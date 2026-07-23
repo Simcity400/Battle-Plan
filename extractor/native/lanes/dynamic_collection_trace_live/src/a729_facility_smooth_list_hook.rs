@@ -247,6 +247,8 @@ impl A729FacilitySmoothListSource {
     }
 }
 
+impl crate::source_seal::Sealed for A729FacilitySmoothListSource {}
+
 impl ExactControllerTraceSource for A729FacilitySmoothListSource {
     fn is_exact_a729_controller_source(&self) -> bool {
         true

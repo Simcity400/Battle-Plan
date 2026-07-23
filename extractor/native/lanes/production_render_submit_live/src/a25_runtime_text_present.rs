@@ -20,14 +20,74 @@ use runtime_text_inputs_live_lane::owner_glyph_probe::{
 use runtime_text_inputs_live_lane::RuntimeTextLayout;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A captured-runtime text command cannot be scheduled while the upstream
-/// live owner/path fixtures remain unpromoted. Evidence mode may exercise the
-/// same materializer and retain its failures without enabling replay output.
+/// A captured-runtime text command cannot be scheduled until every producer
+/// feeding the already-authenticated materializer has a production callback.
+/// This is an integration gate, not a request for another visual fixture.
 pub const A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED: bool = false;
 /// d76 currently records the selected local UI catalog in one global scope.
 /// Keep the A25 command binding identical instead of accepting caller entropy.
 pub const A25_RUNTIME_TEXT_POV_SCOPE: &str = "global";
 const A25_CAPTURED_RUNTIME_TEXT_CANONICAL_RGBA: [u8; 4] = [255; 4];
+
+/// Exact production callbacks still absent from the A25 producer graph. Keep
+/// these reasons typed so the collector cannot mistake an empty observation
+/// set for measured-empty text paint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum A25RuntimeTextUnavailableReason {
+    /// No live producer calls `begin_gui_paint_candidate_scope`, and the exact
+    /// later final-draw callback can capture draw payload, selected target, and
+    /// pipeline/scissor state only after `CInstantTextObject::Render` RVA
+    /// `0x022D8350` has begun emitting the draw. It does not provide the missing
+    /// pre-draw owner paint ordinal or destination. The owner-entry callback
+    /// must therefore remain unavailable instead of borrowing later draw state
+    /// or promoting the pointer-bearing diagnostic rectangle candidates.
+    CommonGuiPaintOwnerEntryAuthorityUnavailable,
+    /// The exact font and sprite pointers observed by the bitmap-font hooks do
+    /// not yet have a mechanical pointer-to-authenticated-VFS receipt producer.
+    AuthenticatedFontAndIconAssetBindingNotInstalled,
+    /// The post-emit/cache hook owners are not yet installed by the early
+    /// render lifecycle. Their static insertion points are exact, but dormant.
+    OrdinaryGlyphHookLifecycleNotInstalled,
+    /// The derived `CGameBitmapFont` callbacks are exact at RVAs
+    /// `0x0162E880/0x0162EFE0/0x0162EB10`, but are not yet part of the installed
+    /// render hook set.
+    DerivedInlineIconHookLifecycleNotInstalled,
+}
+
+pub const A25_RUNTIME_TEXT_UNAVAILABLE_REASONS: &[A25RuntimeTextUnavailableReason] = &[
+    A25RuntimeTextUnavailableReason::CommonGuiPaintOwnerEntryAuthorityUnavailable,
+    A25RuntimeTextUnavailableReason::AuthenticatedFontAndIconAssetBindingNotInstalled,
+    A25RuntimeTextUnavailableReason::OrdinaryGlyphHookLifecycleNotInstalled,
+    A25RuntimeTextUnavailableReason::DerivedInlineIconHookLifecycleNotInstalled,
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum A25SelectedOwnerCaptureDrain {
+    ProductionReady(Vec<SelectedOwnerGlyphCapture>),
+    EvidenceOnly(Vec<SelectedOwnerGlyphCapture>),
+    SourceUnavailable(Vec<A25RuntimeTextUnavailableReason>),
+}
+
+/// Drain the selected-Present owner queue without conflating a dormant
+/// producer with an authenticated empty result. The legacy evidence switch is
+/// still isolated and can never produce a production-ready drain.
+pub fn drain_selected_a25_owner_captures(
+    selected: OwnerGlyphPresentCandidate,
+) -> Result<A25SelectedOwnerCaptureDrain, String> {
+    if A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED {
+        return Err(
+            "A25 product latch is true without an installed production owner-glyph drain".into(),
+        );
+    }
+    if runtime_text_inputs_live_lane::owner_glyph_probe::A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED {
+        return runtime_text_inputs_live_lane::owner_glyph_probe::
+            admit_selected_present_if_evidence_active(selected)
+            .map(A25SelectedOwnerCaptureDrain::EvidenceOnly);
+    }
+    Ok(A25SelectedOwnerCaptureDrain::SourceUnavailable(
+        A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.to_vec(),
+    ))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A25SelectedPresentTextPaint {
@@ -483,4 +543,40 @@ fn push_exact_content(
         .map_err(|_| "A25 text content index exceeds u32".to_string())?;
     ordered.push(content);
     Ok(index)
+}
+
+#[cfg(test)]
+mod production_reachability_tests {
+    use super::*;
+
+    #[test]
+    fn dormant_product_returns_typed_unavailable_not_empty_capture() {
+        let drain = drain_selected_a25_owner_captures(OwnerGlyphPresentCandidate {
+            process_start_nonce: 1,
+            hook_epoch_nonce: 1,
+            submit_index: 1,
+            frame_sequence: 1,
+            frame_hour: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            drain,
+            A25SelectedOwnerCaptureDrain::SourceUnavailable(
+                A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.to_vec()
+            )
+        );
+        assert!(!A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED);
+    }
+
+    #[test]
+    fn production_gap_list_names_only_missing_callback_owners() {
+        assert_eq!(A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.len(), 4);
+        assert!(!crate::gui_paint_receipt::GUI_PAINT_LIVE_RECEIPT_PROVEN);
+        assert!(A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.contains(
+            &A25RuntimeTextUnavailableReason::CommonGuiPaintOwnerEntryAuthorityUnavailable
+        ));
+        assert!(A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.contains(
+            &A25RuntimeTextUnavailableReason::AuthenticatedFontAndIconAssetBindingNotInstalled
+        ));
+    }
 }

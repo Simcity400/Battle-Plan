@@ -884,8 +884,11 @@ fn torn_zstd_frame_is_a_hard_fold_check_error() {
 
 #[test]
 fn legacy_pre222_container_decodes_for_diagnostics_but_does_not_certify() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../snapshot/tests/data/legacy/pre222_store_deflate.battleplan");
+    let path = std::fs::canonicalize(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../snapshot/tests/data/legacy/pre222_store_deflate.battleplan"),
+    )
+    .expect("canonicalize checked-in legacy replay fixture");
     let err = match run_input(&path, &ExpectedRoster::production()) {
         Ok(_) => panic!("legacy zero-payload FRAME_END must not pass current certification"),
         Err(err) => err,

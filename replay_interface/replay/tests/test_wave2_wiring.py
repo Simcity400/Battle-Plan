@@ -98,9 +98,11 @@ class TestSchemaPresence(unittest.TestCase):
         for p in ("countries.GER.abilities.aces",
                   "countries.GER.projects",
                   "countries.GER.economy.market_subsidies",
-                  "countries.GER.military.deployment_queue",
                   "diplomacy_world.market_requests"):
             self.assertEqual(schema.source_of(p), "S", p)
+        self.assertEqual(
+            schema.source_of("countries.GER.military.deployment_queue"),
+            "C/M/S")
         # M* tick-transient
         self.assertEqual(
             schema.source_of("combats.naval.5.attacker.damage_history"), "M*")

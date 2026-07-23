@@ -1,0 +1,35 @@
+{
+  "schema": "battle-plan-headless-performance-stress-workload-v1",
+  "certification_enabled": true,
+  "workload_id": "F1_A729_1920X1080_PERFORMANCE_STRESS_V1",
+  "proof_scope": "performance_only_non_semantic_non_promotion",
+  "prohibited_claims": [
+    "replay_semantic_parity",
+    "rendering_law_promotion",
+    "reverse_engineering_evidence",
+    "pixel_parity"
+  ],
+  "viewport_width": 1920,
+  "viewport_height": 1080,
+  "map_operation_count": 1266,
+  "selected_present_ui_operation_count": 1167,
+  "map_count_authority": {
+    "repository_relative_path": "replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json",
+    "sha256": "d0d4917a7102a88938aa4a805beb0a5d897afcbc3287dc4bd169c537c0685307",
+    "json_pointer": "/summary/all/draw_count",
+    "expected_count": 1266
+  },
+  "ui_count_authority": {
+    "repository_relative_path": "replay_interface/re_evidence/rendering_laws/M02/production_interleave_closure/contract.json",
+    "sha256": "cdedd70457793e56132493a81a7e80044f567684c1f033c5fc95565343fd7fb7",
+    "json_pointer": "/authenticated_m02_draw/visible_ui_pass_draw_count",
+    "expected_count": 1167
+  },
+  "shader_asset_path": "performance_assets/f1_stress.hlsl",
+  "shader_asset_sha256": "43deec97670a522ca4f89847dfafc1819eaaa21a56cfb0fe6bbf1f779ecdd8b2",
+  "synthetic_product_modset_sha256": "b1836cbf1d952178865b910977dc880296ade11e0df3ebb520c40abb94a3f900",
+  "synthetic_effective_vfs_manifest_sha256": "217adb01b676c3677fbf605be059298f82d5144f5e2b1cde9d51b5bc186593f0",
+  "ui_surface_algorithm": "rgba32_64_96_16_repeated_1920x1080",
+  "ui_surface_sha256": "fe596b4cf34242b20a49f3d5ba95686cd2103097fb314ebc637b0f74f6988a41",
+  "approved_omissions": []
+}

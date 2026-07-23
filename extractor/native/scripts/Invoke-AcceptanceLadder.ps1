@@ -1685,8 +1685,13 @@ function New-FakeCaptureForRung {
             hour_latch    = [ordered]@{ hours_coalesced = 0 }
         }
         acceptance_telemetry = [ordered]@{
+            schema        = "battle-plan.acceptance_telemetry.v1"
+            complete      = $true
+            problems      = @()
+            collector_sink_write_us = [ordered]@{ count = 10; total = 250; avg = 25.0; p50 = 20; p99 = 100; max = 120 }
             sink_write_us = [ordered]@{ count = 10; avg = 25.0; p50 = 20; p95 = 60; p99 = 100; max = 120 }
             clock_skew    = [ordered]@{ wall_elapsed_us = ($fakeElapsedUs - 100); mono_elapsed_us = $fakeElapsedUs; drift_us = -100; wall_monotonic_ok = $true }
+            clock_skew_scope = "complete physical H4CR capture; capture-set scoped during rollover"
         }
         host_finalize = [ordered]@{ peak_private_bytes = 268435456; peak_working_set_bytes = 201326592; stream_bytes = 1048576 }
     }

@@ -1,6 +1,12 @@
 # Production replay UI promotion
 
-Status: **ROUTE PARTITION FROZEN; XUI25 INPUT AUTHORITY WIRED BUT LIVE-UNAUTHENTICATED; NON-AUTHENTICATED PIXEL ROUTES OMITTED**
+Status: **IMPLEMENTED; HISTORICAL PROMOTION RECEIPT ONLY; CURRENT CENTRAL VALIDATION/REFREEZE PENDING**
+
+The 2026-07-19 counts and hashes below remain historical evidence for their
+recorded source set. They are not current freeze authority: replay-app/UI sources
+and the terminal authority inputs have changed. No current PASS is claimed here.
+Named runtime receipts remain optional fail-closed feature-activation evidence;
+absence omits only the affected surface and never authorizes substitution.
 
 Pinned target: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -43,7 +49,7 @@ M02 combat-indicator carrier and executor laws are complete but its pixels remai
 
 ## Distribution and content boundary
 
-Neutral HUD wire roles, exact launcher-equivalent VFS resolution, GUI/GFX/Clausewitz parsing, and HUD closure interpretation now live under `portable_replay/native`. Recorder-owned physical launch mounts and finalization live under `extractor/native/recorder_host`. `replay_app` has zero extractor/live-lane normal dependencies, and `recorder_host` has zero `replay_interface`, `game_ui`, `replay_core`, `map_viewer`, or `replay_app` normal dependencies.
+Neutral HUD wire roles, exact launcher-equivalent VFS resolution, GUI/GFX/Clausewitz parsing, and HUD closure interpretation now live under `portable_replay/native`. Recorder-owned physical launch mounts and finalization live under `extractor/native/recorder_host`. `replay_app` links the extractor-owned `replay_decoder` solely for its authenticated internal prefold child mode; ordinary replay rendering remains on portable/replay interfaces. `recorder_host` has zero `replay_interface`, `game_ui`, `replay_core`, `map_viewer`, or `replay_app` normal dependencies.
 
 Standalone extractor builds with `replay_interface` absent and standalone replayer builds with `extractor` absent passed twice each. HUD capture-to-relocated-manifest finalization passed twice. A27 relocation and neutral decoding preserved all 6,407 records. All boundary temporary roots were removed.
 
@@ -71,7 +77,7 @@ XUI13 required no new Ghidra operation: function address `N/A`, job ID `N/A`. Cu
 
 The preserved upstream `XUI13/evidence_manifest.json` is non-authoritative for production after the neutral schema move: it still binds the old `replay_core::design_catalog` hash. It was not rewritten here. Production promotion instead hashes the current neutral schema, compatibility shim, admission code, and focused test directly.
 
-## Final verification
+## Historical verification — not current authority
 
 - Targeted installed relocation: 1/1 passed, 665.41 s.
 - Full locked `game_ui` passed twice. Each run had 380 passed and 2 ignored across 42 nonempty binaries; the library tier was 125 passed/2 ignored. `production_renderer` passed 11/11 in 504.78 s and 478.36 s.
@@ -81,4 +87,4 @@ The preserved upstream `XUI13/evidence_manifest.json` is non-authoritative for p
 - The production fallback guard passed in both full UI runs: no extractor staging, runtime user-dir discovery, frozen definition catalog, default game root, unrestricted `AssetResolver::new`, or unrelated installed UI scan is reachable from the product callers.
 - XUI13's current neutral A27 schema, replay compatibility shim, product admission code, and focused test are direct machine-manifest artifacts. The stale pre-neutral-move packet manifest is explicitly excluded from production authority.
 
-Machine-readable contract: `replay_interface/re_evidence/rendering_laws/PRODUCTION_UI_PROMOTION/manifest.json`, SHA-256 `86329980977cffad8dcd2e1229e5d40ad343216566e361f3c00fa99e064a4bc5`.
+Historical machine-readable contract: `replay_interface/re_evidence/rendering_laws/PRODUCTION_UI_PROMOTION/manifest.json`, SHA-256 `86329980977cffad8dcd2e1229e5d40ad343216566e361f3c00fa99e064a4bc5`. Current authority requires a new content-addressed refreeze.

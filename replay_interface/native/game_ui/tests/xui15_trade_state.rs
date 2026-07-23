@@ -1,6 +1,7 @@
 use game_ui::assets::AssetResolver;
 use game_ui::compose::ComposeOptions;
 use game_ui::gfx::SpriteRegistry;
+use game_ui::gui::GuiElement;
 use game_ui::trade_state::{
     admit_trade_screen, apply_trade_to_compose_options, build_trade_compose_scene,
     render_trade_screen, AdmittedTradeScreen, TradeData, TradeDataIssue,
@@ -10,7 +11,9 @@ use replay_core::{
     ResourceTradeDealRow, TradeContractRow, TradeResourceRow, TradeView, ViewStatus,
 };
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ORDER: [&str; 7] = [
     "oil",
@@ -246,6 +249,98 @@ fn presentation() -> game_ui::trade_state::TradePresentation {
     presentation
 }
 
+fn deterministic_trade_gui_root() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "xui15-license-compose-{}-{nonce}",
+        std::process::id()
+    ));
+    let interface = root.join("interface");
+    fs::create_dir_all(&interface).expect("create deterministic XUI15 fixture root");
+    fs::write(
+        interface.join("countrytradeview.gui"),
+        r#"
+guiTypes = {
+    containerWindowType = {
+        name = "countrytradeview"
+        show_position = { x = -6 y = 78 }
+        size = { width = 689 height = 1000 }
+    }
+    containerWindowType = {
+        name = "resources_info_entry"
+        size = { width = 79 height = 156 }
+    }
+    containerWindowType = {
+        name = "country_trade_entry"
+        position = { x = 0 y = 0 }
+        size = { width = 648 height = 45 }
+        buttonType = {
+            name = "country_flag"
+            position = { x = 6 y = 8 }
+            quadTextureSprite = "GFX_flag_small2"
+        }
+        iconType = {
+            name = "country_flag_frame"
+            position = { x = 3 y = 6 }
+            spriteType = "GFX_small_flag_frame_thin"
+        }
+        instantTextboxType = {
+            name = "country"
+            position = { x = 52 y = 6 }
+            font = "hoi_16mbs"
+            text = "name"
+            maxWidth = 130
+            maxHeight = 28
+            format = center
+        }
+        instantTextboxType = {
+            name = "exported"
+            position = { x = 365 y = 12 }
+            font = "hoi_18mbs"
+            text = ""
+            maxWidth = 120
+            maxHeight = 18
+            format = center
+        }
+        instantTextboxType = {
+            name = "available_export"
+            position = { x = 198 y = 12 }
+            font = "hoi_18mbs"
+            text = ""
+            maxWidth = 120
+            maxHeight = 18
+            format = center
+        }
+        instantTextboxType = {
+            name = "convoys"
+            position = { x = 520 y = 12 }
+            font = "hoi_18mbs"
+            text = ""
+            maxWidth = 120
+            maxHeight = 18
+            format = center
+        }
+    }
+}
+"#,
+    )
+    .expect("write deterministic XUI15 GUI fixture");
+    root
+}
+
+fn descendant<'a>(element: &'a GuiElement, name: &str) -> Option<&'a GuiElement> {
+    if element.name == name {
+        return Some(element);
+    }
+    element
+        .children
+        .iter()
+        .find_map(|child| descendant(child, name))
+}
+
 #[test]
 fn exact_admission_preserves_resource_and_deal_order_with_complete_totals() {
     let presentation = presentation();
@@ -372,6 +467,128 @@ fn compose_binding_uses_authored_names_and_keeps_visible_order() {
     assert_eq!(options.text_overrides["xui15_deal_0_convoys"], "2/3");
     assert_eq!(options.text_overrides["xui15_license_count"], "1");
     assert_eq!(options.text_overrides["xui15_license_0_partner"], "SWE");
+}
+
+#[test]
+fn production_license_options_bind_real_authored_scene_children() {
+    let root = deterministic_trade_gui_root();
+    let resolver = AssetResolver::new(vec![root.clone()]);
+    let screen = AdmittedTradeScreen::Visible(presentation());
+    let scene = build_trade_compose_scene(&resolver, &screen, 1920, 1080)
+        .expect("build deterministic XUI15 licence scene");
+
+    let license_overrides = scene
+        .options
+        .text_overrides
+        .keys()
+        .filter(|name| name.starts_with("xui15_license"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(license_overrides.len(), 5);
+    for name in &license_overrides {
+        assert!(
+            descendant(&scene.root, name).is_some(),
+            "licence override {name} must bind a concrete scene child"
+        );
+    }
+    assert!(scene
+        .options
+        .hidden_elements
+        .contains("xui15_license_country_flag"));
+    assert!(scene
+        .options
+        .hidden_elements
+        .contains("xui15_license_0_country_flag"));
+
+    let partner = descendant(&scene.root, "xui15_license_0_partner")
+        .expect("authored country text becomes licence partner");
+    assert_eq!(partner.font.as_deref(), Some("hoi_16mbs"));
+    assert_eq!(partner.format.as_deref(), Some("center"));
+    for name in [
+        "xui15_license_0_start_date",
+        "xui15_license_0_end_date",
+        "xui15_license_0_variant_count",
+    ] {
+        let field = descendant(&scene.root, name).expect("authored licence field");
+        assert_eq!(field.font.as_deref(), Some("hoi_18mbs"));
+        assert_eq!(field.format.as_deref(), Some("center"));
+    }
+
+    let output = render_trade_screen(
+        &resolver,
+        &SpriteRegistry::new(),
+        &screen,
+        1920,
+        1080,
+    )
+    .expect("compose deterministic XUI15 licence scene");
+    let rect = |name: &str| {
+        output
+            .debug_rects
+            .iter()
+            .find(|rect| rect.name == name)
+            .unwrap_or_else(|| panic!("missing composed rect {name}"))
+    };
+    assert_eq!(
+        (
+            rect("xui15_license_count").x,
+            rect("xui15_license_count").y
+        ),
+        (61, 681)
+    );
+    assert_eq!(
+        (
+            rect("xui15_license_0_partner").x,
+            rect("xui15_license_0_partner").y
+        ),
+        (61, 726)
+    );
+    assert_eq!(
+        (
+            rect("xui15_license_0_start_date").x,
+            rect("xui15_license_0_start_date").y
+        ),
+        (207, 732)
+    );
+    assert_eq!(
+        (
+            rect("xui15_license_0_end_date").x,
+            rect("xui15_license_0_end_date").y
+        ),
+        (374, 732)
+    );
+    assert_eq!(
+        (
+            rect("xui15_license_0_variant_count").x,
+            rect("xui15_license_0_variant_count").y
+        ),
+        (529, 732)
+    );
+    assert!(output
+        .debug_rects
+        .iter()
+        .all(|rect| rect.name != "xui15_license_0_country_flag"));
+
+    fs::remove_dir_all(root).expect("remove deterministic XUI15 fixture root");
+}
+
+#[test]
+fn unavailable_production_licenses_render_only_fail_closed_notice() {
+    let root = deterministic_trade_gui_root();
+    let resolver = AssetResolver::new(vec![root.clone()]);
+    let mut presentation = presentation();
+    presentation.production_license_agreements =
+        TradeData::Unavailable(TradeDataIssue::CapturedButUnobtained);
+    let screen = AdmittedTradeScreen::Visible(presentation);
+    let scene = build_trade_compose_scene(&resolver, &screen, 1920, 1080)
+        .expect("build unavailable XUI15 licence scene");
+
+    assert_eq!(scene.options.text_overrides["xui15_license_count"], "--");
+    assert!(descendant(&scene.root, "xui15_license_count").is_some());
+    assert!(descendant(&scene.root, "xui15_licenses_unavailable").is_some());
+    assert!(descendant(&scene.root, "xui15_license_0_partner").is_none());
+
+    fs::remove_dir_all(root).expect("remove deterministic XUI15 fixture root");
 }
 
 #[test]

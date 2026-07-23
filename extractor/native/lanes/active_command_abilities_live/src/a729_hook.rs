@@ -1,12 +1,12 @@
-//! Discovery-complete, promotion-gated a729 ability-list transition observer.
+//! Exact production a729 ability-list transition observer.
 //!
 //! This module records the exact engine leaves needed by the A36 human
 //! transition matrix and captures the exact same-row disabled-reason
-//! accumulator before its destruction. Runtime pointers and aggregate scratch
-//! records remain diagnostic identities. Only `JoinedExactA729AbilitySource`,
+//! accumulator before its destruction when such text is evaluated. Runtime
+//! pointers and aggregate scratch records remain process-local join identities.
+//! Only `JoinedExactA729AbilitySource`,
 //! produced after a complete pointer-erasing row join, implements
-//! `ExactA729AbilityControllerSource`. Promotion remains separated from
-//! live/compact scheduling until the required game-state transitions exist.
+//! `ExactA729AbilityControllerSource`. Core rows do not require optional text.
 
 use core::ffi::c_void;
 use minhook::MinHook;
@@ -72,8 +72,8 @@ pub const TERMINAL_ACTIVE_RECORD_MANIFEST_SHA256: &str =
 pub const TERMINAL_ACTIVE_RECORD_AUTHORITY_BOUND: bool = true;
 pub const EXACT_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
-pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = false;
-pub const COMPACT_DOMAIN_SCHEDULED: bool = false;
+pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = true;
+pub const COMPACT_DOMAIN_SCHEDULED: bool = true;
 
 const REFRESH_SENTINEL: [u8; 16] = [
     0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,
@@ -685,7 +685,6 @@ impl crate::ExactA729AbilityControllerSource for JoinedExactA729AbilitySource {
         EXACT_A729_AUTHORITY_BOUND
             && self.controller_sequence != 0
             && self.identity_catalog_epoch != 0
-            && self.tooltip_sequences.len() == self.frame.rows.len()
             && self.tooltip_sequences.iter().all(|sequence| *sequence != 0)
     }
 
@@ -705,7 +704,10 @@ fn materialize_abl1_frame(
     observations: &[DisabledReasonObservation],
 ) -> Result<(crate::AbilityFrame, Vec<u64>), String> {
     validate_identity_catalog(catalog)?;
-    if u64::try_from(controller.observed_game_hour_raw).ok() != Some(frame_hour) {
+    if compact_contract::calendar::hour_index_from_raw(controller.observed_game_hour_raw)
+        .and_then(|hour| u64::try_from(hour).ok())
+        != Some(frame_hour)
+    {
         return Err("A36 exact-root join hour differs from retained refresh hour".into());
     }
     if controller.sequence == 0
@@ -723,11 +725,10 @@ fn materialize_abl1_frame(
     let mut rows = Vec::with_capacity(controller.source_definition_runtime.len());
     let mut tooltip_sequences = Vec::with_capacity(rows.capacity());
     for ordinal in 0..controller.source_definition_runtime.len() {
-        let matches = observations
+        let row_identity_matches = observations
             .iter()
             .filter(|observation| {
-                observation.controller_sequence == controller.sequence
-                    && observation.controller_runtime == controller.controller_runtime
+                observation.controller_runtime == controller.controller_runtime
                     && observation.row_ordinal as usize == ordinal
                     && observation.definition_runtime
                         == controller.source_definition_runtime[ordinal]
@@ -744,22 +745,34 @@ fn materialize_abl1_frame(
                     && observation.field_marshal_aggregate == controller.field_marshal_aggregate
             })
             .collect::<Vec<_>>();
-        if matches.len() != 1 {
-            return Err("A36 ABL1 row lacks one exact tooltip transaction".into());
-        }
-        let observation = matches[0];
-        if observation.sequence <= controller.sequence
-            || observation.observed_game_hour_raw != controller.observed_game_hour_raw
-            || observation.final_tooltip.is_empty()
-            || !observation.accumulator_callsite_seen
+        if row_identity_matches
+            .iter()
+            .any(|observation| observation.controller_sequence != controller.sequence)
         {
-            return Err("A36 tooltip/disabled-reason transaction is incomplete".into());
+            return Err("A36 ABL1 row has a cross-refresh tooltip transaction".into());
+        }
+        let matches = row_identity_matches
+            .into_iter()
+            .filter(|observation| observation.controller_sequence == controller.sequence)
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err("A36 ABL1 row has ambiguous tooltip transactions".into());
+        }
+        let observation = matches.first().copied();
+        if observation.is_some_and(|observation| {
+            observation.sequence <= controller.sequence
+                || observation.observed_game_hour_raw != controller.observed_game_hour_raw
+                || observation.final_tooltip.is_empty()
+                || !observation.accumulator_callsite_seen
+        }) {
+            return Err("A36 observed tooltip/disabled-reason transaction is incomplete".into());
         }
         // 0x141D06052 is unconditional: it appends the evaluated error
         // accumulator even when that accumulator has length zero. Therefore
         // callsite presence authenticates the observation, while the exact
         // captured length (not callsite presence) is the availability leaf.
-        let has_disabled_reason = !observation.disabled_reason.is_empty();
+        let has_disabled_reason = observation
+            .is_some_and(|observation| !observation.disabled_reason.is_empty());
         let definition = &controller.definitions[ordinal];
         let presentation = &controller.definition_presentations[ordinal];
         if definition.definition_runtime != controller.source_definition_runtime[ordinal]
@@ -774,10 +787,10 @@ fn materialize_abl1_frame(
                 .ok_or_else(|| {
                     "A36 ordinary definition lacks its exact state record".to_string()
                 })?;
-            if (ordinary.state == OrdinaryAbilityState::Available && has_disabled_reason)
-                || (ordinary.state == OrdinaryAbilityState::Unavailable
-                    && !has_disabled_reason)
-            {
+            if observation.is_some()
+                && ((ordinary.state == OrdinaryAbilityState::Available && has_disabled_reason)
+                    || (ordinary.state == OrdinaryAbilityState::Unavailable
+                        && !has_disabled_reason)) {
                 return Err(
                     "A36 evaluated ordinary availability disagrees with the exact accumulator"
                         .into(),
@@ -786,6 +799,7 @@ fn materialize_abl1_frame(
         }
         let (active, activation_elapsed, cooldown_remaining, duration_remaining, cost, active_leaders) =
             materialize_state(controller, definition, observation)?;
+        let available = ability_available(controller, definition)?;
         let activation_hour = if active {
             Some(frame_hour.checked_sub(u64::try_from(activation_elapsed)
                 .map_err(|_| "A36 active row has a negative activation elapsed value")?)
@@ -802,7 +816,7 @@ fn materialize_abl1_frame(
         }
         rows.push(crate::AbilityRow {
             ability_id: presentation.ability_id.clone(),
-            available: !has_disabled_reason,
+            available,
             active,
             activation_hour,
             cooldown_total: cooldown_total(definition.cooldown_hours)?,
@@ -814,14 +828,18 @@ fn materialize_abl1_frame(
             duration_remaining,
             display_order: ordinal as u32,
             icon: presentation.resolved_icon.clone(),
-            tooltip: observation.final_tooltip.clone(),
-            disabled_reason: has_disabled_reason
-                .then(|| observation.disabled_reason.clone()),
+            tooltip: observation.map(|observation| observation.final_tooltip.clone()),
+            disabled_reason: observation.and_then(|observation| {
+                (!observation.disabled_reason.is_empty())
+                    .then(|| observation.disabled_reason.clone())
+            }),
             affected_division_ids: affected_division_ids.into_iter()
                 .map(|id| format!("division:{id}"))
                 .collect(),
         });
-        tooltip_sequences.push(observation.sequence);
+        if let Some(observation) = observation {
+            tooltip_sequences.push(observation.sequence);
+        }
     }
     if rows.is_empty() && !controller.measured_empty {
         return Err("A36 empty source lacks the exact measured-empty witness".into());
@@ -982,11 +1000,34 @@ fn remaining_timer(raw: i32) -> Result<crate::TimerValue, String> {
     }
 }
 
+fn ability_available(
+    controller: &ControllerObservation,
+    definition: &DefinitionLeaves,
+) -> Result<bool, String> {
+    if controller.field_marshal_aggregate {
+        let state = controller
+            .field_marshal_leaves
+            .iter()
+            .find(|row| row.definition_runtime == definition.definition_runtime)
+            .ok_or_else(|| {
+                "A36 field-marshal definition lacks its exact state record".to_string()
+            })?;
+        Ok(state.available_count != 0)
+    } else {
+        let state = controller
+            .ordinary_leaves
+            .iter()
+            .find(|row| row.definition_runtime == definition.definition_runtime)
+            .ok_or_else(|| "A36 ordinary definition lacks its exact state record".to_string())?;
+        Ok(state.state == OrdinaryAbilityState::Available)
+    }
+}
+
 fn materialize_state(
     controller: &ControllerObservation,
     definition: &DefinitionLeaves,
-    tooltip: &DisabledReasonObservation,
-) -> Result<(bool, i32, crate::TimerValue, crate::TimerValue, i64, Vec<usize>), String> {
+    tooltip: Option<&DisabledReasonObservation>,
+) -> Result<(bool, i32, crate::TimerValue, crate::TimerValue, Option<i64>, Vec<usize>), String> {
     if controller.field_marshal_aggregate {
         let state = controller.field_marshal_leaves.iter()
             .find(|row| row.definition_runtime == definition.definition_runtime)
@@ -1042,7 +1083,7 @@ fn materialize_state(
             return Err("A36 active field-marshal row has no active leader membership".into());
         }
         Ok((active, activation_elapsed, cooldown_remaining,
-            duration_remaining, state.allocated_command_power_cost_fixed, active_leaders))
+            duration_remaining, Some(state.allocated_command_power_cost_fixed), active_leaders))
     } else {
         let state = controller.ordinary_leaves.iter()
             .find(|row| row.definition_runtime == definition.definition_runtime)
@@ -1066,8 +1107,9 @@ fn materialize_state(
                     .map_err(|_| "A36 duration remaining exceeds i32")?)?
             }
         } else { crate::TimerValue::NotStarted };
-        let cost = tooltip.effective_command_power_cost_fixed
-            .ok_or_else(|| "A36 ordinary row lacks its exact effective command-power cost".to_string())?;
+        let cost = tooltip.and_then(|observation| {
+            observation.effective_command_power_cost_fixed
+        });
         let leaders = if active && controller.selected_leader_runtime != 0 {
             vec![controller.selected_leader_runtime]
         } else {
@@ -2663,10 +2705,13 @@ fn rpm(address: usize, len: usize) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    const TEST_FRAME_HOUR: u64 = 1936 * 365 * 24 + 900;
+
     fn controller() -> ControllerObservation {
         ControllerObservation {
             sequence: 41,
-            observed_game_hour_raw: 900,
+            observed_game_hour_raw: compact_contract::calendar::DATE_EPOCH_CONST
+                + TEST_FRAME_HOUR as i32,
             controller_runtime: 0x7ff6_1000_0000,
             context_mode: 1,
             selected_root_runtime: 0x7ff6_2000_0000,
@@ -2726,7 +2771,8 @@ mod tests {
     fn observation() -> DisabledReasonObservation {
         DisabledReasonObservation {
             sequence: 42,
-            observed_game_hour_raw: 900,
+            observed_game_hour_raw: compact_contract::calendar::DATE_EPOCH_CONST
+                + TEST_FRAME_HOUR as i32,
             controller_sequence: 41,
             controller_runtime: 0x7ff6_1000_0000,
             callback_owner_runtime: 0x7ff6_1000_0028,
@@ -2752,7 +2798,7 @@ mod tests {
     #[test]
     fn exact_disabled_reason_transaction_materializes_pointer_free_abl1_and_aba2() {
         let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &controller(),
@@ -2775,6 +2821,29 @@ mod tests {
     }
 
     #[test]
+    fn core_row_is_authoritative_without_an_optional_text_transaction() {
+        let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            TEST_FRAME_HOUR,
+            7,
+            &catalog(),
+            &controller(),
+            &[],
+        )
+        .expect("bind exact core row without tooltip");
+        assert!(crate::ExactA729AbilityControllerSource::is_exact_a729_ability_controller(&source));
+        assert!(source.tooltip_sequences().is_empty());
+        assert_eq!(source.frame.rows[0].tooltip, None);
+        assert_eq!(source.frame.rows[0].disabled_reason, None);
+        assert_eq!(source.frame.rows[0].cost_command_power_fixed, None);
+        assert!(crate::production_carrier::collect_and_encode(
+            &source,
+            TEST_FRAME_HOUR,
+            7
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn unconditional_empty_accumulator_materializes_available_row() {
         let mut available = controller();
         available.ordinary_leaves[0].state = OrdinaryAbilityState::Available;
@@ -2785,7 +2854,7 @@ mod tests {
         tooltip.accumulator_callsite_seen = true;
 
         let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &available,
@@ -2801,14 +2870,14 @@ mod tests {
         let mut tooltip = observation();
         tooltip.effective_command_power_cost_fixed = Some(-125_000);
         let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &controller(),
             &[tooltip],
         )
         .expect("bind signed exact effective cost");
-        assert_eq!(source.frame.rows[0].cost_command_power_fixed, -125_000);
+        assert_eq!(source.frame.rows[0].cost_command_power_fixed, Some(-125_000));
     }
 
     #[test]
@@ -2819,7 +2888,7 @@ mod tests {
         let mut tooltip = observation();
         tooltip.disabled_reason = "Cannot activate".into();
         assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &available,
@@ -2833,7 +2902,7 @@ mod tests {
         let mut empty = observation();
         empty.disabled_reason.clear();
         assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &unavailable,
@@ -2903,7 +2972,7 @@ mod tests {
         let (active, elapsed, cooldown, duration, _, leaders) = materialize_state(
             &controller,
             &controller.definitions[0],
-            &observation(),
+            Some(&observation()),
         )
         .expect("materialize exact all-leaders-active aggregate");
         assert!(active);
@@ -2917,7 +2986,7 @@ mod tests {
     fn duplicate_or_cross_refresh_tooltip_transactions_fail_closed() {
         let row = observation();
         assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &controller(),
@@ -2927,7 +2996,7 @@ mod tests {
         let mut wrong_refresh = row;
         wrong_refresh.controller_sequence = 40;
         assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
-            900,
+            TEST_FRAME_HOUR,
             12,
             &catalog(),
             &controller(),

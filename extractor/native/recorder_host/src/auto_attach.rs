@@ -13,11 +13,10 @@
 //!
 //! The coordinator, WMI+reconciliation discovery, identity/journal/policy,
 //! restrictive paired H4CR/H4CT backend, heartbeat/first-frame authority, and
-//! installed-payload resolution have offline implementations. The live product
-//! still runs the legacy child adapter because duplex activation is deliberately
-//! frozen; that adapter's stdout proof is finite and explicit stop still cannot
-//! claim graceful collector finalization. The dormant duplex worker is the only
-//! intended replacement and remains fail-closed until its lifecycle matrix passes.
+//! installed-payload resolution are composed in the live product. The child
+//! publishes its attempt-bound status ladder to a recorder-created durable file;
+//! H4CT remains the authority for every forwarded heartbeat. Explicit stop owns
+//! the authenticated stop event and bounded H4CR drain/finalization path.
 
 pub mod coordinator;
 pub mod duplex_worker;
@@ -35,7 +34,7 @@ pub mod state;
 #[cfg(windows)]
 pub mod windows_combined_backend;
 
-pub use coordinator::{Coordinator, CoordinatorConfig, CoordinatorDeps};
+pub use coordinator::{Coordinator, CoordinatorConfig, CoordinatorDeps, SupervisorEvent};
 pub use identity::{ProcessIdentity, ProcessKey};
 pub use state::CandidateState;
 
@@ -72,6 +71,17 @@ pub struct SupervisorOptions {
 pub fn run_supervisor(
     opts: SupervisorOptions,
     should_stop: impl Fn() -> bool,
+) -> Result<(), String> {
+    run_supervisor_with_events(opts, should_stop, |_| {})
+}
+
+/// Run the resident coordinator and synchronously publish durable lifecycle
+/// events to a product-facing observer. The callback is informational only.
+#[cfg(windows)]
+pub fn run_supervisor_with_events(
+    opts: SupervisorOptions,
+    should_stop: impl Fn() -> bool,
+    mut on_event: impl FnMut(SupervisorEvent),
 ) -> Result<(), String> {
     use sources::wmi::WmiProcessEventSource;
     use sources::{SystemClock, ToolhelpProbe};
@@ -113,11 +123,23 @@ pub fn run_supervisor(
 
     while !should_stop() {
         coord.step()?;
+        for event in coord.drain_supervisor_events() {
+            on_event(event);
+        }
         std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
     }
     coord.begin_explicit_stop()?;
+    for event in coord.drain_supervisor_events() {
+        on_event(event);
+    }
     while !coord.drive_shutdown()? {
+        for event in coord.drain_supervisor_events() {
+            on_event(event);
+        }
         std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
+    }
+    for event in coord.drain_supervisor_events() {
+        on_event(event);
     }
     Ok(())
 }
@@ -128,7 +150,9 @@ pub fn run_supervisor(
 mod live {
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, TryRecvError};
+    use std::sync::Arc;
     use std::{mem, ptr};
 
     use std::os::windows::io::AsRawHandle;
@@ -444,8 +468,7 @@ mod live {
     /// as the per-game worker (design §5: reuse the existing hook injector; the
     /// coordinator never injects directly). This is the SAME interface the dev
     /// launcher uses (`Start-Hoi4ProductionSpeed5Capture.ps1`).
-    /// Process-isolated worker adapter. With activation frozen it retains the
-    /// explicit Legacy behavior; a mintable product permit selects the child
+    /// Process-isolated worker adapter. A mintable product permit selects the child
     /// recorder's combined H4CR/H4CT backend plus authenticated stop event.
     pub struct ProductProcessCommandSpawner {
         exe: PathBuf,
@@ -494,6 +517,10 @@ mod live {
                 } else {
                     None
                 };
+            let proof_path = spec
+                .out_dir
+                .join(super::proof::WORKER_PROOF_FILE_NAME);
+            let proof_file = super::proof::create_durable_proof_file(proof_path.clone())?;
             let mut cmd = Command::new(&self.exe);
             cmd.args(&self.extra_args)
                 .arg("--pid")
@@ -525,13 +552,14 @@ mod live {
                 .env(
                     "BATTLE_PLAN_AUTO_ATTACH_SOURCE_DLL_SHA256",
                     &spec.payload.source_sha256,
-                );
+                )
+                .env(super::proof::WORKER_PROOF_PATH_ENV, &proof_path);
             if let Some(stop_event) = cooperative_stop_event.as_ref() {
                 cmd.env("BATTLE_PLAN_AUTO_ATTACH_STOP_EVENT", &stop_event.name);
             }
             cmd
                 .stdin(Stdio::null())
-                .stdout(Stdio::piped());
+                .stdout(Stdio::null());
             let crash_job = WorkerCrashJob::create()?;
             let mut child = cmd.spawn().map_err(|e| format!("spawn worker: {e}"))?;
             if let Err(error) = crash_job.assign(&child) {
@@ -539,20 +567,18 @@ mod live {
                 let _ = child.wait();
                 return Err(error);
             }
-            let stdout = match child.stdout.take() {
-                Some(stdout) => stdout,
-                None => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("spawned worker has no proof pipe".to_string());
-                }
-            };
             let (status_tx, status_rx) = mpsc::channel();
-            if let Err(e) = std::thread::Builder::new()
+            let proof_stop = Arc::new(AtomicBool::new(false));
+            let proof_thread_stop = proof_stop.clone();
+            let proof_join = match std::thread::Builder::new()
                 .name(format!("auto-attach-proof-{}", spec.key.pid))
                 .spawn(move || {
                     let result = (|| -> Result<(), String> {
-                        let mut channel = super::proof::recorder_channel(stdout, control_session)?;
+                        let tail = super::proof::DurableProofTail::new(
+                            proof_file,
+                            proof_thread_stop,
+                        );
+                        let mut channel = super::proof::recorder_channel(tail, control_session)?;
                         let hello = channel.recv().map_err(|e| e.to_string())?;
                         if hello.kind != crate::control_transport::MessageKind::CollectorHello {
                             return Err(format!("expected CollectorHello, got {:?}", hello.kind));
@@ -597,10 +623,13 @@ mod live {
                     }
                 })
             {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("spawn proof reader: {e}"));
-            }
+                Ok(join) => join,
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("spawn proof reader: {e}"));
+                }
+            };
             Ok(Box::new(ChildWorkerHandle {
                 child,
                 out_dir: spec.out_dir.clone(),
@@ -610,6 +639,8 @@ mod live {
                 cooperative_stop_event,
                 cooperative_stop_started: None,
                 status_rx,
+                proof_stop,
+                proof_join: Some(proof_join),
                 saw_attached: false,
                 saw_recording: false,
                 #[cfg(test)]
@@ -618,8 +649,9 @@ mod live {
         }
     }
 
-    /// Handle over the process-isolated recorder worker. Stdout carries only
-    /// attempt-bound hello/first-world/recurring-heartbeat proofs; child exit is
+    /// Handle over the process-isolated recorder worker. A retained, durable
+    /// per-attempt file carries hello/first-world/recurring-heartbeat proofs;
+    /// child exit is
     /// accepted as Complete only when that ladder succeeded and recorder-main's
     /// fold/pack/verify pipeline left a replay artifact.
     struct ChildWorkerHandle {
@@ -638,6 +670,8 @@ mod live {
         cooperative_stop_event: Option<SupervisorStopEvent>,
         cooperative_stop_started: Option<std::time::Instant>,
         status_rx: Receiver<WorkerStatus>,
+        proof_stop: Arc<AtomicBool>,
+        proof_join: Option<std::thread::JoinHandle<()>>,
         saw_attached: bool,
         saw_recording: bool,
         #[cfg(test)]
@@ -685,6 +719,17 @@ mod live {
                 },
                 Ok(None) => WorkerStatus::Handshaking,
                 Ok(Some(status)) => {
+                    self.finish_proof_reader();
+                    while let Ok(proof_status) = self.status_rx.try_recv() {
+                        match proof_status {
+                            WorkerStatus::Attached => self.saw_attached = true,
+                            WorkerStatus::Recording { .. } => self.saw_recording = true,
+                            WorkerStatus::Failed { reason } => {
+                                return WorkerStatus::Failed { reason }
+                            }
+                            _ => {}
+                        }
+                    }
                     if status.success() {
                         if !self.saw_attached || !self.saw_recording {
                             WorkerStatus::Failed {
@@ -759,11 +804,21 @@ mod live {
                     Err(_) => break false,
                 }
             };
+            self.finish_proof_reader();
             #[cfg(test)]
             if _waited {
                 if let Some(reaped) = &self.test_reaped {
                     reaped.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
+            }
+        }
+    }
+
+    impl ChildWorkerHandle {
+        fn finish_proof_reader(&mut self) {
+            self.proof_stop.store(true, Ordering::Release);
+            if let Some(join) = self.proof_join.take() {
+                let _ = join.join();
             }
         }
     }
@@ -862,6 +917,8 @@ mod live {
                 cooperative_stop_event: None,
                 cooperative_stop_started: None,
                 status_rx,
+                proof_stop: Arc::new(AtomicBool::new(true)),
+                proof_join: None,
                 saw_attached: false,
                 saw_recording: false,
                 test_reaped: Some(reaped.clone()),

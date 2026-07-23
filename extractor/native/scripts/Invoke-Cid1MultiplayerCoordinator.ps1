@@ -1,21 +1,27 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('RegisterObserved','RunLegacyTransport')]
+    [string]$Mode = 'RegisterObserved',
     [ValidateSet('M1','M2','M3')]
     [string]$Arm,
     [Parameter(Mandatory=$true)]
     [string]$MatrixPlanPath,
-    [Parameter(Mandatory=$true)]
-    [string[]]$EndpointRequestPaths,
+    [string[]]$EndpointRequestPaths = @(),
+    [string[]]$EndpointDescriptorPaths = @(),
+    [string]$PreconditionPath,
     [string]$TransportDriverPath,
     [string]$MultiplayerOwnerProfilePath,
-    [string]$OutputRoot = 'C:\hoi4_evidence\cid1_lifecycle_matrix\multiplayer',
+    [string]$OutputRoot,
     [switch]$AllowExternalEndpoints
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PinnedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
-$ContractPath = 'extractor\re_evidence\CID1_LIFECYCLE_MATRIX_V1\multiplayer_coordinator_contract.json'
+$ContractPath = Join-Path $PSScriptRoot '..\..\re_evidence\CID1_LIFECYCLE_MATRIX_V1\multiplayer_coordinator_contract.json'
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+    $OutputRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'battle-plan\evidence\cid1_lifecycle_matrix\multiplayer'
+}
 function Get-Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Write-AtomicJson([string]$Path,$Value) {
     $full=[IO.Path]::GetFullPath($Path);$parent=[IO.Path]::GetDirectoryName($full);[IO.Directory]::CreateDirectory($parent)|Out-Null
@@ -29,6 +35,18 @@ if ($contract.schema -ne 'battle-plan.campaign_identity_multiplayer_coordinator_
 $plan = Get-Content -LiteralPath $MatrixPlanPath -Raw | ConvertFrom-Json
 if ($plan.schema -ne 'battle-plan.campaign_identity_matrix_plan.v1' -or $plan.pinned_executable_sha256 -ne $PinnedExeSha256) {
     throw 'CID1 matrix plan mismatch.'
+}
+if ($Mode -eq 'RegisterObserved') {
+    if ($EndpointDescriptorPaths.Count -ne 2) {
+        throw "$Arm passive registration requires exactly two finalized endpoint descriptors."
+    }
+    if ([string]::IsNullOrWhiteSpace($PreconditionPath) -or -not (Test-Path -LiteralPath $PreconditionPath -PathType Leaf)) {
+        throw "$Arm passive registration requires a content-addressed precondition."
+    }
+    $registrar = Join-Path $PSScriptRoot 'Invoke-Cid1PassiveArmRegistration.ps1'
+    & $registrar -Arm $Arm -MatrixPlanPath $MatrixPlanPath -EndpointDescriptorPaths $EndpointDescriptorPaths -PreconditionPath $PreconditionPath -OutputRoot (Join-Path ([IO.Path]::GetFullPath($OutputRoot)) $Arm)
+    if (-not $?) { throw "CID1 $Arm passive multiplayer registration failed." }
+    return
 }
 if ($EndpointRequestPaths.Count -ne 2) {
     throw 'A multiplayer arm requires exactly two independently registered endpoint requests.'
@@ -65,7 +83,7 @@ if ($Arm -in @('M1','M2') -and $requests[0].machine_id -eq $requests[1].machine_
     throw "$Arm requires two distinct real process endpoints."
 }
 if (-not $AllowExternalEndpoints) {
-    throw 'External multiplayer execution is fail-closed. The validated interface is frozen, but no endpoint has been contacted.'
+    throw 'Legacy transport execution is isolated and fail-closed. Use RegisterObserved for the production passive path.'
 }
 if ([string]::IsNullOrWhiteSpace($TransportDriverPath) -or -not (Test-Path -LiteralPath $TransportDriverPath -PathType Leaf)) {
     throw 'A real mutually authenticated endpoint transport driver is required; missing endpoints are never synthesized.'

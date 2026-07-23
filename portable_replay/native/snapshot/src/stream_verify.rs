@@ -1,9 +1,9 @@
 //! STREAMING `.battleplan` verifier (bounded memory).
 //!
-//! [`crate::container::Container`] reads the WHOLE archive into RAM (`fs::read`)
-//! and caps total size at 64 GiB — fine for a replay a consumer opens, but the
-//! recorder must self-verify a container whose raw-stream entry can be many GiB
-//! without ever materializing it. This module re-reads the finished container
+//! Path-based [`crate::container::Container`] opens retain a bounded file-backed
+//! archive; byte-buffer opens remain available for fixtures. The recorder must
+//! still self-verify a container whose raw-stream entry can be many GiB without
+//! ever materializing it. This module re-reads the finished container
 //! FROM DISK, one entry at a time, seeking to each local header and streaming its
 //! compressed bytes through the decompressor while hashing incrementally. Peak
 //! memory is O(one chunk + retained entry metadata + the manifest JSON), not
@@ -17,13 +17,14 @@
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
-    portable_path_key, validate_path, validate_payload_path, INITIAL_ENTRY_RESERVE,
+    legacy_path_key, portable_path_key, validate_path, validate_path_legacy_v1,
+    validate_payload_path, validate_payload_path_legacy_v1, INITIAL_ENTRY_RESERVE,
     MAX_CONTAINER_ENTRY_BYTES, MAX_READER_ENTRIES, STREAMING_MAX_CONTAINER_ENTRY_BYTES,
     ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
 use flate2::read::DeflateDecoder;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -38,6 +39,13 @@ const EOCD_MIN_LEN: u64 = 22;
 const ZIP64_LOCATOR_LEN: u64 = 20;
 const ZIP64_EOCD_MIN_LEN: u64 = 56;
 const VERIFY_CHUNK: usize = 4 * 1024 * 1024;
+const STITCHED_CONTAINER_VERSION: u64 = 2;
+const FEATURE_TIMELINE_SEGMENTS_V1: &str = "timeline_segments_v1";
+const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2";
+const KNOWN_FEATURES: &[&str] = &[
+    FEATURE_TIMELINE_SEGMENTS_V1,
+    FEATURE_PORTABLE_CONTENT_MANIFEST_V2,
+];
 
 /// What a successful streaming verification observed.
 #[derive(Debug, Clone, Default)]
@@ -69,8 +77,8 @@ pub(crate) struct CdEntry {
 }
 
 /// File-backed archive used by the product reader. It retains one pinned file
-/// handle for central-directory parsing, up-front CRC validation, and lazy
-/// payload reads; the complete container never resides in a `Vec<u8>`.
+/// handle for central-directory parsing and lazy authenticated payload reads;
+/// the complete container never resides in a `Vec<u8>`.
 pub(crate) struct FileBackedArchive {
     file: Mutex<File>,
     file_len: u64,
@@ -79,13 +87,24 @@ pub(crate) struct FileBackedArchive {
 }
 
 impl FileBackedArchive {
+    /// Hash a retained container handle before any ZIP parsing begins. The
+    /// caller must move this same handle into [`FileBackedArchive::open`] and
+    /// compare the result with [`Self::whole_file_receipt`] after parsing.
+    pub(crate) fn whole_file_receipt_before_open(file: &mut File) -> Result<(u64, String), String> {
+        let file_len = file
+            .metadata()
+            .map_err(|error| format!("stat retained container for receipt: {error}"))?
+            .len();
+        whole_file_receipt_from_handle(file, file_len)
+    }
+
     pub(crate) fn open(mut file: File, max_entries: u64) -> Result<Self, String> {
         let file_len = file
             .metadata()
             .map_err(|error| format!("stat container: {error}"))?
             .len();
         let (entries, central_directory_off) =
-            read_central_directory_with_limit(&mut file, file_len, max_entries)?;
+            read_central_directory_with_limit_policy(&mut file, file_len, max_entries, false)?;
         Ok(Self {
             file: Mutex::new(file),
             file_len,
@@ -96,6 +115,17 @@ impl FileBackedArchive {
 
     pub(crate) fn entries(&self) -> &[CdEntry] {
         &self.entries
+    }
+
+    /// Derive a whole-container receipt through the exact retained handle.
+    /// The pathname is never resolved or reopened, and length is checked both
+    /// before and after hashing so a persistent concurrent resize fails closed.
+    pub(crate) fn whole_file_receipt(&self) -> Result<(u64, String), String> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "container file lock poisoned".to_string())?;
+        whole_file_receipt_from_handle(&mut file, self.file_len)
     }
 
     pub(crate) fn validate_local_headers(&self) -> Result<(), String> {
@@ -109,19 +139,6 @@ impl FileBackedArchive {
             self.file_len,
             self.central_directory_off,
         )
-    }
-
-    pub(crate) fn validate_payloads_crc(&self) -> Result<(), String> {
-        let mut file = self
-            .file
-            .lock()
-            .map_err(|_| "container file lock poisoned".to_string())?;
-        validate_file_length(&file, self.file_len)?;
-        for entry in &self.entries {
-            verify_entry_crc_streaming(&mut file, entry)?;
-        }
-        validate_file_length(&file, self.file_len)?;
-        Ok(())
     }
 
     pub(crate) fn read_entry(
@@ -159,6 +176,7 @@ impl FileBackedArchive {
         index: usize,
         writer: &mut W,
         calculate_sha256: bool,
+        maximum_uncompressed_bytes: u64,
     ) -> Result<(Option<String>, u64), String> {
         let entry = self
             .entries
@@ -174,7 +192,7 @@ impl FileBackedArchive {
             entry,
             Some(writer),
             calculate_sha256,
-            STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            maximum_uncompressed_bytes.min(STREAMING_MAX_CONTAINER_ENTRY_BYTES),
         )?;
         validate_file_length(&file, self.file_len)?;
         Ok(result)
@@ -192,6 +210,30 @@ fn validate_file_length(file: &File, expected: u64) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn whole_file_receipt_from_handle(
+    file: &mut File,
+    expected_len: u64,
+) -> Result<(u64, String), String> {
+    validate_file_length(file, expected_len)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("seek retained container for receipt: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read retained container for receipt: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    validate_file_length(file, expected_len)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind retained container after receipt: {error}"))?;
+    Ok((expected_len, to_hex(&digest.finalize())))
 }
 
 #[derive(Clone, Copy)]
@@ -264,15 +306,17 @@ pub fn verify_replay_container_streaming_file_at_path(
     stream_role: &str,
     stream_payload_path: &str,
 ) -> Result<StreamVerifyReport, String> {
-    validate_path(stream_payload_path)
-        .map_err(|e| format!("invalid canonical stream payload path: {e}"))?;
     let file_len = file
         .metadata()
         .map_err(|e| format!("stat container: {e}"))?
         .len();
 
+    // The path-policy selector is authenticated inside manifest.json, so the
+    // structural pass must begin with the historical grammar. It rejects
+    // traversal/absolute/device paths but deliberately does not impose NFC or
+    // full Unicode-caseless identity before the manifest version is known.
     let (entries, central_directory_off) =
-        read_central_directory_with_limit(&mut file, file_len, MAX_READER_ENTRIES)?;
+        read_central_directory_with_limit_policy(&mut file, file_len, MAX_READER_ENTRIES, false)?;
     validate_local_headers_file(&mut file, &entries, file_len, central_directory_off)?;
 
     // --- manifest.json (read + parse + digest) ---
@@ -294,6 +338,15 @@ pub fn verify_replay_container_streaming_file_at_path(
     if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
         return Err("manifest.format != \"hoi4replay\"".to_string());
     }
+    let unicode_paths = manifest_uses_unicode_paths(&manifest)?;
+    validate_archive_paths(&entries, unicode_paths)?;
+    if unicode_paths {
+        validate_path(stream_payload_path)
+    } else {
+        validate_path_legacy_v1(stream_payload_path)
+    }
+    .map_err(|e| format!("invalid canonical stream payload path: {e}"))?;
+
     let declared_digest = manifest
         .get("manifest_digest")
         .and_then(Value::as_str)
@@ -317,11 +370,19 @@ pub fn verify_replay_container_streaming_file_at_path(
         role: Option<String>,
     }
     let mut by_path: HashMap<String, ManRec> = HashMap::new();
+    let mut manifest_path_keys = HashSet::with_capacity(man_entries.len());
     for ent in man_entries {
         let p = ent
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| "entry.path missing".to_string())?;
+        let collision_key = versioned_path_key(p, true, unicode_paths)
+            .map_err(|e| format!("invalid manifest entry path {p}: {e}"))?;
+        if !manifest_path_keys.insert(collision_key) {
+            return Err(format!(
+                "duplicate or portable-path-colliding manifest entry {p}"
+            ));
+        }
         let sha = ent
             .get("sha256")
             .and_then(Value::as_str)
@@ -449,6 +510,95 @@ pub fn verify_replay_container_streaming_file_at_path(
     Ok(report)
 }
 
+/// Select the same versioned path namespace as `Container::open`. This is kept
+/// next to the streaming verifier because it must make the decision before any
+/// archive/manifest path join is trusted.
+fn manifest_uses_unicode_paths(manifest: &Value) -> Result<bool, String> {
+    let container_version = manifest
+        .get("container_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "manifest.container_version missing".to_string())?;
+    if container_version > crate::container::MAX_CONTAINER_VERSION {
+        return Err(format!(
+            "container_version {container_version} > reader max {}",
+            crate::container::MAX_CONTAINER_VERSION
+        ));
+    }
+
+    let mut declared_features = Vec::new();
+    match manifest.get("required_features") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(features)) => {
+            for feature in features {
+                let feature = feature.as_str().ok_or_else(|| {
+                    "manifest.required_features has a non-string element (malformed)".to_string()
+                })?;
+                if !KNOWN_FEATURES.contains(&feature) {
+                    return Err(format!(
+                        "unknown required feature {feature:?} in required_features"
+                    ));
+                }
+                declared_features.push(feature);
+            }
+        }
+        Some(_) => {
+            return Err(
+                "manifest.required_features must be an array (malformed; fail-closed)".into(),
+            )
+        }
+    }
+
+    let has_timeline_segments = declared_features.contains(&FEATURE_TIMELINE_SEGMENTS_V1);
+    if container_version >= STITCHED_CONTAINER_VERSION && !has_timeline_segments {
+        return Err(format!(
+            "container_version {container_version} must declare required feature {FEATURE_TIMELINE_SEGMENTS_V1:?}"
+        ));
+    }
+    if container_version < STITCHED_CONTAINER_VERSION && has_timeline_segments {
+        return Err(format!(
+            "required feature {FEATURE_TIMELINE_SEGMENTS_V1:?} requires container_version {STITCHED_CONTAINER_VERSION}"
+        ));
+    }
+
+    Ok(container_version >= STITCHED_CONTAINER_VERSION
+        || declared_features.contains(&FEATURE_PORTABLE_CONTENT_MANIFEST_V2))
+}
+
+fn validate_archive_paths(entries: &[CdEntry], unicode_paths: bool) -> Result<(), String> {
+    let mut collision_keys = HashSet::with_capacity(entries.len());
+    for entry in entries {
+        let key = versioned_path_key(&entry.name, entry.name != "manifest.json", unicode_paths)
+            .map_err(|e| format!("unsafe entry path {}: {e}", entry.name))?;
+        if !collision_keys.insert(key) {
+            return Err(format!(
+                "duplicate entry name {} (portable path collision)",
+                entry.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn versioned_path_key(name: &str, payload: bool, unicode_paths: bool) -> Result<String, String> {
+    if unicode_paths {
+        if payload {
+            validate_payload_path(name)
+        } else {
+            validate_path(name)
+        }
+        .map_err(|e| e.to_string())?;
+        portable_path_key(name).map_err(|e| e.to_string())
+    } else {
+        if payload {
+            validate_payload_path_legacy_v1(name)
+        } else {
+            validate_path_legacy_v1(name)
+        }
+        .map_err(|e| e.to_string())?;
+        legacy_path_key(name).map_err(|e| e.to_string())
+    }
+}
+
 /// Locate the End-Of-Central-Directory and parse central-directory records
 /// incrementally, retaining only the metadata needed for later reads.
 #[cfg(test)]
@@ -461,6 +611,15 @@ fn read_central_directory_with_limit(
     file: &mut File,
     file_len: u64,
     max_entries: u64,
+) -> Result<(Vec<CdEntry>, u64), String> {
+    read_central_directory_with_limit_policy(file, file_len, max_entries, true)
+}
+
+fn read_central_directory_with_limit_policy(
+    file: &mut File,
+    file_len: u64,
+    max_entries: u64,
+    unicode_v2: bool,
 ) -> Result<(Vec<CdEntry>, u64), String> {
     if file_len < 22 {
         return Err("container too small for an EOCD".to_string());
@@ -657,19 +816,32 @@ fn read_central_directory_with_limit(
         } else {
             lho32 as u64
         };
-        validate_path(&name).map_err(|e| format!("unsafe entry path {name}: {e}"))?;
+        if unicode_v2 {
+            validate_path(&name)
+        } else {
+            validate_path_legacy_v1(&name)
+        }
+        .map_err(|e| format!("unsafe entry path {name}: {e}"))?;
         if name != "manifest.json" {
-            validate_payload_path(&name)
-                .map_err(|e| format!("entry outside payload root {name}: {e}"))?;
+            if unicode_v2 {
+                validate_payload_path(&name)
+            } else {
+                validate_payload_path_legacy_v1(&name)
+            }
+            .map_err(|e| format!("entry outside payload root {name}: {e}"))?;
         }
         if !seen.insert(name.clone()) {
             return Err(format!("duplicate entry name {name}"));
         }
         // case-insensitive collision (would clobber on Windows/macOS unpack);
         // same rule as the in-RAM reader.
-        if !seen_ci
-            .insert(portable_path_key(&name).map_err(|e| format!("unsafe entry path {name}: {e}"))?)
-        {
+        let collision_key = if unicode_v2 {
+            portable_path_key(&name)
+        } else {
+            legacy_path_key(&name)
+        }
+        .map_err(|e| format!("unsafe entry path {name}: {e}"))?;
+        if !seen_ci.insert(collision_key) {
             return Err(format!("duplicate entry name {name} (case-insensitive)"));
         }
         entries.push(CdEntry {
@@ -814,8 +986,7 @@ fn validate_local_headers_file(
 ) -> Result<(), String> {
     let mut previous_end = 0u64;
     for entry in entries {
-        let region =
-            validate_entry_structure(file, entry, file_len, central_directory_off)?;
+        let region = validate_entry_structure(file, entry, file_len, central_directory_off)?;
         if region.header_start < previous_end {
             return Err(format!(
                 "entry regions overlap or are out of order: {}",
@@ -877,7 +1048,10 @@ fn validate_entry_structure(
         .checked_add(e.comp_size)
         .ok_or_else(|| format!("entry {}: data end overflow", e.name))?;
     if data_end > file_len || data_end > central_directory_off {
-        return Err(format!("entry {}: data range ends past payload area", e.name));
+        return Err(format!(
+            "entry {}: data range ends past payload area",
+            e.name
+        ));
     }
 
     file.seek(SeekFrom::Start(name_start))
@@ -910,9 +1084,7 @@ fn validate_entry_structure(
         } else {
             comp_size32 as u64
         };
-        if crc32 != e.crc32
-            || local_comp_size != e.comp_size
-            || local_uncomp_size != e.uncomp_size
+        if crc32 != e.crc32 || local_comp_size != e.comp_size || local_uncomp_size != e.uncomp_size
         {
             return Err(format!(
                 "entry {}: local/central crc or size mismatch",
@@ -947,41 +1119,19 @@ fn validate_entry_structure(
 /// (manifest.json); large entries go through [`hash_entry_streaming`].
 fn read_entry_bytes(file: &mut File, e: &CdEntry) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    entry_integrity_inner(
-        file,
-        e,
-        Some(&mut out),
-        false,
-        MAX_CONTAINER_ENTRY_BYTES,
-    )?;
+    entry_integrity_inner(file, e, Some(&mut out), false, MAX_CONTAINER_ENTRY_BYTES)?;
     Ok(out)
 }
 
 /// Stream + decompress one entry, returning `(sha256_hex, uncompressed_len)`
 /// without holding the decompressed bytes.
 fn hash_entry_streaming(file: &mut File, e: &CdEntry) -> Result<(String, u64), String> {
-    let (digest, len) = entry_integrity_inner(
-        file,
-        e,
-        None,
-        true,
-        STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-    )?;
+    let (digest, len) =
+        entry_integrity_inner(file, e, None, true, STREAMING_MAX_CONTAINER_ENTRY_BYTES)?;
     Ok((
         digest.ok_or_else(|| format!("entry {}: internal SHA-256 state missing", e.name))?,
         len,
     ))
-}
-
-fn verify_entry_crc_streaming(file: &mut File, e: &CdEntry) -> Result<(), String> {
-    entry_integrity_inner(
-        file,
-        e,
-        None,
-        false,
-        STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-    )
-    .map(|_| ())
 }
 
 /// Shared core: seek to the entry's data and stream it through the decompressor,
@@ -1205,24 +1355,19 @@ fn entry_integrity_inner(
         data_descriptor_end_file(file, e, descriptor_start)?;
     }
     Ok((
-        final_sink
-            .hasher
-            .map(|hasher| to_hex(&hasher.finalize())),
+        final_sink.hasher.map(|hasher| to_hex(&hasher.finalize())),
         uncomp_len,
     ))
 }
 
-fn data_descriptor_end_file(
-    file: &mut File,
-    e: &CdEntry,
-    start: u64,
-) -> Result<u64, String> {
+fn data_descriptor_end_file(file: &mut File, e: &CdEntry, start: u64) -> Result<u64, String> {
     let signed = data_descriptor_candidate_file(file, e, start, true)?;
     let unsigned = data_descriptor_candidate_file(file, e, start, false)?;
     match (signed, unsigned) {
         (Some(end), None) | (None, Some(end)) => {
-            file.seek(SeekFrom::Start(end))
-                .map_err(|error| format!("entry {}: seek after data descriptor: {error}", e.name))?;
+            file.seek(SeekFrom::Start(end)).map_err(|error| {
+                format!("entry {}: seek after data descriptor: {error}", e.name)
+            })?;
             Ok(end)
         }
         (Some(_), Some(_)) => Err(format!(
@@ -1403,6 +1548,76 @@ mod tests {
     impl Drop for TmpDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn manifest_selects_container_versioned_path_policy() {
+        let v1 = serde_json::json!({
+            "container_version": 1,
+            "required_features": []
+        });
+        assert!(!manifest_uses_unicode_paths(&v1).unwrap());
+
+        let portable_v1 = serde_json::json!({
+            "container_version": 1,
+            "required_features": ["portable_content_manifest_v2"]
+        });
+        assert!(manifest_uses_unicode_paths(&portable_v1).unwrap());
+
+        let v2 = serde_json::json!({
+            "container_version": 2,
+            "required_features": ["timeline_segments_v1"]
+        });
+        assert!(manifest_uses_unicode_paths(&v2).unwrap());
+
+        let malformed_v2 = serde_json::json!({
+            "container_version": 2,
+            "required_features": []
+        });
+        assert!(manifest_uses_unicode_paths(&malformed_v2).is_err());
+    }
+
+    #[test]
+    fn archive_and_manifest_joins_share_the_versioned_unicode_namespace() {
+        let decomposed = "payload/g/CAFE\u{301}.json";
+        assert!(versioned_path_key(decomposed, true, false).is_ok());
+        assert!(versioned_path_key(decomposed, true, true).is_err());
+
+        let sharp_s = "payload/g/Stra\u{df}e.json";
+        let expanded = "payload/g/STRASSE.json";
+        assert_ne!(
+            versioned_path_key(sharp_s, true, false).unwrap(),
+            versioned_path_key(expanded, true, false).unwrap()
+        );
+        assert_eq!(
+            versioned_path_key(sharp_s, true, true).unwrap(),
+            versioned_path_key(expanded, true, true).unwrap()
+        );
+
+        let entries = [
+            dummy_cd_entry("manifest.json"),
+            dummy_cd_entry(sharp_s),
+            dummy_cd_entry(expanded),
+        ];
+        assert!(validate_archive_paths(&entries, false).is_ok());
+        assert!(validate_archive_paths(&entries, true)
+            .unwrap_err()
+            .contains("portable path collision"));
+    }
+
+    fn dummy_cd_entry(name: &str) -> CdEntry {
+        CdEntry {
+            name: name.to_string(),
+            version_needed: 20,
+            flags: 0,
+            method: ZIP_METHOD_STORE,
+            mod_time: 0,
+            mod_date: 0,
+            crc32: 0,
+            comp_size: 0,
+            uncomp_size: 0,
+            local_header_off: 0,
         }
     }
 

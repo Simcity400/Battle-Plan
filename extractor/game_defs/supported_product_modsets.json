@@ -1,0 +1,20 @@
+{
+  "schema": "extractor.supported_product_modsets.v1",
+  "policy": "exact_registry_match",
+  "entries": [
+    {
+      "id": "a729-vanilla-current-dlc-vfs-20260718",
+      "classification": "vanilla",
+      "product_modset": {
+        "schema": "extractor.product_modset_key.v1",
+        "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "mod_state_effective_content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "dlc_state_effective_content_sha256": "28dc633b6fd5c914bd5634ea1aa08a3c988a4b15c580a2ced170250d0fd06257",
+        "load_order_effective_content_sha256": "971ab86220835bf7c4f7eb720cfafa0ab1cc0e10a3049667fc4a5ed49f031155",
+        "effective_vfs_namespace_sha256": "5f24a7ee9f5f1cd61b8a5e63c71a11332db676a3607ac88162c9c232b899f863",
+        "effective_vfs_rows_sha256": "80554efa51f51882a5b740b85e95967fc7a43c04ac7d4a019e0561a86c1abc1f",
+        "product_modset_sha256": "06997a1c5b6368eff0b15f62e3281f96cda2e056f157f90d24c82852cac841d2"
+      }
+    }
+  ]
+}

@@ -20,7 +20,10 @@ pub const EXECUTABLE_SHA256: &str =
 pub const HOURLY_UPDATE_RVA: usize = 0x006E_FE10;
 pub const DEFINITION_CANCEL_RVA: usize = 0x006D_D7F0;
 pub const EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE";
-pub const PRODUCTION_SCHEDULING_ENABLED: bool = false;
+/// The exact hourly/cancel detours are installed passively whenever the
+/// existing delayed-events domain is scheduled. Missing roots, callback loss,
+/// or incomplete lifecycle custody fail the observation closed.
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const MAX_PENDING_EVENTS: usize = 65_536;
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6E90;

@@ -732,6 +732,11 @@ def capture(args: argparse.Namespace) -> dict[str, object]:
 
 
 def main() -> int:
+    require(
+        os.environ.get("BATTLE_PLAN_CLIENT_DRIVING_OPT_IN", os.environ.get("HOI4_CLIENT_DRIVING_OPT_IN"))
+        == "I_ACKNOWLEDGE_THIS_TOOL_WILL_CONTROL_HOI4",
+        "legacy the game client driving is disabled; explicit process-local opt-in is required",
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--collector-dll", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)

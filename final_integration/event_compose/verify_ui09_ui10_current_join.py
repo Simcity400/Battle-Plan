@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -14,6 +16,23 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 UI09 = ROOT / "replay_interface/re_evidence/rendering_laws/UI09/production_completion"
 UI10 = ROOT / "replay_interface/re_evidence/rendering_laws/UI10"
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    payload = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def sha(path: Path) -> str:
@@ -57,7 +76,7 @@ def main() -> int:
     contract["frozen_inputs"]["ui10_manifest"]["sha256"] = current["manifest"]
     contract["frozen_inputs"]["ui10_typed_graph"]["sha256"] = current["graph"]
     current_contract = HERE / "runs/ui09_current_contract.json"
-    current_contract.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(current_contract, json.dumps(contract, indent=2, sort_keys=True) + "\n")
 
     source_path = UI09 / "verify_promotion.py"
     source = source_path.read_text(encoding="utf-8")
@@ -99,7 +118,7 @@ def main() -> int:
         },
     }
     result["status"] = "PASS" if exit_code == 0 and ui10_run.returncode == 0 else "FAIL"
-    result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(result_path, json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "PASS" else 1
 

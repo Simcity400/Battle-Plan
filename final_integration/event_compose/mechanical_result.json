@@ -3,10 +3,10 @@
     "central_validation": {
       "direct_cargo_invocation": false,
       "path": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-      "sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+      "sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
       "target_directory": ".cargo-target"
     },
-    "production_head": "f6e86b4e90245d047c6d7e5a7b4508d61b0d5acb",
+    "production_head": "0be4bdc7b8bad9ff957b76a03b3d66d795f48e64",
     "production_root": ".",
     "source_sha256": {
       "d3d11_device.rs": "ae8078647efedd2f4cd04f5f4fdcae384ea4bc550f4b70cdaf64df8f7c7e53c5",
@@ -56,14 +56,14 @@
       "packet": "L02",
       "promotion_artifacts": [
         {
-          "bytes": 8584,
+          "bytes": 8450,
           "path": "replay_interface/re_evidence/rendering_laws/L02/promotion_manifest.json",
-          "sha256": "98a46bfdb52c9a2aa6fee49b49a1c4dcecdaa93950ec3fa49c8f61882733cd20"
+          "sha256": "1e6e7b5d7f6b5c9a53461e68fe5ab70a347ff27397a40d3fadeee6be104a1616"
         },
         {
           "bytes": 2680,
           "path": "replay_interface/re_evidence/rendering_laws/L02/production_port_verification.json",
-          "sha256": "7d4c0f2825d25379cb668cbbc6b7015fd3d78740ac4b808a5fd77255b4fc459d"
+          "sha256": "c29f8b306c47bfc3c0ab92c3b094433e186fc8ebfccbc006066af932fd5bfb52"
         },
         {
           "bytes": 40670,
@@ -78,7 +78,7 @@
       },
       "stdout": {
         "path": "runs/L02_shadow_matrix_composition.stdout.log",
-        "sha256": "0479584463286ac994b805fa21193f29ad63e6adec0aca07ed2c4a39f53140c9"
+        "sha256": "cc2bc398ad2e79999deea2dbce9aa7764852e67821a715e75a6eb33e4dfefd8e"
       }
     },
     {
@@ -88,14 +88,14 @@
       "packet": "L03",
       "promotion_artifacts": [
         {
-          "bytes": 10575,
+          "bytes": 10298,
           "path": "replay_interface/re_evidence/rendering_laws/L03/manifest.json",
-          "sha256": "4199a2841e3b275812b779d17692b95ef1cda4464de86ee1d057a6ee152e5e52"
+          "sha256": "c7c6732ae6bc76a11dceb39fc1b500823bbf71e58e1e597d29ac079a2619dba2"
         },
         {
           "bytes": 1821,
           "path": "replay_interface/re_evidence/rendering_laws/L03/production_projection/verification.json",
-          "sha256": "8a90c8bcb9ebea317d348ba193b0389653ed1618f0d7fdd8442eb6ca74a0dbfc"
+          "sha256": "e559157d0c7e98a4d338f16d59dc18b4810e87158f71ef2a38abce21d965e4d7"
         },
         {
           "bytes": 31992,
@@ -135,19 +135,19 @@
       "packet": "M01",
       "promotion_artifacts": [
         {
-          "bytes": 2354,
+          "bytes": 2301,
           "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/promotion_contract.json",
-          "sha256": "971f208128bd7b0dbfcf8763635bf57d41e801781a6fc404063501c482ca82d9"
+          "sha256": "2a2cd0562adf15c6e530832f43c73e38f490cf79575a21c6e1dc994d1edd3aef"
         },
         {
-          "bytes": 3102,
+          "bytes": 3054,
           "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
-          "sha256": "4cfab22e2e0581d6d0cc2fa3448362caa068f816a409b00cf28e28c28d510af3"
+          "sha256": "1dc233aa8babd332fa33e132f7113be8016153134d4e1a35e0c24bc4eb177b96"
         },
         {
           "bytes": 1798,
           "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/verification_result.json",
-          "sha256": "39bfa4a0bec7be870052091308aeb5aaf30e1efff804145418f782a99c0901bb"
+          "sha256": "3b555b5de8bf71043b6d7258d776b4c0ddec0baf90790cb94a6e7d24fbaec2d5"
         },
         {
           "bytes": 14480,
@@ -167,7 +167,7 @@
       },
       "stdout": {
         "path": "runs/M01_unit_event_pass.stdout.log",
-        "sha256": "6a2c58fd3c5f68d542f75c75f8dec28d0e9dcf526df687068f0bf8ced8ac6d4c"
+        "sha256": "058ad86164931dd896cc0070cc60e32d06b88f6d5251e3652e4e37b5c09565a6"
       }
     },
     {
@@ -182,7 +182,7 @@
       },
       "stdout": {
         "path": "runs/M03_arrow_pixel_contract.stdout.log",
-        "sha256": "8bbfd6032c22bc1cd07ec20dcbb633dadd671adbb70893257f5be8b8d8e777fd"
+        "sha256": "09a2e5985b6f532e06f58ad95eaea7fa6e3393b073d10d16d9fe130fbc66b4fe"
       }
     },
     {
@@ -194,12 +194,12 @@
         {
           "bytes": 3059,
           "path": "replay_interface/re_evidence/rendering_laws/N02/promotion_manifest.json",
-          "sha256": "0643ed9491470805e80ca5d92a044ebbe34f77bf737e3570dfdd388c5f91984a"
+          "sha256": "f3de5f61a0e0c59646ff00ef5f6ec8b13bbf961318fa3d059ce7dcecbe19f5df"
         },
         {
           "bytes": 283,
           "path": "replay_interface/re_evidence/rendering_laws/N02/promotion_manifest_verification.json",
-          "sha256": "5c194d9d4c27624b54fb0ac6fdfe8217f4cdeee094487178895dd92a28f6191c"
+          "sha256": "fc49211deb3d806960d969ebc84eb190bced4519377bde9d9b8f294f0e9335e6"
         },
         {
           "bytes": 142950,
@@ -234,9 +234,9 @@
           "sha256": "5a3dacae3079cfac45264975c5b8836ddfd7e394190bd0d768d950219c9a3d16"
         },
         {
-          "bytes": 9300,
+          "bytes": 9234,
           "path": "replay_interface/re_evidence/rendering_laws/O04/evidence_manifest.json",
-          "sha256": "fd17e30a31950189d607c9bbff248eaf737342d6bd4c3850559233457857e83e"
+          "sha256": "ead91a7d2684bc26fd414c15f8396110d975d76a8bc06f0877cc9671bc663b6f"
         },
         {
           "bytes": 1445,
@@ -261,9 +261,9 @@
       "packet": "O05",
       "promotion_artifacts": [
         {
-          "bytes": 5166,
+          "bytes": 5066,
           "path": "replay_interface/re_evidence/rendering_laws/O05/production_promotion.json",
-          "sha256": "3f46f26be0f8c0fa51c41b729c1490beb1c335f4b269a994cb444374adca1cfd"
+          "sha256": "1b6c2155633aa30285ca07618e57865e8a76cbebdc237949328eaebee330c6fe"
         },
         {
           "bytes": 277,
@@ -293,14 +293,14 @@
       "packet": "UI06",
       "promotion_artifacts": [
         {
-          "bytes": 3919,
+          "bytes": 3883,
           "path": "replay_interface/re_evidence/rendering_laws/UI06/production_manifest.json",
-          "sha256": "78b7c3148325198ad3034bbe1380c4fa39f706ddf51807b995d0dce1199e72d9"
+          "sha256": "59f6df6e4c2f53f6a4b9c2843a24b3d9cd7d852944f441f3d4cc60a241c9f20d"
         },
         {
-          "bytes": 3879,
+          "bytes": 4207,
           "path": "replay_interface/re_evidence/rendering_laws/UI06/production_promotion.json",
-          "sha256": "10f28b1733081b7b12cb2f4400fb8a456aa5d1ad8e321f9d3dbf408372744adb"
+          "sha256": "f470d0197069e4ee3d4e28c69a34ba9d8c6dd21786023bbe2374633752c1fefb"
         },
         {
           "bytes": 7369,
@@ -325,9 +325,9 @@
       "packet": "UI09+UI10",
       "promotion_artifacts": [
         {
-          "bytes": 4508,
+          "bytes": 4510,
           "path": "replay_interface/re_evidence/rendering_laws/UI09/production_completion/manifest.json",
-          "sha256": "3a45c91b6a14ab23161aed14f6051d0fdbea1ccb6804b23010442b9c2e99da57"
+          "sha256": "7c06a1ce9fb654e5f0458d6463de76cc534bf626296aed691ab3dbc022dc547b"
         },
         {
           "bytes": 19093,
@@ -347,7 +347,7 @@
       },
       "stdout": {
         "path": "runs/UI09_UI10_current_canvas_join.stdout.log",
-        "sha256": "80894f268a4f50e1e472526bdbbcdfcdce9ffca3f55ea41d5afc4fb9b14c1eab"
+        "sha256": "08edf129e07791c79a877eaabbd7f074e47ed04a08f0af9d97b7be7a55eb2068"
       }
     },
     {
@@ -359,12 +359,12 @@
         {
           "bytes": 3418,
           "path": "replay_interface/re_evidence/rendering_laws/UI15/manifest.json",
-          "sha256": "0a595e1b535668f7115435b57be5f0694c59c7ebb7ee733f35b97a663610720e"
+          "sha256": "293f048caf23a2443a36da31777ce2ac3275efafcd1ba059a997c6cd9ab6348a"
         },
         {
           "bytes": 10743,
           "path": "replay_interface/re_evidence/rendering_laws/UI15/verifier_result.json",
-          "sha256": "6f8b362e087170a7339dfb7662b528139650068a3b485e03eff234699e44ba9c"
+          "sha256": "a0dc0793be483c6dbd8d00652282907afc1960f2375c6db9c36be6c9281bab92"
         },
         {
           "bytes": 139058,
@@ -379,14 +379,14 @@
       },
       "stdout": {
         "path": "runs/UI15_archive_mount_promotion.stdout.log",
-        "sha256": "b058be0847361fb4de836491fbc93e18213c183981736fd1116fc31d3bc55e98"
+        "sha256": "ebc447d1fe4c716a5327de42b8f31dc1b850820aa7c14a95120e4a6a2b9c8c74"
       }
     },
     {
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(pass_graph::tests)",
         "mode": "Test",
         "package": "map_viewer",
@@ -401,11 +401,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_pass_graph_tests.stderr.log",
-        "sha256": "4b6831cf312086b3cb90f27c62cd41e73cb9467b2d5089649a87c39a37679893"
+        "sha256": "b83d52381cc1c4c345369db7056ce38bf203f4bbdffe92660927e7ec93dd047b"
       },
       "stdout": {
         "path": "runs/production_pass_graph_tests.stdout.log",
-        "sha256": "20df40bb95b08c9bd5ad81ded5bb9fdab5ae119a131308b1342af98eca018344"
+        "sha256": "cca92d0393a304acda658e28ab7c2f1ee92c52ae4808d6ab78c12921bdcb4f5f"
       },
       "test_filter": "pass_graph::tests"
     },
@@ -413,7 +413,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(shadow_law::tests)",
         "mode": "Test",
         "package": "map_viewer",
@@ -428,11 +428,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_shadow_law_tests.stderr.log",
-        "sha256": "0440499aed16ccd164e950f0e7f82fb3ff53ea7662b9465b38a8478f127ec381"
+        "sha256": "0e32aa0fb1c399cff16d6d4c8c2ccec01fabce3a38981f172fefdde64dcd49b3"
       },
       "stdout": {
         "path": "runs/production_shadow_law_tests.stdout.log",
-        "sha256": "9e11f699969b22a52f77546c2bc6da4d8264fbe2ee5f7c85bb2b495e18c51f27"
+        "sha256": "6797c42b2576d880d1fdc871074c58ef5f06ba1052f252f02a94e91d78e7e037"
       },
       "test_filter": "shadow_law::tests"
     },
@@ -440,7 +440,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests)",
         "mode": "Test",
         "package": "map_viewer",
@@ -455,11 +455,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_terrain_lod_compose_tests.stderr.log",
-        "sha256": "eb84bb5c8a1e6a9bff328f8f6404121c1840c88570b2c4835236a460334a41dd"
+        "sha256": "705201ea7bd800debdcbc9e23b4c248de66aaaa3e57d53c16d9c35103ab4a49c"
       },
       "stdout": {
         "path": "runs/production_terrain_lod_compose_tests.stdout.log",
-        "sha256": "778ae408622f1b0d779dfe92d0c0386198bc25dd895764eb26175ac2f4ce7136"
+        "sha256": "f5b54cde34d97d5e8238d2c279db95060f70596766ba3a12612e30b4dbc14dfd"
       },
       "test_filter": "terrain_lod_law::tests"
     },
@@ -467,7 +467,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(o05_fixed_object_law::tests)",
         "mode": "Test",
         "package": "map_viewer",
@@ -482,11 +482,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_o05_fixed_object_gate_tests.stderr.log",
-        "sha256": "366130420cf898917eb79833773acd225521deabd131eadd9eb6387005b77fba"
+        "sha256": "f55c2040cbac14a7e7b600c06da88922cbc31154ca4a006537bafd61506bc120"
       },
       "stdout": {
         "path": "runs/production_o05_fixed_object_gate_tests.stdout.log",
-        "sha256": "ea29415a840bd4587332bd79ab2329372d3f022fec973fa40be0daca4337cc21"
+        "sha256": "7afc57ed8a1d6b8e0ea1c8569dce782c2e77ffea0fb147e24d3c97bdffa9ecad"
       },
       "test_filter": "o05_fixed_object_law::tests"
     },
@@ -494,7 +494,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(river_world_synthesis::tests)",
         "mode": "Test",
         "package": "map_viewer",
@@ -509,11 +509,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/R02_river_event_order.stderr.log",
-        "sha256": "73a295d6aaba626300b4b3dca2d845834eda3fbdcb49f70fec4b6125e8672833"
+        "sha256": "c8d61afc25acbb55473aa71b13f86a035aab22b8445e4ff358815956d2f839bd"
       },
       "stdout": {
         "path": "runs/R02_river_event_order.stdout.log",
-        "sha256": "a07d2641eac9a98dcfba94a194c876aca7099b65b1fb4bc5a2ee25e8fee31db0"
+        "sha256": "33d3609c49f72a8098c0e192417b035620a2b94cac8c8b31064824566b722277"
       },
       "test_filter": "river_world_synthesis::tests"
     },
@@ -522,7 +522,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::lod_selection_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -537,11 +537,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_lod_selection_pan2.stderr.log",
-        "sha256": "f7aec8bcabbe19f318c6533dc22832258d6cc19501b09f52b3aee47b42e1fe89"
+        "sha256": "9992f05d153f0365293733ed4c370d14c6ecc4ed94b2df10b1e0dae080bf8532"
       },
       "stdout": {
         "path": "runs/production_t01_lod_selection_pan2.stdout.log",
-        "sha256": "97ec4f7e1c4be223c7e94631e78fbf0b3c0f087aedea6a620bbda37df782dce3"
+        "sha256": "7c0f2396e0256b6b2040b6eef2fd1d95ca932b08cf49e59a2ba35eb475982ad8"
       },
       "test_filter": "terrain_lod_law::tests::lod_selection_gate_env_when_session_available"
     },
@@ -550,7 +550,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::corpus_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -565,11 +565,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_vsnap_corpus_pan2.stderr.log",
-        "sha256": "bfc8e8dbe094ae067a43fbc43d2f95c15b2bd320b09b28e2295de7ef24947d5f"
+        "sha256": "74277dc7674f7e527b7a7cbb1e24548592e862738b88cb80c2821cfef2a57286"
       },
       "stdout": {
         "path": "runs/production_t01_vsnap_corpus_pan2.stdout.log",
-        "sha256": "67d9123c30acbc630d593f9e6b019b54dcb01ab4d69a3f38ccc6d401dcb8c441"
+        "sha256": "676f9f51ee590f9186784293224ab9937084177a2b3737184de5cadbe0b68d72"
       },
       "test_filter": "terrain_lod_law::tests::corpus_gate_env_when_session_available"
     },
@@ -578,7 +578,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_mesh_law::tests::corpus_byte_exact_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -593,11 +593,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_mesh_corpus_pan2.stderr.log",
-        "sha256": "1fb8ab36288452d16e76ce5c02193fd0dd1d31563eb784e40f6b9301c51440df"
+        "sha256": "eaebf0f01db9fc549c9b05055db42e84582b53a2d0d55f87bcf0c24037e345b6"
       },
       "stdout": {
         "path": "runs/production_t01_mesh_corpus_pan2.stdout.log",
-        "sha256": "d0b8a311a74f8645809cc63466efe58c98a39c93326bd12829f071f1b3fd6b72"
+        "sha256": "8e5455b2b9e77b5bf4aa981819bf5b68666c83edccd4da133f05ac1403915e64"
       },
       "test_filter": "terrain_mesh_law::tests::corpus_byte_exact_when_session_available"
     },
@@ -606,7 +606,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::lod_selection_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -621,11 +621,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_lod_selection_pan_chunks.stderr.log",
-        "sha256": "0903a9defe889a020101bdb702d2f60c4cb8c253f1707273aa128ef9be843546"
+        "sha256": "54ba6b1c5653e45c1a6639ed288ff63c2bd5544ac57f47a7d2b15a406947af47"
       },
       "stdout": {
         "path": "runs/production_t01_lod_selection_pan_chunks.stdout.log",
-        "sha256": "97ec4f7e1c4be223c7e94631e78fbf0b3c0f087aedea6a620bbda37df782dce3"
+        "sha256": "7c0f2396e0256b6b2040b6eef2fd1d95ca932b08cf49e59a2ba35eb475982ad8"
       },
       "test_filter": "terrain_lod_law::tests::lod_selection_gate_env_when_session_available"
     },
@@ -634,7 +634,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::corpus_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -649,11 +649,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_vsnap_corpus_pan_chunks.stderr.log",
-        "sha256": "360d15645688b7c1260cf914fc857aa4c90cc417a0fe2d8f4c93477bc1487136"
+        "sha256": "1c76a59e0ec35d06a20468ced2d3958b6d97bcad3246d567d1bca07181f7e5ac"
       },
       "stdout": {
         "path": "runs/production_t01_vsnap_corpus_pan_chunks.stdout.log",
-        "sha256": "67d9123c30acbc630d593f9e6b019b54dcb01ab4d69a3f38ccc6d401dcb8c441"
+        "sha256": "676f9f51ee590f9186784293224ab9937084177a2b3737184de5cadbe0b68d72"
       },
       "test_filter": "terrain_lod_law::tests::corpus_gate_env_when_session_available"
     },
@@ -662,7 +662,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_mesh_law::tests::corpus_byte_exact_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -677,11 +677,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_mesh_corpus_pan_chunks.stderr.log",
-        "sha256": "916901e74da83b13d42c4a57c8e8a6253a0f2d06449b2ca1f924dab652a0d3ab"
+        "sha256": "72fe14c2344781daab33f4479fd69099b736cb693e3644643afd338fdad15e05"
       },
       "stdout": {
         "path": "runs/production_t01_mesh_corpus_pan_chunks.stdout.log",
-        "sha256": "d0b8a311a74f8645809cc63466efe58c98a39c93326bd12829f071f1b3fd6b72"
+        "sha256": "8e5455b2b9e77b5bf4aa981819bf5b68666c83edccd4da133f05ac1403915e64"
       },
       "test_filter": "terrain_mesh_law::tests::corpus_byte_exact_when_session_available"
     },
@@ -690,7 +690,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::lod_selection_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -705,11 +705,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_lod_selection_final_full.stderr.log",
-        "sha256": "f1af07f6bddc2fa14aa47bef39e3f2a30af99572efd4d73a350d106ba5b876bd"
+        "sha256": "027fb143e9609f4c96f38a476ca5e52174fe4208acf1d40f5a0320b1e414f29c"
       },
       "stdout": {
         "path": "runs/production_t01_lod_selection_final_full.stdout.log",
-        "sha256": "97ec4f7e1c4be223c7e94631e78fbf0b3c0f087aedea6a620bbda37df782dce3"
+        "sha256": "7c0f2396e0256b6b2040b6eef2fd1d95ca932b08cf49e59a2ba35eb475982ad8"
       },
       "test_filter": "terrain_lod_law::tests::lod_selection_gate_env_when_session_available"
     },
@@ -718,7 +718,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::corpus_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -733,11 +733,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_vsnap_corpus_final_full.stderr.log",
-        "sha256": "3ad6171ce7af6510e3eee38793fba620be291795fa064a348893a72061c19d4f"
+        "sha256": "7067a4546e88e02eb9f7b3d066e4fa46181d604e9dd34f43374cc962c804e0cc"
       },
       "stdout": {
         "path": "runs/production_t01_vsnap_corpus_final_full.stdout.log",
-        "sha256": "67d9123c30acbc630d593f9e6b019b54dcb01ab4d69a3f38ccc6d401dcb8c441"
+        "sha256": "676f9f51ee590f9186784293224ab9937084177a2b3737184de5cadbe0b68d72"
       },
       "test_filter": "terrain_lod_law::tests::corpus_gate_env_when_session_available"
     },
@@ -746,7 +746,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_mesh_law::tests::corpus_byte_exact_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -761,11 +761,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_mesh_corpus_final_full.stderr.log",
-        "sha256": "b0478a8cf99fbb5c360719e11926dc10f424fac7a3e54094913d974e3b9284e2"
+        "sha256": "b6aad032845334617459c46af8d44108688dc9a75b548d3fd44baf71e9acf9f5"
       },
       "stdout": {
         "path": "runs/production_t01_mesh_corpus_final_full.stdout.log",
-        "sha256": "d0b8a311a74f8645809cc63466efe58c98a39c93326bd12829f071f1b3fd6b72"
+        "sha256": "8e5455b2b9e77b5bf4aa981819bf5b68666c83edccd4da133f05ac1403915e64"
       },
       "test_filter": "terrain_mesh_law::tests::corpus_byte_exact_when_session_available"
     },
@@ -774,7 +774,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::lod_selection_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -808,11 +808,11 @@
       "status": "NOT_APPLICABLE_INCOMPLETE_LEGACY_FIXTURE",
       "stderr": {
         "path": "runs/production_t01_lod_selection_gate18.stderr.log",
-        "sha256": "916b8d318f96265ab5b4b1f18b394e7f95fcc15185d1e481434b2fcfcfb0434e"
+        "sha256": "5e214b9c5031057fa511ab46b2c811a6ff55c02792d7102bcaed2a78cdb28e55"
       },
       "stdout": {
         "path": "runs/production_t01_lod_selection_gate18.stdout.log",
-        "sha256": "97ec4f7e1c4be223c7e94631e78fbf0b3c0f087aedea6a620bbda37df782dce3"
+        "sha256": "7c0f2396e0256b6b2040b6eef2fd1d95ca932b08cf49e59a2ba35eb475982ad8"
       },
       "test_filter": "terrain_lod_law::tests::lod_selection_gate_env_when_session_available"
     },
@@ -821,7 +821,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_lod_law::tests::corpus_gate_env_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -836,11 +836,11 @@
       "status": "PASS",
       "stderr": {
         "path": "runs/production_t01_vsnap_corpus_gate18.stderr.log",
-        "sha256": "79fa35276ee6dfc1bc39998b68fe0270c5d4c7da1222bf65428380491b0ce60f"
+        "sha256": "1cd9bcfb814f92fe31acf20fd3ba2170c35997b6ee94e56b3566f4be1dca08ff"
       },
       "stdout": {
         "path": "runs/production_t01_vsnap_corpus_gate18.stdout.log",
-        "sha256": "67d9123c30acbc630d593f9e6b019b54dcb01ab4d69a3f38ccc6d401dcb8c441"
+        "sha256": "676f9f51ee590f9186784293224ab9937084177a2b3737184de5cadbe0b68d72"
       },
       "test_filter": "terrain_lod_law::tests::corpus_gate_env_when_session_available"
     },
@@ -849,7 +849,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": "test(terrain_mesh_law::tests::corpus_byte_exact_when_session_available)",
         "mode": "Evidence",
         "package": "map_viewer",
@@ -883,11 +883,11 @@
       "status": "NOT_APPLICABLE_KNOWN_NEGATIVE_CONTROL",
       "stderr": {
         "path": "runs/production_t01_mesh_corpus_gate18.stderr.log",
-        "sha256": "870a09cd552671d6e598056bf3c3c098255a02670c1a7fdea951658bb1e6fba2"
+        "sha256": "f39d2cdcb89b2c1f87e4a334cfca1c2044e0f95a29a6b908d7f8d77b3247815e"
       },
       "stdout": {
         "path": "runs/production_t01_mesh_corpus_gate18.stdout.log",
-        "sha256": "d0b8a311a74f8645809cc63466efe58c98a39c93326bd12829f071f1b3fd6b72"
+        "sha256": "8e5455b2b9e77b5bf4aa981819bf5b68666c83edccd4da133f05ac1403915e64"
       },
       "test_filter": "terrain_mesh_law::tests::corpus_byte_exact_when_session_available"
     },
@@ -895,7 +895,7 @@
       "central_validation": {
         "direct_cargo_invocation": false,
         "driver": "extractor/native/scripts/Invoke-CentralRustValidation.ps1",
-        "driver_sha256": "7fdb0cdc6c4d8225e39d208e7eab758913e8718ff7d7a0aa8b31e007cdaeb1b6",
+        "driver_sha256": "51860a8502fb0f395a749082f5f4ef1553419b6e729629fd96683f3e6240372a",
         "filter_expression": null,
         "mode": "Build",
         "package": "map_viewer",
@@ -910,16 +910,16 @@
       "renderer": {
         "bytes": 8128000,
         "path": ".cargo-target/debug/map_viewer.exe",
-        "sha256": "6d2a44af43d1c762bc2cc53059595af7eb67b6cb25feceaf74b61b64a109ac58"
+        "sha256": "9cc69876004ebea9b5495163704948637eb408011de1a33de933153b369ffcc9"
       },
       "status": "PASS",
       "stderr": {
         "path": "runs/production_renderer_build.stderr.log",
-        "sha256": "d433558e1903f237afc80eecfb1ea9bc322982792db357b798230ec43804a2a6"
+        "sha256": "fcd67e72278b7627bbb164b4e0d04e8e8b0eaeaab957b77dc87881439f21efb5"
       },
       "stdout": {
         "path": "runs/production_renderer_build.stdout.log",
-        "sha256": "e1207976370a94a7daa27a7aabddb63d9d67a52960909c3a696ac8f1a3464031"
+        "sha256": "a775388dca8f40d9e57bae02c42087b1933368643d9afa915e396cdac165232a"
       }
     },
     {
@@ -1139,7 +1139,7 @@
     "trees_oracle_manifest": {
       "bytes": 1051,
       "path": "trees_measure_legacy_join/manifest.json",
-      "sha256": "875047b57fb58e8a9faa4d8b62e21d29f04ab11be2fb6f0372e181c9b852af01"
+      "sha256": "7fe5d8bf62c2505907a3a6cc5f2b0e5cdced1d92a0a103da84fbd28cc335c99e"
     },
     "verification": {
       "bytes": 1430,

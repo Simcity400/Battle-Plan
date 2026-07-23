@@ -6,27 +6,34 @@ Decision rule: exact-or-fail; no inferred zeros, visual tuning constants, fabric
 
 ## Promotion decision
 
-The offline reverse-engineering and retained-evidence pass is exhausted for the current repository, installed a729 binary/installed content, Ghidra project, save corpus, RenderDoc corpus, and harness captures. The extractor and replay code are substantially hardened and their deterministic test layers pass, but the combined product is **not yet eligible for production promotion**. Promotion remains fail-closed on the live observations below and on the engineering/authority work listed separately.
+The offline reverse-engineering and retained-evidence pass is exhausted for the
+current repository, installed a729 binary/installed content, Ghidra project, save
+corpus, RenderDoc corpus, and harness captures. The product implementation has
+landed, but the current worktree is **not yet eligible for a new production
+promotion claim** until central validation and content-addressed refreeze run.
+Historical green receipts remain evidence of their historical source sets only.
 
-This document records external controlled observations and product decisions.
+This document records optional controlled activation observations and resolved
+product decisions.
 It must not be read as saying that every row needs a person: after Wave 6, many
 rows are autonomous early-launch, build/injection, or replay-pair runs. A row is
 never a request to guess a value; its verifier derives the value mechanically.
 
-Reconciled through the 2026-07-22 post-landing refreeze: the canonical machine
-register now has 55 implementation-ready autonomous acquisition rows, zero
+Reconciled through the 2026-07-22 post-landing ledger update: the canonical machine
+register now has 55 implementation-ready, optional fail-closed activation rows, zero
 runtime-admitted receipts, zero user-action or unresolved-engineering rows, and
-12 separate product decisions. H-AIR is retired outside the canonical set. CID1
+zero unresolved product decisions. All 12 decisions are resolved. H-AIR is retired outside the canonical set. CID1
 M3's second physical machine is the sole separately listed genuine external
 dependency. The historical execution-bundle grouping remains in
 `dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`; its
-filename is retained for link stability. Root-owned Wave4 validation is now
-complete: centralized Final/All and Release/All both passed with exit zero,
+filename is retained for link stability. Historical Wave4 validation was
+complete for its pinned source set: centralized Final/All and Release/All passed with exit zero,
 the production capture-script battery passed 79/79, and the combined Python
 battery passed 471 with 44 skipped. Independent live, semantic, collector,
-human, and product-decision gates remain fail-closed.
-Wave 6 static RE and production wiring subsequently passed centralized
-Final/All. Current human-versus-autonomous disposition is the canonical machine
+and optional runtime activation gates remain fail-closed. No receipt is admitted
+by this document. These counts are not current worktree authority.
+Wave 6 static RE and production wiring also historically passed centralized
+Final/All for its pinned source set. Current disposition is the canonical machine
 register, not the historical section headings retained below.
 The retained-evidence disposition for every one of the 32 rows
 that was formerly immediate is recorded in
@@ -77,7 +84,13 @@ completed Wave 6 centralized Final/All battery recorded above.
 - O04 reviewed evidence restoration: 410 authenticated files, 79,019,327 bytes; inventory SHA-256 `dea4b2b45270c0095a6d9a3228215cab800024ef0b37c98a22f5d4b8b00bb667`.
 - Final G3 recount is deterministic across two consecutive reads: 95 register rows (`76 PROVEN`, `17 DATA_BLOCKED`, `1 HUMAN_CAPTURE_REQUIRED`, `1 QUEUED`); the active base register is 49 proven plus one human-capture row. The recursive freeze is stale with 265 findings: 94/294 frozen source hashes current, 199 stale, one missing; zero of seven tool pins and zero of seven authority-container pins current; seven source additions and one removal.
 
-## External controlled inputs still required
+## Optional controlled activation/regression evidence
+
+Every H-* row below is nonblocking, agent-owned evidence. Missing or rejected
+evidence leaves production behavior unchanged and the unsupported feature
+explicitly omitted; it does not prevent supported recording, packaging, opening,
+or replay. Legacy client-driving helpers are opt-in nonproduction tools. CID1 M3
+is the sole genuine external dependency and remains separately listed.
 
 Unless a row explicitly requests a product choice or unavailable gameplay
 steering, the root runner should attempt it autonomously with the existing
@@ -109,7 +122,7 @@ fail-closed verifier is not human semantic input.
 | H-B7 | One bounded read-only inspection of the paused D04 raid-system heap at `1944.2.11.18` | Authenticate exact parent/child identity, engine ordering, state and dummy classification against the retained oracle. Only an independently regraded `ACCEPTED_EXACT_440_PARENTS_167_CHILDREN` receipt may authorize a later d91 scheduling patch. |
 | H-AIR | **RETIRED / CLOSED SCHEMA** | Exact A4/A21 writer, serializer, and consumer authority proves the durable region/date/wing aggregate and typed damage causes, with no persistent tactical combat id or opposed-wing pairing. The 33-melt/1.777-GB negative census is supporting evidence, not a reason to demand a nonexistent serialized fixture. |
 | H-PEACE | One registered active conference lifecycle from pre-claim refresh through nonempty contest to terminal summary | Retain the loss-free raw trace and independent regrade. RE is closed negatively: allocation ids are refresh-scoped and terminal rows remain explicitly unjoined because exact-a729 exposes no allocation-result lifecycle identity. Acceptance authorizes later activation of that schema only; pointers, payload hashes, equality, and source order never manufacture a join. |
-| H-CONVOY | One convoy terminal loss plus a no-loss control using the engineered exact `0x141962378` pre-collapse hook and pinned exact-ten authority receipt | Authenticate `CFEXMember+0xD0` client resolution to live source/destination state while owner/killer/count still exist; terminal saves irreversibly discard that join. Exact-ten static custody is closed; this branched gameplay observation is the sole remaining convoy input. |
+| H-CONVOY | Optional isolated, opt-in regression fixture: one convoy terminal loss plus a no-loss control | Production activation no longer depends on this fixture. Fresh exact-a729 static authority plus the exact `CFEXMember+0xD0` reference resolver and concrete producer layouts close d90 mechanically; the passive observer, CTA2 transport, persistent fold and replay projection are production-scheduled fail closed. |
 | H-ACE | Same-tick raw-memory and save fixture for one ace lifecycle transition | Cross-authenticate alive, kill type, handled state, and save representation. |
 | H-DYNMOD | One timed dynamic-modifier lifecycle | Validate raw expiry/duration fields and remaining daily ticks without inventing absolute expiry. |
 | H-A19 | One uninterrupted delayed-event lifecycle covering retained decrement, execution, failed-trigger consumption, and definition cancellation, with one originator distinct from recipient | Authenticate the DEL2 paired hooks, shared dispatch join, ordered pointer-free reasons, corrected scope/originator fields, fold/replay equality, and fail-closed gap/unmatched-disappearance behavior. No human semantic annotation remains. |
@@ -218,13 +231,13 @@ These are **not human reverse-engineering requests** and must not be misreported
 
 1. CAP6 Wave 6 closes the live owner/path/common-draw RE and wires the exact selected-Present final-D3D collector. The route remains fail-closed as `UNAVAILABLE_ZERO_DRAW` until one central build/injection run emits and mechanically accepts H-CAP6-PRESENT. H1 through H5 remain behavioral variation observations; they do not replace or authorize the owner/path receipt.
 2. The G3 lexical classifier is diagnostic only and is not valid promotion proof. Occupation, SnowMud, rails and the Wave 6 shadow/tree paths now have exact typed or producer boundaries, but promotion still requires their named authenticated raw producer/consumer joins. Camera requires the exact C02 current/target binary32 updater and the G2 synchronized zero-delta pixel pair; no token or descriptor substitutes.
-3. The offline product runtime now has durable append tickets, rollover propose/drain/seal/open/ack/header barriers, dormant paired-runner heartbeat, and graceful H4CT close before H4CR drain. Activation remains disabled until concrete live adapters, CID1 proof, and the active legacy spawner's hard-kill/finite-stdout boundaries are replaced or authenticated.
+3. The product runtime has durable append tickets, rollover propose/drain/seal/open/ack/header barriers, paired-runner heartbeat, graceful H4CT close before H4CR drain, and an ordinary desktop-window auto-attach route. Duplex and same-machine campaign identity are enabled; current central validation/refreeze is pending. Legacy client-driving/spawner workflows are explicitly opt-in nonproduction evidence/debug paths. CID1 M3 remains separately disabled because it requires the sole external second-machine endpoint.
 4. The XUI21 fire/materialisation/resolution graph, multi-slot context contract, and authenticated one-shot weather-worker fault tooling are implemented. XUI21 now needs its named exhaustive runtime coverage matrix, not additional producer discovery; weather fault acceptance remains a separate named live observation.
 5. Domain 81's exact-ten owner, enumeration, authentication, and frame-law authority is closed. The authenticated fail-closed manager/type-`0x1a` double-read hub collector is implemented and activates the existing v2 encoder, recorder fold, authority accounting, and replay-ingest route only for a complete snapshot; v1 remains the explicit unavailable fallback. The promotion-manifest authority remains SHA-256 `32388518a63eaa22ea6290e82fb3677a5515039e937334ebc2c2d26a0c0bc6b1`. Central validation has passed; no human capture is required.
 6. A11/A30 owner, assignments, recruitable/portrait/action identity, network proof and all seven XUI14 surface producers are integrated and centrally validated. Exact evidence shows no engine network collection/order for the product-authored summary. The remaining selected-Present matrix is autonomous machine evidence, not human input or unfinished semantic RE.
 7. The weather named-token, definition, entity-selector and SnowMud CPU producer/upload boundaries are closed. Active weather remains false pending the existing early-launch runner's two content-changing H rows, matching replay H2 readbacks and selected-Present output evidence.
 8. XUI27 replay-owned final composition is proven and centrally validated. Future source changes still require its ordinary content-addressed refreeze, but that bookkeeping is not a new RE or human-input gate.
-9. The strict package-runtime boundary now provides deterministic manifests, signing admission, atomic active/previous pointers, rollback, locks, Windows-safe paths, and reparse-point refusal. Product owners must still select the production signature algorithm/key custody and rotation/revocation policy, installer/update entry point, trust-store distribution, and tray/window surface.
+9. The strict package-runtime boundary provides deterministic manifests, atomic active/previous pointers, rollback, locks, Windows-safe paths, and reparse-point refusal. The product choices are resolved: portable per-user offline unsigned packages, two executables in one ZIP, a normal desktop window, no service/tray-only/installer/updater dependency, and fail-closed content-addressed modsets. Current validation/refreeze remains pending.
 10. Pure Cargo/cache scratch totals about 17 GB and can be regenerated. The two mixed audit trees contain superseded intermediate source even though they contain no unique production evidence; archive that source history before deleting those mixed trees.
 11. A38 exact-20 authority and d84 transport are complete, but the existing read-only probe and autonomous harness acquisition path have not yet been exhausted. It remains non-human machine work; no operator card is justified until those paths fail to materialize the required live frame.
 12. A34's exact country-decision graph, DPN1 v2 transport, selected-Present join, fold, replay admission, heterogeneous UI model and centralized validation are complete. Nonempty/measured-empty runtime evidence remains mechanically acquired; caller-provided evidence is never promoted as an inferred production value.
@@ -267,6 +280,9 @@ Production promotion requires all of the following:
 
 1. Central debug and release batteries remain green after the final authority refresh.
 2. O04, XUI27, and G3 recursive verification report current - not stale or substituted - evidence.
-3. Every applicable human-input row above produces an authenticated packet and passes its packet-local verifier.
-4. Product integration, rollover, sink-failure, packaging, and soak gates pass.
+3. CID1 M3 passes only if cross-machine rehost is selected; otherwise that
+   feature remains disabled. No optional runtime card is a base-product gate.
+4. Product integration, rollover, sink-failure, packaging, and elected
+   acceptance gates pass. Optional runtime fixtures activate only their named
+   features after independent admission.
 5. The final recount contains no unowned, fabricated, stale, or silently unavailable production field.

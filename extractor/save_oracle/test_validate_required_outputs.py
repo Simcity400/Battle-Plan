@@ -66,9 +66,10 @@ def test_contract_accounts_for_every_parser_module_and_names_its_outputs():
             assert output in source, f"{producer} no longer declares {output}"
 
 
-def test_newly_restored_output_is_required_by_default(tmp_path: Path):
-    report = validate.Report()
-    assert validate.load(tmp_path, "projects.json", report) is None
-    assert report.rows == [
-        ("FAIL", "load projects.json", "missing required oracle output")
-    ]
+def test_every_declared_output_is_required_by_default(tmp_path: Path):
+    for name in REQUIRED_OUTPUTS:
+        report = validate.Report()
+        assert validate.load(tmp_path, name, report) is None
+        assert report.rows == [
+            ("FAIL", f"load {name}", "missing required oracle output")
+        ]

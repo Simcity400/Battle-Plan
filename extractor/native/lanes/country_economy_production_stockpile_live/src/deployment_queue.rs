@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-pub const DEPLOYMENT_QUEUE_SCHEMA_VERSION: u32 = 1;
+pub const DEPLOYMENT_QUEUE_SCHEMA_VERSION: u32 = 2;
+const DEPLOYMENT_QUEUE_MIN_SCHEMA_VERSION: u32 = 1;
 pub const DEPLOYMENT_QUEUE_HEADER_LEN: usize = 40;
 pub const DEPLOYMENT_CONVEYOR_ID_TYPE: u32 = 64;
 pub const DEPLOYMENT_LINE_ID_TYPE: u32 = 63;
@@ -14,18 +15,24 @@ const LINE_FLAG_MAX_TRAINING: u32 = 1 << 1;
 const LINE_FLAG_MANPOWER_HAVE: u32 = 1 << 2;
 const LINE_FLAG_MANPOWER_NEED: u32 = 1 << 3;
 const LINE_FLAG_MAX_MANPOWER: u32 = 1 << 4;
+const LINE_FLAG_NAME_ORDER: u32 = 1 << 5;
 const LINE_KNOWN_FLAGS: u32 = LINE_FLAG_TRAINING
     | LINE_FLAG_MAX_TRAINING
     | LINE_FLAG_MANPOWER_HAVE
     | LINE_FLAG_MANPOWER_NEED
-    | LINE_FLAG_MAX_MANPOWER;
+    | LINE_FLAG_MAX_MANPOWER
+    | LINE_FLAG_NAME_ORDER;
+const EQUIPMENT_FLAG_ARCHETYPE: u32 = 1;
 const MAX_STRING_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeploymentEquipmentRow {
     pub ordinal: u32,
     pub equipment_id: u32,
-    pub archetype: String,
+    /// Save serialization may preserve an equipment identity whose catalog
+    /// archetype cannot be resolved. `None` is exact unresolved state, not an
+    /// empty string.
+    pub archetype: Option<String>,
     pub amount: f64,
 }
 
@@ -33,7 +40,8 @@ pub struct DeploymentEquipmentRow {
 pub struct DeploymentLineRow {
     pub ordinal: u32,
     pub line_id: u32,
-    pub name_order: i32,
+    /// The nested division-name object may omit its serializer-backed order.
+    pub name_order: Option<i32>,
     pub amount: i32,
     pub training: Option<f64>,
     pub max_training: Option<f64>,
@@ -78,11 +86,20 @@ pub struct DeploymentQueueSummary {
     pub status_flags: u32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeploymentQueueFrame {
+    pub elapsed_wall_ms: u64,
+    pub changed_country_rows: u32,
+    pub status_flags: u32,
+    pub countries: Vec<DeploymentCountryRow>,
+}
+
 /// Encode the exact save/live-neutral X4 deployment carrier.
 ///
-/// The carrier deliberately does not claim a live producer. It preserves the
-/// authenticated save identities and nested ordering so either a save oracle or
-/// a future validated memory reader can feed the same pointer-free contract.
+/// The codec is provenance-neutral. It preserves authenticated identities and
+/// nested ordering so the current exact-a729 native producer and the historical
+/// save oracle feed the same pointer-free contract; provenance is bound by the
+/// enclosing PDQ1 fold receipt, never inferred from these bytes alone.
 pub fn encode_deployment_queue_payload(
     elapsed_wall_ms: u64,
     changed_country_rows: u32,
@@ -186,10 +203,11 @@ pub fn encode_deployment_queue_payload(
                 flags |= u32::from(line.manpower_have.is_some()) * LINE_FLAG_MANPOWER_HAVE;
                 flags |= u32::from(line.manpower_need.is_some()) * LINE_FLAG_MANPOWER_NEED;
                 flags |= u32::from(line.max_manpower.is_some()) * LINE_FLAG_MAX_MANPOWER;
+                flags |= u32::from(line.name_order.is_some()) * LINE_FLAG_NAME_ORDER;
                 out.extend_from_slice(&line.ordinal.to_le_bytes());
                 out.extend_from_slice(&line.line_id.to_le_bytes());
                 out.extend_from_slice(&DEPLOYMENT_LINE_ID_TYPE.to_le_bytes());
-                out.extend_from_slice(&line.name_order.to_le_bytes());
+                out.extend_from_slice(&line.name_order.unwrap_or(0).to_le_bytes());
                 out.extend_from_slice(&line.amount.to_le_bytes());
                 out.extend_from_slice(&flags.to_le_bytes());
                 out.extend_from_slice(&line.training.unwrap_or(0.0).to_bits().to_le_bytes());
@@ -203,9 +221,14 @@ pub fn encode_deployment_queue_payload(
                     out.extend_from_slice(&equipment.ordinal.to_le_bytes());
                     out.extend_from_slice(&equipment.equipment_id.to_le_bytes());
                     out.extend_from_slice(&DEPLOYMENT_EQUIPMENT_ID_TYPE.to_le_bytes());
-                    out.extend_from_slice(&0u32.to_le_bytes());
+                    out.extend_from_slice(
+                        &(u32::from(equipment.archetype.is_some()) * EQUIPMENT_FLAG_ARCHETYPE)
+                            .to_le_bytes(),
+                    );
                     out.extend_from_slice(&equipment.amount.to_bits().to_le_bytes());
-                    append_string(&mut out, &equipment.archetype)?;
+                    if let Some(archetype) = equipment.archetype.as_deref() {
+                        append_string(&mut out, archetype)?;
+                    }
                 }
             }
         }
@@ -214,7 +237,36 @@ pub fn encode_deployment_queue_payload(
 }
 
 pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueueSummary, String> {
+    let frame = decode_deployment_queue_frame(payload)?;
+    let mut summary = DeploymentQueueSummary {
+        country_rows: frame.countries.len() as u32,
+        changed_country_rows: frame.changed_country_rows,
+        status_flags: frame.status_flags,
+        ..DeploymentQueueSummary::default()
+    };
+    for country in &frame.countries {
+        if country.queue_complete {
+            summary.complete_country_rows += 1;
+        } else {
+            summary.unknown_country_rows += 1;
+        }
+        summary.conveyor_rows += country.conveyors.len() as u32;
+        for conveyor in &country.conveyors {
+            summary.line_rows += conveyor.lines.len() as u32;
+            for line in &conveyor.lines {
+                summary.equipment_rows += line.equipment_in_transit.len() as u32;
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Decode and retain the complete pointer-free carrier. Consumers must use
+/// this entry point rather than reparsing around the strict identity, ordering,
+/// nullability, and trailing-byte gates enforced here.
+pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFrame, String> {
     need(payload, DEPLOYMENT_QUEUE_HEADER_LEN, "deployment header")?;
+    let elapsed_wall_ms = read_u64(payload, 0);
     let country_count = read_u32(payload, 8);
     let changed_country_rows = read_u32(payload, 12);
     let status_flags = read_u32(payload, 16);
@@ -223,21 +275,48 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
     let declared_lines = read_u32(payload, 28);
     let declared_equipment = read_u32(payload, 32);
     let reserved = read_u32(payload, 36);
-    if schema_version != DEPLOYMENT_QUEUE_SCHEMA_VERSION || reserved != 0 {
+    if !(DEPLOYMENT_QUEUE_MIN_SCHEMA_VERSION..=DEPLOYMENT_QUEUE_SCHEMA_VERSION)
+        .contains(&schema_version)
+        || reserved != 0
+    {
         return Err(format!(
             "deployment invalid schema/reserved {schema_version}/{reserved}"
         ));
     }
+    let legacy_v1 = schema_version == 1;
     if changed_country_rows > country_count {
         return Err("deployment changed country count exceeds country count".into());
     }
 
     let mut cursor = DEPLOYMENT_QUEUE_HEADER_LEN;
+    require_count_fits_remaining(
+        country_count,
+        payload.len().saturating_sub(cursor),
+        16,
+        "country",
+    )?;
+    require_count_fits_remaining(
+        declared_conveyors,
+        payload.len().saturating_sub(cursor),
+        40,
+        "declared conveyor",
+    )?;
+    require_count_fits_remaining(
+        declared_lines,
+        payload.len().saturating_sub(cursor),
+        72,
+        "declared line",
+    )?;
+    require_count_fits_remaining(
+        declared_equipment,
+        payload.len().saturating_sub(cursor),
+        24,
+        "declared equipment",
+    )?;
     let mut tags = BTreeSet::new();
     let mut conveyor_ids = BTreeSet::new();
     let mut line_ids = BTreeSet::new();
-    let mut complete_country_rows = 0u32;
-    let mut unknown_country_rows = 0u32;
+    let mut countries = Vec::with_capacity(country_count as usize);
     let mut observed_conveyors = 0u32;
     let mut observed_lines = 0u32;
     let mut observed_equipment = 0u32;
@@ -259,15 +338,25 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
             ));
         }
         if flags & COUNTRY_FLAG_QUEUE_COMPLETE == 0 {
-            unknown_country_rows += 1;
             if conveyor_count != 0 {
                 return Err(format!(
                     "deployment unknown country {tag_db_id} carries conveyors"
                 ));
             }
-        } else {
-            complete_country_rows += 1;
         }
+        let queue_complete = flags & COUNTRY_FLAG_QUEUE_COMPLETE != 0;
+        if conveyor_count > declared_conveyors.saturating_sub(observed_conveyors) {
+            return Err(format!(
+                "deployment country {tag_db_id} conveyor count exceeds declared remainder"
+            ));
+        }
+        require_count_fits_remaining(
+            conveyor_count,
+            payload.len().saturating_sub(cursor),
+            40,
+            "conveyor",
+        )?;
+        let mut conveyors = Vec::with_capacity(conveyor_count as usize);
         for conveyor_ordinal in 0..conveyor_count {
             need(payload, cursor + 40, "deployment conveyor row")?;
             let ordinal = read_u32(payload, cursor);
@@ -276,8 +365,8 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
             let template_id = read_u32(payload, cursor + 12);
             let template_type = read_u32(payload, cursor + 16);
             let amount = read_i32(payload, cursor + 20);
-            let _location = read_u32(payload, cursor + 24);
-            let _priority = read_u32(payload, cursor + 28);
+            let location = read_u32(payload, cursor + 24);
+            let priority = read_u32(payload, cursor + 28);
             let conveyor_flags = read_u32(payload, cursor + 32);
             let line_count = read_u32(payload, cursor + 36);
             cursor += 40;
@@ -294,17 +383,29 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
                     "deployment invalid conveyor identity/body {conveyor_id}"
                 ));
             }
-            let _name = read_string(payload, &mut cursor, "deployment conveyor name")?;
-            let _role = read_string(payload, &mut cursor, "deployment conveyor role")?;
+            let name = read_string(payload, &mut cursor, "deployment conveyor name")?;
+            let role = read_string(payload, &mut cursor, "deployment conveyor role")?;
             observed_conveyors = observed_conveyors
                 .checked_add(1)
                 .ok_or_else(|| "deployment conveyor count overflow".to_string())?;
+            if line_count > declared_lines.saturating_sub(observed_lines) {
+                return Err(format!(
+                    "deployment conveyor {conveyor_id} line count exceeds declared remainder"
+                ));
+            }
+            require_count_fits_remaining(
+                line_count,
+                payload.len().saturating_sub(cursor),
+                72,
+                "line",
+            )?;
+            let mut lines = Vec::with_capacity(line_count as usize);
             for line_ordinal in 0..line_count {
                 need(payload, cursor + 72, "deployment line row")?;
                 let ordinal = read_u32(payload, cursor);
                 let line_id = read_u32(payload, cursor + 4);
                 let id_type = read_u32(payload, cursor + 8);
-                let _name_order = read_i32(payload, cursor + 12);
+                let name_order = read_i32(payload, cursor + 12);
                 let amount = read_i32(payload, cursor + 16);
                 let line_flags = read_u32(payload, cursor + 20);
                 let training = f64::from_bits(read_u64(payload, cursor + 24));
@@ -320,8 +421,17 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
                     || id_type != DEPLOYMENT_LINE_ID_TYPE
                     || !line_ids.insert(line_id)
                     || amount < 0
-                    || line_flags & !LINE_KNOWN_FLAGS != 0
+                    || line_flags
+                        & !(if legacy_v1 {
+                            LINE_KNOWN_FLAGS & !LINE_FLAG_NAME_ORDER
+                        } else {
+                            LINE_KNOWN_FLAGS
+                        })
+                        != 0
                     || line_reserved != 0
+                    || (!legacy_v1
+                        && line_flags & LINE_FLAG_NAME_ORDER == 0
+                        && name_order != 0)
                 {
                     return Err(format!("deployment invalid line identity/body {line_id}"));
                 }
@@ -353,19 +463,43 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
                 observed_lines = observed_lines
                     .checked_add(1)
                     .ok_or_else(|| "deployment line count overflow".to_string())?;
+                if equipment_count > declared_equipment.saturating_sub(observed_equipment) {
+                    return Err(format!(
+                        "deployment line {line_id} equipment count exceeds declared remainder"
+                    ));
+                }
+                require_count_fits_remaining(
+                    equipment_count,
+                    payload.len().saturating_sub(cursor),
+                    24,
+                    "equipment",
+                )?;
+                let mut equipment_in_transit = Vec::with_capacity(equipment_count as usize);
                 for equipment_ordinal in 0..equipment_count {
                     need(payload, cursor + 24, "deployment equipment row")?;
                     let ordinal = read_u32(payload, cursor);
                     let equipment_id = read_u32(payload, cursor + 4);
                     let equipment_type = read_u32(payload, cursor + 8);
-                    let equipment_reserved = read_u32(payload, cursor + 12);
+                    let equipment_flags = read_u32(payload, cursor + 12);
                     let amount = f64::from_bits(read_u64(payload, cursor + 16));
                     cursor += 24;
-                    let _archetype = read_string(payload, &mut cursor, "deployment archetype")?;
+                    let archetype = if legacy_v1
+                        || equipment_flags & EQUIPMENT_FLAG_ARCHETYPE != 0
+                    {
+                        Some(read_string(
+                            payload,
+                            &mut cursor,
+                            "deployment archetype",
+                        )?)
+                    } else {
+                        None
+                    };
                     if ordinal != equipment_ordinal
                         || equipment_id == 0
                         || equipment_type != DEPLOYMENT_EQUIPMENT_ID_TYPE
-                        || equipment_reserved != 0
+                        || (legacy_v1 && equipment_flags != 0)
+                        || (!legacy_v1
+                            && equipment_flags & !EQUIPMENT_FLAG_ARCHETYPE != 0)
                         || !amount.is_finite()
                         || amount < 0.0
                     {
@@ -376,9 +510,52 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
                     observed_equipment = observed_equipment
                         .checked_add(1)
                         .ok_or_else(|| "deployment equipment count overflow".to_string())?;
+                    equipment_in_transit.push(DeploymentEquipmentRow {
+                        ordinal,
+                        equipment_id,
+                        archetype,
+                        amount,
+                    });
                 }
+                lines.push(DeploymentLineRow {
+                    ordinal,
+                    line_id,
+                    name_order: if legacy_v1 || line_flags & LINE_FLAG_NAME_ORDER != 0 {
+                        Some(name_order)
+                    } else {
+                        None
+                    },
+                    amount,
+                    training: (line_flags & LINE_FLAG_TRAINING != 0).then_some(training),
+                    max_training: (line_flags & LINE_FLAG_MAX_TRAINING != 0)
+                        .then_some(max_training),
+                    manpower_have: (line_flags & LINE_FLAG_MANPOWER_HAVE != 0)
+                        .then_some(manpower_have),
+                    manpower_need: (line_flags & LINE_FLAG_MANPOWER_NEED != 0)
+                        .then_some(manpower_need),
+                    max_manpower: (line_flags & LINE_FLAG_MAX_MANPOWER != 0)
+                        .then_some(max_manpower),
+                    equipment_in_transit,
+                });
             }
+            conveyors.push(DeploymentConveyorRow {
+                ordinal,
+                conveyor_id,
+                name,
+                template_id,
+                amount,
+                location,
+                priority,
+                role,
+                closed: conveyor_flags & CONVEYOR_FLAG_CLOSED != 0,
+                lines,
+            });
         }
+        countries.push(DeploymentCountryRow {
+            tag_db_id,
+            queue_complete,
+            conveyors,
+        });
     }
     if cursor != payload.len() {
         return Err(format!(
@@ -393,16 +570,29 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
             "deployment declared/observed count mismatch: declared {declared_conveyors}/{declared_lines}/{declared_equipment}, observed {observed_conveyors}/{observed_lines}/{observed_equipment}"
         ));
     }
-    Ok(DeploymentQueueSummary {
-        country_rows: country_count,
-        complete_country_rows,
-        unknown_country_rows,
-        conveyor_rows: observed_conveyors,
-        line_rows: observed_lines,
-        equipment_rows: observed_equipment,
+    Ok(DeploymentQueueFrame {
+        elapsed_wall_ms,
         changed_country_rows,
         status_flags,
+        countries,
     })
+}
+
+fn require_count_fits_remaining(
+    count: u32,
+    remaining: usize,
+    minimum_row_len: usize,
+    label: &str,
+) -> Result<(), String> {
+    let count = usize::try_from(count)
+        .map_err(|_| format!("deployment {label} count does not fit usize"))?;
+    if count > remaining / minimum_row_len {
+        return Err(format!(
+            "deployment {label} count {count} exceeds remaining payload bound {}",
+            remaining / minimum_row_len
+        ));
+    }
+    Ok(())
 }
 
 fn append_string(out: &mut Vec<u8>, value: &str) -> Result<(), String> {
@@ -508,7 +698,7 @@ mod tests {
                 lines: vec![DeploymentLineRow {
                     ordinal: 0,
                     line_id: 6483,
-                    name_order: 21,
+                    name_order: Some(21),
                     amount: 1,
                     training: Some(0.09841),
                     max_training: Some(1.0),
@@ -518,7 +708,7 @@ mod tests {
                     equipment_in_transit: vec![DeploymentEquipmentRow {
                         ordinal: 0,
                         equipment_id: 4730,
-                        archetype: "anti_tank_equipment_1".into(),
+                        archetype: Some("anti_tank_equipment_1".into()),
                         amount: 16.0,
                     }],
                 }],
@@ -528,13 +718,17 @@ mod tests {
 
     #[test]
     fn exact_nested_carrier_round_trips_and_counts() {
-        let payload = encode_deployment_queue_payload(9, 1, 0, &[exact_country()]).unwrap();
+        let country = exact_country();
+        let payload = encode_deployment_queue_payload(9, 1, 0, &[country.clone()]).unwrap();
         let summary = decode_deployment_queue_payload(&payload).unwrap();
         assert_eq!(summary.country_rows, 1);
         assert_eq!(summary.complete_country_rows, 1);
         assert_eq!(summary.conveyor_rows, 1);
         assert_eq!(summary.line_rows, 1);
         assert_eq!(summary.equipment_rows, 1);
+        let frame = decode_deployment_queue_frame(&payload).unwrap();
+        assert_eq!(frame.elapsed_wall_ms, 9);
+        assert_eq!(frame.countries, vec![country]);
     }
 
     #[test]
@@ -557,6 +751,22 @@ mod tests {
         .unwrap();
         assert_eq!(summary.complete_country_rows, 1);
         assert_eq!(summary.unknown_country_rows, 1);
+    }
+
+    #[test]
+    fn serializer_backed_absence_round_trips_without_fabricated_defaults() {
+        let mut country = exact_country();
+        let line = &mut country.conveyors[0].lines[0];
+        line.name_order = None;
+        line.equipment_in_transit[0].archetype = None;
+        let payload = encode_deployment_queue_payload(9, 1, 0, &[country.clone()]).unwrap();
+        let summary = decode_deployment_queue_payload(&payload).unwrap();
+        assert_eq!(summary.line_rows, 1);
+        assert_eq!(summary.equipment_rows, 1);
+        assert_eq!(
+            decode_deployment_queue_frame(&payload).unwrap().countries,
+            vec![country]
+        );
     }
 
     #[test]
@@ -600,5 +810,27 @@ mod tests {
         assert!(decode_deployment_queue_payload(&drift)
             .unwrap_err()
             .contains("count mismatch"));
+    }
+
+    #[test]
+    fn decoder_rejects_header_counts_before_capacity_allocation() {
+        let mut payload = vec![0u8; DEPLOYMENT_QUEUE_HEADER_LEN];
+        payload[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        payload[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        payload[20..24].copy_from_slice(&DEPLOYMENT_QUEUE_SCHEMA_VERSION.to_le_bytes());
+        let error = decode_deployment_queue_frame(&payload).unwrap_err();
+        assert!(error.contains("country count"), "{error}");
+
+        for (offset, label) in [
+            (24, "declared conveyor"),
+            (28, "declared line"),
+            (32, "declared equipment"),
+        ] {
+            let mut payload = vec![0u8; DEPLOYMENT_QUEUE_HEADER_LEN];
+            payload[20..24].copy_from_slice(&DEPLOYMENT_QUEUE_SCHEMA_VERSION.to_le_bytes());
+            payload[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            let error = decode_deployment_queue_frame(&payload).unwrap_err();
+            assert!(error.contains(label), "{label}: {error}");
+        }
     }
 }

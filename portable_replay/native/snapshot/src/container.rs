@@ -5,29 +5,26 @@
 //! ([`crate::Index`], [`crate::Snapshot`]), so the app opens a `.battleplan` with
 //! zero changes elsewhere ([`crate::Store`] dispatches to this transparently).
 //!
-//! Verification is STAGED (spec §4). At open: zip structural validation, the
-//! zip-bomb caps, and an unconditional per-entry CRC-32 re-derivation over every
-//! payload (streamed through a declared-size-bounded decoder; never selectable
-//! or skippable by manifest content), plus the manifest digest/signature, the
-//! path rules, and `index.json`/`timeline.json` verification. Per-entry sha256
-//! verification remains LAZY on first read (Codex d) — open cost is O(total
-//! payload bytes) for the CRC pass but avoids sha256 hashing and entry
-//! materialization — and no snapshot bytes are ever exposed before their entry
-//! hash matches.
+//! Verification is STAGED (spec §4). Open validates ZIP structure and caps,
+//! the manifest digest/signature, versioned path rules, and the required
+//! `index.json`/`timeline.json` spine. Per-entry CRC, size, and SHA-256 checks
+//! happen lazily in the same bounded pass that supplies a requested payload.
+//! No bytes cross an exposure boundary before every integrity check matches.
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::stream_verify::FileBackedArchive;
 use crate::zip::{
-    portable_path_key, validate_payload_path, ZipArchive, MAX_CONTAINER_ENTRY_BYTES,
-    STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP_METHOD_STORE,
+    legacy_path_key, portable_path_key, validate_payload_path, validate_payload_path_legacy_v1,
+    ZipArchive, MAX_CONTAINER_ENTRY_BYTES, STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP_METHOD_STORE,
 };
 use crate::{Index, SegmentGraph, Snapshot};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
 
@@ -47,6 +44,7 @@ const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
 /// Zip-bomb structural caps (spec §4.1). Generous for a real campaign yet bounded.
 const MAX_ENTRIES: usize = 2_000_000;
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // 64 GiB total
+static SPOOL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical digest domain shared by the stitch planner and the v2 reader. The
 /// serialized graph is authoritative; only the digest field itself is removed
@@ -241,22 +239,22 @@ impl ContainerArchive {
 
     fn entry(&self, index: usize) -> Option<ArchiveEntry<'_>> {
         match self {
-            ContainerArchive::Memory(archive) => archive.entries().get(index).map(|entry| {
-                ArchiveEntry {
+            ContainerArchive::Memory(archive) => {
+                archive.entries().get(index).map(|entry| ArchiveEntry {
                     name: &entry.name,
                     uncomp_size: entry.uncomp_size,
                     method: entry.method,
                     local_header_off: entry.local_header_off,
-                }
-            }),
-            ContainerArchive::File(archive) => archive.entries().get(index).map(|entry| {
-                ArchiveEntry {
+                })
+            }
+            ContainerArchive::File(archive) => {
+                archive.entries().get(index).map(|entry| ArchiveEntry {
                     name: &entry.name,
                     uncomp_size: entry.uncomp_size,
                     method: entry.method,
                     local_header_off: entry.local_header_off,
-                }
-            }),
+                })
+            }
         }
     }
 
@@ -268,20 +266,41 @@ impl ContainerArchive {
 
     fn validate_local_headers(&self) -> Result<(), ContainerError> {
         match self {
-            ContainerArchive::Memory(archive) => archive.validate_local_headers().map_err(Into::into),
-            ContainerArchive::File(archive) => archive
-                .validate_local_headers()
-                .map_err(file_archive_error),
+            ContainerArchive::Memory(archive) => {
+                archive.validate_local_headers().map_err(Into::into)
+            }
+            ContainerArchive::File(archive) => {
+                archive.validate_local_headers().map_err(file_archive_error)
+            }
         }
     }
 
-    fn validate_payloads_crc(&self) -> Result<(), ContainerError> {
-        match self {
-            ContainerArchive::Memory(archive) => archive.validate_payloads().map_err(Into::into),
-            ContainerArchive::File(archive) => archive
-                .validate_payloads_crc()
-                .map_err(file_archive_error),
+    fn validate_portable_paths(&self, unicode_v2: bool) -> Result<(), ContainerError> {
+        let mut collision_keys = HashSet::with_capacity(self.len());
+        for index in 0..self.len() {
+            let entry = self.entry(index).ok_or_else(|| {
+                ContainerError::Reject(format!("container entry index {index} is out of range"))
+            })?;
+            if entry.name != "manifest.json" {
+                if unicode_v2 {
+                    validate_payload_path(entry.name)?;
+                } else {
+                    validate_payload_path_legacy_v1(entry.name)?;
+                }
+            }
+            let key = if unicode_v2 {
+                portable_path_key(entry.name)?
+            } else {
+                legacy_path_key(entry.name)?
+            };
+            if !collision_keys.insert(key) {
+                return Err(ContainerError::Reject(format!(
+                    "duplicate or portable-path-colliding zip entry {}",
+                    entry.name
+                )));
+            }
         }
+        Ok(())
     }
 
     fn read_entry(
@@ -308,6 +327,7 @@ impl ContainerArchive {
         &self,
         index: usize,
         writer: &mut W,
+        maximum_uncompressed_bytes: u64,
     ) -> Result<(String, u64), ContainerError> {
         match self {
             ContainerArchive::Memory(_) => Err(ContainerError::Reject(
@@ -315,7 +335,7 @@ impl ContainerArchive {
             )),
             ContainerArchive::File(archive) => {
                 let (digest, len) = archive
-                    .copy_entry_to_writer(index, writer, true)
+                    .copy_entry_to_writer(index, writer, true, maximum_uncompressed_bytes)
                     .map_err(file_archive_error)?;
                 let digest = digest.ok_or_else(|| {
                     ContainerError::Reject(
@@ -331,6 +351,17 @@ impl ContainerArchive {
         matches!(self, ContainerArchive::File(_))
     }
 
+    fn whole_file_receipt(&self) -> Result<(u64, String), ContainerError> {
+        match self {
+            ContainerArchive::Memory(_) => Err(ContainerError::Reject(
+                "whole-file receipts require a retained file-backed container".to_string(),
+            )),
+            ContainerArchive::File(archive) => {
+                archive.whole_file_receipt().map_err(file_archive_error)
+            }
+        }
+    }
+
     fn entry_size_cap(&self) -> u64 {
         match self {
             ContainerArchive::Memory(_) => MAX_CONTAINER_ENTRY_BYTES,
@@ -343,9 +374,457 @@ fn file_archive_error(error: String) -> ContainerError {
     ContainerError::Reject(format!("file-backed zip: {error}"))
 }
 
+fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::io::{Error, ErrorKind};
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use std::path::{Component, Prefix};
+
+        // Permit other readers but deny any new writer or delete/rename handle
+        // for the lifetime of the retained archive. A writer that predates this
+        // open is still covered by the pre/post same-handle receipt equality.
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+        let unresolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let mut components = unresolved.components();
+        let prefix = match components.next() {
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) =>
+            {
+                prefix.as_os_str().to_os_string()
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "replay container must resolve to a local drive path; UNC, device, and network paths are refused",
+                ))
+            }
+        };
+        if !matches!(components.next(), Some(Component::RootDir)) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "replay container path has no rooted local-drive form",
+            ));
+        }
+        // Normalize dot components lexically before opening anything. This does
+        // not follow the filesystem (and therefore cannot hide a reparse
+        // point); every resulting component is still opened and inspected with
+        // OPEN_REPARSE_POINT below.
+        let mut absolute = PathBuf::from(&prefix);
+        absolute.push("\\");
+        let mut depth = 0usize;
+        for component in components {
+            match component {
+                Component::Normal(name) => {
+                    absolute.push(name);
+                    depth += 1;
+                }
+                Component::CurDir => {}
+                Component::ParentDir if depth > 0 => {
+                    absolute.pop();
+                    depth -= 1;
+                }
+                Component::ParentDir => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "replay container path escapes its local-drive root",
+                    ));
+                }
+                Component::Prefix(_) | Component::RootDir => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "replay container path contains an invalid rooted component",
+                    ));
+                }
+            }
+        }
+
+        // Retain every existing parent without delete sharing until the final
+        // object is open. OPEN_REPARSE_POINT makes each component inspection
+        // no-follow, preventing junction/symlink ancestry and pathname rebinding.
+        let parent = absolute.parent().ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "replay container has no parent directory")
+        })?;
+        let mut retained = Vec::new();
+        let mut cursor = PathBuf::from(prefix);
+        cursor.push("\\");
+        for component in parent.components().skip(2) {
+            cursor.push(component.as_os_str());
+            let directory = OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&cursor)?;
+            let metadata = directory.metadata()?;
+            if !metadata.is_dir()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    format!(
+                        "replay container ancestor is not a regular no-follow directory: {}",
+                        cursor.display()
+                    ),
+                ));
+            }
+            retained.push(directory);
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&absolute)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "replay container is not a regular no-follow file: {}",
+                    absolute.display()
+                ),
+            ));
+        }
+        drop(retained);
+        Ok(file)
+    }
+    #[cfg(not(windows))]
+    {
+        File::open(path)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SpoolFileIdentity {
+    volume: u64,
+    file: u64,
+}
+
+/// Retains the complete destination-directory chain while a spool file is
+/// authenticated and published. Windows handles omit delete sharing, so no
+/// accepted component can be renamed or replaced by a junction during the
+/// later pathname-based hard-link call.
+struct SpoolDirectoryGuard {
+    destination: PathBuf,
+    parent: PathBuf,
+    #[cfg(windows)]
+    _handles: Vec<File>,
+}
+
+impl SpoolDirectoryGuard {
+    fn acquire(destination: &Path) -> Result<Self, ContainerError> {
+        use std::path::Component;
+
+        if destination.as_os_str().is_empty()
+            || destination
+                .components()
+                .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+        {
+            return Err(ContainerError::Reject(format!(
+                "transactional spool destination is empty or contains . or ..: {}",
+                destination.display()
+            )));
+        }
+        let destination = if destination.is_absolute() {
+            destination.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(destination)
+        };
+        let parent = destination
+            .parent()
+            .ok_or_else(|| {
+                ContainerError::Reject(
+                    "transactional spool destination has no parent directory".to_string(),
+                )
+            })?
+            .to_path_buf();
+        if destination.file_name().is_none() {
+            return Err(ContainerError::Reject(
+                "transactional spool destination has no file name".to_string(),
+            ));
+        }
+
+        #[cfg(windows)]
+        let handles = retain_windows_directory_chain(&parent).map_err(|error| {
+            ContainerError::Reject(format!(
+                "retain transactional spool directory chain {}: {error}",
+                parent.display()
+            ))
+        })?;
+        #[cfg(not(windows))]
+        validate_spool_directory_chain(&parent)?;
+
+        Ok(Self {
+            destination,
+            parent,
+            #[cfg(windows)]
+            _handles: handles,
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn validate_spool_directory_chain(path: &Path) -> Result<(), ContainerError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if current.parent().is_none() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&current)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ContainerError::Reject(format!(
+                "transactional spool directory component is not a regular directory: {}",
+                current.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn retain_windows_directory_chain(path: &Path) -> Result<Vec<File>, ContainerError> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use std::path::Component;
+
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let mut current = PathBuf::new();
+    let mut handles = Vec::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            continue;
+        }
+        let handle = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&current)?;
+        let metadata = handle.metadata()?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(ContainerError::Reject(format!(
+                "transactional spool directory component is not a non-reparse directory: {}",
+                current.display()
+            )));
+        }
+        handles.push(handle);
+    }
+    if handles.is_empty() {
+        return Err(ContainerError::Reject(
+            "transactional spool destination may not be a filesystem root".to_string(),
+        ));
+    }
+    Ok(handles)
+}
+
+fn create_unique_spool_temp(
+    guard: &SpoolDirectoryGuard,
+) -> Result<(PathBuf, File, SpoolFileIdentity), ContainerError> {
+    let destination_name = guard.destination.file_name().ok_or_else(|| {
+        ContainerError::Reject("transactional spool destination has no file name".to_string())
+    })?;
+    for _ in 0..128 {
+        let sequence = SPOOL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let mut temp_name = std::ffi::OsString::from(".");
+        temp_name.push(destination_name);
+        temp_name.push(format!(
+            ".authenticated-spool.{}.{}.part",
+            std::process::id(),
+            sequence
+        ));
+        let temp = guard.parent.join(temp_name);
+        match open_new_locked_spool_file(&temp) {
+            Ok(file) => {
+                let identity = spool_file_identity(&file, &temp)?;
+                return Ok((temp, file, identity));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(ContainerError::Reject(
+        "could not allocate a unique authenticated spool temporary file".to_string(),
+    ))
+}
+
+#[cfg(windows)]
+fn open_new_locked_spool_file(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_new_locked_spool_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn open_spool_path_for_identity(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        // The retained writer already denies other writers. This inspection
+        // handle must nevertheless share that writer's existing write access
+        // or Windows rejects the reopen; delete sharing stays omitted.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_spool_path_for_identity(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(windows)]
+fn spool_file_identity(file: &File, path: &Path) -> Result<SpoolFileIdentity, ContainerError> {
+    use std::ffi::c_void;
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(
+            handle: *mut c_void,
+            info: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) } == 0 {
+        return Err(ContainerError::Io(std::io::Error::last_os_error()));
+    }
+    let info = unsafe { info.assume_init() };
+    if info.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+        return Err(ContainerError::Reject(format!(
+            "authenticated spool handle is not a regular non-reparse file: {}",
+            path.display()
+        )));
+    }
+    Ok(SpoolFileIdentity {
+        volume: u64::from(info.volume_serial_number),
+        file: (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low),
+    })
+}
+
+#[cfg(unix)]
+fn spool_file_identity(file: &File, path: &Path) -> Result<SpoolFileIdentity, ContainerError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(ContainerError::Reject(format!(
+            "authenticated spool handle is not a regular file: {}",
+            path.display()
+        )));
+    }
+    Ok(SpoolFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(not(any(windows, unix)))]
+fn spool_file_identity(file: &File, path: &Path) -> Result<SpoolFileIdentity, ContainerError> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(ContainerError::Reject(format!(
+            "authenticated spool handle is not a regular file: {}",
+            path.display()
+        )));
+    }
+    Ok(SpoolFileIdentity {
+        volume: 0,
+        file: metadata.len(),
+    })
+}
+
+fn verify_spool_receipt_on_handle(
+    file: &mut File,
+    receipt: &SpoolEntryReceipt,
+) -> Result<(), ContainerError> {
+    let expected_len = receipt.uncompressed_len();
+    if file.metadata()?.len() != expected_len {
+        return Err(ContainerError::Reject(
+            "authenticated spool length changed before publication".to_string(),
+        ));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut digest = Sha256::new();
+    let mut read_len = 0u64;
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        read_len = read_len.checked_add(read as u64).ok_or_else(|| {
+            ContainerError::Reject("authenticated spool length overflow".to_string())
+        })?;
+        digest.update(&buffer[..read]);
+    }
+    let observed_sha256 = to_hex(&digest.finalize());
+    if read_len != expected_len || observed_sha256 != receipt.sha256() {
+        return Err(ContainerError::Reject(format!(
+            "authenticated spool changed before publication (len {read_len}, sha256 {observed_sha256})"
+        )));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(())
+}
+
 /// One manifest-authenticated entry, indexed by its exact container path.
 struct EntryRec {
     archive_index: usize,
+    bytes: u64,
     expected_sha256: String,
     /// Transitions exactly once after decompressed bytes match expected_sha256.
     sha256_state: EntryVerificationState,
@@ -476,7 +955,8 @@ impl Container {
 
     /// Open + verify a `.battleplan` from a path. `expected` enforces identity
     /// (build/schema/mod) when its fields are set; pass `Default::default()` for
-    /// integrity-only (still fully checksum-verified + consistency-checked).
+    /// structural and identity consistency checks. Payload integrity remains
+    /// fail-closed and is verified lazily at each exposure boundary.
     pub fn open<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
@@ -485,43 +965,68 @@ impl Container {
     }
 
     /// Open through one pinned file handle and retain only bounded ZIP metadata.
-    /// Payload CRC verification still completes up front; payload bytes are
-    /// decompressed again only when their authenticated contents are requested.
+    /// Payload CRC, size, and SHA-256 checks complete lazily in the same pass
+    /// that supplies authenticated contents to a caller.
     pub fn open_strict<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
     ) -> Result<Container, ContainerError> {
-        let file = File::open(path.as_ref())?;
-        let archive = FileBackedArchive::open(file, MAX_ENTRIES as u64)
-            .map_err(file_archive_error)?;
+        let file = open_retained_container_file(path.as_ref())?;
+        let archive =
+            FileBackedArchive::open(file, MAX_ENTRIES as u64).map_err(file_archive_error)?;
         Self::from_archive(ContainerArchive::File(archive), expected)
     }
 
     /// Open through one pinned handle and bind a whole-file receipt to that
-    /// exact handle before it becomes the retained archive authority. External
-    /// package-set descriptors can therefore authenticate and consume one file
-    /// object without a pathname reopen window.
+    /// exact handle. The whole-file length and SHA-256 must agree before and
+    /// after manifest/index parsing. External package-set descriptors can
+    /// therefore authenticate and consume one file object without a pathname
+    /// reopen window.
     pub fn open_strict_with_file_receipt<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
     ) -> Result<(Container, u64, String), ContainerError> {
-        let mut file = File::open(path.as_ref())?;
-        let source_len = file.metadata()?.len();
-        let mut digest = Sha256::new();
-        let mut buffer = [0u8; 128 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            digest.update(&buffer[..read]);
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let source_sha256 = to_hex(&digest.finalize());
-        let archive = FileBackedArchive::open(file, MAX_ENTRIES as u64)
+        let file = open_retained_container_file(path.as_ref())?;
+        Self::open_strict_with_file_receipt_from_handle(file, expected, || Ok(()))
+    }
+
+    /// Open and retain an already-open file object, binding the same whole-file
+    /// receipt used by the path-based strict opener. This is intended for an
+    /// unpublished sibling temp whose creation handle has stayed open from pack
+    /// through verification; no pathname reopen is involved.
+    pub fn open_strict_with_file_receipt_from_file(
+        file: File,
+        expected: &ExpectedIdentity,
+    ) -> Result<(Container, u64, String), ContainerError> {
+        Self::open_strict_with_file_receipt_from_handle(file, expected, || Ok(()))
+    }
+
+    fn open_strict_with_file_receipt_from_handle<F>(
+        mut file: File,
+        expected: &ExpectedIdentity,
+        after_initial_receipt: F,
+    ) -> Result<(Container, u64, String), ContainerError>
+    where
+        F: FnOnce() -> Result<(), ContainerError>,
+    {
+        // Receipt the exact retained handle before even the central directory
+        // is parsed. The same handle is then moved into the archive and hashed
+        // again after all manifest/index parsing, closing the entire parse
+        // interval rather than only the higher-level manifest interval.
+        let initial_receipt = FileBackedArchive::whole_file_receipt_before_open(&mut file)
             .map_err(file_archive_error)?;
+        after_initial_receipt()?;
+        let archive =
+            FileBackedArchive::open(file, MAX_ENTRIES as u64).map_err(file_archive_error)?;
         let container = Self::from_archive(ContainerArchive::File(archive), expected)?;
-        Ok((container, source_len, source_sha256))
+        let final_receipt = container.archive.whole_file_receipt()?;
+        if final_receipt != initial_receipt {
+            return Err(ContainerError::Reject(
+                "retained container changed while its manifest and index were being parsed"
+                    .to_string(),
+            ));
+        }
+        Ok((container, final_receipt.0, final_receipt.1))
     }
 
     /// As [`open`](Self::open) but from in-memory bytes (used by tests).
@@ -580,22 +1085,6 @@ impl Container {
                 "total uncompressed size exceeds cap".into(),
             ));
         }
-
-        // Spec section 4.2: the only legal top-level member is the manifest.
-        // Reject scope violations before the O(total payload) CRC pass.
-        for index in 0..archive.len() {
-            let entry = archive.entry(index).ok_or_else(|| {
-                ContainerError::Reject(format!("container entry index {index} is out of range"))
-            })?;
-            if entry.name != "manifest.json" {
-                validate_payload_path(entry.name)?;
-            }
-        }
-
-        // Re-derive every payload CRC before decoding the manifest or trusting
-        // any field inside it. The manifest is attacker-controlled too, so its
-        // version/features must never be able to select or skip this pass.
-        archive.validate_payloads_crc()?;
 
         // One borrowed exact-name index supports O(1) manifest joins without
         // cloning every retained central-directory path a second time. EntryRec
@@ -666,6 +1155,17 @@ impl Container {
                 ));
             }
         }
+
+        // Historical container v1 used the ASCII-only collision namespace.
+        // A stitched v2 container or the current portable-content-v2 feature
+        // opts into spec section 4.2's NFC plus Unicode-caseless identity. The
+        // explicit feature keeps new ordinary (non-stitched) v1 packages strict
+        // while preserving pre-feature recordings byte-for-byte.
+        let unicode_paths = cv >= STITCHED_CONTAINER_VERSION
+            || declared_features
+                .iter()
+                .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V2);
+        archive.validate_portable_paths(unicode_paths)?;
 
         // (7b) version<->feature coupling (§9): a stitched container declares
         // container_version 2 AND required feature `timeline_segments_v1`. A v2+
@@ -815,8 +1315,13 @@ impl Container {
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ContainerError::Reject("entry.path missing".into()))?;
-            validate_payload_path(p)?;
-            let collision_key = portable_path_key(p)?;
+            let collision_key = if unicode_paths {
+                validate_payload_path(p)?;
+                portable_path_key(p)?
+            } else {
+                validate_payload_path_legacy_v1(p)?;
+                legacy_path_key(p)?
+            };
             if !manifest_collision_keys.insert(collision_key) {
                 return Err(ContainerError::Reject(format!(
                     "duplicate or Unicode-case-colliding manifest entry {p}"
@@ -853,6 +1358,7 @@ impl Container {
                     p.to_string(),
                     EntryRec {
                         archive_index,
+                        bytes: declared_bytes,
                         expected_sha256: sha.to_string(),
                         sha256_state: EntryVerificationState::Pending,
                     },
@@ -1027,26 +1533,228 @@ impl Container {
         verify_and_read(&self.archive, &mut guard, path)
     }
 
-    /// Authenticate and decompress one manifest entry directly into `writer`.
+    /// Authenticate one file-backed manifest entry without exposing its bytes.
+    pub fn authenticate_entry(&self, path: &str) -> Result<SpoolEntryReceipt, ContainerError> {
+        self.spool_entry_to_writer(path, &mut std::io::sink())
+    }
+
+    /// Copy one authenticated entry into a caller-owned unpublished sink using
+    /// the retained container handle and bounded decompression buffers. The
+    /// caller must not expose or publish the sink until this method returns its
+    /// receipt successfully.
+    pub fn copy_entry_to_unpublished_writer_bounded<W: Write>(
+        &self,
+        path: &str,
+        writer: &mut W,
+        maximum_uncompressed_bytes: u64,
+    ) -> Result<SpoolEntryReceipt, ContainerError> {
+        self.spool_entry_to_writer_bounded(path, writer, maximum_uncompressed_bytes)
+    }
+
+    /// Authenticate and decompress one file-backed manifest entry into a new
+    /// file, publishing the destination name only after every integrity check,
+    /// flush, and file sync succeeds.
     ///
-    /// The container must have been opened from a retained file handle. The
-    /// complete entry is never held in memory; ZIP structure, declared sizes,
-    /// CRC-32, and manifest SHA-256 are checked during the same copy pass. A
-    /// caller must discard its destination unless this method returns `Ok`.
-    pub fn spool_entry_to_writer<W: std::io::Write>(
+    /// A unique sibling temporary file is created with `create_new`; on Windows
+    /// its retained handle denies write/delete sharing and every destination
+    /// directory ancestor is retained as a non-reparse handle. After sync, the
+    /// same handle is re-hashed and its pathname identity is rebound. The
+    /// no-replace hard link is the commit point; production performs no
+    /// fallible operation after the destination becomes visible.
+    pub fn spool_entry_to_file_transactionally<P: AsRef<Path>>(
+        &self,
+        path: &str,
+        destination: P,
+    ) -> Result<SpoolEntryReceipt, ContainerError> {
+        self.spool_entry_to_file_transactionally_with_hooks(
+            path,
+            destination.as_ref(),
+            STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+    }
+
+    /// Product-facing bounded variant. The manifest declaration is rejected
+    /// before creating a spool file, and the decompressor enforces the same
+    /// ceiling while writing so a forged ZIP size cannot bypass admission.
+    pub fn spool_entry_to_file_transactionally_bounded<P: AsRef<Path>>(
+        &self,
+        path: &str,
+        destination: P,
+        maximum_uncompressed_bytes: u64,
+    ) -> Result<SpoolEntryReceipt, ContainerError> {
+        self.spool_entry_to_file_transactionally_with_hooks(
+            path,
+            destination.as_ref(),
+            maximum_uncompressed_bytes,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+    }
+
+    fn spool_entry_to_file_transactionally_with_hook<F>(
+        &self,
+        path: &str,
+        destination: &Path,
+        before_publish: F,
+    ) -> Result<SpoolEntryReceipt, ContainerError>
+    where
+        F: FnOnce(&Path) -> Result<(), ContainerError>,
+    {
+        self.spool_entry_to_file_transactionally_with_hooks(
+            path,
+            destination,
+            STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            before_publish,
+            |_| Ok(()),
+        )
+    }
+
+    fn spool_entry_to_file_transactionally_with_hooks<F, G>(
+        &self,
+        path: &str,
+        destination: &Path,
+        maximum_uncompressed_bytes: u64,
+        before_publish: F,
+        after_publish: G,
+    ) -> Result<SpoolEntryReceipt, ContainerError>
+    where
+        F: FnOnce(&Path) -> Result<(), ContainerError>,
+        G: FnOnce(&Path) -> Result<(), ContainerError>,
+    {
+        let directory = SpoolDirectoryGuard::acquire(destination)?;
+        let destination = directory.destination.clone();
+        let (temp, file, retained_identity) =
+            create_unique_spool_temp(&directory).map_err(|error| {
+                ContainerError::Reject(format!(
+                    "create authenticated spool temporary file in {}: {error}",
+                    directory.parent.display()
+                ))
+            })?;
+        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+        let mut published = false;
+        let result = (|| {
+            let receipt = self
+                .spool_entry_to_writer_bounded(path, &mut writer, maximum_uncompressed_bytes)
+                .map_err(|error| {
+                    ContainerError::Reject(format!(
+                        "stream authenticated container entry into spool temporary: {error}"
+                    ))
+                })?;
+            writer.flush().map_err(|error| {
+                ContainerError::Reject(format!("flush authenticated spool temporary: {error}"))
+            })?;
+            writer.get_ref().sync_all().map_err(|error| {
+                ContainerError::Reject(format!("sync authenticated spool temporary: {error}"))
+            })?;
+            before_publish(&temp)?;
+
+            // Re-authenticate through the retained handle after the final
+            // mutation window and before any pathname is published.
+            verify_spool_receipt_on_handle(writer.get_mut(), &receipt)?;
+            let temp_path_handle = open_spool_path_for_identity(&temp).map_err(|error| {
+                ContainerError::Reject(format!(
+                    "reopen authenticated spool temporary for identity: {error}"
+                ))
+            })?;
+            if spool_file_identity(&temp_path_handle, &temp)? != retained_identity {
+                return Err(ContainerError::Reject(
+                    "authenticated spool temporary pathname no longer names the retained file"
+                        .to_string(),
+                ));
+            }
+
+            // Commit point: the source pathname is identity-bound to the
+            // retained, immutable handle and every directory ancestor remains
+            // locked. A successful no-replace hard link therefore publishes
+            // that exact object. Production performs no fallible operation
+            // after this call.
+            fs::hard_link(&temp, &destination).map_err(|error| {
+                ContainerError::Reject(format!(
+                    "publish authenticated spool file by no-replace hard link: {error}"
+                ))
+            })?;
+            published = true;
+            after_publish(&destination)?;
+            Ok(receipt)
+        })();
+        drop(writer);
+        // Release every deny-delete file/directory handle before a test-only
+        // injected post-commit failure is rolled back.
+        drop(directory);
+
+        let result = if published && result.is_err() {
+            let destination_still_retained = open_spool_path_for_identity(&destination)
+                .ok()
+                .and_then(|file| spool_file_identity(&file, &destination).ok())
+                == Some(retained_identity);
+            if !destination_still_retained {
+                Err(ContainerError::Reject(
+                    "post-publication failure could not identity-bind destination cleanup"
+                        .to_string(),
+                ))
+            } else {
+                match fs::remove_file(&destination) {
+                    Ok(()) => result,
+                    Err(error) => Err(ContainerError::Reject(format!(
+                        "post-publication failure could not remove authenticated destination: {error}"
+                    ))),
+                }
+            }
+        } else {
+            result
+        };
+
+        // Never unlink a pathname that an adversary rebound while publication
+        // was failing. Successful publication (and ordinary verification
+        // failures without a namespace swap) still remove the retained temp.
+        let temp_still_retained = open_spool_path_for_identity(&temp)
+            .ok()
+            .and_then(|file| spool_file_identity(&file, &temp).ok())
+            == Some(retained_identity);
+        if temp_still_retained {
+            let _ = fs::remove_file(&temp);
+        }
+        result
+    }
+
+    /// Low-level authenticated copy primitive. It remains private so no caller
+    /// can accidentally expose bytes written before the final SHA-256 match.
+    fn spool_entry_to_writer<W: Write>(
         &self,
         path: &str,
         writer: &mut W,
     ) -> Result<SpoolEntryReceipt, ContainerError> {
+        self.spool_entry_to_writer_bounded(path, writer, STREAMING_MAX_CONTAINER_ENTRY_BYTES)
+    }
+
+    fn spool_entry_to_writer_bounded<W: Write>(
+        &self,
+        path: &str,
+        writer: &mut W,
+        maximum_uncompressed_bytes: u64,
+    ) -> Result<SpoolEntryReceipt, ContainerError> {
+        if maximum_uncompressed_bytes == 0 {
+            return Err(ContainerError::Reject(
+                "entry spool byte ceiling must be positive".to_string(),
+            ));
+        }
         let mut guard = self.by_path.lock().map_err(|_| {
             ContainerError::Reject("container entry-verification lock poisoned".into())
         })?;
         let rec = guard
             .get_mut(path)
             .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
-        let (digest, uncompressed_len) =
-            self.archive
-                .copy_entry_to_writer(rec.archive_index, writer)?;
+        if rec.bytes > maximum_uncompressed_bytes {
+            return Err(ContainerError::Reject(format!(
+                "entry {path}: declared uncompressed bytes {} exceed spool ceiling {maximum_uncompressed_bytes}",
+                rec.bytes
+            )));
+        }
+        let (digest, uncompressed_len) = self
+            .archive
+            .copy_entry_to_writer(rec.archive_index, writer, maximum_uncompressed_bytes)?;
         if digest != rec.expected_sha256 {
             return Err(ContainerError::Reject(format!(
                 "entry {path}: sha256 {digest} != manifest {}",
@@ -1120,6 +1828,41 @@ impl Container {
             verify_and_read(&self.archive, &mut guard, &p)?;
         }
         Ok(())
+    }
+
+    /// Full retained-file verification without materializing any payload. Each
+    /// entry is decompressed, CRC-checked, and SHA-256 checked into a bounded
+    /// sink through the already-open archive handle.
+    pub fn verify_all_streaming(&self) -> Result<(), ContainerError> {
+        let mut guard = self.by_path.lock().map_err(|_| {
+            ContainerError::Reject("container entry-verification lock poisoned".into())
+        })?;
+        let paths = guard.keys().cloned().collect::<Vec<_>>();
+        for path in paths {
+            let rec = guard.get_mut(&path).ok_or_else(|| {
+                ContainerError::Reject(format!("entry {path} not in manifest"))
+            })?;
+            let (actual_sha256, _) = self.archive.copy_entry_to_writer(
+                rec.archive_index,
+                &mut std::io::sink(),
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            )?;
+            if actual_sha256 != rec.expected_sha256 {
+                return Err(ContainerError::Reject(format!(
+                    "entry {path}: sha256 {actual_sha256} != manifest {}",
+                    rec.expected_sha256
+                )));
+            }
+            rec.sha256_state = EntryVerificationState::Verified;
+        }
+        Ok(())
+    }
+
+    /// Recompute a bounded whole-file receipt through the retained file handle.
+    /// File-backed callers use this after streaming verification to prove the
+    /// object did not change across the complete validation interval.
+    pub fn retained_file_receipt(&self) -> Result<(u64, String), ContainerError> {
+        self.archive.whole_file_receipt()
     }
 }
 
@@ -1300,10 +2043,50 @@ fn required_u64_pair(
 
 fn required_sha256(value: &Value, key: &str, context: &str) -> Result<String, ContainerError> {
     let digest = required_string(value, key, context)?;
-    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(reject(format!("{context}.{key} must be 64 hex characters")));
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(reject(format!(
+            "{context}.{key} must be canonical lowercase SHA-256"
+        )));
     }
     Ok(digest.to_string())
+}
+
+fn required_evidence_id<'a>(
+    value: &'a Value,
+    key: &str,
+    context: &str,
+) -> Result<&'a str, ContainerError> {
+    let evidence_id = required_string(value, key, context)?;
+    let bytes = evidence_id.as_bytes();
+    if bytes.len() > 256
+        || !bytes[0].is_ascii_alphanumeric()
+        || !bytes.iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
+    {
+        return Err(reject(format!(
+            "{context}.{key} has invalid evidence-id grammar"
+        )));
+    }
+    Ok(evidence_id)
+}
+
+fn required_reason_text<'a>(
+    value: &'a Value,
+    key: &str,
+    context: &str,
+) -> Result<&'a str, ContainerError> {
+    let reason = required_string(value, key, context)?;
+    if reason.len() > 4096 || reason.trim() != reason || reason.chars().any(char::is_control) {
+        return Err(reject(format!(
+            "{context}.{key} has invalid reason-text grammar"
+        )));
+    }
+    Ok(reason)
 }
 
 fn required_hex_bytes(value: &Value, key: &str, context: &str) -> Result<Vec<u8>, ContainerError> {
@@ -1392,8 +2175,8 @@ fn parse_disposition(
             kind: kind.into(),
             file: None,
             sha256: None,
-            reason: Some(required_string(row, "reason", context)?.to_string()),
-            evidence_id: Some(required_string(row, "evidence_id", context)?.to_string()),
+            reason: Some(required_reason_text(row, "reason", context)?.to_string()),
+            evidence_id: Some(required_evidence_id(row, "evidence_id", context)?.to_string()),
             ownership: Value::Null,
         }),
         other => Err(reject(format!(
@@ -1460,7 +2243,7 @@ fn selected_ownership_value(row: &Value, context: &str) -> Result<Value, Contain
             "{context}.selection_rule is unknown/missing"
         )));
     }
-    let observation_id = required_string(row, "selected_observation_id", context)?;
+    let observation_id = required_evidence_id(row, "selected_observation_id", context)?;
     let record_bounds = required_u64_pair(row, "source_record_seq_bounds", context)?;
     let byte_bounds = required_u64_pair(row, "source_byte_bounds", context)?;
     if record_bounds.0 > record_bounds.1 || byte_bounds.0 >= byte_bounds.1 {
@@ -1503,7 +2286,7 @@ fn validate_observed_hour(
             "{context}.selection_rule is unknown/missing"
         )));
     }
-    let selected_id = required_string(row, "selected_observation_id", context)?;
+    let selected_id = required_evidence_id(row, "selected_observation_id", context)?;
     let top_owner = validate_owner(
         row,
         campaign_key_digest,
@@ -1523,7 +2306,8 @@ fn validate_observed_hour(
     for (ordinal, observation) in observations.iter().enumerate() {
         let observation_context = format!("{context}.observations[{ordinal}]");
         required_object(observation, &observation_context)?;
-        let observation_id = required_string(observation, "observation_id", &observation_context)?;
+        let observation_id =
+            required_evidence_id(observation, "observation_id", &observation_context)?;
         if !ids.insert(observation_id.to_string()) {
             return Err(reject(format!(
                 "{context} has duplicate observation evidence"
@@ -1570,7 +2354,8 @@ fn validate_observed_hour(
                 "sha256": required_sha256(observation, "sha256", &observation_context)?,
             }),
             "capture_failed" | "coalesced" | "gap" => {
-                let evidence = required_string(observation, "evidence_id", &observation_context)?;
+                let evidence =
+                    required_evidence_id(observation, "evidence_id", &observation_context)?;
                 if evidence != observation_id {
                     return Err(reject(format!(
                         "{observation_context} disposition evidence disagrees with observation id"
@@ -1578,7 +2363,7 @@ fn validate_observed_hour(
                 }
                 json!({
                     "kind": kind,
-                    "reason": required_string(observation, "reason", &observation_context)?,
+                    "reason": required_reason_text(observation, "reason", &observation_context)?,
                     "evidence_id": evidence,
                 })
             }
@@ -1724,8 +2509,8 @@ fn validate_raw_sources(
             return Err(reject(format!("{context}.participations cannot be empty")));
         }
         let mut participations = HashMap::new();
-        let mut previous_record_end = None;
-        let mut previous_byte_end = None;
+        let mut previous_record_end: Option<u64> = None;
+        let mut previous_byte_end: Option<u64> = None;
         for (participation_ordinal, participation) in participation_rows.iter().enumerate() {
             let participation_context =
                 format!("{context}.participations[{participation_ordinal}]");
@@ -1762,6 +2547,11 @@ fn validate_raw_sources(
                 )));
             }
             let scheme_major = required_u32(participation, "scheme_major", &participation_context)?;
+            if scheme_major == 0 {
+                return Err(reject(format!(
+                    "{participation_context}.scheme_major must be positive"
+                )));
+            }
             let identity_evidence_digest = required_sha256(
                 participation,
                 "identity_evidence_digest",
@@ -1777,12 +2567,29 @@ fn validate_raw_sources(
                 || record_bounds.1 > source_record.1
                 || byte_bounds.0 < source_byte.0
                 || byte_bounds.1 > source_byte.1
-                || previous_record_end.is_some_and(|end| record_bounds.0 <= end)
-                || previous_byte_end.is_some_and(|end| byte_bounds.0 < end)
             {
                 return Err(reject(format!(
                     "{participation_context} has overlapping/invalid source bounds"
                 )));
+            }
+            match (previous_record_end, previous_byte_end) {
+                (None, None) => {
+                    if record_bounds.0 != source_record.0 || byte_bounds.0 != source_byte.0 {
+                        return Err(reject(format!(
+                            "{context}.participations do not start at the raw-source extent"
+                        )));
+                    }
+                }
+                (Some(record_end), Some(byte_end)) => {
+                    if record_end.checked_add(1) != Some(record_bounds.0)
+                        || byte_end != byte_bounds.0
+                    {
+                        return Err(reject(format!(
+                            "{context}.participations do not form one exact contiguous source partition"
+                        )));
+                    }
+                }
+                _ => unreachable!("record and byte participation cursors advance together"),
             }
             if embedded_owner
                 .as_ref()
@@ -1812,6 +2619,12 @@ fn validate_raw_sources(
             {
                 return Err(reject(format!("{context} has duplicate participation ids")));
             }
+        }
+        if previous_record_end != Some(source_record.1) || previous_byte_end != Some(source_byte.1)
+        {
+            return Err(reject(format!(
+                "{context}.participations do not cover the raw-source tail"
+            )));
         }
         if sources
             .insert(
@@ -1905,13 +2718,24 @@ fn validate_stitched_v2(
             "segments.json.publication.created_utc disagrees with manifest.created_utc",
         ));
     }
-    if graph.get("schema_version").and_then(Value::as_str)
-        != manifest.get("schema_version").and_then(Value::as_str)
-    {
+    let graph_schema_version = required_string(&graph, "schema_version", "segments.json")?;
+    if Some(graph_schema_version) != manifest.get("schema_version").and_then(Value::as_str) {
         return Err(reject(
             "segments.json.schema_version disagrees with manifest.schema_version",
         ));
     }
+    let manifest_build = manifest
+        .get("build")
+        .ok_or_else(|| reject("manifest.build is mandatory for a stitched container"))?;
+    required_object(manifest_build, "manifest.build")?;
+    let manifest_build_exe_sha256 =
+        required_sha256(manifest_build, "exe_sha256", "manifest.build")?;
+    let manifest_mod_identity = manifest
+        .get("mod_identity")
+        .ok_or_else(|| reject("manifest.mod_identity is mandatory for a stitched container"))?;
+    required_object(manifest_mod_identity, "manifest.mod_identity")?;
+    let manifest_modset_id =
+        required_string(manifest_mod_identity, "modset_id", "manifest.mod_identity")?;
     if declared_compression != "store"
         || compression_parameters != json!({"level":"none"}).as_object().unwrap()
     {
@@ -1965,7 +2789,7 @@ fn validate_stitched_v2(
             "segments.json.campaign raw key disagrees with campaign_key_digest",
         ));
     }
-    graph
+    let graph_stream_major = graph
         .get("stream_major")
         .and_then(Value::as_u64)
         .filter(|v| *v > 0)
@@ -2074,6 +2898,7 @@ fn validate_stitched_v2(
     let mut serialized_segment_indexes = Vec::with_capacity(segment_rows.len());
     let mut visible = BTreeMap::new();
     let mut insertion_main: BTreeMap<i64, u32> = BTreeMap::new();
+    let mut stitched_compatibility_class: Option<String> = None;
     let mut segment_extents_by_source: HashMap<String, Vec<((u64, u64), (u64, u64), u32)>> =
         HashMap::new();
     for (expected_id, authority) in authorities.iter().enumerate() {
@@ -2122,6 +2947,53 @@ fn validate_stitched_v2(
                 "{context}.identity disagrees with stitched campaign"
             )));
         }
+        let build_exe_sha256 = required_sha256(segment, "build_exe_sha256", &context)?;
+        let modset_id = required_string(segment, "modset_id", &context)?;
+        let segment_schema_version = required_string(segment, "schema_version", &context)?;
+        let static_catalog_digest = required_sha256(segment, "static_catalog_digest", &context)?;
+        if required_u64(segment, "stream_major", &context)? != graph_stream_major
+            || segment_schema_version != graph_schema_version
+            || build_exe_sha256 != manifest_build_exe_sha256
+            || modset_id != manifest_modset_id
+        {
+            return Err(reject(format!(
+                "{context} stream/schema binding disagrees with stitched publication"
+            )));
+        }
+        let compatibility = segment
+            .get("compatibility")
+            .ok_or_else(|| reject(format!("{context}.compatibility is mandatory")))?;
+        let compatibility_context = format!("{context}.compatibility");
+        required_object(compatibility, &compatibility_context)?;
+        let compatibility_class =
+            required_string(compatibility, "compatibility_class", &compatibility_context)?;
+        if required_string(compatibility, "kind", &compatibility_context)? != "proven"
+            || required_evidence_id(compatibility, "evidence_id", &compatibility_context)?
+                .is_empty()
+            || required_sha256(compatibility, "build_exe_sha256", &compatibility_context)?
+                != build_exe_sha256
+            || required_string(compatibility, "modset_id", &compatibility_context)? != modset_id
+            || required_string(compatibility, "schema_version", &compatibility_context)?
+                != segment_schema_version
+            || required_sha256(
+                compatibility,
+                "static_catalog_digest",
+                &compatibility_context,
+            )? != static_catalog_digest
+        {
+            return Err(reject(format!(
+                "{compatibility_context} is not an exact proven segment binding"
+            )));
+        }
+        match &stitched_compatibility_class {
+            None => stitched_compatibility_class = Some(compatibility_class.to_string()),
+            Some(previous) if previous != compatibility_class => {
+                return Err(reject(format!(
+                    "{compatibility_context}.compatibility_class conflicts with another segment"
+                )));
+            }
+            Some(_) => {}
+        }
         let source_ref = segment
             .get("source_ref")
             .ok_or_else(|| reject(format!("{context}.source_ref is mandatory")))?;
@@ -2159,6 +3031,8 @@ fn validate_stitched_v2(
             || participation.play_order != play_order
             || participation.session_nonce != session_nonce
             || participation.process_start_identity != process_start_identity
+            || segment_record_bounds.0 > segment_record_bounds.1
+            || segment_byte_bounds.0 >= segment_byte_bounds.1
             || segment_record_bounds.0 < participation.record_seq_bounds.0
             || segment_record_bounds.1 > participation.record_seq_bounds.1
             || segment_byte_bounds.0 < participation.byte_bounds.0
@@ -2200,6 +3074,14 @@ fn validate_stitched_v2(
         if segment_index.get("source_ref") != Some(source_ref) {
             return Err(reject(format!(
                 "segment index {expected_index:?} source_ref disagrees with graph"
+            )));
+        }
+        let graph_transition_coverage = required_array(segment, "transition_coverage", &context)?;
+        let index_transition_coverage =
+            required_array(&segment_index, "transition_coverage", &expected_index)?;
+        if graph_transition_coverage != index_transition_coverage {
+            return Err(reject(format!(
+                "segment index {expected_index:?} transition coverage disagrees with graph"
             )));
         }
         let cutover = optional_i64(segment, "cutover_hour", &context)?;
@@ -2257,6 +3139,16 @@ fn validate_stitched_v2(
                 )));
             }
         }
+        let computed_empty_recovery = cutover.is_none() && head.is_none() && local.is_empty();
+        let declared_empty_recovery = segment
+            .get("empty_recovery")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| reject(format!("{context}.empty_recovery must be boolean")))?;
+        if declared_empty_recovery != computed_empty_recovery {
+            return Err(reject(format!(
+                "{context}.empty_recovery disagrees with cutover/head/hour evidence"
+            )));
+        }
         match (cutover, head) {
             (None, None) if local.is_empty() => {}
             (Some(start), Some(end)) if start <= end => {
@@ -2282,11 +3174,7 @@ fn validate_stitched_v2(
             }
         }
         let mut transition_hours = Vec::new();
-        for (ordinal, row) in
-            required_array(&segment_index, "transition_coverage", &expected_index)?
-                .iter()
-                .enumerate()
-        {
+        for (ordinal, row) in index_transition_coverage.iter().enumerate() {
             let row_context = format!("{expected_index}.transition_coverage[{ordinal}]");
             let hour = required_i64(row, "hour_index", &row_context)?;
             transition_hours.push(hour);
@@ -2308,6 +3196,39 @@ fn validate_stitched_v2(
                     "duplicate transition/observed hour {hour} in {expected_index}"
                 )));
             }
+        }
+        let required_transition =
+            insertion_main
+                .keys()
+                .next_back()
+                .copied()
+                .and_then(|previous_head| {
+                    cutover.and_then(|start| {
+                        (start > previous_head.saturating_add(1))
+                            .then_some((previous_head.saturating_add(1), start - 1))
+                    })
+                });
+        match required_transition {
+            Some((start, end)) => {
+                let expected_len = (end as i128) - (start as i128) + 1;
+                let is_dense = transition_hours.len() as i128 == expected_len
+                    && transition_hours.first() == Some(&start)
+                    && transition_hours.last() == Some(&end)
+                    && transition_hours
+                        .windows(2)
+                        .all(|pair| pair[0].checked_add(1) == Some(pair[1]));
+                if !is_dense {
+                    return Err(reject(format!(
+                        "{expected_index} transition coverage must exactly account for {start}..={end}"
+                    )));
+                }
+            }
+            None if !transition_hours.is_empty() => {
+                return Err(reject(format!(
+                    "{expected_index} transition coverage is present without a cross-session gap/cutover"
+                )));
+            }
+            None => {}
         }
         for (span_no, span) in required_array(segment, "visible_spans", &context)?
             .iter()
@@ -2557,8 +3478,8 @@ fn verify_and_read(
     // A retained file handle pins identity, not contents: another writer could
     // still alter bytes in place after open. Re-authenticate every file-backed
     // exposure, during the same decompression pass that produces the bytes.
-    let calculate_sha256 = rec.sha256_state == EntryVerificationState::Pending
-        || archive.requires_sha256_each_read();
+    let calculate_sha256 =
+        rec.sha256_state == EntryVerificationState::Pending || archive.requires_sha256_each_read();
     let (bytes, digest) = archive.read_entry(rec.archive_index, calculate_sha256)?;
     if calculate_sha256 {
         let got = digest.ok_or_else(|| {
@@ -2630,22 +3551,267 @@ mod tests {
 
     #[test]
     fn path_open_is_file_backed_while_byte_open_remains_in_memory() {
-        let bytes = pack(
-            "g",
-            &[empty_index_entry()],
-            &PackIdentity::default(),
-            false,
-        )
-        .unwrap();
+        let bytes = pack("g", &[empty_index_entry()], &PackIdentity::default(), false).unwrap();
         let path = TempContainerFile::write("backend_selection", &bytes);
 
-        let file_backed = Container::open(&path.0, &ExpectedIdentity::default())
-            .expect("path container opens");
+        let file_backed =
+            Container::open(&path.0, &ExpectedIdentity::default()).expect("path container opens");
         assert!(matches!(&file_backed.archive, ContainerArchive::File(_)));
 
         let in_memory = Container::from_bytes(bytes, &ExpectedIdentity::default())
             .expect("byte container opens");
         assert!(matches!(&in_memory.archive, ContainerArchive::Memory(_)));
+    }
+
+    #[test]
+    fn bounded_transactional_spool_rejects_before_destination_publication() {
+        const PAYLOAD: &[u8] = b"bounded compact payload";
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry("payload/g/compact.bin", PAYLOAD, COMPACT_STREAM_ROLE, None),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let archive = TempContainerFile::write("bounded_spool", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_bounded_spool_{}_{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let destination = root.join("compact.bin");
+        let error = container
+            .spool_entry_to_file_transactionally_bounded(
+                "payload/g/compact.bin",
+                &destination,
+                PAYLOAD.len() as u64 - 1,
+            )
+            .expect_err("declared bytes beyond the product ceiling must fail closed");
+        assert!(error.to_string().contains("spool ceiling"));
+        assert!(!destination.exists());
+        assert!(fs::read_dir(&root).unwrap().next().is_none());
+        fs::remove_dir(&root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_container_open_rejects_unc_and_non_file_inputs() {
+        let unc = open_retained_container_file(Path::new(r"\\server\share\hostile.battleplan"))
+            .expect_err("UNC replay paths must fail lexically without network access");
+        assert_eq!(unc.kind(), std::io::ErrorKind::InvalidInput);
+
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_container_type_{}_{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let error = open_retained_container_file(&root)
+            .expect_err("a directory must not be accepted as a replay file");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn whole_file_receipt_rejects_same_length_mutation_during_parse() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        const SENTINEL: &[u8] = b"P0_WHOLE_FILE_RECEIPT_MUTATION_SENTINEL";
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry("payload/g/optional.bin", SENTINEL, "optional", None),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let offset = bytes
+            .windows(SENTINEL.len())
+            .position(|window| window == SENTINEL)
+            .expect("stored optional payload contains the unique sentinel")
+            as u64;
+        let path = TempContainerFile::write("receipt_same_length_mutation", &bytes);
+
+        // Use permissively shared test handles so the hook can model a writer
+        // that already existed before the production deny-write handle opened.
+        // The production path has no hook and uses open_retained_container_file.
+        let reader = File::open(&path.0).expect("open retained test reader");
+        let mut mutator = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path.0)
+            .expect("open pre-existing test writer");
+        let result = Container::open_strict_with_file_receipt_from_handle(
+            reader,
+            &ExpectedIdentity::default(),
+            move || {
+                mutator.seek(SeekFrom::Start(offset))?;
+                mutator.write_all(b"X")?;
+                mutator.flush()?;
+                mutator.sync_all()?;
+                Ok(())
+            },
+        );
+        let error = match result {
+            Ok(_) => panic!("same-length mutation between receipt passes must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(
+                "retained container changed while its manifest and index were being parsed"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn transactional_spool_never_publishes_post_sync_substitution() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        const AUTHENTICATED: &[u8] = b"authenticated compact stream bytes";
+        let attacker_bytes = vec![b'X'; AUTHENTICATED.len()];
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry(
+                    "payload/g/compact.bin",
+                    AUTHENTICATED,
+                    COMPACT_STREAM_ROLE,
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_transactional_spool_race_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let destination = root.join("compact.bin");
+        let displaced = root.join("displaced.part");
+        let mutated = Arc::new(AtomicBool::new(false));
+        let hook_mutated = Arc::clone(&mutated);
+
+        let result = container.spool_entry_to_file_transactionally_with_hook(
+            "payload/g/compact.bin",
+            &destination,
+            |temp| {
+                if fs::rename(temp, &displaced).is_ok() {
+                    fs::write(temp, &attacker_bytes)?;
+                    hook_mutated.store(true, Ordering::SeqCst);
+                } else if let Ok(mut attacker_file) =
+                    OpenOptions::new().write(true).truncate(true).open(temp)
+                {
+                    attacker_file.write_all(&attacker_bytes)?;
+                    attacker_file.flush()?;
+                    hook_mutated.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+        );
+
+        if mutated.load(Ordering::SeqCst) {
+            let error = result.expect_err("post-sync mutation must fail closed");
+            assert!(
+                error.to_string().contains("authenticated spool"),
+                "unexpected error: {error}"
+            );
+            assert!(
+                !destination.exists(),
+                "attacker bytes must never reach the published destination"
+            );
+        } else {
+            let receipt = result.expect("Windows retained handles deny the mutation attempt");
+            assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
+            assert_eq!(fs::read(&destination).unwrap(), AUTHENTICATED);
+        }
+
+        let _ = fs::remove_file(&destination);
+        let _ = fs::remove_file(&displaced);
+        if let Ok(entries) = fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        let _ = fs::remove_dir(&root);
+    }
+
+    #[test]
+    fn transactional_spool_post_link_failure_is_failure_atomic() {
+        const AUTHENTICATED: &[u8] = b"authenticated post-link bytes";
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry(
+                    "payload/g/post-link.bin",
+                    AUTHENTICATED,
+                    COMPACT_STREAM_ROLE,
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_transactional_spool_post_link_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let destination = root.join("post-link.bin");
+
+        let error = container
+            .spool_entry_to_file_transactionally_with_hooks(
+                "payload/g/post-link.bin",
+                &destination,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+                |_| Ok(()),
+                |_| {
+                    Err(ContainerError::Reject(
+                        "injected post-link identity query failure".to_string(),
+                    ))
+                },
+            )
+            .expect_err("injected post-link failure must propagate");
+        assert!(error.to_string().contains("injected post-link"));
+        assert!(
+            !destination.exists(),
+            "Err must never leave a published destination"
+        );
+
+        let receipt = container
+            .spool_entry_to_file_transactionally("payload/g/post-link.bin", &destination)
+            .expect("hard-link commit with no post-publication work succeeds");
+        assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
+        assert_eq!(fs::read(&destination).unwrap(), AUTHENTICATED);
+
+        fs::remove_file(&destination).unwrap();
+        for entry in fs::read_dir(&root).unwrap().flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+        fs::remove_dir(&root).unwrap();
     }
 
     #[test]
@@ -2709,8 +3875,7 @@ mod tests {
             .has_entry("payload/g/segments.json")
             .expect_err("a poisoned lock must refuse, never report absence");
         assert!(
-            err.to_string()
-                .contains("entry-verification lock poisoned"),
+            err.to_string().contains("entry-verification lock poisoned"),
             "unexpected error: {err}"
         );
         let err = match container.segments() {
@@ -2721,8 +3886,7 @@ mod tests {
             Err(err) => err,
         };
         assert!(
-            err.to_string()
-                .contains("entry-verification lock poisoned"),
+            err.to_string().contains("entry-verification lock poisoned"),
             "unexpected error: {err}"
         );
     }

@@ -98,7 +98,7 @@ field-marshal and measured-empty game-state matrix.
 
 The recorder-fold, replay-core, and game-ui regressions independently consume
 `canonical_active_abilities_envelope.json` (SHA-256
-`9b05c17bf792fc01a7dfcb34088fbd45e03dc1105b36eb258240cc3eedea7efd`) and each
+`dfe9aa4d194ebc91f8b1a176aff4c569936f4ca75e3ac0a3a6a210c604312f5c`) and each
 rejects an authority mutation. This freezes one production shape without adding
 cross-workspace test dependencies.
 

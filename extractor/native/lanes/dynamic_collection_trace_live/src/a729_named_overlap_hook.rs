@@ -391,6 +391,8 @@ impl A729NamedOverlapCompleteSource {
     }
 }
 
+impl crate::source_seal::Sealed for A729NamedOverlapCompleteSource {}
+
 impl ExactControllerTraceSource for A729NamedOverlapCompleteSource {
     fn is_exact_a729_controller_source(&self) -> bool {
         true

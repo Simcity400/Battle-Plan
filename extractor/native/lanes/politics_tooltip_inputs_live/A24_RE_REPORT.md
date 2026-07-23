@@ -1,6 +1,6 @@
 # A24 politics-tooltip upstream RE and d73 carrier
 
-Status: **static producer graph, exact detour set, pointer-free owner capture, and typed extractor-to-replay/UI binding complete; the authenticated multi-surface live fixture remains; d73 is reserved, unschedulable, and fail closed.**
+Status: **exact diagnostic detours, pointer-free owner capture, and the typed extractor-to-replay/UI carrier are complete; the production semantic PTI1 row producer is not implemented, so d73 remains reserved, unschedulable, and fail closed.**
 
 This report belongs only to the extractor A24 lane. It does not amend or reuse the rendering-laws `PROGRAM_STATUS` surface.
 
@@ -138,17 +138,19 @@ validation battery after the shared Wave5 edit set stabilizes.
 
 ## Live source disposition and activation
 
-`src/a729_hook.rs` now installs 23 sentinel-gated detours: the politics entry
+`src/a729_hook.rs` installs 23 sentinel-gated diagnostic detours: the politics entry
 refresh, all nine exact UI producers, the three refresh/binding owners, the
 five internal value/text producers, the availability/cost/affordability/remove
 helpers, and the nested raw modifier-value lookup. Entry and return are paired
 on a thread-local native stack with monotonically allocated invocation IDs.
 Only nested helper calls under an A24 root are retained. Durable observations
 contain module RVAs, fixed-point values, predicates, copied engine strings,
-QPC entry/return times, frame hour, and pointer-free engine identities; raw
-process pointers are never serialized.
+QPC entry/return times, frame hour, and only statically proven pointer-free
+engine identities; an unproven object path remains `null` rather than probing
+plausible offsets. Raw process pointers are never serialized.
 
-An evidence epoch must be armed before UI choreography. Sealing rejects an
+If the isolated legacy diagnostic workflow is explicitly opted into, an
+evidence epoch must be armed before UI choreography. Sealing rejects an
 hour mismatch, any observation outside the arm-to-selected-Present interval,
 an unknown/non-image stack RVA, missing parent invocation, duplicate sequence
 or invocation, incomplete tap census, active callback, queue eviction, or any
@@ -158,7 +160,7 @@ collector DLL may unload. The collector exposes install/arm/receipt-copy/
 uninstall harness ABI functions, an installed-source PTI1 encoder, and the
 one-argument `battle-plan_a24_capture_command_json` remote-owner ABI. That ABI
 drains the production-render selected-Present inside the collector and accepts
-no Present payload from the caller. The clean-launch owner is
+no Present payload from the caller. The legacy clean-launch owner is
 `extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1`; it authenticates
 the frozen D04 save, centrally attested recorder/DLL, loaded module, paused raw
 hour, country handle, window ownership, and 1920x1080 client before delegating
@@ -168,7 +170,11 @@ hover sweeps without prompts, advances exactly one hour between cases, and
 repause-checks every boundary. `verify_a24_autonomous_admission.py` joins the
 six receipt hashes, exact 23-tap union, consecutive hours, regrade result,
 executable, and central Release collector attestation into one immutable
-admission receipt. The owner cannot schedule d73 or change its activation latch.
+diagnostic receipt. A tap-only receipt explicitly does not authorize semantic
+source admission, cannot schedule d73, and cannot change its activation latch.
+The scene driver is isolated behind the explicit process-local
+`BATTLE_PLAN_CLIENT_DRIVING_OPT_IN=I_ACKNOWLEDGE_THIS_TOOL_WILL_CONTROL_HOI4` gate and
+is not part of production completion or validation.
 
 The exact UI producer manifest is
 `18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35`.
@@ -182,15 +188,88 @@ and `7c254928e9c7571dc11a2d9369c6f053c9b6159d8c29756f8b9acbf27b7a7562`.
 
 Production admission remains explicitly disabled by
 `LIVE_PRODUCER_TAPS_COMPLETE=false`; `is_exact_a729_politics_source` remains
-false outside tests and d73 remains reserved/unschedulable. Static code cannot
-substitute for the missing live observation. Promotion requires selected-
-Present cases covering every mutually exclusive politics surface, complete
-visible-target enumeration including measured empty, and PTI1 raw/formatted
-agreement through the existing strict regrader. The complete matrix and
-negative gates are frozen in `H_A24_CAPTURE_AUTOMATION_20260720.json`.
+false outside tests and d73 remains reserved/unschedulable. This is an
+implementation boundary: `begin_exact_politics_frame`,
+`submit_exact_politics_batch`, and `seal_exact_politics_frame` have no production
+callers. The current detours retain final localized strings and selected scalar
+values, but they do not produce the schema's ordered reason nodes, exact
+modifier/popularity source-term lists, or a complete target roster including
+measured-empty targets. A selected-Present tap matrix cannot reconstruct those
+typed values and therefore cannot justify flipping the latch.
 
-No human input is required now. A human request may be opened only after the
-automated harness has exhausted scripted politics/advisor/idea/boost-party
-choreography and can document a runtime state that it cannot reach. Until then,
-the remaining gap is implementation and automated live observation, not
-external evidence.
+## Final exhaustive static producer closure (2026-07-22)
+
+The nominated pre-localisation roots and every immediate exported caller were
+re-exported at depth two from the current exact-a729 broker. All three jobs ran
+read-only on `shard-07` against image base `0x140000000` and executable SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`:
+
+| Scope | Job | Manifest SHA-256 |
+|---|---|---|
+| availability/removal trigger roots and callers | `20260722T071342Z-final-a24-trigger-reason-producer-consum-860727f3` | `378eba48ba1bffaec27c4c0f5bbac8be3a92f5f52031eb8965eaa8b7f36b2768` |
+| country gate and party-change source arithmetic | `20260722T071400Z-final-a24-party-source-term-producer-con-c8fdacbc` | `b595f4b0ce20df02e2fa7fb2e39653cbfbad4e31ddcfa7bcd14887b3044ca9e4` |
+| modifier-tree and slot-roster roots and callers | `20260722T071409Z-final-a24-modifier-roster-producer-consu-825a8c29` | `a3b42976692f4f583ea8e4cd620020e4bfd83d9aadabaf87843209c80423f715` |
+
+The final mechanical disposition is:
+
+- `0x140FBEB00` and `0x140FBEA50` each construct a trigger evaluation
+  context, call the trigger object's virtual evaluator at vtable offset
+  `+0x18`, and return one byte. Neither ABI accepts a reason sink, node vector,
+  callback, or parent/ordinal output. Their direct command callers consume only
+  that byte. The immediate politics UI callers (`0x141C32790`,
+  `0x141C33FE0`, `0x141C2E8C0`, and `0x141C302E0`) independently append generic
+  or already-localized strings; they do not receive structured trigger nodes.
+- `0x140B98A20` looks up modifier `0x22A`, optionally invokes
+  `0x14054D0F0`, appends the returned flat string, and returns whether the
+  aggregate is zero. Its six direct callers either branch on the byte or append
+  the same flat string. There is no structured country-gate reason output at
+  this boundary.
+- `0x14054D0F0` is the exact recursive modifier-source enumerator. Children are
+  at container `+0x18`, count at `+0x24`, and each child contributes its
+  container at `child+0x10`. Leaf formatter `0x14054C770` proves the authored
+  source label at node `+0x48` and calls `0x140551820` for the raw value. The
+  lookup detour now retains `modifier_id`, exact source label when the native
+  stack contains the unique post-call RVA `0x0054C93B`, and raw value. Other
+  lookup callers remain ID-only because their `+0x48` field is not proven to be
+  a string. This closes the pointer-free diagnostic identity path without
+  inventing offsets. The enumerator still returns only one concatenated string,
+  not a durable typed vector.
+- `0x140D05A40` exposes exact final party-change raw value and flat text. Its
+  arithmetic combines a base value, modifier `0xFC`, clamping, and the
+  `0x140B99EB0` drift-dimension return. Consequently the nested modifier leaves
+  are not by themselves the schema's sum-complete party-change term list; the
+  function has no typed term-list output ABI.
+- `0x141C32A50` is called only by constructor `0x141C2DE30`. It allocates three
+  persistent widget vectors at offsets `0x38`, `0x50`, and `0x68` from authored
+  category slot definitions and constructs advisor, idea, or MIO entry widgets.
+  It is a constructor-time layout roster, not a selected-country, frame-local
+  enumeration, and it cannot attest measured-empty runtime targets.
+
+Member hashes for the decisive roots are: `0x140FBEB00`
+`065550044d6bc499d88c905e9549c3fd73310352fbe9bf01b4fef289d903aca3`,
+`0x140FBEA50`
+`144ea54ab4572d0b8797daa2bd2145ca2a77255a39bc9e6929deafad230f5c0d`,
+`0x140B98A20`
+`202ead3c949711027bb42d7fdbc72e694584cb11b6503ad941d9dee7df14733a`,
+`0x140D05A40`
+`76df5f30809bd1a6ef7d98b3aec85f39b740343cb9662bbeb18190744bc774db`,
+`0x140551820`
+`5f73b28680133810cce0615586e254291305e3102f2f0413661b4e286e84ad14`,
+`0x14054D0F0`
+`d740867206f1f505aa458f89cfdf8ca4c8f0e6a36c48460516d8d2deb502bd7c`,
+`0x14054C770`
+`cba933262d3acd9219d655826a30bdc17b2120325556a902e2d538d6b2ad2d59`,
+`0x141C2DE30`
+`390f830706e74edb98101fa62387f33ef4f307ee4f6d729ee0f7bafeaf9ede70`,
+and `0x141C32A50`
+`1dc9f0a49d5e3e4607e68bbb4b70f7227ca282f0da9ac46a1de43a6171405759`.
+
+There is therefore no further static producer wiring available at the nominated
+exact-a729 boundaries. The exact engine owns bools, fixed-point aggregates, and
+localized strings there, but not the typed reason-tree, sum-complete source-term,
+or frame-complete roster objects required by PTI1 v2. Fabricating those objects
+from strings, residual arithmetic, or constructor widgets would violate the
+lane's exact-or-fail contract. The production-safe disposition is to keep d73
+unscheduled and omit the optional politics-tooltip semantic leaf. No human
+input, passive capture, or client-driving workflow can change that static ABI
+fact; any later observation is regression validation only.

@@ -12,6 +12,7 @@ use std::env;
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::Result;
 
@@ -19,6 +20,22 @@ const CONFIG_SCHEMA_VERSION: u32 = 1;
 const CONFIG_DIR: &str = "battle-plan";
 const CONFIG_FILE: &str = "playback_profile.json";
 const LEGACY_CONFIG_FILE: &str = "product_paths.json";
+#[cfg(any(windows, test))]
+const RECORDER_DATA_DIRECTORY_NAME: &str = "Battle Plan Recorder";
+const PRODUCT_PROFILE_SETTING_KEYS: [&str; 11] = [
+    "physical_width",
+    "physical_height",
+    "min_gui_width",
+    "min_gui_height",
+    "gui_scale_f32_bits",
+    "refresh_rate_hz",
+    "max_refresh_rate_hz",
+    "fullscreen",
+    "borderless",
+    "display_mode",
+    "settings_file_sha256",
+];
+static PROFILE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The only machine-local values retained by the replayer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,22 +90,109 @@ pub fn default_config_path() -> Result<PathBuf> {
         }
         return Ok(PathBuf::from(path));
     }
-    if let Some(root) = env::var_os("APPDATA") {
-        return Ok(PathBuf::from(root).join(CONFIG_DIR).join(CONFIG_FILE));
+    #[cfg(windows)]
+    return Ok(config_path_from_local_app_data(&local_app_data_root()?));
+
+    #[cfg(not(windows))]
+    {
+        if let Some(root) = env::var_os("XDG_CONFIG_HOME") {
+            return Ok(PathBuf::from(root).join(CONFIG_DIR).join(CONFIG_FILE));
+        }
+        if let Some(root) = env::var_os("HOME") {
+            return Ok(PathBuf::from(root)
+                .join(".config")
+                .join(CONFIG_DIR)
+                .join(CONFIG_FILE));
+        }
+        Err(
+            "cannot choose a configuration location; pass --config <file> or set battle-plan_CONFIG"
+                .into(),
+        )
     }
-    if let Some(root) = env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(root).join(CONFIG_DIR).join(CONFIG_FILE));
+}
+
+#[cfg(any(windows, test))]
+fn config_path_from_local_app_data(root: &Path) -> PathBuf {
+    root.join(CONFIG_DIR).join(CONFIG_FILE)
+}
+
+#[cfg(any(windows, test))]
+fn recorder_recordings_root_from_local_app_data(root: &Path) -> PathBuf {
+    root.join(RECORDER_DATA_DIRECTORY_NAME)
+}
+
+/// Return the recorder's ordinary per-user output root without creating it.
+/// The no-argument viewer uses this only as its file-picker starting folder.
+#[cfg(windows)]
+pub fn recorder_recordings_root() -> Result<PathBuf> {
+    Ok(recorder_recordings_root_from_local_app_data(
+        &local_app_data_root()?,
+    ))
+}
+
+/// Resolve machine-local storage through the Windows Known Folder API. Neither
+/// APPDATA nor LOCALAPPDATA environment variables participate in this path.
+#[cfg(windows)]
+fn local_app_data_root() -> Result<PathBuf> {
+    use std::ffi::{c_void, OsString};
+    use std::os::windows::ffi::OsStringExt;
+    use std::ptr;
+
+    #[repr(C)]
+    struct Guid {
+        data1: u32,
+        data2: u16,
+        data3: u16,
+        data4: [u8; 8],
     }
-    if let Some(root) = env::var_os("HOME") {
-        return Ok(PathBuf::from(root)
-            .join(".config")
-            .join(CONFIG_DIR)
-            .join(CONFIG_FILE));
+
+    const FOLDERID_LOCAL_APP_DATA: Guid = Guid {
+        data1: 0xF1B3_2785,
+        data2: 0x6FBA,
+        data3: 0x4FCF,
+        data4: [0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91],
+    };
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHGetKnownFolderPath(
+            folder_id: *const Guid,
+            flags: u32,
+            token: *mut c_void,
+            path: *mut *mut u16,
+        ) -> i32;
     }
-    Err(
-        "cannot choose a configuration location; pass --config <file> or set battle-plan_CONFIG"
-            .into(),
-    )
+
+    #[link(name = "ole32")]
+    extern "system" {
+        fn CoTaskMemFree(memory: *mut c_void);
+    }
+
+    unsafe {
+        let mut raw: *mut u16 = ptr::null_mut();
+        let result = SHGetKnownFolderPath(&FOLDERID_LOCAL_APP_DATA, 0, ptr::null_mut(), &mut raw);
+        if result < 0 || raw.is_null() {
+            return Err(format!(
+                "resolve LocalAppData Known Folder failed: HRESULT 0x{:08x}; pass --config <file> or set battle-plan_CONFIG",
+                result as u32
+            )
+            .into());
+        }
+        let mut len = 0usize;
+        while *raw.add(len) != 0 {
+            if len >= 32_767 {
+                CoTaskMemFree(raw.cast());
+                return Err("LocalAppData Known Folder path exceeds Windows limit".into());
+            }
+            len += 1;
+        }
+        let root = PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(raw, len)));
+        CoTaskMemFree(raw.cast());
+        if root.as_os_str().is_empty() || !root.is_absolute() {
+            return Err("LocalAppData Known Folder returned a non-absolute path".into());
+        }
+        Ok(root)
+    }
 }
 
 pub fn legacy_config_path(config: &Path) -> PathBuf {
@@ -109,35 +213,53 @@ pub fn resolve_or_prompt<R: BufRead, W: Write>(
         load_with_migration(config)?
     };
 
-    let game_seed = options
+    let mut game_seed = options
         .game_override
         .or_else(|| saved.as_ref().map(|value| value.game_install.clone()));
-    let user_seed = options
+    let mut user_seed = options
         .user_data_override
         .or_else(|| saved.as_ref().map(|value| value.user_data.clone()));
 
-    let game_install = resolve_root(
-        "the game install/content directory",
-        game_seed,
-        options.non_interactive,
-        input,
-        output,
-        validate_game_install,
-    )?;
-    let user_data = resolve_root(
-        "the game user-data/profile directory",
-        user_seed,
-        options.non_interactive,
-        input,
-        output,
-        validate_user_data,
-    )?;
-    let paths = ProductPaths {
-        game_install,
-        user_data,
-    };
-    store_atomic(config, &paths)?;
-    Ok(paths)
+    loop {
+        let game_install = resolve_root(
+            "the game install/content directory",
+            game_seed.take(),
+            options.non_interactive,
+            input,
+            output,
+            validate_game_install,
+        )?;
+        let user_data = resolve_root(
+            "the game user-data/profile directory",
+            user_seed.take(),
+            options.non_interactive,
+            input,
+            output,
+            validate_user_data,
+        )?;
+        let paths = ProductPaths {
+            game_install,
+            user_data,
+        };
+        match validate_product_profile(&paths) {
+            Ok(_) => {
+                store_atomic(config, &paths)?;
+                return Ok(paths);
+            }
+            Err(error) if options.non_interactive => {
+                return Err(format!(
+                    "the selected roots do not produce a valid launcher-equivalent content profile: {error}"
+                )
+                .into())
+            }
+            Err(error) => {
+                writeln!(
+                    output,
+                    "Saved/selected playback profile is invalid: {error}; select both roots again"
+                )?;
+            }
+        }
+    }
 }
 
 pub fn resolve_process_paths(
@@ -190,6 +312,26 @@ pub fn validate_user_data(path: &Path) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Validate every machine-local input needed to reconstruct the launcher's
+/// effective content and material-settings profile. Callers must complete this
+/// check before persisting or reusing a product profile.
+pub fn validate_product_profile(
+    paths: &ProductPaths,
+) -> Result<map_viewer::GameFileResolver> {
+    let resolver = map_viewer::GameFileResolver::from_dlc_load(
+        paths.game_install.clone(),
+        paths.user_data.clone(),
+    )
+    .map_err(|error| format!("resolve launcher content selection: {error}"))?;
+    playback_environment_from_paths(
+        paths,
+        &resolver,
+        PRODUCT_PROFILE_SETTING_KEYS.into_iter().map(str::to_string),
+    )
+    .map_err(|error| format!("validate selected playback profile metadata: {error}"))?;
+    Ok(resolver)
+}
+
 /// Derive exact, path-redacted local facts for portable-content admission.
 /// Expected values from the replay are never used as local defaults.
 pub fn playback_environment_from_paths(
@@ -214,9 +356,18 @@ pub fn playback_environment_from_paths(
         return Err("settings.txt language is blank".into());
     }
     let pdx_path = paths.user_data.join("pdx_settings.txt");
-    let localisation_language = if pdx_path.is_file() {
-        let pdx = fs::read_to_string(&pdx_path)
-            .map_err(|error| format!("read {}: {error}", pdx_path.display()))?;
+    let pdx = match fs::read_to_string(&pdx_path) {
+        Ok(pdx) => Some(pdx),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "optional selected-profile file {} is present but unreadable: {error}",
+                pdx_path.display()
+            )
+            .into())
+        }
+    };
+    let localisation_language = if let Some(pdx) = pdx {
         let system = named_block(&pdx, "System")?;
         let language = named_block(system, "language")?;
         let selected = assignment(language, "value")?.trim_matches('"').to_string();
@@ -610,19 +761,90 @@ fn load_profile(config: &Path) -> Result<ProductPaths> {
 }
 
 fn store_atomic(config: &Path, paths: &ProductPaths) -> Result<()> {
-    if let Some(parent) = config.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temp = config.with_extension(format!("tmp-{}", std::process::id()));
+    let parent = config
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
     let stored = StoredProfile::from(paths.clone());
-    fs::write(&temp, serde_json::to_vec_pretty(&stored)?)?;
-    if config.exists() {
-        fs::remove_file(config)?;
-    }
-    fs::rename(&temp, config).map_err(|error| {
+    let bytes = serde_json::to_vec_pretty(&stored)?;
+    let file_name = config
+        .file_name()
+        .ok_or_else(|| format!("playback profile path has no file name: {}", config.display()))?
+        .to_string_lossy();
+    let (temp, mut file) = (0..64)
+        .find_map(|_| {
+            let counter = PROFILE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{file_name}.{}.{}.tmp",
+                std::process::id(),
+                counter
+            ));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => Some(Ok((candidate, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .transpose()?
+        .ok_or("could not allocate playback-profile staging file")?;
+
+    let publish = (|| -> Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replace_atomic(&temp, config).map_err(|error| {
+            format!("commit playback profile {}: {error}", config.display()).into()
+        })
+    })();
+    if publish.is_err() {
         let _ = fs::remove_file(&temp);
-        format!("commit playback profile {}: {error}", config.display()).into()
-    })
+    }
+    publish
+}
+
+#[cfg(windows)]
+fn replace_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
 }
 
 #[cfg(test)]
@@ -653,6 +875,12 @@ mod tests {
             b"{\"enabled_mods\":[],\"disabled_dlcs\":[]}",
         )
         .unwrap();
+        (game, user)
+    }
+
+    fn valid_profile_roots(root: &Path) -> (PathBuf, PathBuf) {
+        let (game, user) = valid_roots(root);
+        add_runtime_metadata(&game, &user);
         (game, user)
     }
 
@@ -687,7 +915,7 @@ mod tests {
     #[test]
     fn first_launch_prompts_for_both_paths_and_later_launch_reuses_them() {
         let root = root("prompt");
-        let (game, user) = valid_roots(&root);
+        let (game, user) = valid_profile_roots(&root);
         let config = root.join("config/profile.json");
         let text = format!("{}\n{}\n", game.display(), user.display());
         let mut input = std::io::Cursor::new(text.into_bytes());
@@ -717,7 +945,7 @@ mod tests {
     #[test]
     fn invalid_saved_paths_are_reselected_and_explicit_paths_replace_them() {
         let root = root("replace");
-        let (game, user) = valid_roots(&root);
+        let (game, user) = valid_profile_roots(&root);
         let config = root.join("profile.json");
         fs::create_dir_all(&root).unwrap();
         fs::write(
@@ -736,6 +964,33 @@ mod tests {
         .unwrap();
         assert_eq!(paths.game_install, fs::canonicalize(game).unwrap());
         assert_eq!(paths.user_data, fs::canonicalize(user).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_replacement_is_complete_and_leaves_no_staging_residue() {
+        let root = root("atomic-replace");
+        fs::create_dir_all(&root).unwrap();
+        let config = root.join(CONFIG_FILE);
+        let first = ProductPaths {
+            game_install: PathBuf::from("first-game"),
+            user_data: PathBuf::from("first-user"),
+        };
+        let second = ProductPaths {
+            game_install: PathBuf::from("second-game"),
+            user_data: PathBuf::from("second-user"),
+        };
+        store_atomic(&config, &first).unwrap();
+        store_atomic(&config, &second).unwrap();
+
+        assert_eq!(load_profile(&config).unwrap(), second);
+        let residue = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect::<Vec<_>>();
+        assert!(residue.is_empty(), "staging residue: {residue:?}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -780,8 +1035,8 @@ mod tests {
     #[test]
     fn moved_install_and_profile_can_be_reconfigured_without_replay_path_state() {
         let root = root("moved");
-        let (old_game, old_user) = valid_roots(&root.join("old"));
-        let (new_game, new_user) = valid_roots(&root.join("new"));
+        let (old_game, old_user) = valid_profile_roots(&root.join("old"));
+        let (new_game, new_user) = valid_profile_roots(&root.join("new"));
         let config = root.join("profile.json");
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
@@ -815,7 +1070,7 @@ mod tests {
     #[test]
     fn legacy_product_paths_migrate_to_versioned_profile() {
         let root = root("migration");
-        let (game, user) = valid_roots(&root);
+        let (game, user) = valid_profile_roots(&root);
         let config = root.join(CONFIG_FILE);
         let legacy = legacy_config_path(&config);
         fs::write(
@@ -913,6 +1168,117 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("no proven parser"), "{err}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_validation_failure_does_not_replace_last_good_profile() {
+        let root = root("reject-before-store");
+        let (good_game, good_user) = valid_profile_roots(&root.join("good"));
+        let config = root.join(CONFIG_FILE);
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+        let good = resolve_or_prompt(
+            &config,
+            ResolveOptions {
+                game_override: Some(good_game),
+                user_data_override: Some(good_user),
+                force_reselect: true,
+                non_interactive: true,
+            },
+            &mut input,
+            &mut output,
+        )
+        .unwrap();
+        let committed = fs::read(&config).unwrap();
+
+        let (bad_game, bad_user) = valid_profile_roots(&root.join("bad"));
+        fs::write(bad_user.join("dlc_load.json"), b"not valid json").unwrap();
+        let error = resolve_or_prompt(
+            &config,
+            ResolveOptions {
+                game_override: Some(bad_game),
+                user_data_override: Some(bad_user),
+                force_reselect: true,
+                non_interactive: true,
+            },
+            &mut input,
+            &mut output,
+        )
+        .expect_err("malformed launcher selection must fail before persistence");
+        assert!(error.to_string().contains("launcher"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), committed);
+        assert_eq!(load_profile(&config).unwrap(), good);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saved_profile_is_fully_revalidated_before_reuse() {
+        let root = root("revalidate-saved");
+        let (game, user) = valid_profile_roots(&root);
+        let config = root.join(CONFIG_FILE);
+        store_atomic(
+            &config,
+            &ProductPaths {
+                game_install: fs::canonicalize(game).unwrap(),
+                user_data: fs::canonicalize(&user).unwrap(),
+            },
+        )
+        .unwrap();
+        let committed = fs::read(&config).unwrap();
+        fs::remove_file(user.join("settings.txt")).unwrap();
+
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+        let error = resolve_or_prompt(
+            &config,
+            ResolveOptions {
+                non_interactive: true,
+                ..ResolveOptions::default()
+            },
+            &mut input,
+            &mut output,
+        )
+        .expect_err("saved roots with missing metadata must not be reused");
+        assert!(error.to_string().contains("settings.txt"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), committed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn machine_local_product_paths_share_the_local_app_data_root() {
+        let local = Path::new("C:/Users/Example/AppData/Local");
+        assert_eq!(
+            config_path_from_local_app_data(local),
+            local.join("battle-plan").join("playback_profile.json")
+        );
+        assert_eq!(
+            recorder_recordings_root_from_local_app_data(local),
+            local.join("Battle Plan Recorder")
+        );
+    }
+
+    #[test]
+    fn present_unreadable_optional_profile_file_never_degrades_to_absent() {
+        let root = root("unreadable-optional-profile-file");
+        let (game, user) = valid_roots(&root);
+        add_runtime_metadata(&game, &user);
+        fs::remove_file(user.join("pdx_settings.txt")).unwrap();
+        fs::create_dir(user.join("pdx_settings.txt")).unwrap();
+        let resolver = map_viewer::GameFileResolver::from_dlc_load(&game, user.clone()).unwrap();
+
+        let error = playback_environment_from_paths(
+            &ProductPaths {
+                game_install: game,
+                user_data: user,
+            },
+            &resolver,
+            std::iter::empty(),
+        )
+        .expect_err("present unreadable pdx_settings.txt must not use settings.txt fallback");
+        let message = error.to_string();
+        assert!(message.contains("pdx_settings.txt"), "{message}");
+        assert!(message.contains("present but unreadable"), "{message}");
         let _ = fs::remove_dir_all(root);
     }
 

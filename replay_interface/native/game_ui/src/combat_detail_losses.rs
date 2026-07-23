@@ -359,6 +359,13 @@ fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), G
                 }
             }
         }
+        "exact_no_writer_call_this_hour" => {
+            if side.current_loss_observations.measured().is_some() {
+                return Err(invalid(format!(
+                    "{prefix}.current_loss_observations conflicts with exact-empty status"
+                )));
+            }
+        }
         "unavailable_no_authenticated_live_carrier" => {
             if side.current_loss_observations.measured().is_some() {
                 return Err(invalid(format!(
@@ -446,6 +453,13 @@ fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), G
                         "{observation_prefix}.wrapper sum does not equal final width"
                     )));
                 }
+            }
+        }
+        "exact_no_synchronous_call_this_hour" => {
+            if side.width_observations.measured().is_some() {
+                return Err(invalid(format!(
+                    "{prefix}.width_observations conflicts with exact-empty status"
+                )));
             }
         }
         "unavailable_pending_x2_control" => {

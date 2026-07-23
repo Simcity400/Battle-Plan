@@ -16,14 +16,14 @@ from their canonical representation. Current-build serializer/deserializer RE pr
 `game_unique_seed` as signed `i32[CGameState+0x720]` and `game_unique_id` as the MSVC
 `std::string` object at `CGameState+0x728` for executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`; see
-[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). This is
-**static representation proof, not a validated live identity**. The CID1 codec, shared explicit-mode
+[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). The CID1 codec, shared explicit-mode
 stateful validator, CFA1 codec, collector producer barrier, durable rollover store, ordered package
 publication, replay selection, and recorder-main manifest gate are now statically composed. Pillar
-3 remains fail-closed: all duplex/rollover activation latches are false, so ordinary production
-`Known` is impossible until live L0/lifecycle acceptance and the complete matrix below pass. A
-separate default-off evidence permit can select IdentityV1 only for a content-addressed,
-nonce-bound lifecycle-owner child; it is not a promotion latch.
+3 is enabled for local/single-machine IdentityV1 recording. Each live observation still fails
+closed on build, sentinel, coherence, grammar, CFA1, or rollover uncertainty; there is no static
+fallback and no fabricated `Known`. Cross-machine rehost remains a separate disabled capability
+until M3 supplies two physical-machine endpoint bundles. Legacy action permits are non-production
+and cannot grant either capability.
 
 The current d68 `session` scalar, start date, scenario/bookmark, modset, and human-country
 roster are witnesses only. They must never be substituted when either chosen component is
@@ -189,8 +189,9 @@ The CID1 v1 payload byte table is now frozen in
 `dossiers/W15_CID1_STATIC_CONTRACT.md` and implemented by
 `compact_contract::campaign_identity`. Its 96-byte fixed header, bounded suffix
 order, flag assignments, and text limits are protocol policy; the UUID and
-signed-i32 seed representations are the static engine evidence. This offline
-contract closure does not activate identity or waive any live gate below.
+signed-i32 seed representations are the static engine evidence. This contract is
+the active local IdentityV1 wire format; it does not waive any per-observation
+runtime guard or the M3 cross-machine capability gate below.
 
 All following records begin at sequence 1. Exactly one header is allowed and it must be first.
 Unknown schema, malformed raw fields, digest mismatch, duplicate header, domain 0 on another
@@ -200,9 +201,8 @@ readable as identity-unavailable and cannot be stitched automatically across ses
 `Known` is not admitted merely because the pair is canonical. The CID1 decoder must have two
 complete matching observations bracketing admission, a calendar-valid `game_hour_raw`, a
 non-empty control-free build-profile id, and a SHA-256 recomputed over the complete validated
-CID1 payload. The manifest carries that payload hash. If any prerequisite is absent—including in
-the currently selected Legacy product profile while the CID1 activation latches remain false—state
-remains `unavailable` and no digest is authorized for stitching.
+CID1 payload. The manifest carries that payload hash. If the active exact-build reader fails any
+prerequisite, state remains `unavailable` and no digest is authorized for stitching.
 
 ### Stateful rollover on the duplex control transport
 
@@ -396,12 +396,11 @@ digest, and payload-hash equality. The manifest never overrides stream bytes.
 ## Validation plan
 
 Static location/representation discovery is complete for the pinned current executable: signed
-`i32 +0x720` and MSVC string `+0x728` under `CGameState`. The first live step is the W15 L0 gate:
-hash/root admission, same-hour bracketing, one coherent guarded `+0x720..+0x747` read, exact D-0-4
-oracle equality, and two complete equal observations bracketing first admission. Then prove exact
-live/save equality on at least two same-tick pairs with different UUIDs/seeds, including
-multiplayer. Any missing guard, hash mismatch, or game patch keeps pillar 3 unavailable and requires
-fresh static revalidation.
+`i32 +0x720` and MSVC string `+0x728` under `CGameState`. Production performs hash/root admission,
+same-hour bracketing, one coherent guarded `+0x720..+0x747` read, and complete CID1/CFA1 ordering on
+every actual session. Any missing guard, hash mismatch, or game patch keeps that session
+unavailable and requires fresh static revalidation. The passive matrix remains a conformance
+receipt: it records only states the user actually reaches and never drives the client.
 
 Each capture pair retains both streams/manifests, same-tick melted-save values,
 build/modset/process provenance, role, and first/last stable identity observations.
@@ -421,8 +420,8 @@ build/modset/process provenance, role, and first/last stable identity observatio
 A pair passes only when two stable reads bracket admission; live raw values exactly equal the
 same-tick save values; expected equality/difference holds; the first record decodes as CID1 and
 is hash-bound to the manifest; no data precedes the header or crosses an identity change; and
-missing/torn/conflicting reads produce counted failures without a guessed ID. All S/D/M pairs
-are required for production activation.
+missing/torn/conflicting reads produce counted failures without a guessed ID. Local recording and
+same-machine stitching use those runtime guards directly. M3 alone gates cross-machine rehost.
 
 ## Adversarial self-refutation
 
@@ -493,16 +492,14 @@ extractor/native/lanes/compact_replay_verification_gates/src/*
   CIF1/CIA1 failure accounting, acknowledged rollover, ordered packaging, replay selection,
   and the executable lifecycle owner are complete for the pinned build. There is no
   build-profile fallback.
-- `Invoke-Cid1SdActionDriver.ps1` and `Invoke-Cid1EndpointOwner.ps1` now own S1-S4/D1-D2,
-  including exact process/save discovery, automatic same-hour observations, save-oracle joins,
-  authenticated UI/process actions, and raw-H4CR/durable-rollover boundary receipts. The matrix
-  verifier independently repeats the raw CID1/descriptor join. The driver gives only its recorder
-  child an immutable permit bound to fresh matrix/arm nonces plus request/profile/contract/build
-  hashes; recorder and collector independently regrade it while ordinary activation constants stay
-  false. Live execution of those arms is still required before activation.
-- M1/M2 still require a real second multiplayer-capable exact-a729 process, though both endpoints
-  may be on one machine. M3's frozen relation intrinsically requires a second machine. A socket or
-  duplicated-transcript loopback is not engine lifecycle evidence and remains non-promotional.
-- Until all nine live arms pass, production `campaign_identity.state="known"` remains impossible.
+- `Invoke-Cid1EndpointOwner.ps1` and `Invoke-Cid1PassiveArmRegistration.ps1` own passive S1-S4/D1-D2
+  acquisition and registration: exact process/save observations, same-hour barriers, save-oracle
+  joins, and raw-H4CR/durable-rollover receipts. The user alone drives HOI4. The quarantined
+  `Invoke-Cid1SdActionDriver.ps1` requires explicit legacy opt-in and is not a promotion route.
+- M1/M2 use the same passive registrar with two real local process endpoints. M3's frozen relation
+  intrinsically requires a second physical machine. Socket or duplicated-transcript loopback is
+  not engine lifecycle evidence and remains non-promotional.
+- `DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED` enables guarded local IdentityV1;
+  `DOMAIN_CAMPAIGN_ID_CROSS_MACHINE_REHOST_ENABLED` remains false until M3 passes.
 - Independent campaigns cloned from one save cannot be distinguished by passive persisted
   engine identity until the engine changes it.

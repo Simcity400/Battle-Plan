@@ -212,18 +212,55 @@ mod tests {
     }
 
     #[test]
-    fn a17_nuke_stockpile_transport_is_reserved_until_live_acceptance() {
+    fn a17_nuke_stockpile_transport_is_production_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("nuke_stockpile_live").map(|d| d.id),
             Some(83)
         );
-        assert_eq!(registry.id_for_scheduled_name("nuke_stockpile_live"), None);
-        assert!(registry.by_id(83).is_none());
+        assert_eq!(
+            registry.id_for_scheduled_name("nuke_stockpile_live"),
+            Some(83)
+        );
+        assert_eq!(
+            registry.by_id(83).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
     }
 
     #[test]
-    fn a33_a34_receipted_transports_are_assigned_but_not_scheduled() {
+    fn exact_fail_closed_runtime_producers_are_production_scheduled() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        for (id, name) in [
+            (70, "sunk_convoy_history_live"),
+            (72, "resolved_tooltip_instances_live"),
+            (75, "fired_event_popups_live"),
+            (82, "character_presentation_live"),
+            (85, "selected_designer_identity_live"),
+            (86, "sunk_ship_history_live"),
+            (88, "active_command_abilities_live"),
+            (90, "convoy_transport_attack_live"),
+            (84, "scripted_gui_runtime_live"),
+        ] {
+            assert_eq!(
+                registry.id_for_scheduled_name(name),
+                Some(id),
+                "{name} must be admitted by the production registry"
+            );
+            assert_eq!(
+                registry.by_id(id).map(|descriptor| descriptor.status),
+                Some(if id == 84 {
+                    CompactDomainStatus::ValidatedSlice
+                } else {
+                    CompactDomainStatus::ProductionComplete
+                }),
+                "{name} must retain its exact fail-closed production status"
+            );
+        }
+    }
+
+    #[test]
+    fn a33_transport_is_scheduled_while_a34_remains_reserved() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("sunk_ship_history_live").map(|d| d.id),
@@ -233,38 +270,70 @@ mod tests {
             assigned_descriptor_by_name("decision_panel_live").map(|d| d.id),
             Some(87)
         );
-        assert!(registry.by_id(86).is_none());
+        assert_eq!(registry.id_for_scheduled_name("sunk_ship_history_live"), Some(86));
+        assert_eq!(
+            registry.by_id(86).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
         assert!(registry.by_id(87).is_none());
     }
 
     #[test]
-    fn a31_focus_presentation_transport_is_assigned_but_not_scheduled() {
+    fn a31_focus_presentation_transport_is_production_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("national_focus_presentation_live").map(|d| d.id),
             Some(89)
         );
-        assert!(registry.by_id(89).is_none());
+        assert_eq!(registry.id_for_scheduled_name("national_focus_presentation_live"), Some(89));
+        assert_eq!(
+            registry.by_id(89).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
     }
 
     #[test]
-    fn h_convoy_transport_is_assigned_but_not_scheduled_before_live_acceptance() {
+    fn a36_core_ability_transport_is_production_scheduled() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            registry.id_for_scheduled_name("active_command_abilities_live"),
+            Some(88)
+        );
+        assert_eq!(
+            registry.by_id(88).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
+    }
+
+    #[test]
+    fn d90_convoy_transport_is_production_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("convoy_transport_attack_live").map(|d| d.id),
             Some(90)
         );
-        assert!(registry.by_id(90).is_none());
+        assert_eq!(
+            registry.id_for_scheduled_name("convoy_transport_attack_live"),
+            Some(90)
+        );
+        assert_eq!(
+            registry.by_id(90).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
     }
 
     #[test]
-    fn b7_raid_instances_is_assigned_but_not_scheduled_before_live_acceptance() {
+    fn b7_raid_instances_has_a_fail_closed_production_reader() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("raid_instances_live").map(|d| d.id),
             Some(91)
         );
-        assert!(registry.by_id(91).is_none());
+        assert_eq!(registry.id_for_scheduled_name("raid_instances_live"), Some(91));
+        assert_eq!(
+            registry.by_id(91).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
     }
 
     #[test]

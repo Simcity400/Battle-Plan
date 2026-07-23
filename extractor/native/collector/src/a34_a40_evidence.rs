@@ -216,9 +216,9 @@ pub struct A36PortableAbilityRowReceipt {
     pub cooldown_remaining: A36PortableTimerReceipt,
     pub duration_total: A36PortableTimerReceipt,
     pub duration_remaining: A36PortableTimerReceipt,
-    pub cost_command_power_fixed: i64,
+    pub cost_command_power_fixed: Option<i64>,
     pub display_order: u32,
-    pub tooltip: String,
+    pub tooltip: Option<String>,
     pub disabled_reason: Option<String>,
     pub affected_division_ids: Vec<String>,
 }
@@ -247,6 +247,14 @@ pub struct A36ActiveAbilityEvidenceOwner {
 
 impl A36ActiveAbilityEvidenceOwner {
     pub fn install() -> Result<Self, String> {
+        Self::install_with_mode(false)
+    }
+
+    pub fn install_production() -> Result<Self, String> {
+        Self::install_with_mode(true)
+    }
+
+    fn install_with_mode(production_activation_authorized: bool) -> Result<Self, String> {
         abilities::install_a729_ability_transition_hook()?;
         Ok(Self {
             install_receipt: A36ActiveAbilityInstallReceipt {
@@ -279,9 +287,7 @@ impl A36ActiveAbilityEvidenceOwner {
                     abilities::TOOLTIP_BUILDER_RVA,
                     abilities::ABILITY_REFRESH_RVA,
                 ],
-                // Evidence acquisition never self-authorizes product
-                // scheduling, even after a future independent gate promotion.
-                production_activation_authorized: false,
+                production_activation_authorized,
             },
             installed: true,
             portable_joins: Vec::new(),

@@ -26,7 +26,7 @@
     "output_sha256": "d968506164f5eeaa084215219183d9c51e1fcc71790f2e61a9bcba2b5e9f8383",
     "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
     "result": "PASS_FINAL_ALL",
-    "sha256": "6df83ef524d87107b83324f249d8bbb88dd503caeaed695b6ecbc9822dd44c58"
+    "sha256": "1dc233aa8babd332fa33e132f7113be8016153134d4e1a35e0c24bc4eb177b96"
   },
   "consumer_laws": {
     "a38_authority": "A38 runtime rows are usable only when the same snapshot carries the exact d84 authority object and its contiguous manager_order is a one-to-one cover of every country/gui row.",
@@ -45,13 +45,13 @@
       "admission": "EXTERNAL_AUTHENTICATED_LIVE_FRAME_REQUIRED",
       "domain_id": 84,
       "frozen_sources": {
-        "extractor/native/collector/src/lib.rs": "517e2a8ec9c8abe9cc9e2e3eeb9da54f84a3edc18af998426881ada099545da9",
+        "extractor/native/collector/src/lib.rs": "f0660ef92836ba91e420dce795c2cfb2a3f4f3cd6a4b1781bec0674968fe5e8c",
         "extractor/native/lanes/scripted_state_flags_variables_live/src/scripted_gui_runtime_carrier.rs": "0cec0df69d0df0beab13f1ac0ae8353141447f9640556cd26d72082c4b20aeff",
         "extractor/native/lanes/scripted_state_flags_variables_live/src/scripted_gui_runtime_compact.rs": "4d27854f434209b012b573954538524ea836a5c3cf456bd11709966b803d9d74",
-        "extractor/native/recorder_host/src/world_fold.rs": "2c90031cc4468cb166f5c65882bfd82f1f6c2c709d4cb1ebc657354c90efd252",
-        "extractor/native/recorder_host/src/world_fold/tests.rs": "e4da1defce10f64df66b84410fb290c72c12988eca33d07ad500de19a3f2b79f",
+        "extractor/native/recorder_host/src/world_fold.rs": "681c32c1d4f4cd507804124248580ab13dbbe9e6d95bb3483a5c40ee5545b3af",
+        "extractor/native/recorder_host/src/world_fold/tests.rs": "ab2569daaabc7a0199bcf37a6d5786b127e37bef2c759d1b56556fa33438b2ed",
         "replay_interface/native/game_ui/src/scripted_gui_runtime.rs": "d920559c48a174fa7a71c5b3af61448b03638be132b2c81748ac2fd8de0d27d4",
-        "replay_interface/native/replay_core/src/world.rs": "5c2b1026a201f20667451c49c2b739e17931743c0f2df8421502cab6f47040ac"
+        "replay_interface/native/replay_core/src/world.rs": "6749d8f7dc5db34b278399f1009888bfd75ca1a198924319dccaaf267289b894"
       },
       "implementation": "COMPLETE_FAIL_CLOSED",
       "packets": [

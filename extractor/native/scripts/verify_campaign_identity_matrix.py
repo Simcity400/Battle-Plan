@@ -31,7 +31,10 @@ ARMS = ("S1", "S2", "S3", "S4", "D1", "D2", "M1", "M2", "M3")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
-ROOT_KEYS = {"schema", "contract_path", "contract_sha256", "created_filetime_utc", "arms"}
+ROOT_KEYS = {
+    "schema", "contract_path", "contract_sha256", "matrix_nonce_hex",
+    "created_filetime_utc", "arms",
+}
 ARM_KEYS = {"status", "action_receipt_path", "action_receipt_sha256", "endpoints"}
 ENDPOINT_KEYS = {
     "role", "machine_id", "transcript_path", "transcript_file_sha256", "transcript_sha256", "gate_path",
@@ -50,6 +53,24 @@ PRECONDITION_KEYS = {
     "modset_admission_sha256", "bookmark", "countries",
     "launch_settings_sha256", "selected_save_sha256s",
 }
+PASSIVE_REQUEST_KEYS = {
+    "schema", "arm", "matrix_nonce_hex", "arm_nonce_hex",
+    "pinned_executable_sha256", "contract_path", "contract_sha256",
+    "registration_driver_path",
+    "registration_driver_sha256", "precondition_path", "precondition_sha256",
+    "endpoint_descriptor_paths", "endpoint_descriptor_sha256s", "output_root",
+}
+PASSIVE_PROFILE_KEYS = {
+    "schema", "arm", "precondition_path", "precondition_sha256",
+    "observation_policy", "endpoint_roles",
+}
+PASSIVE_EXECUTION_KEYS = {
+    "schema", "arm", "request_path", "request_sha256", "owner_profile_path",
+    "owner_profile_sha256", "started_filetime_utc", "completed_filetime_utc", "steps",
+}
+PASSIVE_REQUEST_SCHEMA = "battle-plan.campaign_identity_passive_arm_request.v1"
+PASSIVE_PROFILE_SCHEMA = "battle-plan.campaign_identity_passive_observer_profile.v1"
+PASSIVE_EXECUTION_SCHEMA = "battle-plan.campaign_identity_passive_arm_execution.v1"
 STREAM_KEYS = {
     "schema", "status", "transcript_sha256", "campaign_id_v1", "boundary_kind",
     "previous_campaign_id_v1", "cra1_acknowledged", "logical_stream_id",
@@ -174,7 +195,8 @@ def campaign_id(uuid: str, seed: int) -> str:
 
 def endpoint(value: dict, arm: str, expected_role: str) -> dict:
     value = exact(value, ENDPOINT_KEYS, f"{arm}/{expected_role} endpoint")
-    if value["role"] != expected_role or not isinstance(value["machine_id"], str) or not value["machine_id"]:
+    if (value["role"] != expected_role or not isinstance(value["machine_id"], str)
+            or HEX64.fullmatch(value["machine_id"]) is None):
         raise GateError(f"{arm}/{expected_role} endpoint role or machine id is invalid")
 
     transcript_path = checked_path(value["transcript_path"], value["transcript_file_sha256"], f"{arm}/{expected_role} transcript")
@@ -289,7 +311,10 @@ def endpoint(value: dict, arm: str, expected_role: str) -> dict:
     }
 
 
-def verify_arm(arm: str, value: dict) -> dict:
+def verify_arm(
+    arm: str, value: dict, *, contract_path: Path,
+    contract_sha256: str, matrix_nonce_hex: str,
+) -> dict:
     value = exact(value, ARM_KEYS, f"arm {arm}")
     if value["status"] != "complete":
         raise GateError(f"arm {arm} is not complete")
@@ -323,38 +348,79 @@ def verify_arm(arm: str, value: dict) -> dict:
     request = load_json(request_path, f"arm {arm} request")
     owner_profile = load_json(owner_profile_path, f"arm {arm} owner profile")
     execution = load_json(execution_path, f"arm {arm} execution receipt")
+    passive = request.get("schema") == PASSIVE_REQUEST_SCHEMA
+    passive_descriptor_values = None
     sd_arm = arm in {"S1", "S2", "S3", "S4", "D1", "D2"}
-    request_schema = ("battle-plan.campaign_identity_sd_arm_request.v2" if sd_arm
-                      else "battle-plan.campaign_identity_multiplayer_action_request.v1")
-    profile_schema = ("battle-plan.campaign_identity_sd_owner_profile.v1" if sd_arm
-                      else "battle-plan.campaign_identity_multiplayer_owner_profile.v1")
-    execution_schema = ("battle-plan.campaign_identity_sd_owner_execution.v1" if sd_arm
-                        else "battle-plan.campaign_identity_multiplayer_owner_execution.v1")
-    driver_path_key = "action_driver_path" if sd_arm else "transport_driver_path"
-    driver_hash_key = "action_driver_sha256" if sd_arm else "transport_driver_sha256"
-    if (request.get("schema") != request_schema
-            or request.get("arm") != arm
-            or Path(str(request.get(driver_path_key, ""))).resolve() != driver
-            or request.get(driver_hash_key) != action["driver_sha256"]
-            or Path(str(request.get("owner_profile_path", ""))).resolve() != owner_profile_path
-            or request.get("owner_profile_sha256") != action["owner_profile_sha256"]):
-        raise GateError(f"arm {arm} request/driver/profile binding mismatch")
-    if (owner_profile.get("schema") != profile_schema
-            or owner_profile.get("arm") != arm
-            or Path(str(owner_profile.get("precondition_path", ""))).resolve() != precondition
-            or owner_profile.get("precondition_sha256") != action["precondition_sha256"]):
-        raise GateError(f"arm {arm} owner profile/precondition binding mismatch")
-    if (execution.get("schema") != execution_schema
-            or execution.get("arm") != arm
-            or Path(str(execution.get("request_path", ""))).resolve() != request_path
-            or execution.get("request_sha256") != action["request_sha256"]
-            or Path(str(execution.get("owner_profile_path", ""))).resolve() != owner_profile_path
-            or execution.get("owner_profile_sha256") != action["owner_profile_sha256"]
-            or execution.get("started_filetime_utc") != action["started_filetime_utc"]
-            or execution.get("completed_filetime_utc") != action["completed_filetime_utc"]
-            or not isinstance(execution.get("steps"), list) or not execution["steps"]):
-        raise GateError(f"arm {arm} execution receipt binding mismatch")
-    if sd_arm:
+    if passive:
+        request = exact(request, PASSIVE_REQUEST_KEYS, f"arm {arm} passive request")
+        owner_profile = exact(owner_profile, PASSIVE_PROFILE_KEYS, f"arm {arm} passive profile")
+        execution = exact(execution, PASSIVE_EXECUTION_KEYS, f"arm {arm} passive execution")
+        if (request["arm"] != arm
+                or request["pinned_executable_sha256"] != CURRENT_EXE_SHA
+                or Path(str(request["contract_path"])).resolve() != contract_path
+                or request["contract_sha256"] != contract_sha256
+                or Path(str(request["registration_driver_path"])).resolve() != driver
+                or request["registration_driver_sha256"] != action["driver_sha256"]
+                or Path(str(request["precondition_path"])).resolve() != precondition
+                or request["precondition_sha256"] != action["precondition_sha256"]):
+            raise GateError(f"arm {arm} passive request binding mismatch")
+        require_hash(request["matrix_nonce_hex"], f"arm {arm} matrix nonce")
+        require_hash(request["arm_nonce_hex"], f"arm {arm} plan nonce")
+        if (request["matrix_nonce_hex"] != matrix_nonce_hex
+                or request["matrix_nonce_hex"] == request["arm_nonce_hex"]
+                or action["evidence_nonce_hex"] != request["arm_nonce_hex"]):
+            raise GateError(f"arm {arm} passive request nonce binding mismatch")
+        if (owner_profile["schema"] != PASSIVE_PROFILE_SCHEMA
+                or owner_profile["arm"] != arm
+                or Path(str(owner_profile["precondition_path"])).resolve() != precondition
+                or owner_profile["precondition_sha256"] != action["precondition_sha256"]
+                or owner_profile["observation_policy"] != "user_drives_client_observer_records_only"
+                or tuple(owner_profile["endpoint_roles"]) != roles):
+            raise GateError(f"arm {arm} passive profile/precondition binding mismatch")
+        if (execution["schema"] != PASSIVE_EXECUTION_SCHEMA
+                or execution["arm"] != arm
+                or Path(str(execution["request_path"])).resolve() != request_path
+                or execution["request_sha256"] != action["request_sha256"]
+                or Path(str(execution["owner_profile_path"])).resolve() != owner_profile_path
+                or execution["owner_profile_sha256"] != action["owner_profile_sha256"]
+                or execution["started_filetime_utc"] != action["started_filetime_utc"]
+                or execution["completed_filetime_utc"] != action["completed_filetime_utc"]
+                or not isinstance(execution["steps"], list) or not execution["steps"]
+                or not isinstance(action["endpoint_transcript_sha256s"], list)
+                or len(action["endpoint_transcript_sha256s"]) != 2):
+            raise GateError(f"arm {arm} passive execution receipt binding mismatch")
+    else:
+        request_schema = ("battle-plan.campaign_identity_sd_arm_request.v2" if sd_arm
+                          else "battle-plan.campaign_identity_multiplayer_action_request.v1")
+        profile_schema = ("battle-plan.campaign_identity_sd_owner_profile.v1" if sd_arm
+                          else "battle-plan.campaign_identity_multiplayer_owner_profile.v1")
+        execution_schema = ("battle-plan.campaign_identity_sd_owner_execution.v1" if sd_arm
+                            else "battle-plan.campaign_identity_multiplayer_owner_execution.v1")
+        driver_path_key = "action_driver_path" if sd_arm else "transport_driver_path"
+        driver_hash_key = "action_driver_sha256" if sd_arm else "transport_driver_sha256"
+        if (request.get("schema") != request_schema
+                or request.get("arm") != arm
+                or Path(str(request.get(driver_path_key, ""))).resolve() != driver
+                or request.get(driver_hash_key) != action["driver_sha256"]
+                or Path(str(request.get("owner_profile_path", ""))).resolve() != owner_profile_path
+                or request.get("owner_profile_sha256") != action["owner_profile_sha256"]):
+            raise GateError(f"arm {arm} request/driver/profile binding mismatch")
+        if (owner_profile.get("schema") != profile_schema
+                or owner_profile.get("arm") != arm
+                or Path(str(owner_profile.get("precondition_path", ""))).resolve() != precondition
+                or owner_profile.get("precondition_sha256") != action["precondition_sha256"]):
+            raise GateError(f"arm {arm} owner profile/precondition binding mismatch")
+        if (execution.get("schema") != execution_schema
+                or execution.get("arm") != arm
+                or Path(str(execution.get("request_path", ""))).resolve() != request_path
+                or execution.get("request_sha256") != action["request_sha256"]
+                or Path(str(execution.get("owner_profile_path", ""))).resolve() != owner_profile_path
+                or execution.get("owner_profile_sha256") != action["owner_profile_sha256"]
+                or execution.get("started_filetime_utc") != action["started_filetime_utc"]
+                or execution.get("completed_filetime_utc") != action["completed_filetime_utc"]
+                or not isinstance(execution.get("steps"), list) or not execution["steps"]):
+            raise GateError(f"arm {arm} execution receipt binding mismatch")
+    if sd_arm and not passive:
         permit_path = checked_path(
             execution.get("evidence_permit_path"),
             execution.get("evidence_permit_sha256"),
@@ -374,9 +440,9 @@ def verify_arm(arm: str, value: dict) -> dict:
         "D1": {"discover_created_save", "observe_endpoint", "window_input", "finalize_endpoint"},
         "D2": {"observe_endpoint", "window_input", "finalize_endpoint"},
     }
-    if sd_arm and not required_step_kinds[arm].issubset(set(step_kinds)):
+    if sd_arm and not passive and not required_step_kinds[arm].issubset(set(step_kinds)):
         raise GateError(f"arm {arm} execution receipt omits an operation-defining owner step")
-    if sd_arm:
+    if sd_arm and not passive:
         recording_steps = [step for step in execution["steps"] if step.get("kind") == "start_recording_owner"]
         if not recording_steps or any(
             Path(str(step.get("evidence_permit_path", ""))).resolve() != permit_path
@@ -392,12 +458,43 @@ def verify_arm(arm: str, value: dict) -> dict:
             raise GateError("arm D1 must discover exactly two freshly created saves")
         if arm == "S4" and step_kinds.count("copy_save_create_new") != 1:
             raise GateError("arm S4 must create exactly one byte-identical renamed save")
+    if passive:
+        expected_steps = ["register_endpoint", "register_endpoint", "classify_relationship"]
+        if step_kinds != expected_steps:
+            raise GateError(f"arm {arm} passive execution has unexpected steps")
+        register_steps = execution["steps"][:2]
+        if [step.get("role") for step in register_steps] != list(roles):
+            raise GateError(f"arm {arm} passive endpoint roles are out of order")
+        descriptor_paths = request["endpoint_descriptor_paths"]
+        descriptor_hashes = request["endpoint_descriptor_sha256s"]
+        if (not isinstance(descriptor_paths, list) or len(descriptor_paths) != 2
+                or not isinstance(descriptor_hashes, list) or len(descriptor_hashes) != 2):
+            raise GateError(f"arm {arm} passive request must bind two endpoint descriptors")
+        passive_descriptor_values = []
+        for index, step in enumerate(register_steps):
+            descriptor = checked_path(
+                descriptor_paths[index], descriptor_hashes[index],
+                f"arm {arm} passive endpoint descriptor {index}",
+            )
+            if (Path(str(step.get("descriptor_path", ""))).resolve() != descriptor
+                    or step.get("descriptor_sha256") != descriptor_hashes[index]
+                    or step.get("transcript_sha256") != action["endpoint_transcript_sha256s"][index]):
+                raise GateError(f"arm {arm} passive endpoint registration binding mismatch")
+            passive_descriptor_values.append(
+                load_json(descriptor, f"arm {arm} passive endpoint descriptor {index}")
+            )
+        classifier = execution["steps"][2]
+        if (classifier.get("classifier") != "verify_campaign_identity_matrix.py"
+                or classifier.get("policy") != "independent_fail_closed_regrade"):
+            raise GateError(f"arm {arm} passive classifier policy mismatch")
     del driver
     del precondition
     if not isinstance(action["started_filetime_utc"], int) or not isinstance(action["completed_filetime_utc"], int) or action["completed_filetime_utc"] <= action["started_filetime_utc"]:
         raise GateError(f"arm {arm} action interval is invalid")
     if not isinstance(value["endpoints"], list) or len(value["endpoints"]) != 2:
         raise GateError(f"arm {arm} requires exactly two real endpoints")
+    if passive and value["endpoints"] != passive_descriptor_values:
+        raise GateError(f"arm {arm} matrix endpoints differ from registered descriptor bytes")
     endpoints = [endpoint(raw, arm, role) for raw, role in zip(value["endpoints"], roles)]
     endpoint_hashes = [entry["transcript_sha256"] for entry in endpoints]
     if action["endpoint_transcript_sha256s"] != endpoint_hashes:
@@ -448,15 +545,46 @@ def verify(args) -> dict:
         raise GateError("matrix receipt contract path mismatch")
     if receipt["contract_sha256"] != args.expected_contract_sha256:
         raise GateError("matrix receipt contract hash mismatch")
+    matrix_nonce_hex = require_hash(receipt["matrix_nonce_hex"], "matrix receipt nonce")
+    if matrix_nonce_hex == "0" * 64:
+        raise GateError("matrix receipt nonce is zero")
     if not isinstance(receipt["created_filetime_utc"], int) or receipt["created_filetime_utc"] <= 0:
         raise GateError("matrix receipt timestamp is invalid")
     arms = receipt["arms"]
     if not isinstance(arms, dict) or set(arms) != set(ARMS):
         raise GateError("matrix receipt must contain S1-S4,D1-D2,M1-M3 arms exactly")
-    results = [verify_arm(arm, arms[arm]) for arm in ARMS]
+    results = []
+    external_m3_pending = False
+    for arm in ARMS:
+        arm_value = arms[arm]
+        if (arm == "M3" and getattr(args, "allow_external_m3_pending", False)
+                and isinstance(arm_value, dict)
+                and arm_value.get("status") == "blocked_external_second_machine"):
+            exact(arm_value, ARM_KEYS, "arm M3")
+            if (arm_value["action_receipt_path"] != ""
+                    or arm_value["action_receipt_sha256"] != ""
+                    or arm_value["endpoints"] != []):
+                raise GateError("pending M3 must not carry fabricated action or endpoint evidence")
+            external_m3_pending = True
+            results.append({
+                "arm": "M3",
+                "status": "blocked_external_second_machine",
+                "pair_relation": "unobserved",
+                "endpoint_transcripts": [],
+            })
+            continue
+        results.append(verify_arm(
+            arm,
+            arm_value,
+            contract_path=contract_path,
+            contract_sha256=args.expected_contract_sha256,
+            matrix_nonce_hex=matrix_nonce_hex,
+        ))
     return {
         "schema": REPORT_SCHEMA,
-        "verdict": "passed",
+        "verdict": "blocked_external_m3" if external_m3_pending else "passed",
+        "local_production_ready": True,
+        "cross_machine_rehost_ready": not external_m3_pending,
         "matrix_receipt_path": str(args.receipt.resolve()),
         "matrix_receipt_sha256": sha256_file(args.receipt.resolve()),
         "contract_path": str(contract_path),
@@ -487,6 +615,11 @@ def main(argv=None) -> int:
     parser.add_argument("--expected-contract-sha256", required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--allow-external-m3-pending",
+        action="store_true",
+        help="validate S1-S4,D1-D2,M1-M2 while retaining M3 as an evidence-free fail-closed external dependency",
+    )
     args = parser.parse_args(argv)
     try:
         require_hash(args.expected_contract_sha256, "expected contract hash")

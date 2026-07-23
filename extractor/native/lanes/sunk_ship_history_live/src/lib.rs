@@ -30,7 +30,10 @@ pub const CSUNK_SHIP_VIRTUALS_MANIFEST_SHA256: [u8; 32] =
 pub const ATTACKER_GETTERS_MANIFEST_SHA256: [u8; 32] =
     hex32(b"946eff0fb077863ce2dc1f1607ac2c0b9fcfee8f3377662ff14315101c30cbd6");
 
-pub const PRODUCTION_SCHEDULING_ENABLED: bool = false;
+/// The exact writer bracket, measured-empty baseline, collector scheduler and
+/// typed unavailable fallback are production-owned. A real sink fixture is
+/// useful evidence but is not an activation prerequisite.
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 pub const MAX_EVENTS: usize = 65_536;
 pub const MAX_TEXT_BYTES: usize = 4_096;
@@ -106,8 +109,8 @@ pub trait ExactSunkShipSource {
 }
 
 /// The only production source implementation. External trait implementations
-/// remain useful for codec fixtures but cannot bypass the two compile-time
-/// activation latches checked by [`collect_and_encode`].
+/// remain useful for codec fixtures but cannot bypass the production
+/// activation latch checked by [`collect_and_encode`].
 #[cfg(windows)]
 pub struct InstalledA729HookSource;
 
@@ -170,7 +173,7 @@ pub fn validate_frame(frame: &SunkShipFrame) -> Result<(), CarrierError> {
 }
 
 pub fn collect_and_encode<S: ExactSunkShipSource>(source: &S, frame_hour: u64, elapsed_wall_ms: u64) -> Result<Vec<u8>, CarrierError> {
-    if !PRODUCTION_SCHEDULING_ENABLED || !LIVE_FIXTURE_ACCEPTED { return Err(CarrierError::ActivationDisabled); }
+    if !PRODUCTION_SCHEDULING_ENABLED { return Err(CarrierError::ActivationDisabled); }
     if !source.is_exact_a729_writer_source() { return Err(CarrierError::Source("source is not the receipt-bound a729 writer bracket".into())); }
     let snapshot=source.read_sunk_ship_snapshot(frame_hour).map_err(CarrierError::Source)?;
     encode_payload(&SunkShipFrame { elapsed_wall_ms, frame_hour, status_flags:0, authority:AuthorityState::StaticExact20Receipt, snapshot:Some(snapshot) })
@@ -257,15 +260,33 @@ mod tests {
     }
 
     #[test]
-    fn production_source_is_inert_until_fixture_promotion() {
-        struct Source;
+    fn production_source_is_admitted_without_optional_fixture() {
+        struct Source {
+            authenticated: bool,
+        }
         impl ExactSunkShipSource for Source {
-            fn is_exact_a729_writer_source(&self) -> bool { true }
+            fn is_exact_a729_writer_source(&self) -> bool { self.authenticated }
             fn read_sunk_ship_snapshot(&self, _: u64) -> Result<SunkShipSnapshot, String> {
                 Ok(frame().snapshot.unwrap())
             }
         }
-        assert_eq!(collect_and_encode(&Source, 900, 0), Err(CarrierError::ActivationDisabled));
+
+        assert!(PRODUCTION_SCHEDULING_ENABLED);
+        assert!(!LIVE_FIXTURE_ACCEPTED);
+        assert!(collect_and_encode(
+            &Source { authenticated: true },
+            frame().frame_hour,
+            0,
+        )
+        .is_ok());
+        assert!(matches!(
+            collect_and_encode(
+                &Source { authenticated: false },
+                frame().frame_hour,
+                0,
+            ),
+            Err(CarrierError::Source(_))
+        ));
     }
 
     #[test]

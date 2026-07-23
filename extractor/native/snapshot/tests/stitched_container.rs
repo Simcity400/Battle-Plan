@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Container v2 (stitched / reload-relaunch) READER acceptance
 //! (`STITCHING_DESIGN.md` §7, §9).
 //!
@@ -218,6 +220,17 @@ fn stitched_entries() -> Vec<PackEntry> {
                 "segment_id": 0, "play_order": 0, "in_session_ordinal": 0,
                 "session_nonce": "nonce-0", "process_start_identity": "pid-0",
                 "epoch_token": "epoch-0", "ticket": ticket(0),
+                "stream_major": 2,
+                "build_exe_sha256": "ab".repeat(32),
+                "modset_id": MODSET,
+                "schema_version": "1",
+                "static_catalog_digest": "cd".repeat(32),
+                "compatibility": {
+                    "kind": "proven", "evidence_id": "compat-0",
+                    "compatibility_class": "a729-fixture",
+                    "build_exe_sha256": "ab".repeat(32), "modset_id": MODSET,
+                    "schema_version": "1", "static_catalog_digest": "cd".repeat(32)
+                },
                 "identity": {
                     "scheme_major": 1, "campaign_key_digest": CAMPAIGN_DIGEST,
                     "evidence_digest": "00".repeat(32)
@@ -225,6 +238,7 @@ fn stitched_entries() -> Vec<PackEntry> {
                 "cutover_hour": 0, "head_hour": 1, "parent_segment": null,
                 "empty_recovery": false, "index_file": "segments/s00000000.index.json",
                 "source_ref": source_ref(0, 200, &p0),
+                "transition_coverage": [],
                 "visible_spans": [ { "start_hour": 0, "end_hour": 0 } ],
                 "superseded_spans": [ { "start_hour": 1, "end_hour": 1, "superseded_by": 1 } ]
             },
@@ -232,6 +246,17 @@ fn stitched_entries() -> Vec<PackEntry> {
                 "segment_id": 1, "play_order": 1, "in_session_ordinal": 0,
                 "session_nonce": "nonce-1", "process_start_identity": "pid-1",
                 "epoch_token": "epoch-1", "ticket": ticket(1),
+                "stream_major": 2,
+                "build_exe_sha256": "ab".repeat(32),
+                "modset_id": MODSET,
+                "schema_version": "1",
+                "static_catalog_digest": "cd".repeat(32),
+                "compatibility": {
+                    "kind": "proven", "evidence_id": "compat-1",
+                    "compatibility_class": "a729-fixture",
+                    "build_exe_sha256": "ab".repeat(32), "modset_id": MODSET,
+                    "schema_version": "1", "static_catalog_digest": "cd".repeat(32)
+                },
                 "identity": {
                     "scheme_major": 1, "campaign_key_digest": CAMPAIGN_DIGEST,
                     "evidence_digest": "00".repeat(32)
@@ -239,6 +264,7 @@ fn stitched_entries() -> Vec<PackEntry> {
                 "cutover_hour": 1, "head_hour": 1, "parent_segment": 0,
                 "empty_recovery": false, "index_file": "segments/s00000001.index.json",
                 "source_ref": source_ref(1, 100, &p1),
+                "transition_coverage": [],
                 "visible_spans": [ { "start_hour": 1, "end_hour": 1 } ],
                 "superseded_spans": []
             }
@@ -407,7 +433,7 @@ fn reseal_entry_stitch_digest_only(entries: &mut [PackEntry]) {
 fn identity() -> PackIdentity {
     PackIdentity {
         schema_version: Some("1".into()),
-        build_exe_sha256: None,
+        build_exe_sha256: Some("ab".repeat(32)),
         build_pinned: false,
         mod_identity: Some(json!({ "modset_id": MODSET })),
         created_utc: Some("2026-07-12T00:00:00Z".into()),
@@ -697,17 +723,17 @@ fn v2_unread_raw_source_local_method_mismatch_fails_at_open() {
 }
 
 #[test]
-fn v2_unread_store_raw_source_payload_crc_mismatch_fails_at_open() {
+fn v2_unread_store_raw_source_payload_crc_mismatch_fails_before_exposure() {
     let mut bytes = build(&stitched_opts());
     let raw_source = format!("payload/{GAME}/sessions/source-0.h4cr");
     let payload = local_payload_offset(&bytes, &raw_source);
     bytes[payload] ^= 0x01;
 
-    assert_zip_rejects(bytes, "payload crc32 mismatch");
+    assert_entry_crc_rejects_before_exposure(bytes, &raw_source);
 }
 
 #[test]
-fn v2_manifest_downgrade_cannot_skip_whole_archive_payload_crc_validation() {
+fn manifest_downgrade_cannot_skip_payload_crc_at_authenticated_read() {
     let mut bytes = build(&stitched_opts());
     let manifest_header = local_header_offset(&bytes, "manifest.json");
     let manifest_len = u32::from_le_bytes(
@@ -737,12 +763,13 @@ fn v2_manifest_downgrade_cannot_skip_whole_archive_payload_crc_validation() {
     let new_digest = Sha256::hex(&manifest_canonical_bytes(&manifest));
     replace_once_same_len(&mut manifest_bytes, &old_digest, new_digest.as_bytes());
     bytes[manifest_payload..manifest_payload + manifest_len].copy_from_slice(&manifest_bytes);
+    rewrite_entry_crc32(&mut bytes, "manifest.json", &manifest_bytes);
 
     let raw_source = format!("payload/{GAME}/sessions/source-0.h4cr");
     let raw_payload = local_payload_offset(&bytes, &raw_source);
     bytes[raw_payload] ^= 0x01;
 
-    assert_zip_rejects(bytes, "payload crc32 mismatch");
+    assert_entry_crc_rejects_before_exposure(bytes, &raw_source);
 }
 
 #[test]
@@ -986,6 +1013,133 @@ fn v2_windows_source_aliases_collide_but_distinct_sources_remain_distinct() {
         &ExpectedIdentity::default(),
     )
     .expect("genuinely distinct normalized sources must remain distinct");
+}
+
+fn assert_entry_crc_rejects_before_exposure(bytes: Vec<u8>, path: &str) {
+    let container = Container::from_bytes(bytes, &ExpectedIdentity::default())
+        .expect("an unread corrupted payload remains lazy at open");
+    let error = match container.read_entry_bytes(path) {
+        Err(ContainerError::Zip(error)) => error,
+        Err(other) => panic!("expected ZIP CRC rejection for {path:?}, got {other}"),
+        Ok(_) => panic!("corrupted payload bytes for {path:?} must never be exposed"),
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("payload crc32 mismatch"),
+        "expected payload CRC rejection for {path:?}, got {message:?}"
+    );
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+fn rewrite_entry_crc32(bytes: &mut [u8], name: &str, payload: &[u8]) {
+    let declared = crc32(payload).to_le_bytes();
+    let local_header = local_header_offset(bytes, name);
+    bytes[local_header + 14..local_header + 18].copy_from_slice(&declared);
+    let central_header = central_header_offset(bytes, name);
+    bytes[central_header + 16..central_header + 20].copy_from_slice(&declared);
+}
+
+#[test]
+fn v2_digest_and_compatibility_bindings_require_canonical_sha256() {
+    let mut entries = stitched_entries();
+    replace_json_entry(&mut entries, "segments.json", |graph| {
+        graph["segments"][0]["build_exe_sha256"] = json!("AB".repeat(32));
+        graph["segments"][0]["compatibility"]["build_exe_sha256"] =
+            json!("AB".repeat(32));
+    });
+    assert_rejects(
+        build_entries(&entries, &stitched_opts()),
+        "canonical lowercase SHA-256",
+    );
+}
+
+#[test]
+fn v2_raw_source_participations_must_partition_the_complete_extent() {
+    let mut entries = stitched_entries();
+    replace_json_entry(&mut entries, "segments.json", |graph| {
+        graph["raw_sources"][0]["record_seq_bounds"] = json!([0, 4]);
+        graph["raw_sources"][0]["byte_bounds"] = json!([0, 250]);
+    });
+    assert_rejects(
+        build_entries(&entries, &stitched_opts()),
+        "do not cover the raw-source tail",
+    );
+}
+
+#[test]
+fn v2_transition_coverage_requires_exact_graph_binding_and_evidence_grammar() {
+    let bad_transition = json!({
+        "hour_index": 2,
+        "kind": "gap",
+        "reason": "forward gap",
+        "evidence_id": "bad evidence with spaces",
+        "owner": owner(1),
+    });
+    let mut entries = stitched_entries();
+    replace_json_entry(&mut entries, "segments/s00000001.index.json", |index| {
+        index["transition_coverage"] = json!([bad_transition.clone()]);
+    });
+    replace_json_entry(&mut entries, "segments.json", |graph| {
+        graph["segments"][1]["transition_coverage"] = json!([bad_transition]);
+    });
+    assert_rejects(
+        build_entries(&entries, &stitched_opts()),
+        "invalid evidence-id grammar",
+    );
+
+    let mut disagreement = stitched_entries();
+    replace_json_entry(&mut disagreement, "segments.json", |graph| {
+        graph["segments"][1]["transition_coverage"] = json!([{
+            "hour_index": 2,
+            "kind": "gap",
+            "reason": "forward gap",
+            "evidence_id": "transition-gap-2",
+            "owner": owner(1),
+        }]);
+    });
+    assert_rejects(
+        build_entries(&disagreement, &stitched_opts()),
+        "transition coverage disagrees with graph",
+    );
+}
+
+#[test]
+fn v2_empty_recovery_cannot_claim_transition_coverage() {
+    let transition = json!({
+        "hour_index": 2,
+        "kind": "gap",
+        "reason": "unassigned recovery bytes",
+        "evidence_id": "recovery-gap-2",
+        "owner": owner(1),
+    });
+    let mut entries = stitched_entries();
+    replace_json_entry(&mut entries, "segments/s00000001.index.json", |index| {
+        index["cutover_hour"] = Value::Null;
+        index["head_hour"] = Value::Null;
+        index["hours"] = json!([]);
+        index["transition_coverage"] = json!([transition.clone()]);
+    });
+    replace_json_entry(&mut entries, "segments.json", |graph| {
+        let segment = &mut graph["segments"][1];
+        segment["cutover_hour"] = Value::Null;
+        segment["head_hour"] = Value::Null;
+        segment["empty_recovery"] = json!(true);
+        segment["transition_coverage"] = json!([transition]);
+    });
+    assert_rejects(
+        build_entries(&entries, &stitched_opts()),
+        "without a cross-session gap/cutover",
+    );
 }
 
 #[test]

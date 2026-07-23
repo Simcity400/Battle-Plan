@@ -70,19 +70,27 @@ only runtime binding is a copied or relocated `.battleplan` file:
   decoder discovery or implicit fallback is allowed; ordinary open stays
   fail-closed.
 
-The shipped `replay_app` selects one fixed sibling executable,
-`replay_prefold_worker`, in the single `recording_open` policy used by
-interactive playback, headless dumps, and the validate/open UX. The worker is
-built from extractor `replay_decoder` and drives the one production
-`WorldFold`; replay_app reconstructs only the neutral, strictly validated spool
-receipt from its stdout. It must be a regular non-symlink file beside the app,
-and there is no PATH/registry/install discovery or fallback. Its machine-local
-spool parent is product-selected, per-recording children remain identity-marked
-and lifetime-owned by replay_core, and the source receipt remains visible
-through `WorldTimeline`. The product policy does not catch an unsupported
-result and retry ordinary or raw input. A standalone replay distribution is
-still self-contained: it packages the worker as an immutable signed sibling,
-not as a dependency on an installed extractor product.
+The shipped `replay_app` invokes the authenticated recorder sibling in one fixed
+internal prefold mode from the single `recording_open` policy used by
+interactive playback, headless dumps, and the validate/open UX. The internal
+recorder child drives extractor `replay_decoder` and the one production `WorldFold`;
+the parent reconstructs only the neutral, strictly validated spool receipt
+from its stdout. The parent retains the executable and every directory handle
+from its volume/share root through the executable parent against write/delete
+or namespace replacement on Windows. Object type and reparse attributes are
+validated from those opened handles; the child request and receipt are bound
+to the retained image SHA-256, and file identity and hash are rechecked after
+execution. The compact source is likewise opened once no-follow with
+write/delete sharing denied, authenticated through that retained handle, and
+passed as the child's inherited stdin file object; the child folds that exact
+`File` and never reopens the diagnostic source pathname. There is no
+sibling-worker, PATH, registry, or install discovery
+fallback. The machine-local spool parent is product-selected,
+per-recording children remain identity-marked and lifetime-owned by replay_core,
+and the source receipt remains visible through `WorldTimeline`. The product
+policy does not catch an unsupported result and retry ordinary or raw input.
+The old standalone `replay_prefold_worker` target is development/test tooling
+only and is not part of the production package.
 
 Rules at the boundary:
 

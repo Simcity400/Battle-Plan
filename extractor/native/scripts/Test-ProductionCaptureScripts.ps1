@@ -96,8 +96,13 @@ try {
             hour_latch=[ordered]@{requested=$true;enabled=$true;latch_requested_but_inactive=$false;coverage_invariant_ok=$true;hours_unaccounted=0;capture_attempts=10;frames_emitted_to_sink=10;sink_write_success_verified=$true;hours_coalesced=0;capture_failed=0;recorded_failed=0}
         }
         acceptance_telemetry=[ordered]@{
+            schema="battle-plan.acceptance_telemetry.v1"
+            complete=$true
+            problems=@()
+            collector_sink_write_us=[ordered]@{count=10;total=250;avg=25;p50=20;p99=100;max=120}
             sink_write_us=[ordered]@{count=10;avg=25;p50=20;p95=60;p99=100;max=120}
             clock_skew=[ordered]@{wall_elapsed_us=300000000;mono_elapsed_us=300000100;drift_us=-100;wall_monotonic_ok=$true}
+            clock_skew_scope="complete physical H4CR capture; capture-set scoped during rollover"
         }
         host_finalize=[ordered]@{stream_sha256=('d'*64);fold=[ordered]@{skipped=$false;truncated_tail_bytes=0;stop_reason=$null;ends_at_frame_end=$true;malformed_payload_records=0};verify=[ordered]@{stream_sha256_matches_capture=$true;entries_verified=10}}
         replay_packaging=[ordered]@{static_artifacts=@()}
@@ -238,6 +243,9 @@ try {
     Assert-Case 'nonce ledger and consumed seal pinned' ($driverText.Contains('speed_evidence_nonce_ledger_root') -and $driverText.Contains('speed_evidence_nonce_seal_sha256'))
     Assert-Case 'collector control hash bound to proof' ($driverText.Contains('collector_control_sha256=$collectorControlSha'))
     Assert-Case 'recorder receives admitted static bundle and live source bindings' ($driverText.Contains('"--static-bundle-manifest", $bundleManifestPath') -and $driverText.Contains('"--static-bundle-source-inventory", $SourceInventoryPath') -and $driverText.Contains('"--static-bundle-live-resolution-report", $LiveResolutionReportPath') -and -not $driverText.Contains('"--static-templates-equipment-catalog"'))
+    Assert-Case 'every static input form requires exact supported product modset' ($driverText.Contains("Invoke-IndependentCaptureGate -Name 'static_product_modset_policy'") -and $driverText.Contains('static_product_modset_policy_admission.json'))
+    Assert-Case 'prepared product modset gets independent full-corpus regrade' ($driverText.Contains("Invoke-IndependentCaptureGate -Name 'product_modset_policy'") -and $driverText.Contains('prepared_product_modset_admission_sha256'))
+    Assert-Case 'product modset policy is frozen and hash-bound before capture' ($driverText.Contains('retainedProductModsetRegistrySha256') -and $driverText.Contains("'--policy',$retainedProductModsetRegistry") -and $driverText.Contains("'--admission-policy',$retainedProductModsetRegistry"))
     Assert-Case 'capture plan hashes both live static bindings' ($driverText.Contains('static_bundle_source_inventory_sha256') -and $driverText.Contains('static_bundle_live_resolution_report_sha256'))
     Assert-Case 'static admission cross-binds exact target process identity' ($driverText.Contains('liveResolution.process.pid') -and $driverText.Contains('liveResolution.process.creation_filetime_utc') -and $driverText.Contains('process_creation_filetime_utc'))
     Assert-Case 'pre-injection static gate explicitly admits only deferred bundles' ($driverText.Contains('"--allow-deferred-token-gate"') -and $driverText.Contains('static_bundle_phase = "pre_injection_deferred"'))
@@ -257,8 +265,38 @@ try {
     # This script checks the ownership contract statically and never starts a
     # compiler, so historical focused counts cannot certify the current tree.
     $centralText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-CentralRustValidation.ps1') -Raw
+    $packageVerifierText=Get-Content -LiteralPath (Join-Path $scriptDir 'Test-PortableProductPackageReceipt.ps1') -Raw
+    $portableVerificationIndex=$centralText.IndexOf('$verificationStdout = @(& powershell.exe')
+    $portablePublicationIndex=$centralText.IndexOf('[PortableReceiptPublishNative]::PublishNoReplaceWriteThrough(')
     Assert-Case 'central Final owns standalone project progress tests' ($centralText.Contains('extractor\native\project_progress_live_lane') -and $centralText.Contains('"Final"'))
     Assert-Case 'central Final owns standalone occupation replay verifier tests' ($centralText.Contains('occupation_resistance_compliance_live\replay_verify') -and $centralText.Contains('"Final"'))
+    Assert-Case 'portable PASS is independently verified before canonical publication' (
+        $centralText.Contains('-ReceiptPath $packageReceiptCandidate') -and
+        $centralText.Contains('-AllowStagedReceipt') -and
+        $portableVerificationIndex -ge 0 -and
+        $portablePublicationIndex -gt $portableVerificationIndex
+    )
+    $packageBuilderText=Get-Content -LiteralPath (Join-Path $scriptDir 'New-PortableProductPackage.ps1') -Raw
+    Assert-Case 'portable ZIP and PASS receipt use no-replace write-through publication' (
+        $packageBuilderText.Contains('MOVEFILE_WRITE_THROUGH') -and
+        $packageBuilderText.Contains('[PortablePackageNative]::PublishNoReplaceWriteThrough($temporary, $outputFull)') -and
+        $centralText.Contains('MOVEFILE_WRITE_THROUGH') -and
+        $centralText.Contains('[PortableReceiptPublishNative]::PublishNoReplaceWriteThrough(') -and
+        -not $packageBuilderText.Contains('[IO.File]::Move($temporary, $outputFull)')
+    )
+    Assert-Case 'portable receipt verifier restricts staged candidates to the canonical release directory' (
+        $packageVerifierText.Contains('$AllowStagedReceipt') -and
+        $packageVerifierText.Contains('hoi4-portable-package-receipt\.json\.[0-9a-f]{32}\.candidate') -and
+        $packageVerifierText.Contains('PASS_STAGED_CENTRAL_RELEASE_PORTABLE_PACKAGE') -and
+        $packageVerifierText.Contains('canonical_receipt = -not [bool]$AllowStagedReceipt')
+    )
+    Assert-Case 'release cleanup proves authoritative artifacts absent' (
+        $centralText.Contains('function Remove-ReleasePromotionState') -and
+        $centralText.Contains('authoritative residue remains') -and
+        $centralText.Contains("-Context 'stale release authority cleanup'") -and
+        $centralText.Contains("-Context 'stale release package cleanup'") -and
+        $centralText.Contains("-Context 'failed release cleanup'")
+    )
     Assert-Case 'scientists remains in centralized extractor workspace' ((Get-Content -LiteralPath (Join-Path $nativeRoot 'Cargo.toml') -Raw).Contains('"scientists_live_lane"'))
     Assert-Case 'safe launcher has no direct Cargo execution' (-not $driverText.Contains('& cargo') -and -not $driverText.Contains('cargo build'))
     Assert-Case 'safe launcher requires current hash-attested prebuilt artifacts' (

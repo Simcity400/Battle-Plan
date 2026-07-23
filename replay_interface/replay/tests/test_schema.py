@@ -1172,6 +1172,67 @@ class TestValidator(unittest.TestCase):
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("armies should be empty" in problem for problem in probs), probs)
 
+    def test_v2_orders_group_manager_authenticates_typed_army_group_order(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["order_of_battle"]["extra"] = {
+            "army_battleplans_depth_live": {
+                "known": True,
+                "orders": [{
+                    "owner_kind": "army_group", "owner_id": 23, "army_id": None,
+                }],
+                "orders_group_manager": {
+                    "known": True,
+                    "complete": True,
+                    "source": "registered_reference_type_53",
+                    "registered_entry_count": 2,
+                    "army_group_count": 1,
+                    "armies": [
+                        {"army_id": 17, "execution_type": 0,
+                         "cohesion_type": 1, "leader_proximity": 2},
+                    ],
+                    "army_group_ids": [23],
+                },
+            },
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+        manager = snap["order_of_battle"]["extra"]["army_battleplans_depth_live"][
+            "orders_group_manager"
+        ]
+        manager["army_group_ids"] = [24]
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("lacks complete manager identity" in p for p in probs), probs)
+
+        manager["army_group_ids"] = [17]
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("across owner kinds" in p for p in probs), probs)
+
+    def test_typed_army_group_order_requires_known_complete_manager_census(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        domain = {
+            "known": True,
+            "orders": [{
+                "owner_kind": "army_group", "owner_id": 23, "army_id": None,
+            }],
+        }
+        snap["order_of_battle"]["extra"] = {
+            "army_battleplans_depth_live": domain,
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("required for an army-group owner" in p for p in probs), probs)
+
+        domain["orders_group_manager"] = {
+            "known": False,
+            "complete": False,
+            "source": None,
+            "registered_entry_count": None,
+            "army_group_count": None,
+            "armies": [],
+            "army_group_ids": [],
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("cannot be unavailable" in p for p in probs), probs)
+
     def test_unavailable_battleplan_domain_rejects_stale_orders(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
         snap["order_of_battle"]["extra"] = {

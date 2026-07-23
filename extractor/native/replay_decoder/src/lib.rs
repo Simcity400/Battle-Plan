@@ -68,18 +68,18 @@ use std::fs;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use compact_contract::campaign_identity::{
+    ValidatedCid1, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+};
+use compact_contract::campaign_rollover::{RolloverProposeV1, RolloverReason};
+pub use compact_contract::stream_validator::StreamIdentityMode;
+use compact_contract::stream_validator::{AcceptedRecordKind, StatefulStreamValidator};
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, CompactRecordHeader,
     RecordFramingError, ASSIGNED_COMPACT_DOMAINS, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_END,
 };
-use compact_contract::campaign_identity::{
-    ValidatedCid1, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
-};
-use compact_contract::campaign_rollover::{RolloverProposeV1, RolloverReason};
-use compact_contract::stream_validator::{AcceptedRecordKind, StatefulStreamValidator};
-pub use compact_contract::stream_validator::StreamIdentityMode;
 use recorder_host::stream_fold::{
     strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
     FoldStreamStats,
@@ -203,7 +203,10 @@ impl std::fmt::Display for RolloverSetDecodeError {
             Self::Decode {
                 logical_stream_id,
                 error,
-            } => write!(f, "logical stream {logical_stream_id} decode failed: {error}"),
+            } => write!(
+                f,
+                "logical stream {logical_stream_id} decode failed: {error}"
+            ),
             Self::Certification {
                 logical_stream_id,
                 error,
@@ -257,9 +260,10 @@ impl RolloverStreamSet {
                     },
                 ));
             }
-            let cursor = self.cursors.pop_front().expect(
-                "front cursor remains present after exhausted borrow",
-            );
+            let cursor = self
+                .cursors
+                .pop_front()
+                .expect("front cursor remains present after exhausted borrow");
             if let Err(error) = cursor.certify_complete() {
                 self.terminal = true;
                 return Some(Err(RolloverSetDecodeError::Certification {
@@ -334,8 +338,7 @@ pub fn open_rollover_stream_set(
                 "CID1 rollover logical stream {expected_id} disagrees with its durable receipt"
             )));
         }
-        let actual_last_complete_sequence =
-            certify_rollover_member(&stream.path, opts.clone())?;
+        let actual_last_complete_sequence = certify_rollover_member(&stream.path, opts.clone())?;
         if actual_last_complete_sequence != stream.expected_last_complete_sequence {
             return Err(OpenError::Certification(format!(
                 "CID1 rollover logical stream {expected_id} terminal sequence {actual_last_complete_sequence} disagrees with durable frontier {}",
@@ -370,10 +373,8 @@ pub fn open_rollover_stream_set(
             || transition.last_admitted_h4cr_sequence != current.expected_last_complete_sequence
             || transition.current_campaign_id != current.expected_campaign_id
             || transition.proposed_campaign_id != proposed.expected_campaign_id
-            || transition.current_cid1_payload_sha256
-                != current.expected_cid1_payload_sha256
-            || transition.proposed_cid1_payload_sha256
-                != proposed.expected_cid1_payload_sha256
+            || transition.current_cid1_payload_sha256 != current.expected_cid1_payload_sha256
+            || transition.proposed_cid1_payload_sha256 != proposed.expected_cid1_payload_sha256
         {
             return Err(OpenError::Certification(format!(
                 "CID1 rollover transition {current_id}->{proposed_id} is not adjacent to its durable members"
@@ -412,11 +413,8 @@ pub fn open_rollover_stream_set(
 /// Certify a sealed member before the set constructor exposes any cursor and
 /// recover the actual terminal H4CR sequence for the durable frontier join.
 fn certify_rollover_member(path: &Path, opts: OpenOptions) -> Result<u64, OpenError> {
-    let mut cursor = open_stream_file_with_identity_mode(
-        path,
-        &opts,
-        StreamIdentityMode::IdentityV1,
-    )?;
+    let mut cursor =
+        open_stream_file_with_identity_mode(path, &opts, StreamIdentityMode::IdentityV1)?;
     while let Some(hour) = cursor.next_hour() {
         hour.map_err(|error| {
             OpenError::Certification(format!(
@@ -464,9 +462,11 @@ fn read_placement_authenticated_cid1(path: &Path) -> Result<ValidatedCid1, OpenE
     let mut payload = vec![0u8; header.payload_len];
     file.read_exact(&mut payload).map_err(OpenError::Io)?;
     let mut validator = StatefulStreamValidator::identity_v1();
-    let kind = validator.validate_record(&header, &payload).map_err(|error| {
-        OpenError::Certification(format!("CID1 rollover first record is invalid: {error}"))
-    })?;
+    let kind = validator
+        .validate_record(&header, &payload)
+        .map_err(|error| {
+            OpenError::Certification(format!("CID1 rollover first record is invalid: {error}"))
+        })?;
     if kind != AcceptedRecordKind::CampaignIdentity {
         return Err(OpenError::Certification(
             "CID1 rollover stream did not begin with campaign identity".to_string(),
@@ -1012,13 +1012,14 @@ impl snapshot::CertifiedPrefoldDecoder for ProductionCertifiedPrefoldDecoder {
     ) -> Result<snapshot::PrefoldedReplay, snapshot::PrefoldDecodeError> {
         let identity_mode = compact_identity_mode(request.identity_mode());
         let (game_id, raw_h4cr) = request.into_parts();
-        fold_raw_h4cr_bytes_prefolded_with_identity_mode(raw_h4cr, game_id, identity_mode)
-            .map_err(|error| {
-            snapshot::PrefoldDecodeError::new(format!(
-                "{}: {error}",
-                snapshot::CertifiedPrefoldDecoder::decoder_id(self)
-            ))
-        })
+        fold_raw_h4cr_bytes_prefolded_with_identity_mode(raw_h4cr, game_id, identity_mode).map_err(
+            |error| {
+                snapshot::PrefoldDecodeError::new(format!(
+                    "{}: {error}",
+                    snapshot::CertifiedPrefoldDecoder::decoder_id(self)
+                ))
+            },
+        )
     }
 }
 
@@ -1056,13 +1057,13 @@ struct SpooledFoldPass {
 /// from ordinary boundary/count/fold dispatch. All subsequent records pass the
 /// same validator before the existing exact payload and WorldFold machinery.
 fn fold_compact_stream_file_identity_aware(
-    stream_path: &Path,
+    mut reader: fs::File,
     game_id: &str,
     snapshot_dir: &Path,
     identity_mode: StreamIdentityMode,
 ) -> io::Result<SpooledFoldPass> {
-    let mut reader = fs::File::open(stream_path)?;
     let total_len = reader.metadata()?.len();
+    reader.seek(SeekFrom::Start(0))?;
     let mut fold = WorldFold::new_file_backed(game_id, snapshot_dir)?;
     let mut stats = FoldStreamStats {
         stream_bytes: total_len,
@@ -1149,11 +1150,8 @@ fn fold_compact_stream_file_identity_aware(
             // StatefulStreamValidator here: its intentionally terminal
             // all-in-one semantics would discard this record and every record
             // after it, conflating certification with diagnostic decoding.
-            let sequence_error = strict_sequence_error(
-                previous_ordinary_sequence,
-                header.sequence,
-                record_at,
-            );
+            let sequence_error =
+                strict_sequence_error(previous_ordinary_sequence, header.sequence, record_at);
             previous_ordinary_sequence = Some(header.sequence);
             if validation_error.is_none() {
                 validation_error = sequence_error.or_else(|| {
@@ -1247,13 +1245,7 @@ pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
     request: snapshot::CertifiedPrefoldSpoolRequest,
     identity_mode: StreamIdentityMode,
 ) -> Result<snapshot::PrefoldedSpool, OpenError> {
-    if compact_identity_mode(request.identity_mode()) != identity_mode {
-        return Err(OpenError::Certification(
-            "spool prefold request identity mode disagrees with decoder mode".to_string(),
-        ));
-    }
-    let (game_id, raw_path, snapshot_dir, expected_len, expected_sha256) =
-        request.into_parts();
+    let raw_path = request.raw_h4cr_path().to_path_buf();
     let source_meta = fs::symlink_metadata(&raw_path)?;
     if !source_meta.file_type().is_file() || source_meta.file_type().is_symlink() {
         return Err(OpenError::Certification(format!(
@@ -1261,13 +1253,62 @@ pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
             raw_path.display()
         )));
     }
+    let source = fs::File::open(&raw_path)?;
+    fold_raw_h4cr_open_file_spooled_with_identity_mode(request, source, identity_mode)
+}
+
+/// Fold a certified compact source from an already-open file capability.
+///
+/// Unlike [`fold_raw_h4cr_file_spooled`], this entry point never resolves the
+/// request's source pathname. The supplied file is authenticated and consumed
+/// from the same open object, allowing a process boundary to transfer a
+/// retained, deny-write/delete source handle without reintroducing a pathname
+/// substitution race. `CertifiedPrefoldSpoolRequest` remains the portable
+/// receipt and policy contract.
+pub fn fold_raw_h4cr_open_file_spooled(
+    request: snapshot::CertifiedPrefoldSpoolRequest,
+    source: fs::File,
+) -> Result<snapshot::PrefoldedSpool, OpenError> {
+    let identity_mode = compact_identity_mode(request.identity_mode());
+    fold_raw_h4cr_open_file_spooled_with_identity_mode(request, source, identity_mode)
+}
+
+fn fold_raw_h4cr_open_file_spooled_with_identity_mode(
+    request: snapshot::CertifiedPrefoldSpoolRequest,
+    mut source: fs::File,
+    identity_mode: StreamIdentityMode,
+) -> Result<snapshot::PrefoldedSpool, OpenError> {
+    if compact_identity_mode(request.identity_mode()) != identity_mode {
+        return Err(OpenError::Certification(
+            "spool prefold request identity mode disagrees with decoder mode".to_string(),
+        ));
+    }
+    let (game_id, raw_path, snapshot_dir, expected_len, expected_sha256) = request.into_parts();
+    let source_meta = source.metadata()?;
+    if !source_meta.file_type().is_file() || source_meta.file_type().is_symlink() {
+        return Err(OpenError::Certification(format!(
+            "opened raw H4CR source is not a regular file: {}",
+            raw_path.display()
+        )));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if source_meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(OpenError::Certification(format!(
+                "opened raw H4CR source is a reparse point: {}",
+                raw_path.display()
+            )));
+        }
+    }
     if source_meta.len() != expected_len {
         return Err(OpenError::Certification(format!(
             "raw H4CR spool length {} != authenticated source length {expected_len}",
             source_meta.len()
         )));
     }
-    let mut source = fs::File::open(&raw_path)?;
+    source.seek(SeekFrom::Start(0))?;
     let mut magic = [0u8; 4];
     source.read_exact(&mut magic)?;
     if magic != *compact_contract::COMPACT_RECORD_MAGIC {
@@ -1276,7 +1317,7 @@ pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
             raw_path.display()
         )));
     }
-    drop(source);
+    source.seek(SeekFrom::Start(0))?;
 
     let output_meta = fs::symlink_metadata(&snapshot_dir)?;
     if !output_meta.file_type().is_dir() || output_meta.file_type().is_symlink() {
@@ -1298,12 +1339,7 @@ pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
         stats,
         boundary_error,
         campaign_identity: _,
-    } = fold_compact_stream_file_identity_aware(
-        &raw_path,
-        &game_id,
-        &snapshot_dir,
-        identity_mode,
-    )?;
+    } = fold_compact_stream_file_identity_aware(source, &game_id, &snapshot_dir, identity_mode)?;
     strict_stream_certification_verdict(
         stats.stop_reason.as_deref(),
         stats.truncated_tail_bytes,
@@ -1318,9 +1354,7 @@ pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
             stats.stream_bytes, stats.decoded_sha256
         )));
     }
-    if stats.frame_end_records != stats.hours_emitted
-        || stats.hours_emitted != files.len() as u64
-    {
+    if stats.frame_end_records != stats.hours_emitted || stats.hours_emitted != files.len() as u64 {
         return Err(OpenError::Certification(format!(
             "closed-hour cardinality mismatch: {} FRAME_END record(s), {} WorldFold emission(s), {} spilled snapshot(s)",
             stats.frame_end_records,
@@ -1444,11 +1478,7 @@ pub fn fold_raw_h4cr_bytes_prefolded(
     raw_h4cr: Vec<u8>,
     game_id: impl Into<String>,
 ) -> Result<snapshot::PrefoldedReplay, OpenError> {
-    fold_raw_h4cr_bytes_prefolded_with_identity_mode(
-        raw_h4cr,
-        game_id,
-        StreamIdentityMode::Legacy,
-    )
+    fold_raw_h4cr_bytes_prefolded_with_identity_mode(raw_h4cr, game_id, StreamIdentityMode::Legacy)
 }
 
 /// [`fold_raw_h4cr_bytes_prefolded`] under an explicit, non-sniffed identity mode.
@@ -1498,10 +1528,7 @@ pub fn fold_raw_h4cr_bytes_prefolded_with_identity_mode(
     })
 }
 
-fn validate_prefold_cardinality(
-    cursor: &HourCursor,
-    folded_len: usize,
-) -> Result<(), OpenError> {
+fn validate_prefold_cardinality(cursor: &HourCursor, folded_len: usize) -> Result<(), OpenError> {
     let stats = cursor.stats();
     let folded_len = folded_len as u64;
     if stats.frame_end_records != stats.hours_emitted || stats.hours_emitted != folded_len {
@@ -2047,8 +2074,7 @@ impl HourCursor {
             && self.campaign_identity.is_none()
         {
             self.strict_validation_error = Some(
-                "IdentityV1 stream ended without an accepted sequence-zero CID1 header"
-                    .to_string(),
+                "IdentityV1 stream ended without an accepted sequence-zero CID1 header".to_string(),
             );
         }
         if self.strict_validation_error.is_none() {
@@ -2365,9 +2391,7 @@ impl StreamIndex {
     /// Parse an index previously produced by [`StreamIndex::to_json`].
     pub fn from_json(v: &serde_json::Value) -> Option<StreamIndex> {
         let index_schema = v.get("index_schema")?.as_str()?;
-        if index_schema != CERTIFIED_INDEX_SCHEMA
-            && index_schema != LEGACY_CERTIFIED_INDEX_SCHEMA
-        {
+        if index_schema != CERTIFIED_INDEX_SCHEMA && index_schema != LEGACY_CERTIFIED_INDEX_SCHEMA {
             return None;
         }
         let source_json = v.get("source")?;

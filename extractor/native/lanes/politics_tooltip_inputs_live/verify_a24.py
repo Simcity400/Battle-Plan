@@ -39,9 +39,24 @@ check(
 check("domain id exact", dossier["carrier"]["domain_id"] == 73)
 check("all six required line kinds", len(dossier["required_line_kinds"]) == 6)
 check(
-    "dossier records fail-closed pending activation",
+    "dossier records terminal fail-closed static disposition",
     dossier["status"]
-    == "STATIC_GRAPH_DETOURS_OWNER_CAPTURE_AND_REPLAY_BINDING_COMPLETE_LIVE_FIXTURE_PENDING_FAIL_CLOSED",
+    == "FINAL_STATIC_RE_EXHAUSTED_EXACT_SEMANTIC_PTI1_OBJECTS_ABSENT_OPTIONAL_DOMAIN_OMITTED_FAIL_CLOSED",
+)
+check(
+    "final exact-a729 trigger graph pinned",
+    dossier["final_static_closure"]["trigger_reason_manifest_sha256"]
+    == "378eba48ba1bffaec27c4c0f5bbac8be3a92f5f52031eb8965eaa8b7f36b2768",
+)
+check(
+    "final exact-a729 party graph pinned",
+    dossier["final_static_closure"]["party_source_manifest_sha256"]
+    == "b595f4b0ce20df02e2fa7fb2e39653cbfbad4e31ddcfa7bcd14887b3044ca9e4",
+)
+check(
+    "final exact-a729 modifier roster graph pinned",
+    dossier["final_static_closure"]["modifier_roster_manifest_sha256"]
+    == "a3b42976692f4f583ea8e4cd620020e4bfd83d9aadabaf87843209c80423f715",
 )
 
 lane_source = (LANE / "src/lib.rs").read_text(encoding="utf-8")
@@ -84,8 +99,9 @@ check(
     hook_source.count("PoliticsLineKind::") >= 6,
 )
 check(
-    "dossier records incomplete disabled native source",
-    dossier["live_producer_install"]["state"] == "IMPLEMENTED_FIXTURE_PENDING_DISABLED_FAIL_CLOSED",
+    "dossier records exhausted disabled native source",
+    dossier["live_producer_install"]["state"]
+    == "DIAGNOSTIC_DETOURS_IMPLEMENTED_FINAL_STATIC_RE_EXHAUSTED_TYPED_SEMANTIC_OBJECTS_ABSENT_DISABLED_FAIL_CLOSED",
 )
 
 workspace = (ROOT / "extractor/native/Cargo.toml").read_text(encoding="utf-8")
@@ -123,9 +139,7 @@ capture = json.loads(
     (LANE / "H_A24_CAPTURE_AUTOMATION_20260720.json").read_text(encoding="utf-8")
 )
 report = (LANE / "A24_RE_REPORT.md").read_text(encoding="utf-8")
-runner = (ROOT / "extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1").read_text(encoding="utf-8")
 scene_driver = (LANE / "capture_a24_autonomous_scenes.py").read_text(encoding="utf-8")
-scene_profile = json.loads((LANE / "A24_AUTONOMOUS_SCENES_1920X1080.json").read_text(encoding="utf-8"))
 admitter = (LANE / "verify_a24_autonomous_admission.py").read_text(encoding="utf-8")
 
 check("workspace member installed", "lanes/politics_tooltip_inputs_live" in workspace)
@@ -159,23 +173,25 @@ check("fail-closed game UI selector installed", "PoliticsTooltipSelection" in ga
 check("game UI forbids trigger inference", "never evaluates Clausewitz triggers" in game_ui)
 check("game UI A24 module exported", "pub mod politics_tooltips;" in game_ui_exports)
 check(
-    "capture automation pending and fail closed",
+    "legacy capture workflow remains fail closed",
     capture["status"] == "OWNER_CAPTURE_IMPLEMENTED_LIVE_FIXTURE_PENDING_FAIL_CLOSED",
 )
-check("capture matrix covers required taps", len(capture["required_taps"]) == 9)
 check(
-    "capture automation requires no current human input",
-    capture["human_input"]["required_now"] is False,
+    "legacy client driver requires explicit process-local opt in",
+    "BATTLE_PLAN_CLIENT_DRIVING_OPT_IN" in scene_driver
+    and "I_ACKNOWLEDGE_THIS_TOOL_WILL_CONTROL_HOI4" in scene_driver,
 )
-check("capture automation owns selected Present in process", "battle-plan_a24_capture_command_json" in collector_source)
-check("capture runner has no caller HarnessExe", "HarnessExe" not in runner)
-check("capture runner uses clean early launch", "--early-launch-exe" in runner and "--continuelastsave" in runner)
-check("capture runner binds central Release attestation", "Test-ProductionArtifactAttestation" in runner)
-check("scene profile has six exact families", len(scene_profile["scenes"]) == 6 and {row["line_kind"] for row in scene_profile["scenes"]} == set(dossier["required_line_kinds"]))
-check("scene driver is prompt free", "input(" not in scene_driver and "human_input_used" in scene_driver)
-check("scene driver uses physical UI actions", all(token in scene_driver for token in ("SetCursorPos", "mouse_event", "keybd_event")))
-check("scene driver seals in-process selected Present", "battle-plan_a24_capture_command_json" in scene_driver and '"operation": "seal"' in scene_driver)
-check("immutable admission covers exact taps", "REQUIRED_TAPS" in admitter and "PASS_IMMUTABLE_EXACT_A729_SIX_SURFACE_ADMISSION" in admitter)
+check(
+    "A24 requires no automated live capture",
+    dossier["retained_capture_disposition"]["automated_live_capture_required"] is False
+    and dossier["autonomous_acquisition"]["production_required"] is False,
+)
+check(
+    "immutable diagnostic covers exact taps without semantic admission",
+    "REQUIRED_TAPS" in admitter
+    and "PASS_IMMUTABLE_EXACT_A729_SIX_SURFACE_DIAGNOSTIC_ONLY" in admitter
+    and '"semantic_pti1_source_admitted": False' in admitter,
+)
 
 manifest_hash = "18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35"
 for address in dossier["producer_graph"]["function_addresses"]:
@@ -226,7 +242,7 @@ for artifact in artifact_manifest["artifacts"]:
 
 result = {
     "schema": "hoi4-extractor-a24-verification-v2",
-    "status": "PASS_STATIC_GRAPH_REPLAY_BINDING_LIVE_TAPS_PENDING_FAIL_CLOSED",
+    "status": "PASS_FINAL_STATIC_RE_EXHAUSTED_OPTIONAL_D73_OMITTED_FAIL_CLOSED",
     "checks_passed": sum(1 for row in checks if row["pass"]),
     "checks_total": len(checks),
     "checks": checks,

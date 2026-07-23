@@ -170,7 +170,9 @@ impl ZipArchive {
     /// every name. Supports Zip64 metadata; `read_entry` still enforces the
     /// in-RAM materialization cap.
     pub fn parse(data: Vec<u8>) -> Result<ZipArchive, ZipError> {
-        Self::parse_with_entry_limit(data, MAX_READER_ENTRIES)
+        let archive = Self::parse_with_entry_limit(data, MAX_READER_ENTRIES)?;
+        archive.validate_portable_paths(true)?;
+        Ok(archive)
     }
 
     /// Parse with a caller-specific entry ceiling applied before allocating the
@@ -343,12 +345,16 @@ impl ZipArchive {
                 lho32 as u64
             };
 
-            validate_path(&name)?;
+            // The container version lives inside manifest.json, so the low-level
+            // parse may enforce only the legacy-v1 grammar here. Container::open
+            // applies the v2 NFC/caseless policy after authenticating the
+            // manifest version. Generic ZipArchive::parse applies v2 above.
+            validate_path_legacy_v1(&name)?;
             if !seen.insert(name.clone()) {
                 return Err(ZipError::DuplicateName(name));
             }
             // case-insensitive collision (would clobber on Windows/macOS unpack)
-            if !seen_ci.insert(portable_path_key(&name)?) {
+            if !seen_ci.insert(legacy_path_key(&name)?) {
                 return Err(ZipError::DuplicateName(format!(
                     "{name} (case-insensitive)"
                 )));
@@ -390,6 +396,24 @@ impl ZipArchive {
             name_index,
             central_directory_off: cd_off,
         })
+    }
+
+    pub(crate) fn validate_portable_paths(&self, unicode_v2: bool) -> Result<(), ZipError> {
+        let mut collision_keys = HashSet::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let key = if unicode_v2 {
+                portable_path_key(&entry.name)?
+            } else {
+                legacy_path_key(&entry.name)?
+            };
+            if !collision_keys.insert(key) {
+                return Err(ZipError::DuplicateName(format!(
+                    "{} (portable path collision)",
+                    entry.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Exact-name lookup (deliberately NOT case-insensitive: case lookalikes are
@@ -756,6 +780,13 @@ impl ZipArchive {
                 got: out.len() as u64,
             });
         }
+        let crc32 = crc32fast::hash(&out);
+        if crc32 != e.crc32 {
+            return Err(ZipError::Unsupported(format!(
+                "entry {}: payload crc32 mismatch (derived {crc32:08x}, declared {:08x})",
+                e.name, e.crc32
+            )));
+        }
         Ok(out)
     }
 }
@@ -1032,6 +1063,16 @@ fn eocd_comment_ends_at_eof(data: &[u8], off: usize) -> bool {
 /// Path rules. Reject anything that could escape a payload root or collide on a
 /// real filesystem.
 pub fn validate_path(name: &str) -> Result<(), ZipError> {
+    validate_path_legacy_v1(name)?;
+    if name.nfc().ne(name.chars()) {
+        return Err(ZipError::BadPath(name.to_string()));
+    }
+    Ok(())
+}
+
+/// Historical container-v1 path grammar. V1 pre-dates the NFC/caseless-v2
+/// rule and therefore retains byte spelling plus ASCII-only case folding.
+pub(crate) fn validate_path_legacy_v1(name: &str) -> Result<(), ZipError> {
     let bad = |n: &str| Err(ZipError::BadPath(n.to_string()));
     if name.is_empty() {
         return bad(name);
@@ -1049,8 +1090,8 @@ pub fn validate_path(name: &str) -> Result<(), ZipError> {
     if name.contains(':') {
         return bad(name);
     }
-    if name.chars().any(char::is_control) || name.nfc().ne(name.chars()) {
-        return bad(name); // unstable/control-bearing filesystem identity
+    if name.chars().any(char::is_control) {
+        return bad(name);
     }
     for comp in name.split('/') {
         if comp == "." || comp == ".." {
@@ -1085,6 +1126,19 @@ pub(crate) fn validate_payload_path(name: &str) -> Result<(), ZipError> {
         Some(rest) if !rest.is_empty() => Ok(()),
         _ => Err(ZipError::BadPath(name.to_string())),
     }
+}
+
+pub(crate) fn validate_payload_path_legacy_v1(name: &str) -> Result<(), ZipError> {
+    validate_path_legacy_v1(name)?;
+    match name.strip_prefix("payload/") {
+        Some(rest) if !rest.is_empty() => Ok(()),
+        _ => Err(ZipError::BadPath(name.to_string())),
+    }
+}
+
+pub(crate) fn legacy_path_key(name: &str) -> Result<String, ZipError> {
+    validate_path_legacy_v1(name)?;
+    Ok(name.to_ascii_lowercase())
 }
 
 /// Filesystem collision key shared by the in-memory and streaming readers.
@@ -1162,6 +1216,11 @@ mod tests {
         assert!(validate_payload_path("other/g/index.json").is_err());
         assert!(validate_path("payload/g/trailing. ").is_err());
         assert!(validate_path("payload/g/cafe\u{301}.json").is_err());
+        assert!(validate_path_legacy_v1("payload/g/cafe\u{301}.json").is_ok());
+        assert_eq!(
+            legacy_path_key("payload/g/CAFE\u{301}.json").unwrap(),
+            "payload/g/cafe\u{301}.json"
+        );
         assert_eq!(
             portable_path_key("payload/g/CAF\u{c9}.json").unwrap(),
             portable_path_key("payload/g/caf\u{e9}.json").unwrap()

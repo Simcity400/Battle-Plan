@@ -140,7 +140,8 @@ pub use orders_group_manager::{
     ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY,
 };
 pub use army_battleplans::{
-    ArmyBattleplanGeometry, ArmyBattleplanOrderExact, ArmyBattleplanOrderKey, ArmyBattleplansView,
+    ArmyBattleplanGeometry, ArmyBattleplanOrderExact, ArmyBattleplanOrderKey,
+    ArmyBattleplanOwnerKey, ArmyBattleplanOwnerKind, ArmyBattleplansView,
 };
 pub use g2_engine_capture::{
     G2EnginePixelWitness, G2PostProcessBoundaryAuthentication, PackagedG2EngineCapture,
@@ -193,8 +194,11 @@ pub use world::{
     DynamicModifierContinuityExact, DynamicModifierInstanceExact,
     DynamicModifierLifecycleExact, DynamicModifierLifecycleExactView,
     DynamicModifierTransitionExact, DynamicModifierTransitionKindExact,
+    DeploymentConveyorRow, DeploymentEquipmentRow, DeploymentLineRow,
     EndedCombatRow, EquipmentAmount, EquipmentProductionLineRow, EquipmentStock,
     EquipmentVariantRow, FiredEventOptionTextContextRow, FiredEventRow, FiredEventsView,
+    FrdDirectTransitionAuthority, FrdDirectTransitionHistoryView, FrdDirectTransitionKind,
+    FrdDirectTransitionPhase, FrdDirectTransitionRow, FrdDirectTransitionSummary,
     FleetUnitRow, FocusView, ForeignHomebaseExactRow, ForeignHomebaseExactView,
     ForeignHomebaseIdentityExact, GarrisonReinforcementExactRow, HudSurfaceActivation,
     HudSurfaceActivationKind, HudSurfaceActivationRoot, HudSurfaceActivationView, IntelLevelRow,

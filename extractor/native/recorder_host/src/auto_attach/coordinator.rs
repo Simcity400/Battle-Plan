@@ -49,6 +49,20 @@ pub struct CoordinatorDeps {
     pub spawner: Box<dyn WorkerSpawner>,
 }
 
+/// User-visible lifecycle facts emitted only after their authoritative journal
+/// transition succeeds. Capture correctness never depends on a UI consumer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SupervisorEvent {
+    RecordingStarted { pid: u32, run_dir: PathBuf },
+    RecordingSucceeded { pid: u32, replay_path: PathBuf },
+    RecordingFailed {
+        pid: u32,
+        reason: ReasonCode,
+        detail: Option<String>,
+        run_dir: Option<PathBuf>,
+    },
+}
+
 pub struct Coordinator {
     config: CoordinatorConfig,
     deps: CoordinatorDeps,
@@ -58,6 +72,7 @@ pub struct Coordinator {
     last_reconcile_ms: Option<u64>,
     force_reconcile: bool,
     started: bool,
+    supervisor_events: Vec<SupervisorEvent>,
 }
 
 impl Drop for Coordinator {
@@ -87,11 +102,17 @@ impl Coordinator {
             last_reconcile_ms: None,
             force_reconcile: false,
             started: false,
+            supervisor_events: Vec::new(),
         })
     }
 
     pub fn registry(&self) -> &CandidateRegistry {
         &self.registry
+    }
+
+    /// Drain product-facing notifications after their transitions are durable.
+    pub fn drain_supervisor_events(&mut self) -> Vec<SupervisorEvent> {
+        std::mem::take(&mut self.supervisor_events)
     }
 
     /// Transfer every active candidate into explicit-stop ownership. Recording
@@ -735,6 +756,15 @@ impl Coordinator {
     ) -> Result<(), String> {
         let from = self.registry.advance(&key, next, now)?;
         self.journal_transition(key, Some(from), next, reason, detail)?;
+        if next == CandidateState::Recording && from != CandidateState::Recording {
+            if let Some(run_dir) = self.run_dir_for(key) {
+                self.supervisor_events
+                    .push(SupervisorEvent::RecordingStarted {
+                        pid: key.pid,
+                        run_dir,
+                    });
+            }
+        }
         Ok(())
     }
 
@@ -746,9 +776,14 @@ impl Coordinator {
             CandidateState::Complete,
             ReasonCode::ReplayComplete,
         );
-        rec.replay_path = Some(replay_path);
+        rec.replay_path = Some(replay_path.clone());
         rec.artifact_status = Some("verified".to_string());
         self.journal.append(rec)?;
+        self.supervisor_events
+            .push(SupervisorEvent::RecordingSucceeded {
+                pid: key.pid,
+                replay_path: PathBuf::from(replay_path),
+            });
         self.workers.remove(&key);
         Ok(())
     }
@@ -762,10 +797,29 @@ impl Coordinator {
     ) -> Result<(), String> {
         if let Some(from) = self.registry.fail(&key) {
             let _ = now;
-            self.journal_transition(key, Some(from), CandidateState::Failed, reason, detail)?;
+            self.journal_transition(
+                key,
+                Some(from),
+                CandidateState::Failed,
+                reason,
+                detail.clone(),
+            )?;
+            self.supervisor_events.push(SupervisorEvent::RecordingFailed {
+                pid: key.pid,
+                reason,
+                detail,
+                run_dir: self.run_dir_for(key),
+            });
         }
         self.workers.remove(&key);
         Ok(())
+    }
+
+    fn run_dir_for(&self, key: ProcessKey) -> Option<PathBuf> {
+        self.registry
+            .get(&key)
+            .and_then(|candidate| candidate.attempt_id.as_ref())
+            .map(|attempt_id| self.config.out_root.join(format!("run_{attempt_id}")))
     }
 
     fn base_record(
@@ -1240,6 +1294,16 @@ mod tests {
             state_of(&coord, ProcessKey::new(1000, 111)),
             Some(CandidateState::Complete)
         );
+        let events = coord.drain_supervisor_events();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                SupervisorEvent::RecordingStarted { pid: 1000, run_dir },
+                SupervisorEvent::RecordingSucceeded { pid: 1000, replay_path }
+            ] if run_dir.starts_with("out")
+                && run_dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with("run_"))
+                && replay_path == &PathBuf::from("out/replay.battleplan")
+        ));
         assert_eq!(*h.spawner.spawn_count.borrow(), 1, "exactly one injection");
         let _ = std::fs::remove_file(&h.journal_path);
     }
@@ -1510,6 +1574,16 @@ mod tests {
             1,
             "a failed attempt is never retried in-process"
         );
+        let events = coord.drain_supervisor_events();
+        assert!(matches!(
+            events.as_slice(),
+            [SupervisorEvent::RecordingFailed {
+                pid: 7000,
+                reason: ReasonCode::FinalizeVerifyFailed,
+                detail: Some(detail),
+                run_dir: Some(run_dir),
+            }] if detail == "hook rejected" && run_dir.starts_with("out")
+        ));
         // Even if it stays live and we keep stepping, no re-injection.
         run_steps(&mut coord, &h.clock, 12);
         assert_eq!(*h.spawner.spawn_count.borrow(), 1);

@@ -2,8 +2,8 @@
 > Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/country_economy_production_stockpile_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
 
 
-Lane-local production stack for country economy, production, fuel, and stockpile
-variant replay records.
+Lane-local production stack for country economy, production, deployment queues,
+fuel, and stockpile-variant replay records.
 
 > **Warning: `lane_proof` is a slice-only, non-certifying diagnostic.** It checks
 > the physical compact stream and the selected lane domains, but it does not bind
@@ -28,6 +28,11 @@ engine-maintained priority/order from `line+0x44`, `PLS1` runtime subtype,
 `PEF1` efficiency values, `PMI1` MIO identity, and `PCP1` completeness.
 Every present line-key join is bijective; older records may omit a successor
 segment and replay leaves then remain unobtained.
+
+The final D11 segment may be `PDQ1`: a self-sized wrapper around the strict
+deployment-queue v2 codec. Its country set is bijective with the admitted D11
+country set. Complete empty queues are measured `[]`; unreadable queues carry an
+explicit unknown row and never erase an earlier exact queue during folding.
 
 ## Validated roots used by the current compact path
 
@@ -55,6 +60,15 @@ the shared collector today, but this lane keeps its proof and decoder local.
 - `CCountry + 0x1580 -> CCountryFuelStatus*`
 - fuel status fields: current fuel `+0x08`, max fuel `+0x10`, gain base `+0x18`,
   fuel cost `+0x38`, all stored as signed `i64 / 32768`
+- `CCountry + 0x0F70 -> CDeploymentManager*`; exact manager vtable
+  `module+0x2949128`, owner backlink `+0x118`, and conveyor vector `+0x48`
+- exact type-64 conveyor vtable `module+0x29A9E18`, type-52 template vtable
+  `module+0x2938F70`, and type-63 line vtable `module+0x29A9DC0`
+- military-deployment object primary/secondary vtables
+  `module+0x29A9D38/+0x29A9D70`; serializer-owned equipment-variant vector
+  `+0x40` with `0x10` stride and signed `i64 / 100000` amounts; training and
+  max-training at `+0x60/+0x68`; manpower containers at `+0x70/+0x90`; maximum
+  manpower at `+0xB0`
 
 ## Compact domains
 
@@ -63,12 +77,25 @@ the shared collector today, but this lane keeps its proof and decoder local.
   queue rows, fixed scale `100000`; additive `PVJ1`, `PFR1`, `PPR1`, `PLS1`,
   `PEF1`, `PMI1`, and `PCP1` self-sized segments carry exact variant,
   requested-factory, priority/order, subtype, efficiency, line-owned MIO, and
-  vector-completeness state
+  vector-completeness state. Final `PDQ1` carries authenticated deployment queues
 - `37 stockpile_variant_defs`: stockpile-sourced variant catalog rows and module
   token children
 - `40 stockpile_variant_upgrades`: stockpile-sourced variant upgrade rows
 - `611 economy_production_gap_badges`: lane-local proof-only badges for remaining
   economy/production gaps. This is not a shared collector domain.
+
+## Completed deployment queues
+
+Deployment queues are no longer a remaining-gap badge. The collector reads the
+exact-a729 owner and serializer-backed fields into the strict v2 codec, appends a
+final `PDQ1` segment, and poisons the complete row on any unstable read, invalid
+vtable/type, duplicate global conveyor/line identity, or malformed token. The
+recorder fold enforces D11 elapsed/status/count/tag joins and publishes
+`countries.<TAG>.military.deployment_queue` plus the exact authority receipt.
+The typed replay model and UI selector preserve queue order and nullable leaves
+and reject invalid carriers as a whole. The historical save/rehost route remains
+admitted, and the v2 decoder retains strict v1 compatibility for non-null legacy
+carriers. Civil `construction_queue` is never substituted for deployment state.
 
 ## Remaining gap badges
 
@@ -81,13 +108,6 @@ surface. The lane-local `gap_report` proof fail-closes the remainder:
 - `resource_flows_shortages`: source-blocked. Save paths exist for
   `countries.<TAG>.resources.{produced,exported,to_export}`; state deposits are
   covered elsewhere and this lane must not duplicate market/trade ownership.
-- `deployment_queues`: carrier-complete/source-blocked. The strict v1 carrier in
-  `src/deployment_queue.rs` preserves exact type-64 conveyor and type-63 line
-  identities, nested ordering, type-70 equipment in transit, nullable progress,
-  and per-country complete/unknown witnesses. It rejects count, identity,
-  ordering, optional-field, and trailing-byte drift. The retained ten-save
-  `X4_DEPLOYMENT_QUEUES` corpus authenticates this save-neutral shape; live
-  emission remains fail-closed because no conveyor vector/root is validated.
 - `economy_law_derived_state`: owned-elsewhere badge. Law/idea identity belongs
   to characters/politics; this lane only owns numeric economy effects once rooted.
 - `trade_factory_impact`: owned-elsewhere badge. Market/trade owns contract-level
@@ -97,29 +117,9 @@ X4-P5 is promoted: `PMI1` now carries one exact assigned or proven-null MIO id
 for every admitted production-line key. Missing, unreadable, type-invalid,
 duplicate, or non-bijective input suppresses the entire segment.
 
-## Local commands
+## Central validation
 
-```powershell
-cargo test --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml
-cargo run --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml --bin lane_proof -- --stream extractor\native\runs\compact_production_live_speed5_v1\collector_stream.bin --manifest extractor\native\runs\compact_production_live_speed5_v1\native_session_manifest.json --replay extractor\native\runs\compact_production_live_speed5_v1\native_session.battleplan --out extractor\native\runs\country_economy_production_stockpile_live_20260701_v1\production_live_slice_proof.json --expected production_live
-cargo run --manifest-path extractor\native\lanes\country_economy_production_stockpile_live\Cargo.toml --bin gap_report -- --production-stream extractor\native\runs\compact_production_live_speed5_v1\collector_stream.bin --badge-stream-out extractor\native\runs\country_economy_production_stockpile_live_20260701_v2\gap_badges_stream.bin --out extractor\native\runs\country_economy_production_stockpile_live_20260701_v2\gap_badges.json
-```
-
-## Integration patch plan
-
-When the orchestrator grants a shared integration slot, move this lane from local,
-non-certifying slice proof to shared production by:
-
-1. keeping the existing collector domains `10`, `11`, `37`, and `40`;
-2. promoting the stricter lane gate checks into `recorder_host` compact coverage
-   for this domain group;
-3. requiring one data record per scheduled frame for the four lane domains;
-4. preserving `.battleplan` roles `collector_compact_stream` and
-   `recorder_manifest`;
-5. adding manifest counters for `stockpile_rows`, `military_line_rows`,
-   `naval_line_rows`, `construction_queue_rows`, `fuel_country_rows`,
-   `stockpile_variant_def_rows`, and `stockpile_variant_upgrade_rows`.
-
-The lane-local proof now badges every remaining gap. If an integration slot is
-granted later, implement only the proposed lane-owned aggregates and keep
-market/trade, characters/politics, state-detail, and unit-lane ownership intact.
+Run this lane only through the repository's centralized Rust validation runner;
+subagents must not invoke Cargo, builds, or tests directly. The root production
+pass selects the affected extractor packages, then runs the final all-workspace
+validation battery.

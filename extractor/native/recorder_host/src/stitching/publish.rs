@@ -6,19 +6,21 @@
 //! `{level:none}`), and publishes it **build-beside-then-atomic-rename**:
 //!
 //! 1. derive every container entry from ONE immutable plan (never file enumeration);
-//! 2. reference-validate each snapshot payload against the hash the plan recorded
-//!    (a payload that does not hash to its coverage disposition aborts before pack);
-//! 3. pack the container (v2 + `timeline_segments_v1`, STORE);
-//! 4. re-open the packed bytes and run full manifest / hash / reference validation
-//!    (`Container::from_bytes` + `verify_all` + stitched-index + graph checks)
-//!    BEFORE anything touches the destination;
-//! 5. write the bytes to a sibling temp file, fsync, then atomically rename over the
-//!    destination.
+//! 2. bind each snapshot/raw payload to a retained source handle and exact
+//!    length/SHA-256 receipt;
+//! 3. stream the container (v2 + `timeline_segments_v1`, STORE) directly into an
+//!    unpublished sibling temp, rechecking each source during that write;
+//! 4. re-open the exact temp handle and run bounded all-entry verification plus
+//!    stitched-index/graph checks BEFORE anything touches the destination;
+//! 5. atomically rename the exact verified temp handle over the destination;
+//!    no pathname reopen or payload-sized post-commit readback is required.
 //!
-//! Any failure at any phase leaves the prior published replay and all standalone /
+//! Any pre-commit failure leaves the prior published replay and all standalone /
 //! session inputs untouched, and removes the temp artifact — matching §7.4 and the
 //! §11 gate 10 crash-injection requirement. The plan/payload model is a pure input,
-//! so this is fully exercisable offline with synthetic segment fixtures.
+//! so this is fully exercisable offline with synthetic segment fixtures. The
+//! legacy in-memory publisher remains only as a small-fixture reference path;
+//! product callsites use the retained-source publisher.
 //!
 //! What this does NOT do (explicit later-lane interfaces): it does not itself run
 //! the per-segment folds, form segments from the live byte stream
@@ -27,18 +29,27 @@
 //! set and its spilled payloads exist.
 
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
+#[cfg(test)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use snapshot::container::{Container, ExpectedIdentity};
+#[cfg(test)]
 use snapshot::sha256::Sha256;
-use snapshot::{pack_with, PackEntry, PackIdentity, PackOptions};
+use snapshot::{
+    pack_ordered_streaming_to_writer_with_options, BorrowedPackEntry,
+    OrderedStreamingPackEntry, PackIdentity, PackOptions, VerifiedPackEntry,
+};
+#[cfg(test)]
+use snapshot::{pack_with, PackEntry};
 
 use super::{CoverageDisposition, PlannedSegment, RawSourceStorage, StitchedPlan};
 
 /// Supplies the exact retained payload bytes a stitched plan references. During live
 /// finalize the snapshots are the per-segment fold's spilled files and the raw
 /// sources are the retained compact streams; tests supply in-memory maps.
+#[cfg(test)]
 pub trait StitchedPayloadSource {
     /// Snapshot body bytes for one segment's hour. Must hash to the `sha256` the
     /// plan recorded for that hour (enforced by [`build_stitched_entries`]).
@@ -47,12 +58,41 @@ pub trait StitchedPayloadSource {
     fn raw_source_bytes(&self, source_path: &str) -> Result<Vec<u8>, String>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedPayloadReceipt {
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+/// Production payload seam. Implementations retain the authenticated source
+/// file/container handles and copy one requested payload at a time into an
+/// unpublished sink. No method returns the payload as a `Vec<u8>`.
+pub trait RetainedStitchedPayloadSource {
+    fn snapshot_receipt(
+        &self,
+        segment_id: u32,
+        hour_index: i64,
+    ) -> Result<VerifiedPayloadReceipt, String>;
+    fn copy_snapshot_to_unpublished(
+        &self,
+        segment_id: u32,
+        hour_index: i64,
+        writer: &mut dyn Write,
+    ) -> Result<VerifiedPayloadReceipt, String>;
+    fn raw_source_receipt(&self, source_path: &str) -> Result<VerifiedPayloadReceipt, String>;
+    fn copy_raw_source_to_unpublished(
+        &self,
+        source_path: &str,
+        writer: &mut dyn Write,
+    ) -> Result<VerifiedPayloadReceipt, String>;
+}
+
 /// Outcome of a successful publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishReport {
     pub published_path: PathBuf,
     pub container_bytes: usize,
-    /// SHA-256 re-read from the published destination after atomic replace.
+    /// SHA-256 bound to the exact retained temp handle before atomic promotion.
     pub container_sha256: String,
     /// Count of visible main-timeline snapshot hours in the published index.
     pub visible_snapshot_hours: usize,
@@ -102,6 +142,7 @@ fn pack_identity(plan: &StitchedPlan) -> PackIdentity {
 /// (`EmbeddedCampaign`) raw sources are packed; standalone sources are referenced by
 /// the segments graph but never embedded. Entries are sorted by path so the packed
 /// container is byte-deterministic (§8).
+#[cfg(test)]
 pub fn build_stitched_entries<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
@@ -215,6 +256,7 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
 /// Pack a plan into stitched container bytes and independently re-open + validate
 /// them (no destination is touched). This is the packing+validation core shared by
 /// the atomic publisher and its tests.
+#[cfg(test)]
 pub fn pack_and_validate<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
@@ -273,6 +315,385 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
     Ok((bytes, report))
 }
 
+#[derive(Clone)]
+enum RetainedSourceKey {
+    Snapshot { segment_id: u32, hour_index: i64 },
+    Raw { source_path: String },
+}
+
+enum PreparedRetainedEntry {
+    Memory {
+        path: String,
+        bytes: Vec<u8>,
+        role: &'static str,
+        hour_index: Option<i64>,
+    },
+    Source {
+        path: String,
+        source: RetainedSourceKey,
+        receipt: VerifiedPayloadReceipt,
+        role: &'static str,
+        hour_index: Option<i64>,
+    },
+}
+
+impl PreparedRetainedEntry {
+    fn path(&self) -> &str {
+        match self {
+            Self::Memory { path, .. } | Self::Source { path, .. } => path,
+        }
+    }
+}
+
+fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
+    plan: &StitchedPlan,
+    source: &S,
+) -> Result<Vec<PreparedRetainedEntry>, String> {
+    let game = plan.game_id.as_str();
+    let mut entries = plan
+        .to_container_files()
+        .into_iter()
+        .map(|file| PreparedRetainedEntry::Memory {
+            path: format!("payload/{game}/{}", file.rel_path),
+            bytes: file.bytes,
+            role: match file.role {
+                "index" => "index",
+                "segments" => "segments",
+                "segment_index" => "segment_index",
+                _ => "aux",
+            },
+            hour_index: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut raw_paths = std::collections::BTreeSet::new();
+    for segment in &plan.segments {
+        let raw = segment.input.raw_source.as_ref().ok_or_else(|| {
+            format!(
+                "segment {} has no raw-source ledger; cannot publish",
+                segment.segment_id
+            )
+        })?;
+        raw_paths.insert(raw.source_path.clone());
+    }
+    for source_path in raw_paths {
+        let descriptor = plan
+            .segments
+            .iter()
+            .find_map(|segment| {
+                segment
+                    .input
+                    .raw_source
+                    .as_ref()
+                    .filter(|raw| raw.source_path == source_path)
+            })
+            .ok_or_else(|| format!("no raw-source descriptor for {source_path}"))?;
+        if matches!(descriptor.storage, RawSourceStorage::Standalone) {
+            continue;
+        }
+        let receipt = source.raw_source_receipt(&source_path)?;
+        if receipt.sha256 != descriptor.stored_digest {
+            return Err(format!(
+                "raw source {source_path} receipt hashes {} != recorded {}",
+                receipt.sha256, descriptor.stored_digest
+            ));
+        }
+        entries.push(PreparedRetainedEntry::Source {
+            path: format!("payload/{game}/{source_path}"),
+            source: RetainedSourceKey::Raw { source_path },
+            receipt,
+            role: "raw_source",
+            hour_index: None,
+        });
+    }
+
+    for segment in &plan.segments {
+        for (hour_index, disposition) in &segment.input.coverage {
+            let CoverageDisposition::Snapshot { sha256 } = disposition else {
+                continue;
+            };
+            let receipt = source.snapshot_receipt(segment.segment_id, *hour_index)?;
+            if &receipt.sha256 != sha256 {
+                return Err(format!(
+                    "segment {} hour {hour_index} snapshot receipt hashes {} != recorded {sha256}",
+                    segment.segment_id, receipt.sha256
+                ));
+            }
+            entries.push(PreparedRetainedEntry::Source {
+                path: format!(
+                    "payload/{game}/{}",
+                    PlannedSegment::snapshot_file(segment.segment_id, *hour_index)
+                ),
+                source: RetainedSourceKey::Snapshot {
+                    segment_id: segment.segment_id,
+                    hour_index: *hour_index,
+                },
+                receipt,
+                role: "snapshot",
+                hour_index: Some(*hour_index),
+            });
+        }
+    }
+    entries.sort_by(|left, right| left.path().cmp(right.path()));
+    Ok(entries)
+}
+
+fn validate_stitched_container(
+    plan: &StitchedPlan,
+    container: &Container,
+) -> Result<usize, String> {
+    if !container.index().is_stitched() {
+        return Err("packed container is not a stitched (stitched-main-v1) index".to_string());
+    }
+    let graph = container
+        .segments()
+        .map_err(|error| format!("stitched container graph failed to parse: {error}"))?
+        .ok_or_else(|| "packed v2 container has no segments graph".to_string())?;
+    for (hour, file) in plan.visible_snapshot_files() {
+        let resolved = container
+            .index()
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.hour_index == Some(hour))
+            .ok_or_else(|| format!("visible hour {hour} missing from published index"))?;
+        if resolved.file != file {
+            return Err(format!(
+                "visible hour {hour} resolves to {} but the plan names {file}",
+                resolved.file
+            ));
+        }
+    }
+    Ok(graph.segments.len())
+}
+
+/// Bounded-memory production publication. Payloads are copied from retained
+/// sources directly into the unpublished sibling temp. The exact temp object is
+/// retained file-backed for semantic and all-entry streaming verification
+/// before that same handle is atomically promoted.
+pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
+    plan: &StitchedPlan,
+    source: &S,
+    dest: &Path,
+) -> Result<PublishReport, String> {
+    let entries = prepare_retained_entries(plan, source)?;
+    let parent = dest.parent().filter(|path| !path.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create output directory failed: {error}"))?;
+    }
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| "stitched publication destination has no file name".to_string())?;
+    let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(".")))
+        .map_err(|error| format!("anchor stitched output directory failed: {error}"))?;
+    let anchored_dest = canonical_parent.join(file_name);
+    reject_reparse_destination(&anchored_dest)?;
+    let destination_guard = RetainedPublishDirectory::open(&canonical_parent)?;
+    let (temp, mut file) = create_unique_sibling_temp(&anchored_dest)?;
+
+    let publish_result = (|| -> Result<PublishReport, String> {
+        let mut source_keys: Vec<(RetainedSourceKey, VerifiedPayloadReceipt)> = Vec::new();
+        let ordered = entries
+            .iter()
+            .map(|entry| match entry {
+                PreparedRetainedEntry::Memory {
+                    path,
+                    bytes,
+                    role,
+                    hour_index,
+                } => OrderedStreamingPackEntry::Borrowed(BorrowedPackEntry {
+                    path: path.clone(),
+                    bytes,
+                    role: *role,
+                    hour_index: *hour_index,
+                }),
+                PreparedRetainedEntry::Source {
+                    path,
+                    source,
+                    receipt,
+                    role,
+                    hour_index,
+                } => {
+                    let source_id = source_keys.len();
+                    source_keys.push((source.clone(), receipt.clone()));
+                    OrderedStreamingPackEntry::Verified(VerifiedPackEntry {
+                        path: path.clone(),
+                        source_id,
+                        expected_len: receipt.bytes,
+                        expected_sha256: receipt.sha256.clone(),
+                        role: *role,
+                        hour_index: *hour_index,
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        pack_ordered_streaming_to_writer_with_options(
+            &plan.game_id,
+            &ordered,
+            &pack_identity(plan),
+            false,
+            &stitched_pack_options(),
+            &mut file,
+            |source_id, writer| {
+                let (key, expected) = source_keys.get(source_id).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "stitched pack requested an unknown retained source",
+                    )
+                })?;
+                let actual = match key {
+                    RetainedSourceKey::Snapshot {
+                        segment_id,
+                        hour_index,
+                    } => source.copy_snapshot_to_unpublished(
+                        *segment_id,
+                        *hour_index,
+                        writer,
+                    ),
+                    RetainedSourceKey::Raw { source_path } => {
+                        source.copy_raw_source_to_unpublished(source_path, writer)
+                    }
+                }
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                if &actual != expected {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "retained source copy receipt changed during stitched pack",
+                    ));
+                }
+                Ok(())
+            },
+        )
+        .map_err(|error| format!("pack stitched container failed: {error}"))?;
+        file.flush().map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let verify_handle = file.try_clone().map_err(|error| error.to_string())?;
+        let (container, container_bytes, container_sha256) =
+            Container::open_strict_with_file_receipt_from_file(
+                verify_handle,
+                &ExpectedIdentity::default(),
+            )
+            .map_err(|error| format!("stitched temp failed to re-open: {error}"))?;
+        container
+            .verify_all_streaming()
+            .map_err(|error| format!("stitched temp payload verification failed: {error}"))?;
+        if container
+            .retained_file_receipt()
+            .map_err(|error| format!("receipt stitched temp after verify failed: {error}"))?
+            != (container_bytes, container_sha256.clone())
+        {
+            return Err("stitched temp changed during bounded verification".to_string());
+        }
+        let segments = validate_stitched_container(plan, &container)?;
+        Ok(PublishReport {
+            published_path: dest.to_path_buf(),
+            container_bytes: usize::try_from(container_bytes)
+                .map_err(|_| "stitched container length does not fit usize")?,
+            container_sha256,
+            visible_snapshot_hours: plan.visible_snapshot_files().len(),
+            segments,
+        })
+    })();
+    let report = match publish_result {
+        Ok(report) => report,
+        Err(error) => {
+            drop(file);
+            let cleanup = fs::remove_file(&temp);
+            return Err(with_cleanup_note(
+                format!("write stitched temp container failed: {error}"),
+                &temp,
+                cleanup,
+            ));
+        }
+    };
+    if let Err(error) =
+        atomic_replace_retained(&file, &temp, &anchored_dest, &destination_guard)
+    {
+        drop(file);
+        let cleanup = fs::remove_file(&temp);
+        return Err(with_cleanup_note(
+            format!("atomic publish (rename) failed: {error}"),
+            &temp,
+            cleanup,
+        ));
+    }
+    #[cfg(windows)]
+    file.sync_all()
+        .map_err(|error| format!("sync renamed stitched container failed: {error}"))?;
+    drop(file);
+    sync_published_parent(&anchored_dest)
+        .map_err(|error| format!("sync stitched publication directory failed: {error}"))?;
+    Ok(report)
+}
+
+struct RetainedPublishDirectory {
+    #[cfg(windows)]
+    _files: Vec<fs::File>,
+}
+
+impl RetainedPublishDirectory {
+    fn open(path: &Path) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+            use std::path::Component;
+
+            const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+            let mut current = PathBuf::new();
+            let mut files = Vec::new();
+            for component in path.components() {
+                current.push(component.as_os_str());
+                if matches!(component, Component::Prefix(_) | Component::RootDir) {
+                    continue;
+                }
+                let file = OpenOptions::new()
+                    .access_mode(FILE_READ_ATTRIBUTES)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(&current)
+                    .map_err(|error| {
+                        format!(
+                            "retain stitched output directory {} failed: {error}",
+                            current.display()
+                        )
+                    })?;
+                let metadata = file.metadata().map_err(|error| {
+                    format!(
+                        "inspect retained stitched directory {} failed: {error}",
+                        current.display()
+                    )
+                })?;
+                if !metadata.is_dir()
+                    || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                {
+                    return Err(format!(
+                        "stitched output directory component is not a regular no-follow directory: {}",
+                        current.display()
+                    ));
+                }
+                files.push(file);
+            }
+            if files.is_empty() {
+                return Err("stitched output directory may not be a filesystem root".into());
+            }
+            Ok(Self { _files: files })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = path;
+            Ok(Self {})
+        }
+    }
+}
+
 /// Publish a stitched plan to `dest` build-beside-then-atomic-rename (§7.4).
 ///
 /// The container is packed and fully re-validated in memory first; only then are the
@@ -280,6 +701,7 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
 /// Every pre-commit failure leaves the prior file untouched and removes the temp.
 /// After the atomic commit, the destination is re-opened and re-verified before a
 /// success report is returned.
+#[cfg(test)]
 pub fn publish_stitched_container<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
@@ -392,12 +814,40 @@ fn reject_reparse_destination(dest: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(not(windows))]
 fn create_unique_sibling_temp(dest: &Path) -> Result<(PathBuf, fs::File), String> {
     for attempt in 0..128u32 {
         let temp = sibling_temp_path(dest, attempt);
         match OpenOptions::new()
             .read(true)
             .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create unique stitched temp failed: {error}")),
+        }
+    }
+    Err("could not allocate a unique stitched temp after 128 attempts".into())
+}
+
+#[cfg(windows)]
+fn create_unique_sibling_temp(dest: &Path) -> Result<(PathBuf, fs::File), String> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const DELETE_ACCESS: u32 = 0x0001_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+    for attempt in 0..128u32 {
+        let temp = sibling_temp_path(dest, attempt);
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE_ACCESS)
+            .share_mode(FILE_SHARE_READ)
             .create_new(true)
             .open(&temp)
         {
@@ -416,13 +866,131 @@ fn sync_published_parent(dest: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn sync_published_parent(_dest: &Path) -> std::io::Result<()> {
-    // MoveFileExW below carries MOVEFILE_WRITE_THROUGH.
+    // The retained path flushes the renamed file handle immediately after its
+    // handle-based commit; the fixture-only legacy path uses MoveFileExW with
+    // WRITE_THROUGH.
     Ok(())
 }
 
 #[cfg(not(windows))]
 fn atomic_replace(temp: &Path, dest: &Path) -> std::io::Result<()> {
     fs::rename(temp, dest)
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_retained(
+    _verified_file: &fs::File,
+    _temp: &Path,
+    _dest: &Path,
+    _destination_guard: &RetainedPublishDirectory,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "exact retained-handle replacement is unavailable on this platform",
+    ))
+}
+
+#[cfg(windows)]
+fn atomic_replace_retained(
+    verified_file: &fs::File,
+    _temp: &Path,
+    dest: &Path,
+    _destination_guard: &RetainedPublishDirectory,
+) -> std::io::Result<()> {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileRenameInfo {
+        replace_if_exists: u32,
+        root_directory: *mut c_void,
+        file_name_length: u32,
+        file_name: [u16; 1],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut c_void,
+            information_class: i32,
+            information: *const c_void,
+            information_bytes: u32,
+        ) -> i32;
+    }
+
+    const FILE_RENAME_INFO_CLASS: i32 = 3;
+    // Use the canonical absolute destination that was anchored before the temp
+    // was created. The complete canonical directory chain remains open without
+    // delete sharing for this entire call, so the path cannot be rebound under
+    // the handle-based promotion. A null RootDirectory plus the full path is
+    // also the SetFileInformationByHandle contract used by the recorder's
+    // established verified-replay finalizer; the retained directory handles are
+    // identity guards, not rename-authority handles.
+    let wide = dest.as_os_str().encode_wide().collect::<Vec<_>>();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "atomic publish destination is empty or contains NUL",
+        ));
+    }
+    let name_bytes = wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "atomic publish destination is too long",
+            )
+        })?;
+    let info_bytes = std::mem::size_of::<FileRenameInfo>()
+        .checked_add((wide.len() - 1) * std::mem::size_of::<u16>())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "atomic publish rename buffer overflow",
+            )
+        })?;
+    let info_bytes_u32 = u32::try_from(info_bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "atomic publish rename buffer is too large",
+        )
+    })?;
+    let word_bytes = std::mem::size_of::<usize>();
+    let word_count = info_bytes
+        .checked_add(word_bytes - 1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "atomic publish rename allocation overflow",
+            )
+        })?
+        / word_bytes;
+    let mut storage = vec![0usize; word_count];
+    let info = storage.as_mut_ptr().cast::<FileRenameInfo>();
+    let ok = unsafe {
+        (*info).replace_if_exists = 1;
+        (*info).root_directory = std::ptr::null_mut();
+        (*info).file_name_length = name_bytes;
+        std::ptr::copy_nonoverlapping(
+            wide.as_ptr(),
+            (*info).file_name.as_mut_ptr(),
+            wide.len(),
+        );
+        SetFileInformationByHandle(
+            verified_file.as_raw_handle(),
+            FILE_RENAME_INFO_CLASS,
+            info.cast(),
+            info_bytes_u32,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -594,10 +1162,10 @@ mod tests {
             compatibility: CompatibilityResolution::Proven {
                 evidence_id: format!("compat-{play_order}"),
                 compatibility_class: "decoder-v1".into(),
-                build_exe_sha256: "build-a".into(),
+                build_exe_sha256: "ab".repeat(32),
                 modset_id: MODSET.into(),
                 schema_version: "1".into(),
-                static_catalog_digest: "catalog-a".into(),
+                static_catalog_digest: "cd".repeat(32),
             },
             transition_coverage: BTreeMap::new(),
             coverage,
@@ -626,10 +1194,10 @@ mod tests {
                 process_start_identity: format!("pid-{play_order}"),
                 epoch_token,
                 stream_major: 2,
-                build_exe_sha256: Some("build-a".into()),
+                build_exe_sha256: Some("ab".repeat(32)),
                 modset_id: Some(MODSET.into()),
                 schema_version: Some("1".into()),
-                static_catalog_digest: Some("catalog-a".into()),
+                static_catalog_digest: Some("cd".repeat(32)),
                 source_path: Some(source_path),
                 source_stored_digest: Some(source_digest.clone()),
                 source_decoded_digest: Some(source_digest),
@@ -693,6 +1261,106 @@ mod tests {
         }
     }
 
+    impl RetainedStitchedPayloadSource for MemorySource {
+        fn snapshot_receipt(
+            &self,
+            segment_id: u32,
+            hour_index: i64,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            let bytes = self
+                .snapshots
+                .get(&(segment_id, hour_index))
+                .ok_or_else(|| format!("no snapshot for segment {segment_id} hour {hour_index}"))?;
+            Ok(VerifiedPayloadReceipt {
+                bytes: bytes.len() as u64,
+                sha256: Sha256::hex(bytes),
+            })
+        }
+
+        fn copy_snapshot_to_unpublished(
+            &self,
+            segment_id: u32,
+            hour_index: i64,
+            writer: &mut dyn Write,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            let bytes = self
+                .snapshots
+                .get(&(segment_id, hour_index))
+                .ok_or_else(|| format!("no snapshot for segment {segment_id} hour {hour_index}"))?;
+            writer.write_all(bytes).map_err(|error| error.to_string())?;
+            self.snapshot_receipt(segment_id, hour_index)
+        }
+
+        fn raw_source_receipt(
+            &self,
+            source_path: &str,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            let bytes = self
+                .raw
+                .get(source_path)
+                .ok_or_else(|| format!("no raw source {source_path}"))?;
+            Ok(VerifiedPayloadReceipt {
+                bytes: bytes.len() as u64,
+                sha256: Sha256::hex(bytes),
+            })
+        }
+
+        fn copy_raw_source_to_unpublished(
+            &self,
+            source_path: &str,
+            writer: &mut dyn Write,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            let bytes = self
+                .raw
+                .get(source_path)
+                .ok_or_else(|| format!("no raw source {source_path}"))?;
+            writer.write_all(bytes).map_err(|error| error.to_string())?;
+            self.raw_source_receipt(source_path)
+        }
+    }
+
+    /// Supplies correct pre-pack receipts but changes snapshot bytes while the
+    /// unpublished container is being written. The verified writer must detect
+    /// the drift without ever replacing an existing destination.
+    struct DriftingRetainedSource(MemorySource);
+
+    impl RetainedStitchedPayloadSource for DriftingRetainedSource {
+        fn snapshot_receipt(
+            &self,
+            segment_id: u32,
+            hour_index: i64,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            self.0.snapshot_receipt(segment_id, hour_index)
+        }
+
+        fn copy_snapshot_to_unpublished(
+            &self,
+            segment_id: u32,
+            hour_index: i64,
+            writer: &mut dyn Write,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            writer
+                .write_all(b"payload-drifted-after-receipt")
+                .map_err(|error| error.to_string())?;
+            self.0.snapshot_receipt(segment_id, hour_index)
+        }
+
+        fn raw_source_receipt(
+            &self,
+            source_path: &str,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            self.0.raw_source_receipt(source_path)
+        }
+
+        fn copy_raw_source_to_unpublished(
+            &self,
+            source_path: &str,
+            writer: &mut dyn Write,
+        ) -> Result<VerifiedPayloadReceipt, String> {
+            self.0.copy_raw_source_to_unpublished(source_path, writer)
+        }
+    }
+
     struct TempDir(PathBuf);
     impl TempDir {
         fn new(tag: &str) -> TempDir {
@@ -718,6 +1386,7 @@ mod tests {
     /// The plan -> pack -> read round-trip on a multi-segment synthetic session:
     /// publish, then re-open the published file and confirm the main timeline,
     /// rollback retention, and integrity.
+    #[cfg(windows)]
     #[test]
     fn publishes_multi_segment_session_and_reopens() {
         let plan = rollback_plan();
@@ -725,7 +1394,7 @@ mod tests {
         let dir = TempDir::new("roundtrip");
         let dest = dir.0.join("replay.battleplan");
 
-        let report = publish_stitched_container(&plan, &source, &dest).unwrap();
+        let report = publish_stitched_container_retained(&plan, &source, &dest).unwrap();
         assert_eq!(report.published_path, dest);
         assert!(dest.exists());
         // main hours 0,1 from S0; hour 2 from the later branch S1; hour 3 abandoned.
@@ -769,6 +1438,80 @@ mod tests {
         container.verify_all().unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn retained_publication_is_byte_deterministic_and_leaves_no_temp() {
+        let plan = rollback_plan();
+        let source = MemorySource::for_plan(&plan);
+        let dir = TempDir::new("retained_roundtrip");
+        let first_path = dir.0.join("first.battleplan");
+        let second_path = dir.0.join("second.battleplan");
+
+        let first = publish_stitched_container_retained(&plan, &source, &first_path).unwrap();
+        let second = publish_stitched_container_retained(&plan, &source, &second_path).unwrap();
+        assert_eq!(first.container_sha256, second.container_sha256);
+        assert_eq!(first.container_bytes, second.container_bytes);
+        let (container, _, _) = Container::open_strict_with_file_receipt(
+            &first_path,
+            &ExpectedIdentity::default(),
+        )
+        .unwrap();
+        container.verify_all_streaming().unwrap();
+        assert!(container.index().is_stitched());
+        let leftovers = fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains("stitch-tmp"))
+            .collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "retained publication leaked temp files");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_source_drift_preserves_prior_replay_and_leaves_no_temp() {
+        let plan = rollback_plan();
+        let dir = TempDir::new("retained_drift");
+        let dest = dir.0.join("replay.battleplan");
+        let source = MemorySource::for_plan(&plan);
+        publish_stitched_container_retained(&plan, &source, &dest).unwrap();
+        let prior = fs::read(&dest).unwrap();
+
+        let drifting = DriftingRetainedSource(MemorySource::for_plan(&plan));
+        let error = publish_stitched_container_retained(&plan, &drifting, &dest).unwrap_err();
+        assert!(
+            error.contains("length") || error.contains("sha256") || error.contains("hash"),
+            "unexpected drift failure: {error}"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), prior, "prior replay was replaced");
+        let leftovers = fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains("stitch-tmp"))
+            .collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "retained failure leaked temp files");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn retained_publication_fails_closed_without_handle_replace() {
+        let plan = rollback_plan();
+        let source = MemorySource::for_plan(&plan);
+        let dir = TempDir::new("retained_unsupported");
+        let dest = dir.0.join("replay.battleplan");
+        fs::write(&dest, b"prior-replay-sentinel").unwrap();
+
+        let error = publish_stitched_container_retained(&plan, &source, &dest).unwrap_err();
+        assert!(error.contains("retained-handle replacement"), "{error}");
+        assert_eq!(fs::read(&dest).unwrap(), b"prior-replay-sentinel");
+        let leftovers = fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains("stitch-tmp"))
+            .collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "unsupported publication leaked temp files");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn atomic_publish_replaces_an_existing_verified_destination() {
         let plan = rollback_plan();
@@ -776,9 +1519,9 @@ mod tests {
         let dir = TempDir::new("replace_existing");
         let dest = dir.0.join("replay.battleplan");
 
-        publish_stitched_container(&plan, &source, &dest).unwrap();
+        publish_stitched_container_retained(&plan, &source, &dest).unwrap();
         let first = fs::read(&dest).unwrap();
-        publish_stitched_container(&plan, &source, &dest).unwrap();
+        publish_stitched_container_retained(&plan, &source, &dest).unwrap();
         let second = fs::read(&dest).unwrap();
         assert_eq!(second, first);
         assert!(Container::from_bytes(second, &ExpectedIdentity::default()).is_ok());
@@ -894,6 +1637,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn standalone_source_is_referenced_not_embedded() {
         // Finding 2: a standalone source must NOT be embedded — Container::from_bytes
@@ -904,7 +1648,7 @@ mod tests {
         let dir = TempDir::new("standalone");
         let dest = dir.0.join("replay.battleplan");
 
-        let report = publish_stitched_container(&plan, &source, &dest).unwrap();
+        let report = publish_stitched_container_retained(&plan, &source, &dest).unwrap();
         assert_eq!(report.segments, 1);
         assert_eq!(report.visible_snapshot_hours, 3);
 

@@ -4,8 +4,9 @@
 //! labels. Leader proximity remains a measured raw ordinal.
 
 use replay_core::{
-    ArmyBattleplanGeometry, ArmyBattleplanOrderExact, ArmyBattleplanOrderKey, ArmyBattleplansView,
-    ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView, ViewStatus, WorldFrame,
+    ArmyBattleplanOrderExact, ArmyBattleplanOrderKey, ArmyBattleplanOwnerKey,
+    ArmyBattleplanOwnerKind, ArmyBattleplansView, ArmyCohesionMode, ArmyExecutionMode,
+    ArmyOrdersGroupManagerView, ViewStatus, WorldFrame,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,9 +29,9 @@ pub struct ArmyOrdersGroupControls {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArmyBattleplanPanel {
     pub status: ViewStatus,
-    pub selected_army_id: Option<u32>,
+    pub selected_owner: Option<ArmyBattleplanOwnerKey>,
     /// A measured false is possible only with a complete manager census.
-    pub selected_army_present: Option<bool>,
+    pub selected_owner_present: Option<bool>,
     pub orders: Vec<ArmyBattleplanOrderExact>,
     pub selected_order: Option<ArmyBattleplanOrderExact>,
 }
@@ -44,13 +45,13 @@ pub fn bind_army_orders_group_controls(
 
 pub fn bind_army_battleplan_panel(
     frame: &WorldFrame,
-    selected_army_id: Option<u32>,
+    selected_owner: Option<ArmyBattleplanOwnerKey>,
     selected_order_key: Option<&ArmyBattleplanOrderKey>,
 ) -> ArmyBattleplanPanel {
     bind_battleplan_views(
         &frame.army_battleplans(),
         &frame.army_orders_group_manager(),
-        selected_army_id,
+        selected_owner,
         selected_order_key,
     )
 }
@@ -58,7 +59,7 @@ pub fn bind_army_battleplan_panel(
 fn bind_battleplan_views(
     battleplans: &ArmyBattleplansView,
     manager: &ArmyOrdersGroupManagerView,
-    selected_army_id: Option<u32>,
+    selected_owner: Option<ArmyBattleplanOwnerKey>,
     selected_order_key: Option<&ArmyBattleplanOrderKey>,
 ) -> ArmyBattleplanPanel {
     if battleplans.status != ViewStatus::Present
@@ -71,31 +72,36 @@ fn bind_battleplan_views(
             } else {
                 manager.status
             },
-            selected_army_id,
-            selected_army_present: None,
+            selected_owner,
+            selected_owner_present: None,
             orders: Vec::new(),
             selected_order: None,
         };
     }
-    let Some(army_id) = selected_army_id else {
+    let Some(owner) = selected_owner else {
         return ArmyBattleplanPanel {
             status: ViewStatus::Present,
-            selected_army_id: None,
-            selected_army_present: None,
+            selected_owner: None,
+            selected_owner_present: None,
             orders: Vec::new(),
             selected_order: None,
         };
     };
-    let army_present = manager.army(army_id).is_some();
+    let owner_present = match owner.kind {
+        ArmyBattleplanOwnerKind::Army => manager.army(owner.id).is_some(),
+        ArmyBattleplanOwnerKind::ArmyGroup => {
+            manager.owner_identities_complete && manager.has_army_group(owner.id)
+        }
+    };
     let orders = battleplans
-        .orders_for_army(army_id)
+        .orders_for_owner(owner)
         .cloned()
         .collect::<Vec<_>>();
     let selected_order = selected_order_key
-        .filter(|key| key.army_id == army_id)
+        .filter(|key| key.owner == owner)
         .and_then(|key| {
             battleplans.order(
-                key.army_id,
+                key.owner,
                 key.engine_order_instance_id,
                 key.generation,
             )
@@ -103,8 +109,8 @@ fn bind_battleplan_views(
         .cloned();
     ArmyBattleplanPanel {
         status: ViewStatus::Present,
-        selected_army_id: Some(army_id),
-        selected_army_present: Some(army_present),
+        selected_owner: Some(owner),
+        selected_owner_present: Some(owner_present),
         orders,
         selected_order,
     }
@@ -157,7 +163,9 @@ fn bind_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_core::{ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY};
+    use replay_core::{
+        ArmyBattleplanGeometry, ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY,
+    };
 
     fn manager(status: ViewStatus) -> ArmyOrdersGroupManagerView {
         ArmyOrdersGroupManagerView {
@@ -177,6 +185,8 @@ mod tests {
             } else {
                 Vec::new()
             },
+            army_group_ids: Vec::new(),
+            owner_identities_complete: status == ViewStatus::Present,
             diagnostic: None,
         }
     }
@@ -224,7 +234,10 @@ mod tests {
             orders: if status == ViewStatus::Present {
                 vec![ArmyBattleplanOrderExact {
                     key: ArmyBattleplanOrderKey {
-                        army_id: 17,
+                        owner: ArmyBattleplanOwnerKey {
+                            kind: ArmyBattleplanOwnerKind::Army,
+                            id: 17,
+                        },
                         engine_order_instance_id: 2025,
                         generation: 4,
                     },
@@ -244,18 +257,21 @@ mod tests {
     #[test]
     fn panel_binds_exact_selected_order_without_inventing_labels() {
         let key = ArmyBattleplanOrderKey {
-            army_id: 17,
+            owner: ArmyBattleplanOwnerKey {
+                kind: ArmyBattleplanOwnerKind::Army,
+                id: 17,
+            },
             engine_order_instance_id: 2025,
             generation: 4,
         };
         let panel = bind_battleplan_views(
             &battleplans(ViewStatus::Present),
             &manager(ViewStatus::Present),
-            Some(17),
+            Some(key.owner),
             Some(&key),
         );
         assert_eq!(panel.status, ViewStatus::Present);
-        assert_eq!(panel.selected_army_present, Some(true));
+        assert_eq!(panel.selected_owner_present, Some(true));
         assert_eq!(panel.orders.len(), 1);
         assert_eq!(panel.selected_order.unwrap().assigned_division_ids, vec![301, 205]);
     }
@@ -265,11 +281,14 @@ mod tests {
         let panel = bind_battleplan_views(
             &battleplans(ViewStatus::DomainUnavailable),
             &manager(ViewStatus::Present),
-            Some(17),
+            Some(ArmyBattleplanOwnerKey {
+                kind: ArmyBattleplanOwnerKind::Army,
+                id: 17,
+            }),
             None,
         );
         assert_eq!(panel.status, ViewStatus::DomainUnavailable);
-        assert_eq!(panel.selected_army_present, None);
+        assert_eq!(panel.selected_owner_present, None);
         assert!(panel.orders.is_empty());
     }
 }

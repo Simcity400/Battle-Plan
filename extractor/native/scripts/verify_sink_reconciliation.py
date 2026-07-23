@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import struct
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,12 @@ def sha256(path: Path) -> str:
 
 def is_hex64(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= HEX64
+
+
+def is_finite_number(value: Any) -> bool:
+    if type(value) is int:
+        return True
+    return type(value) is float and math.isfinite(value)
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -307,14 +314,54 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
     require(isinstance(host_write.get("max"), int), "host_sink_write_max_missing", problems)
     require(
         acceptance.get("sink_write_scope")
-        == "host StreamWriter::write_all calls over live named-pipe chunks",
+        == "recorder StreamWriter::write_all calls over the complete physical H4CR capture; capture-set scoped during rollover; buffered/compressed host-path diagnostic, not logical-stream collector sink latency",
         "host_sink_write_scope_invalid",
+        problems,
+    )
+    collector_write = acceptance.get("collector_sink_write_us")
+    collector_write = collector_write if isinstance(collector_write, dict) else {}
+    require(
+        collector_write.get("scope")
+        == "collector synchronous writes to the sole authoritative H4CR pipe sink, finalized by the in-band terminal latch record",
+        "collector_sink_write_scope_invalid",
+        problems,
+    )
+    collector_count = collector_write.get("count")
+    collector_p50 = collector_write.get("p50")
+    collector_p99 = collector_write.get("p99")
+    collector_max = collector_write.get("max")
+    require(type(collector_count) is int and collector_count > 0,
+            "collector_sink_time_samples_empty", problems)
+    require(type(collector_write.get("total")) is int
+            and collector_write["total"] >= 0,
+            "collector_sink_time_total_missing", problems)
+    require(is_finite_number(collector_write.get("avg"))
+            and collector_write["avg"] >= 0,
+            "collector_sink_time_average_missing", problems)
+    require(
+        all(type(value) is int and value >= 0
+            for value in (collector_p50, collector_p99, collector_max))
+        and collector_p50 <= collector_p99 <= collector_max,
+        "collector_sink_time_percentiles_invalid",
+        problems,
+    )
+    require(
+        type(collector_write.get("total")) is int
+        and type(collector_max) is int
+        and collector_max <= collector_write["total"],
+        "collector_sink_time_total_invalid",
         problems,
     )
     clock = acceptance.get("clock_skew")
     clock = clock if isinstance(clock, dict) else {}
     require(bool(clock), "clock_skew_unmeasured", problems)
     require(clock.get("wall_monotonic_ok") is True, "wall_clock_non_monotonic", problems)
+    require(
+        acceptance.get("clock_skew_scope")
+        == "complete physical H4CR capture; capture-set scoped during rollover",
+        "clock_skew_scope_invalid",
+        problems,
+    )
 
     lifecycle = acceptance.get("sink_lifecycle")
     lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
@@ -339,13 +386,19 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
 
     latch = nested(manifest, "compact_stream", "hour_latch")
     latch = latch if isinstance(latch, dict) else {}
-    collector_write = latch.get("sink_write_us")
-    collector_write = collector_write if isinstance(collector_write, dict) else {}
-    require(isinstance(collector_write.get("count"), int)
-            and collector_write["count"] > 0,
+    latch_collector_write = latch.get("sink_write_us")
+    latch_collector_write = latch_collector_write if isinstance(latch_collector_write, dict) else {}
+    require(isinstance(latch_collector_write.get("count"), int)
+            and latch_collector_write["count"] > 0,
             "collector_sink_time_samples_empty", problems)
-    require(collector_write.get("count") == lifecycle.get("write_finishes"),
+    require(latch_collector_write.get("count") == lifecycle.get("write_finishes"),
             "collector_sink_time_sample_count_mismatch", problems)
+    require(collector_write.get("count") == latch_collector_write.get("count")
+            and collector_write.get("total") == latch_collector_write.get("total")
+            and collector_write.get("p50") == latch_collector_write.get("p50")
+            and collector_write.get("p99") == latch_collector_write.get("p99")
+            and collector_write.get("max") == latch_collector_write.get("max"),
+            "acceptance_collector_sink_time_mismatch", problems)
     require(latch.get("terminal_proof_seen") is True, "terminal_latch_proof_missing", problems)
     require(latch.get("configured_sink_count") == 1, "configured_sink_not_one", problems)
     require(latch.get("pipe_sink_enabled") == 1, "pipe_sink_not_enabled", problems)

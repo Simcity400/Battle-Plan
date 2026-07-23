@@ -1,6 +1,11 @@
 # Production non-UI replay promotion
 
-Status: **PORTABLE REPLAY/VFS AND PRODUCT EXECUTOR PROMOTED; PIXELS WITH ABSENT AUTHENTICATED INPUTS OMITTED**
+Status: **IMPLEMENTED; 2026-07-19 PROMOTION RECEIPT HISTORICAL; CURRENT CENTRAL VALIDATION/REFREEZE PENDING**
+
+The promotion disposition and counts below describe the 2026-07-19 source set.
+They do not claim current PASS after the container, recording-open, prefold, and
+product-route changes. Missing runtime observations remain optional fail-closed
+feature-activation evidence and omit only their named pixels.
 
 Pinned target: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -67,7 +72,7 @@ The complete live-submit/d80 provenance table and negative-space discovery ledge
 
 The complete M02 thirteen-function provenance table is frozen in `replay_interface/documents/lane_reports/rendering_laws/M02.md` and its adjacent evidence manifest; the exact DLC precedence seventeen-function provenance table is frozen in `extractor/documents/dossiers/DLC_EFFECTIVE_PRECEDENCE_RE.md`. Those upstream tables record each function address, job ID, artifact path, artifact SHA-256, and manifest SHA-256; this packet references rather than abbreviates them.
 
-## Verification - replay-only refreeze 2026-07-19
+## Historical verification — replay-only refreeze 2026-07-19
 
 All checks used retained portable/fixture inputs. No extractor source/test, the game process, live capture, or adversarial review participated.
 
@@ -79,4 +84,4 @@ All checks used retained portable/fixture inputs. No extractor source/test, the 
 - A replay-side frozen semantic `production_map.province_raster` dimension gate was removed from both windowed and headless product execution. It had incorrectly suppressed unrelated M03/O04/runtime draws. Carried target/geometry/viewport/output descriptors are now authoritative; each operation still fails closed on every exact `UsedContentKey` it actually consumes.
 - No production consumer contains a frozen vanilla path, catalog, map dimension, or fallback asset default. Test-only logical paths remain fixtures, not product defaults.
 
-The machine-readable contract and twice-stable verifier receipts are frozen under `replay_interface/re_evidence/rendering_laws/PRODUCTION_NON_UI_PROMOTION/`. Producer completion and the first new populated end-to-end recording remain explicitly deferred to the extractor phase.
+The historical machine-readable contract and twice-stable verifier receipts remain under `replay_interface/re_evidence/rendering_laws/PRODUCTION_NON_UI_PROMOTION/`. They are not current freeze authority; current central validation and content-addressed refreeze are pending. Producer completion and a new populated end-to-end recording are optional acceptance evidence rather than a prerequisite for fail-closed base-product operation.

@@ -3731,6 +3731,8 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
             .expect_err("semantic levels cannot replace exact producer bytes");
         assert!(err.to_string().contains("no production render carrier"), "{err}");
 
+        drop(frame);
+        drop(timeline);
         std::fs::remove_dir_all(relocated_dir).expect("clean relocated replay fixture");
     }
 

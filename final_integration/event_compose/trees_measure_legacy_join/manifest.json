@@ -14,8 +14,8 @@
   },
   "artifacts": [
     {"path": "oracle.json", "bytes": 7593, "sha256": "02ee3217fe8e3f9308bebd95b9a6ae8b5c2ce10fd2f356e4df43744436115743"},
-    {"path": "verify_oracle.py", "bytes": 8944, "sha256": "2b20a3ca3042bfcb0595c63c2b34d709de607cc44246158145845c39cf5654b3"},
-    {"path": "verification.json", "bytes": 342, "sha256": "98087346a934cc23d464884ef60110c3186cea4b97e7efd21f9b63a2a55a4c69"},
+    {"path": "verify_oracle.py", "bytes": 9147, "sha256": "71e4a4e375dbecb493a3f90d421f91e951b69e5d3abe483c9e0b9b23f1cb4143"},
+    {"path": "verification.json", "bytes": 331, "sha256": "92a873c631d2e2b4efe97adff5354a503b9554be3651e394fd5c25070b157f9a"},
     {"path": "REPORT.md", "bytes": 3636, "sha256": "e53f8abb439234a5b5bce4387ba8320dfd72c69886c655e5bec82ec07e808f02"}
   ],
   "production_code_modified": false,

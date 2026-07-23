@@ -24,6 +24,21 @@ use std::sync::Arc;
 const COMPACT_STREAM_TIMELINE_FORMAT: &str = "hoi4_compact_stream_timeline_v1";
 /// Manifest-entry / timeline role of the raw compact domain stream.
 const COMPACT_STREAM_ROLE: &str = snapshot::COMPACT_STREAM_ROLE;
+/// Shipped-player compact expansion ceiling. Two GiB is intentionally aligned
+/// with the format's ordinary bounded-entry tier and is small enough for weak
+/// offline PCs to reject pathological recordings before reserving product
+/// spool storage. The streaming writer enforces this same limit again.
+pub const PRODUCT_COMPACT_STREAM_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+fn admit_product_compact_stream_bytes(bytes: u64) -> Result<(), SourceError> {
+    if bytes > PRODUCT_COMPACT_STREAM_MAX_BYTES {
+        return Err(SourceError::Unsupported(format!(
+            "compact replay expands to {bytes} bytes; shipped playback limit is {} bytes (2 GiB)",
+            PRODUCT_COMPACT_STREAM_MAX_BYTES
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecorderSessionBinding {
@@ -192,6 +207,15 @@ pub trait ReplaySource: Send + Sync {
     /// sources return `None`.
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
         None
+    }
+    /// Date metadata for one canonical hour, without decoding its frame body.
+    ///
+    /// Production sources answer this from their authenticated index or
+    /// prefold manifest. Backends that do not carry indexed dates return
+    /// `None`; callers must not force a frame load merely to populate
+    /// timeline navigation metadata.
+    fn date_at(&self, _hour_index: i64) -> Result<Option<String>, SourceError> {
+        Ok(None)
     }
     /// Raw snapshot frame for one canonical hour from [`ReplaySource::hours`].
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError>;
@@ -437,6 +461,7 @@ fn open_store_impl(
     validate_index_schema_version(index.schema_version.as_ref())?;
 
     let mut files_by_hour: BTreeMap<i64, String> = BTreeMap::new();
+    let mut dates_by_hour: BTreeMap<i64, Option<String>> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
     for entry in &index.snapshots {
         match entry.hour_index {
@@ -453,6 +478,7 @@ fn open_store_impl(
                     ));
                 } else {
                     files_by_hour.insert(hour, entry.file.clone());
+                    dates_by_hour.insert(hour, entry.date.clone());
                 }
             }
         }
@@ -475,6 +501,7 @@ fn open_store_impl(
         game_id,
         hours,
         files_by_hour,
+        dates_by_hour,
         warnings,
         recorder_binding: metadata.binding,
         design_catalog,
@@ -609,19 +636,13 @@ fn open_compact_stream_with_spooled_decoder(
         };
         validate_index_schema_version(declared_schema_version.as_ref())?;
         validate_compact_stream_entry_identity(&entry.path, &game_id, metadata.timeline.as_ref())?;
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&raw_path)
-            .map_err(|error| {
-                SourceError::Open(format!(
-                    "create private compact-stream spool {}: {error}",
-                    raw_path.display()
-                ))
-            })?;
-        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+        admit_product_compact_stream_bytes(entry.bytes)?;
         let receipt = container
-            .spool_entry_to_writer(&entry.path, &mut writer)
+            .spool_entry_to_file_transactionally_bounded(
+                &entry.path,
+                &raw_path,
+                PRODUCT_COMPACT_STREAM_MAX_BYTES,
+            )
             .map_err(|error| {
                 SourceError::Open(format!(
                     "authenticate compact stream role entry {:?} into private spool: {error}",
@@ -634,18 +655,6 @@ fn open_compact_stream_with_spooled_decoder(
                     .to_string(),
             ));
         }
-        writer.flush().map_err(|error| {
-            SourceError::Open(format!(
-                "flush private compact-stream spool {}: {error}",
-                raw_path.display()
-            ))
-        })?;
-        writer.get_ref().sync_all().map_err(|error| {
-            SourceError::Open(format!(
-                "sync private compact-stream spool {}: {error}",
-                raw_path.display()
-            ))
-        })?;
         receipt
     };
 
@@ -2145,6 +2154,9 @@ struct StoreSource {
     game_id: String,
     hours: Vec<i64>,
     files_by_hour: BTreeMap<i64, String>,
+    /// Authenticated index dates parallel to `files_by_hour`. A missing date
+    /// stays missing; reading navigation metadata never opens a frame body.
+    dates_by_hour: BTreeMap<i64, Option<String>>,
     warnings: Vec<String>,
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
@@ -2216,6 +2228,16 @@ impl ReplaySource for SpooledPrefoldedSource {
 
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
         Some(&self.prefold_receipt)
+    }
+
+    fn date_at(&self, hour_index: i64) -> Result<Option<String>, SourceError> {
+        let entry = self.spool.entry(hour_index).ok_or_else(|| {
+            SourceError::Open(format!(
+                "no spooled prefolded snapshot for hour_index {hour_index} in game {:?}",
+                self.game_id()
+            ))
+        })?;
+        Ok(Some(entry.date().to_string()))
     }
 
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
@@ -2302,6 +2324,16 @@ impl ReplaySource for PrefoldedSource {
         self.prefold_receipt.as_ref()
     }
 
+    fn date_at(&self, hour_index: i64) -> Result<Option<String>, SourceError> {
+        let entry = self.replay.entry(hour_index).ok_or_else(|| {
+            SourceError::Open(format!(
+                "no prefolded snapshot for hour_index {hour_index} in game {:?}",
+                self.game_id()
+            ))
+        })?;
+        Ok(entry.snapshot().date.clone())
+    }
+
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let entry = self.replay.entry(hour_index).ok_or_else(|| {
             SourceError::Open(format!(
@@ -2372,6 +2404,14 @@ impl ReplaySource for StoreSource {
     }
     fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
         self.decision_catalog.as_ref()
+    }
+    fn date_at(&self, hour_index: i64) -> Result<Option<String>, SourceError> {
+        self.dates_by_hour.get(&hour_index).cloned().ok_or_else(|| {
+            SourceError::Open(format!(
+                "no snapshot for hour_index {hour_index} in game {:?}",
+                self.game_id
+            ))
+        })
     }
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let file = self.files_by_hour.get(&hour_index).ok_or_else(|| {
@@ -2585,6 +2625,15 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn shipped_compact_stream_budget_is_closed_at_two_gibibytes() {
+        assert!(admit_product_compact_stream_bytes(PRODUCT_COMPACT_STREAM_MAX_BYTES).is_ok());
+        let error = admit_product_compact_stream_bytes(PRODUCT_COMPACT_STREAM_MAX_BYTES + 1)
+            .expect_err("one byte beyond the product budget must fail before spooling");
+        assert!(error.to_string().contains("2 GiB"));
+        assert!(PRODUCT_COMPACT_STREAM_MAX_BYTES < 64 * 1024 * 1024 * 1024);
     }
 
     #[test]
@@ -3397,15 +3446,6 @@ mod tests {
                     "snapshot/container.rs",
                     "let data = std::fs::read(path.as_ref())?;"
                 )
-                | ("snapshot/container.rs", "use std::path::Path;")
-                // String-only source-path canonicalization (stitching alias
-                // ledger): `components.join("/")` builds a normalized String for
-                // comparison — it is never opened. Slice/String join, not
-                // Path::join. (merge-wave: stitching + replay-loader F4 gate.)
-                | (
-                    "snapshot/container.rs",
-                    "let joined = components.join(\"/\");"
-                )
                 | ("snapshot/dir_store/linux.rs", "use std::fs::File;")
                 | ("snapshot/dir_store/linux.rs", "use std::path::Path;")
                 | (
@@ -3463,18 +3503,67 @@ mod tests {
                     "snapshot/stream_verify.rs",
                     "File::open(path).map_err(|e| format!(\"open container {}: {e}\", path.display()))?;"
                 )
-                // The file-backed container root open (2026-07-20): the one
-                // sanctioned caller-supplied pathname the product reader opens.
-                | ("snapshot/container.rs", "use std::fs::File;")
-                | (
-                    "snapshot/container.rs",
-                    "let file = File::open(path.as_ref())?;"
-                )
-                | (
-                    "snapshot/container.rs",
-                    "let mut file = File::open(path.as_ref())?;"
-                )
         )
+    }
+
+    /// Exact inventory for the hardened portable-container root and output
+    /// spool capabilities. The root reader lexically normalizes a caller path,
+    /// rejects non-local Windows roots, retains every component no-follow, and
+    /// denies delete rebinding. The spool sites create a private output file,
+    /// authenticate its retained handle, and publish that exact object with a
+    /// no-replace hard link. None is a manifest-selected descendant read.
+    ///
+    /// Keep every literal exact: a newly shaped open/join/push remains a gate
+    /// failure until its ownership and handle-identity contract is reviewed.
+    fn classified_snapshot_container_retained_io_site(module: &str, line: &str) -> bool {
+        module == "snapshot/container.rs"
+            && matches!(
+                line,
+                "use std::fs::{self, File, OpenOptions};"
+                    | "use std::path::{Path, PathBuf};"
+                    // String-only stitching alias canonicalization. This is
+                    // Slice/String::join, not a filesystem Path::join.
+                    | "let joined = components.join(\"/\");"
+                    // Retained, no-follow container-root open.
+                    | "use std::os::windows::fs::{MetadataExt, OpenOptionsExt};"
+                    | "use std::path::{Component, Prefix};"
+                    | "std::env::current_dir()?.join(path)"
+                    | "let mut absolute = PathBuf::from(&prefix);"
+                    | "absolute.push(\"\\\\\");"
+                    | "absolute.push(name);"
+                    | "let mut cursor = PathBuf::from(prefix);"
+                    | "cursor.push(\"\\\\\");"
+                    | "cursor.push(component.as_os_str());"
+                    | "let directory = OpenOptions::new()"
+                    | ".open(&cursor)?;"
+                    | "if !metadata.is_dir()"
+                    | "let file = OpenOptions::new()"
+                    | ".open(&absolute)?;"
+                    | "if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {"
+                    | "File::open(path)"
+                    // Authenticated transactional output-spool ownership and
+                    // identity checks. These paths originate from the product
+                    // spool owner, never from container manifest content.
+                    | "use std::path::Component;"
+                    | "std::env::current_dir()?.join(destination)"
+                    | "let mut current = PathBuf::new();"
+                    | "current.push(component.as_os_str());"
+                    | "let metadata = fs::symlink_metadata(&current)?;"
+                    | "if metadata.file_type().is_symlink() || !metadata.is_dir() {"
+                    | "use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};"
+                    | "let handle = OpenOptions::new()"
+                    | ".open(&current)?;"
+                    | "if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {"
+                    | "let temp = guard.parent.join(temp_name);"
+                    | "use std::os::windows::fs::OpenOptionsExt;"
+                    | "OpenOptions::new()"
+                    | ".open(path)"
+                    | "use std::os::unix::fs::MetadataExt;"
+                    | "if !metadata.is_file() {"
+                    | "fs::hard_link(&temp, &destination).map_err(|error| {"
+                    | "match fs::remove_file(&destination) {"
+                    | "let _ = fs::remove_file(&temp);"
+            )
     }
 
     /// Exact capability census for CID1 rollover descriptor discovery. These
@@ -3844,6 +3933,7 @@ mod tests {
             }
             candidates += 1;
             if classified_root_or_handle_site(module, line)
+                || classified_snapshot_container_retained_io_site(module, line)
                 || classified_rollover_descriptor_discovery_site(module, line)
                 || classified_rollover_retained_handle_site(module, line)
                 || classified_non_loader_site(module, line)
@@ -3881,7 +3971,7 @@ fn bad(root: &std::path::Path) {
     let _ = disk::read(root.join("aliased.json"));
 }
 "#;
-        let violations = loader_pathname_violations("snapshot/src/container.rs", planted);
+        let violations = loader_pathname_violations("snapshot/container.rs", planted);
         assert!(
             violations.iter().any(|site| site.contains("File::open")),
             "{violations:?}"

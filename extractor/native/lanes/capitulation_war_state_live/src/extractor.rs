@@ -1071,6 +1071,15 @@ mod tests {
         first_casualties: i32,
         second_casualties: i32,
     ) {
+        // H-B5 promotion made the complete CWarRelation identity part of the
+        // production admission law.  The authenticated row begins at
+        // object+0x10, so every otherwise-valid test fixture must also carry
+        // the exact object vtable immediately before the row.  Leaving this
+        // zeroed models a structurally stale cache entry, not a live war.
+        mem.write_u64(
+            row_addr - profile::DOMAIN60_WAR_OBJECT_TO_ROW as u64,
+            MODULE_BASE + profile::DOMAIN60_WAR_CWARRELATION_VTABLE_RVA as u64,
+        );
         let game_date_vtable = MODULE_BASE + profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA as u64;
         mem.write_u32(row_addr + profile::DOMAIN53_WAR_FIRST_TAG as u64, first);
         mem.write_u32(row_addr + profile::DOMAIN53_WAR_SECOND_TAG as u64, second);

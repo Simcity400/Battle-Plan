@@ -216,7 +216,7 @@ fn write_occupation_secondary_h2_evidence(
     Ok((receipt_path, payload_path))
 }
 
-fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
+pub(crate) fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
     if path.exists() {
         if std::fs::read(path)? == bytes {
             return Ok(());
@@ -1160,6 +1160,7 @@ mod tests {
                 .hour_index(),
             16_959_373
         );
+        drop(provider);
         std::fs::remove_dir_all(path.parent().expect("recording parent"))
             .expect("remove keying recording");
     }

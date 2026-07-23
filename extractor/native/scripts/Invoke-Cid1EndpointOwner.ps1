@@ -9,7 +9,7 @@ param(
     [string]$RakalyPath,
     [string]$RolloverSetDescriptorPath,
     [int]$LogicalStreamId = -1,
-    [string]$Python = 'C:\Program Files\Python311\python.exe'
+    [string]$Python = 'python.exe'
 )
 
 Set-StrictMode -Version Latest
@@ -29,7 +29,8 @@ function Write-CreateNewJson([string]$Path,$Value) {
     finally { if([IO.File]::Exists($temporary)){[IO.File]::Delete($temporary)} }
 }
 
-$pythonPath=(Resolve-Path -LiteralPath $Python).Path
+$pythonCommand=Get-Command $Python -ErrorAction Stop
+$pythonPath=[string]$pythonCommand.Source
 $collector=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'collect_campaign_identity_evidence.py')).Path
 $verifier=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'verify_campaign_identity_evidence.py')).Path
 $boundary=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'materialize_cid1_stream_boundary.py')).Path

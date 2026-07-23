@@ -37,9 +37,11 @@ pub mod zip;
 pub use container::{Container, ContainerError, ExpectedIdentity, SpoolEntryReceipt};
 pub use pack::{
     pack, pack_borrowed, pack_borrowed_to_writer, pack_borrowed_with, pack_borrowed_with_writer,
-    pack_mixed_to_writer, pack_streaming_to_writer, pack_streaming_zstd_to_writer,
+    pack_mixed_to_writer, pack_ordered_streaming_to_writer_with_options,
+    pack_streaming_to_writer, pack_streaming_zstd_to_writer,
     pack_streaming_zstd_to_writer_with_profile, pack_with, BorrowedPackEntry, CompressionProfile,
-    FileBackedPackEntry, PackEntry, PackError, PackIdentity, PackOptions, StreamingFileEntry,
+    FileBackedPackEntry, OrderedStreamingPackEntry, PackEntry, PackError, PackIdentity,
+    PackOptions, StreamingFileEntry, VerifiedPackEntry,
 };
 pub use prefolded::{
     PrefoldedHourEntry, PrefoldedHourIndex, PrefoldedReplay, PrefoldedReplayError,

@@ -49,7 +49,7 @@ session yields a fresh executable/mod/DLC/load binding, all seven artifacts rebu
 `unknown=0`, and that exact bundle passes pre-injection, capture, and pre-publication checks. No such
 live bundle or capture token exists yet.
 
-## 3. Save/campaign identity — OFFLINE CONTRACT PARTIAL; LIVE BINDING OPEN
+## 3. Save/campaign identity — LOCAL PRODUCTION ENABLED; CROSS-MACHINE M3 CLOSED
 
 The identity resolver, digest, strict manifest grammar, and explicit
 known/unavailable/ambiguous/conflict states are built. Hash-bound current-build serializer and
@@ -57,8 +57,7 @@ deserializer evidence for executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad` now proves
 `game_unique_seed` as signed `i32[CGameState+0x720]` and `game_unique_id` as the MSVC `std::string`
 object at `CGameState+0x728`; see
-[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). These are
-statically proven representations, not live-accepted offsets. The CID1 payload/parser and explicit
+[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). The CID1 payload/parser and explicit
 IdentityV1/Legacy stateful validator are offline-green. Shared CFA1 validates the exact complete
 record and enforces durable write → flush → sync receipt ordering. Recorder main now validates before
 dispatch, retains opaque `ValidatedCid1`, excludes CID1 from ordinary counts, and allows manifest
@@ -67,17 +66,17 @@ dispatch, retains opaque `ValidatedCid1`, excludes CID1 from ordinary counts, an
 Phase B is statically composed end to end: the collector owns the sequence-0/CFA1 barrier and
 authenticated `+0x720/+0x728` reader, the recorder owns durable CRP1/CRA1 logical-stream rotation
 and ordered package-set publication, and replay requires explicit member selection with exact
-descriptor/container joins. The normal product profile nevertheless remains Legacy because the
-recorder, collector, and two rollover live-evidence latches are all false. No production identity
-or stitching activation is authorized until the owner-run matrix passes.
+descriptor/container joins. The normal local product profile selects IdentityV1 and fails closed
+per session when exact-build/coherence/CFA1/rollover guards do not pass. Same-machine stitching is
+machine-scope bound. Cross-machine import/rehost remains disabled by the separate M3 capability
+latch.
 
-Activation requires the complete matrix: paused D04 must give two stable, same-hour exact matches to
-seed `1026046527` and UUID `a4b17fed-ed12-4361-9064-fb6576638110`; exact-save reload, older-lineage
-rollback, process relaunch, and renamed/copied-save arms must preserve the pair; two independently
-created otherwise-identical campaigns must differ, and switching measured campaigns in one process
-must change identity before any new world row; host/hotjoin, host/observer, and cross-machine rehost
-must preserve the pair. Unreadable/torn values, one-component conflict, whole-pair rollover, and
-digest-collision states remain fail-closed exactly as P3 defines them in the master contract.
+The passive conformance matrix records exact-save reload, older-lineage rollback, process relaunch,
+renamed/copied-save, independent-campaign, campaign-switch, host/hotjoin, and host/observer states
+only when the user reaches them. These receipts are never fabricated and do not drive HOI4.
+Unreadable/torn values, one-component conflict, whole-pair rollover, and digest-collision states
+remain fail-closed. M3 requires distinct physical-machine endpoint bundles before the
+cross-machine latch can be enabled.
 
 ## 4. Reload/relaunch stitching — PLANNER/FORMAT BUILT; PRODUCTION CALL SITE OPEN
 
@@ -93,8 +92,8 @@ digest-collision states remain fail-closed exactly as P3 defines them in the mas
   and integration tests exist. The production recorder still has no call site that performs
   pre-fold segmentation, fresh per-segment folds, durable append-ticket ordering, and atomic
   stitched publication across reload/relaunch.
-- Stitch activation is additionally blocked on the entire campaign-identity live matrix above; the
-  static member proof is not sufficient to join or supersede sessions.
+- Same-machine stitching consumes only placement-authoritative CID1 and a persisted machine-local
+  scope. Cross-machine stitching/import is unavailable until M3 enables its separate capability.
 - POLICY CONFIRMED BY OWNER 2026-07-12: whatever comes LATER (in wall-clock
   play order) supersedes whatever came prior on conflict. Canonical example
   (owner's, multiplayer): game crashes; the newest save anyone has is a month

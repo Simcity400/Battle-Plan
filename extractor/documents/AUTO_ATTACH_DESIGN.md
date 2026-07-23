@@ -1,10 +1,10 @@
 # Dual-order automatic attach design
 
-**Status (corrected 2026-07-19):** the auto-attach product code is merged — the `--auto-attach`
-supervisor entry (`run_auto_attach`) in `extractor/native/recorder_host/src/main.rs` wires the real
-Windows adapters over `recorder_host::auto_attach`, including `auto_attach/duplex_worker.rs` (duplex
-activation still hard-disabled). The prior "no product code exists yet" line was stale. The design
-content below is retained unchanged as the governing design.
+**Status (corrected 2026-07-22):** the auto-attach product code is merged. An ordinary no-argument
+launch of the packaged recorder opens its normal desktop window and owns the resident supervisor;
+`--auto-attach` remains the support/headless entry. The product has no tray process or service.
+Closing the window or pressing **Stop and finish recordings** enters coordinator-owned graceful
+shutdown. Duplex activation remains separately governed by P2.
 
 **Owner decision:** 2026-07-12. This implements pillar 1 of
 `PRODUCT_SESSION_SEMANTICS.md`: app-first and game-first must both attach without a
@@ -36,9 +36,10 @@ Ship one resident **auto-attach coordinator**:
 8. Attach every proven simultaneous the game process independently. Never choose one
    silently or merge output merely because hours/modsets match.
 
-The coordinator supervises one `collector_record` worker per game process. The GUI
-consumes structured events. Closing its window minimizes to tray; **Quit and stop
-recording** performs graceful stop/finalization.
+The coordinator supervises one `collector_record` worker per game process. It is
+started explicitly from the portable package; no installer-created sign-in task is
+assumed. Closing its normal window or pressing **Stop and finish recordings**
+performs graceful stop/finalization. There is no tray lifecycle.
 
 ## 2. Watcher: WMI plus bounded reconciliation
 
@@ -277,7 +278,7 @@ and preserves the prefix; never delete capture bytes to make room.
 
 ## 8. Loud failure and durable closure
 
-The tray/window shows global watcher state plus a card per process identity: current
+The window and durable journal expose global watcher state plus per-process identity state: current
 transition, exact reason, last confirmed hour, output path, and valid-prefix status.
 WMI+fallback failure, identity/modset ambiguity, privilege mismatch, payload/pipe/
 hook/handshake failure, pipe break while game lives, disk failure, pack/verify
@@ -365,12 +366,13 @@ The implementing lane should make these changes; this lane intentionally does no
 + Keep APIs local-machine-only; no network discovery or admin service.
 ```
 
-### Packaging/UI entry point (path not established in inspected tree)
+### Packaging/UI entry point
 
 ```diff
-+ Launch/reconnect to collector_record --auto-attach on app boot.
-+ Render structured states/reasons; minimize to tray on window close.
-+ Make explicit quit a stop-and-finalize operation.
++ Launch the resident supervisor from the recorder's ordinary no-argument entry.
++ Keep the normal desktop window open while watching/recording.
++ Make window close and the explicit stop button stop-and-finalize operations.
+- Do not install a tray icon, background service, sign-in task, or updater.
 - Remove PID/path/duration controls from normal product UI.
 ```
 
@@ -449,6 +451,6 @@ machines; do not label them acceptable until weaker-PC evidence is owner-approve
 ## 12. Explicit non-closures
 
 This design does not close campaign/save identity, cross-session stitching/rollback
-selection, the packaging/UI source path (not established in the inspected extractor
-tree), live WMI/multi-instance/crash-recovery/weaker-PC proof, or implementation of
-section 9. None may be reported built merely because this design specifies it.
+selection, or the live WMI/multi-instance/crash-recovery/weaker-PC proof. The
+packaging/UI implementation is now present, but none of those separate acceptance
+rows may be reported closed merely because this design specifies them.

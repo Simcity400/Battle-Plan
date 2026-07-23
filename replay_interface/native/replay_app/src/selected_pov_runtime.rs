@@ -22,6 +22,7 @@ use game_ui::decision_replay::{
     bind_decision_panel, decision_panel_snapshot_from_world, DecisionPanelBinding,
     DecisionStaticCatalog,
 };
+use game_ui::deployment_queue_state::{deployment_queue_state, AdmittedDeploymentQueue};
 use game_ui::event_chrome::{
     admit_event_history, event_definitions_by_id, load_events, AdmittedFiredEvent, EventDef,
     EventHistoryRequest,
@@ -41,7 +42,10 @@ use game_ui::loc::Localisation;
 use game_ui::text_law::RuntimeTextContext;
 use replay_core::agency_upgrade_controller::admit_agency_upgrade_controller_refresh;
 use replay_core::cipher_controller::admit_cipher_controller_refresh;
-use replay_core::{ArmyBattleplanOrderKey, Leaf, RuntimeTextCatalog, ViewStatus, WorldFrame};
+use replay_core::{
+    ArmyBattleplanOrderKey, ArmyBattleplanOwnerKey, ArmyBattleplanOwnerKind,
+    FrdDirectTransitionKind, Leaf, RuntimeTextCatalog, ViewStatus, WorldFrame,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureState<T> {
@@ -80,6 +84,18 @@ pub struct CipherControllerSummary {
     pub ordered_targets: Vec<String>,
 }
 
+/// Pointer-free X10 history state consumed by the existing selected-POV
+/// event/runtime surface. Counts remain in the engine's fixed kind order and
+/// the latest row keeps exact sequence/hour identity without cloning the
+/// cumulative history on every selected-Present refresh.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTransitionHistorySummary {
+    pub transition_count: usize,
+    pub kind_counts: [usize; 12],
+    pub last_sequence: Option<u64>,
+    pub last_event_hour_raw: Option<i32>,
+}
+
 /// Authenticated inputs that cannot be reconstructed from a replay frame.
 /// The product passes them only after its effective VFS/UI09 layers have
 /// admitted the same content identity. Decisions use the recorder-packaged
@@ -95,7 +111,7 @@ pub struct SelectedPovSupplementalInputs<'a> {
     pub decisions: Option<&'a DecisionStaticCatalog>,
     pub character: Option<(u32, &'a CharacterPresentationInput)>,
     pub peace: Option<&'a PeaceConferenceSnapshot>,
-    pub selected_army_id: Option<u32>,
+    pub selected_battleplan_owner: Option<ArmyBattleplanOwnerKey>,
     /// Stable replay identity selected by the product UI. A raw slot index or
     /// engine pointer is never accepted because either can alias after churn.
     pub selected_order_key: Option<&'a ArmyBattleplanOrderKey>,
@@ -117,10 +133,15 @@ pub struct SelectedPovRuntimeSnapshot {
     pub battleplan_panel: FeatureState<ArmyBattleplanPanel>,
     pub combat_detail: FeatureState<Xui20ReplayAdmission>,
     pub fired_events: FeatureState<Vec<AdmittedFiredEvent>>,
+    pub direct_transitions: FeatureState<DirectTransitionHistorySummary>,
     /// XUI15 typed classic-resource trade presentation. This is consumed on
     /// every selected-POV refresh; pixel composition remains separately gated
     /// on an authenticated trade-window activation/root binding.
     pub trade: FeatureState<AdmittedTradeScreen>,
+    /// Exact X4 ordered deployment hierarchy for the selected country. The
+    /// inner enum preserves domain absence, unobtained capture and measured
+    /// empty as three different presentation states.
+    pub deployment_queue: FeatureState<AdmittedDeploymentQueue>,
 }
 
 pub struct SelectedPovRuntime {
@@ -395,11 +416,13 @@ impl SelectedPovRuntime {
                 "XUI21 A25 runtime-text carrier is unavailable",
             ),
         };
+        let direct_transitions = admit_direct_transition_history(frame);
+        let deployment_queue = FeatureState::admitted(deployment_queue_state(frame, pov));
 
         let battleplan_panel = admit_battleplan_panel(
             bind_army_battleplan_panel(
                 frame,
-                supplemental.selected_army_id,
+                supplemental.selected_battleplan_owner,
                 supplemental.selected_order_key,
             ),
             supplemental.selected_order_key,
@@ -418,20 +441,75 @@ impl SelectedPovRuntime {
             peace_conference,
             orders_group: FeatureState::admitted(bind_army_orders_group_controls(
                 frame,
-                supplemental.selected_army_id,
+                supplemental.selected_battleplan_owner.and_then(|owner| {
+                    (owner.kind == ArmyBattleplanOwnerKind::Army).then_some(owner.id)
+                }),
             )),
             battleplan_panel,
             combat_detail: FeatureState::admitted(admit_xui20_replay(
                 &combat_detail_losses_from_frame(frame),
             )),
             fired_events,
+            direct_transitions,
             trade: FeatureState::admitted(admit_trade_screen(
                 frame.trade_status(),
                 pov,
                 frame.trade(pov),
             )),
+            deployment_queue,
         };
     }
+}
+
+fn admit_direct_transition_history(
+    frame: &WorldFrame,
+) -> FeatureState<DirectTransitionHistorySummary> {
+    admit_direct_transition_history_view(frame.frd_direct_transition_history())
+}
+
+fn admit_direct_transition_history_view(
+    history: &replay_core::FrdDirectTransitionHistoryView,
+) -> FeatureState<DirectTransitionHistorySummary> {
+    if history.status != ViewStatus::Present {
+        return FeatureState::unavailable(format!(
+            "X10 direct-transition history is not present: {:?}",
+            history.status
+        ));
+    }
+    let Some(authority) = history.authority.as_ref() else {
+        return FeatureState::unavailable(
+            "X10 direct-transition history omitted its typed authority",
+        );
+    };
+    if authority.evidence_fixture {
+        return FeatureState::unavailable(
+            "X10 evidence-fixture history is not admitted to product runtime",
+        );
+    }
+    let mut kind_counts = [0usize; 12];
+    for row in &history.transitions {
+        let index = match row.kind {
+            FrdDirectTransitionKind::FocusCompletion => 0,
+            FrdDirectTransitionKind::ResearchThresholdCrossing => 1,
+            FrdDirectTransitionKind::OrdinaryDecisionTaken => 2,
+            FrdDirectTransitionKind::TargetedDecisionTaken => 3,
+            FrdDirectTransitionKind::TimedDecisionActivated => 4,
+            FrdDirectTransitionKind::OnActionInvoked => 5,
+            FrdDirectTransitionKind::DecisionCancelEffectInvoked => 6,
+            FrdDirectTransitionKind::DecisionRemoveEffectInvoked => 7,
+            FrdDirectTransitionKind::DecisionTimeoutEffectInvoked => 8,
+            FrdDirectTransitionKind::TargetedDecisionCancelEffectInvoked => 9,
+            FrdDirectTransitionKind::TargetedDecisionRemoveEffectInvoked => 10,
+            FrdDirectTransitionKind::TargetedDecisionTimeoutEffectInvoked => 11,
+        };
+        kind_counts[index] = kind_counts[index].saturating_add(1);
+    }
+    FeatureState::admitted(DirectTransitionHistorySummary {
+        transition_count: history.transitions.len(),
+        kind_counts,
+        last_sequence: history.transitions.last().map(|row| row.sequence),
+        last_event_hour_raw: history.transitions.last().map(|row| row.event_hour_raw),
+    })
 }
 
 fn selected_designer(frame: &WorldFrame) -> FeatureState<AdmittedSelectedDesignerIdentity> {
@@ -450,18 +528,19 @@ fn admit_battleplan_panel(
             panel.status
         ));
     }
-    let Some(selected_army_id) = panel.selected_army_id else {
-        return FeatureState::unavailable("no exact army selection was supplied");
+    let Some(selected_owner) = panel.selected_owner else {
+        return FeatureState::unavailable("no exact battleplan owner selection was supplied");
     };
-    if panel.selected_army_present != Some(true) {
+    if panel.selected_owner_present != Some(true) {
         return FeatureState::unavailable(format!(
-            "selected army {selected_army_id} is not present in the complete d54 manager census"
+            "selected battleplan owner {:?}:{} is not present in the complete d54 manager census",
+            selected_owner.kind, selected_owner.id
         ));
     }
     if let Some(key) = selected_order_key {
-        if key.army_id != selected_army_id {
+        if key.owner != selected_owner {
             return FeatureState::unavailable(
-                "selected order identity belongs to a different selected army",
+                "selected order identity belongs to a different selected battleplan owner",
             );
         }
         if panel.selected_order.is_none() {
@@ -492,7 +571,9 @@ fn unavailable_snapshot(
         battleplan_panel: FeatureState::unavailable(reason),
         combat_detail: FeatureState::unavailable(reason),
         fired_events: FeatureState::unavailable(reason),
+        direct_transitions: FeatureState::unavailable(reason),
         trade: FeatureState::unavailable(reason),
+        deployment_queue: FeatureState::unavailable(reason),
     }
 }
 
@@ -518,21 +599,24 @@ mod tests {
             snapshot.battleplan_panel.unavailable_reason.as_deref(),
             snapshot.combat_detail.unavailable_reason.as_deref(),
             snapshot.fired_events.unavailable_reason.as_deref(),
+            snapshot.direct_transitions.unavailable_reason.as_deref(),
             snapshot.trade.unavailable_reason.as_deref(),
+            snapshot.deployment_queue.unavailable_reason.as_deref(),
         ] {
             assert_eq!(state, Some("no selected POV"));
         }
         assert!(snapshot.topbar.value.is_none());
         assert!(snapshot.combat_detail.value.is_none());
         assert!(snapshot.trade.value.is_none());
+        assert!(snapshot.deployment_queue.value.is_none());
     }
 
     #[test]
     fn battleplan_admission_rejects_missing_or_stale_exact_selection() {
         let no_army = ArmyBattleplanPanel {
             status: ViewStatus::Present,
-            selected_army_id: None,
-            selected_army_present: None,
+            selected_owner: None,
+            selected_owner_present: None,
             orders: Vec::new(),
             selected_order: None,
         };
@@ -540,18 +624,22 @@ mod tests {
             admit_battleplan_panel(no_army, None)
                 .unavailable_reason
                 .as_deref(),
-            Some("no exact army selection was supplied")
+            Some("no exact battleplan owner selection was supplied")
         );
 
+        let owner = ArmyBattleplanOwnerKey {
+            kind: ArmyBattleplanOwnerKind::Army,
+            id: 17,
+        };
         let key = ArmyBattleplanOrderKey {
-            army_id: 17,
+            owner,
             engine_order_instance_id: 2025,
             generation: 4,
         };
         let stale_order = ArmyBattleplanPanel {
             status: ViewStatus::Present,
-            selected_army_id: Some(17),
-            selected_army_present: Some(true),
+            selected_owner: Some(owner),
+            selected_owner_present: Some(true),
             orders: Vec::new(),
             selected_order: None,
         };
@@ -560,6 +648,73 @@ mod tests {
                 .unavailable_reason
                 .as_deref(),
             Some("selected order stable identity is absent from the exact d54 order census")
+        );
+    }
+
+    fn x10_history(evidence_fixture: bool) -> replay_core::FrdDirectTransitionHistoryView {
+        let row = replay_core::FrdDirectTransitionRow {
+            sequence: 9,
+            kind: replay_core::FrdDirectTransitionKind::OnActionInvoked,
+            phase: replay_core::FrdDirectTransitionPhase::Invocation,
+            thread_id: 7,
+            event_hour_raw: 60_787_539,
+            hook_rva: 0x00a6_aae0,
+            owner_instance_id: 1,
+            subject_instance_id: 2,
+            argument_instance_id: 0,
+            owner_key: 0,
+            subject_token_hash_fnv1a64: 3,
+            subject_key: 0,
+            input_bits: 0,
+            return_bits: 0,
+            before: replay_core::FrdDirectTransitionSummary {
+                state_bits: 0,
+                progress_raw: 0,
+                remaining_raw: 0,
+            },
+            after: replay_core::FrdDirectTransitionSummary {
+                state_bits: 2,
+                progress_raw: 0,
+                remaining_raw: 0,
+            },
+            original_returned: false,
+        };
+        replay_core::FrdDirectTransitionHistoryView {
+            status: ViewStatus::Present,
+            authority: Some(replay_core::FrdDirectTransitionAuthority {
+                schema_version: 3,
+                authority: "exact_a729_d45e_hook_epoch".into(),
+                executable_sha256: "test".into(),
+                legacy_root_manifest_sha256: "test".into(),
+                on_action_root_manifest_sha256: "test".into(),
+                terminal_root_manifest_sha256: "test".into(),
+                cluster_exhaustion_manifest_sha256: "test".into(),
+                hook_epoch: 1,
+                last_drain_sequence: 1,
+                installed_root_mask: (1 << 12) - 1,
+                observed_kind_mask: 1 << 5,
+                producer_complete: true,
+                evidence_fixture,
+                transitions: vec![row.clone()],
+            }),
+            transitions: vec![row],
+        }
+    }
+
+    #[test]
+    fn x10_history_feeds_runtime_summary_and_rejects_evidence_mode() {
+        let admitted = admit_direct_transition_history_view(&x10_history(false));
+        let summary = admitted.value.expect("production X10 summary");
+        assert_eq!(summary.transition_count, 1);
+        assert_eq!(summary.kind_counts[5], 1);
+        assert_eq!(summary.last_sequence, Some(9));
+        assert_eq!(summary.last_event_hour_raw, Some(60_787_539));
+
+        let evidence = admit_direct_transition_history_view(&x10_history(true));
+        assert!(evidence.value.is_none());
+        assert_eq!(
+            evidence.unavailable_reason.as_deref(),
+            Some("X10 evidence-fixture history is not admitted to product runtime")
         );
     }
 
@@ -583,11 +738,15 @@ mod tests {
         let battleplan_binding = selected_pov_impl
             .find("let battleplan_panel = admit_battleplan_panel(\n            bind_army_battleplan_panel(")
             .expect("d54 production battleplan binding");
+        let deployment_binding = selected_pov_impl
+            .find("let deployment_queue = FeatureState::admitted(deployment_queue_state(frame, pov));")
+            .expect("X4 production deployment-queue binding");
         let snapshot_publish = selected_pov_impl
             .find("self.snapshot = SelectedPovRuntimeSnapshot {")
             .expect("selected-POV typed snapshot publication");
         assert!(refresh < selected_present);
         assert!(battleplan_binding < snapshot_publish);
+        assert!(deployment_binding < snapshot_publish);
         assert!(refresh < decision_model);
         assert!(decision_model < selected_present);
         assert!(!product_source.contains("pub fn selected_pov_runtime("));

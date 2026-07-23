@@ -1,8 +1,8 @@
-//! Dormant exact-a729 acquisition owner for A31 national-focus presentation.
+//! Exact-a729 passive acquisition owner for A31 national-focus presentation.
 //!
-//! The hook set is deliberately fixture-only. It makes the previously abstract
-//! `ExactA729FocusObservationBoundary` reachable from the injected collector,
-//! while compact d89 remains reserved. A selected-Present transaction admits
+//! The same hook set serves the ordinary collector and optional fixture owner.
+//! It makes `ExactA729FocusObservationBoundary` reachable in-process. A
+//! selected-Present transaction admits
 //! only a completed update that happened before the selected Present's QPC
 //! frontier. Process pointers are never included in an admitted snapshot or
 //! evidence record.
@@ -65,10 +65,11 @@ pub const INLINE_INSTRUMENTATION_MANIFEST_SHA256: &str =
 pub const INLINE_INSTRUMENTATION_JOB_RECEIPT_SHA256: &str =
     "5c0dcd6032b2aa747ed02bec309c9c41d0697e445b46b86b91f9fb4132f5059a";
 
-/// A real observation fixture is still required before this owner may be
-/// selected by the production scheduler.
-pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = false;
-pub const COMPACT_DOMAIN_89_SCHEDULED: bool = false;
+/// The exact passive observer is admitted by executable identity, sentinels,
+/// complete callback witnesses and a selected-Present frontier. A missing
+/// refresh remains typed unavailable; fixture transitions are regression-only.
+pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = true;
+pub const COMPACT_DOMAIN_89_SCHEDULED: bool = true;
 
 const MAX_ITEMS: usize = 131_072;
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -410,6 +411,16 @@ pub fn arm_selected_present_epoch(
     Ok(generation)
 }
 
+/// Drop an unsealed epoch before re-arming for a new hour/country. No partial
+/// candidate is admitted, and no process-local identity escapes this reset.
+pub fn cancel_active_epoch() -> Result<(), String> {
+    let mut state = state().lock().map_err(|_| "A31 hook state poisoned")?;
+    state.active = None;
+    state.admitted = None;
+    state.fatal_error = None;
+    Ok(())
+}
+
 /// Exact internal-callsite instrumentation owned by the custom harness feeds
 /// the final `ESI -> EDX` value from `0x141bb636e` through this bounded join.
 /// A function-entry observation alone is deliberately insufficient.
@@ -616,6 +627,16 @@ pub fn install() -> Result<InstalledAddresses, String> {
     if !PRODUCTION_ACTIVATION_AUTHORIZED || !COMPACT_DOMAIN_89_SCHEDULED {
         return Err("A31 production hook activation is not authorized".into());
     }
+    install_hook_set()
+}
+
+pub fn install_production(
+    decoder: Arc<dyn ExactA729FocusLiveDecoder>,
+) -> Result<InstalledAddresses, String> {
+    if !PRODUCTION_ACTIVATION_AUTHORIZED || !COMPACT_DOMAIN_89_SCHEDULED {
+        return Err("A31 production hook activation is not authorized".into());
+    }
+    register_decoder(decoder)?;
     install_hook_set()
 }
 
@@ -1242,7 +1263,7 @@ pub fn assemble_process_observation(
 
 #[cfg(test)]
 mod frame_order_tests {
-    use super::consume_pending_dynamic_view;
+    use super::{cancel_active_epoch, consume_pending_dynamic_view, state};
 
     #[test]
     fn detail_refresh_requires_and_consumes_the_same_pending_view() {
@@ -1256,5 +1277,18 @@ mod frame_order_tests {
         assert!(consume_pending_dynamic_view(&mut pending, 0x2000));
         assert_eq!(pending, None);
         assert!(!consume_pending_dynamic_view(&mut pending, 0x2000));
+    }
+
+    #[test]
+    fn campaign_cancel_clears_unsealed_epoch_error_state() {
+        {
+            let mut state = state().lock().expect("A31 test state");
+            state.fatal_error = Some("old campaign".into());
+        }
+        cancel_active_epoch().expect("cancel old campaign epoch");
+        let state = state().lock().expect("A31 test state");
+        assert!(state.active.is_none());
+        assert!(state.admitted.is_none());
+        assert!(state.fatal_error.is_none());
     }
 }

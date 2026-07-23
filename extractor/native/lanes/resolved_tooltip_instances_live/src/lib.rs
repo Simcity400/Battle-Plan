@@ -1,4 +1,4 @@
-//! A26/XUI05 authenticated final-tooltip carrier (reserved d72).
+//! A26/XUI05 authenticated final-tooltip carrier (production d72).
 //!
 //! RenderDoc rectangles and OCR text remain validation oracles only. Production
 //! collection requires an authenticated a729 tooltip hook implementing the
@@ -14,6 +14,11 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"TTI2");
 pub const HEADER_LEN: usize = 96;
 pub const MAX_INSTANCES: usize = 4_096;
 pub const MAX_STRING_BYTES: usize = 65_536;
+/// The ordinary collector owns the exact-a729 hook lifecycle and emits a
+/// typed-unavailable TTI2 record whenever installation or selected-Present
+/// admission fails. A positive visibility fixture is regression evidence, not
+/// a prerequisite for using the already-authenticated passive observer.
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RectI32 {
@@ -117,6 +122,20 @@ pub fn collect_and_encode<S: ExactTooltipInstanceSource>(
 }
 
 pub fn validate_frame(frame: &TooltipTraceFrame) -> Result<(), TooltipTraceError> {
+    if frame.status_flags != 0 {
+        if frame.selected_present_candidate_id != 0
+            || frame.selected_present_ordinal != 0
+            || frame.selected_present_qpc_ticks != 0
+            || !frame.selected_present_receipt_sha256.is_empty()
+            || frame.producer_manifest_sha256 != [0; 32]
+            || !frame.completeness_record_identity.is_empty()
+            || frame.expected_instance_count != 0
+            || !frame.instances.is_empty()
+        {
+            return invalid("source-unavailable frame carries measured tooltip authority");
+        }
+        return Ok(());
+    }
     if frame.producer_manifest_sha256 == [0; 32] {
         return invalid("producer manifest hash is zero");
     }
@@ -194,8 +213,16 @@ pub fn encode_payload(frame: &TooltipTraceFrame) -> Result<Vec<u8>, TooltipTrace
     put_u32(&mut out, frame.expected_instance_count);
     put_u32(&mut out, frame.instances.len() as u32);
     put_u32(&mut out, HEADER_LEN as u32);
-    put_string(&mut out, &frame.selected_present_receipt_sha256, false)?;
-    put_string(&mut out, &frame.completeness_record_identity, false)?;
+    put_string(
+        &mut out,
+        &frame.selected_present_receipt_sha256,
+        frame.status_flags != 0,
+    )?;
+    put_string(
+        &mut out,
+        &frame.completeness_record_identity,
+        frame.status_flags != 0,
+    )?;
     for instance in &frame.instances {
         put_u64(&mut out, instance.frame_hour);
         put_string(&mut out, &instance.pov_country_or_global, false)?;
@@ -231,8 +258,8 @@ pub fn decode_payload(payload: &[u8]) -> Result<TooltipTraceFrame, TooltipTraceE
     if reader.u32()? as usize != HEADER_LEN || instance_count > MAX_INSTANCES {
         return invalid("header/count invalid");
     }
-    let selected_present_receipt_sha256 = reader.string(false)?;
-    let completeness_record_identity = reader.string(false)?;
+    let selected_present_receipt_sha256 = reader.string(true)?;
+    let completeness_record_identity = reader.string(true)?;
     let mut instances = Vec::with_capacity(instance_count);
     for _ in 0..instance_count {
         let instance_frame_hour = reader.u64()?;
@@ -315,12 +342,38 @@ pub(crate) fn validate_sha256_hex(
     Ok(())
 }
 
+/// Canonical fail-closed representation for a scheduled observer failure.
+/// This is not a measured-hidden tooltip and cannot be replayed as an empty
+/// instance set because all selected-Present and producer authority is absent.
+pub fn encode_source_unavailable(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+) -> Result<Vec<u8>, TooltipTraceError> {
+    if status_flags == 0 {
+        return invalid("source-unavailable frame requires nonzero status");
+    }
+    encode_payload(&TooltipTraceFrame {
+        elapsed_wall_ms,
+        status_flags,
+        frame_hour,
+        selected_present_candidate_id: 0,
+        selected_present_ordinal: 0,
+        selected_present_qpc_ticks: 0,
+        selected_present_receipt_sha256: String::new(),
+        producer_manifest_sha256: [0; 32],
+        completeness_record_identity: String::new(),
+        expected_instance_count: 0,
+        instances: Vec::new(),
+    })
+}
+
 pub fn valid_pov_country_or_global(value: &str) -> bool {
     value == "global"
         || (value.len() == 3
             && value
                 .bytes()
-                .all(|byte| byte.is_ascii_uppercase()))
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()))
 }
 
 fn validate_rect(rect: RectI32) -> Result<(), TooltipTraceError> {

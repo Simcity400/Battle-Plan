@@ -10,10 +10,12 @@ use capitulation_war_state_live as capwar60;
 use character_presentation_live_lane as character82;
 use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
+use country_economy_production_stockpile_live_lane as production11;
 use design_catalog_context_live_lane as design78;
 use design_catalog_context_live_lane::selected_designer_identity as selected85;
 use decision_panel_live_lane as decision87;
 use diplomacy_intel_operatives_live as diplomacy53;
+use dynamic_collection_trace_live_lane as dynamic71;
 use fired_event_popups_live_lane as fired75;
 use hub_motorization_live_lane as hub62;
 use hud_role_observer_live_lane as hud79;
@@ -123,7 +125,7 @@ pub(crate) fn a29_expected_source_record_sha256(
 pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89,
+    62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89,
     90, 91, 92, 93, 94, 95, 96,
 ];
 
@@ -557,6 +559,8 @@ pub const COMPACT_ARMY_ORDER_TARGET_ROW_LEN: usize = 8;
 pub const COMPACT_ARMY_ORDER_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES: u32 = 1 << 1;
 pub const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
+pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY: u32 = 0;
+pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY_GROUP: u32 = 1;
 pub const COMPACT_ARMY_ORDER_MAX_SLOT_INDEX: u32 = 64;
 pub const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = 65_535;
 pub const COMPACT_OOB_ROW_LEN: usize = 80;
@@ -1445,6 +1449,7 @@ fn decode_compact_production_trailers(
     let mut pmi_seen = false;
     let mut pcp_seen = false;
     let mut pcv_seen = false;
+    let mut pdq_seen = false;
     while trailer_offset < payload.len() {
         let Some(magic) = payload.get(trailer_offset..trailer_offset.saturating_add(4)) else {
             summary.parse_errors.push(format!(
@@ -1583,6 +1588,21 @@ fn decode_compact_production_trailers(
                 country_count,
                 summary,
             )
+        } else if magic == b"PDQ1" {
+            if pdq_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PDQ1 trailer"
+                ));
+                return;
+            }
+            pdq_seen = true;
+            decode_compact_deployment_queue_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                country_count,
+                summary,
+            )
         } else {
             summary.parse_errors.push(format!(
                 "offset {offset}: production trailing bytes are not a known D11 trailer"
@@ -1590,8 +1610,166 @@ fn decode_compact_production_trailers(
             return;
         };
         let Some(next) = next else { return };
+        if pdq_seen && next != payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PDQ1 must be the final D11 trailer"
+            ));
+            return;
+        }
         trailer_offset = next;
     }
+}
+
+fn decode_compact_deployment_queue_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_country_count: usize,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PDQ1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 trailer is truncated before its header"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let codec_payload_len = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let Some(expected) = HEADER_LEN.checked_add(codec_payload_len) else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 segment size overflows usize"
+        ));
+        return None;
+    };
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 header/count/length is invalid"
+        ));
+        return None;
+    }
+    let codec_payload = &trailer[HEADER_LEN..segment_len];
+    let frame = match production11::decode_deployment_queue_frame(codec_payload) {
+        Ok(frame) => frame,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PDQ1 deployment carrier is invalid: {error}"
+            ));
+            return None;
+        }
+    };
+    let codec_schema_version = read_u32_le(codec_payload, 20);
+    if codec_schema_version != production11::deployment_queue::DEPLOYMENT_QUEUE_SCHEMA_VERSION {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 requires deployment codec v{}, got v{codec_schema_version}",
+            production11::deployment_queue::DEPLOYMENT_QUEUE_SCHEMA_VERSION
+        ));
+    }
+    if frame.elapsed_wall_ms != read_u64_le(payload, 0) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 elapsed_wall_ms does not match D11"
+        ));
+    }
+    if frame.countries.len() != base_country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 country rows {} != D11 country_count {base_country_count}",
+            frame.countries.len()
+        ));
+    }
+    if frame.changed_country_rows as usize != base_country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 changed_country_rows {} != D11 country_count {base_country_count}",
+            frame.changed_country_rows
+        ));
+    }
+    let base_changed_country_rows = read_u32_le(payload, 12);
+    if frame.changed_country_rows != base_changed_country_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 changed_country_rows {} != D11 changed_rows {base_changed_country_rows}",
+            frame.changed_country_rows
+        ));
+    }
+    let base_status_flags = read_u32_le(payload, 16);
+    if frame.status_flags != base_status_flags {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 status_flags {:#x} != D11 status_flags {base_status_flags:#x}",
+            frame.status_flags
+        ));
+    }
+    let unknown_status = compact_contract::compact_status_unknown_flags_v1(frame.status_flags);
+    if unknown_status != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PDQ1 has unknown status flags {unknown_status:#x}"
+        ));
+    }
+    if compact_contract::compact_status_is_failure(frame.status_flags)
+        && frame.countries.iter().any(|country| country.queue_complete)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: failed PDQ1 carrier contains complete country queues"
+        ));
+    }
+    add_decoder_status(summary, frame.status_flags);
+    let complete_country_rows = frame
+        .countries
+        .iter()
+        .filter(|country| country.queue_complete)
+        .count();
+    let unknown_country_rows = frame.countries.len() - complete_country_rows;
+    let conveyor_rows = frame
+        .countries
+        .iter()
+        .map(|country| country.conveyors.len())
+        .sum::<usize>();
+    let line_rows = frame
+        .countries
+        .iter()
+        .flat_map(|country| country.conveyors.iter())
+        .map(|conveyor| conveyor.lines.len())
+        .sum::<usize>();
+    let equipment_rows = frame
+        .countries
+        .iter()
+        .flat_map(|country| country.conveyors.iter())
+        .flat_map(|conveyor| conveyor.lines.iter())
+        .map(|line| line.equipment_in_transit.len())
+        .sum::<usize>();
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "deployment_queue_country_rows",
+        frame.countries.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "deployment_queue_complete_country_rows",
+        complete_country_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "deployment_queue_unknown_country_rows",
+        unknown_country_rows,
+    );
+    add_compact_domain_data_unit(summary, 11, "deployment_queue_conveyor_rows", conveyor_rows);
+    add_compact_domain_data_unit(summary, 11, "deployment_queue_line_rows", line_rows);
+    add_compact_domain_data_unit(summary, 11, "deployment_queue_equipment_rows", equipment_rows);
+    Some(trailer_offset + segment_len)
 }
 
 fn decode_compact_production_mio_join_trailer(
@@ -5281,7 +5459,7 @@ fn decode_compact_army_orders_data_payload(
         let target_count = read_u32_le(payload, cursor + 28) as usize;
         let target_state_declared_count = read_u32_le(payload, cursor + 32) as usize;
         let target_status_code = read_u32_le(payload, cursor + 36);
-        let row_reserved0 = read_u32_le(payload, cursor + 40);
+        let owner_kind = read_u32_le(payload, cursor + 40);
         let row_reserved1 = read_u32_le(payload, cursor + 44);
         cursor += COMPACT_ARMY_ORDER_ROW_LEN;
 
@@ -5292,9 +5470,17 @@ fn decode_compact_army_orders_data_payload(
             summary.parse_errors.push(format!(
                 "offset {offset}: army order row {row_index} has invalid army_id {army_id}"
             ));
-        } else if !seen_orders.insert((army_id, generation, slot_index, deleted)) {
+        }
+        if !matches!(
+            owner_kind,
+            COMPACT_ARMY_ORDER_OWNER_KIND_ARMY | COMPACT_ARMY_ORDER_OWNER_KIND_ARMY_GROUP
+        ) {
             summary.parse_errors.push(format!(
-                "offset {offset}: army order row {row_index} duplicates army {army_id}:{generation}:{slot_index}"
+                "offset {offset}: army order row {row_index} has invalid owner_kind {owner_kind}"
+            ));
+        } else if !seen_orders.insert((owner_kind, army_id, generation, slot_index, deleted)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} duplicates typed owner {owner_kind}:{army_id}:{generation}:{slot_index}"
             ));
         }
         if flags
@@ -5367,7 +5553,7 @@ fn decode_compact_army_orders_data_payload(
                 "offset {offset}: army order row {row_index} has target_state_count without flag"
             ));
         }
-        if row_reserved0 != 0 || row_reserved1 != 0 {
+        if row_reserved1 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: army order row {row_index} reserved field is nonzero"
             ));
@@ -8165,6 +8351,114 @@ fn decode_compact_resolved_tooltip_instances_live_data_payload(
         "resolved_tooltip_final_blobs",
         final_blob_count,
     );
+}
+
+fn decode_compact_dynamic_collection_trace_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let Some(magic) = payload
+        .get(..4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_le_bytes)
+    else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain71 payload lacks a complete DCT1/TCV1 carrier discriminator"
+        ));
+        return;
+    };
+
+    if magic == dynamic71::MAGIC {
+        let frame = match dynamic71::decode_payload(payload) {
+            Ok(frame) => frame,
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: dynamic_collection_trace DCT1 payload invalid: {error:?}"
+                ));
+                return;
+            }
+        };
+        add_decoder_status(summary, frame.status_flags);
+        let collection_count = frame.collections.len();
+        let source_item_count = frame
+            .collections
+            .iter()
+            .map(|collection| collection.source_items.len())
+            .sum();
+        let ordered_item_count = frame
+            .collections
+            .iter()
+            .map(|collection| collection.ordered_item_ids.len())
+            .sum();
+        let group_count = frame
+            .collections
+            .iter()
+            .map(|collection| collection.group_boundaries.len())
+            .sum();
+        let materialized_slot_count = frame
+            .collections
+            .iter()
+            .map(|collection| collection.materialized_slots.len())
+            .sum();
+        if let Some(domain) = summary.per_domain.get_mut(&dynamic71::DOMAIN_ID) {
+            domain.status_flags_or |= frame.status_flags;
+            domain.data_rows_total = domain
+                .data_rows_total
+                .saturating_add(collection_count as u64);
+            domain.data_changed_rows_total = domain
+                .data_changed_rows_total
+                .saturating_add(collection_count as u64);
+        }
+        for (name, count) in [
+            ("dynamic_collection_trace_collections", collection_count),
+            ("dynamic_collection_trace_source_items", source_item_count),
+            ("dynamic_collection_trace_ordered_items", ordered_item_count),
+            ("dynamic_collection_trace_groups", group_count),
+            (
+                "dynamic_collection_trace_materialized_slots",
+                materialized_slot_count,
+            ),
+        ] {
+            add_compact_domain_data_unit(summary, dynamic71::DOMAIN_ID, name, count);
+        }
+        return;
+    }
+
+    if magic == dynamic71::a729_technology_canvas::MAGIC {
+        let frame = match dynamic71::a729_technology_canvas::decode_authenticated_payload(payload) {
+            Ok(frame) => frame,
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: technology_canvas TCV1 payload not admitted: {error:?}"
+                ));
+                return;
+            }
+        };
+        let source_item_count = frame.source_items.len();
+        let ordered_item_count = frame.final_draw_order.len();
+        let materialized_drawable_count = frame.materialized_drawables.len();
+        if let Some(domain) = summary.per_domain.get_mut(&dynamic71::DOMAIN_ID) {
+            domain.data_rows_total = domain.data_rows_total.saturating_add(1);
+            domain.data_changed_rows_total = domain.data_changed_rows_total.saturating_add(1);
+        }
+        for (name, count) in [
+            ("technology_canvas_frames", 1),
+            ("technology_canvas_source_items", source_item_count),
+            ("technology_canvas_ordered_items", ordered_item_count),
+            (
+                "technology_canvas_materialized_drawables",
+                materialized_drawable_count,
+            ),
+        ] {
+            add_compact_domain_data_unit(summary, dynamic71::DOMAIN_ID, name, count);
+        }
+        return;
+    }
+
+    summary.parse_errors.push(format!(
+        "offset {offset}: domain71 payload has an unknown DCT1/TCV1 carrier discriminator"
+    ));
 }
 
 fn decode_compact_hud_surface_activation_live_data_payload(
@@ -16434,6 +16728,13 @@ pub fn summarize_domain_data_payload(
         }
         COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE => {
             decode_compact_rail_replay_state_data_payload(offset, payload, &mut summary)
+        }
+        dynamic71::DOMAIN_ID => {
+            decode_compact_dynamic_collection_trace_live_data_payload(
+                offset,
+                payload,
+                &mut summary,
+            )
         }
         tooltip72::DOMAIN_ID => decode_compact_resolved_tooltip_instances_live_data_payload(
             offset,

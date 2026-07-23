@@ -1,10 +1,12 @@
 //! Signature-gated a729 scheduler and authenticated source for A24.
 //!
 //! The hook at the exact politics-entry refresh records the engine producer
-//! tuple. Producer taps submit only engine-evaluated rows associated with that
-//! tuple. A frame is visible through [`ExactPoliticsTooltipSource`] only after
-//! the scheduler seals it and proves all six required row families, exact
-//! count agreement, and one of the retained authenticated dispatch chains.
+//! tuple, while the remaining detours retain pointer-free observations of the
+//! exact UI/value producers. Those observations are diagnostic evidence, not
+//! PTI1 rows. A separate semantic producer must submit engine-evaluated rows
+//! associated with the tuple; a frame is visible through
+//! [`ExactPoliticsTooltipSource`] only after that producer seals all six row
+//! families, exact count agreement, and an authenticated dispatch chain.
 
 use crate::{
     validate_frame, ExactPoliticsTooltipSource, PoliticsLineKind, PoliticsTooltipFrame,
@@ -49,6 +51,10 @@ pub const COUNTRY_CAN_TAKE_IDEAS_RVA: u32 = 0x00B9_8A20;
 pub const BOOST_PARTY_WHY_TEXT_RVA: u32 = 0x0118_F860;
 pub const BOOST_PARTY_NAME_TEXT_RVA: u32 = 0x0061_6BC0;
 pub const MODIFIER_VALUE_LOOKUP_RVA: u32 = 0x0055_1820;
+// Exact return address immediately after 0x14054C770 calls 0x140551820.
+// Only that formatter callsite proves that lookup owner `a1` is a labelled
+// modifier-source node with its authored MSVC string at +0x48.
+const MODIFIER_SOURCE_LOOKUP_RETURN_RVA: u32 = 0x0054_C93B;
 pub const TOOLTIP_FORMATTER_CALLSITE_A_RVA: u32 = 0x0188_963C;
 pub const TOOLTIP_FORMATTER_CALLSITE_B_RVA: u32 = 0x0188_97B4;
 pub const TOOLTIP_DISPATCH_CHAIN_TAIL: [u32; 5] = [
@@ -117,9 +123,11 @@ const ALL_HOOK_RVAS: [u32; 23] = [
     IDEA_ICON_AND_MODIFIER_BIND_RVA,
     MODIFIER_VALUE_LOOKUP_RVA,
 ];
-/// Set only when every required same-thread entry/return producer tap is
-/// implemented. This remains false in production; unit tests exercise the
-/// downstream sealing logic through the private atomic below.
+/// Set only after the exact detours are accompanied by a production semantic
+/// row producer which calls the frame/batch/seal path below. The detours alone
+/// cannot reconstruct typed reason trees, source-term lists, or complete target
+/// rosters from final localized strings, so this remains false in production.
+/// Unit tests exercise the downstream sealing logic through the private atomic.
 pub const LIVE_PRODUCER_TAPS_COMPLETE: bool = false;
 const MAX_RECENT_TUPLES: usize = 262_144;
 const MAX_SEALED_FRAMES: usize = 8;
@@ -130,9 +138,13 @@ type TapFn2 = unsafe extern "system" fn(usize, usize) -> usize;
 type TapFn3 = unsafe extern "system" fn(usize, usize, usize) -> usize;
 type TapFn4 = unsafe extern "system" fn(usize, usize, usize, usize) -> usize;
 type TapFn5 = unsafe extern "system" fn(usize, usize, usize, usize, usize) -> usize;
+type TapFn2U32 = unsafe extern "system" fn(usize, usize) -> u32;
+type TapFn2U8 = unsafe extern "system" fn(usize, usize) -> u8;
+type TapFn3U8 = unsafe extern "system" fn(usize, usize, usize) -> u8;
+type TapFn3U32Arg = unsafe extern "system" fn(usize, usize, u32) -> usize;
 type VoidTapFn1 = unsafe extern "system" fn(usize);
-type VoidTapFn2 = unsafe extern "system" fn(usize, usize);
-type VoidTapFn3 = unsafe extern "system" fn(usize, usize, usize);
+type VoidTapFn2U8 = unsafe extern "system" fn(usize, u8);
+type VoidTapFn3U8 = unsafe extern "system" fn(usize, usize, u8);
 
 static ORIGINAL_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ADVISOR_COMPACT_COST: AtomicUsize = AtomicUsize::new(0);
@@ -911,7 +923,7 @@ fn begin_tap(kind: A24ProducerTapKind, owner: usize) -> OpenTap {
         entry_qpc_ticks: recording.then(query_performance_counter).flatten(),
         stack_rvas: recording.then(capture_stack_rvas).unwrap_or_default(),
         engine_target_identity: recording
-            .then(|| capture_engine_target_identity(owner))
+            .then(|| capture_engine_target_identity(kind, owner))
             .flatten(),
     }
 }
@@ -996,23 +1008,43 @@ fn capture_stack_rvas() -> Vec<u32> {
         .collect()
 }
 
-fn capture_engine_target_identity(owner: usize) -> Option<String> {
-    let direct = owner.checked_add(0x40).and_then(read_engine_string);
-    if direct.is_some() {
-        return direct;
-    }
-    for pointer_offset in [0x18usize, 0x20, 0x28, 0x30, 0x518] {
-        let Some(pointer_address) = owner.checked_add(pointer_offset) else {
-            continue;
-        };
-        let Some(pointer) = read_usize(pointer_address) else {
-            continue;
-        };
-        if let Some(value) = pointer.checked_add(0x40).and_then(read_engine_string) {
-            return Some(value);
+fn capture_engine_target_identity(kind: A24ProducerTapKind, owner: usize) -> Option<String> {
+    // Do not probe a menu of plausible offsets here. A coincidental valid
+    // `std::string` would fabricate a durable target identity. These are the
+    // only target paths proven by the retained exact-a729 producer exports:
+    //
+    // * 0x141C33FE0: entry+0x30 is CIdea; and 0x141C2B640 /
+    //   0x141C302E0: owner+0x18 is CIdea. CIdea+0x40 is the authored idea
+    //   identity (`+0x50` length, `+0x58` capacity).
+    // * 0x140FBEB00 / 0x140FBEA50 receive CIdea directly; 0x140B9C980
+    //   receives CIdea as its second argument.
+    // * 0x141C6AA70 -> 0x140616BC0: owner+0x518 reaches the selected-party
+    //   holder, holder+0x18 is the ideology object, and ideology+0x18 is the
+    //   identity string consumed by the exact name producer.
+    //
+    // Every other tap remains explicitly identity-unavailable until its own
+    // object path is proven. Final resolved text/raw values are still retained;
+    // no unproven identity is substituted for them.
+    match kind {
+        A24ProducerTapKind::PoliticsEntryRefresh => read_usize(owner.checked_add(0x30)?)?
+            .checked_add(0x40)
+            .and_then(read_engine_string),
+        A24ProducerTapKind::ActiveIdeaTooltip
+        | A24ProducerTapKind::PoliticalIdeaTooltip => read_usize(owner.checked_add(0x18)?)?
+            .checked_add(0x40)
+            .and_then(read_engine_string),
+        A24ProducerTapKind::IdeaAvailability
+        | A24ProducerTapKind::AllowedToRemove
+        | A24ProducerTapKind::TimedIdeaRemainingDays => owner
+            .checked_add(0x40)
+            .and_then(read_engine_string),
+        A24ProducerTapKind::BoostPartyTooltip => {
+            let holder = read_usize(owner.checked_add(0x518)?)?;
+            let ideology = read_usize(holder.checked_add(0x18)?)?;
+            ideology.checked_add(0x18).and_then(read_engine_string)
         }
+        _ => None,
     }
-    None
 }
 
 /// Read the exact MSVC `basic_string<char>` layout used by the pinned a729
@@ -1020,7 +1052,11 @@ fn capture_engine_target_identity(owner: usize) -> Option<String> {
 fn read_engine_string(address: usize) -> Option<String> {
     let length = read_usize(address.checked_add(0x10)?)?;
     let capacity = read_usize(address.checked_add(0x18)?)?;
-    if length == 0 || length > crate::MAX_STRING_BYTES || capacity < length {
+    if length == 0
+        || length > crate::MAX_STRING_BYTES
+        || capacity < length
+        || (capacity != 15 && !(16..=crate::MAX_STRING_BYTES).contains(&capacity))
+    {
         return None;
     }
     let data = if capacity <= 15 {
@@ -1139,13 +1175,13 @@ unsafe extern "system" fn hook_idea_modifier_description(a1: usize) -> usize {
     result
 }
 
-unsafe extern "system" fn hook_idea_availability(a1: usize, a2: usize) -> usize {
+unsafe extern "system" fn hook_idea_availability(a1: usize, a2: usize) -> u8 {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::IdeaAvailability, a1);
-    let original: TapFn2 =
+    let original: TapFn2U8 =
         unsafe { mem::transmute(ORIGINAL_IDEA_AVAILABILITY.load(Ordering::Acquire)) };
     let result = unsafe { original(a1, a2) };
-    finish_tap(open, None, None, Some(result & 0xff != 0));
+    finish_tap(open, None, None, Some(result != 0));
     result
 }
 
@@ -1159,23 +1195,23 @@ unsafe extern "system" fn hook_effective_idea_cost(a1: usize, a2: usize, a3: usi
     result
 }
 
-unsafe extern "system" fn hook_resource_affordability(a1: usize, a2: usize, a3: usize) -> usize {
+unsafe extern "system" fn hook_resource_affordability(a1: usize, a2: usize, a3: usize) -> u8 {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::ResourceAffordability, a1);
-    let original: TapFn3 =
+    let original: TapFn3U8 =
         unsafe { mem::transmute(ORIGINAL_RESOURCE_AFFORDABILITY.load(Ordering::Acquire)) };
     let result = unsafe { original(a1, a2, a3) };
-    finish_tap(open, None, Some(a3 as i64), Some(result & 0xff != 0));
+    finish_tap(open, None, Some(a3 as i64), Some(result != 0));
     result
 }
 
-unsafe extern "system" fn hook_allowed_to_remove(a1: usize, a2: usize) -> usize {
+unsafe extern "system" fn hook_allowed_to_remove(a1: usize, a2: usize) -> u8 {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::AllowedToRemove, a1);
-    let original: TapFn2 =
+    let original: TapFn2U8 =
         unsafe { mem::transmute(ORIGINAL_ALLOWED_TO_REMOVE.load(Ordering::Acquire)) };
     let result = unsafe { original(a1, a2) };
-    finish_tap(open, None, None, Some(result & 0xff != 0));
+    finish_tap(open, None, None, Some(result != 0));
     result
 }
 
@@ -1196,25 +1232,25 @@ unsafe extern "system" fn hook_party_popularity_computation(
     result
 }
 
-unsafe extern "system" fn hook_timed_idea_remaining_days(a1: usize, a2: usize) -> usize {
+unsafe extern "system" fn hook_timed_idea_remaining_days(a1: usize, a2: usize) -> u32 {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::TimedIdeaRemainingDays, a2);
-    let original: TapFn2 = unsafe {
+    let original: TapFn2U32 = unsafe {
         mem::transmute(ORIGINAL_TIMED_IDEA_REMAINING_DAYS.load(Ordering::Acquire))
     };
     let result = unsafe { original(a1, a2) };
-    finish_tap(open, None, Some((result as u32 as i32) as i64), None);
+    finish_tap(open, None, Some((result as i32) as i64), None);
     result
 }
 
-unsafe extern "system" fn hook_country_can_take_ideas(a1: usize, a2: usize) -> usize {
+unsafe extern "system" fn hook_country_can_take_ideas(a1: usize, a2: usize) -> u8 {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::CountryCanTakeIdeas, a1);
-    let original: TapFn2 = unsafe {
+    let original: TapFn2U8 = unsafe {
         mem::transmute(ORIGINAL_COUNTRY_CAN_TAKE_IDEAS.load(Ordering::Acquire))
     };
     let result = unsafe { original(a1, a2) };
-    finish_tap(open, (a2 != 0).then_some(a2), None, Some(result & 0xff != 0));
+    finish_tap(open, (a2 != 0).then_some(a2), None, Some(result != 0));
     result
 }
 
@@ -1238,24 +1274,24 @@ unsafe extern "system" fn hook_boost_party_name_text(a1: usize, a2: usize) -> us
     result
 }
 
-unsafe extern "system" fn hook_idea_selection_refresh(a1: usize, a2: usize, a3: usize) {
+unsafe extern "system" fn hook_idea_selection_refresh(a1: usize, a2: usize, a3: u8) {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::IdeaSelectionRefresh, a1);
-    let original: VoidTapFn3 = unsafe {
+    let original: VoidTapFn3U8 = unsafe {
         mem::transmute(ORIGINAL_IDEA_SELECTION_REFRESH.load(Ordering::Acquire))
     };
     unsafe { original(a1, a2, a3) };
     finish_tap(open, None, read_u32(a2).map(i64::from), None);
 }
 
-unsafe extern "system" fn hook_idea_compact_cost_refresh(a1: usize, a2: usize) {
+unsafe extern "system" fn hook_idea_compact_cost_refresh(a1: usize, a2: u8) {
     let _callback = CallbackGuard::enter();
     let open = begin_tap(A24ProducerTapKind::IdeaCompactCostRefresh, a1);
-    let original: VoidTapFn2 = unsafe {
+    let original: VoidTapFn2U8 = unsafe {
         mem::transmute(ORIGINAL_IDEA_COMPACT_COST_REFRESH.load(Ordering::Acquire))
     };
     unsafe { original(a1, a2) };
-    finish_tap(open, None, None, Some(a2 & 0xff != 0));
+    finish_tap(open, None, None, Some(a2 != 0));
 }
 
 unsafe extern "system" fn hook_idea_icon_and_modifier_bind(a1: usize) {
@@ -1268,13 +1304,28 @@ unsafe extern "system" fn hook_idea_icon_and_modifier_bind(a1: usize) {
     finish_tap(open, None, None, None);
 }
 
-unsafe extern "system" fn hook_modifier_value_lookup(a1: usize, a2: usize, a3: usize) -> usize {
+unsafe extern "system" fn hook_modifier_value_lookup(a1: usize, a2: usize, a3: u32) -> usize {
     let _callback = CallbackGuard::enter();
     let mut open = begin_tap(A24ProducerTapKind::ModifierValueLookup, a1);
     if open.frame_hour.is_some() {
-        open.engine_target_identity = Some(format!("modifier_id:{a3}"));
+        // 0x14054C770 proves that a modifier source node owns its authored
+        // identity as an MSVC string at +0x48 before its single lookup call at
+        // 0x14054C936. Other callers pass aggregate containers whose +0x48
+        // field has no proven string meaning, so label only the exact
+        // post-call return address and leave every other lookup ID-only.
+        let source_node_call = open
+            .stack_rvas
+            .contains(&MODIFIER_SOURCE_LOOKUP_RETURN_RVA);
+        open.engine_target_identity = if source_node_call {
+            a1.checked_add(0x48)
+                .and_then(read_engine_string)
+                .map(|source| format!("modifier_id:{a3}:source:{source}"))
+                .or_else(|| Some(format!("modifier_id:{a3}")))
+        } else {
+            Some(format!("modifier_id:{a3}"))
+        };
     }
-    let original: TapFn3 = unsafe {
+    let original: TapFn3U32Arg = unsafe {
         mem::transmute(ORIGINAL_MODIFIER_VALUE_LOOKUP.load(Ordering::Acquire))
     };
     let result = unsafe { original(a1, a2, a3) };

@@ -13,6 +13,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Hoi4ClientDriving.OptIn.ps1')
+Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 
 foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll)) {
     if (-not (Test-Path -LiteralPath $path)) {

@@ -24,7 +24,6 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::{mem::MaybeUninit, ptr::null_mut};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -409,44 +408,6 @@ fn open_timeline(path: &Path) -> WorldTimeline {
     WorldTimeline::open(open_recording(path).unwrap()).unwrap()
 }
 
-fn push_h4cr_record(
-    out: &mut Vec<u8>,
-    template: &[u8],
-    sequence: u64,
-    game_hour_raw: i32,
-    domain_id: u16,
-    record_type: u16,
-    payload: &[u8],
-) {
-    assert!(template.len() >= 32);
-    out.extend_from_slice(&template[..8]);
-    out.extend_from_slice(&sequence.to_le_bytes());
-    out.extend_from_slice(&game_hour_raw.to_le_bytes());
-    out.extend_from_slice(&domain_id.to_le_bytes());
-    out.extend_from_slice(&record_type.to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(payload);
-}
-
-fn run_cargo(extractor_native: &Path, temp_dir: &Path, args: &[&str]) {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .current_dir(extractor_native)
-        .env("TEMP", temp_dir)
-        .env("TMP", temp_dir)
-        .args(args)
-        .output()
-        .expect("launch extractor cargo command");
-    assert!(
-        output.status.success(),
-        "extractor cargo command failed: {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn write_absence_unavailable_store(root: &Path) {
     let game = "absence_unavailable";
     let dir = root.join(game);
@@ -524,7 +485,7 @@ fn write_faction_roster_status_store(root: &Path) {
         if !rows.is_null() {
             extra["faction_rows"] = rows;
         }
-        let snapshot = json!({
+        let mut snapshot = json!({
             "schema_version": "1",
             "game_id": game,
             "date": format!("1936.1.1.{}", hour - 20),
@@ -532,6 +493,12 @@ fn write_faction_roster_status_store(root: &Path) {
             "countries": {},
             "diplomacy_world": { "domain53_extra": extra }
         });
+        if hour == 20 {
+            // A stale legacy value must never override an authenticated modern
+            // unavailable status from the same serialized frame.
+            snapshot["diplomacy_live"] =
+                json!({"faction_members": {"axis": ["GER", "ITA"]}});
+        }
         let file = format!("{hour:012}.snapshot.json");
         fs::write(dir.join(&file), serde_json::to_vec(&snapshot).unwrap()).unwrap();
         snapshots.push(json!({
@@ -591,6 +558,10 @@ fn write_legacy_faction_roster_store(root: &Path) {
 // typed views + trichotomy
 // ---------------------------------------------------------------------------
 
+// Extractor-side malformed-domain degradation is covered by recorder_host's
+// stream_fold/world_fold tests. This workspace owns only the portable,
+// serialized boundary below; replay_core tests must never compile or execute an
+// extractor workspace as a nested test dependency.
 #[test]
 fn domain53_faction_roster_status_survives_open_into_typed_view() {
     let root = unique_temp_dir("faction_roster_status");
@@ -631,6 +602,33 @@ fn domain53_faction_roster_status_survives_open_into_typed_view() {
 }
 
 #[test]
+fn modern_unavailable_faction_status_beats_stale_legacy_value() {
+    let root = unique_temp_dir("faction_roster_modern_precedence");
+    write_faction_roster_status_store(&root);
+    let serialized: Value = serde_json::from_slice(
+        &fs::read(
+            root.join("faction_roster_status")
+                .join("000000000020.snapshot.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        serialized["diplomacy_live"]["faction_members"]["axis"],
+        json!(["GER", "ITA"]),
+        "fixture must carry the stale legacy value challenged by this test"
+    );
+    let timeline = open_timeline(&root);
+
+    let frame = timeline.frame(20).unwrap();
+    assert_eq!(
+        frame.diplomacy().faction_roster_status(),
+        FactionRosterStatus::Unavailable
+    );
+    assert_eq!(frame.diplomacy().faction_members, Leaf::Unobtained);
+}
+
+#[test]
 fn legacy_faction_roster_is_measured_only_when_valid_and_nonempty() {
     let root = unique_temp_dir("legacy_faction_roster");
     write_legacy_faction_roster_store(&root);
@@ -664,223 +662,6 @@ fn legacy_faction_roster_is_measured_only_when_valid_and_nonempty() {
             .get("axis"),
         Some(&vec!["GER".to_string(), "ITA".to_string()])
     );
-}
-
-// OWNER RULING 2026-07-14 — ZERO DATA LOSS (per-domain degrade). This test injects a TRUNCATED
-// d53 payload (3 bytes); the fold SUCCEEDS and degrades only d53 — the faction-roster tri-state
-// serializes "unavailable" (beating a stale present-legacy value) while every other domain/hour
-// keeps folding. The stream-boundary ingest gate (stream_fold.rs drive_fold) now degrades a
-// malformed single-domain payload instead of failing the whole fold; framing / magic / version /
-// checksum / zstd corruption still fails closed. Acceptance oracle for that degrade behavior (was
-// briefly parked during the boundary-auth × facs-wire merge).
-#[test]
-fn production_encode_decode_fold_typed_unavailable_beats_present_legacy_json() {
-    let root = unique_temp_dir("faction_roster_composed");
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .unwrap();
-    let extractor_native = repo_root.join("extractor/native");
-    // Use the test's own writable temp root (matching the game_ui harness) rather
-    // than a hardcoded path under the source tree, so the test runs under a
-    // read-only source fence with an external CARGO_TARGET_DIR.
-    let extractor_temp = root.join("extractor_tmp");
-    fs::create_dir_all(&extractor_temp).unwrap();
-
-    let proof_record = root.join("d53.compact.bin");
-    let proof_report = root.join("d53.proof.json");
-    let proof_manifest = root.join("d53.manifest.json");
-    let proof_replay = root.join("d53.battleplan");
-    run_cargo(
-        &extractor_native,
-        &extractor_temp,
-        &[
-            "run",
-            "--locked",
-            "--offline",
-            "--quiet",
-            "-p",
-            "diplomacy_intel_operatives_live",
-            "--bin",
-            "domain53_proof",
-            "--",
-            "--out-record",
-            proof_record.to_str().unwrap(),
-            "--out-report",
-            proof_report.to_str().unwrap(),
-            "--out-manifest",
-            proof_manifest.to_str().unwrap(),
-            "--out-replay",
-            proof_replay.to_str().unwrap(),
-        ],
-    );
-
-    // Hour N is a production-encoded valid d53 frame. Hour N+1 is a
-    // well-framed d53 record with a deliberately malformed payload, exercising
-    // the production decoder rejection and fold suppression path.
-    let mut encoded = fs::read(&proof_record).unwrap();
-    let mut offsets = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < encoded.len() {
-        assert_eq!(&encoded[cursor..cursor + 4], b"H4CR");
-        let header_len =
-            u16::from_le_bytes(encoded[cursor + 6..cursor + 8].try_into().unwrap()) as usize;
-        let payload_len =
-            u32::from_le_bytes(encoded[cursor + 24..cursor + 28].try_into().unwrap()) as usize;
-        offsets.push(cursor);
-        cursor += header_len + payload_len;
-    }
-    assert_eq!(cursor, encoded.len());
-    assert_eq!(
-        offsets.len(),
-        3,
-        "canonical proof must be PERF/DATA/FRAME_END"
-    );
-    assert_eq!(
-        offsets
-            .iter()
-            .map(|offset| {
-                u16::from_le_bytes(encoded[offset + 22..offset + 24].try_into().unwrap())
-            })
-            .collect::<Vec<_>>(),
-        vec![1, 3, 2]
-    );
-    let data_offset = offsets[1];
-    assert_eq!(
-        u16::from_le_bytes(
-            encoded[data_offset + 20..data_offset + 22]
-                .try_into()
-                .unwrap()
-        ),
-        53
-    );
-    // The proof CLI's historical 24-hour smoke timestamp predates the fold's
-    // plausible-calendar gate. Keep its production-encoded payload and move
-    // only the H4CR test clock into the canonical 1936 window.
-    let raw_hour = 43_799_999i32 + (1936 * 365 * 24);
-    for (index, offset) in offsets.into_iter().enumerate() {
-        encoded[offset + 8..offset + 16].copy_from_slice(&(index as u64 + 1).to_le_bytes());
-        encoded[offset + 16..offset + 20].copy_from_slice(&raw_hour.to_le_bytes());
-    }
-    let template = encoded[..32].to_vec();
-    let mut stream = encoded;
-    let frame_end = vec![0u8; 28];
-    push_h4cr_record(
-        &mut stream,
-        &template,
-        4,
-        raw_hour + 1,
-        53,
-        3,
-        &[0x00, 0x01, 0x02],
-    );
-    push_h4cr_record(&mut stream, &template, 5, raw_hour + 1, 1000, 2, &frame_end);
-    let stream_path = root.join("collector_stream.bin");
-    fs::write(&stream_path, stream).unwrap();
-
-    let game = "faction_roster_composed";
-    let store_root = root.join("store");
-    let game_dir = store_root.join(game);
-    fs::create_dir_all(&game_dir).unwrap();
-    run_cargo(
-        &extractor_native,
-        &extractor_temp,
-        &[
-            "run",
-            "--locked",
-            "--offline",
-            "--quiet",
-            "-p",
-            "recorder_host",
-            "--bin",
-            "stream_fold",
-            "--",
-            stream_path.to_str().unwrap(),
-            game_dir.to_str().unwrap(),
-            "--game-id",
-            game,
-            "--workers",
-            "1",
-        ],
-    );
-
-    let mut index_rows = Vec::new();
-    let mut snapshot_paths = fs::read_dir(&game_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".snapshot.json"))
-        })
-        .collect::<Vec<_>>();
-    snapshot_paths.sort();
-    assert_eq!(snapshot_paths.len(), 2);
-    for path in snapshot_paths {
-        let snapshot: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let hour = snapshot["hour_index"].as_i64().unwrap();
-        index_rows.push((hour, path, snapshot));
-    }
-    index_rows.sort_by_key(|(hour, _, _)| *hour);
-    let max_hour = index_rows.last().unwrap().0;
-    let unavailable = &mut index_rows.last_mut().unwrap().2;
-    assert_eq!(
-        unavailable["diplomacy_world"]["domain53_extra"]["faction_roster_status"],
-        json!("unavailable"),
-        "the real fold must serialize the suppressed d53 roster state"
-    );
-    // A valid nonempty v1 roster would be measured on its own. The serialized
-    // modern unavailable status must take precedence before legacy parsing.
-    unavailable["diplomacy_live"] = json!({"faction_members": {"axis": ["GER", "ITA"]}});
-
-    let mut snapshots = Vec::new();
-    for (hour, path, snapshot) in &index_rows {
-        fs::write(path, serde_json::to_vec(snapshot).unwrap()).unwrap();
-        snapshots.push(json!({
-            "hour_index": hour,
-            "date": snapshot["date"].as_str().unwrap(),
-            "file": path.file_name().unwrap().to_str().unwrap()
-        }));
-    }
-    fs::write(
-        game_dir.join("index.json"),
-        serde_json::to_vec(&json!({
-            "game_id": game,
-            "schema_version": "1",
-            "snapshots": snapshots
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let timeline = open_timeline(&store_root);
-    let measured = timeline.frame(max_hour - 1).unwrap();
-    let autonomy = measured
-        .diplomacy()
-        .subject_autonomy_current
-        .measured()
-        .expect("proof frame must expose authenticated current autonomy");
-    assert_eq!(autonomy.len(), 1);
-    assert_eq!(autonomy[0].ratio_raw, 40_000);
-    assert_eq!(autonomy[0].current_score_raw, 40_000);
-    assert_eq!(autonomy[0].direction, Leaf::Unobtained);
-    let frame = timeline.frame(max_hour).unwrap();
-    assert_eq!(
-        frame.diplomacy().faction_roster_status(),
-        FactionRosterStatus::Unavailable
-    );
-    assert_ne!(
-        frame.diplomacy().faction_roster_status(),
-        FactionRosterStatus::MeasuredEmpty
-    );
-    assert_eq!(frame.diplomacy().faction_members, Leaf::Unobtained);
-    assert_eq!(
-        frame.diplomacy().subject_autonomy_current,
-        Leaf::Unobtained
-    );
-    drop(frame);
-    drop(timeline);
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

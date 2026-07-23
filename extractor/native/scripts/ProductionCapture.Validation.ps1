@@ -34,6 +34,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if (-not ("ProductionCaptureAtomicPublishNative" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class ProductionCaptureAtomicPublishNative {
+    private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+    private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool MoveFileExW(string existingName, string newName, uint flags);
+
+    public static void ReplaceWriteThrough(string temporary, string destination) {
+        if (!MoveFileExW(temporary, destination,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "durable atomic publication failed: " + destination);
+        }
+    }
+}
+'@
+}
+
 $script:CanonicalCompactFailureMask = [uint32]0x13CF
 $script:RequiredStaticArtifactNames = @(
     "templates_equipment_catalog",
@@ -54,11 +78,12 @@ $script:ProductionDomainStatuses = @(
 )
 
 # Acceptance-telemetry (F5) schema fields. Per-frame extraction time lives under
-# compact_stream; the new p50/p99 join the pre-existing avg/p95/max. Sink-write
-# latency and clock-skew live in the dedicated acceptance_telemetry block the
-# recorder emits alongside stream_storage.
+# compact_stream; the new p50/p99 join the pre-existing avg/p95/max. Authoritative
+# collector sink timing, recorder-path diagnostics, and clock skew live in the
+# dedicated acceptance_telemetry block emitted alongside stream_storage.
 $script:RequiredFrameTimeFields = @("count", "avg", "p50", "p95", "p99", "max")
 $script:RequiredSinkWriteFields = @("count", "avg", "p50", "p95", "p99", "max")
+$script:RequiredCollectorSinkWriteFields = @("count", "total", "avg", "p50", "p99", "max")
 $script:RequiredClockSkewFields = @("wall_elapsed_us", "mono_elapsed_us", "drift_us", "wall_monotonic_ok")
 
 function Write-AtomicUtf8Text {
@@ -77,7 +102,7 @@ function Write-AtomicUtf8Text {
         $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
         try { $stream.Flush($true) } finally { $stream.Dispose() }
         if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
-            [System.IO.File]::Replace($temp, $fullPath, $null, $true)
+            [ProductionCaptureAtomicPublishNative]::ReplaceWriteThrough($temp, $fullPath)
         } else {
             [System.IO.File]::Move($temp, $fullPath)
         }
@@ -558,7 +583,7 @@ function Read-CaptureManifest {
 function Test-HasProperty {
     # PS 5.1: distinguish an ABSENT member from a member whose value is $null.
     param(
-        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][AllowNull()]$Object,
         [Parameter(Mandatory = $true)][string]$Name
     )
     if ($null -eq $Object) { return $false }
@@ -693,6 +718,32 @@ function Get-AcceptanceTelemetryProblems {
     param([Parameter(Mandatory = $true)]$Manifest)
     $problems = [System.Collections.Generic.List[string]]::new()
 
+    $acceptance = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry"
+    if (-not $acceptance.Found) {
+        $problems.Add("acceptance_telemetry missing")
+    } elseif ($null -eq $acceptance.Value) {
+        $problems.Add("acceptance_telemetry is null")
+    } else {
+        $schema = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.schema"
+        if (-not $schema.Found -or $schema.Value -cne "battle-plan.acceptance_telemetry.v1") {
+            $problems.Add("acceptance_telemetry.schema is absent or unsupported")
+        }
+        $complete = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.complete"
+        if (-not $complete.Found -or $complete.Value -isnot [bool] -or $complete.Value -ne $true) {
+            $problems.Add("acceptance_telemetry.complete is not boolean true")
+        }
+        $producerProblems = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.problems"
+        if (-not $producerProblems.Found -or $null -eq $producerProblems.Value) {
+            $problems.Add("acceptance_telemetry.problems missing")
+        } elseif (@($producerProblems.Value).Count -ne 0) {
+            $problems.Add("acceptance_telemetry.problems is not empty")
+        }
+    }
+    $clockScope = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.clock_skew_scope"
+    if (-not $clockScope.Found -or $clockScope.Value -cne "complete physical H4CR capture; capture-set scoped during rollover") {
+        $problems.Add("acceptance_telemetry.clock_skew_scope is absent or unsupported")
+    }
+
     # frame_time_us (per-frame extraction time) under compact_stream.
     $frame = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.frame_time_us"
     if (-not $frame.Found) {
@@ -730,6 +781,45 @@ function Get-AcceptanceTelemetryProblems {
                     $problems.Add("compact_stream.frame_time_us.$pf is not numeric ('$($fv.Value)')")
                 }
             }
+        }
+    }
+
+    # The authoritative sink timing is measured by the collector around its
+    # synchronous writes to the sole H4CR pipe and sealed in-band by the terminal
+    # latch record. Recorder StreamWriter timings below are retained as a host
+    # buffering/compression diagnostic; they are not accepted as sink evidence.
+    $collectorSink = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us"
+    if (-not $collectorSink.Found) {
+        $problems.Add("acceptance_telemetry.collector_sink_write_us missing (at $($collectorSink.Missing))")
+    } elseif ($null -eq $collectorSink.Value) {
+        $problems.Add("acceptance_telemetry.collector_sink_write_us is null")
+    } else {
+        Test-TimingSummaryFields -Summary $collectorSink.Value -RequiredFields $script:RequiredCollectorSinkWriteFields `
+            -Label "acceptance_telemetry.collector_sink_write_us" -Problems $problems
+        $collectorCount = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.count"
+        if ($collectorCount.Found) {
+            if (-not (Test-IsJsonInteger $collectorCount.Value) -or [int64]$collectorCount.Value -le 0) {
+                $problems.Add("acceptance_telemetry.collector_sink_write_us.count is not a positive integer")
+            }
+        }
+        foreach ($field in @("total", "avg", "p50", "p99", "max")) {
+            $value = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.$field"
+            if ($value.Found -and (-not (Test-IsJsonNumber $value.Value) -or [double]$value.Value -lt 0)) {
+                $problems.Add("acceptance_telemetry.collector_sink_write_us.$field is not a non-negative finite number")
+            }
+        }
+        $p50 = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.p50"
+        $p99 = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.p99"
+        $max = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.max"
+        $total = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.total"
+        if ($p50.Found -and $p99.Found -and $max.Found -and
+            (Test-IsJsonNumber $p50.Value) -and (Test-IsJsonNumber $p99.Value) -and (Test-IsJsonNumber $max.Value) -and
+            ([double]$p50.Value -gt [double]$p99.Value -or [double]$p99.Value -gt [double]$max.Value)) {
+            $problems.Add("acceptance_telemetry.collector_sink_write_us percentiles are not ordered")
+        }
+        if ($total.Found -and $max.Found -and (Test-IsJsonNumber $total.Value) -and
+            (Test-IsJsonNumber $max.Value) -and [double]$max.Value -gt [double]$total.Value) {
+            $problems.Add("acceptance_telemetry.collector_sink_write_us max exceeds total")
         }
     }
 
@@ -992,13 +1082,18 @@ function New-TestManifest {
             hour_latch    = [ordered]@{ hours_coalesced = $CoalescedHours }
         }
         acceptance_telemetry = [ordered]@{
+            schema       = "battle-plan.acceptance_telemetry.v1"
+            complete     = $true
+            problems     = @()
+            collector_sink_write_us = [ordered]@{ count = 10; total = 250; avg = 25.0; p50 = 20; p99 = 100; max = 120 }
             sink_write_us = (New-TestTimingSummary -P95 60 -Max 120 -Avg 25 -P50 20 -P99 100)
-            clock_skew    = [ordered]@{
+            clock_skew   = [ordered]@{
                 wall_elapsed_us   = 300000000
                 mono_elapsed_us   = 300000100
                 drift_us          = -100
                 wall_monotonic_ok = $true
             }
+            clock_skew_scope = "complete physical H4CR capture; capture-set scoped during rollover"
         }
     }
 }
@@ -1142,7 +1237,7 @@ function Invoke-ValidationSelfTest {
     # 16. FINITE-VALUE gate end-to-end: a sink_write_us percentile parsed from bare
     #     JSON NaN/Infinity must fail Get-AcceptanceTelemetryProblems. Fail-before:
     #     the same manifest text with a finite percentile passes.
-    $jsonFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true}}}'
+    $jsonFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"schema":"battle-plan.acceptance_telemetry.v1","complete":true,"problems":[],"collector_sink_write_us":{"count":10,"total":250,"avg":25,"p50":20,"p99":100,"max":120},"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true},"clock_skew_scope":"complete physical H4CR capture; capture-set scoped during rollover"}}'
     $mFinite = $jsonFinite | ConvertFrom-Json
     [string[]]$probsFinite = Get-AcceptanceTelemetryProblems -Manifest $mFinite
     Assert-True ($probsFinite.Count -eq 0) "finite sink_write_us telemetry must pass (fail-before baseline); problems: $($probsFinite -join '; ')"
@@ -1160,7 +1255,7 @@ function Invoke-ValidationSelfTest {
     #     compared the value with `-gt` without rejecting non-finite first, so a bare
     #     JSON NaN/Infinity frame_time_us.p95/max returned Passed=True. Prove BOTH
     #     holes closed, with a finite fail-before baseline for each.
-    $jsonFrameFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true}}}'
+    $jsonFrameFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"schema":"battle-plan.acceptance_telemetry.v1","complete":true,"problems":[],"collector_sink_write_us":{"count":10,"total":250,"avg":25,"p50":20,"p99":100,"max":120},"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true},"clock_skew_scope":"complete physical H4CR capture; capture-set scoped during rollover"}}'
     # (a) schema/value gate: bare NaN/Infinity frame percentiles are rejected.
     [string[]]$probsFrameFinite = Get-AcceptanceTelemetryProblems -Manifest ($jsonFrameFinite | ConvertFrom-Json)
     Assert-True ($probsFrameFinite.Count -eq 0) "finite frame_time_us telemetry must pass (fail-before baseline); problems: $($probsFrameFinite -join '; ')"
@@ -1287,6 +1382,42 @@ function Invoke-ValidationSelfTest {
             }
         } finally { Remove-Item -LiteralPath $idTmp -Recurse -Force -ErrorAction SilentlyContinue }
     }
+
+    # 20. The consumer must honor the producer's complete/problems verdict; a
+    # structurally populated block cannot override a reported producer gap.
+    $incomplete = New-TestManifest
+    $incomplete.acceptance_telemetry.complete = $false
+    $incomplete.acceptance_telemetry.problems = @("acceptance_exact_roster_mismatch")
+    $rIncomplete = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $incomplete)
+    Assert-True (-not $rIncomplete.Passed) "acceptance_telemetry.complete=false must fail"
+    Assert-True (($rIncomplete.Problems -join "`n") -match "complete is not boolean true") "consumer must report the false producer verdict"
+    Assert-True (($rIncomplete.Problems -join "`n") -match "problems is not empty") "consumer must report producer problems"
+    $nullAcceptance = New-TestManifest
+    $nullAcceptance.acceptance_telemetry = $null
+    $nullThrew = $false
+    $rNullAcceptance = $null
+    try { $rNullAcceptance = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $nullAcceptance) } catch { $nullThrew = $true }
+    Assert-True (-not $nullThrew) "null acceptance_telemetry must return a failed verdict, never throw"
+    Assert-True (-not $rNullAcceptance.Passed) "null acceptance_telemetry must fail closed"
+
+    # 21. Host buffering metrics cannot substitute for the in-band collector
+    # sink timing. Absence and incoherent percentile ordering both fail closed.
+    $missingCollectorSink = New-TestManifest
+    $missingCollectorSink.acceptance_telemetry.Remove("collector_sink_write_us") | Out-Null
+    $rMissingCollectorSink = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $missingCollectorSink)
+    Assert-True (-not $rMissingCollectorSink.Passed) "missing collector sink timing must fail even when host sink timing is present"
+    Assert-True (($rMissingCollectorSink.Problems -join "`n") -match "collector_sink_write_us missing") "problem must name missing authoritative collector sink timing"
+    $unorderedCollectorSink = New-TestManifest
+    $unorderedCollectorSink.acceptance_telemetry.collector_sink_write_us.p50 = 101
+    $unorderedCollectorSink.acceptance_telemetry.collector_sink_write_us.p99 = 100
+    $rUnorderedCollectorSink = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $unorderedCollectorSink)
+    Assert-True (-not $rUnorderedCollectorSink.Passed) "unordered collector sink percentiles must fail"
+    Assert-True (($rUnorderedCollectorSink.Problems -join "`n") -match "percentiles are not ordered") "problem must name incoherent collector sink timing"
+    $impossibleCollectorTotal = New-TestManifest
+    $impossibleCollectorTotal.acceptance_telemetry.collector_sink_write_us.total = 50
+    $rImpossibleCollectorTotal = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $impossibleCollectorTotal)
+    Assert-True (-not $rImpossibleCollectorTotal.Passed) "collector max greater than total must fail"
+    Assert-True (($rImpossibleCollectorTotal.Problems -join "`n") -match "max exceeds total") "problem must name impossible collector sink total"
 
     if ($failures.Count -gt 0) {
         Write-Host "ProductionCapture.Validation self-test FAILED:" -ForegroundColor Red

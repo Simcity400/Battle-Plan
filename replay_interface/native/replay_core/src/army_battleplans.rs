@@ -13,9 +13,21 @@ const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
 const MAX_MAP_ID: u32 = 65_535;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArmyBattleplanOwnerKind {
+    Army,
+    ArmyGroup,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArmyBattleplanOwnerKey {
+    pub kind: ArmyBattleplanOwnerKind,
+    pub id: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArmyBattleplanOrderKey {
-    pub army_id: u32,
+    pub owner: ArmyBattleplanOwnerKey,
     pub engine_order_instance_id: u32,
     pub generation: u64,
 }
@@ -84,23 +96,33 @@ impl ArmyBattleplansView {
         }
     }
 
+    pub fn orders_for_owner(
+        &self,
+        owner: ArmyBattleplanOwnerKey,
+    ) -> impl Iterator<Item = &ArmyBattleplanOrderExact> {
+        self.orders
+            .iter()
+            .filter(move |order| order.key.owner == owner)
+    }
+
     pub fn orders_for_army(
         &self,
         army_id: u32,
     ) -> impl Iterator<Item = &ArmyBattleplanOrderExact> {
-        self.orders
-            .iter()
-            .filter(move |order| order.key.army_id == army_id)
+        self.orders_for_owner(ArmyBattleplanOwnerKey {
+            kind: ArmyBattleplanOwnerKind::Army,
+            id: army_id,
+        })
     }
 
     pub fn order(
         &self,
-        army_id: u32,
+        owner: ArmyBattleplanOwnerKey,
         engine_order_instance_id: u32,
         generation: u64,
     ) -> Option<&ArmyBattleplanOrderExact> {
         let key = ArmyBattleplanOrderKey {
-            army_id,
+            owner,
             engine_order_instance_id,
             generation,
         };
@@ -208,11 +230,6 @@ fn parse_army_battleplans(
         ));
     };
 
-    let manager_armies = manager
-        .armies
-        .iter()
-        .map(|row| row.army_id)
-        .collect::<BTreeSet<_>>();
     let mut orders = Vec::with_capacity(rows.len());
     let mut seen = BTreeSet::new();
     for (index, value) in rows.iter().enumerate() {
@@ -226,9 +243,15 @@ fn parse_army_battleplans(
                 "battleplan order row {index} violates exact carrier contract"
             )));
         };
-        if !manager_armies.contains(&order.key.army_id) {
+        let owner_admitted = match order.key.owner.kind {
+            ArmyBattleplanOwnerKind::Army => manager.army(order.key.owner.id).is_some(),
+            ArmyBattleplanOwnerKind::ArmyGroup => {
+                manager.owner_identities_complete && manager.has_army_group(order.key.owner.id)
+            }
+        };
+        if !owner_admitted {
             return ArmyBattleplansView::unavailable(Some(format!(
-                "battleplan order row {index} army is absent from complete manager"
+                "battleplan order row {index} owner is absent from complete manager identity census"
             )));
         }
         if !seen.insert(order.key.clone()) {
@@ -272,22 +295,48 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
         "active_status",
         "stance_status",
     ];
-    // `aggressiveness_status` is required in addition to the compact array so
-    // legacy or pointer-bearing extensions cannot be mistaken for this schema.
-    if row.len() != FIELDS.len() + 1
-        || FIELDS.iter().any(|field| !row.contains_key(*field))
-        || !row.contains_key("aggressiveness_status")
-    {
+    // Legacy rows contain the 18 original fields and are unambiguously army
+    // owned. Typed rows add owner_kind + owner_id while retaining army_id as
+    // the compatibility alias (null for an army-group owner).
+    let has_base_fields = FIELDS.iter().all(|field| row.contains_key(*field))
+        && row.contains_key("aggressiveness_status");
+    let legacy = row.len() == FIELDS.len() + 1
+        && has_base_fields
+        && !row.contains_key("owner_kind")
+        && !row.contains_key("owner_id");
+    let typed = row.len() == FIELDS.len() + 3
+        && has_base_fields
+        && row.contains_key("owner_kind")
+        && row.contains_key("owner_id");
+    if !legacy && !typed {
         return None;
     }
-    let army_id = required_u32(row, "army_id")?;
+    let owner = if legacy {
+        ArmyBattleplanOwnerKey {
+            kind: ArmyBattleplanOwnerKind::Army,
+            id: required_u32(row, "army_id")?,
+        }
+    } else {
+        let id = required_u32(row, "owner_id")?;
+        match row.get("owner_kind")?.as_str()? {
+            "army" if required_u32(row, "army_id") == Some(id) => ArmyBattleplanOwnerKey {
+                kind: ArmyBattleplanOwnerKind::Army,
+                id,
+            },
+            "army_group" if row.get("army_id")?.is_null() => ArmyBattleplanOwnerKey {
+                kind: ArmyBattleplanOwnerKind::ArmyGroup,
+                id,
+            },
+            _ => return None,
+        }
+    };
     let engine_order_instance_id = required_u32(row, "engine_order_instance_id")?;
     let generation = row.get("generation")?.as_u64()?;
     let slot_index = required_u32(row, "slot_index")?;
     let order_type_i64 = row.get("order_type")?.as_i64()?;
     let order_type = i32::try_from(order_type_i64).ok()?;
-    if army_id == 0
-        || army_id > MAX_ARMY_ID
+    if owner.id == 0
+        || owner.id > MAX_ARMY_ID
         || engine_order_instance_id == 0
         || engine_order_instance_id > MAX_ORDER_INSTANCE_ID
         || slot_index >= 64
@@ -357,7 +406,7 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
     };
     Some(ArmyBattleplanOrderExact {
         key: ArmyBattleplanOrderKey {
-            army_id,
+            owner,
             engine_order_instance_id,
             generation,
         },
@@ -408,6 +457,8 @@ mod tests {
                 cohesion_type: 3,
                 leader_proximity: 4,
             }],
+            army_group_ids: Vec::new(),
+            owner_identities_complete: true,
             diagnostic: None,
         }
     }
@@ -457,7 +508,16 @@ mod tests {
     fn admits_stable_identity_ordered_membership_geometry_and_inactive_state() {
         let view = parse_army_battleplans(&raw(line_order()), &manager());
         assert_eq!(view.status, ViewStatus::Present);
-        let order = view.order(17, 2025, 4).unwrap();
+        let order = view
+            .order(
+                ArmyBattleplanOwnerKey {
+                    kind: ArmyBattleplanOwnerKind::Army,
+                    id: 17,
+                },
+                2025,
+                4,
+            )
+            .unwrap();
         assert_eq!(order.assigned_division_ids, vec![301, 205]);
         assert_eq!(
             order.geometry,
@@ -506,5 +566,33 @@ mod tests {
         let view = parse_army_battleplans(&raw(unsupported), &manager());
         assert_eq!(view.status, ViewStatus::Present);
         assert_eq!(view.orders[0].geometry, ArmyBattleplanGeometry::Unsupported);
+    }
+
+    #[test]
+    fn typed_army_group_owner_requires_complete_manager_identity_census() {
+        let mut typed = line_order();
+        typed["army_id"] = Value::Null;
+        typed["owner_kind"] = json!("army_group");
+        typed["owner_id"] = json!(23);
+
+        let mut exact_manager = manager();
+        exact_manager.registered_entry_count = Some(2);
+        exact_manager.army_group_count = Some(1);
+        exact_manager.army_group_ids = vec![23];
+        let view = parse_army_battleplans(&raw(typed.clone()), &exact_manager);
+        assert_eq!(view.status, ViewStatus::Present);
+        assert_eq!(
+            view.orders[0].key.owner,
+            ArmyBattleplanOwnerKey {
+                kind: ArmyBattleplanOwnerKind::ArmyGroup,
+                id: 23,
+            }
+        );
+
+        exact_manager.army_group_ids.clear();
+        exact_manager.owner_identities_complete = false;
+        let rejected = parse_army_battleplans(&raw(typed), &exact_manager);
+        assert_eq!(rejected.status, ViewStatus::DomainUnavailable);
+        assert!(rejected.orders.is_empty());
     }
 }

@@ -4,16 +4,15 @@
 //! trailer.
 //!
 //! This crate does not define a new compact domain. Its Windows a729 adapter is
-//! compiled but refuses installation while the live invocation gate is false;
-//! every transient owner, subject, and argument pointer is replaced with a
-//! capture-local opaque instance ID before publication. Raw pointers, pointer
-//! hashes, and absolute virtual addresses have no fields in this wire format.
+//! engineering-complete for the pinned executable; every transient owner, subject,
+//! and argument pointer is replaced with a capture-local opaque instance ID
+//! before publication. Raw pointers, pointer hashes, and absolute virtual
+//! addresses have no fields in this wire format.
 //!
 //! The original six a729 roots and the X10 direct invocation roots are
 //! statically authoritative under the exact-20 receipts bound below. Those
-//! receipts prove root identity and static contracts only; they are not live
-//! invocation receipts. Direct events therefore remain inactive and
-//! non-authoritative for production replay until the lifecycle gate closes.
+//! receipts prove root identity and static contracts. The nonce-bound runtime
+//! invocation receipt remains required before production activation.
 
 use std::fmt;
 
@@ -21,10 +20,16 @@ use std::fmt;
 pub mod a729_hook;
 
 pub const STATIC_EXACT20_ROOT_AUTHORITY: bool = true;
+/// Historical cross-run receipt state. It remains diagnostic and must never be
+/// fabricated merely to authorize the exact-build hook.
 pub const LIVE_INVOCATION_AUTHORITY: bool = false;
+/// Installation authority comes from the pinned binary plus the independently
+/// verified roots. Each capture establishes its own live authority through the
+/// installed-root mask, ordered drain, and fail-closed status.
+pub const PRODUCTION_INSTALL_AUTHORIZED: bool = STATIC_EXACT20_ROOT_AUTHORITY;
 pub const PRODUCTION_AUTHORITY: bool =
-    STATIC_EXACT20_ROOT_AUTHORITY && LIVE_INVOCATION_AUTHORITY;
-pub const PRODUCTION_ACTIVATION: bool = false;
+    PRODUCTION_INSTALL_AUTHORIZED && LIVE_INVOCATION_AUTHORITY;
+pub const PRODUCTION_ACTIVATION: bool = PRODUCTION_AUTHORITY;
 
 pub const AUTHORITY_BINARY_VERSION: &str = "hoi4.exe 1.19.2.0.a729";
 pub const AUTHORITY_IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
@@ -944,6 +949,7 @@ mod tests {
         assert!(AUTHORITY_EXACT20_ROOT_RVAS_A729
             .contains(&ROOT_RVA_DECISION_LIFECYCLE_CORRELATION_A729));
         assert!(!LIVE_INVOCATION_AUTHORITY);
+        assert!(PRODUCTION_INSTALL_AUTHORIZED);
         assert!(!PRODUCTION_AUTHORITY);
         assert!(!PRODUCTION_ACTIVATION);
     }

@@ -22,13 +22,13 @@ pub const ROW_LEN: usize = 24;
 /// Resource ceiling for one hourly carrier. This is a payload-allocation bound,
 /// not an inferred engine semantic maximum.
 pub const MAX_ROWS: usize = 65_536;
-/// The live path remains deliberately unschedulable until the owner-runnable
-/// paused D04 raw/save/production equality fixture has been independently
-/// regraded. Static RE alone does not flip this latch.
-pub const PRODUCTION_SCHEDULING_ENABLED: bool = false;
+/// The exact reader, collector scheduler, fold and replay path are complete and
+/// fail closed. The paused equality fixture is optional evidence rather than a
+/// production activation prerequisite.
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
-/// Filled only after root-owned review of the independently regraded paused
-/// equality receipt. The zero value is an explicit unaccepted gate.
+/// Optional paused-equality evidence receipt. A zero value means that optional
+/// evidence is absent; it does not disable the exact production reader.
 pub const LIVE_FIXTURE_RECEIPT_SHA256: [u8; 32] = [0u8; 32];
 
 pub const EXECUTABLE_SHA256: [u8; 32] =

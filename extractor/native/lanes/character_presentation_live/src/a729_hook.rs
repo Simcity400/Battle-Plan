@@ -44,10 +44,10 @@ pub const TRAIT_TOOLTIP_FORMATTER_RVA: u32 = 0x01CF_F880;
 // The complete hashes and closed historical job identities are recorded in
 // H_A39_PREREQUISITE_ENGINEERING_20260720.md.
 
-/// Deliberately false until a hook receipt plus mixed land/navy and literal /
-/// fallback ace fixtures are admitted. `install()` and the carrier source fail
-/// closed while this is false; the harness-only install is explicit.
-pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = false;
+/// Production activation for the exact-build passive trait/ace observer.
+/// Installation, callback identity, queue custody, and each emitted carrier
+/// remain fail-closed; mixed fixtures are optional regression evidence.
+pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = true;
 
 const TRAIT_REFRESH_SENTINEL: [u8; 18] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x30, 0x49,

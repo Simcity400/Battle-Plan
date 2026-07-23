@@ -105,7 +105,7 @@ ROSTER = {
     "session_header_live": (68, True),
     "tech_sharing_groups_live": (69, True),
     "sunk_convoy_history_live": (70, False),
-    "dynamic_collection_trace_live": (71, False),
+    "dynamic_collection_trace_live": (71, True),
     "resolved_tooltip_instances_live": (72, True),
     "politics_tooltip_inputs_live": (73, False),
     "power_balance_presentation_live": (74, False),
@@ -124,7 +124,7 @@ ROSTER = {
     "decision_panel_live": (87, False),
     "active_command_abilities_live": (88, False),
     "national_focus_presentation_live": (89, False),
-    "convoy_transport_attack_live": (90, False),
+    "convoy_transport_attack_live": (90, True),
     "frame": (1000, False),
 }
 PROFILE = {n: i for n, (i, p) in ROSTER.items() if p}

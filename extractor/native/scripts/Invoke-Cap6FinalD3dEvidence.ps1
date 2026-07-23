@@ -13,6 +13,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Hoi4ClientDriving.OptIn.ps1')
+Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))

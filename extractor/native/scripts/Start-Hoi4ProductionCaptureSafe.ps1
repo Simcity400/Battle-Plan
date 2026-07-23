@@ -58,6 +58,9 @@ $registryPath = Join-Path $nativeRoot "domain_registry.json"
 $profilePath = Join-Path $repoRoot "extractor\live_capture\collector_profiles\vanilla_latest_2026_06_30.json"
 $staticBundleScript = Join-Path $repoRoot "extractor\game_defs\static_bundle.py"
 $productModsetPrepareScript = Join-Path $repoRoot "extractor\game_defs\prepare_product_modset_capture.py"
+$productModsetVerifier = Join-Path $repoRoot "extractor\game_defs\verify_product_modset_capture_ready.py"
+$productModsetPolicy = Join-Path $repoRoot "extractor\game_defs\product_modset_admission.py"
+$productModsetRegistry = Join-Path $repoRoot "extractor\game_defs\supported_product_modsets.json"
 $speedStreamVerifier = Join-Path $scriptDir "verify_speed5_stream.py"
 $speedEvidenceVerifier = Join-Path $scriptDir "verify_speed_root_evidence_v2.py"
 $speedEvidenceProbe = Join-Path $scriptDir "collect_speed_root_evidence_v2.py"
@@ -277,6 +280,12 @@ Copy-Item -LiteralPath $sourceDll -Destination $stagedDll
 $sourceSha = (Get-FileHash -LiteralPath $sourceDll -Algorithm SHA256).Hash.ToLowerInvariant()
 $stagedSha = (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($sourceSha -ne $stagedSha -or $sourceSha -cne [string]$prebuiltArtifacts.artifact_sha256.collector_dll) { throw "staged DLL hash mismatch" }
+$retainedProductModsetRegistry = Join-Path $stageDir 'supported_product_modsets.json'
+[IO.File]::Copy($productModsetRegistry, $retainedProductModsetRegistry, $false)
+$retainedProductModsetRegistrySha256 = (Get-FileHash -LiteralPath $retainedProductModsetRegistry -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($retainedProductModsetRegistrySha256 -cne (Get-FileHash -LiteralPath $productModsetRegistry -Algorithm SHA256).Hash.ToLowerInvariant()) {
+    throw 'retained supported product-modset registry differs from the attested source'
+}
 
 if (-not (Test-Path -LiteralPath $StaticBundleDir -PathType Container)) { throw "static bundle directory missing: $StaticBundleDir" }
 $StaticBundleDir=(Resolve-Path -LiteralPath $StaticBundleDir).Path
@@ -343,6 +352,22 @@ foreach ($entry in @($bundleManifest.artifacts)) {
     $static[$role]=$path
 }
 if ($static.Count -ne $script:RequiredStaticArtifactNames.Count) { throw "static bundle does not contain the exact seven required roles" }
+$staticProductModsetAdmission = $null
+if ($AcceptanceMode -eq 'production') {
+    $staticProductModsetAdmissionPath = Join-Path $OutDir 'static_product_modset_policy_admission.json'
+    $staticProductModsetAdmissionGate = Invoke-IndependentCaptureGate -Name 'static_product_modset_policy' -FilePath $PythonExe -Arguments @($productModsetPolicy,'--manifest',$bundleManifestPath,'--mod-state',$ModStatePath,'--dlc-state',$DlcStatePath,'--load-order',$LoadOrderPath,'--source-inventory',$SourceInventoryPath,'--policy',$retainedProductModsetRegistry,'--out',$staticProductModsetAdmissionPath) -LogDir (Join-Path $OutDir 'preflight_product_modset_static') -TimeoutSeconds 900 -CancellationGraceSeconds $CancellationGraceSeconds
+    if (-not $staticProductModsetAdmissionGate.passed -or -not (Test-Path -LiteralPath $staticProductModsetAdmissionPath -PathType Leaf)) {
+        throw "static product-modset policy admission failed; see $($staticProductModsetAdmissionGate.stderr)"
+    }
+    $staticProductModsetAdmission = Get-Content -LiteralPath $staticProductModsetAdmissionPath -Raw | ConvertFrom-Json
+    if ([string]$staticProductModsetAdmission.schema -cne 'extractor.product_modset_policy_admission.v1' -or [string]$staticProductModsetAdmission.product_modset_sha256 -cne $productModsetSha256) {
+        throw 'static product-modset policy admission is noncanonical or mismatched'
+    }
+    $admittedProductModsetPolicySha256 = [string]$staticProductModsetAdmission.policy_sha256
+    if ($admittedProductModsetPolicySha256 -cnotmatch '^[0-9a-f]{64}$' -or $retainedProductModsetRegistrySha256 -cne $admittedProductModsetPolicySha256) {
+        throw 'supported product-modset registry differs from its admission receipt'
+    }
+}
 
 $args = @(
     "--pid", "$Hoi4Pid", "--dll", $stagedDll, "--out-dir", $OutDir,
@@ -400,6 +425,12 @@ if ($AcceptanceMode -ne "production") {
     $plan["acceptance_mode"] = $AcceptanceMode
     $plan["acceptance_test_nonce"] = $AcceptanceTestNonce
     $plan["admissible_for_production"] = $false
+} else {
+    $plan["product_modset_admission_sha256"]=(Get-FileHash -LiteralPath $staticProductModsetAdmissionPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $plan["product_modset_policy_sha256"]=$retainedProductModsetRegistrySha256
+    $plan["retained_product_modset_policy"]=$retainedProductModsetRegistry
+    $plan["product_modset_policy_entry_id"]=[string]$staticProductModsetAdmission.entry_id
+    $plan["product_modset_classification"]=[string]$staticProductModsetAdmission.classification
 }
 # Optional rung-identity binding (additive): when the acceptance ladder drives this
 # launcher for a specific F6 rung it passes -Rung, which is recorded in the plan so the
@@ -470,6 +501,21 @@ if ($null -ne $preparedModsetReceipt -and (
     [string]$preparedModsetReceipt.process.executable_sha256 -cne $exeSha.ToLowerInvariant()
 )) { throw "prepared product-modset receipt is for a different the game process identity" }
 $plan["exe_sha256"]=$exeSha.ToLowerInvariant()
+if ($AcceptanceMode -eq 'production' -and $null -ne $preparedModsetReceipt) {
+    $productModsetAdmissionPath = Join-Path $OutDir 'prepared_product_modset_admission.json'
+    $productModsetAdmissionGate = Invoke-IndependentCaptureGate -Name 'product_modset_policy' -FilePath $PythonExe -Arguments @($productModsetVerifier,'--exe',$exePath,'--prepared',$PreparedProductModsetDir,'--admission-policy',$retainedProductModsetRegistry,'--out',$productModsetAdmissionPath) -LogDir (Join-Path $OutDir 'preflight_product_modset') -TimeoutSeconds 900 -CancellationGraceSeconds $CancellationGraceSeconds
+    if (-not $productModsetAdmissionGate.passed -or -not (Test-Path -LiteralPath $productModsetAdmissionPath -PathType Leaf)) {
+        throw "prepared product-modset policy admission failed; see $($productModsetAdmissionGate.stderr)"
+    }
+    $productModsetAdmission = Get-Content -LiteralPath $productModsetAdmissionPath -Raw | ConvertFrom-Json
+    if ([string]$productModsetAdmission.schema -cne 'extractor.product_modset_capture_admission.v1' -or [string]$productModsetAdmission.verdict -cne 'passed' -or [string]$productModsetAdmission.product_modset_sha256 -cne $productModsetSha256 -or [string]$productModsetAdmission.product_modset_admission.schema -cne 'extractor.product_modset_policy_admission.v1') {
+        throw 'prepared product-modset verifier emitted a noncanonical or mismatched policy admission'
+    }
+    if ([string]$productModsetAdmission.product_modset_admission.policy_sha256 -cne [string]$staticProductModsetAdmission.policy_sha256 -or [string]$productModsetAdmission.product_modset_admission.entry_id -cne [string]$staticProductModsetAdmission.entry_id) {
+        throw 'prepared and static product-modset policy admissions disagree'
+    }
+    $plan["prepared_product_modset_admission_sha256"]=(Get-FileHash -LiteralPath $productModsetAdmissionPath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 $plan["domain57_game_speed_gate_v2_sha256"]=$speedRootGateSha
 $plan["process_start_utc"]=$game.StartTime.ToUniversalTime().ToString('o')
 $plan["process_creation_filetime_utc"]=$processCreationFiletimeUtc
@@ -478,6 +524,9 @@ $planSha=(Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInv
 
 $preflightStatic = Invoke-IndependentCaptureGate -Name "preflight_static_bundle" -FilePath $PythonExe -Arguments @($staticBundleScript,"verify","--bundle",$StaticBundleDir,"--exe",$exePath,"--mod-state",$ModStatePath,"--dlc-state",$DlcStatePath,"--load-order",$LoadOrderPath,"--source-inventory",$SourceInventoryPath,"--live-resolution-report",$LiveResolutionReportPath,"--allow-deferred-token-gate") -LogDir (Join-Path $OutDir "preflight") -TimeoutSeconds 900 -CancellationGraceSeconds $CancellationGraceSeconds
 if (-not $preflightStatic.passed) { throw "static bundle failed binding verification; see $($preflightStatic.stderr)" }
+if ($AcceptanceMode -eq 'production' -and ((Get-FileHash -LiteralPath $retainedProductModsetRegistry -Algorithm SHA256).Hash.ToLowerInvariant() -cne $admittedProductModsetPolicySha256)) {
+    throw 'supported product-modset registry changed after admission'
+}
 
 New-Item -ItemType Directory -Path $AttemptStateRoot -Force | Out-Null
 $attemptMarkerPath=Join-Path $AttemptStateRoot ("hoi4_pid_{0}.unresolved.json" -f $Hoi4Pid)

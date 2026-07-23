@@ -1,7 +1,7 @@
 //! Fail-closed a729 CTA1 pre-collapse call-site observer.
 //!
-//! The installer is fully engineered, but cannot mutate process code while the
-//! H-CONVOY receipt is absent and the activation latch remains false. It
+//! The installer is gated by the exact-a729 static authority and full byte
+//! window. It
 //! replaces only the authenticated five-byte CALL with a rel32 call to a near
 //! relay; the relay performs a pointer-free absolute jump to the Rust ABI
 //! wrapper. The wrapper invokes the original aggregator exactly once and emits
@@ -13,10 +13,15 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 use std::collections::{BTreeSet, VecDeque};
+use std::ffi::OsString;
+use std::io::Read;
+use std::os::windows::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::convoy_terminal_attribution::{
     activation_blockers, capture_candidate, prepare_a729_hook, A729PreCollapseRegisters,
@@ -104,6 +109,7 @@ extern "system" {
     fn GetCurrentProcessId() -> Dword;
     fn GetCurrentThreadId() -> Dword;
     fn GetModuleHandleW(module_name: *const u16) -> Handle;
+    fn GetModuleFileNameW(module: Handle, filename: *mut u16, size: Dword) -> Dword;
     fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
     fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
     fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
@@ -1050,9 +1056,9 @@ fn read_stable_i32(memory: &ProcessMemory, address: usize) -> Option<i32> {
     (read_i32(memory, address)? == first).then_some(first)
 }
 
-/// Install only after the exact-ten and H-CONVOY hashes are pinned and the
-/// compile-time activation latch is reviewed true. In the current source tree
-/// this always returns `PromotionBlocked` before any process mutation.
+/// Install only after the fresh exact-a729 static authority and compile-time
+/// activation gate are present. Any missing gate returns `PromotionBlocked`
+/// before process mutation.
 pub fn install_convoy_terminal_hook(
     executable_sha256: &str,
 ) -> Result<(), ConvoyTerminalInstallError> {
@@ -1064,8 +1070,7 @@ pub fn install_convoy_terminal_hook(
 }
 
 /// Install the exact hook only for the isolated H-CONVOY loss/no-loss capture.
-/// Production activation and the accepted control-pair hash deliberately stay
-/// blocked while this acquisition path is armed by its launch environment.
+/// This regression-only acquisition path does not mint production authority.
 pub fn install_convoy_terminal_evidence_hook(
     executable_sha256: &str,
 ) -> Result<(), ConvoyTerminalInstallError> {
@@ -1080,6 +1085,13 @@ fn install_convoy_terminal_hook_inner(
     enforce_production_activation: bool,
 ) -> Result<(), ConvoyTerminalInstallError> {
     if !executable_sha256.eq_ignore_ascii_case(A729_EXE_SHA256) {
+        return Err(ConvoyTerminalInstallError::BinaryGate);
+    }
+    // The caller's expected hash is a policy input, not an observation. Hash
+    // the executable backing the current process before any allocation or
+    // code mutation so passing the a729 constant cannot make the binary gate
+    // tautological. The exact in-memory call window is revalidated below.
+    if current_process_executable_sha256()?.as_str() != A729_EXE_SHA256 {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
     let mut state = INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -1151,6 +1163,35 @@ fn install_convoy_terminal_hook_inner(
     INSTALLED.store(true, Ordering::Release);
     drop(suspended);
     Ok(())
+}
+
+fn current_process_executable_sha256() -> Result<String, ConvoyTerminalInstallError> {
+    let mut path = [0u16; 32_768];
+    let len = unsafe {
+        GetModuleFileNameW(
+            ptr::null_mut(),
+            path.as_mut_ptr(),
+            path.len() as Dword,
+        )
+    } as usize;
+    if len == 0 || len >= path.len() {
+        return Err(ConvoyTerminalInstallError::BinaryGate);
+    }
+    let path = PathBuf::from(OsString::from_wide(&path[..len]));
+    let mut file = std::fs::File::open(path)
+        .map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn restore_and_quiesce_convoy_terminal_hook(

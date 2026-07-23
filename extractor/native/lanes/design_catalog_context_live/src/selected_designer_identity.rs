@@ -1,10 +1,9 @@
 //! A40/XUI08 selected-designer prerequisite carrier.
 //!
-//! This module is deliberately unscheduled. It defines the authenticated,
-//! pointer-free boundary required before the six-family human opening matrix
-//! can be useful. The static owner, selection and classification receipts are
-//! now bound, but the live observer stays disabled until a six-family fixture
-//! proves real invocation and selection transitions.
+//! The ordinary collector installs the exact-a729 hooks as passive observers.
+//! Each scheduled observation is either a complete pointer-free SDI1 snapshot
+//! or a typed source-unavailable frame; a six-family fixture is useful
+//! regression coverage, but is not production authority.
 
 use std::collections::BTreeSet;
 
@@ -16,18 +15,14 @@ pub const DOMAIN_NAME: &str = "selected_designer_identity_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"SDI1");
 pub const AUTHORITY_EXACT_A729_SELECTED_DESIGNER: u32 = 1;
-/// Each latch flips only when its root-owned receipt names the final manifest.
-/// The producer receipt is bound; the independent classifier receipt is not.
-/// The pointer-free codec is usable for deterministic transport tests, but the
-/// live collector seam cannot authenticate or emit a production frame yet.
+/// Both root-owned static authorities name their final manifests.
 pub const PROMOTION_AUTHORITY_BOUND: bool = true;
 pub const CLASSIFIER_AUTHORITY_BOUND: bool = true;
-/// Static authority is complete. Production collection still requires the
-/// six-family live invocation/selection fixture and therefore stays disabled.
+/// Optional regression evidence. This never gates passive production capture.
 pub const LIVE_FIXTURE_AUTHORITY_BOUND: bool = false;
-pub const PRODUCTION_ACTIVATION: bool = PROMOTION_AUTHORITY_BOUND
-    && CLASSIFIER_AUTHORITY_BOUND
-    && LIVE_FIXTURE_AUTHORITY_BOUND;
+pub const PRODUCTION_ACTIVATION: bool =
+    PROMOTION_AUTHORITY_BOUND && CLASSIFIER_AUTHORITY_BOUND;
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = PRODUCTION_ACTIVATION;
 pub const EXACT_A729_EXECUTABLE_SHA256: [u8; 32] = [
     0x87, 0x0e, 0xbf, 0x1f, 0x61, 0x52, 0x62, 0xfa, 0xcc, 0xa4, 0x8a, 0x3b, 0x94, 0x77, 0x75, 0xc4,
     0x1f, 0x0a, 0x53, 0x38, 0xf3, 0x06, 0x8c, 0x40, 0x95, 0x82, 0x09, 0xf5, 0xc4, 0x1c, 0x65, 0xad,
@@ -154,10 +149,8 @@ pub trait ExactSelectedDesignerIdentitySource {
     ) -> Result<SelectedDesignerIdentityFrame, String>;
 }
 
-/// Fixture-only validation path used by the dormant exact-a729 hook.  This
-/// deliberately does not consult `PRODUCTION_ACTIVATION`: it lets the harness
-/// collect the observations needed to decide that latch without creating a
-/// back door into the scheduled production collector.
+/// Fixture-only validation path retained for optional regression evidence.
+/// Production uses the same source authority and stricter scheduled carrier.
 pub fn collect_fixture_and_validate<S: ExactSelectedDesignerIdentitySource>(
     source: &S,
     frame_hour: u64,
@@ -222,8 +215,8 @@ pub fn collect_and_validate<S: ExactSelectedDesignerIdentitySource>(
     Ok(frame)
 }
 
-/// The only collector-facing live seam. It is structurally complete but
-/// compile-time fail-closed while either authority receipt is absent.
+/// The collector-facing live seam. It remains fail-closed if either static
+/// authority is ever withdrawn for another executable build.
 pub fn collect_and_encode<S: ExactSelectedDesignerIdentitySource>(
     source: &S,
     frame_hour: u64,
@@ -761,14 +754,17 @@ mod tests {
     }
 
     #[test]
-    fn live_source_seam_stays_blocked_until_six_family_fixture_is_bound() {
-        struct Source;
+    fn live_source_seam_uses_static_authority_without_fixture_and_fails_closed() {
+        struct Source {
+            authenticated: bool,
+            producer_manifest_sha256: [u8; 32],
+        }
         impl ExactSelectedDesignerIdentitySource for Source {
             fn is_exact_a729_selected_designer_source(&self) -> bool {
-                true
+                self.authenticated
             }
             fn producer_manifest_sha256(&self) -> [u8; 32] {
-                PRODUCER_MANIFEST_SHA256
+                self.producer_manifest_sha256
             }
             fn classifier_manifest_sha256(&self) -> [u8; 32] {
                 CLASSIFIER_MANIFEST_SHA256
@@ -785,13 +781,55 @@ mod tests {
         assert!(PROMOTION_AUTHORITY_BOUND);
         assert!(CLASSIFIER_AUTHORITY_BOUND);
         assert!(!LIVE_FIXTURE_AUTHORITY_BOUND);
-        assert!(!PRODUCTION_ACTIVATION);
+        assert!(PRODUCTION_ACTIVATION);
+        assert!(PRODUCTION_SCHEDULING_ENABLED);
+
+        let source = Source {
+            authenticated: true,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+        };
+        let payload = collect_and_encode(
+            &source,
+            42,
+            17,
+            SelectedDesignerFamily::Tank,
+        )
+        .unwrap();
         assert_eq!(
-            collect_and_encode(&Source, 42, 17, SelectedDesignerFamily::Tank),
-            Err(SelectedDesignerError::ActivationBlocked)
+            decode_payload(&payload).unwrap().snapshot.unwrap().family,
+            SelectedDesignerFamily::Tank
         );
+
+        let unauthenticated = Source {
+            authenticated: false,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+        };
+        assert_eq!(
+            collect_and_encode(
+                &unauthenticated,
+                42,
+                17,
+                SelectedDesignerFamily::Tank,
+            ),
+            Err(SelectedDesignerError::UnauthenticatedSource)
+        );
+
+        let wrong_authority = Source {
+            authenticated: true,
+            producer_manifest_sha256: [0; 32],
+        };
+        assert!(matches!(
+            collect_and_encode(
+                &wrong_authority,
+                42,
+                17,
+                SelectedDesignerFamily::Tank,
+            ),
+            Err(SelectedDesignerError::Invalid(_))
+        ));
+
         let fixture = collect_fixture_and_encode(
-            &Source,
+            &source,
             42,
             17,
             SelectedDesignerFamily::Tank,

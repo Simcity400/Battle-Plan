@@ -7,12 +7,17 @@ update ledgers as usual.
 
 Canonical dependency authority is
 `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`:
-55 atomic cards are implementation-ready autonomous external-state acquisitions,
-zero require user action, zero are unresolved RE/engineering, zero currently
-have an admitted runtime receipt, and 12 product decisions remain separate. The
+55 historical H-* cards are optional, nonblocking regression/evidence
+acquisitions; zero require user action and none globally gates product
+activation. Known unsupported feature slices remain explicitly unavailable:
+d71 technology-canvas and heterogeneous MIO aggregate-bonus identity, d73 complete politics producer taps,
+d74 power-balance semantic sealing, d87 complete decision-panel semantic-supplement production,
+and A25 common-GUI pre-render owner authority. All 12
+product decisions are resolved. The
 sole genuine external dependency is CID1 multiplayer arm M3, which requires a
-second physical machine and is tracked separately. Wave 6 static RE and production wiring passed the root-owned
-centralized Final/All validation. H-* is retained only as a stable card prefix;
+second physical machine and is tracked separately. Historical Wave 6 static RE
+and production wiring passed its root-owned centralized Final/All validation;
+the current source set still requires the final central validation. H-* is retained only as a stable card prefix;
 it does not mean that a human must operate the game or interpret evidence.
 
 ## 1. Extractor
@@ -20,7 +25,7 @@ it does not mean that a human must operate the game or interpret evidence.
 Detail: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` (§A/B/D/E/F/P/S/X)
 and `extractor/documents/RE_REMAINING.md`.
 
-- **Autonomous acceptance/activation (§A):** A5 ace events, A7 terminal
+- **Optional regression observations and feature-local omissions (§A):** A5 ace events, A7 terminal
   convoy-route acceptance, A18 dynamic modifiers, A19 delayed events, A23
   CProgram owner-tag equality, and A24–A40 selected-Present/runtime matrices.
   Their static RE, fail-closed production routes, and centralized validation are
@@ -43,11 +48,11 @@ and `extractor/documents/RE_REMAINING.md`.
   transitions are optional regression validation.)
   (A11, A13, A16, A17, A20, and X9 are closed/centrally validated; historical
   root-validation or human-fixture wording for them is stale.)
-  (A23 remains activation-blocked only on the autonomous paused 26/26 d65
-  owner-equality receipt; d41 lifecycle/reward history and X9 specialization
-  identity are closed.)
+  (A23's optional paused 26/26 d65 owner-equality receipt is regression
+  evidence only; d41 lifecycle/reward history and X9 specialization identity
+  are closed. Production support is determined by exact code authority.)
 - **Deep-root acceptance (§B):** B4 sunk-convoys, B5 war threat/instigator, and
-  B7 raids retain autonomous paused receipts. B1/B2/B6 production routes are
+  B7 raids retain optional paused regression receipts. B1/B2/B6 production routes are
   centrally validated; B3 is subsumed by A35.
   (B2 RESOLVED 2026-07-19: promotion-ready — PASS 8/8 in
   `extractor/re_evidence/B2_COUNTRY_CONVOYS/`; RE_REMAINING was stale, fixed.)
@@ -62,21 +67,20 @@ and `extractor/documents/RE_REMAINING.md`.
 - **Save-family dispositions (§E):** no semantic RE remains in E12–E29. E16
   claims, E17 cores, and E27 dynamic-major status are carried by the fail-closed
   CIM1 path and centrally validated. E14 retains one ordinary mechanically
-  regraded promotion receipt; every other row is closed, captured by an exact
+  regraded regression receipt; every other row is closed, captured by an exact
   carrier, or evidence-backed rejection.
-- **Build/ops (§F):** F1b is closed by the green centralized Final/All battery.
-  Remaining work is F3 Windows capability gates, F5 truthful acceptance
-  telemetry, and the autonomous F6 acceptance ladder/soak evidence.
-- **Product pillars (§P):** P1 auto-attach product closure (packaging, tray,
-  graceful stop, heartbeat), P2 duplex activation (collector H4CT/CID1
-  client, durable sink/stdout replacement, live peer/deadline/cancellation/
-  liveness proof, rollover — then flip
-  `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`), P3 autonomous campaign-identity
-  matrix (sequence-zero/CFA1 barriers and coordinator implemented), P4 stitching
-  production call site, P5 dormant stitch-input hardening.
-- **Static/oracle (§S):** S4 is no longer blocked by F1b; S7 atlas generator
-  independence residual, S8 exhaustive save-oracle fixtures (peace-conference,
-  naval-battle, land/air-combat, special-project, restored outputs), S9 live
+- **Build/ops (§F):** F1b's historical green battery is not authority for the
+  current implementation diff. F3 capability gates, F5 truthful acceptance
+  telemetry, and the F6 ladder/soak tooling are implemented; current central
+  validation and any elected optional platform/runtime evidence remain.
+- **Product pillars (§P):** P1's ordinary desktop-window auto-attach/package
+  route, P2 duplex activation, P3 same-machine campaign identity, P4 production
+  stitching call site, and P5 stitch-input hardening are implemented. Current
+  central validation/refreeze remains pending. CID1 M3 is the only external
+  dependency; other live matrices are optional nonblocking regression evidence.
+- **Static/oracle (§S):** S4 is no longer blocked by F1b. S7's independent atlas
+  generator and S8's exhaustive fail-closed save-oracle fixture disposition are
+  implemented; current central validation remains pending. S9 live
   static-bundle admission across each selected product modset. A current-session
   seven-artifact bundle has been produced and admitted; repeated modset coverage
   remains H-MODSET-CAPTURE. S1 is closed: all seven
@@ -89,12 +93,14 @@ and `extractor/documents/RE_REMAINING.md`.
   semantic RE is authorized.
 - **Coverage sweeps (§X):** X1a–c, X2b–d, X3, X4 deployment queues, X8 order
   membership, X9 projects, X10 direct hooks, X11 expected-partial narrowing,
-  X12 sub-hour timing.
+  and X12 sub-hour timing are implemented. Their current-diff validation/refreeze
+  remains pending; named runtime receipts are optional nonblocking regression evidence.
 - **Acceptance tooling:** synthetic-fault and paused-proof harnesses, the six-rung
   ladder, verified affinity apply/restore, idle-cost measurement, D57
   emission-vs-raw comparison, and CID1 lifecycle/multiplayer coordination are
-  implemented. Remaining product integration is P4's stitch callsite and P1's
-  packaging/tray surface; their external acceptance runs stay agent-owned.
+  implemented, including P4's stitch callsite and P1's portable desktop-window
+  product surface. Current validation remains; any legacy client-driving helper
+  is opt-in evidence tooling only and is not part of the production route.
 - **2026-07-14 session-close residue:** retired as an archived dispatch snapshot.
   Current production ledgers, the centralized Final/All result, and the canonical
   dependency register supersede its `REVISE`/re-gate labels.
@@ -105,22 +111,24 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
 
 - **XUI21 fired-event popup coverage:** the common fire hook, pending baseline,
   materialisation, player/AI/timeout paths, d75/A25 owner joins, and zero-loss
-  completeness contract are implemented fail-closed. Run H-POPUP's pinned
-  five-class/four-resolution matrix. This is a mechanically graded runtime
-  coverage run, not human RE; no further producer discovery is open.
+  completeness contract are implemented fail-closed. H-POPUP's pinned
+  five-class/four-resolution matrix is optional regression evidence, not a
+  product gate or human RE; no further producer discovery is open.
 - **Map-label B10 integration:** reverse engineering is closed: the engine keys
   country labels by province controller and uses the authenticated selector-wide
   mapname CB1 carrier. Project measured `control_by_province` rows and emit the
   exact semantic token; no wartime owner/controller or alpha-fitting capture remains.
 - **Weather rendering:** the retained 423-hour d24 temporal gate passed and
-  Wave 6 closes the exact SnowMud CPU producer/upload boundary. Promotion still
-  needs the existing early-launch collector to record two content-changing H
-  rows plus matching replay H2 readbacks. That is an autonomous, mechanically
-  graded capture transition, not additional RE or human interpretation.
+  Wave 6 closes the exact SnowMud CPU producer/upload boundary. The product
+  consumes authenticated per-observation state and leaves unobserved initial or
+  update ownership typed unavailable. H-XN14Q content-changing rows and replay
+  readbacks are optional regression evidence; they do not promote or activate
+  weather behavior.
 
 - **XUI27 final UI composition** — replay-owned terminal composition is
-  PROVEN and centrally validated. Its six extractor-boundary rows remain
-  explicit external-input gates and do not reopen replay-side RE.
+  implemented and historically validated; current content-addressed refreeze is
+  pending. Its six extractor-boundary rows are optional nonblocking regression
+  evidence and do not reopen replay-side RE or block the base product.
 - **Adversarial release-review wave** — by program policy ALL adversarial
   review was deferred until after freeze; it has never run.
 - **Reissue the finalization receipt** with stable SHAs after the fix wave
@@ -156,24 +164,19 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
     normalized" / selection-digest mismatch). Decide: version-gate the new
     rule to v2 manifests, or accept that pre-wave recordings with
     non-ASCII paths need re-recording.
-  **Still open from the wave (held or lane-blocked):**
+  **Current disposition after the landed follow-up implementation:**
   - G2 exact synchronized-pixel acquisition: autonomously acquire one authenticated
     close-zoom engine MainScene/map-target readback and portable-replay render
     for the same render boundary, hour, physical viewport, graphics settings,
     language, DLC/mod VFS, camera, and POV. Retain both 32-bit BGRA planes and
     require the receipt-bound gate to report `mismatch_pixels=0` and
     `max_channel_delta=0`; typed-state hashes and receipts without pixels do not qualify.
-  - Container open cost (remaining parts, owner decision): full
-    decompress+CRC at open, whole-file RAM residency, O(hours) frame scan —
-    lazy/streamed design changes fail-closed timing semantics.
-  - Container-spec §4.3 NFC path-collision rejection + `EntryRec.verified`
-    wiring (lane-blocked, unapplied).
-  - Further confirmed findings held for owner decisions (including high-priority
-    replay_core extractor-coupled tests, silent
-    UpdateSubresource failure, corrupt-JSON→'absent' store degrades, stale
-    committed fixture corpus, zero CI/pinned toolchain, stale
-    final_integration FROZEN/PASS receipts). Full list: workflow output
-    `wj03rsxj7.output` (machine-local).
+  - Lazy container verification/opening, transactional prefold spooling,
+    Unicode/NFC path-collision rejection, and `EntryRec.verified` wiring are
+    implemented; current central validation is pending.
+  - CI and the pinned Rust toolchain are present. Old final-integration
+    `FROZEN`/`PASS` receipts are historical until the current source set is
+    centrally validated and content-addressed receipts are reissued.
 - **Capture-gated residuals** (CAP1–CAP11 verified against the board
   2026-07-19 — 10 of 11 closed/superseded by the XN/XUI program):
   - **CAP6 counter rendering** — Wave 6 proves the live counter owner/root/
@@ -203,18 +206,20 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
 
 ## 3. Seam (both directions)
 
-See `SEAM_CONTRACTS.md`. Extractor-side A24–A40 routes are implemented
-fail-closed and now wait on their named autonomous acquisition/activation gates.
+See `SEAM_CONTRACTS.md`. Extractor-side A24–A40 implemented routes fail closed.
+Optional acquisition receipts do not activate them; unsupported feature slices
+listed above remain unavailable until their named engineering authority exists.
 X-DECODER is closed. X-ENDEDCOMBAT is implemented and awaits central regression
-validation. The completed legacy dedup exposed two genuine replay integration
-seams—X-DLCLIST-NAME1B and X-COUNTER-BIND—plus the upstream A15-orgmax value gap.
+validation. X-DLCLIST-NAME1B is closed through the authenticated session-DLC
+consumer. X-COUNTER-BIND and the upstream A15-orgmax value are implemented.
+Current central regression validation/refreeze is the remaining seam work.
 
 ## 4. Owner-run / owner decisions
 
-The only questions reserved for the user are the 12 product choices in the
-canonical register (signing/trust, install/update policy, Windows mitigations,
-product surface, supported modsets, and the reference weak-PC/GPU budget).
-Everything else in this section is agent-owned execution or engineering.
+All 12 product choices in the canonical register are resolved. CID1 M3's second
+physical machine remains the sole genuine external dependency. Everything else
+in this section is agent-owned implementation, validation, or optional
+nonblocking regression evidence.
 
 - **Autonomous acceptance sequences:** the canonical register and its authorized
   defaults supersede the old operator-question list. Use retained/paused D04,
@@ -234,17 +239,22 @@ Everything else in this section is agent-owned execution or engineering.
   capability at its interactive, headless, and validate/open boundaries through
   one product-owned spool policy; it exposes the source receipt and has no
   ordinary/raw fallback.
-- **F1 performance contract:** name the reference weak-PC/GPU class and
-  frame-time budget; then the headless bench gets built.
-- **Replay-loader TOCTOU decision** (user-gated; two non-production
-  finalizers).
+- **F1 performance contract:** the headless path is implemented. Reference
+  hardware execution is optional post-build performance evidence; absence of an
+  F1 receipt never blocks recording, packaging, opening, or replay.
+- **Replay-loader TOCTOU:** the product-owned bounded spool/finalizer path is
+  implemented. Legacy client-driving or alternate finalizer workflows are
+  opt-in nonproduction evidence/debug paths only.
 - **Rescue branches** (local-only, from
   `archive/GIT_CONSOLIDATION_2026-07-19.md`): `rescue/weather-leaf-soundness`
-  (run its 3 tests vs master — master may have REGRESSED the open-vocab
-  weather-leaf masking fix), `rescue/acceptance-telemetry-f5` (port or
+  is **already landed / obsolete** — HEAD retains `_owed_open_vocab_weather_leaf`
+  plus the `assert_well_formed`, `_manifest_covering_paths`, exclusion-catalog,
+  and `collect_universe` OWED-provenance selectors, with the no-mask regression
+  tests in `extractor/coverage_audit/test_save_oracle.py`; do not cherry-pick
+  the older rescue branch. `rescue/acceptance-telemetry-f5` (port or
   descope), `rescue/replay-layer-checkpoint` (parity review, then drop).
-- **Trigger the adversarial release-review wave** after the current seam fixes,
-  autonomous input activation, and stable refreeze are in.
+- **Trigger the adversarial release-review wave** after the current seam fixes
+  and stable refreeze are in. Optional H-* or F1 receipts are not prerequisites.
 
 ## 5. Documentation debt (doc says X, reality is Y)
 

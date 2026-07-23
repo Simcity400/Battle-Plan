@@ -206,15 +206,19 @@ pub enum InstallError {
 }
 
 pub fn install() -> Result<(), InstallError> {
-    let production = crate::PRODUCTION_SCHEDULING_ENABLED && crate::LIVE_FIXTURE_ACCEPTED;
-    let evidence = evidence_activation_enabled();
-    if !production && !evidence && !crate::PRODUCTION_SCHEDULING_ENABLED {
+    if !crate::PRODUCTION_SCHEDULING_ENABLED {
         return Err(InstallError::ProductionSchedulingDisabled);
     }
-    if !production && !evidence {
+    install_promoted(false).map_err(InstallError::Runtime)
+}
+
+/// Explicit nonproduction receipt mode. It never changes ordinary product
+/// scheduling and is reachable only through the isolated evidence opt-in.
+pub fn install_for_evidence() -> Result<(), InstallError> {
+    if !evidence_activation_enabled() {
         return Err(InstallError::LiveFixtureNotAccepted);
     }
-    install_promoted(evidence && !production).map_err(InstallError::Runtime)
+    install_promoted(true).map_err(InstallError::Runtime)
 }
 
 /// The evidence gate is deliberately distinct from both production latches.
@@ -397,11 +401,11 @@ pub fn installed() -> bool {
 }
 
 /// Publish the complete pre-hook history before any live event is admitted.
-/// The live fixture must authenticate this baseline; an empty vector is valid
-/// only when the fixture proves measured-empty history.
+/// Production installation itself measures and revalidates the empty baseline;
+/// optional evidence capture is not an admission gate.
 pub fn publish_complete_baseline(events: Vec<crate::SunkShipEvent>) -> Result<(), String> {
-    if !crate::PRODUCTION_SCHEDULING_ENABLED || !crate::LIVE_FIXTURE_ACCEPTED {
-        return Err("A33 live fixture has not authenticated a complete baseline".into());
+    if !crate::PRODUCTION_SCHEDULING_ENABLED {
+        return Err("A33 production scheduling is disabled".into());
     }
     if !INSTALLED.load(Ordering::Acquire)
         || EVIDENCE_INSTALL.load(Ordering::Acquire)

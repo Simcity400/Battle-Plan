@@ -340,7 +340,7 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             // The scrub UI's seek/play_to hooks resolve identically and land the
             // exact recorded hour (E1 conformance, re-checked end-to-end here).
             assert_eq!(provider.seek_hour(hour), provider.play_to_hour(hour));
-            assert_eq!(provider.seek_hour(hour), Some(hour));
+            assert_eq!(provider.seek_hour(hour), Ok(hour));
             // Owners flow through the same primitive the scrub reads.
             let _ = provider.owners_at(hour).expect("provider owners");
 

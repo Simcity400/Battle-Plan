@@ -1,0 +1,118 @@
+name: Rust production validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - ExtractorV2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A branch push and its pull_request synchronization carry the same head
+  # SHA. One cancels the other instead of running the four-hour battery twice.
+  group: rust-production-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  final:
+    name: Central final battery
+    runs-on: windows-2022
+    timeout-minutes: 240
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13.14'
+          check-latest: false
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.0-x86_64-pc-windows-msvc --profile minimal
+          rustup override set 1.96.0-x86_64-pc-windows-msvc
+
+      - name: Install pinned cargo-nextest
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: cargo-nextest@0.9.140
+          fallback: none
+          checksum: true
+
+      # Pull requests may restore caches written by trusted branch pushes, but
+      # never save cache contents. This prevents untrusted PR code from
+      # poisoning persistent compiler inputs for later production runs.
+      - name: Restore trusted Cargo source cache
+        id: rust-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: rust-sources-${{ runner.os }}-1.96.0-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Run deterministic Python contract tests
+        shell: pwsh
+        run: |
+          $observedPython = (& python --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $observedPython -cne 'Python 3.13.14') {
+            throw "Pinned Python 3.13.14 is required; observed '$observedPython'"
+          }
+          $pythonPath = (Get-Command python -CommandType Application -ErrorAction Stop).Source
+          Write-Host "Pinned Python contract-test interpreter: $observedPython at $pythonPath"
+          $tests = @(
+            'extractor/game_defs/tests/test_product_modset_admission.py',
+            'extractor/native/scripts/tests/test_campaign_identity_matrix_passive.py',
+            'extractor/save_oracle/test_parse_intel_peace.py',
+            'replay_interface/re_evidence/rendering_laws/final_integration/authority_index/test_finalize_production.py'
+          )
+          foreach ($test in $tests) {
+            & python (Join-Path '${{ github.workspace }}' $test)
+            if ($LASTEXITCODE -ne 0) {
+              throw "deterministic Python contract test failed: $test"
+            }
+          }
+
+      - name: Run deterministic PowerShell contract self-tests
+        shell: pwsh
+        run: |
+          $tests = @(
+            'ProductionCapture.Validation.ps1',
+            'Get-FullGameSizeProjection.ps1',
+            'Invoke-AcceptanceLadder.ps1'
+          )
+          foreach ($test in $tests) {
+            $path = Join-Path '${{ github.workspace }}\extractor\native\scripts' $test
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $path -SelfTest
+            if ($LASTEXITCODE -ne 0) {
+              throw "deterministic PowerShell contract self-test failed: $test"
+            }
+          }
+
+      - name: Run the authorized centralized validation
+        shell: pwsh
+        run: >-
+          powershell.exe -NoProfile -ExecutionPolicy Bypass
+          -File "${{ github.workspace }}\extractor\native\scripts\Invoke-CentralRustValidation.ps1"
+          -Mode Final -Workspace All -CacheMode Iterative
+
+      - name: Save trusted Cargo source cache
+        if: github.event_name == 'push' && success() && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

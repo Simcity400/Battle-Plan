@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use map_viewer::GameFileResolver;
+use replay_core::{ArmyBattleplanOrderKey, ArmyBattleplanOwnerKey, ViewStatus, WorldFrame};
 use winapi::um::winuser::{
     VK_ADD, VK_ESCAPE, VK_LEFT, VK_OEM_4, VK_OEM_6, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD,
     VK_OEM_PLUS, VK_RIGHT, VK_SPACE, VK_SUBTRACT,
@@ -32,7 +33,10 @@ const KEY_PAN_SCREEN_PX_PER_SEC: f64 = 900.0;
 const MAX_FRAME_DT: f64 = 0.25;
 
 const VK_A: i32 = 0x41;
+const VK_B: i32 = 0x42;
+const VK_C: i32 = 0x43;
 const VK_D: i32 = 0x44;
+const VK_M: i32 = 0x4D;
 const VK_N: i32 = 0x4E;
 const VK_O: i32 = 0x4F;
 const VK_R: i32 = 0x52;
@@ -50,6 +54,98 @@ struct DragState {
     start_center_x: f64,
 }
 
+/// Product-owned army/order selection for the typed d54 battleplan companion.
+///
+/// The current map route has no authenticated unit/counter hit-test event, so
+/// startup deliberately leaves this empty. Explicit B/M keyboard input cycles
+/// only identities already admitted from the current typed frame; the render
+/// path never infers a first army or order without that user action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BattleplanSelectionState {
+    selected_owner: Option<ArmyBattleplanOwnerKey>,
+    selected_order_key: Option<ArmyBattleplanOrderKey>,
+}
+
+impl BattleplanSelectionState {
+    pub(crate) fn select_owner(&mut self, owner: ArmyBattleplanOwnerKey) {
+        if self.selected_owner != Some(owner) {
+            self.selected_order_key = None;
+        }
+        self.selected_owner = Some(owner);
+    }
+
+    pub(crate) fn select_order(&mut self, key: ArmyBattleplanOrderKey) {
+        self.selected_owner = Some(key.owner);
+        self.selected_order_key = Some(key);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.selected_owner = None;
+        self.selected_order_key = None;
+    }
+
+    /// Cycle only over typed owners present in the admitted d54 order view.
+    /// This is explicit user input and never guesses a map/unit hit-test.
+    pub(crate) fn cycle_owner(&mut self, frame: &WorldFrame) {
+        let view = frame.army_battleplans();
+        if view.status != ViewStatus::Present {
+            self.clear();
+            return;
+        }
+        let mut owners = view
+            .orders
+            .iter()
+            .map(|order| order.key.owner)
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.is_empty() {
+            self.clear();
+            return;
+        }
+        let next = self
+            .selected_owner
+            .and_then(|selected| owners.iter().position(|owner| *owner == selected))
+            .map(|index| owners[(index + 1) % owners.len()])
+            .unwrap_or(owners[0]);
+        self.select_owner(next);
+    }
+
+    /// Cycle stable order identities under the already selected typed owner.
+    pub(crate) fn cycle_order(&mut self, frame: &WorldFrame) {
+        let Some(owner) = self.selected_owner else {
+            return;
+        };
+        let view = frame.army_battleplans();
+        if view.status != ViewStatus::Present {
+            self.selected_order_key = None;
+            return;
+        }
+        let orders = view
+            .orders_for_owner(owner)
+            .map(|order| order.key.clone())
+            .collect::<Vec<_>>();
+        if orders.is_empty() {
+            self.selected_order_key = None;
+            return;
+        }
+        let next = self
+            .selected_order_key
+            .as_ref()
+            .and_then(|selected| orders.iter().position(|key| key == selected))
+            .map(|index| orders[(index + 1) % orders.len()].clone())
+            .unwrap_or_else(|| orders[0].clone());
+        self.select_order(next);
+    }
+
+    fn supplemental_inputs(&self) -> ArmyBattleplanUiSupplementalInputs<'_> {
+        ArmyBattleplanUiSupplementalInputs {
+            selected_owner: self.selected_owner,
+            selected_order_key: self.selected_order_key.as_ref(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ProductProductionD3dRuntime {
     backend: Option<map_viewer::NativeProductionD3dBackend>,
@@ -62,8 +158,7 @@ pub(crate) struct ProductProductionD3dOutcome {
     pub(crate) presented_to_app_target: bool,
     pub(crate) receipt_sha256: String,
     pub(crate) snow_mud_proof: Option<map_viewer::SnowMudD3dExecutionProof>,
-    pub(crate) occupation_secondary_proof:
-        Option<map_viewer::OccupationSecondaryD3dExecutionProof>,
+    pub(crate) occupation_secondary_proof: Option<map_viewer::OccupationSecondaryD3dExecutionProof>,
 }
 
 impl ProductProductionD3dRuntime {
@@ -144,8 +239,7 @@ impl ProductProductionD3dRuntime {
         )?;
         let receipt = map_viewer::execute_production_d3d_frame(frame, &mut executor)?;
         let snow_mud_proof = executor.snow_mud_execution_proof().cloned();
-        let occupation_secondary_proof =
-            executor.occupation_secondary_execution_proof().cloned();
+        let occupation_secondary_proof = executor.occupation_secondary_execution_proof().cloned();
         Ok(ProductProductionD3dOutcome {
             executed_operations: receipt.ordered_draws.len(),
             executed_draw_tokens: receipt
@@ -217,6 +311,13 @@ fn frame_has_authenticated_map_operations(frame: &map_viewer::PreparedProduction
     map_viewer::has_authenticated_d80_map_operations(frame)
 }
 
+/// Bind transport to the authenticated hour index without enumerating dates.
+/// Date metadata remains behind `OwnerProvider::date_at` and is resolved only
+/// by an explicit date-navigation command.
+fn transport_from_provider_index(provider: &dyn OwnerProvider) -> Result<Transport> {
+    Transport::with_lazy_dates(provider.hours().to_vec()).map_err(|error| error.into())
+}
+
 pub fn run(
     bundle: Option<MapBundle>,
     mode: TimelineMode,
@@ -241,25 +342,12 @@ pub fn run(
         content_manifest,
     )?;
     let mut reported_production_data_needs = BTreeSet::new();
-    let hours: Vec<i64> = provider.hours().to_vec();
-    if hours.is_empty() {
-        return Err("timeline provider has no hours".into());
-    }
     // E1 transport: play/pause, speed steps, seek, jump-to-date over the
-    // recording's (hour, date) spine. E6 POV: the country picker source +
-    // the fail-closed POV state object.
-    let dates: Vec<Option<String>> = hours
-        .iter()
-        .map(|hour| provider.date_at(*hour))
-        .collect::<Result<Vec<_>>>()?;
-    let mut transport = match Transport::new(hours.clone(), dates) {
-        Ok(transport) => transport,
-        Err(err) => return Err(err.into()),
-    };
-    // Day-boundary seek-bar ticks (jump-to-date navigation): "," / "." jump to
-    // the previous / next calendar-day boundary. Dates are static, so compute
-    // once. Empty for a dateless recording (navigation degrades to hour steps).
-    let date_ticks = transport.date_ticks();
+    // recording's authenticated hour/date index. The date side is deliberately
+    // lazy: startup must not enumerate every date or decode every frame. E6
+    // POV: the country picker source + the fail-closed POV state object.
+    let mut transport = transport_from_provider_index(provider.as_ref())?;
+    let hours: Vec<i64> = transport.hours().to_vec();
     let pov_picker = provider.pov_picker();
     let mut pov = PovState::new();
     match &pov_picker {
@@ -282,6 +370,7 @@ pub fn run(
     let initial_frame = provider
         .world_frame_at(hours[0])?
         .ok_or("initial replay frame is unavailable")?;
+    transport.apply_recorded_session_timing(initial_frame.session_metadata());
     let initial_display = initial_frame
         .session_metadata()
         .display_variant
@@ -336,6 +425,9 @@ pub fn run(
     let mut production_map_refused_for_displayed_hour = false;
     let mut product_production_d3d = ProductProductionD3dRuntime::default();
     let mut product_selected_present_ui: Option<ProductSelectedPresentRuntime> = None;
+    // No current map/unit callback owns an exact order identity. Keep startup
+    // empty; explicit B/M input below selects only current typed d54 identities.
+    let mut battleplan_selection = BattleplanSelectionState::default();
     // Day/night terminator shading is OFF by default, matching the game's
     // default map view (the captured CB0 gate is off); 'N' toggles it.
     let mut day_night_enabled = false;
@@ -347,6 +439,9 @@ pub fn run(
     let mut last_frame = Instant::now();
 
     loop {
+        let mut cycle_battleplan_owner = false;
+        let mut cycle_battleplan_order = false;
+        let mut clear_battleplan_selection = false;
         let (events, alive) = window.pump();
         if !alive {
             break;
@@ -386,12 +481,18 @@ pub fn run(
                     VK_OEM_MINUS | VK_SUBTRACT => transport.speed_down(),
                     // Jump to the previous / next calendar-day boundary.
                     VK_OEM_COMMA => {
+                        let date_ticks = transport.date_ticks_with(|hour| {
+                            provider.date_at(hour).map_err(|error| error.to_string())
+                        })?;
                         let here = transport.current_index();
                         if let Some(tick) = date_ticks.iter().rev().find(|tick| tick.index < here) {
                             transport.seek_to_index(tick.index);
                         }
                     }
                     VK_OEM_PERIOD => {
+                        let date_ticks = transport.date_ticks_with(|hour| {
+                            provider.date_at(hour).map_err(|error| error.to_string())
+                        })?;
                         let here = transport.current_index();
                         if let Some(tick) = date_ticks.iter().find(|tick| tick.index > here) {
                             transport.seek_to_index(tick.index);
@@ -416,6 +517,12 @@ pub fn run(
                     VK_N => {
                         day_night_enabled = !day_night_enabled;
                     }
+                    // Exact d54 keyboard selection. B cycles typed owners, M
+                    // cycles stable orders under that owner, C clears. These
+                    // identities come only from the admitted replay frame.
+                    VK_B => cycle_battleplan_owner = true,
+                    VK_M => cycle_battleplan_order = true,
+                    VK_C => clear_battleplan_selection = true,
                     VK_A => pan_keys.west = true,
                     VK_D => pan_keys.east = true,
                     _ => {}
@@ -514,7 +621,24 @@ pub fn run(
         // the engine's primary fill and GradientBorder generation law is ported.
         let hour = transport.current_hour();
         let world_frame = provider.world_frame_at(hour)?;
+        if clear_battleplan_selection {
+            battleplan_selection.clear();
+        } else if let Some(frame) = world_frame.as_deref() {
+            if cycle_battleplan_owner {
+                battleplan_selection.cycle_owner(frame);
+            }
+            if cycle_battleplan_order {
+                battleplan_selection.cycle_order(frame);
+            }
+        } else if cycle_battleplan_owner || cycle_battleplan_order {
+            // A requested selection cannot survive an unavailable frame: no
+            // prior-hour identity may masquerade as current product input.
+            battleplan_selection.clear();
+        }
         if uploaded_hour_index != Some(hour_index) {
+            if let Some(frame) = world_frame.as_deref() {
+                transport.apply_recorded_session_timing(frame.session_metadata());
+            }
             production_map_refused_for_displayed_hour = false;
             let owners = provider.owners_at(hour)?;
             let controllers = provider.controllers_at(hour)?;
@@ -611,9 +735,21 @@ pub fn run(
         };
         let speed = transport.speed_hours_per_sec();
         let hour_label = provider.hour_label(hour)?;
+        let recorded_clock_suffix = transport
+            .recorded_clock()
+            .map(|clock| {
+                let state = if clock.paused { "paused" } else { "running" };
+                let tick = clock
+                    .tick_progress_f32_bits
+                    .map(f32::from_bits)
+                    .map(|value| format!(" tick {value:.3}"))
+                    .unwrap_or_default();
+                format!(" | game speed {} {state}{tick}", clock.speed_raw + 1)
+            })
+            .unwrap_or_default();
         // F4: surface any mid-playback anomaly holds (marked HELD), so a held
         // last-good value never reads as live. Empty on clean recordings.
-        let anomaly_note = provider.anomaly_note(hour);
+        let anomaly_note = provider.anomaly_note(hour)?;
         let anomaly_suffix = anomaly_note
             .as_deref()
             .map(|note| format!(" | {note}"))
@@ -624,11 +760,13 @@ pub fn run(
         // debug-only and its line-2 draw can be skipped, so the title is the
         // one surface where a held value can never silently read as live.
         if overlay.as_ref().is_some_and(Overlay::has_text) {
-            window.set_title(&format!("replay_app - {mode_label}{anomaly_suffix}"));
+            window.set_title(&format!(
+                "replay_app - {mode_label}{recorded_clock_suffix}{anomaly_suffix}"
+            ));
         } else {
             let zoom = camera.as_ref().map(|camera| camera.zoom);
             window.set_title(&format!(
-                "replay_app - {mode_label} | {hour_label}{playing} {speed:.0}h/s | {observer_note} | {probe}{}{anomaly_suffix}",
+                "replay_app - {mode_label} | {hour_label}{playing} {speed:.0}h/s{recorded_clock_suffix} | {observer_note} | {probe}{}{anomaly_suffix}",
                 zoom.map(|value| format!(" | zoom {value:.2}")).unwrap_or_default()
             ));
         }
@@ -752,7 +890,7 @@ pub fn run(
                             .ok_or("selected-Present UI has no current world frame")?,
                         pov.active_pov(),
                         runtime_text.as_ref(),
-                        ArmyBattleplanUiSupplementalInputs::default(),
+                        battleplan_selection.supplemental_inputs(),
                         IntelligenceUiSupplementalInputs::default(),
                         OccupationUiSupplementalInputs::default(),
                     )? {
@@ -881,8 +1019,99 @@ mod product_production_d3d_tests {
         VertexBufferBinding, ViewportDesc,
     };
     use sha2::{Digest, Sha256};
+    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::fs;
+    use std::sync::Arc;
+
+    struct StartupDateProbe {
+        hours: Vec<i64>,
+        date_calls: Cell<usize>,
+        frame_calls: Cell<usize>,
+    }
+
+    impl OwnerProvider for StartupDateProbe {
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+
+        fn owners_at(&self, _hour: i64) -> Result<Arc<BTreeMap<u32, String>>> {
+            panic!("transport startup must not materialize owner maps")
+        }
+
+        fn controllers_at(&self, _hour: i64) -> Result<Arc<BTreeMap<u32, String>>> {
+            panic!("transport startup must not materialize controller maps")
+        }
+
+        fn world_frame_at(&self, _hour: i64) -> Result<Option<Arc<WorldFrame>>> {
+            self.frame_calls.set(self.frame_calls.get() + 1);
+            Ok(None)
+        }
+
+        fn date_at(&self, hour: i64) -> Result<Option<String>> {
+            self.date_calls.set(self.date_calls.get() + 1);
+            Ok(Some(format!("1936.1.1.{hour}")))
+        }
+    }
+
+    #[test]
+    fn startup_transport_binding_does_not_enumerate_dates_or_load_frames() {
+        let provider = StartupDateProbe {
+            hours: (0..20).collect(),
+            date_calls: Cell::new(0),
+            frame_calls: Cell::new(0),
+        };
+
+        let transport = transport_from_provider_index(&provider).expect("transport index");
+
+        assert_eq!(transport.len(), 20);
+        assert_eq!(provider.date_calls.get(), 0);
+        assert_eq!(provider.frame_calls.get(), 0);
+    }
+
+    #[test]
+    fn battleplan_selection_is_fail_closed_until_product_input_selects_an_owner() {
+        let selection = BattleplanSelectionState::default();
+        let inputs = selection.supplemental_inputs();
+        assert_eq!(inputs.selected_owner, None);
+        assert_eq!(inputs.selected_order_key, None);
+    }
+
+    #[test]
+    fn battleplan_selection_preserves_stable_order_identity_and_clears_cross_owner_state() {
+        let army = ArmyBattleplanOwnerKey {
+            kind: replay_core::ArmyBattleplanOwnerKind::Army,
+            id: 17,
+        };
+        let selected = ArmyBattleplanOrderKey {
+            owner: army,
+            engine_order_instance_id: 203,
+            generation: 9,
+        };
+        let mut selection = BattleplanSelectionState::default();
+        selection.select_order(selected.clone());
+
+        let inputs = selection.supplemental_inputs();
+        assert_eq!(inputs.selected_owner, Some(army));
+        assert_eq!(inputs.selected_order_key, Some(&selected));
+
+        let army_group = ArmyBattleplanOwnerKey {
+            kind: replay_core::ArmyBattleplanOwnerKind::ArmyGroup,
+            id: 18,
+        };
+        selection.select_owner(army_group);
+        let inputs = selection.supplemental_inputs();
+        assert_eq!(inputs.selected_owner, Some(army_group));
+        assert_eq!(
+            inputs.selected_order_key, None,
+            "an order identity must not leak into a different typed owner selection"
+        );
+
+        selection.clear();
+        let inputs = selection.supplemental_inputs();
+        assert_eq!(inputs.selected_owner, None);
+        assert_eq!(inputs.selected_order_key, None);
+    }
 
     fn sha256(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
@@ -1451,5 +1680,21 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
         assert!(!source.contains(&forbidden_dimension_gate));
         let forbidden = ["copy_main_scene", "_to_proof_texture"].concat();
         assert!(!source.contains(&forbidden));
+    }
+
+    #[test]
+    fn selected_present_callsite_uses_product_battleplan_selection() {
+        let source = include_str!("app.rs");
+        let source = &source[..source.find("#[cfg(test)]").expect("test module marker")];
+        let selected_present = source
+            .find("if let Some(frame) = prepared_selected_present_ui.as_ref()")
+            .expect("selected-Present product route");
+        let selected_present = &source[selected_present..];
+
+        assert!(selected_present.contains("battleplan_selection.supplemental_inputs()"));
+        assert!(
+            !selected_present.contains("ArmyBattleplanUiSupplementalInputs::default()"),
+            "the product route must not discard the app's explicit army/order selection"
+        );
     }
 }

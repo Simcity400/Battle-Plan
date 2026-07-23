@@ -1,6 +1,6 @@
 # Project status
 
-**Updated: 2026-07-19.** This page, `REMAINING_WORK.md`, and
+**Updated: 2026-07-22.** This page, `REMAINING_WORK.md`, and
 `SEAM_CONTRACTS.md` are the only top-level current-state documents. Everything else is spec, evidence, or
 archive. If you are an agent landing cold: read this, then `REMAINING_WORK.md`,
 then follow links only as needed.
@@ -11,23 +11,28 @@ multiplayer games. Pipeline:
 Doctrine: fail-closed — anything the replay cannot reproduce exactly surfaces
 as a typed blocker, never a silent approximation.
 
-## Extractor (recording half) — broad coverage, not production-closed
+## Extractor (recording half) — implementation landed; current validation pending
 
 - All 14 gameplay areas extracted at DONE-**base** slices — named residual
   functionality remains per the master's coverage table (market, naval,
   combat, intel, supply, event-hook residuals). 71 domains registered
   (`extractor/native/domain_registry.json` is code-authoritative).
 - A production promotion tuple (A1/A2/A4/A12/A14/A15/A21/A22/B8-X6) plus
-  A27/A35 has frozen promotion evidence. A32's display/language carrier is
-  integrated, but its input-family authority is disabled and unbound, so A32
-  and XUI25 currently reject fail-closed rather than qualify for promotion.
-- **Not closed:** the product pillars P1–P5 (auto-attach, duplex control,
-  campaign identity, stitching, hardening) are offline-green with activation
-  deliberately OFF — the active path is still Legacy. No live speed-5
-  acceptance proof exists. Path to production =
-  `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md` (5 owner-run sequences,
-  ~36 launches; sequence 5 needs a second machine + player), plus its
-  OWED-PRODUCER tooling that must be built first.
+  A27/A35 has frozen promotion evidence. A32's display/language and authenticated
+  selected-Present pointer-family path are integrated through d77; d80 is a
+  deliberately non-independent reserved semantic ID folded into that manifest.
+  Unsupported keyboard/controller traversal remains unavailable rather than
+  fabricated.
+- The P1–P5 product implementation has landed: the ordinary no-argument
+  desktop-window route enters auto-attach, duplex activation is enabled,
+  campaign identity is enabled for same-machine use, durable append-ticket
+  stitching is called from production, and dormant stitch inputs are hardened.
+  These statements describe implementation, not a current promotion receipt:
+  central validation/refreeze for the present worktree is still pending. CID1
+  M3 rehost on a second physical machine is the sole genuine external
+  dependency. All other H-* matrices are optional nonblocking regression
+  evidence and never activate product code. Unsupported B boundaries remain
+  feature-local omitted and fail closed.
 - Detail ledgers: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
   (completion + backlog) and `extractor/documents/RE_REMAINING.md` (RE ledger,
   incl. the A24–A40 seam contracts).
@@ -39,17 +44,19 @@ as a typed blocker, never a silent approximation.
   (replay-side done, waiting only on extractor inputs — see
   `SEAM_CONTRACTS.md`). Board of record:
   `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`.
-- **Not closed:** XUI27 (final pixel-parity composition over every panel
-  family) has never run; the adversarial release-review wave has never run;
-  the F1 performance gate was never contracted (owner must name a reference
-  machine); a set of capture-gated residuals remains. The 2026-07-19
+- XUI27 replay-owned terminal composition is implemented and has historical
+  green evidence, but the current source set requires a fresh content-addressed
+  refreeze. The adversarial release-review wave has never run. The headless F1
+  reference hardware and frame-time contract are defined as optional
+  performance evidence, not a product-wide gate. Optional runtime evidence stays
+  fail-closed and is not a product-completion blocker. The 2026-07-19
   "REPLAY LAYER COMPLETE" finalization receipt
   (`replay_interface/re_evidence/rendering_laws/replay_promotion/REPLAY_CORE_FINALIZATION_20260719.md`)
   is **invalid as a freeze authority** — 3 of its 4 SHA256s drifted the same
   day; it must be reissued after the current fix wave.
-- A verified 2026-07-19 robustness audit found fail-closed holes and container
-  robustness gaps; a code fix wave is addressing them (list + state in
-  `REMAINING_WORK.md` §2).
+- The robustness and container-hardening implementation wave has landed. Its
+  current central validation/refreeze remains pending (list + state in
+  `REMAINING_WORK.md` §2); historical green counts are not current authority.
 - Architecture: `replay_interface/documents/REPLAY_ARCHITECTURE.md`. Specs
   (all under `replay_interface/documents/`): `HOI4REPLAY_CONTAINER_SPEC.md`,
   `REPLAY_SCHEMA.md`, `REPLAY_DATA_REQUIREMENTS.md`, the `*_LAW.md` files
@@ -72,9 +79,9 @@ All machine-local evidence lives under **`C:\hoi4_evidence\`** (own README
 manifest; junctions remain at old paths). Repo-side index: the evidence-store
 table at the bottom of
 `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`.
-Known loss: the `restore_gate_1`
-capture is LOST — grading/bloom/political-v2 law re-validation needs a
-recapture. Pre-consolidation git history: bundle at
+The original 243-file `restore_gate_1` capture has been recovered byte-for-byte;
+RG-H1 through RG-H4 remain optional discriminator/regression captures, not
+production blockers. Pre-consolidation git history: bundle at
 `<local-path>` (see
 `documents/archive/GIT_CONSOLIDATION_2026-07-19.md`; its 3 rescue branches are
 tracked in `REMAINING_WORK.md` §4).

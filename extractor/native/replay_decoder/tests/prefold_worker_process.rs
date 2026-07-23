@@ -34,13 +34,7 @@ fn stream() -> Vec<u8> {
     country.push(1);
 
     let mut bytes = Vec::new();
-    push_record(
-        &mut bytes,
-        1,
-        18,
-        COMPACT_RECORD_TYPE_DOMAIN_DATA,
-        &country,
-    );
+    push_record(&mut bytes, 1, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &country);
     push_record(
         &mut bytes,
         2,
@@ -91,7 +85,10 @@ fn worker_process_folds_authenticated_source_and_emits_portable_receipt() {
     assert!(output.stderr.is_empty());
     let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(receipt["schema"], "hoi4_prefold_worker_receipt_v2");
-    assert_eq!(receipt["decoder_id"], "extractor.replay_decoder.production_world_fold.worker.v1");
+    assert_eq!(
+        receipt["decoder_id"],
+        "extractor.replay_decoder.production_world_fold.worker.v1"
+    );
     assert_eq!(receipt["identity_mode"], "legacy");
     assert_eq!(receipt["game_id"], GAME);
     assert_eq!(receipt["schema_version"], "1");

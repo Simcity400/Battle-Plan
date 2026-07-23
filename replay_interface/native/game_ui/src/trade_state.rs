@@ -883,7 +883,7 @@ pub fn build_trade_compose_scene(
                     "RESOURCE DATA UNAVAILABLE",
                 ));
             }
-            if let TradeData::Available(rows) = &presentation.deals {
+            let deal_row_count = if let TradeData::Available(rows) = &presentation.deals {
                 for (index, _) in rows.iter().enumerate() {
                     let prefix = format!("xui15_deal_{index}_");
                     let mut element = load_named_element(
@@ -896,6 +896,7 @@ pub fn build_trade_compose_scene(
                     prefix_element_names(&mut element, &prefix);
                     children.push(element);
                 }
+                rows.len()
             } else {
                 children.push(unavailable_text(
                     "xui15_deals_unavailable",
@@ -903,6 +904,82 @@ pub fn build_trade_compose_scene(
                     552,
                     "CLASSIC RESOURCE DEALS UNAVAILABLE",
                 ));
+                1
+            };
+
+            // Production licences are a distinct X3 relation family, not
+            // classic resource deals. Reuse the authored country-trade row
+            // geometry and typography so the already-bound semantic values
+            // reach concrete compositor children instead of remaining orphan
+            // ComposeOptions entries.
+            let license_summary_y = checked_license_row_y(540, deal_row_count.max(1))?;
+            let mut summary = load_named_element(
+                &mut layout_cache,
+                resolver,
+                "interface/countrytradeview.gui",
+                "country_trade_entry",
+            )?;
+            set_position_upper_left(&mut summary, 9, license_summary_y);
+            rename_descendant_exact(&mut summary, "country", "count")?;
+            prefix_element_names(&mut summary, "xui15_license_");
+            options
+                .hidden_elements
+                .insert("xui15_license_country_flag".to_string());
+            options
+                .hidden_elements
+                .insert("xui15_license_country_flag_frame".to_string());
+            children.push(summary);
+
+            match &presentation.production_license_agreements {
+                TradeData::Available(rows) => {
+                    for (index, _) in rows.iter().enumerate() {
+                        let mut element = load_named_element(
+                            &mut layout_cache,
+                            resolver,
+                            "interface/countrytradeview.gui",
+                            "country_trade_entry",
+                        )?;
+                        let ordinal = index.checked_add(1).ok_or_else(|| {
+                            crate::GameUiError::parse(
+                                "XUI15 production-licence row ordinal overflow",
+                            )
+                        })?;
+                        set_position_upper_left(
+                            &mut element,
+                            9,
+                            checked_license_row_y(license_summary_y, ordinal)?,
+                        );
+                        for (authored_name, semantic_name) in [
+                            ("country", "partner"),
+                            ("available_export", "start_date"),
+                            ("exported", "end_date"),
+                            ("convoys", "variant_count"),
+                        ] {
+                            rename_descendant_exact(
+                                &mut element,
+                                authored_name,
+                                semantic_name,
+                            )?;
+                        }
+                        prefix_element_names(
+                            &mut element,
+                            &format!("xui15_license_{index}_"),
+                        );
+                        options
+                            .hidden_elements
+                            .insert(format!("xui15_license_{index}_country_flag"));
+                        options
+                            .hidden_elements
+                            .insert(format!("xui15_license_{index}_country_flag_frame"));
+                        children.push(element);
+                    }
+                }
+                TradeData::Unavailable(_) => children.push(unavailable_text(
+                    "xui15_licenses_unavailable",
+                    20,
+                    license_summary_y + 57,
+                    "PRODUCTION LICENCES UNAVAILABLE",
+                )),
             }
         }
     }
@@ -1069,6 +1146,48 @@ fn set_text(options: &mut ComposeOptions, name: &str, value: impl Into<String>) 
     options
         .text_overrides
         .insert(name.to_string(), value.into());
+}
+
+fn rename_descendant_exact(
+    element: &mut GuiElement,
+    authored_name: &str,
+    semantic_name: &str,
+) -> Result<()> {
+    let mut matches = 0usize;
+    rename_descendants(element, authored_name, semantic_name, &mut matches);
+    if matches != 1 {
+        return Err(crate::GameUiError::missing(format!(
+            "interface/countrytradeview.gui: country_trade_entry expected one {authored_name} child, found {matches}"
+        )));
+    }
+    Ok(())
+}
+
+fn checked_license_row_y(base: i32, ordinal: usize) -> Result<i32> {
+    let ordinal = i32::try_from(ordinal).map_err(|_| {
+        crate::GameUiError::parse("XUI15 production-licence row count exceeds i32 geometry")
+    })?;
+    let offset = ordinal.checked_mul(45).ok_or_else(|| {
+        crate::GameUiError::parse("XUI15 production-licence row offset overflow")
+    })?;
+    base.checked_add(offset).ok_or_else(|| {
+        crate::GameUiError::parse("XUI15 production-licence row position overflow")
+    })
+}
+
+fn rename_descendants(
+    element: &mut GuiElement,
+    authored_name: &str,
+    semantic_name: &str,
+    matches: &mut usize,
+) {
+    if element.name == authored_name {
+        element.name = semantic_name.to_string();
+        *matches += 1;
+    }
+    for child in &mut element.children {
+        rename_descendants(child, authored_name, semantic_name, matches);
+    }
 }
 
 fn wrapper_root(width: usize, height: usize, children: Vec<GuiElement>) -> GuiElement {

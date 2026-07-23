@@ -1,7 +1,12 @@
 //! Typed H4CT status proof shared by the supervisor and its worker child.
 
 use std::collections::BTreeSet;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::control_transport::{
     claim_session_capability, ControlCapabilities, ControlChannel, ControlIo, MessageKind,
@@ -97,10 +102,10 @@ pub fn validate_collector_hello(
     Ok(())
 }
 
-/// Encode the dormant duplex hello form whose final word is the collector's
-/// closed H4CT capability claim.  The existing stdout proof adapter continues
-/// to use the historical 68-byte form; only the not-yet-activated combined
-/// H4CR/H4CT worker consumes this exact 72-byte product-admission form.
+/// Encode the duplex hello form whose final word is the collector's closed H4CT
+/// capability claim. The durable supervisor-status adapter uses the historical
+/// 68-byte forwarded proof; the combined H4CR/H4CT worker consumes this exact
+/// 72-byte product-admission form.
 pub fn collector_hello_with_capabilities_payload(
     expectation: &ProofExpectation,
     capabilities: ControlCapabilities,
@@ -286,7 +291,7 @@ impl<W: Write> WorkerProofEmitter<W> {
     }
 
     /// Forward a recorder-authenticated recurring H4CT heartbeat to the
-    /// supervisor after Recording admission. The stdout channel is only a
+    /// supervisor after Recording admission. The durable file is only a
     /// parent/child status transport; the proof's authority still comes from
     /// the admitted collector H4CT exchange.
     pub fn report_recurring_heartbeat(&mut self, sequence: u64) -> Result<(), String> {
@@ -300,6 +305,125 @@ impl<W: Write> WorkerProofEmitter<W> {
             )
             .map_err(|error| error.to_string())
     }
+}
+
+/// Per-attempt, recorder-owned status stream used between the worker process
+/// and the resident supervisor.  H4CT remains the authority for the contained
+/// hello/heartbeat facts; this file makes their delivery durable across a
+/// supervisor crash and removes stdout from the product protocol.
+pub const WORKER_PROOF_FILE_NAME: &str = "worker_status.h4ct";
+pub const WORKER_PROOF_PATH_ENV: &str = "BATTLE_PLAN_AUTO_ATTACH_PROOF_PATH";
+
+pub struct DurableProofWriter {
+    file: File,
+}
+
+impl DurableProofWriter {
+    /// Open only the exact recorder-created file inside this attempt's output
+    /// directory.  The supervisor retains a no-delete handle from before child
+    /// creation, so this open cannot be redirected by path replacement.
+    pub fn open_existing(path: &Path, out_dir: &Path) -> Result<Self, String> {
+        let expected = out_dir.join(WORKER_PROOF_FILE_NAME);
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("stat worker proof file failed: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != 0 {
+            return Err(
+                "worker proof file must be the empty regular file created by the supervisor"
+                    .to_string(),
+            );
+        }
+        let canonical_out = fs::canonicalize(out_dir)
+            .map_err(|error| format!("canonicalize worker output directory failed: {error}"))?;
+        let canonical_path = fs::canonicalize(path)
+            .map_err(|error| format!("canonicalize worker proof file failed: {error}"))?;
+        let canonical_expected = fs::canonicalize(&expected)
+            .map_err(|error| format!("canonicalize expected worker proof file failed: {error}"))?;
+        if canonical_path != canonical_expected
+            || canonical_path.parent() != Some(canonical_out.as_path())
+        {
+            return Err("worker proof file escaped its attempt output directory".to_string());
+        }
+        let mut options = OpenOptions::new();
+        options.append(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Share read/write with the retained supervisor handle, but deny
+            // delete/rename for the lifetime of this writer.
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
+        let file = options
+            .open(&canonical_path)
+            .map_err(|error| format!("open durable worker proof sink failed: {error}"))?;
+        Ok(Self { file })
+    }
+}
+
+impl Write for DurableProofWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.file.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()?;
+        self.file.sync_data()
+    }
+}
+
+/// Tail reader for the retained supervisor handle.  Regular-file EOF means
+/// "not appended yet", not terminal EOF.  The owning child handle sets `stop`
+/// only after process exit or teardown; already-appended bytes are consumed
+/// before the reader returns EOF, so exit cannot race the final proof frame.
+pub struct DurableProofTail {
+    file: File,
+    stop: Arc<AtomicBool>,
+}
+
+impl DurableProofTail {
+    pub fn new(file: File, stop: Arc<AtomicBool>) -> Self {
+        Self { file, stop }
+    }
+}
+
+impl Read for DurableProofTail {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let read = self.file.read(bytes)?;
+            if read != 0 {
+                return Ok(read);
+            }
+            if self.stop.load(Ordering::Acquire) {
+                return Ok(0);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Create the durable status file before the worker process exists and retain
+/// the read handle with delete sharing denied. `create_new` makes stale residue
+/// fail closed instead of appending to another attempt's transcript.
+pub fn create_durable_proof_file(path: PathBuf) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|error| format!("create durable worker proof file failed: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("sync durable worker proof file failed: {error}"))?;
+    Ok(file)
 }
 
 /// The generic PERF envelope immediately preceding a candidate world DATA
@@ -1042,6 +1166,36 @@ fn read_i64(payload: &[u8], offset: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_worker_status_is_create_new_synced_and_tailed_to_terminal_eof() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_durable_worker_proof_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join(WORKER_PROOF_FILE_NAME);
+        let retained = create_durable_proof_file(path.clone()).unwrap();
+        assert!(create_durable_proof_file(path.clone()).is_err());
+
+        let mut writer = DurableProofWriter::open_existing(&path, &root).unwrap();
+        writer.write_all(b"durable-status").unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        let stop = Arc::new(AtomicBool::new(true));
+        let mut tail = DurableProofTail::new(retained, stop);
+        let mut observed = [0u8; 14];
+        tail.read_exact(&mut observed).unwrap();
+        assert_eq!(&observed, b"durable-status");
+        assert_eq!(tail.read(&mut [0u8; 1]).unwrap(), 0);
+        drop(tail);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn expectation() -> ProofExpectation {
         ProofExpectation {

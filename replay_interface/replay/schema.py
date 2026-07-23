@@ -731,8 +731,8 @@ FIELD_SOURCES: Dict[str, str] = {
     # --- country.economy market-extra (§3.1, from market_extra.json). S. ---
     "countries.*.economy.market_price_levels": "S",
     "countries.*.economy.market_subsidies": "S",
-    # --- country.military deployment (§3.2, from deployment.json). S. ---
-    "countries.*.military.deployment_queue": "S",
+    # --- country.military deployment (§3.2). Native collector/recorder plus save. ---
+    "countries.*.military.deployment_queue": "C/M/S",
     "countries.*.military.reinforcement_priority": "S",
     # --- country.mios (§3.10, from designs.json) ---
     "countries.*.mios": "S",
@@ -831,14 +831,14 @@ FIELD_SOURCES: Dict[str, str] = {
     "order_of_battle.by_country": "S/D",
     # live per-ship roster from the global CShip registry (§12b). All M.
     "order_of_battle.ships": "M",
-    # LIVE battle-plan orders (construction_orders_live, M). DISTINCT live-only list: per-army
-    # area-defense orders, each {army_id, order_type, target_states}. target_states is the
-    # exact state-id set for type-5 (area defense) orders ONLY; other geometry is RESISTED
-    # (null target_states), never fabricated. army_id + target_states are RAW engine ints.
+    # LIVE battle-plan orders (construction_orders_live, M). DISTINCT live-only
+    # list keyed by typed owner_kind + owner_id; the nullable `army` field is a
+    # compatibility alias only for kind=army. target_states is the exact state-id
+    # set for type-5 area defense; other geometry is never fabricated.
     "order_of_battle.battle_plan_orders": "M",
     # Exact a729 domain-54 registered-reference type-53 census. The manager is
-    # a complete, pointer-free hourly snapshot including zero-order armies and
-    # raw command-backed execution/cohesion/leader-proximity ordinals.
+    # a complete, pointer-free hourly snapshot including zero-order typed owners
+    # (armies and army groups) plus raw army command-backed control ordinals.
     "order_of_battle.extra.army_battleplans_depth_live.orders_group_manager": "C",
     # --- per-country OOB view (§12, derived rollup) ---
     "countries.*.order_of_battle": "S/D",
@@ -2741,21 +2741,56 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
         problems.append(f"{ctx}.orders should be a list")
     elif domain_known is False and orders:
         problems.append(f"{ctx}.orders should be empty when the domain is unavailable")
+    elif isinstance(orders, list):
+        for index, row in enumerate(orders):
+            rctx = f"{ctx}.orders[{index}]"
+            if not isinstance(row, dict):
+                problems.append(f"{rctx} should be dict")
+                continue
+            has_kind = "owner_kind" in row
+            has_id = "owner_id" in row
+            if has_kind != has_id:
+                problems.append(f"{rctx} has a partial typed owner identity")
+                continue
+            if not has_kind:
+                army_id = row.get("army_id")
+                if type(army_id) is not int or not 0 < army_id <= 0x7FFFFFFF:
+                    problems.append(f"{rctx}.army_id should be a legacy positive signed-range u32")
+                continue
+            owner_kind = row.get("owner_kind")
+            owner_id = row.get("owner_id")
+            if owner_kind not in {"army", "army_group"}:
+                problems.append(f"{rctx}.owner_kind should be army|army_group")
+            if type(owner_id) is not int or not 0 < owner_id <= 0x7FFFFFFF:
+                problems.append(f"{rctx}.owner_id should be a positive signed-range u32")
+            if owner_kind == "army" and row.get("army_id") != owner_id:
+                problems.append(f"{rctx}.army_id should equal its typed army owner_id")
+            if owner_kind == "army_group" and row.get("army_id") is not None:
+                problems.append(f"{rctx}.army_id should be null for an army-group owner")
 
     manager = domain.get("orders_group_manager")
     if manager is None:
+        if any(
+            isinstance(row, dict) and row.get("owner_kind") == "army_group"
+            for row in (orders or [])
+        ):
+            problems.append(
+                f"{ctx}.orders_group_manager is required for an army-group owner"
+            )
         return problems
     mctx = f"{ctx}.orders_group_manager"
     if not isinstance(manager, dict):
         problems.append(f"{mctx} should be dict")
         return problems
-    manager_fields = {
+    manager_fields_v1 = {
         "known", "complete", "source", "registered_entry_count",
         "army_group_count", "armies",
     }
-    if set(manager) != manager_fields:
+    manager_fields_v2 = manager_fields_v1 | {"army_group_ids"}
+    if set(manager) not in (manager_fields_v1, manager_fields_v2):
         problems.append(f"{mctx} has wrong exact field set")
         return problems
+    is_v2 = set(manager) == manager_fields_v2
     known = manager.get("known")
     if type(known) is not bool:
         problems.append(f"{mctx}.known should be bool")
@@ -2768,6 +2803,15 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
                 problems.append(f"{mctx}.{key} should be null when unavailable")
         if manager.get("armies") != []:
             problems.append(f"{mctx}.armies should be empty when unavailable")
+        if is_v2 and manager.get("army_group_ids") != []:
+            problems.append(f"{mctx}.army_group_ids should be empty when unavailable")
+        if any(
+            isinstance(row, dict) and row.get("owner_kind") == "army_group"
+            for row in (orders or [])
+        ):
+            problems.append(
+                f"{mctx} cannot be unavailable while an army-group order is present"
+            )
         return problems
 
     if domain_known is not True:
@@ -2779,6 +2823,7 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
     registered = manager.get("registered_entry_count")
     group_count = manager.get("army_group_count")
     rows = manager.get("armies")
+    group_ids = manager.get("army_group_ids") if is_v2 else None
     if type(registered) is not int or not 0 <= registered <= 262_144:
         problems.append(f"{mctx}.registered_entry_count should be an exact bounded u32")
     if type(group_count) is not int or not 0 <= group_count <= 262_144:
@@ -2786,6 +2831,22 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
     if not isinstance(rows, list):
         problems.append(f"{mctx}.armies should be a list")
         return problems
+    if is_v2:
+        if not isinstance(group_ids, list):
+            problems.append(f"{mctx}.army_group_ids should be a list")
+            return problems
+        if type(group_count) is int and len(group_ids) != group_count:
+            problems.append(f"{mctx}.army_group_ids count disagrees with army_group_count")
+        previous_group_id = 0
+        for index, group_id in enumerate(group_ids):
+            if type(group_id) is not int or not 0 < group_id <= 0x7FFFFFFF:
+                problems.append(
+                    f"{mctx}.army_group_ids[{index}] should be a positive signed-range u32"
+                )
+            elif group_id <= previous_group_id:
+                problems.append(f"{mctx}.army_group_ids should be strictly increasing")
+            else:
+                previous_group_id = group_id
     if (
         type(registered) is int
         and type(group_count) is int
@@ -2794,6 +2855,7 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
         problems.append(f"{mctx} registered count disagrees with army and army-group rows")
 
     previous_id = 0
+    army_ids = set()
     for index, row in enumerate(rows):
         rctx = f"{mctx}.armies[{index}]"
         if not isinstance(row, dict):
@@ -2814,6 +2876,7 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
             problems.append(f"{rctx}.army_id should be strictly increasing")
         else:
             previous_id = army_id
+            army_ids.add(army_id)
         for key, value, maximum in (
             ("execution_type", execution, 2),
             ("cohesion_type", cohesion, 3),
@@ -2821,6 +2884,28 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
         ):
             if type(value) is not int or not 0 <= value <= maximum:
                 problems.append(f"{rctx}.{key} should be an int in 0..{maximum}")
+    group_id_set = {
+        value for value in (group_ids or [])
+        if type(value) is int and 0 < value <= 0x7FFFFFFF
+    }
+    if army_ids & group_id_set:
+        problems.append(f"{mctx} reuses one type-53 id across owner kinds")
+    if known and isinstance(orders, list):
+        for index, row in enumerate(orders):
+            if not isinstance(row, dict):
+                continue
+            owner_kind = row.get("owner_kind", "army")
+            owner_id = row.get("owner_id", row.get("army_id"))
+            if type(owner_id) is not int:
+                continue
+            if owner_kind == "army" and owner_id not in army_ids:
+                problems.append(
+                    f"{ctx}.orders[{index}] army owner is absent from manager census"
+                )
+            elif owner_kind == "army_group" and (not is_v2 or owner_id not in group_id_set):
+                problems.append(
+                    f"{ctx}.orders[{index}] army-group owner lacks complete manager identity"
+                )
     return problems
 
 
@@ -4618,7 +4703,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if carrier.get("frame_hour") != expected_hour:
                 problems.append(f"{prefix}.carrier.frame_hour does not match snapshot hour")
             exact_snapshot = {
-                "magic": "ABL1", "schema_version": 1,
+                "magic": "ABL1", "schema_version": 2,
                 "authority": ACTIVE_ABILITY_AUTHORITY, "status_flags": 0,
                 "header_bytes": 40, "country_tag": tag, "complete": True,
             }
@@ -4691,7 +4776,9 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 reason, activation_hour = row.get("disabled_reason"), row.get("activation_hour")
                 if type(available) is not bool or type(active) is not bool:
                     problems.append(f"{row_prefix}.available/active not bool")
-                if not bounded_utf8(reason, 4096) or available == bool(reason):
+                if (reason is not None and not bounded_utf8(reason, 4096, nonempty=True)):
+                    problems.append(f"{row_prefix}.disabled_reason not null|bounded nonempty str")
+                if available is True and reason is not None:
                     problems.append(f"{row_prefix}.disabled_reason availability mismatch")
                 if (type(activation_hour) is not int
                         or not -(1 << 63) <= activation_hour < (1 << 63) or
@@ -4699,8 +4786,9 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                                      not 0 <= activation_hour <= expected_hour)) or
                         (not active and activation_hour != -1)):
                     problems.append(f"{row_prefix}.activation_hour activity mismatch")
-                if (type(row.get("cost_command_power_fixed")) is not int or
-                        not 0 <= row.get("cost_command_power_fixed") < (1 << 63) or
+                cost = row.get("cost_command_power_fixed")
+                if (cost is not None and
+                        (type(cost) is not int or not -(1 << 63) < cost < (1 << 63)) or
                         row.get("cost_command_power_scale") != ACTIVE_ABILITY_FIXED_SCALE):
                     problems.append(f"{row_prefix}.cost_command_power fixed-point value invalid")
                 def timer(value):
@@ -4726,8 +4814,9 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     if (active and duration_remaining[0] == "not_started") or (not active and duration_remaining[0] != "not_started"):
                         problems.append(f"{row_prefix} duration timer disagrees with activity")
                 tooltip, affected = row.get("tooltip"), row.get("affected_division_ids")
-                if not bounded_utf8(tooltip, 4096, nonempty=True):
-                    problems.append(f"{row_prefix}.tooltip not bounded nonempty str")
+                if (tooltip is not None and
+                        not bounded_utf8(tooltip, 4096, nonempty=True)):
+                    problems.append(f"{row_prefix}.tooltip not null|bounded nonempty str")
                 if (not isinstance(affected, list) or len(affected) > 4096
                         or any(not portable(identity) for identity in affected)
                         or len(set(affected)) != len(affected)):

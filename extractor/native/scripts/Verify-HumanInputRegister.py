@@ -17,7 +17,7 @@ from typing import Any
 
 
 REGISTER = Path("extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json")
-SCHEMA = "hoi4-production-promotion-human-input-register-v3"
+SCHEMA = "hoi4-production-promotion-human-input-register-v4"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PATH_FIELDS = {"authority", "validation", "source", "evidence"}
 SOURCE_MARKERS = ("human_input", "human_fixture", "human_capture")
@@ -249,21 +249,62 @@ def validate_closure_evidence(repo: Path) -> None:
     anomaly = (repo / "replay_interface/native/replay_app/src/anomaly.rs").read_text(encoding="utf-8")
     timeline = (repo / "replay_interface/native/replay_app/src/timeline.rs").read_text(encoding="utf-8")
     validation = (repo / "replay_interface/native/replay_app/src/validate.rs").read_text(encoding="utf-8")
-    required_f4_tokens = {
+    # F4 moved from an eager whole-recording scan at provider construction to
+    # ordered incremental validation through the requested hour.  Verify the
+    # semantic boundary rather than pinning one obsolete call-site spelling:
+    # every newly crossed frame is loaded before observe(), scan progress moves
+    # only afterwards, playback maps a load failure to the typed terminal error,
+    # and explicit certification still exhaustively validates every payload.
+    required_f4_patterns = {
         "anomaly.rs": [
-            "pub struct TimelineScanError",
-            "pub fn scan_timeline(",
-            "return Err(TimelineScanError",
-            "frame_integrity_failure_is_terminal_not_a_hold",
+            ("stateful anomaly policy", r"pub\s+struct\s+AnomalyPolicy\b"),
+            ("frame observation API", r"pub\s+fn\s+observe\s*\(\s*&mut\s+self\s*,\s*frame:\s*&WorldFrame"),
         ],
-        "timeline.rs": ["scan_timeline(&timeline, known_provinces).map_err", "F4 fail-closed frame validation rejected recording"],
-        "validate.rs": ["fn validate_all_frame_payloads", "integrity failure cannot open"],
+        "timeline.rs": [
+            ("incremental scan state", r"struct\s+IncrementalAnomalyScan\b"),
+            ("ordered prefix boundary", r"partition_point\s*\(\s*\|hour\|\s*\*hour\s*<=\s*target_hour\s*\)"),
+            (
+                "authenticate then observe then advance",
+                r"\.frame\s*\(\s*hour\s*\)[\s\S]{0,700}?"
+                r"scan\.policy\.observe\s*\(\s*&frame\s*\)[\s\S]{0,300}?"
+                r"scan\.next_index\s*\+=\s*1",
+            ),
+            (
+                "terminal incremental frame-load mapping",
+                r"F4\s+fail-closed\s+incremental\s+validation\s+failed\s+at\s+hour",
+            ),
+            (
+                "provider boundary validates before frame return",
+                r"fn\s+selected_frame\s*\([^)]*\)[\s\S]{0,500}?"
+                r"scan_anomalies_through\s*\(\s*canonical_hour\s*\)\?",
+            ),
+            (
+                "incremental ordering regression test",
+                r"fn\s+anomaly_validation_is_lazy_ordered_and_does_not_scan_at_open\s*\(",
+            ),
+            (
+                "anomaly-note failure regression test",
+                r"fn\s+anomaly_note_validates_the_frame_before_reporting_no_hold\s*\(",
+            ),
+        ],
+        "validate.rs": [
+            ("exhaustive certification function", r"fn\s+validate_all_frame_payloads\s*\("),
+            (
+                "every indexed payload is decoded",
+                r"for\s+&hour\s+in\s+timeline\.hours\s*\(\s*\)\s*\{"
+                r"[\s\S]{0,300}?timeline\.frame\s*\(\s*hour\s*\)\.map_err",
+            ),
+            (
+                "lazy integrity regression test",
+                r"fn\s+exhaustive_validation_rejects_a_lazy_midstream_sha_mismatch\s*\(",
+            ),
+        ],
     }
     texts = {"anomaly.rs": anomaly, "timeline.rs": timeline, "validate.rs": validation}
-    for filename, tokens in required_f4_tokens.items():
-        for token in tokens:
-            if token not in texts[filename]:
-                fail(f"F4 closure token missing from {filename}: {token!r}")
+    for filename, patterns in required_f4_patterns.items():
+        for description, pattern in patterns:
+            if re.search(pattern, texts[filename]) is None:
+                fail(f"F4 closure semantic missing from {filename}: {description}")
 
     main = (repo / "replay_interface/native/replay_app/src/main.rs").read_text(encoding="utf-8")
     blockers = (repo / "replay_interface/native/replay_app/src/blockers.rs").read_text(encoding="utf-8")
@@ -290,8 +331,9 @@ def verify(repo: Path) -> dict[str, Any]:
         "validation",
         "exact10_authority",
         "dependency_reclassification",
-        "runtime_admission",
+        "optional_evidence",
         "genuine_external_dependencies",
+        "feature_local_omissions",
         "canonical_human_inputs",
         "aliases",
         "missing_authenticated_artifacts",
@@ -312,27 +354,16 @@ def verify(repo: Path) -> dict[str, Any]:
         fail("canonical_human_inputs must be a nonempty array")
     canonical_ids: set[str] = set()
     allowed_classes = {
-        "external_state_capture",
-        "external_same_tick_pair",
-        "external_temporal_capture",
-        "external_lifecycle_capture",
-        "external_early_launch_capture",
-        "external_environment_fixture",
-        "external_live_acceptance",
-        "external_deployment_observation",
-        "autonomous_same_tick_pair",
-        "autonomous_state_capture",
+        "optional_state_capture",
+        "optional_same_tick_pair",
+        "optional_temporal_capture",
+        "optional_lifecycle_capture",
+        "optional_early_launch_capture",
+        "optional_environment_fixture",
+        "optional_live_acceptance",
+        "optional_deployment_observation",
     }
-    allowed_states = {
-        "required",
-        "required_after_static_root_candidate",
-        "required_after_hook_engineering",
-        "required_after_exact_writer_hook_engineering",
-        "required_after_product_choice",
-        "required_after_integration",
-        "retired_closed_schema_disposition",
-        "autonomous",
-    }
+    allowed_states = {"optional_nonblocking_regression_evidence"}
     for index, item in enumerate(canonical):
         context = f"canonical_human_inputs[{index}]"
         if not isinstance(item, dict):
@@ -353,6 +384,15 @@ def verify(repo: Path) -> dict[str, Any]:
         for key in ("category", "action"):
             if not isinstance(item[key], str) or not item[key].strip():
                 fail(f"{context}.{key} must be nonempty")
+        forbidden_gate_claims = (
+            r"(?:activation|scheduling|promotion) remains false until",
+            r"remains unscheduled until",
+            r"zero rows remain promoted until",
+            r"missing evidence keeps only this feature",
+        )
+        for pattern in forbidden_gate_claims:
+            if re.search(pattern, item["action"], flags=re.IGNORECASE):
+                fail(f"{context}.action incorrectly makes optional evidence a product gate")
 
     if any(item_id.startswith("H-M03") for item_id in canonical_ids):
         fail("retired M03 work reappeared as a canonical acquisition")
@@ -363,9 +403,9 @@ def verify(repo: Path) -> dict[str, Any]:
     expected_reclassification_keys = {
         "as_of",
         "user_action_required",
-        "autonomous_external_state_acquisition",
-        "unresolved_re_or_engineering",
-        "stale_or_closed",
+        "optional_nonblocking_regression_evidence",
+        "h_card_unresolved_re_or_engineering",
+        "retired_h_cards",
         "authorized_defaults",
         "classification_rule",
     }
@@ -375,9 +415,9 @@ def verify(repo: Path) -> dict[str, Any]:
     classified: set[str] = set()
     for key in (
         "user_action_required",
-        "autonomous_external_state_acquisition",
-        "unresolved_re_or_engineering",
-        "stale_or_closed",
+        "optional_nonblocking_regression_evidence",
+        "h_card_unresolved_re_or_engineering",
+        "retired_h_cards",
     ):
         values = reclassification[key]
         if not isinstance(values, list) or len(values) != len(set(values)):
@@ -393,12 +433,13 @@ def verify(repo: Path) -> dict[str, Any]:
             f"unknown={sorted(classified - canonical_ids)}"
         )
     canonical_by_id = {item["id"]: item for item in canonical}
-    for item_id in reclassification["stale_or_closed"]:
-        if canonical_by_id[item_id]["state"] != "retired_closed_schema_disposition":
-            fail(f"stale/closed card is not explicitly retired: {item_id}")
-    for item_id in reclassification["autonomous_external_state_acquisition"]:
-        if canonical_by_id[item_id]["state"] == "retired_closed_schema_disposition":
-            fail(f"retired card reappeared as autonomous acquisition: {item_id}")
+    if reclassification["h_card_unresolved_re_or_engineering"]:
+        fail("H cards cannot conceal unresolved RE or engineering")
+    if reclassification["retired_h_cards"]:
+        fail("retired H cards must remain outside the canonical set")
+    for item_id in reclassification["optional_nonblocking_regression_evidence"]:
+        if canonical_by_id[item_id]["state"] != "optional_nonblocking_regression_evidence":
+            fail(f"optional evidence card has a blocking state: {item_id}")
     defaults = reclassification["authorized_defaults"]
     expected_default_keys = {
         "save_and_scene",
@@ -411,22 +452,29 @@ def verify(repo: Path) -> dict[str, Any]:
     if reclassification["user_action_required"]:
         fail("current user authorization leaves no canonical card user-blocking")
 
-    runtime_admission = register["runtime_admission"]
-    expected_runtime_keys = {"implementation_ready_receipt_pending", "admitted", "rule"}
-    if not isinstance(runtime_admission, dict) or set(runtime_admission) != expected_runtime_keys:
-        fail("runtime_admission has unexpected keys")
-    ready = runtime_admission["implementation_ready_receipt_pending"]
-    admitted = runtime_admission["admitted"]
-    if not isinstance(ready, list) or len(ready) != len(set(ready)):
-        fail("runtime_admission implementation-ready set must be unique")
-    if not isinstance(admitted, list) or len(admitted) != len(set(admitted)):
-        fail("runtime_admission admitted set must be unique")
-    if set(ready) & set(admitted):
-        fail("runtime_admission ready and admitted sets overlap")
-    if set(ready) | set(admitted) != canonical_ids:
-        fail("runtime_admission must exhaust canonical acquisition IDs")
-    if admitted:
-        fail("no canonical runtime receipt has yet been admitted in this authority refreeze")
+    optional_evidence = register["optional_evidence"]
+    expected_optional_keys = {
+        "pending_regression_receipts",
+        "accepted_regression_receipts",
+        "product_activation_dependencies",
+        "rule",
+    }
+    if not isinstance(optional_evidence, dict) or set(optional_evidence) != expected_optional_keys:
+        fail("optional_evidence has unexpected keys")
+    pending = optional_evidence["pending_regression_receipts"]
+    accepted = optional_evidence["accepted_regression_receipts"]
+    activation_dependencies = optional_evidence["product_activation_dependencies"]
+    for name, values in (("pending", pending), ("accepted", accepted)):
+        if not isinstance(values, list) or len(values) != len(set(values)):
+            fail(f"optional_evidence {name} receipts must be a unique array")
+    if set(pending) & set(accepted):
+        fail("optional evidence pending and accepted sets overlap")
+    if set(pending) | set(accepted) != canonical_ids:
+        fail("optional evidence status must exhaust canonical H IDs")
+    if activation_dependencies != []:
+        fail("H evidence must never appear as a product activation dependency")
+    if accepted:
+        fail("no optional regression receipt is accepted in this authority refreeze")
 
     external_dependencies = register["genuine_external_dependencies"]
     if not isinstance(external_dependencies, list) or len(external_dependencies) != 1:
@@ -437,6 +485,41 @@ def verify(repo: Path) -> dict[str, Any]:
         fail("genuine external dependency has unexpected keys")
     if dependency.get("id") != "P3-M3-SECOND-MACHINE" or dependency.get("state") != "external_endpoint_required":
         fail("the sole genuine external dependency is not P3 M3")
+
+    omissions = register["feature_local_omissions"]
+    expected_omission_ids = {
+        "B-A24-POLITICS-TOOLTIP-PRODUCER-TAPS",
+        "B-A25-GUI-PAINT-OWNER-PATH",
+        "B-A28-TECHNOLOGY-CANVAS",
+        "B-A28-MIO-AGGREGATE-BONUS",
+        "B-D74-POWER-BALANCE-SEMANTIC-SEALER",
+        "B-D87-RESOLVED-DECISION-PANEL-SUPPLEMENT-PRODUCER",
+    }
+    if not isinstance(omissions, list):
+        fail("feature_local_omissions must be an array")
+    omission_ids: set[str] = set()
+    for index, omission in enumerate(omissions):
+        context = f"feature_local_omissions[{index}]"
+        if not isinstance(omission, dict):
+            fail(f"{context} must be an object")
+        expected_keys = {"id", "feature", "state", "reason", "source"}
+        if set(omission) != expected_keys:
+            fail(f"{context} has unexpected keys")
+        omission_id = omission["id"]
+        if not isinstance(omission_id, str) or omission_id in omission_ids:
+            fail(f"{context}.id must be a unique string")
+        omission_ids.add(omission_id)
+        if omission["state"] != "omitted_fail_closed":
+            fail(f"{context} is not feature-local fail-closed")
+        for key in ("feature", "reason"):
+            if not isinstance(omission[key], str) or not omission[key].strip():
+                fail(f"{context}.{key} must be nonempty")
+    if omission_ids != expected_omission_ids:
+        fail(
+            "feature-local omission inventory drift: "
+            f"missing={sorted(expected_omission_ids - omission_ids)}, "
+            f"unknown={sorted(omission_ids - expected_omission_ids)}"
+        )
 
     aliases = register["aliases"]
     alias_ids: set[str] = set()
@@ -499,15 +582,116 @@ def verify(repo: Path) -> dict[str, Any]:
         "D-RELEASE-POLICY",
         "D-WINDOWS-MITIGATIONS",
         "D-INSTALL-TOPOLOGY",
+        "D-PRODUCT-SURFACE",
+        "D-MODSET",
+        "D-WEAK-PC",
     }
-    if not package_decision_ids.issubset(all_ids):
-        fail(f"package policy decisions missing: {sorted(package_decision_ids - all_ids)}")
+    register_decisions = {item["id"]: item["decision"] for item in register["product_decisions"]}
+    if set(register_decisions) != package_decision_ids:
+        fail(
+            "resolved product-policy inventory drift: "
+            f"missing={sorted(package_decision_ids - set(register_decisions))}, "
+            f"unknown={sorted(set(register_decisions) - package_decision_ids)}"
+        )
+    unresolved_decisions = sorted(
+        decision_id
+        for decision_id, decision in register_decisions.items()
+        if not decision.startswith("RESOLVED:")
+    )
+    if unresolved_decisions:
+        fail(f"product-policy decisions are not resolved: {unresolved_decisions}")
+
     install_matrix = load_json(repo / "replay_interface/documents/PACKAGE_INSTALL_ACCEPTANCE_MATRIX.json")
-    if install_matrix.get("status") != "mechanics_wired_policy_inputs_pending":
+    expected_matrix_keys = {
+        "schema",
+        "product_id",
+        "status",
+        "acceptance_state",
+        "selected_distribution",
+        "resolved_product_policies",
+        "unresolved_human_product_policy_inputs",
+        "publication_authority",
+        "mechanical_cases",
+        "legacy_package_runtime_disposition",
+        "explicitly_out_of_scope",
+    }
+    if set(install_matrix) != expected_matrix_keys:
+        fail("package install matrix has unexpected keys")
+    if install_matrix.get("schema") != "hoi4.replay.package-install-matrix.v2":
+        fail("package install matrix schema drift")
+    if install_matrix.get("product_id") != "battle-plan":
+        fail("package install matrix product identity drift")
+    if install_matrix.get("status") != "policy_resolved_portable_zip_acceptance_spec":
         fail("package install matrix status drift")
-    policy_inputs = install_matrix.get("human_product_policy_inputs")
-    if not isinstance(policy_inputs, list) or len(policy_inputs) != 9 or len(set(policy_inputs)) != 9:
-        fail("package install matrix must retain nine unique human product-policy inputs")
+    if install_matrix.get("acceptance_state") != "specified_not_asserted_by_this_document":
+        fail("package install matrix overclaims acceptance")
+    if install_matrix.get("unresolved_human_product_policy_inputs") != []:
+        fail("resolved package policy cannot retain pending human product-policy inputs")
+
+    matrix_policy_rows = install_matrix.get("resolved_product_policies")
+    if not isinstance(matrix_policy_rows, list):
+        fail("package install matrix resolved_product_policies must be an array")
+    matrix_decisions: dict[str, str] = {}
+    for index, decision in enumerate(matrix_policy_rows):
+        context = f"package install matrix resolved_product_policies[{index}]"
+        if not isinstance(decision, dict) or set(decision) != {"id", "decision"}:
+            fail(f"{context} has unexpected shape")
+        decision_id = decision.get("id")
+        decision_text = decision.get("decision")
+        if not isinstance(decision_id, str) or decision_id in matrix_decisions:
+            fail(f"{context}.id must be a unique string")
+        if not isinstance(decision_text, str) or not decision_text.startswith("RESOLVED:"):
+            fail(f"{context}.decision is not resolved")
+        matrix_decisions[decision_id] = decision_text
+    if matrix_decisions != register_decisions:
+        fail("package install matrix does not preserve the exact resolved product-policy values")
+
+    selected = install_matrix.get("selected_distribution")
+    if not isinstance(selected, dict):
+        fail("package install matrix selected_distribution must be an object")
+    selected_contract = {
+        "install_kind": "portable_zip",
+        "delivery": "offline_manual_download",
+        "release_channel": "single_stable_channel",
+        "automatic_updater": False,
+        "publisher_signature_gate": False,
+        "authenticode_required": False,
+        "administrator_required": False,
+        "desktop_surface": "normal_window",
+        "package_entries": [
+            "Battle Plan Recorder.exe",
+            "Battle Plan.exe",
+            "collector.dll",
+            "README.txt",
+            "SHA256SUMS.txt",
+        ],
+        "checksum_semantics": "accidental_corruption_detection_only_not_publisher_authentication",
+        "writable_state": "current_user_application_data",
+        "recorder_payload_rule": (
+            "collector.dll_must_be_a_nonempty_non_alias_sibling_of_the_recorder_executable"
+        ),
+    }
+    if selected != selected_contract:
+        fail("package install matrix selected portable distribution drift")
+
+    publication = install_matrix.get("publication_authority")
+    if not isinstance(publication, dict):
+        fail("package install matrix publication_authority must be an object")
+    required_publication_values = {
+        "builder": "extractor/native/scripts/New-PortableProductPackage.ps1",
+        "verifier": "extractor/native/scripts/Test-PortableProductPackageReceipt.ps1",
+        "required_validation": "unfiltered centralized Release -Workspace All",
+        "required_result": "PASS_CENTRAL_RELEASE_PORTABLE_PACKAGE",
+        "required_receipt": ".cargo-target/release/hoi4-portable-package-receipt.json",
+        "canonical_receipt_required": True,
+    }
+    for key, expected in required_publication_values.items():
+        if publication.get(key) != expected:
+            fail(f"package install matrix publication authority drift: {key}")
+
+    legacy_runtime = install_matrix.get("legacy_package_runtime_disposition")
+    if not isinstance(legacy_runtime, dict) or legacy_runtime.get("state") != "not_selected_for_the_portable_zip_product":
+        fail("legacy signed package runtime reappeared as a portable-product prerequisite")
 
     for index, residual in enumerate(register["non_human_residuals"]):
         require_keys(residual, {"id", "state", "detail", "evidence"}, f"non_human_residuals[{index}]")
@@ -542,16 +726,18 @@ def verify(repo: Path) -> dict[str, Any]:
         "result": "PASS",
         "canonical_human_input_count": len(canonical_ids),
         "user_action_required_count": len(reclassification["user_action_required"]),
-        "autonomous_external_state_acquisition_count": len(
-            reclassification["autonomous_external_state_acquisition"]
+        "optional_nonblocking_regression_evidence_count": len(
+            reclassification["optional_nonblocking_regression_evidence"]
         ),
-        "unresolved_re_or_engineering_count": len(
-            reclassification["unresolved_re_or_engineering"]
+        "h_card_unresolved_re_or_engineering_count": len(
+            reclassification["h_card_unresolved_re_or_engineering"]
         ),
-        "stale_or_closed_count": len(reclassification["stale_or_closed"]),
-        "implementation_ready_receipt_pending_count": len(ready),
-        "admitted_runtime_receipt_count": len(admitted),
+        "retired_h_card_count": len(reclassification["retired_h_cards"]),
+        "pending_regression_receipt_count": len(pending),
+        "accepted_regression_receipt_count": len(accepted),
+        "product_activation_dependency_count": len(activation_dependencies),
         "genuine_external_dependency_count": len(external_dependencies),
+        "feature_local_omission_count": len(omission_ids),
         "alias_count": len(alias_ids),
         "missing_authenticated_artifact_count": len(register["missing_authenticated_artifacts"]),
         "product_decision_count": len(register["product_decisions"]),

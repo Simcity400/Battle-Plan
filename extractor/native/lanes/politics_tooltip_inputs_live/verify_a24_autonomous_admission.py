@@ -102,7 +102,12 @@ def main() -> int:
     require(observed == REQUIRED_TAPS, "six-scene union does not cover the exact 23-tap matrix")
 
     require(grade.get("schema") == "hoi4-a24-live-fixture-regrade-v1", "regrade schema mismatch")
-    require(grade.get("status") == "PASS_EXACT_A729_TAP_MATRIX_READY_FOR_LATCH_REVIEW", "regrade did not pass exact tap matrix")
+    require(
+        grade.get("status")
+        == "PASS_EXACT_A729_TAP_MATRIX_DIAGNOSTIC_ONLY_NO_PTI1_SEMANTICS",
+        "regrade did not pass the diagnostic-only exact tap matrix",
+    )
+    require(grade.get("latch_review_authorized") is False, "tap-only grade authorized the semantic latch")
     require(grade.get("game_executable_sha256") == EXE_SHA256, "regrade executable identity mismatch")
     require(grade.get("producer_receipt_sha256s") == receipt_hashes, "regrade case order/hash binding mismatch")
     require(grade.get("frame_hours") == hours and grade.get("tap_kinds") == sorted(REQUIRED_TAPS), "regrade exact matrix summary mismatch")
@@ -112,7 +117,7 @@ def main() -> int:
     require(isinstance(collector, dict) and collector.get("sha256") == actions.get("collector_sha256"), "actions did not use the centrally attested collector")
     result = {
         "schema": "hoi4.a24.autonomous-live-admission.v1",
-        "status": "PASS_IMMUTABLE_EXACT_A729_SIX_SURFACE_ADMISSION",
+        "status": "PASS_IMMUTABLE_EXACT_A729_SIX_SURFACE_DIAGNOSTIC_ONLY",
         "game_executable_sha256": EXE_SHA256,
         "collector_sha256": actions["collector_sha256"],
         "prebuilt_attestation_sha256": sha256(args.prebuilt_attestation),
@@ -124,6 +129,7 @@ def main() -> int:
         "line_kinds": sorted(REQUIRED_LINE_KINDS),
         "tap_kinds": sorted(REQUIRED_TAPS),
         "human_input_required": False,
+        "semantic_pti1_source_admitted": False,
         "production_activation_changed": False,
         "immutable": True,
     }

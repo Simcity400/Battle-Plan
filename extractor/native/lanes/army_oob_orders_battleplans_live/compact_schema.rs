@@ -70,6 +70,8 @@ const ARMY_ORDER_TARGET_ROW_LEN: usize = 8;
 const ARMY_ORDER_FLAG_DELETED: u32 = 1;
 const ARMY_ORDER_FLAG_TARGET_STATES: u32 = 1 << 1;
 const ARMY_ORDER_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
+const ARMY_ORDER_OWNER_KIND_ARMY: u32 = 0;
+const ARMY_ORDER_OWNER_KIND_ARMY_GROUP: u32 = 1;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_ARMY_ORDER_SLOT_INDEX: u32 = 64;
 const MAX_STATE_ID: u32 = 65_535;
@@ -546,7 +548,7 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
         let target_count = read_u32(payload, cursor + 28) as usize;
         let target_declared = read_u32(payload, cursor + 32);
         let target_status = read_u32(payload, cursor + 36);
-        let reserved0 = read_u32(payload, cursor + 40);
+        let owner_kind = read_u32(payload, cursor + 40);
         let reserved1 = read_u32(payload, cursor + 44);
         cursor += ARMY_ORDER_ROW_LEN;
 
@@ -558,7 +560,15 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
                 "offset {offset}: army order row {row_index} has bad army id"
             ));
         }
-        if !seen.insert((army_id, generation, slot_index, deleted)) {
+        if !matches!(
+            owner_kind,
+            ARMY_ORDER_OWNER_KIND_ARMY | ARMY_ORDER_OWNER_KIND_ARMY_GROUP
+        ) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has bad owner kind"
+            ));
+        }
+        if !seen.insert((owner_kind, army_id, generation, slot_index, deleted)) {
             summary.parse_errors.push(format!(
                 "offset {offset}: duplicate army order row {row_index}"
             ));
@@ -621,7 +631,7 @@ pub fn decode_army_orders_payload(offset: usize, payload: &[u8], summary: &mut C
                 "offset {offset}: army order row {row_index} has target count without flag"
             ));
         }
-        if reserved0 != 0 || reserved1 != 0 {
+        if reserved1 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: army order row {row_index} has nonzero reserved field"
             ));
@@ -942,6 +952,24 @@ mod tests {
         assert_eq!(domain.rows, 2);
         assert_eq!(domain.child_rows, 2);
         assert_eq!(domain.deleted_rows, 1);
+    }
+
+    #[test]
+    fn army_orders_payload_accepts_typed_army_group_and_rejects_unknown_kind() {
+        let mut payload = test_army_orders_payload(0);
+        payload[40 + 40..40 + 44]
+            .copy_from_slice(&ARMY_ORDER_OWNER_KIND_ARMY_GROUP.to_le_bytes());
+        let mut summary = CompactGateSummary::default();
+        decode_army_orders_payload(0, &payload, &mut summary);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+
+        payload[40 + 40..40 + 44].copy_from_slice(&2u32.to_le_bytes());
+        let mut invalid = CompactGateSummary::default();
+        decode_army_orders_payload(0, &payload, &mut invalid);
+        assert!(invalid
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("bad owner kind")));
     }
 
     #[test]

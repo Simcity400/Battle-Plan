@@ -90,10 +90,10 @@ fn snap_seg(
         compatibility: CompatibilityResolution::Proven {
             evidence_id: format!("compat-evidence-{play_order}"),
             compatibility_class: "test-decoder-v1".into(),
-            build_exe_sha256: "build-a".into(),
+            build_exe_sha256: "ab".repeat(32),
             modset_id: "modset-a".into(),
             schema_version: "schema-a".into(),
-            static_catalog_digest: "catalog-a".into(),
+            static_catalog_digest: "cd".repeat(32),
         },
         transition_coverage: BTreeMap::new(),
         coverage,
@@ -114,10 +114,10 @@ fn snap_seg(
             process_start_identity: format!("pid-{play_order}"),
             epoch_token,
             stream_major: 2,
-            build_exe_sha256: Some("build-a".into()),
+            build_exe_sha256: Some("ab".repeat(32)),
             modset_id: Some("modset-a".into()),
             schema_version: Some("schema-a".into()),
-            static_catalog_digest: Some("catalog-a".into()),
+            static_catalog_digest: Some("cd".repeat(32)),
             source_path: Some(source_path),
             source_stored_digest: Some(stored_digest),
             source_decoded_digest: Some(decoded_digest),
@@ -1092,10 +1092,24 @@ fn mandatory_source_inputs_are_rejected_and_schema_moves_digest() {
 
     let mut writer_a = stitch_inputs();
     writer_a.schema_version = "writer-schema-a".into();
-    let a = stitched(plan_stitch("g", writer_a, vec![snap_seg(0, 0, K, 0..=1)]));
+    let mut segment_a = snap_seg(0, 0, K, 0..=1);
+    segment_a.provenance.schema_version = Some("writer-schema-a".into());
+    if let CompatibilityResolution::Proven { schema_version, .. } =
+        &mut segment_a.compatibility
+    {
+        *schema_version = "writer-schema-a".into();
+    }
+    let a = stitched(plan_stitch("g", writer_a, vec![segment_a]));
     let mut writer_b = stitch_inputs();
     writer_b.schema_version = "writer-schema-b".into();
-    let b = stitched(plan_stitch("g", writer_b, vec![snap_seg(0, 0, K, 0..=1)]));
+    let mut segment_b = snap_seg(0, 0, K, 0..=1);
+    segment_b.provenance.schema_version = Some("writer-schema-b".into());
+    if let CompatibilityResolution::Proven { schema_version, .. } =
+        &mut segment_b.compatibility
+    {
+        *schema_version = "writer-schema-b".into();
+    }
+    let b = stitched(plan_stitch("g", writer_b, vec![segment_b]));
     assert_ne!(a.stitch_input_digest, b.stitch_input_digest);
     let graph = a.segments_value();
     assert!(graph["fold_version"].is_string());
@@ -1106,8 +1120,7 @@ fn mandatory_source_inputs_are_rejected_and_schema_moves_digest() {
         stitch_inputs(),
         vec![snap_seg(0, 0, K, 0..=1)],
     ));
-    let mutations: [fn(&mut StitchRequiredInputs); 8] = [
-        |inputs| inputs.schema_version.push_str("-changed"),
+    let mutations: [fn(&mut StitchRequiredInputs); 7] = [
         |inputs| inputs.fold_version.push_str("-changed"),
         |inputs| inputs.canonical_writer_version.push_str("-changed"),
         |inputs| inputs.packer_codec_version.push_str("-changed"),
@@ -1183,6 +1196,35 @@ fn raw_source_participations_must_partition_the_complete_source_extent() {
 
 #[test]
 fn digests_and_transition_evidence_use_canonical_grammars() {
+    let mut invalid_compatibility_digest = snap_seg(0, 0, K, 0..=1);
+    if let CompatibilityResolution::Proven {
+        build_exe_sha256, ..
+    } = &mut invalid_compatibility_digest.compatibility
+    {
+        *build_exe_sha256 = "AB".repeat(32);
+    }
+    invalid_compatibility_digest.provenance.build_exe_sha256 = Some("AB".repeat(32));
+    assert!(matches!(
+        plan_stitch("g", stitch_inputs(), vec![invalid_compatibility_digest]),
+        StitchOutcome::Separate { .. }
+    ));
+
+    let mut mismatched_publication_schema = snap_seg(0, 0, K, 0..=1);
+    if let CompatibilityResolution::Proven { schema_version, .. } =
+        &mut mismatched_publication_schema.compatibility
+    {
+        *schema_version = "foreign-schema".into();
+    }
+    mismatched_publication_schema.provenance.schema_version = Some("foreign-schema".into());
+    assert!(matches!(
+        plan_stitch(
+            "g",
+            stitch_inputs(),
+            vec![mismatched_publication_schema]
+        ),
+        StitchOutcome::Separate { .. }
+    ));
+
     let mut uppercase_source_digest = snap_seg(0, 0, K, 0..=1);
     uppercase_source_digest
         .raw_source

@@ -9,7 +9,11 @@
 
 use std::path::Path;
 
-use super::publish::{publish_stitched_container, PublishReport, StitchedPayloadSource};
+use super::publish::{
+    publish_stitched_container_retained, PublishReport, RetainedStitchedPayloadSource,
+};
+#[cfg(test)]
+use super::publish::{publish_stitched_container, StitchedPayloadSource};
 use super::{plan_stitch, SegmentInput, StitchOutcome, StitchRequiredInputs, StitchedPlan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +30,7 @@ pub enum ProductStitchOutcome {
 /// inputs, sealed segments, payload authority, and an explicit `.battleplan`
 /// destination are all required. A planner refusal is a successful fail-closed
 /// outcome, not an I/O error, and never calls the publisher.
+#[cfg(test)]
 pub fn publish_product_stitch<S: StitchedPayloadSource>(
     game_id: &str,
     required_inputs: StitchRequiredInputs,
@@ -39,6 +44,25 @@ pub fn publish_product_stitch<S: StitchedPayloadSource>(
         segments,
         destination,
         |plan, destination| publish_stitched_container(plan, source, destination),
+    )
+}
+
+/// Production retained-handle variant. Planning semantics match the fixture
+/// seam above, while large payloads stream into the unpublished sibling temp
+/// and are never returned as resident byte vectors.
+pub fn publish_product_stitch_retained<S: RetainedStitchedPayloadSource>(
+    game_id: &str,
+    required_inputs: StitchRequiredInputs,
+    segments: Vec<SegmentInput>,
+    source: &S,
+    destination: &Path,
+) -> Result<ProductStitchOutcome, String> {
+    publish_product_stitch_with(
+        game_id,
+        required_inputs,
+        segments,
+        destination,
+        |plan, destination| publish_stitched_container_retained(plan, source, destination),
     )
 }
 
@@ -141,10 +165,10 @@ mod tests {
             compatibility: CompatibilityResolution::Proven {
                 evidence_id: format!("compat-{play_order}"),
                 compatibility_class: "a729-product".into(),
-                build_exe_sha256: "build-a729".into(),
+                build_exe_sha256: "ab".repeat(32),
                 modset_id: "modset-product".into(),
                 schema_version: "schema-product-v1".into(),
-                static_catalog_digest: "catalog-product".into(),
+                static_catalog_digest: "cd".repeat(32),
             },
             transition_coverage: BTreeMap::new(),
             coverage: BTreeMap::from([(hour, disposition.clone())]),
@@ -174,10 +198,10 @@ mod tests {
                 process_start_identity: format!("process-{play_order}"),
                 epoch_token,
                 stream_major: 2,
-                build_exe_sha256: Some("build-a729".into()),
+                build_exe_sha256: Some("ab".repeat(32)),
                 modset_id: Some("modset-product".into()),
                 schema_version: Some("schema-product-v1".into()),
-                static_catalog_digest: Some("catalog-product".into()),
+                static_catalog_digest: Some("cd".repeat(32)),
                 source_path: Some(source_path),
                 source_stored_digest: Some(stored_digest),
                 source_decoded_digest: Some(decoded_digest),

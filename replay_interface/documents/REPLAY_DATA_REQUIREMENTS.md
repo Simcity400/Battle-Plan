@@ -124,16 +124,16 @@ more per-division state than the row above: `supply_ratio`/`low_supply`
 hourly/on-change alongside the base division row; each missing field
 degrades to badge-absent. Same priority as the close-zoom unit lane (A7).
 
-Confirmed by the U1a counter-CONTENT binding (`game_ui::binding_counters`,
-2026-07-09): the typed `DivisionUnitRow` serves ONLY `moving` (orders) and
-`in_combat`; `supply_status`/`dig_in`/`experience`(training)/attrition/
-`active_ability_kinds` are all absent from the view and fail-close to
-badge-absent. **NEW field also needed:** a division **organisation max** (or a
-normalised org ratio like the 0..1 strength ratio) — the on-map
-`GFX_mapicon_unit_bar_org` fill = `organisation / max_organisation`, but the row
-carries only raw `organisation` points, so the org bar fraction is uncomputable
-today (bound `None`). Naval note (item 8): `FleetUnitRow` drops the task-force
-name (the counter name is `None`).
+Closure update (2026-07-22): extended D20 rows now carry the authenticated
+division `max_organisation` returned by the exact-a729 wrapper vslot `+0x130`;
+the producer reads `(*(wrapper+0x138))+0x280` and preserves pointer/vtable/range
+validation. Recorder folding, `DivisionUnitRow`, and the counter binding retain
+the value and compute `organisation / max_organisation` only when both exact
+operands validate. Retained 104-byte rows, malformed values, and failed source
+authentication remain absent/unobtained; no template or doctrine reconstruction
+is permitted. The old U1a max-organisation request is therefore closed. Naval
+note (item 8): `FleetUnitRow` still drops the task-force name (the counter name
+is `None`).
 
 ## 4. Session metadata (playback pacing & player labels)
 

@@ -2,12 +2,17 @@
 //!
 //! The retained controller roots prove where the mode-6
 //! `CCountryTechTreeView` is owned and where population/refresh commits occur,
-//! and the exact20 root/helper receipt and sentinels are now frozen. The
-//! two-axis scroll owner and final connector identity remain unproven, so this
-//! module supplies a complete fail-closed engineering seam while
+//! and the exact20 root/helper receipt and sentinels are now frozen. Final
+//! static exhaustion identified one two-dimensional GUI root at
+//! `controller+0x578`, but did not identify an authenticated producer for the
+//! two axis records carried by TCV1. It also proved that connector segment objects are reused across
+//! logical edges, so a post-return pool scan cannot recover portable endpoint
+//! identity. This module therefore supplies a complete fail-closed engineering
+//! seam while
 //! [`PRODUCTION_ACTIVATION`] remains false. The carrier is wired end-to-end on
 //! reserved domain 71, but collection and authenticated decode remain disabled
-//! until the persisted preflight and live producer contracts are frozen.
+//! unless the schema is revised for the single 2D root and a contextual
+//! connector producer is implemented.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,6 +23,22 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const PRODUCTION_ACTIVATION: bool = false;
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+
+/// Final exact-a729 static-exhaustion exports. These close the controller-root
+/// and connector-pool questions; they do not manufacture the absent TCV1 axis
+/// records or portable connector identities.
+pub const FINAL_CONTROLLER_CONNECTOR_JOB_ID: &str =
+    "20260722T072211Z-a28-tech-canvas-connector-two-axis-final-1b34e6a9";
+pub const FINAL_CONTROLLER_CONNECTOR_MANIFEST_SHA256: &str =
+    "c11f54bc04a2ea34fb50d967bbfd87b3acfbe069774c2cd24bc931d778360c88";
+pub const FINAL_OBJECT_SCROLL_JOB_ID: &str =
+    "20260722T072341Z-a28-tech-canvas-object-scroll-final-fd03b189";
+pub const FINAL_OBJECT_SCROLL_MANIFEST_SHA256: &str =
+    "49a33352fa2e5dbf577c1f2a87562aaa646a61ff48bd8c6d20afda64e9554de1";
+pub const FINAL_PAN_OWNER_JOB_ID: &str =
+    "20260722T072548Z-a28-tech-canvas-pan-scroll-owner-final-85776e34";
+pub const FINAL_PAN_OWNER_MANIFEST_SHA256: &str =
+    "08b91afcf7b313a5be968990f6d8e94d041386aec1b4557e4c567451a2a01864";
 
 pub const OWNER_CONSTRUCTOR_RVA: usize = 0x00B5_2390;
 pub const COUNTRY_TECH_TREE_CONSTRUCTOR_RVA: usize = 0x013B_E7F0;
@@ -165,9 +186,11 @@ pub const AUTHENTICATED_EXACT20_HOOK_CONTRACT: Option<Exact20HookContract> =
 /// gate absent until the canonical pool/job ledger supplies one.
 pub const PERSISTED_EXACT20_PREFLIGHT_RECEIPT_SHA256: Option<&str> = None;
 
-/// Remains absent until a live fixture authenticates complete dispositions,
-/// portable connector/overlay identity, two-axis ownership, registry joins,
-/// and the installed hook/trampoline images.
+/// Deliberately absent. The retained static exports did not identify an exact
+/// producer for TCV1's two axis records. Portable connector identity additionally
+/// requires a contextual bracket around `CONNECTOR_PATH_MATERIALIZER_RVA` and
+/// every segment-helper emission because the post-return pool merges/reuses
+/// segment objects. Neither value may be synthesized from the final pool.
 pub const AUTHENTICATED_LIVE_PRODUCER_CONTRACT: Option<AuthenticatedLiveProducerContract> = None;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,7 +389,7 @@ pub fn activation_blockers() -> Vec<&'static str> {
         blockers.push("persisted same-session exact20 preflight receipt is absent");
     }
     if AUTHENTICATED_LIVE_PRODUCER_CONTRACT.is_none() {
-        blockers.push("authenticated live producer/registry/hook contract is absent; internal callback-label semantics and two-axis ownership remain unproven");
+        blockers.push("no authenticated TCV1 axis producer was identified from the exact-a729 2D GUI root at controller+0x578; connector objects are reused across logical edges and cannot yield portable endpoint identity in a post-return pool scan");
     }
     blockers
 }

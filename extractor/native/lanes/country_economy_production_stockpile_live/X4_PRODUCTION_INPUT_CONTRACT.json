@@ -1,6 +1,6 @@
 {
   "schema": "hoi4-extractor-x4-production-input-contract-v1",
-  "status": "X4_P1_TO_P6_PRODUCTION_PROMOTION_READY",
+  "status": "X4_P1_TO_P6_AND_DEPLOYMENT_PRODUCTION_IMPLEMENTATION_COMPLETE",
   "program": {
     "name": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
@@ -117,9 +117,10 @@
     "fail_closed": "any unreadable required field or missing completeness witness rejects that country production block"
   },
   "deployment_queue_carrier": {
-    "schema": "deployment_queue v1",
+    "schema": "deployment_queue v2",
+    "compatibility": "encoder writes v2 nullable name_order/archetype flags; decoder retains strict v1 admission for historical non-null carriers",
     "domain_id_reserved": 614,
-    "status": "CARRIER_COMPLETE_LIVE_PRODUCER_SOURCE_BLOCKED",
+    "status": "PRODUCTION_NATIVE_AND_SAVE_REHOST_COMPLETE",
     "implementation": "extractor/native/lanes/country_economy_production_stockpile_live/src/deployment_queue.rs",
     "identity": {
       "conveyor": "serialized {id,type=64}",
@@ -131,12 +132,30 @@
     "ordering": "country-local conveyor ordinals, conveyor-local line ordinals, and line-local equipment ordinals are contiguous from zero",
     "fail_closed": "wrong/duplicate identities, non-contiguous order, malformed optional leaves, declared/observed count mismatch, invalid UTF-8, and trailing bytes reject the payload",
     "evidence": "extractor/re_evidence/X4_DEPLOYMENT_QUEUES/verification.json",
-    "live_blocker": "no authenticated a729 live conveyor root/vector/type offsets; do not infer from civil construction_queue"
+    "production_routes": [
+      "native collector -> final D11 PDQ1/v1 -> deployment_queue/v2 -> recorder fold -> typed replay -> fail-closed UI selector",
+      "save_oracle/parse_deployment.py -> replay/store.py -> replay/schema.py -> replay/diff_engine.py"
+    ],
+    "save_evidence": "ten frozen a729 saves authenticate 3350 complete country vectors, 577 conveyors, 1874 lines, and 8473 equipment rows",
+    "authenticated_live_projection": {
+      "owner": "CCountry+0xF70 -> deployment manager vtable module+0x2949128; manager+0x118 owner backlink; manager+0x48 complete conveyor vector",
+      "identities": "type-64 conveyor vtable module+0x29A9E18; type-63 line vtable module+0x29A9DC0; type-52 template vtable module+0x2938F70; type-70 equipment-variant vtable module+0x293AFB8",
+      "line_state": "military-deployment primary/secondary vtables module+0x29A9D38/module+0x29A9D70; training/max-training signed i64 /100000 at +0x60/+0x68; manpower containers +0x70/+0x90; max manpower +0xB0",
+      "equipment": "serializer-owned CEquipmentVariantPool at object+0x20 (vtable module+0x27330A0), exact variant vector at +0x40, stride 0x10, type-70 pointer +0, signed i64 /100000 amount +8; derived +0x28 aggregate is prohibited",
+      "text": "conveyor role token resolves through exact lexer table with token zero mapped to __unknown_0x0; line name_order comes from the authenticated CNameGroupMember object; unresolved equipment archetype remains null"
+    },
+    "native_carrier": "PDQ1 version 1 is the final self-sized D11 trailer and wraps deployment_queue v2; the country set is bijective with PCP1/D11, complete empty writes [], and unreadable state remains explicit unknown without erasing prior exact state",
+    "authority_receipt": {
+      "carrier": "D11/PDQ1/v1+deployment_queue/v2",
+      "source": "CCountry+0xF70/CDeploymentManager+0x48",
+      "producer_rva": "0x01718FE0",
+      "ghidra_job_id": "20260722T051855Z-x4-deployment-native-owner-final-d76cf884",
+      "ghidra_manifest_sha256": "627a03c76e73e472f16fe2e2fafde9bdd58d641187fba42d4814f616611b60c4"
+    }
   },
   "not_owned_here": [
     "production-panel formatting",
-    "progress/output display formulas",
-    "replay typed-view integration"
+    "progress/output display formulas"
   ],
   "ghidra_provenance": [
     {

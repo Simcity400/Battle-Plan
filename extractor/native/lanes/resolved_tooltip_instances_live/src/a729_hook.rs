@@ -186,6 +186,22 @@ impl A729ResolvedTooltipHookOwner {
         A729ResolvedTooltipHookSource::new(self.epoch, pov_country_or_global)
     }
 
+    /// Clear all process-local observations at an authenticated campaign
+    /// boundary while retaining the same installed detour owner. Callbacks
+    /// racing after this mutex-protected reset belong to the new campaign;
+    /// no pre-boundary queue or selected-Present frontier is retained.
+    pub fn reset_campaign_observations(&self) -> Result<(), String> {
+        if !self.active || !INSTALLED.load(Ordering::Acquire) {
+            return Err("A26 hook owner is not active".into());
+        }
+        let mut state = STATE
+            .get_or_init(|| Mutex::new(HookState::default()))
+            .lock()
+            .map_err(|_| "A26 hook state mutex poisoned".to_string())?;
+        clear_campaign_observations(&mut state);
+        Ok(())
+    }
+
     pub fn uninstall(&mut self) -> Result<(), String> {
         if !self.active {
             return Ok(());
@@ -205,6 +221,10 @@ impl A729ResolvedTooltipHookOwner {
         self.active = false;
         Ok(())
     }
+}
+
+fn clear_campaign_observations(state: &mut HookState) {
+    *state = HookState::default();
 }
 
 impl Drop for A729ResolvedTooltipHookOwner {
@@ -693,4 +713,22 @@ const fn hex32(input: &[u8; 64]) -> [u8; 32] {
         index += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod campaign_reset_tests {
+    use super::*;
+
+    #[test]
+    fn campaign_reset_drops_queue_frontier_and_poison() {
+        let mut state = HookState::default();
+        state.last_sealed_present_qpc_ticks = 99;
+        state.controller_calls = 7;
+        state.poison = Some("old campaign".into());
+        clear_campaign_observations(&mut state);
+        assert_eq!(state.last_sealed_present_qpc_ticks, 0);
+        assert_eq!(state.controller_calls, 0);
+        assert!(state.observations.is_empty());
+        assert!(state.poison.is_none());
+    }
 }

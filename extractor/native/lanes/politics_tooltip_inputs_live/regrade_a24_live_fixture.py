@@ -253,7 +253,7 @@ def main() -> int:
     if args.snapshot is None:
         receipt = {
             "schema": "hoi4-a24-live-fixture-regrade-v1",
-            "status": "PASS_EXACT_A729_TAP_MATRIX_READY_FOR_LATCH_REVIEW",
+            "status": "PASS_EXACT_A729_TAP_MATRIX_DIAGNOSTIC_ONLY_NO_PTI1_SEMANTICS",
             "producer_receipt_paths": [str(path.resolve()) for path in args.producer_receipt],
             "producer_receipt_sha256s": [sha256(path) for path in args.producer_receipt],
             "game_executable_sha256": EXECUTABLE_SHA256,
@@ -268,6 +268,7 @@ def main() -> int:
             "observation_count": len(observations),
             "tap_kinds": sorted(REQUIRED_TAPS),
             "pointer_free": True,
+            "latch_review_authorized": False,
             "d73_activation_changed": False,
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)

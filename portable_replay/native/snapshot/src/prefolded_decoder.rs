@@ -203,8 +203,11 @@ impl std::ops::Deref for CertifiedPrefoldedReplay {
 }
 
 /// Owned request for the bounded, disk-backed variant of the portable decoder
-/// seam. `raw_h4cr_path` names a private, already authenticated spool file and
-/// `snapshot_dir` is an empty private directory owned by the caller.
+/// seam. `raw_h4cr_path` identifies a private, already authenticated spool file
+/// for diagnostics and portable implementations, while hardened process-boundary
+/// implementations may transfer and consume the retained open file capability
+/// instead of resolving this path again. `snapshot_dir` is an empty private
+/// directory owned by the caller.
 #[derive(Debug)]
 pub struct CertifiedPrefoldSpoolRequest {
     game_id: String,
@@ -246,7 +249,9 @@ impl CertifiedPrefoldSpoolRequest {
         let snapshot_dir = snapshot_dir.into();
         let source_sha256 = source_sha256.into();
         if game_id.trim().is_empty() {
-            return Err(PrefoldDecodeError::new("spool prefold request game_id is empty"));
+            return Err(PrefoldDecodeError::new(
+                "spool prefold request game_id is empty",
+            ));
         }
         if source_len < 4 {
             return Err(PrefoldDecodeError::new(
@@ -331,8 +336,8 @@ impl PrefoldedSpoolEntry {
         let file_name = file_name.into();
         let sha256 = sha256.into();
         let mut components = Path::new(&file_name).components();
-        let is_leaf = matches!(components.next(), Some(Component::Normal(_)))
-            && components.next().is_none();
+        let is_leaf =
+            matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
         if !is_leaf
             || file_name.contains('/')
             || file_name.contains('\\')
@@ -356,11 +361,21 @@ impl PrefoldedSpoolEntry {
         })
     }
 
-    pub fn hour_index(&self) -> i64 { self.hour_index }
-    pub fn date(&self) -> &str { &self.date }
-    pub fn file_name(&self) -> &str { &self.file_name }
-    pub fn byte_len(&self) -> u64 { self.byte_len }
-    pub fn sha256(&self) -> &str { &self.sha256 }
+    pub fn hour_index(&self) -> i64 {
+        self.hour_index
+    }
+    pub fn date(&self) -> &str {
+        &self.date
+    }
+    pub fn file_name(&self) -> &str {
+        &self.file_name
+    }
+    pub fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
 }
 
 /// Portable manifest for lazily loaded, disk-backed canonical snapshots.
@@ -403,15 +418,31 @@ impl PrefoldedSpool {
             }
             hours.push(entry.hour_index);
         }
-        Ok(Self { game_id, schema_version, entries, hours })
+        Ok(Self {
+            game_id,
+            schema_version,
+            entries,
+            hours,
+        })
     }
 
-    pub fn game_id(&self) -> &str { &self.game_id }
-    pub fn schema_version(&self) -> &Value { &self.schema_version }
-    pub fn entries(&self) -> &[PrefoldedSpoolEntry] { &self.entries }
-    pub fn hours(&self) -> &[i64] { &self.hours }
+    pub fn game_id(&self) -> &str {
+        &self.game_id
+    }
+    pub fn schema_version(&self) -> &Value {
+        &self.schema_version
+    }
+    pub fn entries(&self) -> &[PrefoldedSpoolEntry] {
+        &self.entries
+    }
+    pub fn hours(&self) -> &[i64] {
+        &self.hours
+    }
     pub fn entry(&self, hour_index: i64) -> Option<&PrefoldedSpoolEntry> {
-        self.hours.binary_search(&hour_index).ok().map(|index| &self.entries[index])
+        self.hours
+            .binary_search(&hour_index)
+            .ok()
+            .map(|index| &self.entries[index])
     }
 }
 
@@ -434,9 +465,15 @@ pub struct CertifiedPrefoldedSpool {
 }
 
 impl CertifiedPrefoldedSpool {
-    pub fn spool(&self) -> &PrefoldedSpool { &self.spool }
-    pub fn snapshot_dir(&self) -> &Path { &self.snapshot_dir }
-    pub fn receipt(&self) -> &PrefoldSourceReceipt { &self.receipt }
+    pub fn spool(&self) -> &PrefoldedSpool {
+        &self.spool
+    }
+    pub fn snapshot_dir(&self) -> &Path {
+        &self.snapshot_dir
+    }
+    pub fn receipt(&self) -> &PrefoldSourceReceipt {
+        &self.receipt
+    }
     pub fn into_parts(self) -> (PrefoldedSpool, PathBuf, PrefoldSourceReceipt) {
         (self.spool, self.snapshot_dir, self.receipt)
     }
@@ -455,7 +492,9 @@ pub fn decode_certified_prefolded_spool(
     if spool.game_id() != expected_game_id {
         return Err(PrefoldDecodeError::new(format!(
             "decoder {:?} returned game_id {:?} for spool request {:?}",
-            decoder.decoder_id(), spool.game_id(), expected_game_id
+            decoder.decoder_id(),
+            spool.game_id(),
+            expected_game_id
         )));
     }
     Ok(CertifiedPrefoldedSpool {
@@ -471,7 +510,10 @@ pub fn decode_certified_prefolded_spool(
 }
 
 fn is_lower_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,12 +566,8 @@ mod tests {
             .unwrap();
             let entry = crate::PrefoldedHourEntry::from_json(1, &bytes)
                 .map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
-            PrefoldedReplay::try_new(
-                "other",
-                serde_json::Value::String("1".into()),
-                vec![entry],
-            )
-            .map_err(|error| PrefoldDecodeError::new(error.to_string()))
+            PrefoldedReplay::try_new("other", serde_json::Value::String("1".into()), vec![entry])
+                .map_err(|error| PrefoldDecodeError::new(error.to_string()))
         }
     }
 
@@ -542,7 +580,10 @@ mod tests {
             &self,
             request: CertifiedPrefoldRequest,
         ) -> Result<PrefoldedReplay, PrefoldDecodeError> {
-            assert_eq!(request.identity_mode(), PrefoldStreamIdentityMode::IdentityV1);
+            assert_eq!(
+                request.identity_mode(),
+                PrefoldStreamIdentityMode::IdentityV1
+            );
             let (game_id, _) = request.into_parts();
             let bytes = serde_json::to_vec(&serde_json::json!({
                 "game_id": game_id.clone(),
@@ -552,12 +593,8 @@ mod tests {
             .unwrap();
             let entry = crate::PrefoldedHourEntry::from_json(1, &bytes)
                 .map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
-            PrefoldedReplay::try_new(
-                game_id,
-                serde_json::Value::String("1".into()),
-                vec![entry],
-            )
-            .map_err(|error| PrefoldDecodeError::new(error.to_string()))
+            PrefoldedReplay::try_new(game_id, serde_json::Value::String("1".into()), vec![entry])
+                .map_err(|error| PrefoldDecodeError::new(error.to_string()))
         }
     }
 
@@ -599,13 +636,7 @@ mod tests {
     #[test]
     fn spool_manifest_rejects_path_escape_duplicate_files_and_hour_order() {
         let make = |hour, file: &str| {
-            PrefoldedSpoolEntry::try_new(
-                hour,
-                "1936.1.1.12",
-                file,
-                10,
-                "a".repeat(64),
-            )
+            PrefoldedSpoolEntry::try_new(hour, "1936.1.1.12", file, 10, "a".repeat(64))
         };
         for unsafe_name in ["../x.json", "a/b.json", "a\\b.json", "CON"] {
             assert!(make(1, unsafe_name).is_err(), "accepted {unsafe_name:?}");

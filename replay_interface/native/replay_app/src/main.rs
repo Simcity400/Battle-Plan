@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #![recursion_limit = "256"]
 
 //! Battle Plan product surface: Win32 + D3D11 swapchain app.
@@ -49,6 +50,7 @@ mod install_paths;
 mod observer;
 mod palette;
 mod power_balance_runtime;
+mod prefold_worker;
 #[cfg(test)]
 mod post_effect;
 mod recording_open;
@@ -74,9 +76,13 @@ mod map_labels;
 #[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
+mod performance_bench;
+#[cfg(windows)]
 mod political_scene;
 #[cfg(windows)]
 mod render;
+#[cfg(windows)]
+mod product_entry;
 #[cfg(windows)]
 mod submitted_draw;
 #[cfg(windows)]
@@ -95,12 +101,13 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --dump-hour selects the exact canonical REPLAY_SCHEMA hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
+--benchmark-stress-output runs the checked-in non-semantic 1920x1080 production-path performance workload; --benchmark-output retains the stronger recording-backed profile and requires --benchmark-contract; --benchmark-warmup-frames (default 120, min 60) and --benchmark-sample-frames (default 600, min 300) may only increase sampling; \
 --logical-stream <id> selects one independent timeline from logical-stream-package-set.json; package sets never default to or concatenate segments; \
 --configure selects/replaces the two machine-local content roots without opening a replay; --config provides a portable/headless configuration location; \
 normal product playback reconstructs the launcher's effective selection from the configured user-data dlc_load.json; --mod remains an explicit development/test override; \
@@ -634,8 +641,66 @@ fn log_game_file_resolver_warnings(resolver: Option<&GameFileResolver>) -> Resul
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw_args_os: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let raw_args = match raw_args_os
+        .into_iter()
+        .map(OsString::into_string)
+        .collect::<std::result::Result<Vec<_>, _>>()
+    {
+        Ok(args) => args,
+        Err(_) => {
+            #[cfg(windows)]
+            if product_entry::attach_parent_console() {
+                eprintln!("replay_app: ordinary command-line arguments must be Unicode");
+            } else {
+                product_entry::show_error(
+                    "Ordinary command-line arguments must be Unicode. Check the shortcut or command and try again.",
+                );
+            }
+            #[cfg(not(windows))]
+            eprintln!("replay_app: ordinary command-line arguments must be Unicode");
+            std::process::exit(2);
+        }
+    };
+    #[cfg(windows)]
+    let (args, product_launch) = match product_entry::normalize(raw_args) {
+        Ok(product_entry::ProductLaunch::Cancelled) => return,
+        Ok(product_entry::ProductLaunch::Run { args, visible_errors }) => {
+            let visible_errors = if visible_errors {
+                if let Err(error) = product_entry::ensure_product_profile() {
+                    product_entry::show_error(&error);
+                    std::process::exit(2);
+                }
+                true
+            } else {
+                // A GUI-subsystem process can inherit redirected stderr
+                // without owning a console (notably Command::output and CI).
+                // Preserve that machine-readable CLI route and only fall back
+                // to a dialog when neither a pipe nor a console is available.
+                let diagnostics_available = product_entry::inherited_stderr_available()
+                    || product_entry::attach_parent_console();
+                product_entry::visible_errors_for_route(
+                    false,
+                    diagnostics_available,
+                )
+            };
+            (args, visible_errors)
+        }
+        Err(error) => {
+            product_entry::show_error(&error);
+            std::process::exit(2);
+        }
+    };
+    #[cfg(not(windows))]
+    let args = raw_args;
     if let Err(err) = run(&args) {
+        #[cfg(windows)]
+        if product_launch {
+            product_entry::show_error(&err.to_string());
+        } else {
+            eprintln!("replay_app: {err}");
+        }
+        #[cfg(not(windows))]
         eprintln!("replay_app: {err}");
         std::process::exit(2);
     }
@@ -693,33 +758,9 @@ fn run_configure(args: &[String]) -> Result<()> {
             non_interactive,
         },
     )?;
-    let resolver =
-        GameFileResolver::from_dlc_load(selected.game_install.clone(), selected.user_data.clone())
-            .map_err(|error| {
-                format!(
-            "the selected roots do not produce a valid launcher-equivalent content profile: {error}"
-        )
-            })?;
-    install_paths::playback_environment_from_paths(
-        &selected,
-        &resolver,
-        [
-            "physical_width",
-            "physical_height",
-            "min_gui_width",
-            "min_gui_height",
-            "gui_scale_f32_bits",
-            "refresh_rate_hz",
-            "max_refresh_rate_hz",
-            "fullscreen",
-            "borderless",
-            "display_mode",
-            "settings_file_sha256",
-        ]
-        .into_iter()
-        .map(str::to_string),
-    )
-    .map_err(|error| format!("selected playback profile metadata is invalid: {error}"))?;
+    let resolver = install_paths::validate_product_profile(&selected).map_err(|error| {
+        format!("the saved playback profile failed post-write validation: {error}")
+    })?;
     println!("Playback profile saved and validated.");
     println!("  the game content root: {}", selected.game_install.display());
     println!("  User-data/profile: {}", selected.user_data.display());
@@ -740,6 +781,12 @@ fn run(args: &[String]) -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--validate-playback") {
         return run_validate_playback(args);
+    }
+    if args.iter().any(|arg| arg == "--benchmark-stress-output") {
+        return run_performance_stress(args);
+    }
+    if args.iter().any(|arg| arg == "--benchmark-output") {
+        return run_performance_benchmark(args);
     }
     // E4 open/validate product entry: `--validate-recording <path>` runs the
     // SHARED validator and reports a readable diagnostic without needing a map
@@ -904,6 +951,150 @@ fn run(args: &[String]) -> Result<()> {
             options.water_full,
         ),
     }
+}
+
+#[cfg(windows)]
+fn run_performance_stress(args: &[String]) -> Result<()> {
+    let (default_warmup, default_samples) = performance_bench::defaults();
+    let mut warmup_frames = default_warmup;
+    let mut sample_frames = default_samples;
+    let mut workload_contract = None;
+    let mut output = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = |index: &mut usize| -> Result<&String> {
+            *index += 1;
+            args.get(*index)
+                .ok_or_else(|| format!("{flag} requires a value\n{USAGE}").into())
+        };
+        match flag {
+            "--benchmark-warmup-frames" => {
+                warmup_frames = value(&mut index)?.parse::<usize>().map_err(|error| {
+                    format!("--benchmark-warmup-frames requires a count: {error}")
+                })?
+            }
+            "--benchmark-sample-frames" => {
+                sample_frames = value(&mut index)?.parse::<usize>().map_err(|error| {
+                    format!("--benchmark-sample-frames requires a count: {error}")
+                })?
+            }
+            "--benchmark-contract" => {
+                workload_contract = Some(PathBuf::from(value(&mut index)?))
+            }
+            "--benchmark-stress-output" => output = Some(PathBuf::from(value(&mut index)?)),
+            "--non-interactive" => {}
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --benchmark-stress-output\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    let workload_contract =
+        workload_contract.ok_or("--benchmark-stress-output requires --benchmark-contract")?;
+    let output = output.ok_or("--benchmark-stress-output requires a receipt path")?;
+    reject_env_overrides(|name| std::env::var_os(name))?;
+    performance_bench::run_stress(performance_bench::StressBenchOptions {
+        warmup_frames,
+        sample_frames,
+        workload_contract,
+        output,
+    })
+}
+
+#[cfg(windows)]
+fn run_performance_benchmark(args: &[String]) -> Result<()> {
+    let (default_warmup, default_samples) = performance_bench::defaults();
+    let mut recording = None;
+    let mut frame_cache_entries = replay_core::TimelineConfig::default().frame_cache_entries;
+    let mut warmup_frames = default_warmup;
+    let mut sample_frames = default_samples;
+    let mut workload_contract = None;
+    let mut output = None;
+    let mut game = None;
+    let mut userdata = None;
+    let mut config = None;
+    let mut non_interactive = false;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = |index: &mut usize| -> Result<&String> {
+            *index += 1;
+            args.get(*index)
+                .ok_or_else(|| format!("{flag} requires a value\n{USAGE}").into())
+        };
+        match flag {
+            "--recording" => recording = Some(PathBuf::from(value(&mut index)?)),
+            "--frame-cache" => {
+                frame_cache_entries = value(&mut index)?.parse::<usize>().map_err(|error| {
+                    format!("--frame-cache requires an entry count: {error}")
+                })?
+            }
+            "--benchmark-warmup-frames" => {
+                warmup_frames = value(&mut index)?.parse::<usize>().map_err(|error| {
+                    format!("--benchmark-warmup-frames requires a count: {error}")
+                })?
+            }
+            "--benchmark-sample-frames" => {
+                sample_frames = value(&mut index)?.parse::<usize>().map_err(|error| {
+                    format!("--benchmark-sample-frames requires a count: {error}")
+                })?
+            }
+            "--benchmark-contract" => {
+                workload_contract = Some(PathBuf::from(value(&mut index)?))
+            }
+            "--benchmark-output" => output = Some(PathBuf::from(value(&mut index)?)),
+            "--game" => game = Some(PathBuf::from(value(&mut index)?)),
+            "--userdata" => userdata = Some(PathBuf::from(value(&mut index)?)),
+            "--config" => config = Some(PathBuf::from(value(&mut index)?)),
+            "--non-interactive" => non_interactive = true,
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --benchmark-output\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    let recording = recording.ok_or("--benchmark-output requires --recording")?;
+    let workload_contract =
+        workload_contract.ok_or("--benchmark-output requires --benchmark-contract")?;
+    let output = output.ok_or("--benchmark-output requires a receipt path")?;
+    let paths = install_paths::resolve_process_paths(
+        config,
+        install_paths::ResolveOptions {
+            game_override: resolve_game_dir(game, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA"))),
+            user_data_override: userdata,
+            force_reselect: false,
+            non_interactive,
+        },
+    )?;
+    reject_env_overrides(|name| std::env::var_os(name))?;
+    performance_bench::run(
+        performance_bench::BenchOptions {
+            recording,
+            frame_cache_entries,
+            warmup_frames,
+            sample_frames,
+            workload_contract,
+            output,
+        },
+        &paths,
+    )
+}
+
+#[cfg(not(windows))]
+fn run_performance_stress(_args: &[String]) -> Result<()> {
+    Err("replay_app headless performance stress requires Windows and D3D11".into())
+}
+
+#[cfg(not(windows))]
+fn run_performance_benchmark(_args: &[String]) -> Result<()> {
+    Err("replay_app headless performance benchmark requires Windows and D3D11".into())
 }
 
 fn parse_standalone_logical_stream(args: &[String]) -> Result<Option<u64>> {

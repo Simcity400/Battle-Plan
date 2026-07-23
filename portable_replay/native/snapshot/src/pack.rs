@@ -13,7 +13,7 @@
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
-    portable_path_key, validate_path, validate_payload_path, MAX_CONTAINER_ENTRY_BYTES,
+    portable_path_key, validate_payload_path, MAX_CONTAINER_ENTRY_BYTES,
     STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_ENTRY_COUNT, ZIP32_MAX_FIELD_VALUE,
     ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
@@ -76,6 +76,29 @@ pub struct StreamingFileEntry<'a> {
     pub role: &'static str,
     pub hour_index: Option<i64>,
     pub sha256: Option<String>,
+}
+
+/// One authenticated large entry supplied through a caller-owned retained
+/// source. `source_id` is opaque to the packer; the ordered streaming callback
+/// must copy that source into the unpublished ZIP sink and the packer proves
+/// the exact declared length and SHA-256 during the same write pass.
+pub struct VerifiedPackEntry {
+    pub path: String,
+    pub source_id: usize,
+    pub expected_len: u64,
+    pub expected_sha256: String,
+    pub role: &'static str,
+    pub hour_index: Option<i64>,
+}
+
+/// One entry in a caller-defined global ZIP order. Small canonical metadata can
+/// remain borrowed while large payloads stay file-backed; unlike the older
+/// grouped mixed packers, this representation preserves one exact ordering
+/// across both source kinds.
+pub enum OrderedStreamingPackEntry<'a> {
+    Borrowed(BorrowedPackEntry<'a>),
+    File(StreamingFileEntry<'a>),
+    Verified(VerifiedPackEntry),
 }
 
 /// Identity recorded into the manifest (the values the capture read at session
@@ -523,6 +546,257 @@ pub fn pack_streaming_to_writer<W: Write>(
         CompressionProfile::default(),
         writer,
     )
+}
+
+/// Options-aware streaming writer whose entry slice is already in the exact
+/// desired ZIP order. This is the production seam for stitched containers:
+/// canonical metadata stays borrowed, raw streams and snapshots are consumed
+/// from files in bounded chunks, and the v2 feature/options contract is kept
+/// identical to the in-memory packer.
+pub fn pack_ordered_streaming_to_writer_with_options<W, F>(
+    game_id: &str,
+    entries: &[OrderedStreamingPackEntry<'_>],
+    identity: &PackIdentity,
+    deflate: bool,
+    opts: &PackOptions,
+    writer: &mut W,
+    mut copy_verified_source: F,
+) -> Result<(), PackError>
+where
+    W: Write,
+    F: FnMut(usize, &mut dyn Write) -> std::io::Result<()>,
+{
+    if deflate
+        && entries
+            .iter()
+            .any(|entry| matches!(entry, OrderedStreamingPackEntry::Verified(_)))
+    {
+        return Err(PackError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "verified callback entries currently require deterministic STORE",
+        )));
+    }
+    planned_zip_file_count(
+        &[entries.len()],
+        (if opts.inject_stowaway.is_some() { 1 } else { 0 })
+            + (if !opts.omit_manifest { 1 } else { 0 }),
+    )?;
+    validate_distinct_paths(entries.iter().map(|entry| match entry {
+        OrderedStreamingPackEntry::Borrowed(entry) => entry.path.as_str(),
+        OrderedStreamingPackEntry::File(entry) => entry.path.as_str(),
+        OrderedStreamingPackEntry::Verified(entry) => entry.path.as_str(),
+    }))?;
+    let mut previous_path: Option<&str> = None;
+    for path in entries.iter().map(|entry| match entry {
+        OrderedStreamingPackEntry::Borrowed(entry) => entry.path.as_str(),
+        OrderedStreamingPackEntry::File(entry) => entry.path.as_str(),
+        OrderedStreamingPackEntry::Verified(entry) => entry.path.as_str(),
+    }) {
+        if previous_path.is_some_and(|previous| previous >= path) {
+            return Err(PackError::BadPath(format!(
+                "ordered entry path {path:?} does not follow {previous_path:?}"
+            )));
+        }
+        previous_path = Some(path);
+    }
+
+    let mut manifest_entries = Vec::with_capacity(entries.len());
+    let mut expectations: Vec<Option<(String, u64)>> = Vec::with_capacity(entries.len());
+    let mut counts_snapshots = 0u64;
+    for entry in entries {
+        let (path, sha256, bytes, role, hour_index, expectation) = match entry {
+            OrderedStreamingPackEntry::Borrowed(entry) => {
+                validate_payload_path(&entry.path)
+                    .map_err(|_| PackError::BadPath(entry.path.clone()))?;
+                (
+                    entry.path.as_str(),
+                    to_hex(&Sha256::digest(entry.bytes)),
+                    entry.bytes.len() as u64,
+                    entry.role,
+                    entry.hour_index,
+                    None,
+                )
+            }
+            OrderedStreamingPackEntry::File(entry) => {
+                validate_payload_path(&entry.path)
+                    .map_err(|_| PackError::BadPath(entry.path.clone()))?;
+                let (sha256, bytes) = match &entry.sha256 {
+                    Some(sha256) => (sha256.clone(), streaming_entry_decoded_len(entry)?),
+                    None => sha256_streaming_entry(entry)?,
+                };
+                (
+                    entry.path.as_str(),
+                    sha256.clone(),
+                    bytes,
+                    entry.role,
+                    entry.hour_index,
+                    Some((sha256, bytes)),
+                )
+            }
+            OrderedStreamingPackEntry::Verified(entry) => {
+                validate_payload_path(&entry.path)
+                    .map_err(|_| PackError::BadPath(entry.path.clone()))?;
+                (
+                    entry.path.as_str(),
+                    entry.expected_sha256.clone(),
+                    entry.expected_len,
+                    entry.role,
+                    entry.hour_index,
+                    Some((entry.expected_sha256.clone(), entry.expected_len)),
+                )
+            }
+        };
+        let mut manifest_entry = json!({
+            "path": path,
+            "sha256": sha256,
+            "bytes": bytes,
+            "role": role,
+        });
+        if let Some(hour_index) = hour_index {
+            manifest_entry
+                .as_object_mut()
+                .expect("manifest entry is an object")
+                .insert("hour_index".into(), json!(hour_index));
+        }
+        if role == "snapshot" {
+            counts_snapshots = counts_snapshots.saturating_add(1);
+        }
+        manifest_entries.push(manifest_entry);
+        expectations.push(expectation);
+    }
+    manifest_entries.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["path"].as_str().unwrap_or(""))
+    });
+    if let (Some(raw), Some(first)) = (&opts.first_role_raw, manifest_entries.first_mut()) {
+        first
+            .as_object_mut()
+            .expect("manifest entry object")
+            .insert("role".into(), raw.clone());
+    }
+
+    let required_features = match (&opts.required_features_raw, &opts.inject_required_feature) {
+        (Some(raw), _) => raw.clone(),
+        (None, Some(feature)) => json!([feature]),
+        (None, None) => json!(portable_content_required_features(
+            identity,
+            opts.required_features.clone().unwrap_or_default(),
+        )),
+    };
+    let content_manifest = portable_content_manifest_value(identity)?;
+    let mut manifest = json!({
+        "format": "hoi4replay",
+        "container_version": opts.container_version.unwrap_or(1),
+        "required_features": required_features,
+        "optional_features": [],
+        "schema_version": identity.schema_version,
+        "game_id": game_id,
+        "build": {
+            "exe_sha256": identity.build_exe_sha256,
+            "pinned": identity.build_pinned,
+        },
+        "mod_identity": identity.mod_identity.clone().unwrap_or(Value::Null),
+        "content_manifest": content_manifest,
+        "created_utc": identity.created_utc,
+        "recorder": { "tool": "hoi4replay-recorder", "tool_version": "1.0.0" },
+        "counts": { "snapshots": counts_snapshots },
+        "entries": manifest_entries,
+        "manifest_digest": Value::Null,
+        "signature": Value::Null,
+    });
+    let digest = to_hex(&Sha256::digest(&manifest_canonical_bytes(&manifest)));
+    manifest
+        .as_object_mut()
+        .expect("manifest is an object")
+        .insert("manifest_digest".into(), json!(digest));
+
+    let compression = PackCompression::from_deflate_flag(deflate);
+    let compression_profile = CompressionProfile::default();
+    let mut central = Vec::new();
+    let mut written = 0u64;
+    let mut zip64_used = false;
+    let mut file_count = 0usize;
+    for (entry, expectation) in entries.iter().zip(expectations.iter()) {
+        match entry {
+            OrderedStreamingPackEntry::Borrowed(entry) => write_zip_file(
+                writer,
+                &mut central,
+                &mut written,
+                &mut zip64_used,
+                &entry.path,
+                entry.bytes,
+                compression.method_for_entry(&entry.path, entry.bytes.len() as u64),
+                compression_profile,
+            )?,
+            OrderedStreamingPackEntry::File(entry) => {
+                let (expected_sha256, expected_len) = expectation
+                    .as_ref()
+                    .expect("file-backed entry has an expectation");
+                write_zip_file_streaming(
+                    writer,
+                    &mut central,
+                    &mut written,
+                    &mut zip64_used,
+                    &entry.path,
+                    entry,
+                    compression,
+                    compression_profile,
+                    expected_sha256,
+                    *expected_len,
+                )?;
+            }
+            OrderedStreamingPackEntry::Verified(entry) => {
+                let (expected_sha256, expected_len) = expectation
+                    .as_ref()
+                    .expect("verified entry has an expectation");
+                write_zip_file_from_callback(
+                    writer,
+                    &mut central,
+                    &mut written,
+                    &mut zip64_used,
+                    &entry.path,
+                    expected_sha256,
+                    *expected_len,
+                    |sink| copy_verified_source(entry.source_id, sink),
+                )?;
+            }
+        }
+        file_count += 1;
+    }
+    if let Some((path, data)) = &opts.inject_stowaway {
+        write_zip_file(
+            writer,
+            &mut central,
+            &mut written,
+            &mut zip64_used,
+            path,
+            data,
+            ZipCompression::Store,
+            compression_profile,
+        )?;
+        file_count += 1;
+    }
+    if !opts.omit_manifest {
+        let mut manifest_bytes = serde_json::to_vec(&manifest).expect("manifest serializes");
+        if opts.inject_duplicate_role_member {
+            inject_duplicate_role_member(&mut manifest_bytes);
+        }
+        write_zip_file(
+            writer,
+            &mut central,
+            &mut written,
+            &mut zip64_used,
+            "manifest.json",
+            &manifest_bytes,
+            ZipCompression::Store,
+            compression_profile,
+        )?;
+        file_count += 1;
+    }
+    finish_zip(writer, &mut central, written, file_count, zip64_used)?;
+    Ok(())
 }
 
 /// Production streaming writer: STORE tiny entries and Zstandard-compress large
@@ -1101,6 +1375,135 @@ impl<W: Write> Write for CountingWriter<'_, W> {
 /// Chunk size for streaming a large file entry into the container.
 const STREAM_CHUNK: usize = 4 * 1024 * 1024;
 
+struct VerifiedStoreWriter<'a, W: Write> {
+    out: &'a mut W,
+    crc32: crc32fast::Hasher,
+    sha256: Sha256,
+    len: u64,
+    name: &'a str,
+}
+
+impl<W: Write> Write for VerifiedStoreWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next = self
+            .len
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| zip_limit_err(format!("verified entry {} size", self.name)))?;
+        ensure_entry_size_within_limit(
+            self.name,
+            "uncompressed size",
+            next,
+            STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+        )?;
+        self.out.write_all(bytes)?;
+        self.crc32.update(bytes);
+        self.sha256.update(bytes);
+        self.len = next;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// Append one authenticated callback source as STORE without opening a path or
+/// materializing its bytes. The callback writes only into the unpublished ZIP
+/// sink; length and digest are checked before the manifest/central directory is
+/// finalized, so any retained-source drift aborts publication.
+fn write_zip_file_from_callback<W, F>(
+    out: &mut W,
+    central: &mut Vec<u8>,
+    written: &mut u64,
+    zip64_used: &mut bool,
+    name: &str,
+    expected_sha256: &str,
+    expected_len: u64,
+    copy_source: F,
+) -> std::io::Result<()>
+where
+    W: Write,
+    F: FnOnce(&mut dyn Write) -> std::io::Result<()>,
+{
+    ensure_entry_size_within_limit(
+        name,
+        "uncompressed size",
+        expected_len,
+        STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    )?;
+    let local_header_offset = *written;
+    let method = ZIP_METHOD_STORE;
+    let flags = 0x0008u16;
+    let name_len = checked_zip_u16_len(name.len(), "entry name length", name)?;
+    let version = version_needed(
+        method,
+        zip64_field_needed(local_header_offset) || zip64_field_needed(expected_len),
+    );
+
+    write_all_counted(out, written, &0x0403_4b50u32.to_le_bytes())?;
+    write_all_counted(out, written, &version.to_le_bytes())?;
+    write_all_counted(out, written, &flags.to_le_bytes())?;
+    write_all_counted(out, written, &method.to_le_bytes())?;
+    write_all_counted(out, written, &0u16.to_le_bytes())?;
+    write_all_counted(out, written, &0u16.to_le_bytes())?;
+    write_all_counted(out, written, &0u32.to_le_bytes())?;
+    write_all_counted(out, written, &0u32.to_le_bytes())?;
+    write_all_counted(out, written, &0u32.to_le_bytes())?;
+    write_all_counted(out, written, &name_len.to_le_bytes())?;
+    write_all_counted(out, written, &0u16.to_le_bytes())?;
+    write_all_counted(out, written, name.as_bytes())?;
+
+    let mut sink = VerifiedStoreWriter {
+        out,
+        crc32: crc32fast::Hasher::new(),
+        sha256: Sha256::new(),
+        len: 0,
+        name,
+    };
+    copy_source(&mut sink)?;
+    let VerifiedStoreWriter {
+        out: _,
+        crc32,
+        sha256,
+        len: data_len,
+        name: _,
+    } = sink;
+    let actual_sha256 = to_hex(&sha256.finalize());
+    let crc32 = crc32.finalize();
+    if data_len != expected_len || actual_sha256 != expected_sha256 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "entry {name} changed while packing: expected {expected_len} bytes sha256 {expected_sha256}, wrote {data_len} bytes sha256 {actual_sha256}"
+            ),
+        ));
+    }
+    *written = written
+        .checked_add(data_len)
+        .ok_or_else(|| zip_limit_err(format!("verified entry {name} size overflow")))?;
+    write_all_counted(out, written, &0x0807_4b50u32.to_le_bytes())?;
+    write_all_counted(out, written, &crc32.to_le_bytes())?;
+    if zip64_field_needed(data_len) {
+        write_all_counted(out, written, &data_len.to_le_bytes())?;
+        write_all_counted(out, written, &data_len.to_le_bytes())?;
+    } else {
+        write_all_counted(out, written, &(data_len as u32).to_le_bytes())?;
+        write_all_counted(out, written, &(data_len as u32).to_le_bytes())?;
+    }
+    *zip64_used |= append_central_directory_record(
+        central,
+        name,
+        method,
+        flags,
+        crc32,
+        data_len,
+        data_len,
+        local_header_offset,
+        version,
+    )?;
+    Ok(())
+}
+
 /// Append a file to the zip in bounded memory: the local header is written with a
 /// data-descriptor flag (crc/sizes deferred), the payload is streamed through the
 /// configured encoder (or STORE) directly to `out` while the crc32 and lengths
@@ -1159,7 +1562,15 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     // general-purpose bit 3: crc-32 and sizes are in a trailing data descriptor.
     let flags: u16 = 0x0008;
     let name_len = checked_zip_u16_len(name.len(), "entry name length", name)?;
-    let version = version_needed(method, zip64_field_needed(lho));
+    // Compressed size is not known until after the local header is emitted.
+    // Advertise ZIP64 conservatively for compressed streaming entries; STORE
+    // can decide exactly from its decoded/stored length.
+    let version = version_needed(
+        method,
+        zip64_field_needed(lho)
+            || zip64_field_needed(expected_len)
+            || !matches!(zip_compression, ZipCompression::Store),
+    );
 
     // --- local file header (crc + sizes zeroed; real values in descriptor + CD) ---
     write_all_counted(out, written, &0x0403_4b50u32.to_le_bytes())?; // sig
@@ -1296,7 +1707,7 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
 
     // --- central directory record (true crc/sizes: the reader's authority) ---
     let entry_zip64 = append_central_directory_record(
-        central, name, method, flags, crc, comp_len, data_len, lho,
+        central, name, method, flags, crc, comp_len, data_len, lho, version,
     )?;
     *zip64_used |= entry_zip64;
     Ok(())
@@ -1366,8 +1777,9 @@ fn write_zip_file<W: Write>(
     write_all_counted(out, written, &local_extra)?;
     write_all_counted(out, written, &comp)?;
 
-    *zip64_used |=
-        append_central_directory_record(central, name, method, 0, crc, comp_len, data_len, lho)?;
+    *zip64_used |= append_central_directory_record(
+        central, name, method, 0, crc, comp_len, data_len, lho, version,
+    )?;
     Ok(())
 }
 
@@ -1491,6 +1903,7 @@ fn append_central_directory_record(
     comp_len: u64,
     data_len: u64,
     local_header_off: u64,
+    minimum_version: u16,
 ) -> std::io::Result<bool> {
     let name_len = checked_zip_u16_len(name.len(), "entry name length", name)?;
     let need_uncomp = zip64_field_needed(data_len);
@@ -1503,7 +1916,7 @@ fn append_central_directory_record(
     )?;
     let extra_len = checked_zip_u16_len(extra.len(), "central extra length", name)?;
     let uses_zip64 = need_uncomp || need_comp || need_lho;
-    let version = version_needed(method, uses_zip64);
+    let version = version_needed(method, uses_zip64).max(minimum_version);
 
     central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
     central.extend_from_slice(&version.to_le_bytes()); // version made by
@@ -1982,5 +2395,111 @@ mod tests {
             pack("g", &top_level_payload, &PackIdentity::default(), false),
             Err(PackError::BadPath(_))
         ));
+    }
+
+    #[test]
+    fn ordered_verified_packer_keeps_large_sources_chunk_bounded_and_deterministic() {
+        struct TrackingWriter {
+            bytes: Vec<u8>,
+            largest_write: usize,
+        }
+        impl Write for TrackingWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.largest_write = self.largest_write.max(bytes.len());
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        const SOURCE_CHUNK: usize = 256 * 1024;
+        const SOURCE_CHUNKS: usize = 48;
+        let chunk = vec![0x5au8; SOURCE_CHUNK];
+        let mut digest = Sha256::new();
+        for _ in 0..SOURCE_CHUNKS {
+            digest.update(&chunk);
+        }
+        let expected_sha256 = to_hex(&digest.finalize());
+        let expected_len = (SOURCE_CHUNK * SOURCE_CHUNKS) as u64;
+        let control = br#"{"index_schema":"fixture"}"#;
+        let entries = [
+            OrderedStreamingPackEntry::Borrowed(BorrowedPackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: control,
+                role: "index",
+                hour_index: None,
+            }),
+            OrderedStreamingPackEntry::Verified(VerifiedPackEntry {
+                path: "payload/g/raw/source.h4cr".into(),
+                source_id: 7,
+                expected_len,
+                expected_sha256,
+                role: "raw_source",
+                hour_index: None,
+            }),
+        ];
+
+        let mut first = TrackingWriter {
+            bytes: Vec::new(),
+            largest_write: 0,
+        };
+        pack_ordered_streaming_to_writer_with_options(
+            "g",
+            &entries,
+            &PackIdentity::default(),
+            false,
+            &PackOptions::default(),
+            &mut first,
+            |source_id, writer| {
+                assert_eq!(source_id, 7);
+                for _ in 0..SOURCE_CHUNKS {
+                    writer.write_all(&chunk)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            first.largest_write <= SOURCE_CHUNK,
+            "source write expanded to {} bytes",
+            first.largest_write
+        );
+
+        let mut second = TrackingWriter {
+            bytes: Vec::new(),
+            largest_write: 0,
+        };
+        pack_ordered_streaming_to_writer_with_options(
+            "g",
+            &entries,
+            &PackIdentity::default(),
+            false,
+            &PackOptions::default(),
+            &mut second,
+            |_, writer| {
+                for _ in 0..SOURCE_CHUNKS {
+                    writer.write_all(&chunk)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(second.bytes, first.bytes);
+        let archive = crate::zip::ZipArchive::parse(first.bytes).unwrap();
+        let names = archive
+            .entries()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "payload/g/index.json",
+                "payload/g/raw/source.h4cr",
+                "manifest.json"
+            ]
+        );
     }
 }

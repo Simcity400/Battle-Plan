@@ -3,13 +3,14 @@
 //! `ABL1` remains the pointer-free selected-context row codec. `ABA2` binds an
 //! admitted `ABL1` frame to the exact-a729 executable and exact20 evidence
 //! receipt, and gives the compact fold an explicit unavailable representation.
-//! The collector entry point remains inert until live transitions and the
-//! portable final-text join have both been authenticated.
+//! Core rows are admitted from the exact refresh/state observer. Portable
+//! final text remains optional and is absent when no exact text transaction
+//! was observed.
 
 use crate::{
     decode_payload as decode_abl1, encode_payload as encode_abl1, validate_frame as validate_abl1,
     AbilityError, AbilityFrame, ExactA729AbilityControllerSource, COMPACT_DOMAIN_SCHEDULED,
-    EXACT_A729_AUTHORITY_BOUND, LIVE_TRANSITION_PROMOTION_BOUND, PORTABLE_TEXT_JOIN_BOUND,
+    EXACT_A729_AUTHORITY_BOUND, LIVE_TRANSITION_PROMOTION_BOUND,
 };
 
 pub const DOMAIN_ID: u16 = 88;
@@ -186,7 +187,6 @@ pub fn collect_and_encode<S: ExactA729AbilityControllerSource>(
 ) -> Result<Vec<u8>, CarrierError> {
     if !EXACT_A729_AUTHORITY_BOUND
         || !LIVE_TRANSITION_PROMOTION_BOUND
-        || !PORTABLE_TEXT_JOIN_BOUND
         || !COMPACT_DOMAIN_SCHEDULED
     {
         return Err(CarrierError::ActivationDisabled);
@@ -366,14 +366,14 @@ mod tests {
                 activation_hour: Some(897),
                 cooldown_total: TimerValue::Hours(504),
                 cooldown_remaining: TimerValue::NotStarted,
-                cost_command_power_fixed: 2_200_000,
+                cost_command_power_fixed: Some(2_200_000),
                 target_kind: Some("army_leader".into()),
                 target_id: Some("leader:42".into()),
                 duration_total: TimerValue::Hours(168),
                 duration_remaining: TimerValue::Hours(165),
                 display_order: 0,
                 icon: "GFX_ability_force_attack_animated".into(),
-                tooltip: "Force Attack".into(),
+                tooltip: Some("Force Attack".into()),
                 disabled_reason: Some("Already active".into()),
                 affected_division_ids: vec!["division:9".into()],
             }],
@@ -469,7 +469,7 @@ mod tests {
             .as_mut()
             .expect("snapshot")
             .rows[0]
-            .cost_command_power_fixed = -2_200_000;
+            .cost_command_power_fixed = Some(-2_200_000);
         let encoded = encode_payload(&signed).expect("encode signed effective cost");
         assert_eq!(decode_payload(&encoded).expect("decode signed effective cost"), signed);
     }
@@ -487,10 +487,11 @@ mod tests {
     }
 
     #[test]
-    fn production_collection_stays_inert_without_authenticated_live_gates() {
-        assert_eq!(
-            collect_and_encode(&Fake, 900, 7),
-            Err(CarrierError::ActivationDisabled)
-        );
+    fn production_collection_encodes_authenticated_promoted_source() {
+        let encoded = collect_and_encode(&Fake, 900, 7)
+            .expect("encode authenticated promoted A36 source");
+        let decoded = decode_payload(&encoded).expect("decode promoted ABA2 frame");
+        assert_eq!(decoded.authority, AuthorityState::Exact20Receipt);
+        assert_eq!(decoded.snapshot, Some(snapshot()));
     }
 }

@@ -19,6 +19,7 @@ import live_binding_resolver as LR  # noqa: E402
 import prepare_product_modset_capture as PREPARE  # noqa: E402
 import source_inventory_layers as SIL  # noqa: E402
 import static_bundle as SB  # noqa: E402
+import verify_product_modset_capture_ready as VERIFY_PREPARED  # noqa: E402
 
 
 def test_all_static_entrypoints_treat_empty_explicit_modset_as_vanilla_only():
@@ -484,6 +485,33 @@ def _fake_product_bundle_build(**kwargs):
     return {"schema": B.BUILD_SCHEMA, "passed": True}
 
 
+def _write_product_policy(exe: Path, bindings: Path, path: Path) -> Path:
+    _report, product = PREPARE._validate_binding_corpus(exe, bindings)
+    mod_state = SB._validate_binding_document(
+        SB.load_object(bindings / "mod_state.json", "mod_state"), "mod_state"
+    )
+    classification = (
+        "validated_modset"
+        if any(row["enabled"] for row in mod_state["items"])
+        else "vanilla"
+    )
+    _write_json(
+        path,
+        {
+            "schema": "extractor.supported_product_modsets.v1",
+            "policy": "exact_registry_match",
+            "entries": [
+                {
+                    "id": "fixture-exact-product",
+                    "classification": classification,
+                    "product_modset": product,
+                }
+            ],
+        },
+    )
+    return path
+
+
 def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -491,12 +519,17 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     monkeypatch.setattr(PREPARE.LR, "EXPECTED_EXE_SHA256", SB.sha256_file(exe))
     _retain_process_bound_ui14_evidence(exe, bindings)
     monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
+    policy = _write_product_policy(exe, bindings, tmp_path / "supported.json")
 
     first = PREPARE.prepare_offline(
-        exe=exe, bindings=bindings, output=tmp_path / "prepared-a"
+        exe=exe, bindings=bindings, output=tmp_path / "prepared-a",
+        admission_policy=policy,
+        allow_dev_policy_override=True,
     )
     second = PREPARE.prepare_offline(
-        exe=exe, bindings=bindings, output=tmp_path / "prepared-b"
+        exe=exe, bindings=bindings, output=tmp_path / "prepared-b",
+        admission_policy=policy,
+        allow_dev_policy_override=True,
     )
 
     assert first["preparation_mode"] == "authenticated_binding_corpus"
@@ -505,6 +538,7 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     assert first["static_bundle"]["product_modset_sha256"] == first[
         "product_modset_sha256"
     ]
+    assert first["product_modset_admission"]["entry_id"] == "fixture-exact-product"
     assert first["ui14_capture_evidence"]["capture_nonce_sha256"]
     assert first["ui14_capture_evidence"] == second["ui14_capture_evidence"]
     PREPARE._reject_pointers(first)
@@ -514,6 +548,24 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
         )
     )
     assert persisted == first
+    monkeypatch.setattr(VERIFY_PREPARED, "EXACT_A729_SHA256", SB.sha256_file(exe))
+    independent = VERIFY_PREPARED.verify(
+        exe, tmp_path / "prepared-a", admission_policy=policy,
+        allow_dev_policy_override=True,
+    )
+    assert independent["product_modset_admission"] == first[
+        "product_modset_admission"
+    ]
+    direct = PREPARE.PMA.admit_static_bundle(
+        tmp_path / "prepared-a/static_bundle/bundle/static_bundle_manifest.json",
+        tmp_path / "prepared-a/bindings/mod_state.json",
+        tmp_path / "prepared-a/bindings/dlc_state.json",
+        tmp_path / "prepared-a/bindings/load_order.json",
+        tmp_path / "prepared-a/bindings/source_inventory.json",
+        policy,
+        allow_dev_policy_override=True,
+    )
+    assert direct == first["product_modset_admission"]
     for name in PREPARE.BINDING_FILES:
         assert (tmp_path / "prepared-a/bindings" / name).read_bytes() == (
             bindings / name

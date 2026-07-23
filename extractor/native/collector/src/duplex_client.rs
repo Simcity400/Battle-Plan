@@ -32,16 +32,14 @@
 //! deadline and reports `TimedOut`; the channel then poisons through its normal
 //! terminal path, so a timeout can never be read as "probably alive".
 //!
-//! # Activation freeze
+//! # Activation boundary
 //!
-//! Everything here is DORMANT, and dormancy is ENFORCED, not merely described:
+//! Product I/O is enforced at a typed boundary:
 //! every production entry point that can open a pipe or spawn a connector
 //! worker requires a move-only [`DuplexClientProductPermit`], and the only
-//! production constructor ([`duplex_client_product_permit`]) fails while
-//! [`DUPLEX_CONTROL_CLIENT_ENABLED`] is `false` — the same private-permit
-//! pattern as the recorder-side `AutoAttachDuplexProductPermit`. Activation is
-//! owner-gated on live validation. The module compiles, is fully unit-tested
-//! against fake in-memory transports, and is reachable only through the permit.
+//! production constructor ([`duplex_client_product_permit`]) requires both the
+//! product latch and exact-build local identity reader. The module is reachable
+//! only through that private permit.
 
 #![allow(dead_code)]
 
@@ -109,19 +107,13 @@ use compact_contract::sink_failure::{
     encode_sink_failure, SinkFailureKind, SinkFailureReport, SinkStatusError,
 };
 
-/// ACTIVATION FREEZE: the duplex control client is built and unit-tested but
-/// must NOT be wired into the live attach path yet. The live integration is
-/// gated on this constant (kept `false` until owner sign-off on live
-/// validation), exactly like the recorder-side duplex activation seam.
-pub const DUPLEX_CONTROL_CLIENT_ENABLED: bool = false;
+/// Product activation latch, jointly checked with the exact-build local CID1
+/// reader by [`duplex_client_product_permit`].
+pub const DUPLEX_CONTROL_CLIENT_ENABLED: bool = true;
 
-/// Independent promotion latch for the CRP1/CRA1 logical-stream lifecycle.
-/// The complete product route is compiled and selected through
-/// [`CollectorControlClient::new_product`], but the ordinary
-/// AUTO_ATTACH_DUPLEX_V1 word remains
-/// authoritative until one authenticated live change/rollback run proves the
-/// drain, durable seal, second CID1, and second CFA1 boundaries end to end.
-pub const ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = false;
+/// CRP1/CRA1 local logical-stream lifecycle activation. Every transition still
+/// fails closed through the durable seal, second CID1, and second CFA1 gates.
+pub const ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = true;
 
 pub fn evidence_or_product_identity_enabled() -> bool {
     (DUPLEX_CONTROL_CLIENT_ENABLED
@@ -130,7 +122,7 @@ pub fn evidence_or_product_identity_enabled() -> bool {
 }
 
 pub fn product_rollover_enabled() -> bool {
-    (DUPLEX_CONTROL_CLIENT_ENABLED && ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND)
+    (evidence_or_product_identity_enabled() && ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND)
         || compact_contract::cid1_lifecycle_evidence::cid1_lifecycle_evidence_permit_enabled()
 }
 
@@ -138,7 +130,7 @@ pub fn product_rollover_enabled() -> bool {
 /// recorder-side `AutoAttachDuplexProductPermit`). Every production entry point
 /// that can start pipe I/O or spawn a worker thread demands one, so a caller
 /// that ignores [`DUPLEX_CONTROL_CLIENT_ENABLED`] simply cannot compile a call:
-/// dormancy is enforced by construction.
+/// the typed authority boundary is enforced by construction.
 pub struct DuplexClientProductPermit {
     _private: (),
 }
@@ -620,8 +612,8 @@ pub enum ClientError {
     /// are accepted only by their dedicated offline next-word transaction;
     /// Stage-B and kinds no endpoint sends (for example `RecorderHello`) fail closed.
     Unsupported(MessageKind),
-    /// A production pipe-I/O entry point was consulted while the duplex client
-    /// is frozen dormant ([`DUPLEX_CONTROL_CLIENT_ENABLED`] is `false`).
+    /// A production pipe-I/O entry point was consulted while an activation
+    /// prerequisite was false.
     ActivationDisabled,
     /// A method was called after the session already stopped or failed.
     NotUsable,
@@ -727,9 +719,8 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
     ///
     /// Requires a [`DuplexClientProductPermit`]: this is the single construction
     /// gate for the whole client. Because the only production permit constructor
-    /// fails closed while [`DUPLEX_CONTROL_CLIENT_ENABLED`] is `false`, no
-    /// production code can build a client — and therefore cannot handshake,
-    /// report failures, or drive any pipe I/O — while the activation freeze holds.
+    /// fails closed while either activation prerequisite is false, no
+    /// production code can build a client or drive pipe I/O without the permit.
     pub fn new(
         _permit: &DuplexClientProductPermit,
         io: T,
@@ -2306,7 +2297,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Live Win32 adapters (dormant; owner-gated on live validation, not unit-tested)
+// Live Win32 adapters (production, still guarded by the typed permit)
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
 mod win32 {

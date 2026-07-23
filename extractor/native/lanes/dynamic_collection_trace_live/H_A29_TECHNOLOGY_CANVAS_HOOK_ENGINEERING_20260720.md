@@ -18,7 +18,7 @@ product payload in this revision:
 - collection rejects before invoking the source while any live gate is absent;
 - structural encode/decode helpers are private; the only public decoder checks
   production activation, persisted preflight, and the live contract;
-- collector, reserved d71 routing, recorder fold, replay typed view, and UI09
+- collector, magic-discriminated d71 routing, recorder fold, replay typed view, and UI09
   admission are now wired; none can admit a payload while the live gates above
   remain absent.
 
@@ -117,7 +117,10 @@ repository policy they were not run by this subagent.
 
 ## Production transport completed
 
-Reserved domain 71 now discriminates `DCT1` and `TCV1` by carrier magic. TCV1
+Domain 71 discriminates `DCT1` and `TCV1` by carrier magic. D71 is now
+production-scheduled for exact Air-selection and paired MIO-history `DCT1`
+observations; `TCV1` remains omitted and fail closed because its exact two-axis
+producer is not statically closed. TCV1
 is never projected into the older collection schema: the recorder preserves
 the full authority hashes, same-record identity, explicit two-axis pan and
 scroll state, complete source dispositions, hierarchy-derived slots, rectangles

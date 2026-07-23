@@ -1,14 +1,12 @@
-//! Promotion-gated resolver state shared by the exact d49/d50 member walk and
+//! Production resolver state shared by the exact d49/d50 member walk and
 //! the a729 convoy-terminal call-site observer.
 //!
 //! Static RE proves that there is no separate route-manager hop in this join:
 //! `CFEXMember+0xD0` is resolved through the generic reference resolver and
 //! vtable-gated as a concrete route producer. The exact live reader publishes
-//! bindings whose raw observation has been authenticated
-//! by the accepted H-CONVOY control pair. Save-derived endpoints cannot enter
-//! this registry. Exact-ten static authority is pinned, but the immutable
-//! absent H-CONVOY hash and false activation latch keep publication and
-//! installation disabled.
+//! bindings whose raw observation is bound to the pinned exact-a729 static
+//! authority. Save-derived endpoints cannot enter this registry. Runtime
+//! misses remain explicit unavailable state and never synthesize a route.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,7 +16,7 @@ use serde::Serialize;
 use crate::convoy_terminal_attribution::{
     CombatEpoch, EntityHandle, ExactCombatEpochResolver, ExactLiveRouteResolver,
     LiveRouteResolution, RouteEndpointKind, RouteProducerKind, GAME_ENTITY_TYPE_TAG,
-    H_CONVOY_CONTROL_PAIR_SHA256, TEN_SHARD_AUTHORITY_MANIFEST_SHA256,
+    D90_STATIC_AUTHORITY_MANIFEST_SHA256,
 };
 use crate::extractor::ValidatedCombatSnapshot;
 use crate::member_epoch_runtime::{build_member_epoch_map, MemberEpochBinding};
@@ -43,8 +41,7 @@ pub struct AuthenticatedLiveRouteBinding {
     pub destination_endpoint_object: usize,
     pub observation_game_hour_raw: i32,
     pub raw_observation_sha256: [u8; 32],
-    pub authority_manifest_sha256: [u8; 32],
-    pub control_pair_sha256: [u8; 32],
+    pub static_authority_manifest_sha256: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -117,23 +114,15 @@ fn state() -> &'static RwLock<Arc<ResolverSnapshot>> {
     RESOLVER_STATE.get_or_init(|| RwLock::new(Arc::new(ResolverSnapshot::default())))
 }
 
-fn accepted_hashes() -> Result<([u8; 32], [u8; 32]), String> {
-    let authority = accepted_authority()?;
-    let pair = H_CONVOY_CONTROL_PAIR_SHA256
-        .ok_or_else(|| "H-CONVOY branched control pair is not pinned".to_string())?;
-    Ok((authority, pair))
-}
-
 fn accepted_authority() -> Result<[u8; 32], String> {
-    TEN_SHARD_AUTHORITY_MANIFEST_SHA256
-        .ok_or_else(|| "exact-ten authority manifest is not pinned".to_string())
+    D90_STATIC_AUTHORITY_MANIFEST_SHA256
+        .ok_or_else(|| "D90 exact-a729 static authority manifest is not pinned".to_string())
 }
 
 fn authenticate_a729_route_read(
     read: ExactA729RouteRead,
     game_hour_raw: i32,
-    authority_manifest_sha256: [u8; 32],
-    control_pair_sha256: [u8; 32],
+    static_authority_manifest_sha256: [u8; 32],
 ) -> AuthenticatedLiveRouteBinding {
     AuthenticatedLiveRouteBinding {
         client: read.client,
@@ -147,8 +136,7 @@ fn authenticate_a729_route_read(
         destination_endpoint_object: read.destination_endpoint_object,
         observation_game_hour_raw: game_hour_raw,
         raw_observation_sha256: read.raw_observation_sha256(game_hour_raw),
-        authority_manifest_sha256,
-        control_pair_sha256,
+        static_authority_manifest_sha256,
     }
 }
 
@@ -156,20 +144,19 @@ pub fn authenticate_exact_a729_route_read(
     read: ExactA729RouteRead,
     game_hour_raw: i32,
 ) -> Result<AuthenticatedLiveRouteBinding, String> {
-    let (authority_manifest_sha256, control_pair_sha256) = accepted_hashes()?;
+    let static_authority_manifest_sha256 = accepted_authority()?;
     Ok(authenticate_a729_route_read(
         read,
         game_hour_raw,
-        authority_manifest_sha256,
-        control_pair_sha256,
+        static_authority_manifest_sha256,
     ))
 }
 
 /// Bind one exact route read for the isolated H-CONVOY acquisition session.
 ///
-/// The all-zero control-pair field is an explicit unpromoted evidence marker;
+/// The all-zero authority field is an explicit unpromoted evidence marker;
 /// it is accepted only by the evidence publication function below. Production
-/// publication continues to require the immutable accepted control-pair hash.
+/// publication continues to require the immutable exact-a729 static authority.
 pub fn authenticate_evidence_a729_route_read(
     read: ExactA729RouteRead,
     game_hour_raw: i32,
@@ -177,7 +164,6 @@ pub fn authenticate_evidence_a729_route_read(
     Ok(authenticate_a729_route_read(
         read,
         game_hour_raw,
-        accepted_authority()?,
         [0; 32],
     ))
 }
@@ -186,7 +172,6 @@ fn validate_route_binding(
     binding: &AuthenticatedLiveRouteBinding,
     expected_hour: i32,
     authority: [u8; 32],
-    pair: [u8; 32],
 ) -> Result<(), String> {
     if binding.client.id == 0
         || binding.client.type_tag != GAME_ENTITY_TYPE_TAG
@@ -208,8 +193,7 @@ fn validate_route_binding(
         return Err("live route binding hour differs from d49/d50 publication hour".into());
     }
     if binding.raw_observation_sha256 == [0; 32]
-        || binding.authority_manifest_sha256 != authority
-        || binding.control_pair_sha256 != pair
+        || binding.static_authority_manifest_sha256 != authority
     {
         return Err("live route binding evidence hashes are absent or not accepted".into());
     }
@@ -278,18 +262,17 @@ pub fn publish_convoy_terminal_resolver_bindings(
     routes: &[AuthenticatedLiveRouteBinding],
     game_hour_raw: i32,
 ) -> Result<ResolverPublicationReceipt, String> {
-    let (authority, pair) = accepted_hashes()?;
+    let authority = accepted_authority()?;
     publish_convoy_terminal_resolver_bindings_with_hashes(
         member_bindings,
         routes,
         game_hour_raw,
         authority,
-        pair,
     )
 }
 
 /// Publish resolver custody for the isolated H-CONVOY acquisition session.
-/// This does not authenticate or activate domain 90: its zero control-pair
+/// This does not authenticate or activate domain 90: its zero-authority
 /// marker cannot pass the production publication entry point.
 pub fn publish_evidence_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
@@ -300,7 +283,6 @@ pub fn publish_evidence_convoy_terminal_resolver_bindings(
         member_bindings,
         routes,
         game_hour_raw,
-        accepted_authority()?,
         [0; 32],
     )
 }
@@ -310,7 +292,6 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
     routes: &[AuthenticatedLiveRouteBinding],
     game_hour_raw: i32,
     authority: [u8; 32],
-    pair: [u8; 32],
 ) -> Result<ResolverPublicationReceipt, String> {
     let member_epochs: BTreeMap<usize, CombatEpoch> = build_member_epoch_map(member_bindings)?
         .into_iter()
@@ -319,7 +300,7 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
 
     let mut route_map = BTreeMap::new();
     for binding in routes {
-        validate_route_binding(binding, game_hour_raw, authority, pair)?;
+        validate_route_binding(binding, game_hour_raw, authority)?;
         if route_map.insert(binding.client, *binding).is_some() {
             return Err("duplicate client handle in live generic-reference publication".into());
         }

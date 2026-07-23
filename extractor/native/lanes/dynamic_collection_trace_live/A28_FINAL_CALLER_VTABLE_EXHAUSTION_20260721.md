@@ -87,13 +87,13 @@ remains an honest fixture-data gap, not an unimplemented generic list law.
 
 ## Promotion disposition
 
-`A28_D71_SCHEDULED` and `A28_LIVE_PROMOTION_BOUND` remain `false`. Facility and
-technology hooks still require authentic zero-gap owner captures. The overlap
-hook additionally requires its same-transition controller source/disposition
-ledger. Air and MIO require the missing controller ledgers listed above. The
-offline regrader now understands equipment, facility, technology-badge, and
-named-overlap authority sets, but a verifier-capable schema is not evidence by
-itself.
+This 2026-07-21 disposition is superseded for the Air-selection and paired MIO
+history subfamilies by the exact-a729 passive hooks completed on 2026-07-22.
+`A28_D71_SCHEDULED` is now `true` for those proven subfamilies. The broad legacy
+`A28_LIVE_PROMOTION_BOUND` fixture latch remains `false`; it does not govern the
+sealed hook-owned production constructors. Technology-canvas output and the
+heterogeneous MIO aggregate-bonus family remain feature-locally omitted and
+fail closed rather than inferred.
 
 No build, test, verifier, compiler, formatter, or generator was run while
 performing this static RE and implementation pass.
@@ -125,9 +125,10 @@ candidate's authenticated bucket lane.
 
 Air and MIO history candidates additionally require an authenticated resolver
 record before their local source record/reference pair may become a portable
-type/id. All four families still need hook-owned zero-gap transition records
-before d71 can be scheduled. The exact contract and remaining evidence blockers are frozen
-in `../../../documents/dossiers/A28/AIR_MIO_PRODUCER_CONTRACT_20260722.json`.
+type/id. The Air-selection and paired MIO-history passive hooks now own those
+zero-gap transition records. The aggregate-bonus family remains excluded. The
+exact contract is frozen in
+`../../../documents/dossiers/A28/AIR_MIO_PRODUCER_CONTRACT_20260722.json`.
 
 Candidate identity now includes the authenticated producer source lane and a
 positive stable source-local occurrence key. This is required for production

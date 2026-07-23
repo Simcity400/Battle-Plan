@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub mod deployment_queue;
 pub use deployment_queue::{
-    decode_deployment_queue_payload, encode_deployment_queue_payload, DeploymentConveyorRow,
-    DeploymentCountryRow, DeploymentEquipmentRow, DeploymentLineRow, DeploymentQueueSummary,
+    decode_deployment_queue_frame, decode_deployment_queue_payload,
+    encode_deployment_queue_payload, DeploymentConveyorRow, DeploymentCountryRow,
+    DeploymentEquipmentRow, DeploymentLineRow, DeploymentQueueFrame, DeploymentQueueSummary,
 };
 
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
@@ -517,22 +518,6 @@ pub fn remaining_gap_badges() -> Vec<RemainingGapBadge> {
             owner_boundary: "state deposits belong to map/detail construction-state lanes; market/trade contracts belong to market owner",
         },
         RemainingGapBadge {
-            gap_id: 4,
-            name: "deployment_queues",
-            status: GAP_STATUS_SOURCE_BLOCKED,
-            status_label: "source_blocked",
-            evidence_mask: GAP_EVIDENCE_SAVE_ORACLE
-                | GAP_EVIDENCE_CURRENT_COMPACT_SCHEMA
-                | GAP_EVIDENCE_NO_HOT_LOOP_ROOT,
-            current_support: GAP_CURRENT_SUPPORT_PARTIAL,
-            current_compact_evidence: "strict deployment_queue v1 payload carrier preserves queue-complete/unknown country rows, type-64 conveyor ids, type-63 line ids, ordered type-70 equipment-in-transit, nullable progress leaves, and rejects identity/count/trailing-byte drift; domain 11 construction_queue remains civil construction only",
-            source_evidence: "save_oracle/parse_deployment.py and the retained ten-save X4_DEPLOYMENT_QUEUES corpus authenticate stable queue identities, nested ordering, exact empty vectors, and cross-save continuity",
-            fail_closed_badge: "carrier is schema-ready but live emission remains omitted until the conveyor root/vector/type offsets are authenticated; unknown country rows cannot carry queue rows",
-            proposed_domain_id: PROPOSED_DOMAIN_DEPLOYMENT_QUEUES,
-            proposed_domain_name: domain_name(PROPOSED_DOMAIN_DEPLOYMENT_QUEUES),
-            owner_boundary: "lane-owned deployment queue state; deployed unit/oob state remains unit-lane owned",
-        },
-        RemainingGapBadge {
             gap_id: 6,
             name: "economy_law_derived_state",
             status: GAP_STATUS_OWNED_ELSEWHERE,
@@ -574,15 +559,9 @@ pub fn gap_badge_rows(gaps: &[RemainingGapBadge]) -> Vec<GapBadgeRow> {
             status: gap.status,
             evidence_mask: gap.evidence_mask,
             current_support: gap.current_support,
-            current_domain_id: match gap.name {
-                "deployment_queues" => PROPOSED_DOMAIN_DEPLOYMENT_QUEUES as u32,
-                _ => 0,
-            },
+            current_domain_id: 0,
             proposed_domain_id: gap.proposed_domain_id as u32,
-            current_row_len: match gap.name {
-                "deployment_queues" => 0,
-                _ => 0,
-            },
+            current_row_len: 0,
             source_ref_id: gap.gap_id,
         })
         .collect()
@@ -4184,7 +4163,6 @@ mod tests {
             vec![
                 "consumer_goods",
                 "resource_flows_shortages",
-                "deployment_queues",
                 "economy_law_derived_state",
                 "trade_factory_impact",
             ]
@@ -4216,20 +4194,20 @@ mod tests {
             summary.parse_errors
         );
         let domain = summary.per_domain.get(&DOMAIN_GAP_BADGES).unwrap();
-        assert_eq!(domain.data_rows_total, 5);
+        assert_eq!(domain.data_rows_total, 4);
         assert_eq!(
             domain
                 .data_units_total
                 .get("remaining_gap_badge_rows")
                 .copied(),
-            Some(5)
+            Some(4)
         );
         assert_eq!(
             domain
                 .data_units_total
                 .get("source_blocked_gap_rows")
                 .copied(),
-            Some(3)
+            Some(2)
         );
     }
 

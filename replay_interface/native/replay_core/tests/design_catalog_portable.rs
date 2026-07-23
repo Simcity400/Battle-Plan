@@ -163,6 +163,9 @@ fn portable_artifact_roundtrips_and_d78_is_the_only_display_order() {
     assert_eq!(current.records[0].design_id, "55:70");
     assert_eq!(current.records[0].kind, DesignKind::EquipmentVariant);
     assert_eq!(current.records[1].design_id, "7:70");
+    drop(current);
+    drop(frame);
+    drop(timeline);
     fs::remove_file(path).unwrap();
 }
 
@@ -175,6 +178,7 @@ fn portable_artifact_and_d78_join_fail_closed() {
         timeline.frame(900).unwrap().current_design_catalog(),
         Err(DesignCatalogJoinError::UnknownContextId(999))
     );
+    drop(timeline);
     fs::remove_file(unknown).unwrap();
 
     let partial = temp_file("design_catalog_partial");

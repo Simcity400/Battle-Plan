@@ -102,11 +102,16 @@ Notes:
   is real). `[Codex b/c]`
 * The reader hashes the **decompressed bytes of the exact central-directory entry**
   it will serve; it never trusts a local-header name for path or content. `[Codex b]`
-* No entry is ever extracted to disk by the reader. Path opens retain one pinned
-  archive handle, parse central-directory records incrementally, and materialize
-  only the requested decompressed entry, so zip-slip/symlink/device-name
-  extraction attacks do not apply to the read path. (A future "unpack to dir"
-  tool MUST apply §4.2.) `[Codex b]`
+* Ordinary snapshot reads never extract entries to disk. Path opens retain one
+  pinned archive handle, parse central-directory records incrementally, and
+  materialize only the requested decompressed entry. The certified compact-stream
+  decoder may spool one authenticated role entry beside its private destination;
+  it publishes that destination only after CRC, size, compression, SHA-256,
+  flush, and sync succeed. Publication uses a unique retained temporary handle,
+  locked non-reparse directory ancestry, a post-sync same-handle digest, and
+  a final source-path/file-identity join. The no-replace hard link is the commit
+  point, with no fallible production work after visibility; it never replaces
+  an existing file. `[Codex b]`
 
 ---
 
@@ -225,22 +230,27 @@ Two independent layers, by intent:
 
 ## 4. Reader algorithm (normative)
 
-Verification is **staged**: structural validation and an incremental CRC-32 pass
-over every payload happen up front without archive-wide RAM residency; expensive
-per-entry SHA-256 authentication happens lazily when bytes are requested.
+Verification is **staged**: structural validation and the required manifest/index
+spine happen up front without archive-wide RAM residency. CRC-32, decoded size,
+compression-stream strictness, and SHA-256 are derived together when an entry is
+first requested.
 `[Codex d]`
 
-### 4.1 Open (up-front, O(total payload), bounded memory)
+### 4.1 Open (up-front, O(entries + required spine), bounded memory)
 
-1. Open the ZIP through one pinned file handle; record the handle's observed
+1. Open the ZIP through one pinned file handle (on Windows, sharing permits
+   readers but denies new write/delete handles); record the handle's observed
    length and reject a concurrent length change. Parse central-directory records
    incrementally, retaining only bounded entry metadata, and reject a
-   malformed/truncated archive.
+   malformed/truncated archive. Receipt-bearing opens hash the whole file through
+   that exact handle before and after manifest/index parsing and require identical
+   length and SHA-256 observations before returning the receipt. The pathname is
+   never reopened for the second observation.
 2. Reject **duplicate entry names**. `[Codex b]`
 3. Validate **every** entry path against §4.2. Reject on any violation. `[Codex b]`
-4. Before decoding or trusting the manifest, incrementally decompress every entry
-   through its declared-size bound and re-derive CRC-32. Any CRC, decompressed-size,
-   compression-stream, or data-descriptor mismatch is an open-time refusal.
+4. Read `manifest.json` through the bounded entry-integrity path. Any CRC,
+   decompressed-size, compression-stream, or data-descriptor mismatch is an
+   open-time refusal before manifest fields are trusted.
 5. Locate `manifest.json`. **If absent → this is an unfinalized/recovery-only file;
    the normal reader REFUSES it** (a separate recovery tool, §6, may rebuild a
    manifest and mark the result `recovered/unverified`). `[Codex c]`
@@ -270,6 +280,12 @@ per-entry SHA-256 authentication happens lazily when bytes are requested.
   (would collide when extracted on Windows/macOS); `[Codex b]`
 * a Windows reserved device name component (`CON`, `NUL`, `COM1`…);
 * a path not under `payload/` (except the single top-level `manifest.json`).
+
+Reader compatibility exception: historical `container_version: 1` recordings
+without `portable_content_manifest_v2` use their original safe-path grammar and
+ASCII-only collision key. Writers still emit NFC paths. Container v2 and current
+portable-content-v2 recordings require NFC and the Unicode-caseless collision
+key above; normalization is never performed on a serialized path in place.
 
 ### 4.3 Per-snapshot read (lazy, O(one snapshot))
 

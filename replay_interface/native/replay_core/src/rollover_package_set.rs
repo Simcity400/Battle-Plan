@@ -577,7 +577,7 @@ fn validate_selected_container(
         return Err("selected replay package compact-stream entry disagrees with the package set".to_string());
     }
     let receipt = container
-        .spool_entry_to_writer(&compact.path, &mut std::io::sink())
+        .authenticate_entry(&compact.path)
         .map_err(|error| format!("authenticate selected compact-stream entry: {error}"))?;
     if receipt.uncompressed_len() != segment.raw_bytes
         || receipt.sha256() != segment.raw_sha256.as_str()
@@ -965,6 +965,8 @@ mod tests {
         assert_eq!(set.ordered_streams()[0].logical_stream_id, 0);
         let selected = set.select(0).unwrap();
         assert_eq!(selected.path(), fs::canonicalize(root.join("native_session.battleplan")).unwrap());
+        drop(selected);
+        drop(set);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -973,8 +975,14 @@ mod tests {
         let (root, descriptor) = fixture("replace_after_admission");
         let selected = RolloverPackageSet::open(&descriptor).unwrap().select(0).unwrap();
         let selected_path = selected.path().to_path_buf();
-        fs::rename(&selected_path, root.join("selected-object-retained.battleplan")).unwrap();
-        fs::write(&selected_path, b"replacement is not the selected replay").unwrap();
+        #[cfg(windows)]
+        fs::rename(&selected_path, root.join("selected-object-retained.battleplan"))
+            .expect_err("the retained authenticated handle must deny pathname replacement");
+        #[cfg(not(windows))]
+        {
+            fs::rename(&selected_path, root.join("selected-object-retained.battleplan")).unwrap();
+            fs::write(&selected_path, b"replacement is not the selected replay").unwrap();
+        }
         let spool = root.join("spool");
         fs::create_dir(&spool).unwrap();
 

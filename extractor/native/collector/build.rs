@@ -19,9 +19,15 @@ fn main() {
         println!("cargo:warning=seh_read.c skipped (non-msvc target_env)");
         return;
     }
+    let static_crt = std::env::var("CARGO_CFG_TARGET_FEATURE")
+        .unwrap_or_default()
+        .split(',')
+        .any(|feature| feature == "crt-static");
     cc::Build::new()
         .file("src/seh_read.c")
-        // Match the Rust side's dynamic CRT (msvcrt) so there is one CRT.
-        .static_crt(false)
+        // Match the Rust target exactly. Central Windows Release validation
+        // enables `crt-static`, so the injected C shim and Rust cdylib both
+        // use the static CRT and the portable package needs no VC runtime DLL.
+        .static_crt(static_crt)
         .compile("seh_read");
 }

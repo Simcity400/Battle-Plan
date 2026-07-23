@@ -7,7 +7,8 @@
 //!   an exclusive cross-process lock and atomically commits it before returning;
 //! * [`SegmentRuntime`] stages one complete logical frame, calls
 //!   [`SegmentCutter::route_checked`], seals the old fold before constructing a
-//!   fresh fold, and is the production call site for [`publish_product_stitch`].
+//!   fresh fold, and is the production call site for
+//!   [`publish_product_stitch_retained`].
 //!
 //! A failure poisons the runtime.  There is no retry on partly-mutated fold
 //! state, no guessed ticket, and no publication while a fold remains open.
@@ -21,8 +22,8 @@ use sha2::{Digest, Sha256};
 use super::formation::{
     FormationInputError, FrameFacts, FrameRouting, SealedSegment, SegmentCutter,
 };
-use super::product::{publish_product_stitch, ProductStitchOutcome};
-use super::publish::StitchedPayloadSource;
+use super::product::{publish_product_stitch_retained, ProductStitchOutcome};
+use super::publish::RetainedStitchedPayloadSource;
 use super::{AppendTicket, SegmentInput, StitchRequiredInputs};
 
 const LEDGER_MAGIC: &[u8; 8] = b"AOLT1\0\0\0";
@@ -281,6 +282,16 @@ fn write_ledger_atomically(path: &Path, tickets: &[AppendTicket]) -> Result<(), 
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| format!("fsync append-ledger directory: {error}"))?;
+    }
+    let campaign_key = tickets
+        .first()
+        .ok_or_else(|| "refusing to commit an empty append ledger".to_string())?
+        .campaign_key
+        .as_slice();
+    let committed = read_ledger(path, campaign_key)
+        .map_err(|error| format!("verify committed append ledger: {error}"))?;
+    if committed.as_slice() != tickets {
+        return Err("committed append ledger readback disagrees with allocated tickets".into());
     }
     Ok(())
 }
@@ -582,7 +593,7 @@ impl<P, F: SegmentFoldFactory<P>> SegmentRuntime<P, F> {
 
     /// The sole live-driver composition call from staged folds to the atomic
     /// stitched publisher.
-    pub fn finish_and_publish<S: StitchedPayloadSource>(
+    pub fn finish_and_publish<S: RetainedStitchedPayloadSource>(
         self,
         game_id: &str,
         required_inputs: StitchRequiredInputs,
@@ -590,7 +601,7 @@ impl<P, F: SegmentFoldFactory<P>> SegmentRuntime<P, F> {
         destination: &Path,
     ) -> Result<ProductStitchOutcome, String> {
         let segments = self.finish().map_err(|error| error.to_string())?;
-        publish_product_stitch(game_id, required_inputs, segments, source, destination)
+        publish_product_stitch_retained(game_id, required_inputs, segments, source, destination)
     }
 }
 

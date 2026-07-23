@@ -20,6 +20,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Hoi4ClientDriving.OptIn.ps1')
+Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 
 $core = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'Invoke-A39A40AutonomousEvidenceCore.ps1')).Path
 if ([string]::IsNullOrWhiteSpace($ActionProfile)) {

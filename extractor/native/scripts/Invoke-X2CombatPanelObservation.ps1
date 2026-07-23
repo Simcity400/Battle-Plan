@@ -18,6 +18,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Hoi4ClientDriving.OptIn.ps1')
+Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 
 $capture = Join-Path $PSScriptRoot "Start-Hoi4ProductionCaptureSafe.ps1"
 $verifier = Join-Path $PSScriptRoot "verify_x2_combat_panel_observation.py"

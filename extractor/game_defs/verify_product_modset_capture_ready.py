@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import prepare_product_modset_capture as PREPARE
+import product_modset_admission as PMA
 import static_bundle as SB
 
 
@@ -66,7 +67,10 @@ def resolve_member(root: Path, row: Any, label: str) -> Path:
     return path
 
 
-def verify(exe: Path, root: Path) -> dict[str, Any]:
+def verify(
+    exe: Path, root: Path, admission_policy: Path = PMA.DEFAULT_POLICY, *,
+    allow_dev_policy_override: bool = False,
+) -> dict[str, Any]:
     exe = exe.resolve()
     root = root.resolve()
     if not exe.is_file() or not root.is_dir():
@@ -166,6 +170,20 @@ def verify(exe: Path, root: Path) -> dict[str, Any]:
         raise ValueError("prepared static-bundle manifest filename is noncanonical")
 
     _report, product_modset = PREPARE._validate_binding_corpus(exe, bindings)
+    documents = {
+        role: SB._validate_binding_document(
+            SB.load_object(bindings / f"{role}.json", f"capture {role}"), role
+        )
+        for role in ("mod_state", "dlc_state", "load_order")
+    }
+    policy_admission = PMA.admit(
+        product_modset, documents, admission_policy,
+        allow_dev_policy_override=allow_dev_policy_override,
+    )
+    if ready.get("product_modset_admission") != policy_admission:
+        raise ValueError(
+            "prepared product-modset policy admission differs from the current registry"
+        )
     report = load_strict(bindings / "resolution_report.json")
     ui14_binding = report.get("ui14_capture_binding")
     if (not isinstance(ui14_binding, dict)
@@ -216,6 +234,7 @@ def verify(exe: Path, root: Path) -> dict[str, Any]:
         "binding_corpus_sha256": corpus_sha,
         "static_bundle_manifest_sha256": sha256_file(manifest_path),
         "product_modset_sha256": product_modset["product_modset_sha256"],
+        "product_modset_admission": policy_admission,
         "paths": {
             "static_bundle_manifest": str(manifest_path),
             **{role: str((bindings / name).resolve()) for role, name in expected_roles.items()},
@@ -227,10 +246,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", required=True, type=Path)
     parser.add_argument("--prepared", required=True, type=Path)
+    parser.add_argument(
+        "--admission-policy", type=Path, default=PMA.DEFAULT_POLICY,
+        help="strict exact-match supported product-modset registry",
+    )
+    parser.add_argument(
+        "--allow-dev-policy-override", action="store_true",
+        help="allow a noncanonical policy digest for explicit tests/development",
+    )
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:
-        result = verify(args.exe, args.prepared)
+        result = verify(
+            args.exe, args.prepared, args.admission_policy,
+            allow_dev_policy_override=args.allow_dev_policy_override,
+        )
     except (OSError, ValueError, json.JSONDecodeError, SB.BundleError) as exc:
         print(f"prepared product-modset admission: FAIL: {exc}", file=sys.stderr)
         return 1

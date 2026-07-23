@@ -1,6 +1,7 @@
 //! D3D product adapter for the proven game_ui compositor.
 
 use game_ui::assets::AssetResolver;
+use game_ui::deployment_queue_state::AdmittedDeploymentQueue;
 use game_ui::gfx::SpriteRegistry;
 use game_ui::power_balance::PowerBalanceRuntimeSupplement;
 use game_ui::power_balance_assets::{
@@ -84,6 +85,9 @@ pub struct SelectedPresentTypedConsumption {
     pub combat_detail_admitted_row_count: Option<usize>,
     pub fired_event_count: Option<usize>,
     pub fired_event_popup_count: Option<usize>,
+    /// X10 direct focus/research/decision/on-action history consumed by the
+    /// selected-POV runtime. Evidence-fixture histories remain unavailable.
+    pub direct_transition_count: Option<usize>,
     pub trade_resource_pool_count: Option<usize>,
     pub trade_resource_count: Option<usize>,
     pub trade_deal_count: Option<usize>,
@@ -106,6 +110,14 @@ pub struct SelectedPresentTypedConsumption {
     /// producer's completeness witness is measured true.
     pub delayed_event_lifecycle_count: Option<usize>,
     pub delayed_event_lifecycle_complete: Option<bool>,
+    /// X4 ordered hierarchy counts admitted from the selected-POV desktop
+    /// presentation model. `Some(0)` is measured empty; any unavailable or
+    /// unobtained state leaves all three fields `None` and emits a named reason
+    /// in `feature_local_unavailable`. These are model-consumption counts, not
+    /// a claim that the deployment window was active or its pixels observed.
+    pub deployment_queue_conveyor_count: Option<usize>,
+    pub deployment_queue_line_count: Option<usize>,
+    pub deployment_queue_equipment_in_transit_count: Option<usize>,
     /// Exact d24 strategic-region weather rows admitted for this frame. This
     /// consumes the typed state; weather particles remain owned by the
     /// authenticated map submit and are never synthesized here.
@@ -117,6 +129,26 @@ pub struct SelectedPresentTypedConsumption {
     /// Exact current-hour B4 monthly sunk-convoy history. D70 aggregates and
     /// route-less terminal evidence never substitute for this field.
     pub exact_sunk_convoy_history_count: Option<usize>,
+    /// CAP6/X-COUNTER-BIND is consumed only when the exact selected-Present
+    /// frontier contains authenticated `mapicons_container` counter owners.
+    /// The HUD commands remain sole pixel authority; these counts prove that
+    /// the typed counter model was consumed from the same WorldFrame. Domain
+    /// counts stay `None` unless that domain's own authored surface was
+    /// authenticated; air remains `None` until an air owner is proven.
+    pub counter_hud_authenticated_owner_count: Option<usize>,
+    pub counter_hud_authenticated_command_count: Option<usize>,
+    pub counter_hud_land_content_count: Option<usize>,
+    pub counter_hud_naval_content_count: Option<usize>,
+    pub counter_hud_air_content_count: Option<usize>,
+    pub counter_exact_supply_row_count: Option<usize>,
+    pub counter_exact_organisation_bar_row_count: Option<usize>,
+    pub counter_exact_order_kind_row_count: Option<usize>,
+    pub counter_evaluated_low_supply_row_count: Option<usize>,
+    pub counter_evaluated_dig_in_row_count: Option<usize>,
+    pub counter_evaluated_training_row_count: Option<usize>,
+    pub counter_evaluated_invalid_orders_row_count: Option<usize>,
+    pub counter_evaluated_attrition_row_count: Option<usize>,
+    pub counter_exact_active_ability_row_count: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -130,7 +162,7 @@ pub struct IntelligenceUiSupplementalInputs<'a> {
 #[derive(Clone, Copy, Default)]
 pub struct ArmyBattleplanUiSupplementalInputs<'a> {
     /// Local product selection joined to the complete d54 manager census.
-    pub selected_army_id: Option<u32>,
+    pub selected_owner: Option<replay_core::ArmyBattleplanOwnerKey>,
     /// Stable replay identity selected from an already admitted panel row.
     pub selected_order_key: Option<&'a ArmyBattleplanOrderKey>,
 }
@@ -165,6 +197,34 @@ pub struct ProductSelectedPresentRuntime {
         Vec<game_ui::special_projects::SpecialProjectBreakthroughPresentation>,
     special_project_breakthrough_error: Option<String>,
     selected_pov_runtime: crate::selected_pov_runtime::SelectedPovRuntime,
+}
+
+/// Performance-only selected-Present stress adapter.
+///
+/// This deliberately owns no semantic UI state and is never a replay or RE
+/// authority. It reuses the exact production `ImageRenderer` upload/draw path
+/// for a contract-pinned number of selected-Present-equivalent GPU operations.
+/// The F1 receipt labels the result non-semantic and non-promotional.
+pub(crate) struct ProductSelectedPresentPerformanceRuntime {
+    image: ImageRenderer,
+}
+
+impl ProductSelectedPresentPerformanceRuntime {
+    pub(crate) fn new(gfx: &Gfx, surface: &game_ui::dds::RgbaImage) -> Result<Self> {
+        let mut image = ImageRenderer::new(gfx)?;
+        image.set_rgba(gfx, surface)?;
+        Ok(Self { image })
+    }
+
+    pub(crate) fn execute(&self, gfx: &Gfx, operation_count: usize) -> Result<usize> {
+        if operation_count == 0 {
+            return Err("performance selected-Present operation count is zero".into());
+        }
+        for _ in 0..operation_count {
+            self.image.draw(gfx)?;
+        }
+        Ok(operation_count)
+    }
 }
 
 impl ProductSelectedPresentRuntime {
@@ -311,7 +371,7 @@ impl ProductSelectedPresentRuntime {
             world_frame,
             pov_tag,
             crate::selected_pov_runtime::SelectedPovSupplementalInputs {
-                selected_army_id: army_inputs.selected_army_id,
+                selected_battleplan_owner: army_inputs.selected_owner,
                 selected_order_key: army_inputs.selected_order_key,
                 ..Default::default()
             },
@@ -465,7 +525,7 @@ impl ProductSelectedPresentRuntime {
         let battleplan_order_count = battleplan_panel.map(|panel| panel.orders.len());
         let battleplan_selected_order_present =
             battleplan_panel.map(|panel| panel.selected_order.is_some());
-        let typed_consumption = self.selected_present_typed_consumption(world_frame);
+        let typed_consumption = self.selected_present_typed_consumption(world_frame, pass);
 
         let playback_context = game_ui::selected_present::SelectedPresentPlaybackContext {
             frame_hour: world_frame.hour_index(),
@@ -609,6 +669,7 @@ impl ProductSelectedPresentRuntime {
     fn selected_present_typed_consumption(
         &self,
         world_frame: &WorldFrame,
+        pass: &replay_core::AuthenticatedUiPass,
     ) -> SelectedPresentTypedConsumption {
         use game_ui::combat_detail_losses::Xui20SurfaceState;
         use game_ui::trade_state::{AdmittedTradeScreen, TradeData};
@@ -626,6 +687,10 @@ impl ProductSelectedPresentRuntime {
             ("D54_ORDERS_GROUP", snapshot.orders_group.unavailable_reason.as_deref()),
             ("XUI20_COMBAT", snapshot.combat_detail.unavailable_reason.as_deref()),
             ("XUI21_EVENTS", snapshot.fired_events.unavailable_reason.as_deref()),
+            (
+                "X10_DIRECT_TRANSITIONS",
+                snapshot.direct_transitions.unavailable_reason.as_deref(),
+            ),
         ] {
             if let Some(reason) = reason {
                 feature_local_unavailable.push(format!("{feature}:{reason}"));
@@ -799,6 +864,62 @@ impl ProductSelectedPresentRuntime {
                     None
                 }
             };
+        let counter_binding = game_ui::binding_counters::counter_binding_for_selected_present(
+            world_frame,
+            self.selected_pov_runtime.snapshot().pov_country.as_deref(),
+            pass,
+        );
+        let (
+            counter_hud_authenticated_owner_count,
+            counter_hud_authenticated_command_count,
+            counter_hud_land_content_count,
+            counter_hud_naval_content_count,
+            counter_hud_air_content_count,
+            counter_exact_supply_row_count,
+            counter_exact_organisation_bar_row_count,
+            counter_exact_order_kind_row_count,
+            counter_evaluated_low_supply_row_count,
+            counter_evaluated_dig_in_row_count,
+            counter_evaluated_training_row_count,
+            counter_evaluated_invalid_orders_row_count,
+            counter_evaluated_attrition_row_count,
+            counter_exact_active_ability_row_count,
+        ) = match counter_binding {
+            Ok(binding) => {
+                let land_coverage = binding.land_field_coverage.as_ref();
+                (
+                    Some(binding.authenticated_owner_count),
+                    Some(binding.authenticated_command_count),
+                    binding.land_contents.as_ref().map(Vec::len),
+                    binding.naval_contents.as_ref().map(Vec::len),
+                    binding.air_contents.as_ref().map(Vec::len),
+                    land_coverage.map(|coverage| coverage.exact_supply_rows),
+                    land_coverage.map(|coverage| coverage.exact_organisation_bar_rows),
+                    land_coverage.map(|coverage| coverage.exact_order_kind_rows),
+                    land_coverage.map(|coverage| coverage.evaluated_low_supply_rows),
+                    land_coverage.map(|coverage| coverage.evaluated_dig_in_rows),
+                    land_coverage.map(|coverage| coverage.evaluated_training_rows),
+                    land_coverage.map(|coverage| coverage.evaluated_invalid_orders_rows),
+                    land_coverage.map(|coverage| coverage.evaluated_attrition_rows),
+                    land_coverage.map(|coverage| coverage.exact_active_ability_rows),
+                )
+            }
+            Err(reason) => {
+                feature_local_unavailable.push(format!("CAP6_COUNTER_HUD:{reason}"));
+                (
+                    None, None, None, None, None, None, None, None, None, None, None, None, None,
+                    None,
+                )
+            }
+        };
+        let deployment_queue = deployment_queue_consumption(
+            snapshot.deployment_queue.value.as_ref(),
+            snapshot.deployment_queue.unavailable_reason.as_deref(),
+            snapshot.pov_country.as_deref(),
+        );
+        if let Some(reason) = deployment_queue.unavailable_reason.as_deref() {
+            feature_local_unavailable.push(format!("X4_DEPLOYMENT_QUEUE:{reason}"));
+        }
         let mut receipt = SelectedPresentTypedConsumption {
             feature_local_unavailable,
             national_focus_node_count: snapshot
@@ -849,6 +970,11 @@ impl ProductSelectedPresentRuntime {
             fired_event_popup_count: snapshot.fired_events.value.as_ref().map(|events| {
                 events.iter().filter(|event| event.popup.is_some()).count()
             }),
+            direct_transition_count: snapshot
+                .direct_transitions
+                .value
+                .as_ref()
+                .map(|history| history.transition_count),
             special_project_breakthrough_count: self
                 .special_project_breakthrough_error
                 .is_none()
@@ -859,10 +985,28 @@ impl ProductSelectedPresentRuntime {
             operative_network_assignment_count,
             delayed_event_lifecycle_count,
             delayed_event_lifecycle_complete,
+            deployment_queue_conveyor_count: deployment_queue.conveyor_count,
+            deployment_queue_line_count: deployment_queue.line_count,
+            deployment_queue_equipment_in_transit_count: deployment_queue
+                .equipment_in_transit_count,
             exact_weather_region_count,
             exact_ace_owner_count,
             exact_ace_row_count,
             exact_sunk_convoy_history_count,
+            counter_hud_authenticated_owner_count,
+            counter_hud_authenticated_command_count,
+            counter_hud_land_content_count,
+            counter_hud_naval_content_count,
+            counter_hud_air_content_count,
+            counter_exact_supply_row_count,
+            counter_exact_organisation_bar_row_count,
+            counter_exact_order_kind_row_count,
+            counter_evaluated_low_supply_row_count,
+            counter_evaluated_dig_in_row_count,
+            counter_evaluated_training_row_count,
+            counter_evaluated_invalid_orders_row_count,
+            counter_evaluated_attrition_row_count,
+            counter_exact_active_ability_row_count,
             ..Default::default()
         };
 
@@ -1027,6 +1171,79 @@ impl ProductSelectedPresentRuntime {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeploymentQueueConsumption {
+    conveyor_count: Option<usize>,
+    line_count: Option<usize>,
+    equipment_in_transit_count: Option<usize>,
+    unavailable_reason: Option<String>,
+}
+
+impl DeploymentQueueConsumption {
+    fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            conveyor_count: None,
+            line_count: None,
+            equipment_in_transit_count: None,
+            unavailable_reason: Some(reason.into()),
+        }
+    }
+}
+
+/// Consume only the deployment model published by `SelectedPovRuntime` for
+/// this selected Present. The product receipt counts admitted hierarchy rows;
+/// it never derives queue amounts or converts an unavailable leaf into zero.
+fn deployment_queue_consumption(
+    value: Option<&AdmittedDeploymentQueue>,
+    feature_unavailable_reason: Option<&str>,
+    selected_pov: Option<&str>,
+) -> DeploymentQueueConsumption {
+    if value.is_some() && feature_unavailable_reason.is_some() {
+        return DeploymentQueueConsumption::unavailable(
+            "presentation feature carried both a value and an unavailable reason",
+        );
+    }
+    match value {
+        Some(AdmittedDeploymentQueue::Available(queue)) => {
+            let Some(selected_pov) = selected_pov else {
+                return DeploymentQueueConsumption::unavailable(
+                    "admitted hierarchy has no selected POV identity",
+                );
+            };
+            if queue.country_tag != selected_pov {
+                return DeploymentQueueConsumption::unavailable(format!(
+                    "admitted hierarchy country {:?} does not match selected POV {:?}",
+                    queue.country_tag, selected_pov
+                ));
+            }
+            let line_count = queue
+                .conveyors
+                .iter()
+                .map(|conveyor| conveyor.lines.len())
+                .sum();
+            let equipment_in_transit_count = queue
+                .conveyors
+                .iter()
+                .flat_map(|conveyor| conveyor.lines.iter())
+                .map(|line| line.equipment_in_transit.len())
+                .sum();
+            DeploymentQueueConsumption {
+                conveyor_count: Some(queue.conveyors.len()),
+                line_count: Some(line_count),
+                equipment_in_transit_count: Some(equipment_in_transit_count),
+                unavailable_reason: None,
+            }
+        }
+        Some(AdmittedDeploymentQueue::Unavailable(reason)) => {
+            DeploymentQueueConsumption::unavailable(format!("{reason:?}"))
+        }
+        None => DeploymentQueueConsumption::unavailable(
+            feature_unavailable_reason
+                .unwrap_or("presentation feature omitted without an unavailable reason"),
+        ),
+    }
+}
+
 fn exact_variant_admission_key(
     frame: &WorldFrame,
     pass: &replay_core::AuthenticatedUiPass,
@@ -1114,6 +1331,113 @@ mod tests {
         assert!(!source.contains(&legacy_type));
         assert!(!source.contains(&legacy_compose));
         assert!(source.contains(".battleplan_panel\n            .value"));
+    }
+
+    #[test]
+    fn x4_receipt_distinguishes_measured_empty_absent_and_unobtained() {
+        use game_ui::deployment_queue_state::{
+            DeploymentConveyorPresentation, DeploymentEquipmentPresentation,
+            DeploymentLinePresentation, DeploymentQueuePresentation,
+            DeploymentQueueUnavailable,
+        };
+
+        let admitted = AdmittedDeploymentQueue::Available(DeploymentQueuePresentation {
+            country_tag: "GER".into(),
+            conveyors: vec![DeploymentConveyorPresentation {
+                ordinal: 0,
+                conveyor_id: 41,
+                name: "1. Panzer-Division".into(),
+                template_id: 17,
+                amount: 1,
+                location: 64,
+                priority: 2,
+                role: "armor".into(),
+                closed: false,
+                lines: vec![DeploymentLinePresentation {
+                    ordinal: 0,
+                    line_id: 73,
+                    name_order: replay_core::Leaf::Measured(0),
+                    amount: 1,
+                    training: replay_core::Leaf::Measured(0.25),
+                    max_training: replay_core::Leaf::Measured(1.0),
+                    manpower_have: replay_core::Leaf::Measured(5_000),
+                    manpower_need: replay_core::Leaf::Measured(10_000),
+                    max_manpower: replay_core::Leaf::Measured(10_000),
+                    equipment_in_transit: vec![DeploymentEquipmentPresentation {
+                        ordinal: 0,
+                        equipment_id: 91,
+                        archetype: replay_core::Leaf::Measured("light_tank_equipment".into()),
+                        amount: 20.0,
+                    }],
+                }],
+            }],
+        });
+        let measured = deployment_queue_consumption(Some(&admitted), None, Some("GER"));
+        assert_eq!(measured.conveyor_count, Some(1));
+        assert_eq!(measured.line_count, Some(1));
+        assert_eq!(measured.equipment_in_transit_count, Some(1));
+        assert_eq!(measured.unavailable_reason, None);
+
+        let empty = AdmittedDeploymentQueue::Available(DeploymentQueuePresentation {
+            country_tag: "GER".into(),
+            conveyors: Vec::new(),
+        });
+        let measured_empty = deployment_queue_consumption(Some(&empty), None, Some("GER"));
+        assert_eq!(measured_empty.conveyor_count, Some(0));
+        assert_eq!(measured_empty.line_count, Some(0));
+        assert_eq!(measured_empty.equipment_in_transit_count, Some(0));
+        assert_eq!(measured_empty.unavailable_reason, None);
+
+        let absent = AdmittedDeploymentQueue::Unavailable(
+            DeploymentQueueUnavailable::NotRecorded,
+        );
+        let absent = deployment_queue_consumption(Some(&absent), None, Some("GER"));
+        assert_eq!(absent.conveyor_count, None);
+        assert_eq!(absent.unavailable_reason.as_deref(), Some("NotRecorded"));
+
+        let unavailable = AdmittedDeploymentQueue::Unavailable(
+            DeploymentQueueUnavailable::DomainUnavailable,
+        );
+        let unavailable = deployment_queue_consumption(Some(&unavailable), None, Some("GER"));
+        assert_eq!(unavailable.conveyor_count, None);
+        assert_eq!(
+            unavailable.unavailable_reason.as_deref(),
+            Some("DomainUnavailable")
+        );
+
+        let unobtained = AdmittedDeploymentQueue::Unavailable(
+            DeploymentQueueUnavailable::CapturedButUnobtained,
+        );
+        let unobtained = deployment_queue_consumption(Some(&unobtained), None, Some("GER"));
+        assert_eq!(unobtained.conveyor_count, None);
+        assert_eq!(
+            unobtained.unavailable_reason.as_deref(),
+            Some("CapturedButUnobtained")
+        );
+        assert_ne!(
+            absent.unavailable_reason.as_deref(),
+            unobtained.unavailable_reason.as_deref()
+        );
+        assert_ne!(
+            unavailable.unavailable_reason.as_deref(),
+            unobtained.unavailable_reason.as_deref()
+        );
+    }
+
+    #[test]
+    fn x4_receipt_rejects_pov_identity_mismatch() {
+        let queue = AdmittedDeploymentQueue::Available(
+            game_ui::deployment_queue_state::DeploymentQueuePresentation {
+                country_tag: "GER".into(),
+                conveyors: Vec::new(),
+            },
+        );
+        let receipt = deployment_queue_consumption(Some(&queue), None, Some("ITA"));
+        assert_eq!(receipt.conveyor_count, None);
+        assert!(receipt
+            .unavailable_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("does not match selected POV")));
     }
 
     fn display() -> replay_core::world::DisplayVariantMetadata {

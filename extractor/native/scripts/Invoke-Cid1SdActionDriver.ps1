@@ -1,11 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$RequestPath,
-    [Parameter(Mandatory=$true)][string]$ReceiptPath
+    [Parameter(Mandatory=$true)][string]$ReceiptPath,
+    [switch]$EnableLegacyClientDriving
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if(-not$EnableLegacyClientDriving){throw 'This legacy CID1 owner launches, focuses, inputs to, and terminates HOI4. It is isolated from production and requires explicit -EnableLegacyClientDriving opt-in.'}
 $expectedExeSha256='870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $operations=@{S1='save_reload_same_process';S2='load_older_same_lineage';S3='close_relaunch_same_save';S4='rename_copy_load';D1='create_identical_start_campaign_pair';D2='switch_campaign_a_to_b_same_process'}
 $roles=@{S1=@('before_save','after_same_process_reload');S2=@('newer_lineage','older_lineage_reload');S3=@('before_relaunch','after_relaunch');S4=@('original_name','renamed_copy');D1=@('new_campaign_a','new_campaign_b');D2=@('campaign_a','campaign_b_after_switch')}

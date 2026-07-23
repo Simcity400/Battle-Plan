@@ -1,10 +1,10 @@
-//! Activation-frozen auto-attach integration for the paired H4CR/H4CT transport.
+//! Production auto-attach integration for the paired H4CR/H4CT transport.
 //!
 //! This module composes the listener-before-injection type state, admitted
 //! deadline channel, recurring heartbeat, and [`WorkerHandle`] lifecycle. The
-//! live spawner selects the combined product branch only when both explicit
-//! activation authorities below are true; otherwise it remains byte-for-byte
-//! on the legacy child path.
+//! live spawner selects the combined product branch only when the local CID1
+//! reader is enabled. Cross-machine rehost remains a separate capability and
+//! cannot globally disable local recording.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,17 +39,16 @@ use super::proof::{
 };
 use super::sources::{WorkerHandle, WorkerSpec, WorkerStatus};
 
-/// Explicit product kill switch. The reusable foundation is testable, but the
-/// live spawner cannot select it until identity-reader activation is also true.
-pub const AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED: bool = false;
+/// Product activation for the fail-closed paired transport.
+pub const AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED: bool = true;
 
-/// Separate CRP1/CRA1 promotion latch. Product storage/router/package
-/// selection is compiled below, but the expanded capability word remains
-/// unreachable until an authenticated live change/rollback lifecycle is sealed.
-pub const AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = false;
+/// CRP1/CRA1 is implemented by the same exact-build local identity reader,
+/// durable filesystem store, and two-CFA1 router. Each attempted transition
+/// remains fail-closed at those runtime boundaries.
+pub const AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = true;
 
-/// Opaque product selector.  Offline preparation/tests do not mint it, and the
-/// constructor fails while the activation constant remains false.
+/// Opaque product selector. The constructor still fails if any compile-time
+/// local identity prerequisite is withdrawn.
 pub struct AutoAttachDuplexProductPermit {
     _private: (),
 }
@@ -65,8 +64,8 @@ pub fn auto_attach_duplex_product_permit(
 
 /// One fail-closed identity-mode selector shared by recorder-main consumers.
 /// A duplex-only flag flip cannot silently reinterpret Legacy bytes as CID1;
-/// the only alternate route is the explicit nonce-bound lifecycle-evidence
-/// permit, which leaves both ordinary product constants false.
+/// the explicit nonce-bound lifecycle-evidence permit remains a separate test
+/// and evidence route.
 pub fn auto_attach_identity_v1_enabled() -> bool {
     (AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
         && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED)
@@ -457,8 +456,8 @@ fn authority_error(error: impl Into<String>) -> DuplexWorkerError {
     DuplexWorkerError::AttemptAuthority(error.into())
 }
 
-/// Dormant H4CR listener seam.  A later integration owner supplies the real
-/// overlapped inbound-pipe adapter; tests use a deterministic in-memory fake.
+/// H4CR listener seam used by the real overlapped inbound-pipe adapter; tests
+/// use a deterministic in-memory fake.
 /// All three operations consume the same absolute startup deadline and shared
 /// cancellation token as H4CT.
 pub trait DataPipeListenerBackend {
@@ -554,7 +553,7 @@ impl CombinedListenersReadyProof {
     }
 }
 
-/// Move-only, dormant combined H4CR+H4CT listener authority.  Data and control
+/// Move-only combined H4CR+H4CT listener authority. Data and control
 /// names, expected peer, session id, startup deadline, cancellation, and target
 /// monitor cannot be split into caller-owned tuples.
 pub struct PreparedAutoAttachCombined<D, B, T>
@@ -2392,14 +2391,12 @@ mod tests {
         assert!(required.contains(
             ControlCapabilities::from_bits(ControlCapabilities::CAMPAIGN_IDENTITY).unwrap()
         ));
-        let missing_bits = [
-            ControlCapabilities::HEARTBEAT,
-            ControlCapabilities::FIRST_COMPACT_ACK,
-            ControlCapabilities::TRANSPORT_STATUS,
-            ControlCapabilities::CAMPAIGN_IDENTITY,
-        ];
-        for (index, missing) in missing_bits.into_iter().enumerate() {
-            let session_bytes = [0xC0 + index as u8; 16];
+        let mut remaining_required_bits = required.bits();
+        let mut index = 0u8;
+        while remaining_required_bits != 0 {
+            let missing = 1u32 << remaining_required_bits.trailing_zeros();
+            remaining_required_bits &= !missing;
+            let session_bytes = [0xC0 + index; 16];
             let session_id = SessionId::from_bytes(session_bytes).unwrap();
             let advertised = ControlCapabilities::from_bits(required.bits() & !missing).unwrap();
             let wire = encode_frame(
@@ -2418,14 +2415,15 @@ mod tests {
                 Err(DuplexWorkerError::CollectorHello(_))
             ));
             assert_eq!(session.state(), DuplexWorkerState::Failed);
+            index += 1;
         }
 
         for (session_bytes, payload) in [
             (
-                [0xC4; 16],
+                [0xD0; 16],
                 super::super::proof::collector_hello_payload(&expectation()),
             ),
-            ([0xC5; 16], {
+            ([0xD1; 16], {
                 let mut payload = super::super::proof::collector_hello_with_capabilities_payload(
                     &expectation(),
                     required,
@@ -2433,16 +2431,17 @@ mod tests {
                 payload[68..72].copy_from_slice(&(1u32 << 31).to_le_bytes());
                 payload
             }),
-            ([0xC6; 16], {
-                let advertised =
-                    ControlCapabilities::from_bits(required.bits() | ControlCapabilities::ROLLOVER)
-                        .unwrap();
+            ([0xD2; 16], {
+                let advertised = ControlCapabilities::from_bits(
+                    required.bits() | ControlCapabilities::EARLY_RENDER,
+                )
+                .unwrap();
                 super::super::proof::collector_hello_with_capabilities_payload(
                     &expectation(),
                     advertised,
                 )
             }),
-            ([0xC7; 16], {
+            ([0xD3; 16], {
                 let advertised =
                     ControlCapabilities::from_bits(required.bits() | ControlCapabilities::STAGE_B)
                         .unwrap();
@@ -2466,13 +2465,12 @@ mod tests {
     }
 
     #[test]
-    fn activation_is_explicitly_disabled_and_listener_precedes_session() {
-        assert!(!AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED);
-        assert!(!auto_attach_identity_v1_enabled());
-        assert!(matches!(
-            auto_attach_duplex_product_permit(),
-            Err(DuplexWorkerError::ActivationDisabled)
-        ));
+    fn production_activation_requires_local_identity_and_listener_precedes_session() {
+        assert!(AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED);
+        assert!(compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED);
+        assert!(auto_attach_identity_v1_enabled());
+        assert!(auto_attach_rollover_enabled());
+        assert!(auto_attach_duplex_product_permit().is_ok());
         let session_id = [0x31; 16];
         let prepared = prepared_with_proofs(session_id, &[]);
         let _proof_required_before_future_injection = prepared.listener_ready_proof();
@@ -2819,7 +2817,7 @@ mod tests {
         let session =
             compact_contract::control_transport::claim_session_capability(client_session).unwrap();
         let expected = expectation();
-        let mut client = collector::duplex_client::CollectorControlClient::new(
+        let mut client = collector::duplex_client::CollectorControlClient::new_product(
             &collector::duplex_client::test_duplex_client_permit(),
             ClientCaptureIo {
                 outbound: Rc::clone(&outbound),
@@ -2923,7 +2921,7 @@ mod tests {
         assert_eq!(session.state(), DuplexWorkerState::Failed);
     }
 
-    // --- all four advertised capabilities, end-to-end against real host code ---
+    // --- active advertised capabilities, end-to-end against real host code ---
 
     /// In-memory duplex transport for the real client with BOTH a captured
     /// outbound stream and a scripted inbound stream (recorder->collector).

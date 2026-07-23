@@ -2,8 +2,9 @@
 //!
 //! Authored ability definitions establish identity, target type, localisation
 //! keys and resolved normal/active icons. The replay row remains authoritative for selected-
-//! context availability, activation, timers, effective cost, ordering, tooltip
-//! and disabled reason.  No trigger, timer or command-power formula is run here.
+//! context availability, activation, timers, optional effective cost, ordering,
+//! and optional final text. No trigger, timer, command-power formula, tooltip,
+//! or disabled reason is reconstructed here.
 
 use crate::assets::AssetResolver;
 use crate::gfx::SpriteRegistry;
@@ -36,7 +37,7 @@ pub struct ActiveAbilityPresentation {
     pub activation_hour: i64,
     pub cooldown_total: CommandAbilityTimer,
     pub cooldown_remaining: CommandAbilityTimer,
-    pub cost_command_power_fixed: i64,
+    pub cost_command_power_fixed: Option<i64>,
     pub cost_command_power_scale: i64,
     pub target_kind: String,
     pub target_id: String,
@@ -44,8 +45,8 @@ pub struct ActiveAbilityPresentation {
     pub duration_remaining: CommandAbilityTimer,
     pub display_order: u32,
     pub icon: String,
-    pub tooltip: String,
-    pub disabled_reason: String,
+    pub tooltip: Option<String>,
+    pub disabled_reason: Option<String>,
     pub affected_division_ids: Vec<String>,
 }
 
@@ -297,19 +298,14 @@ fn admit_row(
             "{prefix} has an invalid duration interval"
         )));
     }
-    if available && !disabled_reason.is_empty() {
+    if available && disabled_reason.is_some() {
         return Err(ActiveAbilityRejection(format!(
             "{prefix} is available but carries a disabled reason"
         )));
     }
-    if !available && disabled_reason.is_empty() {
+    if target_id.is_empty() {
         return Err(ActiveAbilityRejection(format!(
-            "{prefix} is disabled without an exact reason"
-        )));
-    }
-    if tooltip.is_empty() || target_id.is_empty() {
-        return Err(ActiveAbilityRejection(format!(
-            "{prefix} lacks resolved tooltip or target identity"
+            "{prefix} lacks its exact target identity"
         )));
     }
     let mut affected_identities = BTreeSet::new();
@@ -431,7 +427,7 @@ mod tests {
                 kind: CommandAbilityTimerKind::Hours,
                 hours: Some(336),
             },
-            cost_command_power_fixed: 2_200_000,
+            cost_command_power_fixed: Some(2_200_000),
             cost_command_power_scale: 100_000,
             target_kind: "army_leader".into(),
             target_id: "73".into(),
@@ -445,8 +441,8 @@ mod tests {
             },
             display_order: 0,
             icon: "GFX_ability_force_attack_animated".into(),
-            tooltip: "Force Attack".into(),
-            disabled_reason: "Already active".into(),
+            tooltip: Some("Force Attack".into()),
+            disabled_reason: Some("Already active".into()),
             affected_division_ids: vec!["division:9".into()],
         }
     }
@@ -461,19 +457,19 @@ mod tests {
         let admitted = admit_row(&row(), 0, &defs).expect("exact row");
         assert_eq!(admitted.cooldown_remaining.hours, Some(336));
         assert_eq!(admitted.duration_remaining.hours, Some(120));
-        assert_eq!(admitted.cost_command_power_fixed, 2_200_000);
+        assert_eq!(admitted.cost_command_power_fixed, Some(2_200_000));
         assert_eq!(admitted.cost_command_power_scale, 100_000);
-        assert_eq!(admitted.tooltip, "Force Attack");
-        assert_eq!(admitted.disabled_reason, "Already active");
+        assert_eq!(admitted.tooltip.as_deref(), Some("Force Attack"));
+        assert_eq!(admitted.disabled_reason.as_deref(), Some("Already active"));
     }
 
     #[test]
     fn signed_effective_cost_is_admitted_without_clamping() {
         let defs = BTreeMap::from([("force_attack".into(), definition())]);
         let mut signed = row();
-        signed.cost_command_power_fixed = -2_200_000;
+        signed.cost_command_power_fixed = Some(-2_200_000);
         let admitted = admit_row(&signed, 0, &defs).expect("signed exact effective cost");
-        assert_eq!(admitted.cost_command_power_fixed, -2_200_000);
+        assert_eq!(admitted.cost_command_power_fixed, Some(-2_200_000));
         assert_eq!(admitted.cost_command_power_scale, 100_000);
     }
 
@@ -573,11 +569,13 @@ mod tests {
     }
 
     #[test]
-    fn inconsistent_runtime_values_reject() {
+    fn optional_runtime_values_remain_absent_while_malformed_values_reject() {
         let defs = BTreeMap::from([("force_attack".into(), definition())]);
         let mut missing = row();
-        missing.tooltip.clear();
-        assert!(admit_row(&missing, 0, &defs).is_err());
+        missing.tooltip = None;
+        missing.cost_command_power_fixed = None;
+        missing.disabled_reason = None;
+        assert!(admit_row(&missing, 0, &defs).is_ok());
 
         let mut duplicate_affected = row();
         duplicate_affected.affected_division_ids =
@@ -604,7 +602,7 @@ mod tests {
         assert!(admit_row(&lossy_cost, 0, &defs).is_err());
 
         let mut inferred_reason = row();
-        inferred_reason.disabled_reason.clear();
-        assert!(admit_row(&inferred_reason, 0, &defs).is_err());
+        inferred_reason.disabled_reason = None;
+        assert!(admit_row(&inferred_reason, 0, &defs).is_ok());
     }
 }

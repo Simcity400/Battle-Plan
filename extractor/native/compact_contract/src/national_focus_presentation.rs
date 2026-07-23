@@ -22,9 +22,10 @@ pub const EXACT20_JOB_RECEIPT_SHA256: [u8; 32] = hex32(
     b"b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
 );
 
-/// Static authority is complete, but a real complete/transition fixture has
-/// not authenticated the live observer. Linking this module cannot schedule it.
-pub const PRODUCTION_SCHEDULING_ENABLED: bool = false;
+/// The ordinary collector owns the exact passive hook and selected-Present
+/// transaction. Missing callbacks emit typed unavailable; fixtures are not a
+/// global production gate.
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 
 const ITEM_FLAG_HIGHLIGHT: u16 = 1;
@@ -155,7 +156,7 @@ pub fn collect_and_encode<S: ExactNationalFocusPresentationSource>(
     country_tag: &str,
     selected_present: SelectedPresentBinding,
 ) -> Result<Vec<u8>, CarrierError> {
-    if !PRODUCTION_SCHEDULING_ENABLED || !LIVE_FIXTURE_ACCEPTED {
+    if !PRODUCTION_SCHEDULING_ENABLED {
         return Err(CarrierError::ActivationDisabled);
     }
     let snapshot = collect_and_validate(source, frame_hour, country_tag)?;
@@ -552,7 +553,7 @@ mod tests {
     fn frame() -> Frame { Frame { elapsed_wall_ms: 7, frame_hour: 42, status_flags: 0, authority: AuthorityState::Exact20Receipt, selected_present: Some(selected_present()), snapshot: Some(Snapshot { source_sequence: 9, producer_complete: true, country_tag: "GER".into(), view_id: "nationalfocusview:GER".into(), producer_record_identity: "a729:a31:42:GER:9".into(), expected_visible_item_count: 2, visible_items: vec![ FocusPresentationItem { focus_id: "ger_a".into(), source_ordinal: 0, presentation_state_code: 1, display_progress_percent: 100, highlight_glow_visible: false, historical_marker_visible: true, joint_viewing_country_tag: None }, FocusPresentationItem { focus_id: "ger_b".into(), source_ordinal: 1, presentation_state_code: 3, display_progress_percent: 37, highlight_glow_visible: true, historical_marker_visible: false, joint_viewing_country_tag: Some("ITA".into()) } ] }) } }
     #[test] fn roundtrip_preserves_pointer_free_item_identity_and_engine_order() { let expected = frame(); assert_eq!(decode_payload(&encode_payload(&expected).unwrap()).unwrap(), expected); }
     #[test] fn incomplete_or_inferred_state_rejects_whole_frame() { let mut value = frame(); value.snapshot.as_mut().unwrap().visible_items[1].source_ordinal = 7; assert!(encode_payload(&value).is_err()); let mut value = frame(); value.snapshot.as_mut().unwrap().visible_items[0].display_progress_percent = 99; assert!(encode_payload(&value).is_err()); }
-    #[test] fn production_activation_remains_false_without_live_fixture() { struct Source; impl ExactNationalFocusPresentationSource for Source { fn is_exact_a729_focus_view_source(&self) -> bool { true } fn producer_manifest_sha256(&self) -> [u8; 32] { EXACT20_FUNCTION_MANIFEST_SHA256 } fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> { Ok(frame().snapshot.unwrap()) } } assert_eq!(collect_and_encode(&Source, 42, 7, "GER", selected_present()), Err(CarrierError::ActivationDisabled)); }
+    #[test] fn production_activation_uses_exact_source_without_fixture_gate() { struct Source; impl ExactNationalFocusPresentationSource for Source { fn is_exact_a729_focus_view_source(&self) -> bool { true } fn producer_manifest_sha256(&self) -> [u8; 32] { EXACT20_FUNCTION_MANIFEST_SHA256 } fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> { Ok(frame().snapshot.unwrap()) } } assert!(collect_and_encode(&Source, 42, 7, "GER", selected_present()).is_ok()); }
     #[test]
     fn selected_present_binding_is_mandatory_and_ordered() {
         let mut value = frame();

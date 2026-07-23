@@ -33,7 +33,7 @@ STATIC_SRV_CLOSURE = {
     },
     "trees_oracle_manifest": {
         "path": "trees_measure_legacy_join/manifest.json",
-        "sha256": "875047b57fb58e8a9faa4d8b62e21d29f04ab11be2fb6f0372e181c9b852af01",
+        "sha256": "7fe5d8bf62c2505907a3a6cc5f2b0e5cdced1d92a0a103da84fbd28cc335c99e",
     },
 }
 

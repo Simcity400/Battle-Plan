@@ -1,9 +1,13 @@
 # A28 owner-runnable controller fixtures
 
-Four controller-bound hook surfaces are now implemented. Domain 71 remains
-unscheduled: no family is promoted merely because an installable observer
-exists, and every family still needs a zero-gap owner capture regraded by the
-offline fixture gate.
+> Superseded scheduling note (2026-07-22): domain 71 is production-scheduled
+> for the sealed exact-a729 Air-selection and paired MIO-history passive hooks.
+> The fixture route described below remains non-promoting; technology canvas
+> and heterogeneous MIO aggregate bonus remain omitted and fail closed.
+
+Four controller-bound hook surfaces are implemented. No family is promoted
+merely because an installable observer exists, and fixture observations still
+need a zero-gap owner capture regraded by the offline fixture gate.
 
 ## Equipment-variant standard grid
 

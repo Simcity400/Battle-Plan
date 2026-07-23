@@ -117,7 +117,12 @@ impl ConvoyTransportAttackWitness {
             && self.queue_drain_complete
             && self.remaining_events == 0
             && self.active_callbacks == 0
-            && self.resolver_publication_sequence != 0
+            // A freshly installed observer can produce a complete measured-
+            // empty drain before the first d49/d50 resolver publication. Any
+            // callback in that interval increments a drop counter, so only a
+            // genuinely zero-callback drain may omit resolver custody.
+            && (self.telemetry.callbacks_seen == 0
+                || self.resolver_publication_sequence != 0)
             && self.telemetry.callbacks_seen == self.telemetry.original_calls
             && self.telemetry.callbacks_seen == self.telemetry.events_emitted
             && self.producer_sequence_next
@@ -646,6 +651,30 @@ mod tests {
         let encoded = encode_convoy_transport_attack_batch(&rows, observed).unwrap();
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
         assert!(!decoded.exact_events_complete);
+    }
+
+    #[test]
+    fn cta2_accepts_zero_callback_prepublication_drain_only() {
+        let observed = ConvoyTransportAttackWitness {
+            hook_installed: true,
+            queue_drain_complete: true,
+            producer_sequence_next: 1,
+            ..ConvoyTransportAttackWitness::default()
+        };
+        let encoded = encode_convoy_transport_attack_batch(&[], observed).unwrap();
+        assert!(decode_convoy_transport_attack_batch(&encoded)
+            .unwrap()
+            .exact_events_complete);
+
+        let mut dropped = observed;
+        dropped.telemetry.callbacks_seen = 1;
+        dropped.telemetry.original_calls = 1;
+        dropped.telemetry.dropped_resolver = 1;
+        assert!(!decode_convoy_transport_attack_batch(
+            &encode_convoy_transport_attack_batch(&[], dropped).unwrap(),
+        )
+        .unwrap()
+        .exact_events_complete);
     }
 
     #[test]

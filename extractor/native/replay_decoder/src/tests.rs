@@ -9,8 +9,8 @@
 use super::*;
 use compact_contract::calendar::DATE_EPOCH_CONST;
 use compact_contract::campaign_identity::{
-    encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
-    COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+    encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
+    COMPACT_RECORD_TYPE_STREAM_HEADER,
 };
 use compact_contract::{
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
@@ -208,8 +208,11 @@ impl Drop for TmpDir {
 }
 
 fn legacy_fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../snapshot/tests/data/legacy/pre222_store_deflate.battleplan")
+    std::fs::canonicalize(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../snapshot/tests/data/legacy/pre222_store_deflate.battleplan"),
+    )
+    .expect("canonicalize checked-in legacy replay fixture")
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,7 +1019,10 @@ fn seek_matches_linear_iteration() {
         StreamIdentityMode::Legacy
     );
     let mut missing_mode = json.clone();
-    missing_mode.as_object_mut().unwrap().remove("identity_mode");
+    missing_mode
+        .as_object_mut()
+        .unwrap()
+        .remove("identity_mode");
     assert!(StreamIndex::from_json(&missing_mode).is_none());
 
     for want in [HOUR_A, HOUR_B, HOUR_C] {
@@ -1358,13 +1364,9 @@ fn rollover_stream_set_rejects_nonadjacent_transition_before_yielding() {
 fn rollover_stream_set_requires_strictly_increasing_transition_nonces() {
     let dir = TmpDir::new("rollover_nonce_chain");
     let mut ordered_streams = Vec::new();
-    for (logical_stream_id, seed) in [
-        1_026_046_527,
-        1_026_046_528,
-        1_026_046_529,
-    ]
-    .into_iter()
-    .enumerate()
+    for (logical_stream_id, seed) in [1_026_046_527, 1_026_046_528, 1_026_046_529]
+        .into_iter()
+        .enumerate()
     {
         let path = dir.0.join(format!("stream-{logical_stream_id}.h4cr"));
         let bytes = identity_v1_stream_with_seed(seed);
@@ -1389,10 +1391,8 @@ fn rollover_stream_set_requires_strictly_increasing_transition_nonces() {
             proposal_nonce: 1,
             current_campaign_id: ordered_streams[index].expected_campaign_id,
             proposed_campaign_id: ordered_streams[index + 1].expected_campaign_id,
-            current_cid1_payload_sha256: ordered_streams[index]
-                .expected_cid1_payload_sha256,
-            proposed_cid1_payload_sha256: ordered_streams[index + 1]
-                .expected_cid1_payload_sha256,
+            current_cid1_payload_sha256: ordered_streams[index].expected_cid1_payload_sha256,
+            proposed_cid1_payload_sha256: ordered_streams[index + 1].expected_cid1_payload_sha256,
         })
         .collect();
     let error = open_rollover_stream_set(
@@ -1416,12 +1416,8 @@ fn identity_v1_index_binds_mode_and_seek_reopens_under_it() {
     let opts = OpenOptions {
         game_id: Some("fold_check".to_string()),
     };
-    let index = build_index_with_identity_mode(
-        &source,
-        &opts,
-        StreamIdentityMode::IdentityV1,
-    )
-    .unwrap();
+    let index =
+        build_index_with_identity_mode(&source, &opts, StreamIdentityMode::IdentityV1).unwrap();
     assert_eq!(index.identity_mode, StreamIdentityMode::IdentityV1);
     assert_eq!(index.to_json()["identity_mode"], "identity_v1");
     assert_eq!(
@@ -1503,13 +1499,10 @@ fn certified_raw_h4cr_produces_the_neutral_prefolded_contract() {
 
 #[test]
 fn portable_decoder_contract_drives_the_same_certified_world_fold() {
-    let request = snapshot::CertifiedPrefoldRequest::try_new("fold_check", three_hour_stream())
-        .unwrap();
-    let replay = snapshot::decode_certified_prefolded(
-        &ProductionCertifiedPrefoldDecoder,
-        request,
-    )
-    .unwrap();
+    let request =
+        snapshot::CertifiedPrefoldRequest::try_new("fold_check", three_hour_stream()).unwrap();
+    let replay =
+        snapshot::decode_certified_prefolded(&ProductionCertifiedPrefoldDecoder, request).unwrap();
 
     assert_eq!(replay.index().game_id(), "fold_check");
     assert_eq!(replay.index().hours(), &[HOUR_A, HOUR_B, HOUR_C]);
@@ -1525,11 +1518,8 @@ fn portable_identity_request_drives_identity_aware_certified_fold() {
         snapshot::PrefoldStreamIdentityMode::IdentityV1,
     )
     .unwrap();
-    let replay = snapshot::decode_certified_prefolded(
-        &ProductionCertifiedPrefoldDecoder,
-        request,
-    )
-    .unwrap();
+    let replay =
+        snapshot::decode_certified_prefolded(&ProductionCertifiedPrefoldDecoder, request).unwrap();
     assert_eq!(replay.index().hours(), &[HOUR_A, HOUR_B, HOUR_C]);
     assert_eq!(
         replay.receipt().identity_mode(),
@@ -1558,7 +1548,11 @@ fn identity_aware_spooled_fold_consumes_cid1_before_file_backed_world_fold() {
     let spool = fold_raw_h4cr_file_spooled(request).unwrap();
     assert_eq!(spool.entries().len(), 3);
     assert_eq!(
-        spool.entries().iter().map(|entry| entry.hour_index()).collect::<Vec<_>>(),
+        spool
+            .entries()
+            .iter()
+            .map(|entry| entry.hour_index())
+            .collect::<Vec<_>>(),
         vec![HOUR_A, HOUR_B, HOUR_C]
     );
 }
@@ -1586,7 +1580,10 @@ fn portable_prefold_rejects_closed_hour_the_world_fold_cannot_key() {
     let error = fold_raw_h4cr_bytes_prefolded(stream, "fold_check").unwrap_err();
     match error {
         OpenError::Certification(message) => {
-            assert!(message.contains("closed-hour cardinality mismatch"), "{message}");
+            assert!(
+                message.contains("closed-hour cardinality mismatch"),
+                "{message}"
+            );
             assert!(message.contains("4 FRAME_END"), "{message}");
             assert!(message.contains("3 WorldFold"), "{message}");
         }

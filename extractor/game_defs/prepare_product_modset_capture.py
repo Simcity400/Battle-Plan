@@ -20,6 +20,7 @@ from typing import Any
 
 import build_runtime_static_bundle as RB
 import live_binding_resolver as LR
+import product_modset_admission as PMA
 import static_bundle as SB
 
 
@@ -376,8 +377,20 @@ def _validate_binding_corpus(exe: Path, bindings_dir: Path) -> tuple[dict[str, A
 def _complete_preparation(
     *, exe: Path, bindings_dir: Path, output: Path, preparation_mode: str,
     binding_corpus: dict[str, Any] | None = None,
+    admission_policy: Path = PMA.DEFAULT_POLICY,
+    allow_dev_policy_override: bool = False,
 ) -> dict[str, Any]:
     report, expected_product_modset = _validate_binding_corpus(exe, bindings_dir)
+    documents = {
+        role: SB._validate_binding_document(
+            SB.load_object(bindings_dir / f"{role}.json", f"capture {role}"), role
+        )
+        for role in ("mod_state", "dlc_state", "load_order")
+    }
+    product_admission = PMA.admit(
+        expected_product_modset, documents, admission_policy,
+        allow_dev_policy_override=allow_dev_policy_override,
+    )
     static_output = output / "static_bundle"
     build = RB.build(
         bindings_dir=bindings_dir,
@@ -437,6 +450,7 @@ def _complete_preparation(
         "binding_corpus_sha256": corpus["sha256"],
         "binding_corpus": corpus,
         "product_modset_sha256": product_modset["product_modset_sha256"],
+        "product_modset_admission": product_admission,
         "process": {
             "pid": report["process"]["pid"],
             "creation_filetime_utc": report["process"]["creation_filetime_utc"],
@@ -501,6 +515,8 @@ def prepare(
     ui14_engine_vfs: Path,
     ui14_capture_root: Path,
     output: Path,
+    admission_policy: Path = PMA.DEFAULT_POLICY,
+    allow_dev_policy_override: bool = False,
 ) -> dict[str, Any]:
     if pid <= 0:
         raise LR.ResolutionError("pid must be positive")
@@ -582,10 +598,16 @@ def prepare(
         bindings_dir=bindings_dir,
         output=output,
         preparation_mode="live_binding_resolution",
+        admission_policy=admission_policy,
+        allow_dev_policy_override=allow_dev_policy_override,
     )
 
 
-def prepare_offline(*, exe: Path, bindings: Path, output: Path) -> dict[str, Any]:
+def prepare_offline(
+    *, exe: Path, bindings: Path, output: Path,
+    admission_policy: Path = PMA.DEFAULT_POLICY,
+    allow_dev_policy_override: bool = False,
+) -> dict[str, Any]:
     """Prepare from an already-authenticated, immutable binding corpus.
 
     This route performs no process query and consumes no launcher/log state. It
@@ -672,6 +694,8 @@ def prepare_offline(*, exe: Path, bindings: Path, output: Path) -> dict[str, Any
         output=output,
         preparation_mode="authenticated_binding_corpus",
         binding_corpus=corpus,
+        admission_policy=admission_policy,
+        allow_dev_policy_override=allow_dev_policy_override,
     )
 
 
@@ -688,6 +712,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--ui14-engine-vfs", type=Path)
     parser.add_argument("--ui14-capture-root", type=Path)
+    parser.add_argument(
+        "--admission-policy", type=Path, default=PMA.DEFAULT_POLICY,
+        help="strict exact-match supported product-modset registry",
+    )
+    parser.add_argument(
+        "--allow-dev-policy-override", action="store_true",
+        help="allow a noncanonical policy digest for explicit tests/development",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
@@ -701,6 +733,8 @@ def main(argv: list[str] | None = None) -> int:
                 exe=args.exe,
                 bindings=args.bindings,
                 output=args.out,
+                admission_policy=args.admission_policy,
+                allow_dev_policy_override=args.allow_dev_policy_override,
             )
         else:
             if (args.userdir is None or args.ui14_engine_vfs is None
@@ -715,6 +749,8 @@ def main(argv: list[str] | None = None) -> int:
                 ui14_engine_vfs=args.ui14_engine_vfs,
                 ui14_capture_root=args.ui14_capture_root,
                 output=args.out,
+                admission_policy=args.admission_policy,
+                allow_dev_policy_override=args.allow_dev_policy_override,
             )
     except (LR.ResolutionError, SB.BundleError, OSError, json.JSONDecodeError) as exc:
         print(f"product modset capture preparation: FAIL: {exc}", file=sys.stderr)

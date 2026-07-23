@@ -8,7 +8,7 @@
     "output_sha256": "d968506164f5eeaa084215219183d9c51e1fcc71790f2e61a9bcba2b5e9f8383",
     "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
     "result": "PASS_FINAL_ALL",
-    "sha256": "6df83ef524d87107b83324f249d8bbb88dd503caeaed695b6ecbc9822dd44c58"
+    "sha256": "1dc233aa8babd332fa33e132f7113be8016153134d4e1a35e0c24bc4eb177b96"
   },
   "fail_closed": true,
   "global_extractor_completion": false,
@@ -113,12 +113,12 @@
     {
       "path": "extractor/native/domain_registry.json",
       "role": "schedulable domain roster and status",
-      "sha256": "81703a0b96c11199877057f3fa7b8d8eef31d5d6d0e3c19499623f8965439ec9"
+      "sha256": "ccd7eacbc34dd5706bf58e51205b89019a4cd79ae99d82a85db683d509dcd39f"
     },
     {
       "path": "extractor/native/compact_contract/src/build_profile.rs",
       "role": "pinned RVAs, layouts, and build gates",
-      "sha256": "7e143b281820b8aca12053f8b08c95bf64bd5c468dedb3301fe4f992211f9dd1"
+      "sha256": "30173d63d38ae22c6140ebe7d24e89c31613fc4d6f2e34de47254b3a5fdf49b9"
     },
     {
       "path": "extractor/native/compact_contract/src/building_registry.rs",
@@ -128,27 +128,27 @@
     {
       "path": "extractor/native/compact_contract/src/lib.rs",
       "role": "compact schema and fail-closed interpretation",
-      "sha256": "5e38ebddd94fddd747b0601541ac9573b3203c12b5782426d05a2700e0d174a2"
+      "sha256": "b96b46262eb4dac7cefa8b57cf2a25657c4b3c1b8f08338021495e0c0971570b"
     },
     {
       "path": "extractor/native/collector/src/lib.rs",
       "role": "live read and compact emission",
-      "sha256": "c5d825df7626827c1cdfc42170778d82dcc170f3c396d2f60ecef9d0e0b8d136"
+      "sha256": "f0660ef92836ba91e420dce795c2cfb2a3f4f3cd6a4b1781bec0674968fe5e8c"
     },
     {
       "path": "extractor/native/recorder_host/src/domain_data_authority.rs",
       "role": "domain admission and authority accounting",
-      "sha256": "750d79b9aee0a65b699f32505c2346ee057958ad42ae19ce2b2962316534aa90"
+      "sha256": "f4b941bd127ce3c672769d91d21086e653a7190120f8c610e477af4e1d834c0e"
     },
     {
       "path": "extractor/native/recorder_host/src/world_fold.rs",
       "role": "authoritative replay world folds",
-      "sha256": "2c90031cc4468cb166f5c65882bfd82f1f6c2c709d4cb1ebc657354c90efd252"
+      "sha256": "681c32c1d4f4cd507804124248580ab13dbbe9e6d95bb3483a5c40ee5545b3af"
     },
     {
       "path": "extractor/native/recorder_host/src/main.rs",
       "role": "recorder gate and production composition",
-      "sha256": "59f7ed73a5aac44a93ad1673a4a1530aa3e981db747f8dab2a16c0a587173047"
+      "sha256": "617b99a8b0773828dc0faff23991eed2cf1d8b24524ff1591b528038b8fd3b0d"
     }
   ],
   "residuals": [],

@@ -4,7 +4,7 @@ use crate::paradox_text::parse_file;
 use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BitmapFont {
@@ -652,20 +652,78 @@ struct ParsedFont {
 impl ParsedFont {
     fn load_pages(self, resolver: &AssetResolver) -> Result<BitmapFont> {
         let mut pages = Vec::new();
-        let page_files = if self.page_files.is_empty() {
+        // BMFont `page file=` names are relative to the descriptor, not to the
+        // global font root. This matters for language packs and mod winners
+        // under directories such as `gfx/fonts/japanese/`. Preserve explicit
+        // effective-VFS paths, otherwise try the authenticated descriptor
+        // parent before the legacy root/inferred candidates.
+        let descriptor_parent = Path::new(&self.source_file)
+            .parent()
+            .map(|parent| normalize_rel_path(&parent.to_string_lossy()))
+            .filter(|parent| !parent.is_empty());
+        let pages_were_declared = !self.page_files.is_empty();
+        let page_files = if !pages_were_declared {
             inferred_page_files(&self.name, resolver)?
         } else {
             self.page_files
         };
         for (id, file) in page_files {
-            let rel = if normalize_rel_path(&file).contains('/') {
-                normalize_rel_path(&file)
-            } else {
-                normalize_rel_path(&format!("gfx/fonts/{file}"))
+            // Validate after separator normalization so a descriptor cannot
+            // smuggle `..\\` through a non-Windows producer and have it become
+            // `../` when the portable replay is consumed elsewhere.
+            let declared = normalize_rel_path(&file);
+            let raw_path = Path::new(&file);
+            let declared_path = Path::new(&declared);
+            let has_unsafe_component = |path: &Path| {
+                path.components().any(|component| {
+                    matches!(
+                        component,
+                        Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                    )
+                })
             };
-            let decoded = resolver
-                .decode_texture(&rel)
-                .or_else(|err| decode_inferred_page(resolver, &self.name, id).map_err(|_| err))?;
+            if raw_path.is_absolute()
+                || declared_path.is_absolute()
+                || file.starts_with('/')
+                || file.starts_with('\\')
+                || file.contains(':')
+                || has_unsafe_component(raw_path)
+                || has_unsafe_component(declared_path)
+            {
+                return Err(GameUiError::parse(format!(
+                    "font {} page {id} has unsafe declared path {file}",
+                    self.name
+                )));
+            }
+            let explicit_vfs_path = declared
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gfx/"));
+            let descriptor_relative = descriptor_parent
+                .as_ref()
+                .filter(|_| !explicit_vfs_path)
+                .map(|parent| normalize_rel_path(&format!("{parent}/{declared}")));
+            let legacy = if declared.contains('/') {
+                declared.clone()
+            } else {
+                normalize_rel_path(&format!("gfx/fonts/{declared}"))
+            };
+            let selected = match descriptor_relative {
+                Some(candidate) if resolver.resolve_optional_file(&candidate)?.is_some() => {
+                    Some(candidate)
+                }
+                _ if resolver.resolve_optional_file(&legacy)?.is_some() => Some(legacy),
+                _ => None,
+            };
+            let decoded = match selected {
+                Some(rel) => resolver.decode_texture(&rel)?,
+                None if !pages_were_declared => decode_inferred_page(resolver, &self.name, id)?,
+                None => {
+                    return Err(GameUiError::missing(format!(
+                        "font {} declared page {id} ({file}) is absent from the effective VFS",
+                        self.name
+                    )))
+                }
+            };
             pages.push(FontPage {
                 id,
                 file: decoded.rel_path,
@@ -1065,6 +1123,145 @@ pub fn solid_image(width: usize, height: usize, rgba: [u8; 4]) -> RgbaImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FONT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct FontFixtureRoot(PathBuf);
+
+    impl FontFixtureRoot {
+        fn new(label: &str) -> Self {
+            let ordinal = NEXT_FONT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "game_ui_font_{label}_{}_{}",
+                std::process::id(),
+                ordinal
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn write_tga(&self, rel: &str, rgba: [u8; 4]) {
+            let path = self
+                .0
+                .join(rel.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut bytes = vec![0u8; 18];
+            bytes[2] = 2;
+            bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+            bytes[14..16].copy_from_slice(&1u16.to_le_bytes());
+            bytes[16] = 32;
+            bytes[17] = 0x28;
+            bytes.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+            fs::write(path, bytes).unwrap();
+        }
+    }
+
+    impl Drop for FontFixtureRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn parsed_font_with_page(source_file: &str, page_file: &str) -> ParsedFont {
+        ParsedFont {
+            name: "probe".into(),
+            source_file: source_file.into(),
+            info_size: 16,
+            info_padding: [0; 4],
+            info_spacing: [0; 2],
+            outline: 0,
+            line_height: 16,
+            base: 12,
+            scale_w: 1,
+            scale_h: 1,
+            glyph_channel: None,
+            page_files: BTreeMap::from([(0, page_file.into())]),
+            chars: BTreeMap::new(),
+            kernings: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn declared_page_prefers_descriptor_parent_over_legacy_font_root() {
+        let root = FontFixtureRoot::new("descriptor_parent");
+        root.write_tga("gfx/fonts/japanese/atlas.tga", [10, 20, 30, 255]);
+        root.write_tga("gfx/fonts/atlas.tga", [90, 80, 70, 255]);
+        let resolver = AssetResolver::new(vec![root.0.clone()]);
+
+        let font = parsed_font_with_page("gfx/fonts/japanese/probe.fnt", "atlas.tga")
+            .load_pages(&resolver)
+            .unwrap();
+
+        assert_eq!(font.pages.len(), 1);
+        assert_eq!(font.pages[0].file, "gfx/fonts/japanese/atlas.tga");
+        assert_eq!(font.pages[0].image.pixels, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn uppercase_explicit_vfs_page_does_not_probe_descriptor_parent() {
+        let root = FontFixtureRoot::new("uppercase_vfs");
+        root.write_tga("GFX/fonts/shared.tga", [10, 20, 30, 255]);
+        root.write_tga(
+            "gfx/fonts/japanese/GFX/fonts/shared.tga",
+            [90, 80, 70, 255],
+        );
+        let resolver = AssetResolver::new(vec![root.0.clone()]);
+
+        let font = parsed_font_with_page(
+            "gfx/fonts/japanese/probe.fnt",
+            "GFX/fonts/shared.tga",
+        )
+        .load_pages(&resolver)
+        .unwrap();
+
+        assert_eq!(font.pages[0].image.pixels, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn missing_declared_page_does_not_fall_back_to_inferred_atlas() {
+        let root = FontFixtureRoot::new("explicit_missing");
+        root.write_tga("gfx/fonts/probe.tga", [10, 20, 30, 255]);
+        let resolver = AssetResolver::new(vec![root.0.clone()]);
+
+        let error = parsed_font_with_page("gfx/fonts/nested/probe.fnt", "missing.tga")
+            .load_pages(&resolver)
+            .expect_err("an explicit missing page must not be inferred");
+
+        assert!(error.message.contains("declared page 0"), "{error}");
+        assert!(error.message.contains("absent from the effective VFS"), "{error}");
+    }
+
+    #[test]
+    fn declared_page_rejects_parent_absolute_and_drive_paths() {
+        let root = FontFixtureRoot::new("unsafe_paths");
+        let resolver = AssetResolver::new(vec![root.0.clone()]);
+        let absolute = root
+            .0
+            .join("outside.tga")
+            .to_string_lossy()
+            .into_owned();
+        let cases = [
+            ("parent", "../outside.tga"),
+            ("backslash-parent", "..\\outside.tga"),
+            ("rooted", "/outside.tga"),
+            ("backslash-rooted", "\\outside.tga"),
+            ("absolute", absolute.as_str()),
+            ("drive-colon", "C:\\outside.tga"),
+            ("colon", "atlas:alternate.tga"),
+        ];
+
+        for (label, page) in cases {
+            let error = parsed_font_with_page("gfx/fonts/nested/probe.fnt", page)
+                .load_pages(&resolver)
+                .expect_err(label);
+            assert!(
+                error.message.contains("unsafe declared path"),
+                "{label}: {error}"
+            );
+        }
+    }
 
     #[test]
     fn strips_hoi4_color_codes() {

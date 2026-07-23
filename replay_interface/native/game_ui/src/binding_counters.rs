@@ -44,8 +44,8 @@
 //!   strength and yields `None`, fail-closed).
 //! * **Org bar fraction** — exact only when the row carries both
 //!   `organisation` and `max_organisation`; invalid or absent operands produce
-//!   `None`. No template/doctrine reconstruction is used. Current compact D20
-//!   still has no authenticated maximum, so ordinary live frames fail closed.
+//!   `None`. No template/doctrine reconstruction is used. Extended compact D20
+//!   rows carry the authenticated maximum; retained legacy rows fail closed.
 //! * **Badges (A15)** — D20 primary-order linkage replaces the old movement
 //!   proxy; order kind is admitted only through a same-hour D54 identity and
 //!   membership join. A36 active abilities join by exact `division:<id>`
@@ -53,11 +53,12 @@
 //!   experience is never substituted for the engine's exercising predicate.
 
 use replay_core::{
-    ArmyBattleplansView, CommandAbilityEnvelope, DivisionPrimaryOrderExact, DivisionUnitRow,
-    ExactProvinceSupplyTooltipView, FleetUnitRow, Leaf, PoliticsDetailView, ViewStatus,
-    WingUnitRow, WorldFrame,
+    ArmyBattleplansView, AuthenticatedUiPass, CommandAbilityEnvelope, DivisionPrimaryOrderExact,
+    DivisionUnitRow, ExactProvinceSupplyTooltipView, FleetUnitRow, HudCommandExecution,
+    HudCommandIdentity, Leaf, PoliticsDetailView, UiPassOperation, ViewStatus, WingUnitRow,
+    WorldFrame,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
 // NATO symbol naming law (FILE: interface/subuniticons.gfx).
@@ -342,6 +343,264 @@ fn strength_bar_fraction(strength: Option<f64>) -> Option<f32> {
         .map(|v| v as f32)
 }
 
+/// Exact authored counter roots accepted from the selected-Present HUD
+/// frontier. These strings are not a heuristic: the a729 owner classifier
+/// authenticates them together with `interface/mapicons.gui` and the
+/// `mapicons_container` runtime root before a HUD command can be emitted.
+const COUNTER_GUI_DEFINITION: &str = "interface/mapicons.gui";
+const COUNTER_RUNTIME_ROOT: &str = "mapicons_container";
+const LAND_COUNTER_SURFACE: &str = "unit_counter";
+const NAVAL_COUNTER_SURFACE: &str = "unit_counter_navy";
+const RAILWAY_COUNTER_SURFACE: &str = "unit_counter_railway_gun";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum AuthenticatedCounterSurface {
+    Land,
+    Naval,
+    RailwayGun,
+}
+
+/// Coverage of exact, same-hour inputs consumed by the counter binding. A
+/// count is evidence coverage, not a default: zero can mean a measured-empty
+/// domain, while `CounterSelectedPresentBinding` itself is absent when the
+/// selected-Present counter frontier was not authenticated.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CounterFieldCoverage {
+    pub land_rows: usize,
+    pub exact_supply_rows: usize,
+    pub exact_organisation_bar_rows: usize,
+    pub exact_order_kind_rows: usize,
+    pub evaluated_low_supply_rows: usize,
+    pub evaluated_dig_in_rows: usize,
+    pub evaluated_training_rows: usize,
+    pub evaluated_invalid_orders_rows: usize,
+    pub evaluated_attrition_rows: usize,
+    pub exact_active_ability_rows: usize,
+}
+
+/// Typed counter state consumed beside the real authenticated selected-Present
+/// HUD commands. The commands remain the sole pixel authority. This receipt
+/// proves only that the semantic counter model and the exact authored counter
+/// owners were consumed from the same validated `WorldFrame`/Present; it does
+/// not invent a per-unit join from an opaque GUI instance token.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CounterSelectedPresentBinding {
+    /// Typed land rows are consumed only when this Present authenticated at
+    /// least one authored land-counter owner.
+    pub land_contents: Option<Vec<CounterContent>>,
+    /// Typed naval rows are consumed only when this Present authenticated at
+    /// least one authored naval-counter owner.
+    pub naval_contents: Option<Vec<CounterContent>>,
+    /// There is no authenticated air-counter surface in the current a729 HUD
+    /// owner vocabulary. Keep this structurally absent instead of borrowing a
+    /// land/naval/railway owner as provenance.
+    pub air_contents: Option<Vec<CounterContent>>,
+    pub authenticated_owner_count: usize,
+    pub authenticated_command_count: usize,
+    pub authenticated_land_owner_count: usize,
+    pub authenticated_naval_owner_count: usize,
+    pub authenticated_railway_gun_owner_count: usize,
+    /// Every currently implemented exact field belongs to a land division
+    /// row, so coverage is unavailable unless a land owner was authenticated.
+    pub land_field_coverage: Option<CounterFieldCoverage>,
+}
+
+fn authenticated_counter_surface(
+    identity: &HudCommandIdentity,
+) -> Result<Option<AuthenticatedCounterSurface>, String> {
+    let surface = match identity.authored_surface_identity.as_str() {
+        LAND_COUNTER_SURFACE => AuthenticatedCounterSurface::Land,
+        NAVAL_COUNTER_SURFACE => AuthenticatedCounterSurface::Naval,
+        RAILWAY_COUNTER_SURFACE => AuthenticatedCounterSurface::RailwayGun,
+        _ => return Ok(None),
+    };
+    if identity.runtime_root != COUNTER_RUNTIME_ROOT
+        || identity.selected_gui_definition.normalized_game_relative_path
+            != COUNTER_GUI_DEFINITION
+    {
+        return Err(
+            "selected-Present counter owner is not bound to the authenticated mapicons root"
+                .into(),
+        );
+    }
+    Ok(Some(surface))
+}
+
+fn counter_field_coverage(contents: &CounterContentSet) -> CounterFieldCoverage {
+    let evaluated = |badge: ServedBadge| badge != ServedBadge::AbsentThisHour
+        && badge != ServedBadge::NotSurfaced;
+    CounterFieldCoverage {
+        land_rows: contents.land.len(),
+        exact_supply_rows: contents
+            .land
+            .iter()
+            .filter(|row| {
+                row.current_supply.is_some()
+                    && row.max_supply.is_some()
+                    && row.supply_ratio.is_some()
+            })
+            .count(),
+        exact_organisation_bar_rows: contents
+            .land
+            .iter()
+            .filter(|row| row.org_bar_fraction.is_some())
+            .count(),
+        exact_order_kind_rows: contents
+            .land
+            .iter()
+            .filter(|row| row.current_order_kind.is_measured())
+            .count(),
+        evaluated_low_supply_rows: contents
+            .land
+            .iter()
+            .filter(|row| evaluated(row.badges.low_supply))
+            .count(),
+        evaluated_dig_in_rows: contents
+            .land
+            .iter()
+            .filter(|row| evaluated(row.badges.dig_in))
+            .count(),
+        evaluated_training_rows: contents
+            .land
+            .iter()
+            .filter(|row| evaluated(row.badges.training))
+            .count(),
+        evaluated_invalid_orders_rows: contents
+            .land
+            .iter()
+            .filter(|row| evaluated(row.badges.invalid_orders))
+            .count(),
+        evaluated_attrition_rows: contents
+            .land
+            .iter()
+            .filter(|row| evaluated(row.badges.attrition))
+            .count(),
+        exact_active_ability_rows: contents
+            .land
+            .iter()
+            .filter(|row| row.active_ability_kinds.is_measured())
+            .count(),
+    }
+}
+
+type AuthenticatedCounterDomainContent = (
+    Option<Vec<CounterContent>>,
+    Option<Vec<CounterContent>>,
+    Option<Vec<CounterContent>>,
+    Option<CounterFieldCoverage>,
+);
+
+/// Select semantic content only for counter surfaces authenticated in this
+/// Present. Air remains unavailable until its own authored surface is proven;
+/// it may never inherit land, naval, or railway provenance.
+fn authenticated_counter_domain_content(
+    contents: CounterContentSet,
+    authenticated_land_owner_count: usize,
+    authenticated_naval_owner_count: usize,
+) -> AuthenticatedCounterDomainContent {
+    let land_field_coverage = (authenticated_land_owner_count > 0)
+        .then(|| counter_field_coverage(&contents));
+    let land_contents = (authenticated_land_owner_count > 0).then_some(contents.land);
+    let naval_contents = (authenticated_naval_owner_count > 0).then_some(contents.naval);
+    (land_contents, naval_contents, None, land_field_coverage)
+}
+
+/// Bind typed counter content to the authenticated selected-Present HUD
+/// consumer. No counter command means a feature-local fail-closed error; the
+/// legacy CAP6 captured-map pass is never consulted or enabled here.
+pub fn counter_binding_for_selected_present(
+    frame: &WorldFrame,
+    pov_tag: Option<&str>,
+    pass: &AuthenticatedUiPass,
+) -> Result<CounterSelectedPresentBinding, String> {
+    pass.validate()?;
+    let render = frame
+        .production_render()
+        .ok_or("counter HUD binding has no production render frame")?;
+    if render.selected_present.computed_sha256()? != pass.selected_present_receipt_sha256 {
+        return Err("counter HUD binding crosses selected-Present receipts".into());
+    }
+
+    let mut owners = BTreeSet::new();
+    let mut commands = 0usize;
+    for operation in &pass.ui_pass_operations {
+        let UiPassOperation::HudCommand { command } = operation else {
+            continue;
+        };
+        let Some(surface) = authenticated_counter_surface(&command.identity)? else {
+            continue;
+        };
+        if !matches!(&command.execution, HudCommandExecution::ExactPipeline { .. }) {
+            return Err(
+                "authenticated counter owner does not carry an exact-pipeline HUD command".into(),
+            );
+        }
+        owners.insert((surface, command.identity.engine_instance_token));
+        commands += 1;
+    }
+    if owners.is_empty() || commands == 0 {
+        return Err("selected-Present HUD frontier has no authenticated counter owner".into());
+    }
+
+    let mut owner_counts = BTreeMap::new();
+    for (surface, _) in &owners {
+        *owner_counts.entry(*surface).or_insert(0usize) += 1;
+    }
+    let contents = counter_contents_from_frame(frame, pov_tag);
+    if owner_counts
+        .get(&AuthenticatedCounterSurface::Land)
+        .copied()
+        .unwrap_or(0)
+        > 0
+        && contents.land_status != ViewStatus::Present
+    {
+        return Err("authenticated land-counter HUD owners have no present typed land view".into());
+    }
+    if owner_counts
+        .get(&AuthenticatedCounterSurface::Naval)
+        .copied()
+        .unwrap_or(0)
+        > 0
+        && contents.naval_status != ViewStatus::Present
+    {
+        return Err(
+            "authenticated naval-counter HUD owners have no present typed naval view".into(),
+        );
+    }
+    let authenticated_land_owner_count = owner_counts
+        .get(&AuthenticatedCounterSurface::Land)
+        .copied()
+        .unwrap_or(0);
+    let authenticated_naval_owner_count = owner_counts
+        .get(&AuthenticatedCounterSurface::Naval)
+        .copied()
+        .unwrap_or(0);
+    let authenticated_railway_gun_owner_count = owner_counts
+        .get(&AuthenticatedCounterSurface::RailwayGun)
+        .copied()
+        .unwrap_or(0);
+    let (land_contents, naval_contents, air_contents, land_field_coverage) =
+        authenticated_counter_domain_content(
+            contents,
+            authenticated_land_owner_count,
+            authenticated_naval_owner_count,
+        );
+    Ok(CounterSelectedPresentBinding {
+        land_contents,
+        naval_contents,
+        // No authenticated air surface is currently admitted. Railway owners
+        // likewise remain owner-only until a typed railway-gun content join
+        // exists; neither may borrow another surface's provenance.
+        air_contents,
+        authenticated_owner_count: owners.len(),
+        authenticated_command_count: commands,
+        authenticated_land_owner_count,
+        authenticated_naval_owner_count,
+        authenticated_railway_gun_owner_count,
+        land_field_coverage,
+    })
+}
+
 /// Exact bounded fraction. Invalid, non-finite, negative, zero-denominator,
 /// and numerator-above-denominator pairs fail closed; presentation never
 /// clamps an unproven value into range.
@@ -379,8 +638,9 @@ fn exact_supply_operands(row: &DivisionUnitRow) -> (Option<f64>, Option<f64>, Op
     }
 }
 
-/// Exact wrapper vslot +0x138 organisation bar law: divide current by the
-/// authenticated max and clamp the fixed result to the 0..1 bar interval.
+/// Exact organization bar law: divide current by the authenticated denominator
+/// returned by wrapper vslot `+0x130` (whose source pointer is at wrapper
+/// `+0x138`) and clamp the result to the 0..1 bar interval.
 fn exact_org_bar_fraction(current: Option<f64>, maximum: Option<f64>) -> Option<f32> {
     match (current, maximum) {
         (Some(current), Some(maximum))
@@ -460,7 +720,8 @@ fn exact_order_kind(row: &DivisionUnitRow, battleplans: &ArmyBattleplansView) ->
         ViewStatus::DomainUnavailable => Leaf::Unobtained,
         ViewStatus::Present => {
             let mut matches = battleplans.orders.iter().filter(|order| {
-                order.key.army_id == army_id
+                order.key.owner.kind == replay_core::ArmyBattleplanOwnerKind::Army
+                    && order.key.owner.id == army_id
                     && order.key.engine_order_instance_id == engine_order_instance_id
                     && order.assigned_division_ids.contains(&row.raw_division_id)
             });
@@ -797,6 +1058,57 @@ pub fn nato_symbol_resolution<'a>(
 mod tests {
     use super::*;
 
+    fn hud_identity(surface: &str, root: &str, definition: &str) -> HudCommandIdentity {
+        HudCommandIdentity {
+            authored_surface_identity: surface.into(),
+            runtime_root: root.into(),
+            selected_gui_definition: replay_core::UsedContentKey {
+                effective_vfs_manifest_sha256: "11".repeat(32),
+                normalized_game_relative_path: definition.into(),
+                winning_layer_ordinal: 0,
+                layer_kind: replay_core::ContentLayerKind::Base,
+                layer_id: "vanilla".into(),
+                source_sha256: "22".repeat(32),
+                payload_sha256: "33".repeat(32),
+                payload_bytes: 1,
+            },
+            engine_instance_token: 7,
+            child_path: vec![0, 1],
+            element_type: "iconType".into(),
+            name: "counter_bg".into(),
+            paint_ordinal: 0,
+        }
+    }
+
+    #[test]
+    fn selected_present_counter_identity_requires_exact_authored_owner_join() {
+        let exact = hud_identity(
+            LAND_COUNTER_SURFACE,
+            COUNTER_RUNTIME_ROOT,
+            COUNTER_GUI_DEFINITION,
+        );
+        assert_eq!(
+            authenticated_counter_surface(&exact).unwrap(),
+            Some(AuthenticatedCounterSurface::Land)
+        );
+
+        let wrong_root = hud_identity(
+            LAND_COUNTER_SURFACE,
+            LAND_COUNTER_SURFACE,
+            COUNTER_GUI_DEFINITION,
+        );
+        assert!(authenticated_counter_surface(&wrong_root).is_err());
+        let wrong_definition = hud_identity(
+            LAND_COUNTER_SURFACE,
+            COUNTER_RUNTIME_ROOT,
+            "interface/unitview.gui",
+        );
+        assert!(authenticated_counter_surface(&wrong_definition).is_err());
+
+        let unrelated = hud_identity("topbar", "topbar", "interface/topbar.gui");
+        assert_eq!(authenticated_counter_surface(&unrelated).unwrap(), None);
+    }
+
     #[test]
     fn nato_land_symbol_key_follows_subuniticons_naming() {
         assert_eq!(
@@ -954,6 +1266,41 @@ mod tests {
     }
 
     #[test]
+    fn selected_present_domain_content_never_borrows_another_surface_owner() {
+        let contents = || CounterContentSet {
+            pov_tag: Some("GER".into()),
+            land: vec![land_counter_content(&land_row(
+                Some("infantry"),
+                Leaf::Measured(0.95),
+                Leaf::Measured(false),
+            ))],
+            naval: Vec::new(),
+            air: Vec::new(),
+            land_status: ViewStatus::Present,
+            naval_status: ViewStatus::Present,
+            air_status: ViewStatus::Present,
+        };
+
+        let (land, naval, air, coverage) =
+            authenticated_counter_domain_content(contents(), 0, 1);
+        assert!(land.is_none(), "a naval owner cannot authenticate land rows");
+        assert_eq!(naval.as_ref().map(Vec::len), Some(0));
+        assert!(air.is_none(), "air has no authenticated owner vocabulary");
+        assert!(coverage.is_none(), "land fields require a land owner");
+
+        let (land, naval, air, coverage) =
+            authenticated_counter_domain_content(contents(), 1, 0);
+        assert_eq!(land.as_ref().map(Vec::len), Some(1));
+        assert!(naval.is_none(), "a land owner cannot authenticate naval rows");
+        assert!(air.is_none());
+        assert_eq!(coverage.map(|value| value.land_rows), Some(1));
+
+        let (land, naval, air, coverage) =
+            authenticated_counter_domain_content(contents(), 0, 0);
+        assert!(land.is_none() && naval.is_none() && air.is_none() && coverage.is_none());
+    }
+
+    #[test]
     fn d20_primary_order_joins_d54_kind_only_on_exact_membership() {
         let mut row = land_row(Some("infantry"), Leaf::Measured(0.95), Leaf::Measured(true));
         row.army_id = Leaf::Measured(17);
@@ -968,7 +1315,10 @@ mod tests {
             identity_or_active_omitted_rows_this_hour: Some(0),
             orders: vec![replay_core::ArmyBattleplanOrderExact {
                 key: replay_core::ArmyBattleplanOrderKey {
-                    army_id: 17,
+                    owner: replay_core::ArmyBattleplanOwnerKey {
+                        kind: replay_core::ArmyBattleplanOwnerKind::Army,
+                        id: 17,
+                    },
                     engine_order_instance_id: 10_002,
                     generation: 3,
                 },

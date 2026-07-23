@@ -38,6 +38,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod callsite;
 pub mod formation;
 pub mod product;
 pub mod publish;
@@ -808,6 +809,11 @@ fn validate_raw_source_for_segment(seg: &SegmentInput) -> Result<(), String> {
     let mut previous_byte_end: Option<u64> = None;
     let mut participation_ids = std::collections::BTreeSet::new();
     for participation in &source.participations {
+        if participation.scheme_major == 0 || participation.ticket.campaign_key.is_empty() {
+            return Err(
+                "raw source participation has an empty/zero campaign identity binding".into(),
+            );
+        }
         if participation.ticket.session_nonce != source.session_nonce
             || participation.ticket.process_start_identity != source.process_start_identity
         {
@@ -1490,15 +1496,16 @@ pub fn plan_stitch(
                 schema_version,
                 static_catalog_digest,
             } => {
-                if evidence_id.is_empty()
+                if !is_evidence_id(evidence_id)
                     || class.is_empty()
-                    || build_exe_sha256.is_empty()
+                    || !is_sha256_hex(build_exe_sha256)
                     || modset_id.is_empty()
                     || schema_version.is_empty()
-                    || static_catalog_digest.is_empty()
+                    || !is_sha256_hex(static_catalog_digest)
                 {
                     return StitchOutcome::Separate {
-                        reason: "compatibility Proven result has an empty mandatory binding".into(),
+                        reason: "compatibility Proven result has an empty/invalid mandatory binding"
+                            .into(),
                     };
                 }
                 let exact = seg.provenance.build_exe_sha256.as_deref()
@@ -1506,7 +1513,8 @@ pub fn plan_stitch(
                     && seg.provenance.modset_id.as_deref() == Some(modset_id.as_str())
                     && seg.provenance.schema_version.as_deref() == Some(schema_version.as_str())
                     && seg.provenance.static_catalog_digest.as_deref()
-                        == Some(static_catalog_digest.as_str());
+                        == Some(static_catalog_digest.as_str())
+                    && schema_version == &required_inputs.schema_version;
                 if !exact {
                     return StitchOutcome::Separate {
                         reason:

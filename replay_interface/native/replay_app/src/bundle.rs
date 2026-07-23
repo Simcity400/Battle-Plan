@@ -96,13 +96,14 @@ impl MapBundle {
             .checked_mul(height)
             .ok_or("manifest.json dimensions overflow")?;
 
-        let province_ids_name = manifest_file_name(&manifest, "province_ids", "province_ids.r32");
+        let province_ids_name =
+            manifest_file_name(&manifest, "province_ids", "province_ids.r32")?;
         let province_to_state_name =
-            manifest_file_name(&manifest, "province_to_state", "province_to_state.json");
+            manifest_file_name(&manifest, "province_to_state", "province_to_state.json")?;
         let state_owner_name =
-            manifest_file_name(&manifest, "state_owner_1936", "state_owner_1936.json");
+            manifest_file_name(&manifest, "state_owner_1936", "state_owner_1936.json")?;
         let country_colors_name =
-            manifest_file_name(&manifest, "country_colors", "country_colors.json");
+            manifest_file_name(&manifest, "country_colors", "country_colors.json")?;
 
         let province_ids = read_u32_raw(&dir.join(&province_ids_name), pixel_count)?;
         let province_to_state = read_u32_key_u32_map(&dir.join(&province_to_state_name))?;
@@ -160,13 +161,32 @@ impl MapBundle {
     }
 }
 
-fn manifest_file_name(manifest: &serde_json::Value, key: &str, default: &str) -> String {
-    manifest
-        .get("files")
-        .and_then(|files| files.get(key))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(default)
-        .to_string()
+fn manifest_file_name(manifest: &serde_json::Value, key: &str, default: &str) -> Result<String> {
+    let Some(files) = manifest.get("files") else {
+        return Ok(default.to_string());
+    };
+    let files = files
+        .as_object()
+        .ok_or("manifest.json \"files\" is present but is not an object")?;
+    let Some(value) = files.get(key) else {
+        return Ok(default.to_string());
+    };
+    let name = value.as_str().ok_or_else(|| {
+        format!("manifest.json files.{key} is present but is not a string")
+    })?;
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || Path::new(name).is_absolute()
+    {
+        return Err(format!(
+            "manifest.json files.{key} must be a non-empty bundle-local file name, found {name:?}"
+        )
+        .into());
+    }
+    Ok(name.to_string())
 }
 
 fn json_usize(value: &serde_json::Value, key: &str, context: &str) -> Result<usize> {
@@ -433,6 +453,46 @@ pub(crate) mod tests {
         assert!(
             err.to_string().contains("unsupported map bundle schema"),
             "{err}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_present_file_selectors_never_degrade_to_default_names() {
+        let dir = unique_temp_dir("malformed_file_selectors");
+        write_fixture_bundle(&dir);
+        fs::write(
+            dir.join("manifest.json"),
+            br#"{"schema":"battle-plan-rust-map-bundle-v1","dimensions":{"width":8,"height":4},"files":{"province_ids":17}}"#,
+        )
+        .expect("overwrite manifest");
+
+        let error = MapBundle::load(&dir)
+            .expect_err("present wrong-typed selector must not use province_ids.r32");
+        assert!(
+            error
+                .to_string()
+                .contains("files.province_ids is present but is not a string"),
+            "{error}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bundle_file_selectors_cannot_escape_the_bundle_directory() {
+        let dir = unique_temp_dir("unsafe_file_selector");
+        write_fixture_bundle(&dir);
+        fs::write(
+            dir.join("manifest.json"),
+            br#"{"schema":"battle-plan-rust-map-bundle-v1","dimensions":{"width":8,"height":4},"files":{"country_colors":"../country_colors.json"}}"#,
+        )
+        .expect("overwrite manifest");
+
+        let error = MapBundle::load(&dir)
+            .expect_err("bundle selector must not escape the admitted bundle directory");
+        assert!(
+            error.to_string().contains("bundle-local file name"),
+            "{error}"
         );
         fs::remove_dir_all(&dir).ok();
     }

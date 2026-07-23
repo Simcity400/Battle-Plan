@@ -1,16 +1,18 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Plan','RunSDArm','Finalize')]
+    [ValidateSet('Plan','RegisterObservedArm','RunLegacySDArm','FinalizeLocal','Finalize')]
     [string]$Mode = 'Plan',
     [ValidateSet('S1','S2','S3','S4','D1','D2','M1','M2','M3')]
     [string]$Arm,
-    [string]$OutputRoot = 'C:\hoi4_evidence\cid1_lifecycle_matrix',
-    [string]$ContractPath = 'extractor\re_evidence\CID1_LIFECYCLE_MATRIX_V1\matrix_contract.json',
+    [string]$OutputRoot,
+    [string]$ContractPath,
     [string]$ActionDriverPath,
     [string]$OwnerProfilePath,
+    [string]$PreconditionPath,
     [string[]]$EndpointDescriptorPaths = @(),
     [string]$MatrixReceiptPath,
     [string]$GateOutPath,
+    [string]$Python = 'python.exe',
     [switch]$AllowLiveLifecycleActions
 )
 
@@ -23,6 +25,12 @@ $PlanSchema = 'battle-plan.campaign_identity_matrix_plan.v1'
 $RequestSchema = 'battle-plan.campaign_identity_sd_arm_request.v2'
 $SDArms = @('S1','S2','S3','S4','D1','D2')
 $AllArms = @('S1','S2','S3','S4','D1','D2','M1','M2','M3')
+if ([string]::IsNullOrWhiteSpace($ContractPath)) {
+    $ContractPath = Join-Path $PSScriptRoot '..\..\re_evidence\CID1_LIFECYCLE_MATRIX_V1\matrix_contract.json'
+}
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+    $OutputRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'battle-plan\evidence\cid1_lifecycle_matrix'
+}
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -69,7 +77,7 @@ if ($Mode -eq 'Plan') {
             arm_nonce_hex = New-HexNonce
             endpoint_descriptor_paths = @()
             action_receipt_path = $null
-            reason = if ($name -like 'M*') { 'two authenticated external endpoints are not registered' } else { 'owner action driver has not executed this arm' }
+            reason = if ($name -eq 'M3') { 'second-physical-machine endpoint pair is unavailable' } elseif ($name -like 'M*') { 'two passive multiplayer endpoint bundles are not registered' } else { 'two passive lifecycle endpoint bundles are not registered' }
         }
     }
     $plan = [ordered]@{
@@ -94,12 +102,26 @@ if ($plan.schema -ne $PlanSchema -or $plan.contract_sha256 -ne $contractSha256) 
     throw 'Matrix plan does not bind the current frozen contract.'
 }
 
-if ($Mode -eq 'RunSDArm') {
+if ($Mode -eq 'RegisterObservedArm') {
+    if ([string]::IsNullOrWhiteSpace($PreconditionPath) -or -not (Test-Path -LiteralPath $PreconditionPath -PathType Leaf)) {
+        throw 'RegisterObservedArm requires a content-addressed arm precondition.'
+    }
+    if ($EndpointDescriptorPaths.Count -ne 2) {
+        throw 'RegisterObservedArm requires exactly two finalized passive endpoint descriptors.'
+    }
+    $registrar = Join-Path $PSScriptRoot 'Invoke-Cid1PassiveArmRegistration.ps1'
+    $armRoot = Join-Path (Join-Path $resolvedOutput 'registrations') $Arm
+    & $registrar -Arm $Arm -MatrixPlanPath $planPath -EndpointDescriptorPaths $EndpointDescriptorPaths -PreconditionPath $PreconditionPath -OutputRoot $armRoot
+    if (-not $?) { throw "CID1 $Arm passive registration failed." }
+    return
+}
+
+if ($Mode -eq 'RunLegacySDArm') {
     if ($SDArms -notcontains $Arm) {
-        throw 'RunSDArm accepts only S1-S4 or D1-D2. Multiplayer arms use Invoke-Cid1MultiplayerCoordinator.ps1.'
+        throw 'RunLegacySDArm accepts only S1-S4 or D1-D2. Multiplayer arms use Invoke-Cid1MultiplayerCoordinator.ps1.'
     }
     if (-not $AllowLiveLifecycleActions) {
-        throw 'Live lifecycle actions are fail-closed. Pass -AllowLiveLifecycleActions only in an owner-authorized isolated run.'
+        throw 'Legacy client-driving actions are isolated and fail-closed. Pass -AllowLiveLifecycleActions only for an explicit non-production harness run.'
     }
     if ([string]::IsNullOrWhiteSpace($ActionDriverPath)) {
         $ActionDriverPath = Join-Path $PSScriptRoot 'Invoke-Cid1SdActionDriver.ps1'
@@ -108,7 +130,7 @@ if ($Mode -eq 'RunSDArm') {
         throw 'A real owner action driver is required; the orchestrator never fabricates game actions.'
     }
     if ([string]::IsNullOrWhiteSpace($OwnerProfilePath) -or -not (Test-Path -LiteralPath $OwnerProfilePath -PathType Leaf)) {
-        throw 'RunSDArm requires a content-addressed autonomous owner profile.'
+        throw 'RunLegacySDArm requires a content-addressed autonomous owner profile.'
     }
     $driver = (Resolve-Path -LiteralPath $ActionDriverPath).Path
     $armRoot = Join-Path $resolvedOutput $Arm
@@ -144,7 +166,7 @@ if ($Mode -eq 'RunSDArm') {
         output_root = $armRoot
     }
     Write-AtomicJson $requestPath $request
-    & $driver -RequestPath $requestPath -ReceiptPath $receiptPath
+    & $driver -RequestPath $requestPath -ReceiptPath $receiptPath -EnableLegacyClientDriving
     $driverSucceeded = $?
     if (-not $driverSucceeded -or -not (Test-Path -LiteralPath $receiptPath)) {
         throw "CID1 $Arm action driver failed or emitted no receipt."
@@ -171,13 +193,17 @@ if ([string]::IsNullOrWhiteSpace($MatrixReceiptPath)) {
     $matrixArms = [ordered]@{}
     foreach ($name in $AllArms) {
         $state = $plan.arms.$name
+        if ($Mode -eq 'FinalizeLocal' -and $name -eq 'M3' -and $state.state -ne 'complete') {
+            $matrixArms[$name] = [ordered]@{status='blocked_external_second_machine';action_receipt_path='';action_receipt_sha256='';endpoints=@()}
+            continue
+        }
         if ($state.state -ne 'complete' -or [string]::IsNullOrWhiteSpace([string]$state.action_receipt_path) -or @($state.endpoint_descriptor_paths).Count -ne 2) {
             throw "Finalize requires completed real endpoint/action receipts for arm $name."
         }
         $endpoints = @($state.endpoint_descriptor_paths | ForEach-Object { Get-Content -LiteralPath $_ -Raw | ConvertFrom-Json })
         $matrixArms[$name] = [ordered]@{status='complete';action_receipt_path=[string]$state.action_receipt_path;action_receipt_sha256=Get-Sha256 ([string]$state.action_receipt_path);endpoints=$endpoints}
     }
-    Write-AtomicJson $MatrixReceiptPath ([ordered]@{schema='battle-plan.campaign_identity_matrix_receipt.v1';contract_path=$resolvedContract;contract_sha256=$contractSha256;created_filetime_utc=[DateTime]::UtcNow.ToFileTimeUtc();arms=$matrixArms})
+    Write-AtomicJson $MatrixReceiptPath ([ordered]@{schema='battle-plan.campaign_identity_matrix_receipt.v1';contract_path=$resolvedContract;contract_sha256=$contractSha256;matrix_nonce_hex=[string]$plan.matrix_nonce_hex;created_filetime_utc=[DateTime]::UtcNow.ToFileTimeUtc();arms=$matrixArms})
 }
 if (-not (Test-Path -LiteralPath $MatrixReceiptPath -PathType Leaf)) {
     throw 'Finalize requires a complete matrix receipt assembled from nine real arm receipts.'
@@ -185,7 +211,9 @@ if (-not (Test-Path -LiteralPath $MatrixReceiptPath -PathType Leaf)) {
 if ([string]::IsNullOrWhiteSpace($GateOutPath)) {
     $GateOutPath = Join-Path $resolvedOutput 'matrix_gate.json'
 }
-$verifier = 'extractor\native\scripts\verify_campaign_identity_matrix.py'
-& 'C:\Program Files\Python311\python.exe' $verifier --contract $resolvedContract --expected-contract-sha256 $contractSha256 --receipt $MatrixReceiptPath --out $GateOutPath
+$verifier = Join-Path $PSScriptRoot 'verify_campaign_identity_matrix.py'
+$verifyArguments = @($verifier,'--contract',$resolvedContract,'--expected-contract-sha256',$contractSha256,'--receipt',$MatrixReceiptPath,'--out',$GateOutPath)
+if ($Mode -eq 'FinalizeLocal') { $verifyArguments += '--allow-external-m3-pending' }
+& $Python @verifyArguments
 if (-not $?) { throw 'CID1 lifecycle matrix regrade failed.' }
 Write-Output $GateOutPath

@@ -1,123 +1,133 @@
 {
-  "schema": "hoi4.replay.package-install-matrix.v1",
+  "schema": "hoi4.replay.package-install-matrix.v2",
   "product_id": "battle-plan",
-  "status": "mechanics_wired_policy_inputs_pending",
-  "product_surfaces": [
+  "status": "policy_resolved_portable_zip_acceptance_spec",
+  "acceptance_state": "specified_not_asserted_by_this_document",
+  "selected_distribution": {
+    "install_kind": "portable_zip",
+    "delivery": "offline_manual_download",
+    "release_channel": "single_stable_channel",
+    "automatic_updater": false,
+    "publisher_signature_gate": false,
+    "authenticode_required": false,
+    "administrator_required": false,
+    "desktop_surface": "normal_window",
+    "package_entries": [
+      "Battle Plan Recorder.exe",
+      "Battle Plan.exe",
+      "collector.dll",
+      "README.txt",
+      "SHA256SUMS.txt"
+    ],
+    "checksum_semantics": "accidental_corruption_detection_only_not_publisher_authentication",
+    "writable_state": "current_user_application_data",
+    "recorder_payload_rule": "collector.dll_must_be_a_nonempty_non_alias_sibling_of_the_recorder_executable"
+  },
+  "resolved_product_policies": [
     {
-      "id": "standalone_replay",
-      "authority": "replay_package_runtime",
-      "required_installed_roles": [
-        "platform_signed_stable_launcher",
-        "canonical_active_release_pointer",
-        "content_addressed_signed_version_tree",
-        "manifest_declared_replay_entrypoint",
-        "manifest_declared_replay_prefold_worker_sibling"
-      ]
+      "id": "D-SIGNATURE",
+      "decision": "RESOLVED: no detached-signature or publisher-authentication checks; internal content hashes remain corruption checks only."
     },
     {
-      "id": "resident_recorder",
-      "authority": "recorder_host.auto_attach.product_runtime",
-      "required_installed_roles": [
-        "platform_signed_recorder_host",
-        "nonempty_non_alias_collector.dll_in_same_canonical_directory",
-        "known_folder_product_data_root"
-      ],
-      "fixed_runtime_rule": "ordinary_resolution_never_searches_path_registry_steam_or_profile_locations"
+      "id": "D-TRUST-LIFECYCLE",
+      "decision": "RESOLVED: no public trust-material, key rotation, or revocation lifecycle because publisher signatures are not used."
+    },
+    {
+      "id": "D-PLATFORM-SIGNING",
+      "decision": "RESOLVED: ship unsigned initially; Authenticode is not a production prerequisite."
+    },
+    {
+      "id": "D-INSTALL-SCOPE-ACL",
+      "decision": "RESOLVED: portable per-user operation with writable state under the current user's application-data directory and user-only ACLs; no administrator access."
+    },
+    {
+      "id": "D-TRANSPORT-STAGING",
+      "decision": "RESOLVED: offline packages only, with no online downloader or retained update staging."
+    },
+    {
+      "id": "D-RESIDUE-RECOVERY",
+      "decision": "RESOLVED: quarantine stale locks and incomplete incoming residue, then recover only after mechanical validation."
+    },
+    {
+      "id": "D-RELEASE-POLICY",
+      "decision": "RESOLVED: one stable channel distributed by manual download; no automatic updater, downgrade service, or emergency network rollback."
+    },
+    {
+      "id": "D-WINDOWS-MITIGATIONS",
+      "decision": "RESOLVED: enable safe standard Windows DLL-search and process mitigations that preserve required recorder and replay behavior."
+    },
+    {
+      "id": "D-INSTALL-TOPOLOGY",
+      "decision": "RESOLVED: distribute the recorder and replayer as two executables together in one portable ZIP."
+    },
+    {
+      "id": "D-PRODUCT-SURFACE",
+      "decision": "RESOLVED: use a normal desktop window; no tray-only UI, background service, or installer-managed surface."
+    },
+    {
+      "id": "D-MODSET",
+      "decision": "RESOLVED: support vanilla plus exact content-addressed modsets that have passed fail-closed validation and acceptance; reject unvalidated modsets."
+    },
+    {
+      "id": "D-WEAK-PC",
+      "decision": "RESOLVED: reference i5-8400 or Ryzen 5 2600, 16 GiB RAM, GTX 1060 6 GiB or RX 580 8 GiB at 1920x1080; require average 60 fps and p95 frame time no worse than 33.3 ms."
     }
   ],
-  "transaction_order": [
-    "build_unsigned_manifest",
-    "external_sign_raw_package_digest",
-    "write_canonical_replay-package.json",
-    "retain_staged_release",
-    "promote_release",
-    "invoke_active_release_from_current_launcher"
-  ],
+  "unresolved_human_product_policy_inputs": [],
+  "publication_authority": {
+    "builder": "extractor/native/scripts/New-PortableProductPackage.ps1",
+    "verifier": "extractor/native/scripts/Test-PortableProductPackageReceipt.ps1",
+    "required_validation": "unfiltered centralized Release -Workspace All",
+    "required_result": "PASS_CENTRAL_RELEASE_PORTABLE_PACKAGE",
+    "required_receipt": ".cargo-target/release/hoi4-portable-package-receipt.json",
+    "canonical_receipt_required": true,
+    "rule": "The matrix specifies acceptance behavior; only the current canonical receipt and verifier result establish that a particular ZIP passed it."
+  },
   "mechanical_cases": [
     {
-      "id": "I01_clean_first_install",
-      "operation": "retain_then_promote",
-      "expected": "digest_directory_verified_generation_1_previous_absent"
+      "id": "P01_full_release",
+      "operation": "run_the_unfiltered_centralized_release_for_both_native_workspaces",
+      "expected": "five_entry_unsigned_portable_zip_and_canonical_receipt_published_only_after_exact_verification"
     },
     {
-      "id": "I02_identical_reinstall",
-      "operation": "retain_same_digest",
-      "expected": "existing_tree_reverified_no_rewrite_no_pointer_change"
+      "id": "P02_non_authoritative_build",
+      "operation": "run_extractor_only_replay_only_package_filtered_expression_filtered_or_direct_builder_work",
+      "expected": "no_promotable_canonical_package_receipt"
     },
     {
-      "id": "I03_upgrade",
-      "operation": "retain_then_policy_admitted_promote",
-      "expected": "generation_incremented_old_current_retained_as_previous"
+      "id": "P03_invalid_input_artifact",
+      "operation": "supply_a_missing_empty_reparse_wrong_pe_kind_or_non_gui_binary",
+      "expected": "package_publication_refused"
     },
     {
-      "id": "I04_interrupted_copy",
-      "operation": "terminate_before_incoming_directory_rename",
-      "expected": "active_pointer_unchanged_inert_incoming_residue_only"
+      "id": "P04_existing_output",
+      "operation": "attempt_to_publish_over_an_existing_destination",
+      "expected": "no_replace_publication_refused"
     },
     {
-      "id": "I05_interrupted_pointer_replace",
-      "operation": "terminate_during_promote_release_atomic_replace",
-      "expected": "complete_old_or_complete_new_canonical_pointer"
+      "id": "P05_archive_shape",
+      "operation": "inspect_the_closed_candidate_zip",
+      "expected": "exactly_two_executables_one_collector_dll_readme_and_checksum_list_in_stable_order"
     },
     {
-      "id": "I06_tamper_and_aliases",
-      "operation": "alter_remove_add_hardlink_symlink_or_reparse_package_path",
-      "expected": "verification_refused_before_process_callback"
+      "id": "P06_archive_integrity",
+      "operation": "reopen_and_decompress_every_candidate_entry_before_publication",
+      "expected": "every_entry_length_sha256_and_bytes_match_the_retained_inputs_and_checksum_list"
     },
     {
-      "id": "I07_corrupt_occupied_digest",
-      "operation": "retain_when_digest_directory_already_contains_other_bytes",
-      "expected": "existing_tree_refused_and_never_replaced"
+      "id": "P07_receipt_drift",
+      "operation": "mutate_the_zip_builder_source_inputs_attestation_or_build_environment_after_receipt_creation",
+      "expected": "receipt_verification_refused"
     },
     {
-      "id": "I08_wrong_identity",
-      "operation": "admit_signed_other_product_or_target",
-      "expected": "retention_promotion_and_launch_refused"
-    },
-    {
-      "id": "I09_signature_failure",
-      "operation": "omit_signature_or_use_unknown_revoked_or_invalid_signer",
-      "expected": "production_admission_refused"
-    },
-    {
-      "id": "I10_release_policy_failure",
-      "operation": "attempt_downgrade_channel_hop_or_disallowed_active_release",
-      "expected": "pointer_mutation_or_launch_refused"
-    },
-    {
-      "id": "I11_pointer_race",
-      "operation": "change_active_pointer_during_launch_verification",
-      "expected": "reread_detects_drift_and_process_callback_is_not_called"
-    },
-    {
-      "id": "I12_rollback",
-      "operation": "rollback_to_retained_previous",
-      "expected": "both_trees_and_policies_verified_before_atomic_swap"
-    },
-    {
-      "id": "I13_stale_lock",
-      "operation": "mutate_with_existing_package_update_lock",
-      "expected": "mutation_refused_pending_explicit_operator_recovery"
-    },
-    {
-      "id": "I14_acl",
-      "operation": "unprivileged_write_to_launcher_pointer_or_version_tree",
-      "expected": "os_denies_write_and_runtime_refuses_any_resulting_tamper"
-    },
-    {
-      "id": "I15_argument_integrity",
-      "operation": "launch_with_spaces_quotes_and_shell_metacharacters_in_user_arguments",
-      "expected": "opaque_os_arguments_forwarded_without_shell_interpretation"
-    },
-    {
-      "id": "I16_prefold_worker_sibling",
-      "operation": "open_compact_only_recording_with_manifest_listed_worker_beside_replay_app_then_remove_replace_or_alias_worker",
-      "expected": "valid_worker_executes_single_certified_world_fold_missing_nonregular_or_symlink_worker_refuses_without_search_fallback"
+      "id": "P08_staged_receipt",
+      "operation": "verify_a_candidate_receipt_with_staged_receipt_authorization",
+      "expected": "staged_pass_is_explicitly_noncanonical_and_nonpromotable"
     },
     {
       "id": "R01_recorder_sibling_payload",
-      "operation": "resolve_ordinary_collector_payload_from_installed_recorder",
-      "expected": "exact_nonempty_non_alias_collector.dll_in_canonical_executable_directory"
+      "operation": "resolve_the_ordinary_collector_payload_from_the_portable_recorder",
+      "expected": "exact_nonempty_non_alias_collector.dll_in_the_canonical_executable_directory"
     },
     {
       "id": "R02_recorder_missing_or_alias_payload",
@@ -126,30 +136,28 @@
     },
     {
       "id": "R03_recorder_support_override",
-      "operation": "supply_explicit_collector_payload_override",
+      "operation": "supply_an_explicit_collector_payload_override",
       "expected": "override_is_still_required_to_be_a_nonempty_regular_non_symlink_file"
     },
     {
       "id": "R04_recorder_data_root",
-      "operation": "resolve_ordinary_product_data_location",
-      "expected": "local_app_data_known_folder_plus_fixed_product_directory_without_profile_or_drive_guessing"
+      "operation": "resolve_the_ordinary_product_data_location",
+      "expected": "current_user_local_app_data_known_folder_plus_fixed_product_directory_without_profile_or_drive_guessing"
     }
   ],
-  "human_product_policy_inputs": [
-    "detached_signature_algorithm_and_signer_identity_format",
-    "public_trust_material_rotation_and_revocation",
-    "launcher_and_installer_platform_code_signing_identity",
-    "per_user_or_per_machine_install_scope_and_os_acls",
-    "download_transport_and_staging_retention",
-    "stale_lock_and_incoming_residue_recovery",
-    "release_channel_downgrade_and_emergency_rollback_policy",
-    "windows_dll_search_and_process_mitigation_policy",
-    "combined_or_separate_replay_and_recorder_install_topology"
-  ],
+  "legacy_package_runtime_disposition": {
+    "authority": "replay_interface/native/package_runtime",
+    "state": "not_selected_for_the_portable_zip_product",
+    "rule": "The signed version-store launcher, retained-update, active-pointer, rollback, and installer mechanics remain reusable library/reference code. They are not production prerequisites and this matrix does not claim final signed-installer acceptance for them."
+  },
   "explicitly_out_of_scope": [
-    "private_signing_keys",
-    "downloader_network_transport",
-    "tray_or_window_ui",
+    "publisher_signing_keys_or_trust_material",
+    "detached_package_signatures",
+    "authenticode_as_a_release_gate",
+    "online_downloader_or_automatic_updater",
+    "installer_managed_version_store_or_rollback_service",
+    "tray_only_ui_or_background_service",
+    "administrator_installation",
     "guessing_steam_hoi4_or_profile_paths"
   ]
 }

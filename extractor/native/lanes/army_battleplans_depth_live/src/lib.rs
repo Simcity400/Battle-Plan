@@ -59,6 +59,9 @@ pub const STATUS_OVERFLOW: u32 = 4;
 pub const STATUS_VALIDATION_FAILED: u32 = 5;
 pub const STATUS_FIXTURE_REQUIRED: u32 = 6;
 pub const STATUS_COLD_PREFLIGHT_ONLY: u32 = 7;
+pub const ORDER_OWNER_KIND_ARMY: u32 = orders_group_live::ORDER_OWNER_KIND_ARMY;
+pub const ORDER_OWNER_KIND_ARMY_GROUP: u32 =
+    orders_group_live::ORDER_OWNER_KIND_ARMY_GROUP;
 
 pub const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
 pub const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
@@ -99,6 +102,9 @@ pub trait BattleplansDepthMemory {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawOrderObservation {
+    pub owner_kind: u32,
+    /// Stable type-53 owner ID. The legacy field name remains wire-compatible;
+    /// pair it with `owner_kind` before interpreting it as an army identifier.
     pub army_id: u32,
     pub generation: u64,
     pub engine_order_instance_id: u32,
@@ -121,6 +127,7 @@ pub struct RawOrderObservation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BattleplanDepthRow {
+    pub owner_kind: u32,
     pub army_id: u32,
     pub generation: u64,
     pub engine_order_instance_id: u32,
@@ -259,6 +266,7 @@ pub fn validated_order_observation<M: BattleplansDepthMemory>(
     let (path_provinces, geometry_status) =
         read_non_type5_path_provinces(mem, order_ptr, order_type);
     Some(RawOrderObservation {
+        owner_kind: ORDER_OWNER_KIND_ARMY,
         army_id,
         generation,
         engine_order_instance_id,
@@ -412,8 +420,20 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
 pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthExtraction {
     let mut out = DepthExtraction::default();
     for row in source {
+        if row.army_id == 0
+            || row.army_id > MAX_ARMY_ID
+            || !matches!(
+                row.owner_kind,
+                ORDER_OWNER_KIND_ARMY | ORDER_OWNER_KIND_ARMY_GROUP
+            )
+        {
+            out.identity_or_active_omitted_rows =
+                out.identity_or_active_omitted_rows.saturating_add(1);
+            continue;
+        }
         if row.deleted {
             out.rows.push(BattleplanDepthRow {
+                owner_kind: row.owner_kind,
                 army_id: row.army_id,
                 generation: row.generation,
                 engine_order_instance_id: row.engine_order_instance_id,
@@ -494,6 +514,7 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
             out.aggressiveness_unknown_rows = out.aggressiveness_unknown_rows.saturating_add(1);
         }
         out.rows.push(BattleplanDepthRow {
+            owner_kind: row.owner_kind,
             army_id: row.army_id,
             generation: row.generation,
             engine_order_instance_id: row.engine_order_instance_id,
@@ -564,13 +585,27 @@ pub fn collect_and_encode_depth_record_with_orders_groups(
         .iter()
         .map(|row| row.army_id)
         .collect::<BTreeSet<_>>();
+    let complete_army_group_ids = orders_groups
+        .army_group_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     if let Some(orphan) = observations
         .iter()
-        .find(|row| !row.deleted && !complete_army_ids.contains(&row.army_id))
+        .find(|row| {
+            !row.deleted
+                && match row.owner_kind {
+                    ORDER_OWNER_KIND_ARMY => !complete_army_ids.contains(&row.army_id),
+                    ORDER_OWNER_KIND_ARMY_GROUP => {
+                        !complete_army_group_ids.contains(&row.army_id)
+                    }
+                    _ => true,
+                }
+        })
     {
         return Err(orders_group_live::OrdersGroupReadError::InvalidObject {
             army_id: orphan.army_id,
-            reason: "order row army absent from complete manager",
+            reason: "typed order owner absent from complete manager",
         });
     }
     let observed_army_rows = orders_groups.armies.len().min(u32::MAX as usize) as u32;
@@ -731,7 +766,7 @@ pub fn encode_depth_payload(
         out.extend_from_slice(&assigned_count.to_le_bytes());
         out.extend_from_slice(&(row.active as u32).to_le_bytes());
         out.extend_from_slice(&row.active_status.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&row.owner_kind.to_le_bytes());
         target_cursor =
             target_cursor.saturating_add(row.target_states.len().min(u32::MAX as usize) as u32);
         path_cursor =
@@ -868,7 +903,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
         let assigned_count = read_u32(payload, cursor + 72) as usize;
         let active_value = read_u32(payload, cursor + 76);
         let active_status = read_u32(payload, cursor + 80);
-        let reserved = read_u32(payload, cursor + 84);
+        let owner_kind = read_u32(payload, cursor + 84);
         cursor += ROW_LEN;
 
         let deleted = flags & FLAG_DELETED != 0;
@@ -932,9 +967,9 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
                 "offset {offset}: deleted row {row_index} has child fields"
             ));
         }
-        if reserved != 0 {
+        if !matches!(owner_kind, ORDER_OWNER_KIND_ARMY | ORDER_OWNER_KIND_ARMY_GROUP) {
             summary.parse_errors.push(format!(
-                "offset {offset}: row {row_index} has nonzero reserved field"
+                "offset {offset}: row {row_index} has invalid owner kind"
             ));
         }
         if engine_order_instance_id == 0 || engine_order_instance_id > MAX_ORDER_INSTANCE_ID {
@@ -1229,6 +1264,7 @@ mod tests {
         path_provinces: Vec<u32>,
     ) -> RawOrderObservation {
         RawOrderObservation {
+            owner_kind: ORDER_OWNER_KIND_ARMY,
             army_id,
             generation: 1,
             engine_order_instance_id: 10_000 + slot_index,
@@ -1296,6 +1332,7 @@ mod tests {
                 },
             ],
             army_group_count: 1,
+            army_group_ids: vec![20],
             registered_entry_count: 3,
         };
         let record = collect_and_encode_depth_record_with_orders_groups(
@@ -1325,6 +1362,7 @@ mod tests {
                 leader_proximity: 4,
             }],
             army_group_count: 0,
+            army_group_ids: vec![],
             registered_entry_count: 1,
         };
         let mut record = collect_and_encode_depth_record_with_orders_groups(
@@ -1355,6 +1393,7 @@ mod tests {
                 leader_proximity: 4,
             }],
             army_group_count: 0,
+            army_group_ids: vec![],
             registered_entry_count: 1,
         };
         let result = collect_and_encode_depth_record_with_orders_groups(
@@ -1368,9 +1407,37 @@ mod tests {
             result,
             Err(orders_group_live::OrdersGroupReadError::InvalidObject {
                 army_id: 11,
-                reason: "order row army absent from complete manager",
+                reason: "typed order owner absent from complete manager",
             })
         );
+    }
+
+    #[test]
+    fn complete_manager_encodes_exact_army_group_owner_in_reserved_row_word() {
+        let carrier = orders_group_live::CompleteArmyOrdersGroups {
+            armies: vec![orders_group_live::ArmyOrdersGroupRow {
+                army_id: 10,
+                execution_type: 2,
+                cohesion_type: 3,
+                leader_proximity: 4,
+            }],
+            army_group_count: 1,
+            army_group_ids: vec![23],
+            registered_entry_count: 2,
+        };
+        let mut group_order = exact_order(23, 0, ORDER_TYPE_LINE, Vec::new(), vec![101]);
+        group_order.owner_kind = ORDER_OWNER_KIND_ARMY_GROUP;
+
+        let record = collect_and_encode_depth_record_with_orders_groups(
+            &[group_order],
+            77,
+            0,
+            1,
+            &carrier,
+        )
+        .unwrap();
+        assert_eq!(read_u32(&record.payload, HEADER_LEN + 84), ORDER_OWNER_KIND_ARMY_GROUP);
+        assert!(decode_depth_payload(0, &record.payload).parse_errors.is_empty());
     }
 
     #[test]

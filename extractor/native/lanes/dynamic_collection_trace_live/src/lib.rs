@@ -1,12 +1,17 @@
-//! A28/XUI03 exact dynamic-collection controller trace carrier (reserved d71).
+//! A28/XUI03 exact dynamic-collection controller trace carrier (production d71).
 //!
 //! This module owns the complete non-address producer contract. It deliberately
 //! has no screen/layout fallback. Receipt-bound equipment observations and the
-//! exact-a729 family hooks below can supply same-transition traces, but d71
-//! remains unschedulable until the retained zero-gap fixture set is complete.
+//! exact-a729 family hooks below supply fail-closed same-transition traces.
+//! The legacy all-families fixture latch remains closed; production scheduling
+//! must drain only the independently bound hook-owned families.
 
 pub mod a729_controller_observation;
 pub mod a729_air_mio_controller;
+#[cfg(windows)]
+pub mod a729_air_selection_hook;
+#[cfg(windows)]
+pub mod a729_mio_history_hook;
 #[cfg(windows)]
 pub mod a729_facility_smooth_list_hook;
 #[cfg(windows)]
@@ -29,7 +34,12 @@ pub const A28_DIRECT_ROOT_JOB_ID: &str =
     "20260720T021840Z-w3-a28-direct-retry-5065e703";
 pub const A28_DIRECT_ROOT_MANIFEST_SHA256: &str =
     "8ce0d88387228dc8a67553e6772c253f40792971760e2f2b695a87af2199b841";
-pub const A28_D71_SCHEDULED: bool = false;
+/// Ordinary production scheduling is active for the independently proven Air
+/// selection and paired MIO-history subfamilies only.
+pub const A28_D71_SCHEDULED: bool = true;
+pub const A28_PASSIVE_SUBFAMILIES_PRODUCTION_BOUND: bool = true;
+/// Legacy all-families fixture promotion. The exact Air and paired MIO-history
+/// hook-owned constructors do not open this broad latch.
 pub const A28_LIVE_PROMOTION_BOUND: bool = false;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DCT1");
 pub const HEADER_LEN: usize = 40;
@@ -106,7 +116,11 @@ pub enum TraceError {
     TrailingBytes,
 }
 
-pub trait ExactControllerTraceSource {
+pub(crate) mod source_seal {
+    pub trait Sealed {}
+}
+
+pub trait ExactControllerTraceSource: source_seal::Sealed {
     fn is_exact_a729_controller_source(&self) -> bool;
     fn collect_frame(&self, frame_hour: u64) -> Result<Vec<CollectionTrace>, String>;
 }
@@ -129,6 +143,24 @@ pub fn collect_and_encode<S: ExactControllerTraceSource>(
             .map_err(TraceError::Source)?,
     };
     encode_payload(&frame)
+}
+
+/// Typed unavailable DCT1 frame. Callers must supply nonzero failure status;
+/// an empty zero-status frame would be a fabricated measured-empty result.
+pub fn encode_source_unavailable(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+) -> Result<Vec<u8>, TraceError> {
+    if status_flags == 0 {
+        return invalid("source-unavailable DCT1 requires failure status");
+    }
+    encode_payload(&TraceFrame {
+        elapsed_wall_ms,
+        status_flags,
+        frame_hour,
+        collections: Vec::new(),
+    })
 }
 
 pub fn validate_frame(frame: &TraceFrame) -> Result<(), TraceError> {
@@ -629,6 +661,7 @@ mod tests {
         assert!(validate_frame(&frame).is_err());
     }
     struct Fake(bool);
+    impl source_seal::Sealed for Fake {}
     impl ExactControllerTraceSource for Fake {
         fn is_exact_a729_controller_source(&self) -> bool {
             self.0

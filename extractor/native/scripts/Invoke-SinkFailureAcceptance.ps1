@@ -11,6 +11,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Hoi4ClientDriving.OptIn.ps1')
+Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $verifier = Join-Path $scriptDir "verify_sink_reconciliation.py"
 

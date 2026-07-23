@@ -704,6 +704,9 @@ impl<'a> Reader<'a> {
 #[cfg(windows)]
 pub mod a729_hook;
 #[cfg(windows)]
+pub mod a25_post_emit_hook;
+#[cfg(windows)]
+#[cfg(windows)]
 pub mod owner_glyph_probe;
 
 #[cfg(test)]

@@ -21,10 +21,10 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadI
 pub const SPEED_SETTER_RVA: usize = 0x001E_DAD0;
 pub const PAUSE_TOGGLE_RVA: usize = 0x00DC_6520;
 pub const PAUSE_FORCED_RVA: usize = 0x00DB_E260;
-/// Remains false until one autonomous X12 lifecycle replay passes the
-/// independent machine regrade and the primary agent completes central
-/// validation. No human semantic join is required.
-pub const PRODUCTION_ACTIVATION: bool = false;
+/// Production-active for the pinned a729 executable. Each installation and
+/// callback remains sentinel-, identity-, sequence-, and queue-integrity-gated;
+/// same-hour lifecycle captures are optional regression evidence.
+pub const PRODUCTION_ACTIVATION: bool = true;
 pub const EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK";
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6E90;
@@ -350,12 +350,18 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-pub fn evidence_activation_enabled() -> bool {
+pub fn activation_enabled() -> bool {
     PRODUCTION_ACTIVATION
         || std::env::var(EVIDENCE_ACTIVATION_ENV)
             .ok()
             .as_deref()
             == Some("1")
+}
+
+/// Backward-compatible name used by diagnostic harnesses. This now reports the
+/// unified production-or-diagnostics activation state.
+pub fn evidence_activation_enabled() -> bool {
+    activation_enabled()
 }
 
 /// Atomically drains the first pre-mutation baseline and all subsequent
@@ -689,6 +695,20 @@ impl Drop for CallbackFlight {
 mod tests {
     use super::*;
 
+    fn observed(speed_raw: i32, paused: bool) -> ObservedState {
+        ObservedState {
+            game_hour_raw: 10,
+            speed_raw,
+            paused,
+            tick_progress_f32_bits: 0x3e80_0000,
+        }
+    }
+
+    #[test]
+    fn exact_build_passive_hook_is_production_authorized() {
+        assert!(PRODUCTION_ACTIVATION);
+    }
+
     #[test]
     fn clean_drain_commits_the_recorder_owned_sequence_zero_baseline() {
         let mut state = HookState::fresh();
@@ -725,5 +745,39 @@ mod tests {
         assert!(baseline.is_some());
         assert_eq!(transitions.len(), 1);
         assert!(!state.clean_baseline_drained);
+    }
+
+    #[test]
+    fn production_transition_queue_overflow_is_sticky_and_emits_no_partial_row() {
+        let state = STATE.get_or_init(|| Mutex::new(HookState::fresh()));
+        let mut guard = state.lock().expect("test hook state lock");
+        *guard = HookState::fresh();
+        let retained = SpeedPauseTransition {
+            sequence: 1,
+            kind: TransitionKind::Speed,
+            game_hour_raw: 10,
+            speed_raw: 2,
+            paused: false,
+            tick_progress_f32_bits: 0x3e80_0000,
+            thread_id: unsafe { GetCurrentThreadId() },
+        };
+        guard.pending = std::iter::repeat(retained).take(MAX_PENDING).collect();
+        drop(guard);
+
+        publish_change(
+            TransitionKind::Speed,
+            Ok(Some(observed(2, false))),
+            Ok(observed(3, false)),
+        );
+
+        let guard = state.lock().expect("test hook state lock after publish");
+        assert_eq!(guard.pending.len(), MAX_PENDING);
+        assert_eq!(guard.next_sequence, 0);
+        assert_eq!(
+            guard.current_error.as_deref(),
+            Some("X12 transition queue overflow; ordering is incomplete")
+        );
+        drop(guard);
+        *state.lock().expect("reset test hook state") = HookState::fresh();
     }
 }

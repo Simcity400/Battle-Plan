@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use replay_core::{Leaf, ReplaySource, WorldFrame, WorldTimeline};
 
-use crate::anomaly::{scan_timeline, AnomalyPolicy};
+use crate::anomaly::AnomalyPolicy;
 use crate::bundle::MapBundle;
 use crate::{Result, TimelineMode};
 
@@ -47,6 +47,12 @@ pub enum TimelineSelectionError {
         first: i64,
         last: i64,
     },
+    GapUnavailable {
+        requested: i64,
+        from: i64,
+        to: i64,
+        missing: Vec<i64>,
+    },
     OrdinalOutOfRange {
         requested: usize,
         count: usize,
@@ -76,6 +82,15 @@ impl std::fmt::Display for TimelineSelectionError {
             Self::MissingCanonical { requested, first, last } => write!(
                 f,
                 "requested canonical hour {requested} is not a recorded snapshot in the recording's valid canonical range {first}..={last}"
+            ),
+            Self::GapUnavailable {
+                requested,
+                from,
+                to,
+                missing,
+            } => write!(
+                f,
+                "requested hour {requested} is unavailable inside the recording gap {from}->{to} (missing {missing:?}); refusing interpolation"
             ),
             Self::OrdinalOutOfRange { requested, count, first, last } => write!(
                 f,
@@ -158,11 +173,9 @@ pub fn build_provider(
             logical_stream_id,
             timeline: config,
         } => {
-            let source = crate::recording_open::open_product_recording_segment(
-                path,
-                *logical_stream_id,
-            )
-                .map_err(|err| format!("open recording {}: {err}", path.display()))?;
+            let source =
+                crate::recording_open::open_product_recording_segment(path, *logical_stream_id)
+                    .map_err(|err| format!("open recording {}: {err}", path.display()))?;
             // F2: the decoded-frame LRU budget rides the mode (default 16;
             // `--frame-cache` shrinks it for weak-PC profiles).
             let timeline = replay_core::WorldTimeline::open_with_config(source, *config)
@@ -179,15 +192,10 @@ pub fn build_provider(
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");
             }
-            // F4 mid-playback anomaly policy: scan the recording at open, log
-            // every mid-stream anomaly once (log + hold-last-good, never
-            // invent). The known-province set (for out-of-range province ids)
-            // comes from the bundle's province->state map.
-            // F2 (2026-07-10) audited this scan: MEMORY is bounded (frames go
-            // through the LRU-capped cache; the policy stores change-points,
-            // not per-hour snapshots) — but it still DECODES every frame once
-            // at open, an O(hours) LATENCY residual on multi-year recordings
-            // (plan F2 row). An incremental/lazy scan is future work.
+            // F4 anomaly validation is incremental. Opening establishes the
+            // gap policy from index metadata only; frames are authenticated and
+            // observed in order through the requested hour before that frame
+            // can cross the provider boundary.
             let known_provinces = bundle.map(|bundle| {
                 bundle
                     .province_to_state
@@ -195,12 +203,7 @@ pub fn build_provider(
                     .copied()
                     .collect::<BTreeSet<u32>>()
             });
-            let policy = scan_timeline(&timeline, known_provinces).map_err(|error| {
-                format!(
-                    "F4 fail-closed frame validation rejected recording {}: {error}",
-                    path.display()
-                )
-            })?;
+            let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), known_provinces);
             for diagnostic in policy.diagnostics() {
                 eprintln!("{}", diagnostic.log_line());
             }
@@ -260,9 +263,7 @@ pub fn build_recording_provider(
             .copied()
             .collect::<BTreeSet<u32>>()
     });
-    let policy = scan_timeline(&timeline, known_provinces).map_err(|error| {
-        format!("F4 fail-closed frame validation rejected recording {source_label}: {error}")
-    })?;
+    let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), known_provinces);
     for diagnostic in policy.diagnostics() {
         eprintln!("{}", diagnostic.log_line());
     }
@@ -309,8 +310,11 @@ pub trait OwnerProvider {
 
     /// F4: the marked held-value note (mid-playback anomaly holds) for `hour`,
     /// or `None` when nothing is held. Defaults to `None` (no anomaly policy).
-    fn anomaly_note(&self, _hour: i64) -> Option<String> {
-        None
+    fn anomaly_note(
+        &self,
+        _hour: i64,
+    ) -> std::result::Result<Option<String>, TimelineSelectionError> {
+        Ok(None)
     }
 
     fn content_manifest(&self) -> Option<&replay_core::ContentManifest> {
@@ -389,7 +393,13 @@ pub struct RecordingTimeline {
     cache: Mutex<Option<CachedFrame>>,
     /// F4 mid-playback anomaly policy (populated at open by `build_provider`).
     /// Holds the marked last-good state so the UI can surface held domains.
-    anomaly: Option<AnomalyPolicy>,
+    anomaly: Option<Mutex<IncrementalAnomalyScan>>,
+}
+
+struct IncrementalAnomalyScan {
+    policy: AnomalyPolicy,
+    /// First canonical hour not yet authenticated and observed.
+    next_index: usize,
 }
 
 struct CachedFrame {
@@ -407,24 +417,110 @@ impl RecordingTimeline {
         RecordingTimeline {
             timeline,
             cache: Mutex::new(None),
-            anomaly,
+            anomaly: anomaly.map(|policy| {
+                Mutex::new(IncrementalAnomalyScan {
+                    policy,
+                    next_index: 0,
+                })
+            }),
         }
     }
 
-    /// F4: the marked held-value note for the frame at-or-before `hour`, e.g.
+    fn scan_anomalies_through(
+        &self,
+        target_hour: i64,
+    ) -> std::result::Result<(), TimelineSelectionError> {
+        let Some(scan) = &self.anomaly else {
+            return Ok(());
+        };
+        let mut scan = scan.lock().map_err(|_| TimelineSelectionError::FrameLoad {
+            requested: target_hour,
+            first: self.timeline.first_hour(),
+            last: self.timeline.last_hour(),
+            detail: "F4 incremental anomaly policy lock poisoned".to_string(),
+        })?;
+        let end = self
+            .timeline
+            .hours()
+            .partition_point(|hour| *hour <= target_hour);
+        while scan.next_index < end {
+            let hour = self.timeline.hours()[scan.next_index];
+            let frame =
+                self.timeline
+                    .frame(hour)
+                    .map_err(|error| TimelineSelectionError::FrameLoad {
+                        requested: target_hour,
+                        first: self.timeline.first_hour(),
+                        last: self.timeline.last_hour(),
+                        detail: format!(
+                            "F4 fail-closed incremental validation failed at hour {hour}: {error}"
+                        ),
+                    })?;
+            for diagnostic in scan.policy.observe(&frame) {
+                eprintln!("{}", diagnostic.log_line());
+            }
+            scan.next_index += 1;
+        }
+        Ok(())
+    }
+
+    /// Resolve an exact recorded scrub position. Any in-range hole is a typed
+    /// gap refusal before a frame, cached map, or date can cross the provider
+    /// boundary.
+    fn selected_canonical_hour(
+        &self,
+        hour: i64,
+    ) -> std::result::Result<i64, TimelineSelectionError> {
+        let (first, last) = canonical_range(self.timeline.hours())?;
+        if hour < first {
+            return Err(TimelineSelectionError::BeforeFirst {
+                requested: hour,
+                first,
+                last,
+            });
+        }
+        if hour > last {
+            return Err(TimelineSelectionError::AfterLast {
+                requested: hour,
+                first,
+                last,
+            });
+        }
+        match self.timeline.hours().binary_search(&hour) {
+            Ok(index) => Ok(self.timeline.hours()[index]),
+            Err(index) => {
+                let from = self.timeline.hours()[index - 1];
+                let to = self.timeline.hours()[index];
+                Err(TimelineSelectionError::GapUnavailable {
+                    requested: hour,
+                    from,
+                    to,
+                    missing: ((from + 1)..to).collect(),
+                })
+            }
+        }
+    }
+
+    /// F4: the marked held-value note for the exact recorded `hour`, e.g.
     /// "anomaly: HELD weather from hour 41", or `None` when nothing is held
     /// (pre-anomaly hours, or a clean recording). An hour that lands inside a
     /// detected gap is reported as unavailable, never interpolated.
-    fn anomaly_note_at(&self, hour: i64) -> Option<String> {
-        use crate::anomaly::HourResolution;
-        let policy = self.anomaly.as_ref()?;
-        // A requested hour inside a gap is unavailable (never interpolated).
-        if let HourResolution::GapUnavailable { from, to, missing } = policy.classify_hour(hour) {
-            return Some(format!(
-                "anomaly: hour {hour} unavailable (gap {from}->{to}, missing {missing:?}); not interpolated"
-            ));
-        }
-        let frame_hour = self.timeline.state_at(hour).ok()?.hour_index();
+    fn anomaly_note_at(
+        &self,
+        hour: i64,
+    ) -> std::result::Result<Option<String>, TimelineSelectionError> {
+        let frame_hour = self.selected_canonical_hour(hour)?;
+        self.scan_anomalies_through(frame_hour)?;
+        let Some(scan) = &self.anomaly else {
+            return Ok(None);
+        };
+        let scan = scan.lock().map_err(|_| TimelineSelectionError::FrameLoad {
+            requested: hour,
+            first: self.timeline.first_hour(),
+            last: self.timeline.last_hour(),
+            detail: "F4 incremental anomaly policy lock poisoned".to_string(),
+        })?;
+        let policy = &scan.policy;
         let mut parts: Vec<String> = Vec::new();
         // Note a gap immediately preceding this frame (the after-gap hour).
         if let Some(gap) = policy.gaps().iter().find(|g| g.to == frame_hour) {
@@ -434,9 +530,9 @@ impl RecordingTimeline {
             parts.push(hold.marker);
         }
         if parts.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(format!("anomaly: {}", parts.join("; ")))
+            Ok(Some(format!("anomaly: {}", parts.join("; "))))
         }
     }
 
@@ -445,49 +541,48 @@ impl RecordingTimeline {
     }
 
     /// E1 wiring: random-access seek through the `replay_core` hook. Returns
-    /// the resolved recorded hour (at-or-before), or `None` before the first
-    /// frame. Playback uses [`WorldTimeline::seek`] / [`WorldTimeline::play_to`]
+    /// the exact recorded hour, or a typed selection/load error. Playback uses
+    /// [`WorldTimeline::seek`] / [`WorldTimeline::play_to`]
     /// which resolve identically today (see the `seek_equals_play_to`
     /// conformance gate); the interactive scrub reads owners through the same
     /// `state_at` primitive.
-    pub fn seek_hour(&self, hour: i64) -> Option<i64> {
+    pub fn seek_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
+        let canonical_hour = self.selected_canonical_hour(hour)?;
+        self.scan_anomalies_through(canonical_hour)?;
         self.timeline
             .seek(hour)
-            .ok()
             .map(|frame| frame.hour_index())
+            .map_err(|error| TimelineSelectionError::FrameLoad {
+                requested: hour,
+                first: self.timeline.first_hour(),
+                last: self.timeline.last_hour(),
+                detail: error.to_string(),
+            })
     }
 
     /// E1 wiring: linear play-to through the `replay_core` hook.
-    pub fn play_to_hour(&self, hour: i64) -> Option<i64> {
+    pub fn play_to_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
+        let canonical_hour = self.selected_canonical_hour(hour)?;
+        self.scan_anomalies_through(canonical_hour)?;
         self.timeline
             .play_to(hour)
-            .ok()
             .map(|frame| frame.hour_index())
+            .map_err(|error| TimelineSelectionError::FrameLoad {
+                requested: hour,
+                first: self.timeline.first_hour(),
+                last: self.timeline.last_hour(),
+                detail: error.to_string(),
+            })
     }
 
     fn selected_frame(&self, hour: i64) -> Result<Arc<WorldFrame>> {
-        let (first, last) = canonical_range(self.timeline.hours())?;
-        if hour < first {
-            return Err(TimelineSelectionError::BeforeFirst {
-                requested: hour,
-                first,
-                last,
-            }
-            .into());
-        }
-        if hour > last {
-            return Err(TimelineSelectionError::AfterLast {
-                requested: hour,
-                first,
-                last,
-            }
-            .into());
-        }
+        let canonical_hour = self.selected_canonical_hour(hour)?;
+        self.scan_anomalies_through(canonical_hour)?;
         self.timeline.state_at(hour).map_err(|err| {
             TimelineSelectionError::FrameLoad {
                 requested: hour,
-                first,
-                last,
+                first: self.timeline.first_hour(),
+                last: self.timeline.last_hour(),
                 detail: err.to_string(),
             }
             .into()
@@ -502,6 +597,10 @@ impl RecordingTimeline {
         Arc<BTreeMap<u32, String>>,
         Option<String>,
     )> {
+        // Validate before consulting the one-slot cache. A map cached for an
+        // prior exact lookup must never make a later unavailable gap look
+        // playable.
+        self.selected_canonical_hour(hour)?;
         if let Ok(guard) = self.cache.lock() {
             if let Some(cached) = guard.as_ref() {
                 if cached.hour == hour {
@@ -565,13 +664,17 @@ impl OwnerProvider for RecordingTimeline {
     }
 
     fn date_at(&self, hour: i64) -> Result<Option<String>> {
-        Ok(self.frame_maps(hour)?.2)
+        // Validate the selection before exposing index metadata, then use the
+        // authenticated date index directly. Building the transport date spine
+        // must not decode every frame in a long recording.
+        self.selected_canonical_hour(hour)?;
+        Ok(self.timeline.date_at(hour)?)
     }
 
     fn pov_picker(&self) -> crate::observer::PovPicker {
         // Player countries are session-level; read them from the first frame's
         // session view through the typed seam (never a raw snapshot parse).
-        match self.timeline.state_at(self.timeline.first_hour()) {
+        match self.selected_frame(self.timeline.first_hour()) {
             Ok(frame) => crate::observer::povs_from_session(frame.session_metadata()),
             Err(err) => {
                 crate::observer::PovPicker::Unavailable(format!("session view unavailable: {err}"))
@@ -579,7 +682,10 @@ impl OwnerProvider for RecordingTimeline {
         }
     }
 
-    fn anomaly_note(&self, hour: i64) -> Option<String> {
+    fn anomaly_note(
+        &self,
+        hour: i64,
+    ) -> std::result::Result<Option<String>, TimelineSelectionError> {
         self.anomaly_note_at(hour)
     }
 
@@ -617,6 +723,7 @@ pub fn owners_from_leaves(leaves: &BTreeMap<u32, Leaf<String>>) -> BTreeMap<u32,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fixture_owners() -> BTreeMap<u32, String> {
         let mut owners = BTreeMap::new();
@@ -726,11 +833,110 @@ mod tests {
         }
     }
 
+    struct CountingSource {
+        hours: Vec<i64>,
+        loads: Arc<AtomicUsize>,
+    }
+
+    impl replay_core::ReplaySource for CountingSource {
+        fn game_id(&self) -> &str {
+            "counting"
+        }
+
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+
+        fn date_at(
+            &self,
+            hour_index: i64,
+        ) -> std::result::Result<Option<String>, replay_core::SourceError> {
+            Ok(Some(format!("1936.1.{}", hour_index + 1)))
+        }
+
+        fn frame(
+            &self,
+            hour_index: i64,
+        ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            Ok(replay_core::RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: Default::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn anomaly_validation_is_lazy_ordered_and_does_not_scan_at_open() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let timeline = WorldTimeline::open(Box::new(CountingSource {
+            hours: vec![10, 11, 12, 13],
+            loads: Arc::clone(&loads),
+        }))
+        .expect("counting timeline");
+        let baseline = loads.load(Ordering::SeqCst);
+        let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), None);
+        let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            baseline,
+            "provider construction must not decode the campaign"
+        );
+
+        recording.world_frame_at(10).expect("first frame");
+        let after_first = loads.load(Ordering::SeqCst);
+        assert!(after_first > baseline);
+        recording.world_frame_at(10).expect("repeat first frame");
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            after_first,
+            "already-observed prefix must not be rescanned"
+        );
+        recording.world_frame_at(13).expect("last frame");
+        assert!(
+            loads.load(Ordering::SeqCst) >= after_first + 3,
+            "forward seek must validate each previously unobserved hour in order"
+        );
+    }
+
+    #[test]
+    fn date_spine_reads_index_metadata_without_loading_frames() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let timeline = WorldTimeline::open(Box::new(CountingSource {
+            hours: vec![10, 11, 12, 13],
+            loads: Arc::clone(&loads),
+        }))
+        .expect("counting timeline");
+        let baseline = loads.load(Ordering::SeqCst);
+        let recording = RecordingTimeline::new_with_policy(timeline, None);
+
+        let dates = recording
+            .hours()
+            .iter()
+            .map(|hour| recording.date_at(*hour).expect("indexed date"))
+            .collect::<Vec<_>>();
+        assert_eq!(dates.first().and_then(Option::as_deref), Some("1936.1.11"));
+        assert_eq!(dates.last().and_then(Option::as_deref), Some("1936.1.14"));
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            baseline,
+            "enumerating the transport date spine must not decode frames"
+        );
+    }
+
     #[test]
     fn recording_provider_never_replaces_selection_or_load_errors_with_empty_maps() {
         let timeline = WorldTimeline::open(Box::new(MidstreamLoadFailureSource::new()))
             .expect("failing timeline");
-        let recording = RecordingTimeline::new_with_policy(timeline, None);
+        let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), None);
+        let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
 
         let before = recording.owners_at(-1).expect_err("before-first must fail");
         assert!(
@@ -757,6 +963,65 @@ mod tests {
             ),
             "{load}"
         );
+    }
+
+    #[test]
+    fn gap_unavailable_is_rejected_before_any_timeline_view_is_exposed() {
+        let timeline = WorldTimeline::open(Box::new(CountingSource {
+            hours: vec![10, 12],
+            loads: Arc::new(AtomicUsize::new(0)),
+        }))
+        .expect("gapped timeline");
+        let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), None);
+        let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
+
+        let assert_gap = |result: Result<()>| {
+            let error = result.expect_err("hour inside a gap must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requested hour 11 is unavailable inside the recording gap 10->12"),
+                "{error}"
+            );
+        };
+        assert_gap(recording.owners_at(11).map(|_| ()));
+        assert_gap(recording.controllers_at(11).map(|_| ()));
+        assert_gap(recording.world_frame_at(11).map(|_| ()));
+        assert_gap(recording.hour_label(11).map(|_| ()));
+        assert_gap(recording.date_at(11).map(|_| ()));
+        assert!(matches!(
+            recording.anomaly_note(11),
+            Err(TimelineSelectionError::GapUnavailable {
+                requested: 11,
+                from: 10,
+                to: 12,
+                ..
+            })
+        ));
+        assert!(matches!(
+            recording.seek_hour(11),
+            Err(TimelineSelectionError::GapUnavailable { requested: 11, .. })
+        ));
+        assert!(matches!(
+            recording.play_to_hour(11),
+            Err(TimelineSelectionError::GapUnavailable { requested: 11, .. })
+        ));
+    }
+
+    #[test]
+    fn anomaly_note_validates_the_frame_before_reporting_no_hold() {
+        let timeline = WorldTimeline::open(Box::new(MidstreamLoadFailureSource::new()))
+            .expect("failing timeline");
+        let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), None);
+        let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
+
+        let error = recording
+            .anomaly_note(2)
+            .expect_err("anomaly note must not hide validation failure as no anomaly");
+        assert!(matches!(
+            error,
+            TimelineSelectionError::FrameLoad { requested: 2, .. }
+        ));
     }
 
     #[test]
@@ -795,7 +1060,7 @@ mod tests {
                 recording.play_to_hour(hour),
                 "seek != play_to at hour {hour}"
             );
-            assert_eq!(recording.seek_hour(hour), Some(hour), "exact-hour resolves");
+            assert_eq!(recording.seek_hour(hour), Ok(hour), "exact-hour resolves");
             // Every recorded frame in this fixture carries a Clausewitz date.
             assert!(
                 recording.date_at(hour).expect("date query").is_some(),

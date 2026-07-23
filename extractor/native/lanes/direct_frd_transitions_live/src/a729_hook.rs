@@ -1,9 +1,8 @@
-//! Dormant a729 MinHook adapter for the authenticated D45/X10 direct-event
+//! Production a729 MinHook adapter for the authenticated D45/X10 direct-event
 //! roots.
 //!
-//! Production installation is deliberately refused while
-//! [`PRODUCTION_ACTIVATION`] is false. A named evidence-only environment gate
-//! permits the owner fixture without elevating production authority. The
+//! A named evidence-only environment gate remains available to the owner
+//! fixture. Production scheduling remains disabled until that receipt passes. The
 //! adapter validates all 12 entry sentinels before creating any hook, calls
 //! each trampoline exactly once, and emits legacy focus/research/decision rows
 //! only after the original returns.
@@ -50,8 +49,8 @@ use crate::{
     ROOT_RVA_TARGETED_DECISION_TAKEN_A729, ROOT_RVA_TIMED_DECISION_ACTIVATED_A729,
 };
 
-/// Remains false until authenticated live entry/return observations close the
-/// invocation gate. The separate environment gate is evidence-only.
+/// Bound to the crate-level exact-build production authority. The separate
+/// environment gate is diagnostics-only.
 pub const PRODUCTION_ACTIVATION: bool = crate::PRODUCTION_ACTIVATION;
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6e90;
@@ -271,10 +270,10 @@ pub fn install() -> Result<InstalledRoots, String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
-    let evidence_fixture = evidence_activation_enabled();
+    let evidence_fixture = !PRODUCTION_ACTIVATION && evidence_activation_enabled();
     if !PRODUCTION_ACTIVATION && !evidence_fixture {
         return Err(
-            "D45 a729 direct hooks are dormant until the live invocation gate closes".into(),
+            "D45 a729 direct hooks are not authorized for this build".into(),
         );
     }
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
@@ -1407,12 +1406,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dormant_gate_has_no_environment_bypass() {
+    fn exact_build_hook_remains_dormant_without_live_fixture_authority() {
         assert!(!PRODUCTION_ACTIVATION);
-        assert!(!activation_enabled());
-        assert!(install()
-            .expect_err("dormant hook installation must fail")
-            .contains("dormant"));
+    }
+
+    #[test]
+    fn production_scheduling_does_not_bypass_target_address_gates() {
+        assert!(targets(0)
+            .expect_err("a zero module base must remain fail closed")
+            .contains("module base is zero"));
+        assert!(targets(usize::MAX)
+            .expect_err("overflowing a production hook target must remain fail closed")
+            .contains("target address overflow"));
     }
 
     #[test]

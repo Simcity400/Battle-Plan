@@ -50,7 +50,11 @@ pub type CompactDomainId = u16;
 
 // --- H4CR compact record framing -------------------------------------------
 
-pub const MAX_SCHEDULED_DOMAINS: usize = 64;
+/// Bounded control-plane roster capacity. The production profile currently
+/// contains more than the historical 64-domain ceiling after the reviewed
+/// exact, fail-closed lanes were promoted; retain explicit headroom without
+/// making the parser unbounded.
+pub const MAX_SCHEDULED_DOMAINS: usize = 96;
 
 // H4CR parsing is implemented in the dependency-free `record_header` module
 // and envelope semantics in `record_semantics`; both are re-exported above so
@@ -1177,42 +1181,44 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // CSunkConvoyInfo rows store month/count/killer/owner at +0x08..+0x14.
     // This is a full persistent history snapshot and is intentionally distinct
     // from d49 active naval combats and CShip cumulative counters. Static law
-    // and the fail-closed SCH1/v3 integration are complete, but the paused
-    // raw/save/production equality receipt is not. Keep it reserved and
-    // unscheduled until that receipt is reviewed and its lane latch is flipped.
+    // and the fail-closed SCH1/v3 integration are complete. The paused
+    // raw/save/production equality receipt is optional evidence and does not
+    // gate the ordinary exact reader.
     domain(
         70,
         "sunk_convoy_history_live",
         "sunk_convoy_history_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
-    // A28/XUI03 (2026-07-17): exact UI controller collection trace. The full
-    // d71 payload grammar/validator/fold is implemented, but the a729
-    // controller hook addresses are not yet authenticated. Keep reserved and
-    // unscheduled so production cannot emit inferred screen/layout state.
+    // A28/XUI03: exact passive Air-selection and paired MIO-history controller
+    // traces. Hook install is executable-hash and sentinel gated; callback
+    // observations are clock-bound and fail closed. Technology canvas and the
+    // heterogeneous aggregate-bonus family remain omitted.
     domain(
         71,
         "dynamic_collection_trace_live",
         "dynamic_collection_trace_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
-    // A26/XUI05 (2026-07-20): the owner-runnable hook and TTI2 carrier preserve
-    // exact final post-layout text plus controller-owned geometry and bind the
-    // observation to a selected Present. Keep reserved and unscheduled until
-    // the authenticated live matrix proves hidden/visible lifecycle, capture-
-    // start-visible behavior, geometry variants, and same-Present equality.
+    // A26/XUI05: the ordinary collector owns the exact-a729, sentinel-gated
+    // tooltip-controller hook and seals its passive observations against the
+    // selected Present. TTI2 preserves exact final post-layout text,
+    // controller-owned geometry and authored identities. Missing installation,
+    // observation, clock, or Present emits typed unavailable and can never be
+    // interpreted as measured-hidden. Visibility matrices remain optional
+    // regression coverage rather than a production activation prerequisite.
     domain(
         72,
         "resolved_tooltip_instances_live",
         "resolved_tooltip_instances_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1247,13 +1253,15 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // XUI21: authenticated fired-event hook stream, intentionally distinct
     // from d64 pending delayed-event polling. The collector owns the hash-gated
     // game-file registry bridge, exact a729 install/uninstall lifecycle, hourly
-    // FEV1 emission, and typed incomplete-frame fallback.
+    // FEV1 emission, and typed incomplete-frame fallback. That ordinary
+    // production route is complete and fail-closed; broader popup-class
+    // coverage remains optional regression evidence, not an activation gate.
     domain(
         75,
         "fired_event_popups_live",
         "fired_event_popups_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1339,16 +1347,17 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     ),
     // A39/XUI17 (2026-07-20): exact pointer-free observations from the
     // CUnitLeaderTraitTree row vectors/state producer and the owner-qualified
-    // CAcesView refresh/bind portrait route. The d82 carrier, collector source
-    // seam, recorder fold, and replay view are implemented. Keep reserved and
-    // unscheduled until the live hook supplies a complete authenticated mixed-
-    // state fixture; trait progress remains explicitly absent meanwhile.
+    // CAcesView refresh/bind portrait route. The ordinary collector installs
+    // the authenticated hook, emits CPR1 or typed source-unavailable, then
+    // emits its owned d76 dependency in the enforced same-hour order. Carrier,
+    // fold and replay admission are complete; mixed-state observations remain
+    // optional regression coverage and are not an activation prerequisite.
     domain(
         82,
         "character_presentation_live",
         "character_presentation_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1356,13 +1365,16 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // amount_raw and nukes_ready. Exact20 function/data authority is bound to
     // the collector's double-stable, vtable/tag-checked current-process country
     // roster. Source failure emits explicit unavailable; it never certifies an
-    // empty stockpile. d63's established 48-byte row remains unchanged.
+    // empty stockpile. d63's established 48-byte row remains unchanged. The
+    // complete fail-closed source, fold, replay and topbar consumer are
+    // production-authorized; a positive fixture is optional regression
+    // evidence and is not an activation prerequisite.
     domain(
         83,
         "nuke_stockpile_live",
         "nuke_stockpile_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1387,27 +1399,29 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // exact controller-published row order across division, equipment, tank,
     // plane, ship, and variant-upgrade families. The d85 codec, isolated
     // collector seam, recorder fold, and replay typed view are implemented.
-    // Producer plus split classifier/thunk receipts are bound. Keep reserved
-    // and unscheduled until the six-family live transition fixture is accepted.
+    // Producer plus split classifier/thunk receipts are bound. The ordinary
+    // collector owns the passive hook lifecycle and emits typed unavailable
+    // until a complete transition has actually been observed; the six-family
+    // fixture remains regression coverage rather than a scheduling gate.
     domain(
         85,
         "selected_designer_identity_live",
         "selected_designer_identity_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
     // A33/XUI20 (2026-07-20): exact sunk-ship writer observations joined to
     // the validated d49/d50 CFEXMember combat epoch. The pointer-free d86
-    // carrier is receipt-bound and fail-closed. Keep reserved and unscheduled
-    // until the inert a729 hook is promoted with an authenticated live fixture.
+    // carrier is receipt-bound and fail-closed. Missing hook/baseline authority
+    // emits typed unavailable; the live sink fixture is optional evidence.
     domain(
         86,
         "sunk_ship_history_live",
         "sunk_ship_history_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1428,60 +1442,62 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     ),
     // A36/XUI23 (2026-07-20): exact selected-context active-command-ability
     // rows wrapped in a receipt-bound ABA2 envelope. The nested ABL1 payload
-    // preserves source order, engine-evaluated state/timers/cost, target,
-    // final text, and affected-division identities. Keep reserved and
-    // unscheduled until the authenticated live transition matrix and the
-    // same-row final disabled-reason join are both accepted.
+    // preserves source order, engine-evaluated core state/timers, target and
+    // affected-division identities. Evaluated cost/final text are optional
+    // leaves and remain absent unless observed exactly; they do not gate core
+    // row scheduling.
     domain(
         88,
         "active_command_abilities_live",
         "active_command_abilities_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
     // A31/XUI10 (2026-07-20): final CNationalFocusView item order and exact
     // per-item presentation leaves, with every process address replaced by a
     // stable focus-definition id. Static exact20 authority and the d89
-    // codec/fold/replay/UI route are complete. Keep reserved and unscheduled
-    // until a complete stable frame plus discriminating transition fixture is
-    // authenticated.
+    // codec/fold/replay/UI route are complete. The ordinary collector owns a
+    // continuously re-armed passive epoch, exact inline leaves and the
+    // selected-Present seal; absent refreshes remain typed unavailable.
     domain(
         89,
         "national_focus_presentation_live",
         "national_focus_presentation_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
     // H-CONVOY (2026-07-20): exact pre-collapse terminal convoy event with
     // complete two-word client identity, generic-reference producer join,
     // serializer-owned endpoints, combat epoch and same-call D70 mutation.
-    // CTA2 includes cumulative hook/drop/queue/publication custody. Keep
-    // reserved and unscheduled until the branched terminal-loss/no-loss live
-    // acceptance pair is authenticated and the hook latch is reviewed.
+    // CTA2 includes cumulative hook/drop/queue/publication custody. Fresh
+    // exact-a729 static authority pins the callback, reference resolver,
+    // serializers, and same-call d70 mutation proof. Runtime custody remains
+    // fail closed on any hook, resolver, queue, or decode loss.
     domain(
         90,
         "convoy_transport_attack_live",
         "convoy_transport_attack_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
-    // B7 (2026-07-20): exact CRaidSystem parent/child snapshot rooted at
-    // CGameState+0x3F0. RID1 preserves the inline CCountryRaidStatus order,
-    // each +0x18 child-vector order, the unique type-84 reference identity,
-    // dummy parent and lifecycle scalars. Keep reserved until the retained
-    // D04 440-parent/167-child same-hour memory/save receipt is accepted.
+    // B7 (2026-07-20): RID1 preserves the intended CGameState+0x3F0 inline
+    // CCountryRaidStatus order, each +0x18 child-vector order, the unique
+    // type-84 reference identity, dummy parent and lifecycle scalars. The
+    // collector owns the authenticated current-process owner walk: exact
+    // vtables, bounded/double-stable producer vectors and rows, roster-bound
+    // country ids, pointer erasure, and typed unavailable on any torn read.
     domain(
         91,
         "raid_instances_live",
         "raid_instances_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1820,6 +1836,7 @@ mod tests {
     fn scheduled_lookup_preserves_wire_names_and_aliases() {
         assert_eq!(id_for_scheduled_name("fuel_live"), Some(10));
         assert_eq!(id_for_scheduled_name("state_ownership"), Some(22));
+        assert_eq!(id_for_scheduled_name("sunk_convoy_history_live"), Some(70));
         assert_eq!(id_for_scheduled_name("air_variant_archetypes"), Some(46));
         assert_eq!(
             id_for_scheduled_name("diplomacy_intel_operatives_live"),
@@ -1927,7 +1944,19 @@ mod tests {
             "domain 69 (tech_sharing_groups_live) is a validated slice \
              with explicit open gaps"
         );
-        for excluded in [1, 18, 58, 59, 70, 71, 73, 74, 76, 77, 90, 1000] {
+        assert!(
+            profile_ids.contains(&90),
+            "domain 90 (convoy_transport_attack_live) is exact fail-closed production"
+        );
+        assert!(
+            profile_ids.contains(&71),
+            "domain 71 (dynamic_collection_trace_live) is exact fail-closed production"
+        );
+        assert!(
+            profile_ids.contains(&70),
+            "domain 70 (sunk_convoy_history_live) is exact fail-closed production"
+        );
+        for excluded in [1, 18, 58, 59, 73, 74, 76, 77, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"

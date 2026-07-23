@@ -1,4 +1,18 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #![recursion_limit = "256"]
+
+// The product recorder already owns the canonical WorldFold. Compile the thin
+// decoder facade and its private worker entry into this executable without
+// creating a replay-workspace dependency on extractor crates.
+#[cfg(not(test))]
+#[path = "../../replay_decoder/src/lib.rs"]
+mod replay_decoder;
+#[cfg(not(test))]
+mod replay_prefold_worker {
+    use crate::replay_decoder;
+
+    include!("../../replay_decoder/src/bin/replay_prefold_worker.rs");
+}
 
 /// mimalloc as the global allocator: the post-capture fold is allocation-bound
 /// (multi-GB serde_json `Value` trees built and dropped per game-hour), and the
@@ -431,31 +445,6 @@ impl AcceptanceTestMode {
 struct AcceptanceTestCli {
     mode: AcceptanceTestMode,
     nonce: String,
-}
-
-const PAUSED_EVIDENCE_DOMAIN_NAME: &str = "sunk_convoy_history_live";
-
-fn is_paused_evidence_domain_name(domain: &str) -> bool {
-    matches!(
-        compact_domain_registry::assigned_descriptor_by_name(domain),
-        Some(descriptor)
-            if domain == PAUSED_EVIDENCE_DOMAIN_NAME
-                && descriptor.id == COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE
-                && descriptor.wire_name == PAUSED_EVIDENCE_DOMAIN_NAME
-                && descriptor.status == compact_contract::CompactDomainStatus::Reserved
-                && !descriptor.schedulable
-                && descriptor.requires_data_record
-    )
-}
-
-fn paused_evidence_domain_authorized(acceptance_test: Option<&AcceptanceTestCli>) -> bool {
-    matches!(
-        acceptance_test,
-        Some(AcceptanceTestCli {
-            mode: AcceptanceTestMode::Paused,
-            nonce,
-        }) if is_lower_sha256(nonce)
-    )
 }
 
 #[derive(Clone, Debug)]
@@ -969,10 +958,57 @@ fn merge_domain_data_authority(
 }
 
 fn main() {
+    #[cfg(not(test))]
+    {
+        let raw_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        if replay_prefold_worker::is_internal_invocation(&raw_args) {
+            if let Err(error) = replay_prefold_worker::run(raw_args) {
+                eprintln!("recorder internal prefold worker: {error}");
+                std::process::exit(2);
+            }
+            return;
+        }
+    }
+    let product_launch = std::env::args_os().nth(1).is_none();
+    #[cfg(windows)]
+    let cli_has_console = product_launch || attach_parent_console_for_cli();
+    #[cfg(windows)]
+    let supervised_worker = std::env::var_os(
+        recorder_host::auto_attach::proof::WORKER_PROOF_PATH_ENV,
+    )
+    .is_some();
     if let Err(err) = run() {
+        #[cfg(windows)]
+        if product_launch || should_show_cli_error(cli_has_console, supervised_worker) {
+            recorder_host::auto_attach::product_runtime::show_product_error(&err);
+        } else {
+            eprintln!("collector_record: {err}");
+        }
+        #[cfg(not(windows))]
         eprintln!("collector_record: {err}");
         std::process::exit(1);
     }
+}
+
+#[cfg(windows)]
+fn attach_parent_console_for_cli() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+        fn GetConsoleWindow() -> *mut std::ffi::c_void;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // A piped worker already has authoritative standard handles; attaching can
+    // legitimately report ERROR_ACCESS_DENIED when a console is already bound.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+        !GetConsoleWindow().is_null()
+    }
+}
+
+#[cfg(windows)]
+fn should_show_cli_error(has_console: bool, supervised_worker: bool) -> bool {
+    !has_console && !supervised_worker
 }
 
 /// Resident support/acceptance entry for the dual-order auto-attach supervisor
@@ -982,10 +1018,8 @@ fn main() {
 /// real Windows adapters and runs the loop. The installed product resolves its
 /// collector payload beside this executable; `--dll` remains a support override.
 /// Console/session close signals enter coordinator-owned stop handling. The
-/// selected legacy child still has only finite stdout proof and hard-kill stop,
-/// so this entry is not the product promotion boundary; the activation-frozen
-/// duplex/combined worker remains the authority for graceful finalization once
-/// its live lifecycle gates pass.
+/// Product workers use the paired duplex backend, durable status stream,
+/// cooperative stop, bounded H4CR drain, and verified finalization.
 #[cfg(windows)]
 fn run_auto_attach(args: &[String]) -> Result<(), String> {
     use recorder_host::auto_attach::{run_supervisor, SupervisorOptions};
@@ -1064,6 +1098,43 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
     run_supervisor(opts, || graceful_stop.is_requested())
 }
 
+/// Ordinary end-user entry. The packaged recorder executable owns both the
+/// visible desktop window and the resident supervisor, so the distribution
+/// needs no launcher, tray process, service, installer, or administrator access.
+/// Closing the window transfers stop ownership to the coordinator and waits for
+/// worker finalization before returning.
+#[cfg(windows)]
+fn run_product_auto_attach() -> Result<(), String> {
+    use recorder_host::auto_attach::{run_supervisor_with_events, SupervisorOptions};
+
+    let worker_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let source_dll = recorder_host::auto_attach::product_runtime::resolve_packaged_collector_dll(
+        None,
+        &worker_exe,
+    )?;
+    let out_root = recorder_host::auto_attach::product_runtime::default_product_data_root()?;
+    let recordings_root = out_root.clone();
+    let opts = SupervisorOptions {
+        source_dll,
+        staging_root: out_root.join("staging"),
+        journal_path: out_root.join("auto_attach_journal.jsonl"),
+        out_root,
+        worker_exe,
+        worker_extra_args: Vec::new(),
+        poll_ms: 2_000,
+    };
+    recorder_host::auto_attach::product_runtime::run_product_window(
+        recordings_root,
+        move |stop, report_event| {
+            run_supervisor_with_events(
+                opts,
+                || stop.load(std::sync::atomic::Ordering::Acquire),
+                move |event| report_event(event),
+            )
+        },
+    )
+}
+
 #[cfg(not(windows))]
 fn run_auto_attach(_args: &[String]) -> Result<(), String> {
     Err("auto-attach is only supported on Windows".to_string())
@@ -1088,6 +1159,10 @@ fn absolute_run_g2_output_directory(out_dir: &Path) -> Result<PathBuf, String> {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
+    #[cfg(windows)]
+    if args.is_empty() {
+        return run_product_auto_attach();
+    }
     if args.first().map(String::as_str) == Some("--fold-and-repack-existing-run-dir") {
         return fold_and_repack_existing_run_dir(parse_repack_args(&args)?);
     }
@@ -1176,6 +1251,7 @@ fn run() -> Result<(), String> {
     }
     if scheduled_roster_includes_domain57(&cfg.scheduled_domains)
         && cfg.domain57_game_speed_gate.is_none()
+        && !allow_native_production_d57_without_speed_gate(cfg.production, cfg.profile)
         && !allow_x12_debug_d57_without_speed_gate(
             cfg.production,
             cfg.profile,
@@ -1470,7 +1546,7 @@ fn run() -> Result<(), String> {
                 (Some(dll), Some(emitter), Some(spec), Some(stop_signal))
             }
             Some(context) => {
-                let (dll, emitter) = context.into_parts()?;
+                let (dll, emitter) = context.into_parts(&cfg)?;
                 (Some(dll), Some(emitter), None, None)
             }
             None => (None, None, None, None),
@@ -1590,6 +1666,10 @@ fn run() -> Result<(), String> {
                 Duration::from_millis(recorder_host::auto_attach::policy::HANDSHAKE_DEADLINE_MS),
             )?;
             let loaded_dll_sha256 = verify_target_loaded_dll(target_proof)?;
+            let stitch_process_start_identity = format!(
+                "pid:{}:creation-filetime:{}",
+                process_authority.pid, process_authority.expected_creation_filetime
+            );
             let outcome = capture_combined_pipe_to_file(
                 data,
                 control,
@@ -1600,6 +1680,8 @@ fn run() -> Result<(), String> {
                 loaded_dll_sha256,
                 activated_stop_signal.ok_or("activated duplex worker lost stop signal")?,
                 &cfg.out_dir,
+                &cfg.session_id,
+                &stitch_process_start_identity,
             )?;
             let scientist_authority = if scientist_requested {
                 let game = game_module_authority
@@ -2800,6 +2882,30 @@ fn run() -> Result<(), String> {
             capture_identity_mode,
             static_bundle_admission.as_ref(),
         )?;
+        if cfg.production {
+            let product_root = cfg
+                .out_dir
+                .parent()
+                .ok_or("production rollover run has no product-data parent")?;
+            let stitch_reports =
+                recorder_host::stitching::callsite::publish_registered_rollover_stitches(
+                    product_root,
+                    &cfg.out_dir,
+                    descriptor,
+                )?;
+            for report in stitch_reports.published {
+                eprintln!(
+                    "recorder stitch: published={} segments={} visible_hours={} sha256={}",
+                    report.published_path.display(),
+                    report.segments,
+                    report.visible_snapshot_hours,
+                    report.container_sha256
+                );
+            }
+            for reason in stitch_reports.kept_separate {
+                eprintln!("recorder stitch: kept separate: {reason}");
+            }
+        }
     }
 
     if cfg.production {
@@ -5539,13 +5645,20 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         early_launch_executable.is_some(),
         env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
     );
+    let native_production_d57_without_speed_gate =
+        allow_native_production_d57_without_speed_gate(production, profile);
     let domain57_omission_reason = if scheduled_roster_includes_domain57(&scheduled_domains) {
         match (
                 speed_root_gate_path.is_some(),
                 domain57_game_speed_transcript_file_sha256.is_some(),
             ) {
                 (true, true) => None,
-                (false, false) if x12_debug_evidence_without_speed_gate => None,
+                (false, false)
+                    if x12_debug_evidence_without_speed_gate
+                        || native_production_d57_without_speed_gate =>
+                {
+                    None
+                }
                 (false, false) => {
                     scheduled_domains.retain(|domain| {
                         compact_domain_id(domain)
@@ -5685,7 +5798,6 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             )
         }
     };
-    validate_scheduled_domain_authority(&scheduled_domains, acceptance_test.as_ref())?;
     let g2_capture_intent = match g2_capture_intent_path {
         None => None,
         Some(path) => {
@@ -6278,28 +6390,9 @@ fn validate_domain(domain: &str) -> Result<(), String> {
     // missing a whole requested domain could pass its gates. Every explicit
     // domain name must resolve in the compact-domain registry, fail-closed at
     // parse time.
-    if compact_domain_registry::id_for_scheduled_name(domain).is_none()
-        && !is_paused_evidence_domain_name(domain)
-    {
+    if compact_domain_registry::id_for_scheduled_name(domain).is_none() {
         return Err(format!(
             "unknown scheduled domain {domain:?} (not in the compact-domain registry)"
-        ));
-    }
-    Ok(())
-}
-
-fn validate_scheduled_domain_authority(
-    scheduled_domains: &[String],
-    acceptance_test: Option<&AcceptanceTestCli>,
-) -> Result<(), String> {
-    if scheduled_domains
-        .iter()
-        .any(|domain| is_paused_evidence_domain_name(domain))
-        && !paused_evidence_domain_authorized(acceptance_test)
-    {
-        return Err(format!(
-            "scheduled domain {PAUSED_EVIDENCE_DOMAIN_NAME:?} is reserved and requires \
-             --acceptance-test-mode paused with a valid paired --acceptance-test-nonce"
         ));
     }
     Ok(())
@@ -11426,7 +11519,12 @@ struct AutoAttachWorkerContext {
     source_dll_sha256: Option<String>,
     dll_authority: RetainedDllAuthority,
     stop_signal: Option<AutoAttachStopSignal>,
+    proof_path: PathBuf,
 }
+
+type AutoAttachProofEmitter = recorder_host::auto_attach::proof::WorkerProofEmitter<
+    recorder_host::auto_attach::proof::DurableProofWriter,
+>;
 
 struct AutoAttachStopSignal(Handle);
 
@@ -11476,6 +11574,8 @@ impl AutoAttachWorkerContext {
         let attempt_id = env::var("BATTLE_PLAN_AUTO_ATTACH_ATTEMPT_ID").or_else(|_| env::var("HOI4_AUTO_ATTACH_ATTEMPT_ID")).ok();
         let source_dll_sha256 = env::var("BATTLE_PLAN_AUTO_ATTACH_SOURCE_DLL_SHA256").or_else(|_| env::var("HOI4_AUTO_ATTACH_SOURCE_DLL_SHA256")).ok();
         let stop_event_name = env::var("BATTLE_PLAN_AUTO_ATTACH_STOP_EVENT").or_else(|_| env::var("HOI4_AUTO_ATTACH_STOP_EVENT")).ok();
+        let proof_path = env::var_os(recorder_host::auto_attach::proof::WORKER_PROOF_PATH_ENV)
+            .map(PathBuf::from);
         if pipe_token.is_none()
             && expected.is_none()
             && expected_dll.is_none()
@@ -11483,6 +11583,7 @@ impl AutoAttachWorkerContext {
             && attempt_id.is_none()
             && source_dll_sha256.is_none()
             && stop_event_name.is_none()
+            && proof_path.is_none()
         {
             return Ok(None);
         }
@@ -11523,6 +11624,8 @@ impl AutoAttachWorkerContext {
             }
             None
         };
+        let proof_path = proof_path
+            .ok_or("partial auto-attach worker context: missing durable proof path")?;
         Ok(Some(Self {
             pipe_token,
             expected_creation_filetime,
@@ -11538,6 +11641,7 @@ impl AutoAttachWorkerContext {
             source_dll_sha256,
             dll_authority,
             stop_signal,
+            proof_path,
         }))
     }
 
@@ -11590,15 +11694,20 @@ impl AutoAttachWorkerContext {
 
     fn into_parts(
         self,
+        cfg: &Config,
     ) -> Result<
         (
             RetainedDllAuthority,
-            recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+            AutoAttachProofEmitter,
         ),
         String,
     > {
+        let writer = recorder_host::auto_attach::proof::DurableProofWriter::open_existing(
+            &self.proof_path,
+            &cfg.out_dir,
+        )?;
         let emitter = recorder_host::auto_attach::proof::WorkerProofEmitter::new(
-            std::io::stdout(),
+            writer,
             self.control_session,
             self.expectation,
         )?;
@@ -11611,15 +11720,19 @@ impl AutoAttachWorkerContext {
     ) -> Result<
         (
             RetainedDllAuthority,
-            recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+            AutoAttachProofEmitter,
             recorder_host::auto_attach::sources::WorkerSpec,
             AutoAttachStopSignal,
         ),
         String,
     > {
         let spec = self.worker_spec(cfg)?;
+        let writer = recorder_host::auto_attach::proof::DurableProofWriter::open_existing(
+            &self.proof_path,
+            &cfg.out_dir,
+        )?;
         let emitter = recorder_host::auto_attach::proof::WorkerProofEmitter::new(
-            std::io::stdout(),
+            writer,
             self.control_session,
             self.expectation,
         )?;
@@ -11631,9 +11744,8 @@ impl AutoAttachWorkerContext {
 }
 
 /// Product composition seam for the paired H4CR/H4CT backend. It is compiled
-/// against the real one-shot injector and real Win32 paired server, but the
-/// opaque permit remains unmintable while offline-only collector/host lifecycle
-/// work is activation-frozen pending live proof.
+/// against the real one-shot injector and real Win32 paired server; its opaque
+/// permit is minted only when exact-build local identity prerequisites hold.
 #[allow(dead_code)]
 fn prepare_activated_duplex_workers(
     spec: &recorder_host::auto_attach::sources::WorkerSpec,
@@ -11781,6 +11893,28 @@ fn write_latency_summary_json(histogram: &WriteLatencyHistogram) -> Value {
         "p99": histogram.percentile_ceiling(99),
         "max": histogram.max_us,
         "percentile_semantics": "bucket_upper_bound_us",
+    })
+}
+
+/// Timing of the collector's synchronous write to its sole authoritative pipe
+/// sink. These counters are emitted in-band by the collector's terminal latch
+/// record, so they describe the producer-to-pipe boundary rather than the
+/// recorder's buffered file/compression path.
+fn collector_sink_write_summary_json(summary: &CompactSummary) -> Value {
+    let count = summary.hour_latch.get("sink_time_sample_count").copied();
+    let total = summary.hour_latch.get("sink_time_total_us").copied();
+    let average = count
+        .filter(|count| *count != 0)
+        .zip(total)
+        .map(|(count, total)| total as f64 / count as f64);
+    json!({
+        "scope": "collector synchronous writes to the sole authoritative H4CR pipe sink, finalized by the in-band terminal latch record",
+        "count": count,
+        "total": total,
+        "avg": average,
+        "p50": summary.hour_latch.get("sink_time_p50_us").copied(),
+        "p99": summary.hour_latch.get("sink_time_p99_us").copied(),
+        "max": summary.hour_latch.get("sink_time_max_us").copied(),
     })
 }
 
@@ -12041,10 +12175,12 @@ fn capture_combined_pipe_to_file(
     out_path: &Path,
     compression: compact_stream::StreamCompression,
     proof_expected_domain_ids: Vec<u16>,
-    mut proof_emitter: recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+    mut proof_emitter: AutoAttachProofEmitter,
     loaded_dll_sha256: [u8; 32],
     stop_signal: AutoAttachStopSignal,
     run_dir: &Path,
+    session_nonce: &str,
+    process_start_identity: &str,
 ) -> Result<PipeCaptureOutcome, String> {
     control
         .control_session_mut()
@@ -12071,14 +12207,29 @@ fn capture_combined_pipe_to_file(
         first_deadline,
     )?;
     let first_record_bytes = first_record.complete_record().to_vec();
+    let rollover_enabled =
+        recorder_host::auto_attach::duplex_worker::auto_attach_rollover_enabled();
+    let product_root = run_dir
+        .parent()
+        .ok_or("activated product run has no product-data parent")?;
+    if rollover_enabled {
+        recorder_host::stitching::callsite::allocate_product_append_ticket(
+            product_root,
+            run_dir,
+            0,
+            first_record.validated_cid1().ok_or(
+                "activated IdentityV1 first record lost CID1 before append-ticket allocation",
+            )?,
+            session_nonce,
+            process_start_identity,
+        )?;
+    }
     let acknowledged = control
         .control_session_mut()
         .ok_or("combined control session disappeared before CFA1")?
         .acknowledge_first_compact_record(&mut identity, first_record, first_deadline)
         .map_err(|error| format!("durable first CID1 acknowledgement failed: {error}"))?;
 
-    let rollover_enabled =
-        recorder_host::auto_attach::duplex_worker::auto_attach_rollover_enabled();
     if rollover_enabled && compression != compact_stream::StreamCompression::None {
         return Err(
             "CID1 rollover storage requires raw per-logical-stream H4CR files; compression is applied independently during packaging"
@@ -12109,6 +12260,10 @@ fn capture_combined_pipe_to_file(
 
     let cancellation = data.cancellation().clone();
     let control_cancellation = cancellation.clone();
+    let stitch_product_root = product_root.to_path_buf();
+    let stitch_run_dir = run_dir.to_path_buf();
+    let stitch_session_nonce = session_nonce.to_string();
+    let stitch_process_start_identity = process_start_identity.to_string();
     let (notice_tx, notice_rx) = std::sync::mpsc::channel::<CombinedControlNotice>();
     let (rollover_store_tx, rollover_store_rx) = std::sync::mpsc::sync_channel(1);
     let control_thread = thread::Builder::new()
@@ -12222,6 +12377,16 @@ fn capture_combined_pipe_to_file(
                                 .map_err(|error| {
                                     format!("validate rollover CID1 record failed: {error}")
                                 })?;
+                                recorder_host::stitching::callsite::allocate_product_append_ticket(
+                                    &stitch_product_root,
+                                    &stitch_run_dir,
+                                    proposal.proposed_logical_stream_id,
+                                    first.validated_cid1().ok_or(
+                                        "rollover IdentityV1 record lost CID1 before append-ticket allocation",
+                                    )?,
+                                    &stitch_session_nonce,
+                                    &stitch_process_start_identity,
+                                )?;
                                 // The old logical stream has ended as soon as the
                                 // authenticated proposal has reached its durable
                                 // new-CID1 barrier. Clear Recording before CFA1 is
@@ -12493,7 +12658,7 @@ fn capture_pipe_to_file(
     compression: compact_stream::StreamCompression,
     proof_expected_domain_ids: Vec<u16>,
     mut proof_emitter: Option<
-        recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+        AutoAttachProofEmitter,
     >,
     target_dll_proof: Option<TargetDllProof>,
     target_process: std::sync::Arc<RetainedProcessAuthority>,
@@ -13244,17 +13409,6 @@ fn compact_domain_names_from_ids(domains: &[u16]) -> Vec<String> {
 }
 
 fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
-    compact_expected_domain_ids_with_authority(scheduled_domains, None)
-}
-
-fn compact_expected_domain_ids_for_config(cfg: &Config) -> Vec<u16> {
-    compact_expected_domain_ids_with_authority(&cfg.scheduled_domains, cfg.acceptance_test.as_ref())
-}
-
-fn compact_expected_domain_ids_with_authority(
-    scheduled_domains: &[String],
-    acceptance_test: Option<&AcceptanceTestCli>,
-) -> Vec<u16> {
     let mut ids = if scheduled_domains.is_empty() {
         vec![10, 11, 12, 13, 14, 15, 16, 17]
     } else {
@@ -13268,25 +13422,23 @@ fn compact_expected_domain_ids_with_authority(
                 // registry-validated at argument parse time; anything
                 // unresolvable reaching this point is a bug and must be loud,
                 // never a silently smaller expectation.
-                compact_domain_id(domain)
-                    .or_else(|| {
-                        (is_paused_evidence_domain_name(domain)
-                            && paused_evidence_domain_authorized(acceptance_test))
-                        .then_some(COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE)
-                    })
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "scheduled domain {domain:?} did not resolve in the \
+                compact_domain_id(domain).unwrap_or_else(|| {
+                    panic!(
+                        "scheduled domain {domain:?} did not resolve in the \
                              compact-domain registry with the required scheduling \
                              authority (parse-time validation bypassed?)"
-                        )
-                    })
+                    )
+                })
             })
             .collect::<Vec<_>>()
     };
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+fn compact_expected_domain_ids_for_config(cfg: &Config) -> Vec<u16> {
+    compact_expected_domain_ids(&cfg.scheduled_domains)
 }
 
 fn compact_forced_domain_dependencies_json(scheduled_domains: &[String]) -> Value {
@@ -14320,9 +14472,10 @@ fn scheduled_roster_includes_domain57(scheduled_domains: &[String]) -> bool {
 
 /// X12's suspended early-launch proof must install its mutation hooks before
 /// the first game-state initialization writes. A same-process A3 transcript
-/// gate therefore cannot exist yet. Permit this one debug/evidence topology;
-/// production and ordinary D57 captures still require the transcript-bound v2
-/// gate.
+/// gate therefore cannot exist yet. Permit this one debug/evidence topology.
+/// Non-production captures still require the transcript-bound v2 gate unless
+/// they use this exact evidence topology. Production may instead use the
+/// independently authorized passive X12 observer below.
 fn allow_x12_debug_d57_without_speed_gate(
     production: bool,
     profile: Option<compact_contract::CaptureProfile>,
@@ -14333,6 +14486,19 @@ fn allow_x12_debug_d57_without_speed_gate(
         && profile == Some(compact_contract::CaptureProfile::Debug)
         && early_launch
         && activation == Some("1")
+}
+
+/// Native production admission is available only while the exact-build passive
+/// X12 observer's lane-local activation latch remains enabled. Each capture
+/// still fails closed on hook installation, identity, sequencing, or queue
+/// integrity failure.
+fn allow_native_production_d57_without_speed_gate(
+    production: bool,
+    profile: Option<compact_contract::CaptureProfile>,
+) -> bool {
+    production
+        && profile == Some(compact_contract::CaptureProfile::Production)
+        && session_multiplayer_metadata_live::x12_a729_hook::PRODUCTION_ACTIVATION
 }
 
 fn hour_latch_gate_problems(summary: &CompactSummary, required: bool) -> Vec<String> {
@@ -14510,13 +14676,15 @@ fn acceptance_telemetry_json(
             "frame_evidence": domain57_frame_evidence_json(summary),
         },
         "frame_time_us": timing_summary_json(&summary.frame_times_us),
+        "collector_sink_write_us": collector_sink_write_summary_json(summary),
         "sink_write_us": capture
             .map(|capture| write_latency_summary_json(&capture.write_latency))
             .unwrap_or_else(|| write_latency_summary_json(&WriteLatencyHistogram::default())),
-        "sink_write_scope": "host StreamWriter::write_all calls over live named-pipe chunks",
+        "sink_write_scope": "recorder StreamWriter::write_all calls over the complete physical H4CR capture; capture-set scoped during rollover; buffered/compressed host-path diagnostic, not logical-stream collector sink latency",
         "clock_skew": capture
             .map(|capture| capture.clock_skew.as_json())
             .unwrap_or(Value::Null),
+        "clock_skew_scope": "complete physical H4CR capture; capture-set scoped during rollover",
         "hour_label_skew": {
             "definition": "absolute game-hour distance between the latch-owned frame label and an independent stable hour read at heavy-sweep start",
             "unit": "game_hours",
@@ -14605,8 +14773,20 @@ fn acceptance_telemetry_problems(
             .into_iter()
             .map(|problem| format!("acceptance_{problem}")),
     );
-    if summary.hour_latch.get("sink_time_sample_count").copied() == Some(0) {
+    let sink_count = summary.hour_latch.get("sink_time_sample_count").copied();
+    let sink_total = summary.hour_latch.get("sink_time_total_us").copied();
+    let sink_p50 = summary.hour_latch.get("sink_time_p50_us").copied();
+    let sink_p99 = summary.hour_latch.get("sink_time_p99_us").copied();
+    let sink_max = summary.hour_latch.get("sink_time_max_us").copied();
+    if sink_count == Some(0) {
         problems.push("acceptance_collector_sink_time_samples_empty".to_string());
+    }
+    if matches!(
+        (sink_total, sink_p50, sink_p99, sink_max),
+        (Some(total), Some(p50), Some(p99), Some(max))
+            if p50 > p99 || p99 > max || max > total
+    ) {
+        problems.push("acceptance_collector_sink_time_distribution_invalid".to_string());
     }
     match capture {
         Some(capture) => {
@@ -15350,6 +15530,14 @@ fn decode_compact_frd_depth_data_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn consoleless_explicit_routes_get_dialogs_but_supervised_workers_do_not() {
+        assert!(should_show_cli_error(false, false));
+        assert!(!should_show_cli_error(true, false));
+        assert!(!should_show_cli_error(false, true));
+    }
 
     #[test]
     fn diagnostic_stage_mask_parser_is_hex_and_rejects_production_or_missing_com() {
@@ -17059,6 +17247,43 @@ mod tests {
     }
 
     #[test]
+    fn collector_sink_summary_uses_in_band_terminal_counters() {
+        let mut summary = CompactSummary::default();
+        for (name, value) in [
+            ("sink_time_sample_count", 4),
+            ("sink_time_total_us", 1_000),
+            ("sink_time_p50_us", 100),
+            ("sink_time_p99_us", 400),
+            ("sink_time_max_us", 500),
+        ] {
+            summary.hour_latch.insert(name.to_string(), value);
+        }
+        let telemetry = collector_sink_write_summary_json(&summary);
+        assert_eq!(telemetry["count"], json!(4));
+        assert_eq!(telemetry["total"], json!(1_000));
+        assert_eq!(telemetry["avg"], json!(250.0));
+        assert_eq!(telemetry["p50"], json!(100));
+        assert_eq!(telemetry["p99"], json!(400));
+        assert_eq!(telemetry["max"], json!(500));
+    }
+
+    #[test]
+    fn acceptance_rejects_incoherent_collector_sink_distribution() {
+        let mut summary = CompactSummary::default();
+        for (name, value) in [
+            ("sink_time_sample_count", 4),
+            ("sink_time_total_us", 1_000),
+            ("sink_time_p50_us", 500),
+            ("sink_time_p99_us", 400),
+            ("sink_time_max_us", 450),
+        ] {
+            summary.hour_latch.insert(name.to_string(), value);
+        }
+        assert!(acceptance_telemetry_problems(&summary, &[], None)
+            .contains(&"acceptance_collector_sink_time_distribution_invalid".to_string()));
+    }
+
+    #[test]
     fn unmeasured_clock_skew_is_null_not_a_false_green() {
         assert_eq!(ClockSkewSample::unmeasured().as_json(), Value::Null);
     }
@@ -17083,6 +17308,9 @@ mod tests {
         for field in ["count", "avg", "p50", "p95", "p99", "max"] {
             assert!(telemetry["sink_write_us"].get(field).is_some());
         }
+        for field in ["count", "total", "avg", "p50", "p99", "max"] {
+            assert!(telemetry["collector_sink_write_us"].get(field).is_some());
+        }
         for field in [
             "wall_elapsed_us",
             "mono_elapsed_us",
@@ -17104,6 +17332,7 @@ mod tests {
         );
         assert_eq!(telemetry["complete"], json!(false));
         assert_eq!(telemetry["frame_time_us"]["p50"], Value::Null);
+        assert_eq!(telemetry["collector_sink_write_us"]["p99"], Value::Null);
         assert_eq!(telemetry["sink_write_us"]["p99"], Value::Null);
         assert_eq!(telemetry["exact_roster"]["exact"], json!(false));
     }
@@ -28044,7 +28273,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_speed_root_gate_feature_locally_omits_only_domain57() {
+    fn missing_speed_root_gate_omits_debug_d57_but_admits_native_production_x12() {
         let dir = std::env::temp_dir().join(format!(
             "battle-plan-recorder_host_d57_roster_gate_{}",
             std::process::id()
@@ -28110,6 +28339,16 @@ mod tests {
         );
         assert_eq!(profile["domain57_omission"]["substitution"], json!("none"));
 
+        let production_default_without_gate = add_required_static_bundle_inputs(
+            &dir,
+            base_profile_test_args(&dir, &["--profile", "production"]),
+        );
+        let cfg = parse_args(production_default_without_gate)
+            .expect("authorized passive X12 should admit native production d57");
+        assert!(scheduled_roster_includes_domain57(&cfg.scheduled_domains));
+        assert!(cfg.speed_root_gate_path.is_none());
+        assert_eq!(cfg.domain57_omission_reason, None);
+
         let exact_only_d57 = add_required_static_bundle_inputs(
             &dir,
             base_profile_test_args(
@@ -28123,9 +28362,10 @@ mod tests {
                 ],
             ),
         );
-        let error = parse_args(exact_only_d57)
-            .expect_err("an exact roster cannot become an empty substituted capture");
-        assert!(error.contains("no feature may be substituted"), "{error}");
+        let cfg = parse_args(exact_only_d57)
+            .expect("authorized passive X12 should admit an exact production d57 roster");
+        assert!(scheduled_roster_includes_domain57(&cfg.scheduled_domains));
+        assert_eq!(cfg.domain57_omission_reason, None);
 
         let mut debug_with_gate_without_raw_hash = add_required_static_bundle_inputs(
             &dir,
@@ -28152,6 +28392,14 @@ mod tests {
             Some(compact_contract::CaptureProfile::Debug),
             true,
             Some("1"),
+        ));
+        assert!(allow_native_production_d57_without_speed_gate(
+            true,
+            Some(compact_contract::CaptureProfile::Production),
+        ));
+        assert!(!allow_native_production_d57_without_speed_gate(
+            false,
+            Some(compact_contract::CaptureProfile::Production),
         ));
         assert!(!allow_x12_debug_d57_without_speed_gate(
             false,
@@ -28324,7 +28572,7 @@ mod tests {
     }
 
     #[test]
-    fn d70_schedule_is_reserved_for_nonce_bound_paused_evidence() {
+    fn d70_schedule_is_ordinary_production_and_paused_evidence_is_optional() {
         let dir = std::env::temp_dir().join(format!(
             "battle-plan-recorder_d70_paused_authority_{}_{}",
             std::process::id(),
@@ -28335,30 +28583,30 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
 
-        let ordinary_error = parse_args(profile_test_args(
+        let ordinary = parse_args(profile_test_args(
             &dir,
             &[
                 "--profile",
                 "production",
                 "--scheduled-domains-exact",
                 "--scheduled-domain",
-                PAUSED_EVIDENCE_DOMAIN_NAME,
+                "sunk_convoy_history_live",
             ],
         ))
-        .expect_err("ordinary production must not schedule reserved d70");
-        assert!(
-            ordinary_error.contains("requires --acceptance-test-mode paused"),
-            "{ordinary_error}"
+        .expect("ordinary production must schedule exact d70");
+        assert_eq!(
+            compact_expected_domain_ids_for_config(&ordinary),
+            vec![COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE]
         );
 
-        let wrong_mode_error = parse_args(profile_test_args(
+        let non_paused_evidence = parse_args(profile_test_args(
             &dir,
             &[
                 "--profile",
                 "production",
                 "--scheduled-domains-exact",
                 "--scheduled-domain",
-                PAUSED_EVIDENCE_DOMAIN_NAME,
+                "sunk_convoy_history_live",
                 "--scheduled-domain",
                 "weather_live",
                 "--acceptance-test-mode",
@@ -28367,10 +28615,10 @@ mod tests {
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ],
         ))
-        .expect_err("a valid nonce in a non-paused mode must not authorize d70");
+        .expect("a separate acceptance mode must not disable ordinary d70");
         assert!(
-            wrong_mode_error.contains("requires --acceptance-test-mode paused"),
-            "{wrong_mode_error}"
+            compact_expected_domain_ids_for_config(&non_paused_evidence)
+                .contains(&COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE)
         );
 
         let cfg = parse_args(profile_test_args(
@@ -28380,14 +28628,14 @@ mod tests {
                 "production",
                 "--scheduled-domains-exact",
                 "--scheduled-domain",
-                PAUSED_EVIDENCE_DOMAIN_NAME,
+                "sunk_convoy_history_live",
                 "--acceptance-test-mode",
                 "paused",
                 "--acceptance-test-nonce",
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ],
         ))
-        .expect("nonce-bound paused acceptance mode should admit reserved d70");
+        .expect("paused acceptance evidence should retain ordinary d70");
         assert_eq!(
             compact_expected_domain_ids_for_config(&cfg),
             vec![COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE]
@@ -28401,7 +28649,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             control["scheduled_domains"],
-            json!(PAUSED_EVIDENCE_DOMAIN_NAME)
+            json!("sunk_convoy_history_live")
         );
         assert_eq!(control["acceptance_test_mode_v1"], json!("paused"));
         assert_eq!(
@@ -33374,6 +33622,11 @@ mod tests {
             2
         );
 
+        // The hardened Windows reader retains the archive without delete
+        // sharing for its lifetime. Release that authenticated view before
+        // simulating a later relocation; a live reader must continue to make
+        // rename/replacement fail closed in production.
+        drop(container);
         let relocated = relocated_dir.join("portable.battleplan");
         fs::rename(&replay_path, &relocated).unwrap();
         fs::remove_file(&catalog_path).unwrap();

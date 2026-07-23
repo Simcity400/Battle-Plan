@@ -1137,50 +1137,37 @@ fn diagnostic_hold_rejects_eof_as_proof() {
     assert!(!client.early_render_capture_committed);
 }
 
-// --- dormancy / activation-freeze ------------------------------------------
+// --- production activation boundary ----------------------------------------
 
-/// ACTIVATION FREEZE proof. The live duplex-control client must stay dormant
-/// until owner sign-off on live validation, and the dormancy is ENFORCED at the
-/// type boundary:
-///   1. the gate constant is `false`, and
-///   2. the ONLY production constructor of [`DuplexClientProductPermit`] fails
-///      while it is `false`. EVERY public entry point that can construct a
+/// Production activation proof. The live duplex-control client remains
+/// fail-closed at the type boundary:
+///   1. activation and the exact-build local identity reader must both be true;
+///   2. the ONLY production constructor of [`DuplexClientProductPermit`] checks
+///      that conjunction. EVERY public entry point that can construct a
 ///      usable client, start pipe I/O, or spawn a connector worker now takes a
 ///      `&DuplexClientProductPermit` by type — `CollectorControlClient::new`,
 ///      `CollectorControlClient::perform_handshake`, `open_client_control_pipe`,
 ///      `run_bounded_worker`, `Win32PipeConnector::new`, and
 ///      `Win32OverlappedControlIo::new` — so a caller that ignores the constant
-///      cannot even compile a call. This test fails the moment the permit
-///      becomes obtainable while the constant is still claimed dormant; the type
-///      system covers the rest. `SendHandle`'s inner handle and
+///      cannot even compile a call. `SendHandle`'s inner handle and
 ///      `CollectorIdentity`'s fields are private, so neither the raw pipe handle
 ///      nor a challenge-less identity can be forged to sidestep the gate.
 ///   3. merely constructing the state machine (with a test permit) performs no
 ///      transport I/O — no `CollectorHello` is written and nothing is read until
 ///      a caller explicitly drives `perform_handshake`/`serve_next`.
 #[test]
-fn activation_freeze_holds_and_no_public_entry_can_start_pipe_io() {
-    assert!(
-        !DUPLEX_CONTROL_CLIENT_ENABLED,
-        "activation freeze: the duplex-control client must stay dormant"
-    );
-    // ENFORCED dormancy: the sole production permit constructor fails closed.
-    // Because `CollectorControlClient::new`/`perform_handshake` and every live
-    // I/O entry point require this permit by type, a fail-closed permit makes a
-    // usable client unconstructible and all pipe I/O unreachable in production.
+fn production_activation_mints_only_the_typed_local_identity_permit() {
+    assert!(DUPLEX_CONTROL_CLIENT_ENABLED);
+    assert!(compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED);
+    assert!(product_rollover_enabled());
+    // Every live I/O entry point requires this private-field permit by type.
     // SCOPE: the actual compile-time guarantee is the `&DuplexClientProductPermit`
     // requirement on those signatures (a permitless public I/O entry simply cannot
     // be written without the permit). This runtime test does not itself PROVE the
     // absence of a hypothetical future permitless entry point — it asserts the
     // permit fails closed and that mere construction is inert; the type boundary is
     // what enforces the rest, backed by review.
-    assert!(
-        matches!(
-            duplex_client_product_permit(),
-            Err(ClientError::ActivationDisabled)
-        ),
-        "no production caller may obtain a duplex-client permit while frozen"
-    );
+    assert!(duplex_client_product_permit().is_ok());
 
     let clock = FakeClock::at(0);
     let (session, session_id) = fresh_session();

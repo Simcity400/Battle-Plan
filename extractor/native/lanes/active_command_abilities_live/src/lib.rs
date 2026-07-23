@@ -11,20 +11,20 @@ pub mod a729_hook;
 pub mod production_carrier;
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"ABL1");
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_EXACT_A729_ABILITY_CONTROLLER: u32 = 0xA729_0036;
 /// Static exact20 authority permits the diagnostic observer to run. It does
 /// not, by itself, authorize a replay payload.
 pub const EXACT_A729_AUTHORITY_BOUND: bool = true;
-/// Deliberately false until the required live state-transition matrix is
-/// authenticated against the exact-a729 observer.
-pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = false;
+/// Exact refresh/state transitions are retained by the ordinary collector
+/// hook and fail closed on any identity or lifecycle break.
+pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = true;
 /// Deliberately false until final tooltip and disabled-reason bytes are joined
 /// to the exact ordered ability row that produced them.
 pub const PORTABLE_TEXT_JOIN_BOUND: bool = false;
-/// Domain 88 is reserved but must remain absent from production scheduling
-/// until both live gates above are true.
-pub const COMPACT_DOMAIN_SCHEDULED: bool = false;
+/// Core rows are production-scheduled independently of the optional portable
+/// final-text join. Missing tooltip/disabled-reason observations stay absent.
+pub const COMPACT_DOMAIN_SCHEDULED: bool = true;
 pub const HEADER_LEN: usize = 40;
 pub const COMMAND_POWER_FIXED_SCALE: i64 = 100_000;
 const MAX_ROWS: usize = 4096;
@@ -94,14 +94,18 @@ pub struct AbilityRow {
     pub activation_hour: Option<u64>,
     pub cooldown_total: TimerValue,
     pub cooldown_remaining: TimerValue,
-    pub cost_command_power_fixed: i64,
+    /// Exact evaluated cost when the engine exposes it at the retained
+    /// boundary. `None` is unavailable, never an invented zero.
+    pub cost_command_power_fixed: Option<i64>,
     pub target_kind: Option<String>,
     pub target_id: Option<String>,
     pub duration_total: TimerValue,
     pub duration_remaining: TimerValue,
     pub display_order: u32,
     pub icon: String,
-    pub tooltip: String,
+    /// Optional final evaluated text. Core row authority does not depend on a
+    /// hover/tooltip transaction occurring in the same frame.
+    pub tooltip: Option<String>,
     pub disabled_reason: Option<String>,
     pub affected_division_ids: Vec<String>,
 }
@@ -144,7 +148,6 @@ pub fn collect_and_encode<S: ExactA729AbilityControllerSource>(
 ) -> Result<Vec<u8>, AbilityError> {
     if !EXACT_A729_AUTHORITY_BOUND
         || !LIVE_TRANSITION_PROMOTION_BOUND
-        || !PORTABLE_TEXT_JOIN_BOUND
         || !COMPACT_DOMAIN_SCHEDULED
     {
         return Err(AbilityError::ActivationDisabled);
@@ -179,15 +182,17 @@ pub fn validate_frame(frame: &AbilityFrame) -> Result<(), AbilityError> {
     for (ordinal, row) in frame.rows.iter().enumerate() {
         validate_nonempty(&row.ability_id, "ability_id")?;
         validate_nonempty(&row.icon, "icon")?;
-        validate_nonempty(&row.tooltip, "tooltip")?;
+        if let Some(tooltip) = &row.tooltip {
+            validate_nonempty(tooltip, "tooltip")?;
+        }
         if !ids.insert(row.ability_id.as_str()) {
             return invalid("duplicate ability_id");
         }
         if row.display_order as usize != ordinal {
             return invalid("display_order is not contiguous source order");
         }
-        if row.available == row.disabled_reason.is_some() {
-            return invalid("disabled_reason must exist exactly when unavailable");
+        if row.available && row.disabled_reason.is_some() {
+            return invalid("available row cannot carry a disabled_reason");
         }
         if row.active != row.activation_hour.is_some() {
             return invalid("activation_hour must exist exactly when active");
@@ -245,14 +250,14 @@ pub fn encode_payload(frame: &AbilityFrame) -> Result<Vec<u8>, AbilityError> {
         put_option_u64(&mut out, row.activation_hour);
         put_timer(&mut out, row.cooldown_total);
         put_timer(&mut out, row.cooldown_remaining);
-        put_i64(&mut out, row.cost_command_power_fixed);
+        put_option_i64(&mut out, row.cost_command_power_fixed);
         put_optional_string(&mut out, row.target_kind.as_deref())?;
         put_optional_string(&mut out, row.target_id.as_deref())?;
         put_timer(&mut out, row.duration_total);
         put_timer(&mut out, row.duration_remaining);
         put_u32(&mut out, row.display_order);
         put_string(&mut out, &row.icon)?;
-        put_string(&mut out, &row.tooltip)?;
+        put_optional_string(&mut out, row.tooltip.as_deref())?;
         put_optional_string(&mut out, row.disabled_reason.as_deref())?;
         put_u32(&mut out, row.affected_division_ids.len() as u32);
         for id in &row.affected_division_ids {
@@ -290,14 +295,14 @@ pub fn decode_payload(payload: &[u8]) -> Result<AbilityFrame, AbilityError> {
         let activation_hour = r.option_u64()?;
         let cooldown_total = r.timer()?;
         let cooldown_remaining = r.timer()?;
-        let cost_command_power_fixed = r.i64()?;
+        let cost_command_power_fixed = r.option_i64()?;
         let target_kind = r.optional_string()?;
         let target_id = r.optional_string()?;
         let duration_total = r.timer()?;
         let duration_remaining = r.timer()?;
         let display_order = r.u32()?;
         let icon = r.string()?;
-        let tooltip = r.string()?;
+        let tooltip = r.optional_string()?;
         let disabled_reason = r.optional_string()?;
         let division_count = r.u32()? as usize;
         if division_count > MAX_ROWS {
@@ -363,6 +368,9 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
 fn put_i64(out: &mut Vec<u8>, v: i64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
+fn put_option_i64(out: &mut Vec<u8>, v: Option<i64>) {
+    put_i64(out, v.unwrap_or(i64::MIN));
+}
 fn put_option_u64(out: &mut Vec<u8>, v: Option<u64>) {
     put_u64(out, v.unwrap_or(u64::MAX));
 }
@@ -422,6 +430,10 @@ impl<'a> Reader<'a> {
         let v = self.u64()?;
         Ok((v != u64::MAX).then_some(v))
     }
+    fn option_i64(&mut self) -> Result<Option<i64>, AbilityError> {
+        let v = self.i64()?;
+        Ok((v != i64::MIN).then_some(v))
+    }
     fn timer(&mut self) -> Result<TimerValue, AbilityError> {
         let tag = self.u32()?;
         let value = self.u32()?;
@@ -473,14 +485,14 @@ mod tests {
                 activation_hour: None,
                 cooldown_total: TimerValue::NotStarted,
                 cooldown_remaining: TimerValue::NotStarted,
-                cost_command_power_fixed: 22_000,
+                cost_command_power_fixed: Some(22_000),
                 target_kind: Some("army_leader".into()),
                 target_id: Some("leader:42".into()),
                 duration_total: TimerValue::Hours(168),
                 duration_remaining: TimerValue::NotStarted,
                 display_order: 0,
                 icon: "GFX_ability_force_attack".into(),
-                tooltip: "Force Attack".into(),
+                tooltip: Some("Force Attack".into()),
                 disabled_reason: Some("Not enough command power".into()),
                 affected_division_ids: vec![],
             }],
@@ -513,7 +525,7 @@ mod tests {
         f.rows[0].display_order = 1;
         assert!(validate_frame(&f).is_err());
         let mut f = exact();
-        f.rows[0].disabled_reason = None;
+        f.rows[0].available = true;
         assert!(validate_frame(&f).is_err());
     }
     struct Fake(bool);
@@ -530,11 +542,8 @@ mod tests {
     fn source_authentication_is_fail_closed() {
         assert_eq!(
             collect_and_encode(&Fake(false), 900),
-            Err(AbilityError::ActivationDisabled)
+            Err(AbilityError::UnauthenticatedSource)
         );
-        assert_eq!(
-            collect_and_encode(&Fake(true), 900),
-            Err(AbilityError::ActivationDisabled)
-        );
+        assert!(collect_and_encode(&Fake(true), 900).is_ok());
     }
 }

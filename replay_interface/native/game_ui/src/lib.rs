@@ -13,6 +13,7 @@ pub mod dds;
 pub mod decision_chrome;
 pub mod decision_replay;
 pub mod definition_admission;
+pub mod deployment_queue_state;
 pub mod design_catalog;
 pub mod dynamic_collection;
 pub mod event_chrome;

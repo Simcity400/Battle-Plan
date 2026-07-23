@@ -1,8 +1,9 @@
-//! Owner-run, evidence-only exact-a729 detours for the A30 controller carriers.
+//! Exact-a729 detours for the production A30 controller carriers.
 //!
-//! Nothing in the production scheduler installs these hooks. An evidence owner
-//! must explicitly enable the environment gate, install the byte-gated hooks,
-//! and arm a single expected controller refresh. Successful observations are
+//! The production scheduler installs these hooks only when compact domain 53
+//! is selected. The explicit evidence owner remains available behind its
+//! environment gate. Both modes arm a single expected controller refresh.
+//! Successful observations are
 //! encoded immediately as the pointer-free `AUGC`/`CIPC` payloads consumed by
 //! the domain-53 multiplex. Teardown disables outer producers first and does
 //! not remove a trampoline until all in-flight callbacks have quiesced.
@@ -22,12 +23,16 @@ use minhook::{MinHook, MH_STATUS};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, VecDeque};
+use std::ffi::OsString;
+use std::io::Read;
+use std::os::windows::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, GetProcessTimes,
 };
@@ -54,6 +59,12 @@ pub const SENTINEL_DUMP_IDENTITY_MANIFEST_SHA256: &str =
     "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe";
 pub const SENTINEL_DUMP_ARTIFACT_SHA256: &str =
     "8bfe8566aaa95d1f2916189d6c2097c5ec4eadab148fb39342c766aee68b392a";
+pub const AGENCY_OWNER_RESOLVER_JOB_ID: &str =
+    "20260722T070232Z-final-a30-production-scheduler-root-b-a5d56784";
+pub const AGENCY_OWNER_RESOLVER_MANIFEST_SHA256: &str =
+    "17eee03f84da87c2c1d864de1ea55e197e931418d51c31598494b475998143f1";
+pub const AGENCY_OWNER_RESOLVER_INSTRUCTIONS_SHA256: &str =
+    "6abb1fbcef1b230c8fc281a770e12e7eacf7ca8a2b58ba3e75166c76c03a5ccc";
 pub const MAX_PENDING_RECORDS: usize = 1_024;
 
 const AGENCY_OUTER_SENTINEL: [u8; 16] = [
@@ -76,19 +87,27 @@ const CIPHER_ROW_SENTINEL: [u8; 16] = [
     0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57,
     0x41, 0x54,
 ];
+const AGENCY_OWNER_RESOLVER_RVA: usize = 0x0BA56A0;
+const AGENCY_OWNER_RESOLVER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x41, 0x35,
+    0xa2, 0x02,
+];
 
 type ControllerOuterFn = unsafe extern "system" fn(usize);
 type AgencyMaterializerFn = unsafe extern "system" fn(usize, usize, usize, usize, usize) -> usize;
 type AgencyFilterFn = unsafe extern "system" fn(usize, usize, usize) -> usize;
 type CipherRowFn = unsafe extern "system" fn(usize, usize, u8);
+type AgencyOwnerResolverFn = unsafe extern "system" fn(usize) -> usize;
 
 static ORIGINAL_AGENCY_OUTER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_AGENCY_MATERIALIZER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_AGENCY_FILTER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_CIPHER_OUTER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_CIPHER_ROW: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_AGENCY_OWNER_RESOLVER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+static EVIDENCE_INSTALL: AtomicBool = AtomicBool::new(false);
 static TEARING_DOWN: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static NEXT_HOOK_EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -106,6 +125,7 @@ static LAST_CIPHER_CONTROLLER: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 static ARMED: OnceLock<Mutex<ArmedRefreshes>> = OnceLock::new();
 static QUEUE: OnceLock<Mutex<VecDeque<Domain53ControllerEvidenceRecord>>> = OnceLock::new();
+static CURRENT_EXECUTABLE_VERIFICATION: OnceLock<Result<(), String>> = OnceLock::new();
 
 thread_local! {
     static OPEN_AGENCY: RefCell<Option<OpenAgency>> = const { RefCell::new(None) };
@@ -194,6 +214,8 @@ struct ArmedRefreshes {
 
 struct OpenAgency {
     builder: Option<AgencyUpgradeRefreshBuilder>,
+    arm: AgencyRefreshArm,
+    owner_resolved: bool,
     expected_controller: usize,
     next_branch_index: u32,
     pending_branch: Option<(u32, u64)>,
@@ -289,6 +311,7 @@ pub struct ControllerEvidenceDiagnostics {
 pub struct HookDrain {
     pub hook_epoch: u64,
     pub module_base: u64,
+    pub evidence_install: bool,
     pub records: Vec<Domain53ControllerEvidenceRecord>,
     pub diagnostics: ControllerEvidenceDiagnostics,
 }
@@ -335,6 +358,8 @@ pub struct ControllerEvidenceReceipt {
     pub sentinel_dump_job_id: String,
     pub sentinel_dump_identity_manifest_sha256: String,
     pub sentinel_dump_artifact_sha256: String,
+    pub agency_owner_resolver_job_id: String,
+    pub agency_owner_resolver_manifest_sha256: String,
     pub process_identity: ProcessIdentityReceipt,
     pub evidence_install: bool,
     pub hook_epoch: u64,
@@ -352,6 +377,7 @@ pub struct InstalledHookAddresses {
     pub agency_filter: usize,
     pub cipher_outer: usize,
     pub cipher_row: usize,
+    pub agency_owner_resolver: usize,
 }
 
 pub fn evidence_activation_enabled() -> bool {
@@ -407,10 +433,24 @@ pub fn install_fixture_hooks() -> Result<InstalledHookAddresses, String> {
     if !evidence_activation_enabled() {
         return Err(format!("A30 evidence hook requires {EVIDENCE_ACTIVATION_ENV}=1"));
     }
+    install_hooks(true)
+}
+
+/// Install the exact byte-gated observer for the ordinary compact-domain 53
+/// scheduler. No environment flag or fixture receipt is an activation input.
+pub fn install_production_hooks() -> Result<InstalledHookAddresses, String> {
+    install_hooks(false)
+}
+
+fn install_hooks(evidence_install: bool) -> Result<InstalledHookAddresses, String> {
     let _guard = INSTALL_LOCK.lock().map_err(|_| "A30 install lock poisoned")?;
     if installed() {
+        if EVIDENCE_INSTALL.load(Ordering::Acquire) != evidence_install {
+            return Err("A30 controller hooks already belong to the other install mode".into());
+        }
         return Ok(addresses(MODULE_BASE.load(Ordering::Acquire)));
     }
+    verify_current_process_executable()?;
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
         return Err("A30 GetModuleHandleW(NULL) returned null".into());
@@ -426,6 +466,7 @@ pub fn install_fixture_hooks() -> Result<InstalledHookAddresses, String> {
     reset_state(epoch)?;
     MODULE_BASE.store(base, Ordering::Release);
     let hooks = [
+        (sites.agency_owner_resolver, hook_agency_owner_resolver as *mut c_void, &ORIGINAL_AGENCY_OWNER_RESOLVER),
         (sites.agency_outer, hook_agency_outer as *mut c_void, &ORIGINAL_AGENCY_OUTER),
         (sites.agency_materializer, hook_agency_materializer as *mut c_void, &ORIGINAL_AGENCY_MATERIALIZER),
         (sites.agency_filter, hook_agency_filter as *mut c_void, &ORIGINAL_AGENCY_FILTER),
@@ -453,7 +494,7 @@ pub fn install_fixture_hooks() -> Result<InstalledHookAddresses, String> {
     }
     // Nested observers become active first; an outer hook is never able to
     // publish a record while its inner observation boundary is absent.
-    for target in [sites.agency_filter, sites.agency_materializer, sites.cipher_row, sites.agency_outer, sites.cipher_outer] {
+    for target in [sites.agency_owner_resolver, sites.agency_filter, sites.agency_materializer, sites.cipher_row, sites.agency_outer, sites.cipher_outer] {
         if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
             if let Err(cleanup) = rollback_created(&created) {
                 INSTALLED.store(true, Ordering::Release);
@@ -465,8 +506,42 @@ pub fn install_fixture_hooks() -> Result<InstalledHookAddresses, String> {
             return Err(format!("A30 hook enable failed at 0x{target:X}: {status}"));
         }
     }
+    EVIDENCE_INSTALL.store(evidence_install, Ordering::Release);
     INSTALLED.store(true, Ordering::Release);
     Ok(sites)
+}
+
+pub(crate) fn verify_current_process_executable() -> Result<(), String> {
+    CURRENT_EXECUTABLE_VERIFICATION
+        .get_or_init(verify_current_process_executable_uncached)
+        .clone()
+}
+
+fn verify_current_process_executable_uncached() -> Result<(), String> {
+    let mut path = [0u16; 32_768];
+    let len = unsafe { GetModuleFileNameW(ptr::null_mut(), path.as_mut_ptr(), path.len() as u32) }
+        as usize;
+    if len == 0 || len >= path.len() {
+        return Err("A30 current executable path is unavailable".into());
+    }
+    let path = PathBuf::from(OsString::from_wide(&path[..len]));
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("A30 current executable open failed: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("A30 current executable read failed: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    if format!("{:x}", digest.finalize()) != EXECUTABLE_SHA256 {
+        return Err("A30 current executable SHA-256 differs from exact a729".into());
+    }
+    Ok(())
 }
 
 pub fn drain() -> Result<HookDrain, String> {
@@ -478,6 +553,7 @@ pub fn drain() -> Result<HookDrain, String> {
     Ok(HookDrain {
         hook_epoch: ACTIVE_HOOK_EPOCH.load(Ordering::Acquire),
         module_base: MODULE_BASE.load(Ordering::Acquire) as u64,
+        evidence_install: EVIDENCE_INSTALL.load(Ordering::Acquire),
         diagnostics: diagnostics(records.len() as u64),
         records,
     })
@@ -508,14 +584,16 @@ pub fn receipt_from_drain(drain: &HookDrain) -> ControllerEvidenceReceipt {
         sentinel_dump_job_id: SENTINEL_DUMP_JOB_ID.into(),
         sentinel_dump_identity_manifest_sha256: SENTINEL_DUMP_IDENTITY_MANIFEST_SHA256.into(),
         sentinel_dump_artifact_sha256: SENTINEL_DUMP_ARTIFACT_SHA256.into(),
+        agency_owner_resolver_job_id: AGENCY_OWNER_RESOLVER_JOB_ID.into(),
+        agency_owner_resolver_manifest_sha256: AGENCY_OWNER_RESOLVER_MANIFEST_SHA256.into(),
         process_identity: current_process_identity(),
-        evidence_install: true,
+        evidence_install: drain.evidence_install,
         hook_epoch: drain.hook_epoch,
-        hook_sites: hook_site_receipts(sites),
+        hook_sites: hook_site_receipts(sites, drain.module_base as usize),
         records: drain.records.iter().map(record_receipt).collect(),
         diagnostics: drain.diagnostics.clone(),
         domain53_multiplex_ready,
-        production_scheduling_enabled: false,
+        production_scheduling_enabled: !drain.evidence_install,
     }
 }
 
@@ -555,7 +633,7 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
     disable(sites.agency_outer)?;
     disable(sites.cipher_outer)?;
     wait_for_callbacks()?;
-    for target in [sites.agency_materializer, sites.agency_filter, sites.cipher_row] {
+    for target in [sites.agency_materializer, sites.agency_filter, sites.agency_owner_resolver, sites.cipher_row] {
         disable(target)?;
     }
     wait_for_callbacks()?;
@@ -568,7 +646,7 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
         COMPLETENESS_POISONED.store(true, Ordering::Release);
     }
     let drained = drain()?;
-    for target in [sites.cipher_outer, sites.agency_outer, sites.cipher_row, sites.agency_materializer, sites.agency_filter] {
+    for target in [sites.cipher_outer, sites.agency_outer, sites.cipher_row, sites.agency_materializer, sites.agency_filter, sites.agency_owner_resolver] {
         match unsafe { MinHook::remove_hook(target as *mut c_void) } {
             Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
             Err(status) => return Err(format!("A30 hook remove failed at 0x{target:X}: {status}")),
@@ -598,26 +676,23 @@ unsafe extern "system" fn hook_agency_outer(controller: usize) {
         unsafe { original(controller) };
         return;
     };
-    let memory = InProcessMemory;
-    let builder = AgencyUpgradeRefreshBuilder::begin(
-        &memory,
-        arm.frame_hour,
-        arm.owner_tag_db_id,
-        &arm.valid_country_tag_db_ids,
-        arm.producer_record_identity,
-    ).ok();
-    let poisoned = builder.is_none();
     OPEN_AGENCY.with(|slot| *slot.borrow_mut() = Some(OpenAgency {
-        builder,
+        builder: None,
+        arm: arm.clone(),
+        owner_resolved: false,
         expected_controller: controller,
         next_branch_index: 1,
         pending_branch: None,
-        poisoned,
+        poisoned: false,
     }));
     unsafe { original(controller) };
     let open = OPEN_AGENCY.with(|slot| slot.borrow_mut().take());
     let Some(mut open) = open else { poison(&DROPPED_UNREADABLE); return };
-    if open.expected_controller != controller || open.poisoned || open.pending_branch.is_some() {
+    if open.expected_controller != controller
+        || !open.owner_resolved
+        || open.poisoned
+        || open.pending_branch.is_some()
+    {
         poison(&DROPPED_UNREADABLE);
         return;
     }
@@ -626,6 +701,48 @@ unsafe extern "system" fn hook_agency_outer(controller: usize) {
         Ok(payload) => retain(ControllerEvidenceFamily::AgencyUpgrade, arm.frame_hour, payload),
         Err(_) => poison(&DROPPED_UNREADABLE),
     }
+}
+
+/// CCountry resolver. This closes the previous trust gap where the arm's human
+/// country could be accepted without proving that the active agency controller
+/// resolved the same country.
+unsafe extern "system" fn hook_agency_owner_resolver(country_id: usize) -> usize {
+    let _active = CallbackGuard::enter();
+    let address = ORIGINAL_AGENCY_OWNER_RESOLVER.load(Ordering::Acquire);
+    if address == 0 {
+        poison(&DROPPED_UNREADABLE);
+        return 0;
+    }
+    let original: AgencyOwnerResolverFn = unsafe { mem::transmute(address) };
+    let result = unsafe { original(country_id) };
+    OPEN_AGENCY.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(open) = slot.as_mut() else { return };
+        if open.owner_resolved || open.builder.is_some() {
+            open.poisoned = true;
+            return;
+        }
+        let observed_owner = read_stable::<u32>(country_id);
+        if observed_owner != Some(open.arm.owner_tag_db_id) {
+            open.poisoned = true;
+            return;
+        }
+        let memory = InProcessMemory;
+        match AgencyUpgradeRefreshBuilder::begin(
+            &memory,
+            open.arm.frame_hour,
+            open.arm.owner_tag_db_id,
+            &open.arm.valid_country_tag_db_ids,
+            open.arm.producer_record_identity,
+        ) {
+            Ok(builder) => {
+                open.builder = Some(builder);
+                open.owner_resolved = true;
+            }
+            Err(_) => open.poisoned = true,
+        }
+    });
+    result
 }
 
 unsafe extern "system" fn hook_agency_materializer(a1: usize, a2: usize, branch: usize, a4: usize, a5: usize) -> usize {
@@ -727,7 +844,7 @@ unsafe extern "system" fn hook_cipher_row(row: usize, target_cid: usize, selecte
         let mut slot = slot.borrow_mut();
         let Some(open) = slot.as_mut() else { return };
         let cid = read_stable::<u32>(target_cid);
-        if cid.is_none_or(|cid| open.builder.as_mut().is_none_or(|builder| builder.observe_bound_target(cid).is_err())) {
+        if cid.is_none_or(|cid| open.builder.as_mut().is_none_or(|builder| builder.observe_bound_target(cid, selected).is_err())) {
             open.poisoned = true;
         }
     });
@@ -866,10 +983,12 @@ fn addresses(base: usize) -> InstalledHookAddresses {
         agency_filter: base + A729_AGENCY_UPGRADE_FILTER_RVA,
         cipher_outer: base + A729_CIPHER_CONTROLLER_RVA,
         cipher_row: base + A729_CIPHER_ROW_BIND_RVA,
+        agency_owner_resolver: base + AGENCY_OWNER_RESOLVER_RVA,
     }
 }
-fn site_sentinels(sites: InstalledHookAddresses) -> [(usize, &'static [u8]); 5] {
+fn site_sentinels(sites: InstalledHookAddresses) -> [(usize, &'static [u8]); 6] {
     [
+        (sites.agency_owner_resolver, &AGENCY_OWNER_RESOLVER_SENTINEL),
         (sites.agency_outer, &AGENCY_OUTER_SENTINEL),
         (sites.agency_materializer, &AGENCY_MATERIALIZER_SENTINEL),
         (sites.agency_filter, &AGENCY_FILTER_SENTINEL),
@@ -908,12 +1027,13 @@ fn wait_for_callbacks() -> Result<(), String> {
     Ok(())
 }
 fn clear_hook_state() {
-    for original in [&ORIGINAL_AGENCY_OUTER, &ORIGINAL_AGENCY_MATERIALIZER, &ORIGINAL_AGENCY_FILTER, &ORIGINAL_CIPHER_OUTER, &ORIGINAL_CIPHER_ROW] {
+    for original in [&ORIGINAL_AGENCY_OUTER, &ORIGINAL_AGENCY_MATERIALIZER, &ORIGINAL_AGENCY_FILTER, &ORIGINAL_CIPHER_OUTER, &ORIGINAL_CIPHER_ROW, &ORIGINAL_AGENCY_OWNER_RESOLVER] {
         original.store(0, Ordering::Release);
     }
     MODULE_BASE.store(0, Ordering::Release);
     ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
     TEARING_DOWN.store(false, Ordering::Release);
+    EVIDENCE_INSTALL.store(false, Ordering::Release);
 }
 
 fn current_process_identity() -> ProcessIdentityReceipt {
@@ -965,8 +1085,9 @@ fn record_receipt(record: &Domain53ControllerEvidenceRecord) -> EncodedRecordRec
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
-fn hook_site_receipts(sites: InstalledHookAddresses) -> Vec<HookSiteReceipt> {
+fn hook_site_receipts(sites: InstalledHookAddresses, module_base: usize) -> Vec<HookSiteReceipt> {
     let artifact_hashes = [
+        AGENCY_OWNER_RESOLVER_INSTRUCTIONS_SHA256,
         "792c01c7522c6ea3fa40b7ba26897a98de27d9d8a3d244441c1cb6157ba1c756",
         "60236d63cdeb51f62b73c89bd7fc773a354f06741b683ce8651d483f83b46934",
         "34e50c09f850eb6a6733be2f987c5929fc7d6ceb8240f1776a953e3e8e70e54c",
@@ -974,7 +1095,7 @@ fn hook_site_receipts(sites: InstalledHookAddresses) -> Vec<HookSiteReceipt> {
         "00a567e6bd65a98ae4e3ebcd865f71bd14b85d984c134fdec97f21c2a8469842",
     ];
     site_sentinels(sites).into_iter().zip(artifact_hashes).map(|((address, sentinel), artifact_sha256)| HookSiteReceipt {
-        rva: (address - MODULE_BASE.load(Ordering::Acquire)) as u32,
+        rva: address.saturating_sub(module_base) as u32,
         installed_address: address as u64,
         sentinel_sha256: sha256(sentinel),
         artifact_sha256: artifact_sha256.into(),
@@ -995,8 +1116,8 @@ mod tests {
             &countries,
         )
         .unwrap();
-        builder.observe_bound_target(2).unwrap();
-        builder.observe_bound_target(3).unwrap();
+        builder.observe_bound_target(2, 1).unwrap();
+        builder.observe_bound_target(3, 0).unwrap();
         Domain53ControllerEvidenceRecord {
             sequence: 1,
             thread_id: 7,
@@ -1018,11 +1139,12 @@ mod tests {
     }
 
     #[test]
-    fn receipt_is_authenticated_but_cannot_enable_production_scheduling() {
+    fn evidence_receipt_is_authenticated_but_cannot_enable_production_scheduling() {
         let record = cipher_record(900);
         let drain = HookDrain {
             hook_epoch: 3,
             module_base: IMAGE_BASE as u64,
+            evidence_install: true,
             diagnostics: ControllerEvidenceDiagnostics {
                 retained_records: 1,
                 ..ControllerEvidenceDiagnostics::default()
@@ -1032,7 +1154,7 @@ mod tests {
         let receipt = receipt_from_drain(&drain);
         assert!(receipt.domain53_multiplex_ready);
         assert!(!receipt.production_scheduling_enabled);
-        assert_eq!(receipt.hook_sites.len(), 5);
+        assert_eq!(receipt.hook_sites.len(), 6);
         assert_eq!(receipt.records[0].owner_tag_db_id, Some(1));
         assert_eq!(receipt.records[0].selected_target_tag_db_id, Some(2));
         let expected_record_identity = "5a".repeat(32);

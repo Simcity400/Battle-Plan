@@ -1,9 +1,10 @@
-//! Dormant exact-a729 A40 selected-designer observer.
+//! Exact-a729 A40 selected-designer passive observer.
 //!
-//! The hook is installable only through an explicit fixture API. Domain 85 is
-//! still registry-reserved and the production collector never calls this
-//! module. All process pointers are consumed in the callback and reduced to
-//! `(object_type, stable_id)` before entering shared state.
+//! The production collector installs this hook only when domain 85 is
+//! scheduled. All process pointers are consumed in the callback and reduced
+//! to `(object_type, stable_id)` before entering shared state. Missing, torn or
+//! incomplete observations are reported as typed unavailability by the
+//! collector and are never replayed as an empty designer catalog.
 
 use super::{
     collect_fixture_and_encode, ExactSelectedDesignerIdentitySource,
@@ -307,6 +308,16 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
     Ok(addresses)
 }
 
+/// Normal production installer. It shares the exact sentinel-gated hook owner
+/// with the optional fixture API; no fixture receipt or client-driving action
+/// is consulted.
+pub fn install() -> Result<InstalledHookAddresses, String> {
+    if !super::PRODUCTION_ACTIVATION {
+        return Err("A40 selected-designer production authority is not bound".into());
+    }
+    install_for_fixture()
+}
+
 pub fn uninstall_fixture_hooks() -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -363,6 +374,12 @@ pub fn uninstall_fixture_hooks() -> Result<(), String> {
     Ok(())
 }
 
+/// Normal production teardown. Quiescence remains mandatory before the DLL
+/// can unload.
+pub fn uninstall() -> Result<(), String> {
+    uninstall_fixture_hooks()
+}
+
 pub fn diagnostics() -> HookDiagnostics {
     let Some(state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return HookDiagnostics::default();
@@ -386,6 +403,65 @@ pub fn encode_fixture_latest(
         elapsed_wall_ms,
         family,
     )
+}
+
+/// Encodes the most recently committed selection across all six families.
+/// This is a passive current-observation read: if no complete callback has
+/// committed, or the newest callback failed validation, the call fails and the
+/// collector emits a typed source-unavailable SDI1 frame for that hour.
+pub fn encode_latest(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<Vec<u8>, SelectedDesignerError> {
+    if !super::PRODUCTION_ACTIVATION || !INSTALLED.load(Ordering::Acquire) {
+        return Err(SelectedDesignerError::ActivationBlocked);
+    }
+    let observed = {
+        let state = STATE
+            .get()
+            .ok_or_else(|| SelectedDesignerError::Source("A40 hook state is not initialized".into()))?
+            .lock()
+            .map_err(|_| SelectedDesignerError::Source("A40 hook state mutex poisoned".into()))?;
+        if let Some(error) = state.current_error.as_ref() {
+            return Err(SelectedDesignerError::Source(error.clone()));
+        }
+        state
+            .latest
+            .values()
+            .max_by_key(|observed| observed.transition_sequence)
+            .cloned()
+            .ok_or_else(|| {
+                SelectedDesignerError::Source(
+                    "A40 has not observed a complete selected-designer transition".into(),
+                )
+            })?
+    };
+    let snapshot = frame_from_observed(frame_hour, observed);
+    super::encode_payload(&super::SelectedDesignerTransportFrame {
+        elapsed_wall_ms,
+        status_flags: 0,
+        frame_hour,
+        snapshot: Some(snapshot),
+    })
+}
+
+/// Clear process-local selections at an authenticated campaign boundary while
+/// retaining the exact detours. The next frame remains typed unavailable until
+/// a new campaign selection callback commits a complete observation.
+pub fn reset_campaign_observations() -> Result<(), String> {
+    if !INSTALLED.load(Ordering::Acquire) {
+        return Err("A40 selected-designer hook is not installed".into());
+    }
+    let mut state = STATE
+        .get_or_init(|| Mutex::new(HookState::default()))
+        .lock()
+        .map_err(|_| "A40 hook state mutex poisoned".to_string())?;
+    clear_campaign_observations(&mut state);
+    Ok(())
+}
+
+fn clear_campaign_observations(state: &mut HookState) {
+    *state = HookState::default();
 }
 
 /// Destructively drain one hook-observed family into SDI1 evidence bytes. The
@@ -921,5 +997,16 @@ mod tests {
         assert!(!state
             .latest
             .contains_key(&SelectedDesignerFamily::VariantUpgrade));
+    }
+
+    #[test]
+    fn campaign_reset_discards_prior_selection_errors_and_counters() {
+        let mut state = HookState::default();
+        state.callback_count = 9;
+        state.current_error = Some("old campaign".into());
+        clear_campaign_observations(&mut state);
+        assert_eq!(state.callback_count, 0);
+        assert!(state.current_error.is_none());
+        assert!(state.latest.is_empty());
     }
 }

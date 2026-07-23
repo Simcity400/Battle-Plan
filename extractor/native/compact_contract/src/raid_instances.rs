@@ -207,6 +207,28 @@ pub fn encode_payload(
     Ok(out)
 }
 
+/// Encode a typed, rowless current-hour observation failure. A failed owner
+/// walk is never represented as a measured-empty raid system and never reuses
+/// rows from an earlier hour.
+pub fn encode_source_unavailable(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+) -> Result<Vec<u8>, String> {
+    if status_flags == 0 {
+        return Err("RID1 unavailable payload requires a nonzero status".into());
+    }
+    encode_payload(
+        frame_hour,
+        elapsed_wall_ms,
+        status_flags,
+        &[],
+        &[],
+        0,
+        0,
+    )
+}
+
 pub fn decode_payload(payload: &[u8]) -> Result<DecodedRaidInstancesPayload, String> {
     if payload.len() < HEADER_LEN {
         return Err("RID1 payload truncated before header".into());
@@ -516,5 +538,15 @@ mod tests {
         let mut bad_parents = parents;
         bad_parents[0].classification = RaidParentClassification::Country;
         assert!(encode_payload(900, 0, 0, &bad_parents, &children, 2, 2).is_err());
+    }
+
+    #[test]
+    fn source_unavailable_is_typed_rowless_and_cannot_claim_clean() {
+        assert!(encode_source_unavailable(900, 7, 0).is_err());
+        let decoded = decode_payload(&encode_source_unavailable(900, 7, 1).unwrap()).unwrap();
+        assert_eq!(decoded.frame_hour, 900);
+        assert_eq!(decoded.status_flags, 1);
+        assert!(decoded.parents.is_empty());
+        assert!(decoded.children.is_empty());
     }
 }

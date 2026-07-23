@@ -2621,12 +2621,62 @@ mod tests {
         let result = (|| -> Result<()> {
             generate(&first, DEFAULT_SEED)?;
             generate(&second, DEFAULT_SEED)?;
-            assert_eq!(read_tree(&first)?, read_tree(&second)?);
+            let generated = read_tree(&first)?;
+            assert_fixture_trees_equal("relocated generation", &generated, &read_tree(&second)?);
+            assert_fixture_trees_equal(
+                "committed replay_interface/fixtures corpus",
+                &generated,
+                &read_tree(&default_out_dir())?,
+            );
             Ok(())
         })();
         let cleanup = fs::remove_dir_all(&root);
         result.expect("generate relocated fixtures");
         cleanup.expect("clean fixture relocation test root");
+    }
+
+    fn assert_fixture_trees_equal(
+        label: &str,
+        expected: &BTreeMap<String, Vec<u8>>,
+        actual: &BTreeMap<String, Vec<u8>>,
+    ) {
+        // This capture is authenticated external evidence, not output owned by
+        // replay_fixture_gen. Keep it in the committed corpus without making a
+        // deterministic generator claim for its bytes.
+        const EXTERNAL_FIXTURES: &[&str] =
+            &["positive/fx_naval_invasion_paradrop_orders.battleplan"];
+        let mut differences = Vec::new();
+        for path in expected.keys().chain(actual.keys()) {
+            if label == "committed replay_interface/fixtures corpus"
+                && EXTERNAL_FIXTURES.contains(&path.as_str())
+            {
+                continue;
+            }
+            if differences.iter().any(|difference: &String| {
+                difference.starts_with(&format!("{path}:"))
+            }) {
+                continue;
+            }
+            match (expected.get(path), actual.get(path)) {
+                (Some(expected), Some(actual)) if expected != actual => differences.push(format!(
+                    "{path}: bytes differ (generated {} bytes sha256 {}, actual {} bytes sha256 {})",
+                    expected.len(),
+                    sha256(expected),
+                    actual.len(),
+                    sha256(actual)
+                )),
+                (Some(_), None) => differences.push(format!("{path}: missing")),
+                (None, Some(_)) => differences.push(format!("{path}: unexpected")),
+                _ => {}
+            }
+        }
+        differences.sort();
+        differences.dedup();
+        assert!(
+            differences.is_empty(),
+            "{label} is stale or non-deterministic:\n{}\nregenerate with replay_fixture_gen --seed {DEFAULT_SEED}",
+            differences.join("\n")
+        );
     }
 
     fn read_tree(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {

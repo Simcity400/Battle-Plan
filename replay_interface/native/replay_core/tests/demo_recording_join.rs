@@ -118,5 +118,6 @@ fn generated_demo_binds_all_owners_and_exposes_controller_flips() {
         "controller flip must not mutate legal ownership"
     );
 
+    drop(timeline);
     std::fs::remove_dir_all(&root).expect("remove demo gate fixture");
 }

@@ -7,9 +7,10 @@
 
 use std::ptr;
 
+use winapi::ctypes::c_void;
 use winapi::shared::dxgi::{
-    IDXGISwapChain, DXGI_PRESENT_DO_NOT_WAIT, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
-    DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    IDXGIAdapter, IDXGIDevice, IDXGISwapChain, DXGI_ADAPTER_DESC, DXGI_PRESENT_DO_NOT_WAIT,
+    DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD, DXGI_SWAP_EFFECT_FLIP_DISCARD,
 };
 use winapi::shared::dxgiformat::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN};
 use winapi::shared::dxgitype::{
@@ -22,10 +23,11 @@ use winapi::shared::winerror::{
     DXGI_ERROR_WAS_STILL_DRAWING, DXGI_STATUS_OCCLUDED,
 };
 use winapi::um::d3d11::{
-    D3D11CreateDevice, D3D11CreateDeviceAndSwapChain, ID3D11Device, ID3D11DeviceContext,
-    ID3D11RenderTargetView, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, D3D11CreateDeviceAndSwapChain, ID3D11Asynchronous, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Query, ID3D11RenderTargetView, ID3D11Texture2D,
+    D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_QUERY_DESC, D3D11_QUERY_EVENT,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
 };
 use winapi::um::d3dcommon::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1,
@@ -238,6 +240,20 @@ pub struct Gfx {
     pub height: u32,
 }
 
+/// Reusable EVENT query for a bounded GPU-completion observation. Construct it
+/// outside timed loops so query allocation is not charged to every frame.
+pub(crate) struct GpuCompletionQuery {
+    query: ComPtr<ID3D11Query>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GpuAdapterIdentity {
+    pub(crate) name: String,
+    pub(crate) dedicated_video_memory_bytes: u64,
+    pub(crate) vendor_id: u32,
+    pub(crate) device_id: u32,
+}
+
 fn swapchain_desc(hwnd: HWND, width: u32, height: u32, swap_effect: u32) -> DXGI_SWAP_CHAIN_DESC {
     DXGI_SWAP_CHAIN_DESC {
         BufferDesc: DXGI_MODE_DESC {
@@ -316,6 +332,43 @@ impl Gfx {
     /// than treating the channel-layout difference as implicit parity.
     pub(crate) const fn target_format(&self) -> u32 {
         DXGI_FORMAT_B8G8R8A8_UNORM
+    }
+
+    /// Identity of the exact DXGI adapter owning this D3D device. The weak-PC
+    /// receipt binds to this device rather than accepting any unrelated GPU
+    /// merely present in Windows inventory.
+    pub(crate) fn adapter_identity(&self) -> Result<GpuAdapterIdentity> {
+        unsafe {
+            let mut dxgi_device: *mut IDXGIDevice = ptr::null_mut();
+            let hr = (*(self.device.as_raw() as *mut IUnknown)).QueryInterface(
+                &IDXGIDevice::uuidof(),
+                &mut dxgi_device as *mut _ as *mut *mut c_void,
+            );
+            self.runtime_hr(hr, "QueryInterface IDXGIDevice")?;
+            let dxgi_device = ComPtr::from_raw(dxgi_device, "DXGI device")?;
+            let mut adapter: *mut IDXGIAdapter = ptr::null_mut();
+            let hr = (*dxgi_device.as_raw()).GetAdapter(&mut adapter);
+            self.runtime_hr(hr, "IDXGIDevice::GetAdapter")?;
+            let adapter = ComPtr::from_raw(adapter, "DXGI device adapter")?;
+            let mut desc: DXGI_ADAPTER_DESC = std::mem::zeroed();
+            let hr = (*adapter.as_raw()).GetDesc(&mut desc);
+            self.runtime_hr(hr, "IDXGIAdapter::GetDesc")?;
+            let name_len = desc
+                .Description
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(desc.Description.len());
+            let name = String::from_utf16(&desc.Description[..name_len])?;
+            if name.trim().is_empty() {
+                return Err("DXGI adapter description is empty".into());
+            }
+            Ok(GpuAdapterIdentity {
+                name,
+                dedicated_video_memory_bytes: desc.DedicatedVideoMemory as u64,
+                vendor_id: desc.VendorId,
+                device_id: desc.DeviceId,
+            })
+        }
     }
 
     /// Check an HRESULT from an operation on this live device. Device removal,
@@ -631,6 +684,60 @@ impl Gfx {
             }
             (*self.context.as_raw()).Unmap(staging.as_raw() as *mut _, 0);
             Ok(out)
+        }
+    }
+
+    /// Allocate the reusable EVENT query used by the headless performance
+    /// gate. Query creation happens before warmup and is never part of a timed
+    /// frame.
+    pub(crate) fn create_gpu_completion_query(&self) -> Result<GpuCompletionQuery> {
+        unsafe {
+            let desc = D3D11_QUERY_DESC {
+                Query: D3D11_QUERY_EVENT,
+                MiscFlags: 0,
+            };
+            let mut query: *mut ID3D11Query = ptr::null_mut();
+            let hr = (*self.device.as_raw()).CreateQuery(&desc, &mut query);
+            self.runtime_hr(hr, "CreateQuery (headless performance completion)")?;
+            let query = ComPtr::from_raw(query, "headless performance completion query")?;
+            Ok(GpuCompletionQuery { query })
+        }
+    }
+}
+
+impl GpuCompletionQuery {
+    /// Block until all commands submitted before this call have completed on
+    /// the GPU. This prevents queued CPU-submit time from being reported as a
+    /// completed frame. Failure or a bounded timeout is a hard error.
+    pub(crate) fn wait(&self, gfx: &Gfx) -> Result<()> {
+        const GPU_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        unsafe {
+            (*gfx.context.as_raw()).End(self.query.as_raw() as *mut ID3D11Asynchronous);
+            (*gfx.context.as_raw()).Flush();
+
+            let started = std::time::Instant::now();
+            loop {
+                let mut completed: i32 = 0;
+                let hr = (*gfx.context.as_raw()).GetData(
+                    self.query.as_raw() as *mut ID3D11Asynchronous,
+                    &mut completed as *mut _ as *mut c_void,
+                    std::mem::size_of_val(&completed) as UINT,
+                    0,
+                );
+                if hr == 0 && completed != 0 {
+                    return Ok(());
+                }
+                if hr < 0 {
+                    gfx.runtime_hr(hr, "GetData (headless performance completion)")?;
+                }
+                if started.elapsed() >= GPU_WAIT_TIMEOUT {
+                    return Err(
+                        "D3D11 headless performance frame did not complete within 30 seconds"
+                            .into(),
+                    );
+                }
+                std::thread::yield_now();
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Dormant Win32 H4CR/H4CT paired-server primitive.
+//! Production Win32 H4CR/H4CT paired-server primitive.
 //!
 //! The positive ready proof in this module is created only after both named
 //! pipes exist and both overlapped `ConnectNamedPipe` operations are armed.
@@ -546,8 +546,8 @@ impl PreparedWindowsServerPair {
         &self.ready
     }
 
-    /// The permit is unmintable while product activation is false. No pipe
-    /// event or received control message can call this closure.
+    /// The permit is unmintable whenever a product prerequisite is false. No
+    /// pipe event or received control message can call this closure.
     pub fn commit_single_injection_for_product<F>(
         self,
         _permit: AutoAttachDuplexProductPermit,
@@ -737,7 +737,7 @@ impl ConnectedWindowsPipePair {
     }
 }
 
-/// Dormant paired runner ready for the hot integration owner. All control
+/// Paired production runner. All control
 /// receives remain inside `DuplexWorkerSession`; all H4CR reads retain the same
 /// target handle and shared cancellation token.
 pub struct WindowsCombinedRunner {
@@ -827,7 +827,7 @@ impl WindowsCombinedRunner {
             .map_err(WindowsCombinedBackendError::Authority)
     }
 
-    /// Recurring-heartbeat cadence for the dormant paired product runner. The
+    /// Recurring-heartbeat cadence for the paired product runner. The
     /// owner calls this from its dedicated control worker; a due operation is
     /// synchronous but bounded by one unchanged five-second deadline. It uses a
     /// fresh CSPRNG challenge and routes asynchronous CIF1 through the same H4CT

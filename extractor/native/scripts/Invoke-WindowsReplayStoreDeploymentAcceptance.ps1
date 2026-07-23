@@ -90,10 +90,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "OneDrive metadata preflight failed with exit code $LASTEXITCODE"
 }
 $capability = Get-Content -LiteralPath $capabilityPath -Raw | ConvertFrom-Json
-if ([string]$capability.schema -cne 'hoi4_windows_replay_store_capability_probe_v3' -or
+if ([string]$capability.schema -cne 'hoi4_windows_replay_store_capability_probe_v4' -or
     [string]$capability.overall_status -cne 'READY_TO_RUN' -or
     @($capability.gates).Count -ne 1) {
-    throw 'OneDrive metadata preflight did not produce one ready v3 gate.'
+    throw 'OneDrive metadata preflight did not produce one ready v4 gate.'
 }
 $fixtureDigest = [string]$capability.gates[0].evidence.replay_store_metadata_manifest_sha256
 if ($fixtureDigest -cnotmatch '^[0-9a-f]{64}$') {

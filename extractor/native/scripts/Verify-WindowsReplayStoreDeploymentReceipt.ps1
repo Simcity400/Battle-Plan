@@ -189,12 +189,14 @@ function Read-And-VerifyReceipt {
     }
     $capabilityValue = $capabilityRaw | ConvertFrom-Json
     Assert-ExactKeys $capabilityValue @(
-        'schema','probe_is_non_mutating','selected_gate','probe_script_sha256',
-        'path_identity_helper_sha256','overall_status','ready_gate_count',
-        'total_gate_count','gates'
+        'schema','machine_settings_changed','payload_bytes_opened','mutations',
+        'selected_gate','probe_script_sha256','path_identity_helper_sha256',
+        'overall_status','ready_gate_count','total_gate_count','gates'
     ) 'capability receipt'
-    if ([string]$capabilityValue.schema -cne 'hoi4_windows_replay_store_capability_probe_v3' -or
-        $capabilityValue.probe_is_non_mutating -cne $true -or
+    if ([string]$capabilityValue.schema -cne 'hoi4_windows_replay_store_capability_probe_v4' -or
+        $capabilityValue.machine_settings_changed -cne $false -or
+        $capabilityValue.payload_bytes_opened -cne $false -or
+        (@($capabilityValue.mutations) | ConvertTo-Json -Compress) -cne '["capability_report_file_created"]' -or
         [string]$capabilityValue.selected_gate -cne 'OneDrive' -or
         [string]$capabilityValue.overall_status -cne 'READY_TO_RUN' -or
         [int]$capabilityValue.ready_gate_count -ne 1 -or
@@ -209,7 +211,9 @@ function Read-And-VerifyReceipt {
     ) 'capability gate'
     $capabilityEvidence = $capabilityValue.gates[0].evidence
     Assert-ExactKeys $capabilityEvidence @(
-        'scanned_files','replay_store_metadata_manifest_sha256','placeholder_files',
+        'scanned_files','scanned_entries','max_depth_observed','max_depth_limit',
+        'max_entries_limit','timeout_seconds','elapsed_milliseconds','bound_exhausted',
+        'replay_store_metadata_manifest_sha256','placeholder_files',
         'replay_snapshot_placeholder_files','offline_files','recall_on_open_files',
         'recall_on_data_access_files','skipped_reparse_directories',
         'placeholder_sample','replay_snapshot_placeholder_sample',
@@ -223,6 +227,15 @@ function Read-And-VerifyReceipt {
         [string]$capabilityValue.gates[0].gate -cne 'onedrive_dehydrated_directory_store' -or
         [string]$capabilityValue.gates[0].reason_code -cne 'ONEDRIVE_CLOUD_PLACEHOLDER_METADATA_PRESENT' -or
         $capabilityEvidence.probe_opened_payload_bytes -cne $false -or
+        $capabilityEvidence.bound_exhausted -cne $false -or
+        $capabilityEvidence.scanned_entries -is [bool] -or
+        [int64]$capabilityEvidence.scanned_entries -lt [int64]$capabilityEvidence.scanned_files -or
+        [int]$capabilityEvidence.max_depth_limit -ne 32 -or
+        [int]$capabilityEvidence.max_entries_limit -ne 250000 -or
+        [int]$capabilityEvidence.timeout_seconds -ne 30 -or
+        [int]$capabilityEvidence.max_depth_observed -lt 0 -or
+        [int]$capabilityEvidence.max_depth_observed -gt [int]$capabilityEvidence.max_depth_limit -or
+        [int64]$capabilityEvidence.elapsed_milliseconds -lt 0 -or
         $capabilityEvidence.scanned_files -is [bool] -or
         $capabilityEvidence.replay_snapshot_placeholder_files -is [bool] -or
         [int64]$capabilityEvidence.scanned_files -cne [int64]$value.fixture.scanned_files -or
