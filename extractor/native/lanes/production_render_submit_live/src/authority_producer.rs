@@ -44,6 +44,12 @@ pub struct ExactProgramAuthorityEvidence {
     pub pixel_reflection: RawShaderBytecodeReflectionObservation,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgramAuthorityDomain {
+    MapOrOpaqueStatic,
+    AuthenticatedGui,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpaqueRenderTargetGraphEvidence {
     pub registrations: Vec<RawRenderTargetRegistrationObservation>,
@@ -266,6 +272,37 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         Ok(required.into_values().collect())
     }
 
+    /// Enumerates the normal exact-pipeline payloads plus the selected GUI
+    /// definition that grants the neutral engine-program lookup its GUI
+    /// authority. The definition is not inserted into the D3D draw's resource
+    /// list: it is an owner/registration join, while the reflected bindings
+    /// remain the complete set of resources consumed by the draw.
+    pub fn required_gui_static_authority_payloads(
+        &self,
+        evidence: &ExactStaticDrawEvidence,
+        program: &ExactProgramAuthorityEvidence,
+        targets: &OpaqueRenderTargetGraphEvidence,
+        selected_gui_definition: &UsedContentKey,
+    ) -> Result<Vec<ExactAuthorityPayloadRequest>, String> {
+        let mut required = self
+            .required_static_authority_payloads(evidence, program, targets)?
+            .into_iter()
+            .map(|request| {
+                (
+                    (
+                        request.content.logical_path.clone(),
+                        request.content.winning_layer_ordinal,
+                        request.content.payload_sha256.clone(),
+                    ),
+                    request,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let gui = self.authenticated_gui_definition_content(selected_gui_definition)?;
+        add_full_payload(self.winner_index, &mut required, gui)?;
+        Ok(required.into_values().collect())
+    }
+
     pub fn build_live_draw_authority(
         &self,
         submit: &crate::RawParticleSubmit,
@@ -294,7 +331,11 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
             }
         }
         let content_identity = self.resolve_live_content_identity(submit, draw, content)?;
-        let (source_open, registration) = self.build_program(draw.final_draw_sequence, &program)?;
+        let (source_open, registration) = self.build_program(
+            draw.final_draw_sequence,
+            &program,
+            ProgramAuthorityDomain::MapOrOpaqueStatic,
+        )?;
         let (ordered_color_targets, depth_target) = targets.materialize_for_draw(
             draw.final_draw_sequence,
             &draw.ordered_color_target_view_ptrs,
@@ -337,6 +378,43 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         program: ExactProgramAuthorityEvidence,
         targets: &OpaqueRenderTargetGraphEvidence,
     ) -> Result<RawStaticAuthorityObservation, String> {
+        self.build_static_draw_authority_for_domain(
+            evidence,
+            program,
+            targets,
+            ProgramAuthorityDomain::MapOrOpaqueStatic,
+        )
+    }
+
+    /// Builds one generic-GUI exact-pipeline authority row. Success requires
+    /// all ordinary D3D/reflection/VFS joins and an exact selected-owner
+    /// `interface/*.gui` winner from the same authenticated VFS manifest.
+    /// Unknown, non-interface, stale, or non-admitted GUI definitions fail
+    /// closed; a map registration root is never relabelled as GUI authority.
+    pub fn build_gui_static_draw_authority(
+        &self,
+        evidence: &ExactStaticDrawEvidence,
+        program: ExactProgramAuthorityEvidence,
+        targets: &OpaqueRenderTargetGraphEvidence,
+        selected_gui_definition: &UsedContentKey,
+    ) -> Result<RawStaticAuthorityObservation, String> {
+        let gui = self.authenticated_gui_definition_content(selected_gui_definition)?;
+        self.resolve_content(gui)?;
+        self.build_static_draw_authority_for_domain(
+            evidence,
+            program,
+            targets,
+            ProgramAuthorityDomain::AuthenticatedGui,
+        )
+    }
+
+    fn build_static_draw_authority_for_domain(
+        &self,
+        evidence: &ExactStaticDrawEvidence,
+        program: ExactProgramAuthorityEvidence,
+        targets: &OpaqueRenderTargetGraphEvidence,
+        domain: ProgramAuthorityDomain,
+    ) -> Result<RawStaticAuthorityObservation, String> {
         let draw = &evidence.draw;
         if draw.capture_sequence == 0
             || draw.shader_program_ptr != program.shader_program_ptr
@@ -345,7 +423,8 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         {
             return Err("static authority producer received a mismatched hook draw".into());
         }
-        let (source_open, registration) = self.build_program(draw.capture_sequence, &program)?;
+        let (source_open, registration) =
+            self.build_program(draw.capture_sequence, &program, domain)?;
         let (ordered_color_targets, depth_target) = targets.materialize_for_draw(
             draw.capture_sequence,
             &draw.ordered_color_target_view_ptrs,
@@ -474,10 +553,28 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         observe_static_authority(frame_sequence, observed)
     }
 
+    pub fn build_and_observe_gui_static_draw_authority(
+        &self,
+        frame_sequence: u64,
+        evidence: &ExactStaticDrawEvidence,
+        program: ExactProgramAuthorityEvidence,
+        targets: &OpaqueRenderTargetGraphEvidence,
+        selected_gui_definition: &UsedContentKey,
+    ) -> Result<(), String> {
+        let observed = self.build_gui_static_draw_authority(
+            evidence,
+            program,
+            targets,
+            selected_gui_definition,
+        )?;
+        observe_static_authority(frame_sequence, observed)
+    }
+
     fn build_program(
         &self,
         capture_sequence: u64,
         evidence: &ExactProgramAuthorityEvidence,
+        domain: ProgramAuthorityDomain,
     ) -> Result<
         (
             RawEffectiveVfsOpenObservation,
@@ -529,8 +626,26 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         evidence
             .pixel_reflection
             .validate_against_creation(&evidence.pixel_creation)?;
-        if !crate::is_authenticated_map_registration_root(evidence.registration_root_rva) {
-            return Err("program authority names an unauthenticated registration root".into());
+        let authenticated_root = match domain {
+            ProgramAuthorityDomain::MapOrOpaqueStatic => {
+                crate::is_authenticated_map_registration_root(evidence.registration_root_rva)
+            }
+            ProgramAuthorityDomain::AuthenticatedGui => {
+                crate::is_authenticated_gui_program_registration_root(
+                    evidence.registration_root_rva,
+                )
+            }
+        };
+        if !authenticated_root {
+            return Err(match domain {
+                ProgramAuthorityDomain::MapOrOpaqueStatic => {
+                    "map/static program authority names an unauthenticated registration root"
+                }
+                ProgramAuthorityDomain::AuthenticatedGui => {
+                    "GUI program authority is not a neutral exact engine lookup"
+                }
+            }
+            .into());
         }
         let registration = RawProgramRegistrationObservation {
             observation_sequence: capture_sequence,
@@ -713,6 +828,35 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         self.resolve_content(content).map(|_| ())
     }
 
+    fn authenticated_gui_definition_content(
+        &self,
+        selected: &UsedContentKey,
+    ) -> Result<&RawVfsContentIdentity, String> {
+        selected.validate()?;
+        if selected.effective_vfs_manifest_sha256 != self.winner_index.authority_manifest_sha256 {
+            return Err("selected GUI definition uses another effective-VFS manifest".into());
+        }
+        let normalized = normalize_game_relative_path(&selected.normalized_game_relative_path)?;
+        if normalized != selected.normalized_game_relative_path
+            || !normalized.starts_with("interface/")
+            || !normalized.ends_with(".gui")
+        {
+            return Err(
+                "selected GUI definition is not a canonical interface/*.gui winner".into(),
+            );
+        }
+        let index = self
+            .winner_index
+            .ordered_rows
+            .binary_search_by(|row| row.content.logical_path.as_str().cmp(normalized.as_str()))
+            .map_err(|_| "selected GUI definition is absent from the effective-VFS winners")?;
+        let content = &self.winner_index.ordered_rows[index].content;
+        if raw_to_used_content(self.winner_index, content)? != *selected {
+            return Err("selected GUI definition disagrees with its authenticated winner".into());
+        }
+        Ok(content)
+    }
+
     fn authorize_target_content(
         &self,
         colors: &[RawRenderTargetRegistrationReceipt],
@@ -892,6 +1036,7 @@ fn validate_explicit_source(
                 "used-content texture source omitted a file-backed resource snapshot".into(),
             )
         }
+        RawStaticShaderResourceSource::AuthenticatedSnapshot => {}
         RawStaticShaderResourceSource::SnowMudTexture {
             producer_ordinal,
             payload_sha256,

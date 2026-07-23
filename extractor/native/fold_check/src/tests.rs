@@ -556,7 +556,7 @@ fn expected_profile_is_mandatory_and_only_production_is_authoritative() {
         production.domains.len(),
         compact_contract::production_profile_domains().len()
     );
-    assert!(!production.domains.contains_key(&18));
+    assert!(production.domains.contains_key(&18));
 }
 
 #[test]

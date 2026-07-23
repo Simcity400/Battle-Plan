@@ -1,11 +1,11 @@
-//! Evidence-only exact-a729 A40 peace-conference transition observer.
+//! Exact-a729 A40 peace-conference transition observer.
 //!
-//! This module deliberately emits no compact production domain. Exact-a729
-//! closes the identity question negatively: peace actions are serialized value
+//! Exact-a729 closes the identity question negatively: peace actions are serialized value
 //! objects without intrinsic allocation ids, and the terminal summary is an
 //! aggregate formatter without result objects or an allocation-to-result join.
-//! The observer therefore retains bounded raw process-local witnesses only for
-//! autonomous positive validation. Production reduction must use complete
+//! The observer retains bounded raw process-local witnesses for optional
+//! validation and publishes only the proven portable refresh identity/scalars
+//! to the production carrier. Production reduction must use complete
 //! snapshots, snapshot-scoped row ids, and explicitly unjoined terminal rows;
 //! it may never promote pointers, inferred ordinals, or payload hashes into
 //! engine lifecycle identity.
@@ -20,6 +20,11 @@ use std::sync::{Mutex, OnceLock};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+use crate::peace_conference_live::{
+    ActivePeaceConferenceObservation, PeaceConferenceObservation, PeaceConferenceReference,
+    PeaceConferenceTransportFrame,
+};
 
 pub const CONFERENCE_REFRESH_RVA: u32 = 0x0184_EB30;
 pub const CLAIM_BREAKDOWN_RVA: u32 = 0x019C_E290;
@@ -190,9 +195,18 @@ pub struct InstalledHookAddresses {
 #[derive(Debug, Default)]
 struct HookState {
     next_event_sequence: u64,
+    next_refresh_sequence: u64,
     refresh_epoch: u64,
     events: Vec<PeaceEvidenceEvent>,
     diagnostics: HookDiagnostics,
+    latest_refresh: Option<LatestRefresh>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LatestRefresh {
+    refresh_sequence: u64,
+    refresh_epoch: u64,
+    observation: Option<(PeaceConferenceReference, i32, bool)>,
 }
 
 pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
@@ -312,6 +326,68 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
 
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
+}
+
+/// Production uses the same exact sentinels and passive detours. Keeping a
+/// separately named entry point prevents evidence receipts from being treated
+/// as the source of product authority.
+pub fn install() -> Result<InstalledHookAddresses, String> {
+    install_for_evidence()
+}
+
+/// Materialize the latest exact refresh as a pointer-free PCS1 frame. An
+/// all-zero reference observed at the refresh boundary is exact inactive.
+pub fn production_payload(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+) -> Result<Vec<u8>, String> {
+    let mut state = STATE
+        .get()
+        .ok_or("A40 peace production hook state is not initialized")?
+        .lock()
+        .map_err(|_| "A40 peace production hook state mutex poisoned")?;
+    let latest = state
+        .latest_refresh
+        .take()
+        .ok_or("A40 peace refresh was not observed")?;
+    let observation = match latest.observation {
+        None => PeaceConferenceObservation::Inactive {
+            refresh_sequence: latest.refresh_sequence,
+        },
+        Some((conference_reference, current_turn_raw, completed)) => {
+            PeaceConferenceObservation::Active(ActivePeaceConferenceObservation {
+                refresh_sequence: latest.refresh_sequence,
+                refresh_epoch: latest.refresh_epoch,
+                conference_reference,
+                current_turn_raw,
+                completed,
+                semantic_snapshot_complete: false,
+            })
+        }
+    };
+    crate::peace_conference_live::encode_payload(&PeaceConferenceTransportFrame {
+        frame_hour,
+        elapsed_wall_ms,
+        status_flags,
+        observation: Some(observation),
+    })
+    .map_err(|error| format!("A40 peace PCS1 encode failed: {error:?}"))
+}
+
+/// Drop any process-local conference refresh identity at a campaign boundary.
+/// Optional evidence events remain append-only; production refresh identity
+/// restarts because registered references are scoped to the new campaign.
+pub fn reset_campaign_observations() -> Result<(), String> {
+    let mut state = STATE
+        .get()
+        .ok_or("A40 peace hook state is not initialized")?
+        .lock()
+        .map_err(|_| "A40 peace hook state mutex poisoned")?;
+    state.next_refresh_sequence = 0;
+    state.refresh_epoch = 0;
+    state.latest_refresh = None;
+    Ok(())
 }
 
 pub fn diagnostics() -> HookDiagnostics {
@@ -674,7 +750,8 @@ fn publish_capture(
     state.diagnostics.callbacks_observed =
         state.diagnostics.callbacks_observed.saturating_add(1);
     let kind = match result {
-        Ok(Some(kind)) => kind,
+        Ok(Some(kind)) => Some(kind),
+        Ok(None) if advances_epoch => None,
         Ok(None) => return,
         Err(_) => {
             state.diagnostics.dropped_unreadable =
@@ -683,14 +760,50 @@ fn publish_capture(
             return;
         }
     };
+    if advances_epoch {
+        state.refresh_epoch = state.refresh_epoch.saturating_add(1).max(1);
+    }
+    if advances_epoch {
+        state.next_refresh_sequence = state.next_refresh_sequence.saturating_add(1).max(1);
+        let refresh_sequence = state.next_refresh_sequence;
+        let refresh_epoch = state.refresh_epoch;
+        let observation = match kind.as_ref() {
+            Some(PeaceEvidenceEventKind::ConferenceRefresh {
+                conference_reference_raw,
+                current_turn_raw,
+                completed_raw,
+                ..
+            }) => Some((
+                PeaceConferenceReference {
+                    object_type: conference_reference_raw[0],
+                    object_id: conference_reference_raw[1],
+                },
+                *current_turn_raw,
+                *completed_raw,
+            )),
+            None => None,
+            Some(_) => {
+                state.diagnostics.completeness_poisoned = true;
+                return;
+            }
+        };
+        state.latest_refresh = Some(LatestRefresh {
+            refresh_sequence,
+            refresh_epoch,
+            observation,
+        });
+    }
+    let Some(kind) = kind else {
+        return;
+    };
+    // Evidence retention is bounded independently of the production refresh
+    // latch. Even after the optional raw-event buffer fills, the newest exact
+    // refresh above remains publishable to PCS1.
     if state.events.len() >= MAX_EVENTS {
         state.diagnostics.dropped_overflow =
             state.diagnostics.dropped_overflow.saturating_add(1);
         state.diagnostics.completeness_poisoned = true;
         return;
-    }
-    if advances_epoch {
-        state.refresh_epoch = state.refresh_epoch.saturating_add(1).max(1);
     }
     state.next_event_sequence = state.next_event_sequence.saturating_add(1).max(1);
     let event_sequence = state.next_event_sequence;

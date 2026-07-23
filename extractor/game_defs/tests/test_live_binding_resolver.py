@@ -41,6 +41,20 @@ def test_descriptor_accepts_directory_or_archive_and_requires_identity(tmp_path:
     broken.write_text('name="Broken"\n', encoding="utf-8")
     with pytest.raises(R.ResolutionError, match="path/archive"):
         R.parse_descriptor(broken)
+    normalized = tmp_path / "normalized.dlc"
+    normalized.write_text(
+        'name="Normalized"\npath="dlc/normalized"\n'
+        'replace_path="common//./units"\n',
+        encoding="utf-8",
+    )
+    assert R.parse_descriptor(normalized)["replace_path"] == ["common/units"]
+    unsafe = tmp_path / "unsafe.dlc"
+    unsafe.write_text(
+        'name="Unsafe"\npath="dlc/unsafe"\nreplace_path="../common"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(R.ResolutionError, match="replace_path"):
+        R.parse_descriptor(unsafe)
 
 
 def test_hash_tree_is_deterministic_and_content_sensitive(tmp_path: Path):
@@ -425,6 +439,29 @@ def test_archive_mod_replace_path_inventory_survives_relocation(tmp_path: Path):
     assert _inventory_winner(inventories[0], "common/base.txt") is None
     winner = _inventory_winner(inventories[0], "common/mod.txt")
     assert winner is not None and winner[0]["storage_kind"] == "zip_archive"
+
+
+def test_archive_member_dot_and_duplicate_separators_use_one_engine_key(tmp_path: Path):
+    empty = tmp_path / "empty.zip"
+    with zipfile.ZipFile(empty, "w"):
+        pass
+    with pytest.raises(R.ResolutionError, match=r"no regular files"):
+        R._zip_namespace_rows(empty, "mod/empty.mod")
+
+    archive = tmp_path / "normalized.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("common//./nested/value.txt", b"canonical payload")
+    _digest, rows, _container_sha, _container_bytes = R._zip_namespace_rows(
+        archive, "mod/normalized.mod"
+    )
+    assert [row["relpath"] for row in rows] == ["common/nested/value.txt"]
+
+    collision = tmp_path / "collision.zip"
+    with zipfile.ZipFile(collision, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("common//./nested/value.txt", b"first")
+        zf.writestr("COMMON/nested/value.txt", b"second")
+    with pytest.raises(R.ResolutionError, match=r"case-fold/duplicate"):
+        R._zip_namespace_rows(collision, "mod/collision.mod")
 
 
 def test_ui14_collision_join_covers_archive_members_and_loose_mods(tmp_path: Path):

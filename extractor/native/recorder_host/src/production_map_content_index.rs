@@ -288,6 +288,7 @@ fn nested_program_content(
                             nested.insert(content.clone());
                             append_texture_resource_content(resource, &mut nested);
                         }
+                        StaticShaderResourceSource::AuthenticatedSnapshot { .. } => {}
                         StaticShaderResourceSource::PreparedTarget { resource, .. }
                         | StaticShaderResourceSource::SnowMudTexture { resource, .. }
                         | StaticShaderResourceSource::PoliticalTexture { resource, .. }
@@ -838,6 +839,7 @@ mod tests {
                 semantic_layout: "mod_scene_constants".into(),
             }],
             ordered_static_map_programs: programs,
+            authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
             s1_shadow: None,
             effect_lifecycle_events: Vec::new(),

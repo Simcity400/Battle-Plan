@@ -296,6 +296,197 @@ impl PowerBalanceAssetCatalog {
             bindings,
         })
     }
+
+    /// Require the recorder-packaged static manifest and the effective-VFS
+    /// resolver to describe the same exact runtime-selected asset set.
+    ///
+    /// This is a semantic consumer of the packaged catalog: every authored
+    /// GUI role, engine-selected sprite, source GFX file, texture slot, layer,
+    /// payload hash and byte length must agree. Merely validating or retaining
+    /// the catalog bytes is not sufficient.
+    pub fn validate_runtime_content_set(
+        &self,
+        runtime: &PowerBalanceRuntimeSupplement,
+        content: &PortablePowerBalanceContentSet,
+    ) -> Result<(), PowerBalanceAssetError> {
+        validate_runtime_selection(
+            runtime.bar_state.sprite(),
+            runtime.launcher_visible,
+            runtime.launcher_icon_sprite.as_deref(),
+        )?;
+        let wanted = wanted_roles_from_manifest(
+            &self.gui_roles,
+            runtime.bar_state.sprite(),
+            runtime.range_indicator_frame,
+            &runtime.effective_left_icon,
+            &runtime.effective_right_icon,
+            runtime.launcher_visible,
+            runtime.launcher_icon_sprite.as_deref(),
+        )?;
+        let mut expected_binding_count = 0usize;
+        for (role, gui_role, sprite_name, selected_frame) in wanted {
+            let sprite = self
+                .sprites
+                .get(&sprite_name.to_ascii_lowercase())
+                .ok_or_else(|| PowerBalanceAssetError::MissingSprite(sprite_name.clone()))?;
+            let slots = sprite.normalized_slots();
+            if slots.is_empty() {
+                return Err(PowerBalanceAssetError::MissingTextureIdentity(sprite_name));
+            }
+            let gui_matches = content
+                .gui_sources
+                .iter()
+                .filter(|source| {
+                    static_content_identity_matches(
+                        source,
+                        &gui_role.source_file,
+                        &gui_role.source.source_layer,
+                        &gui_role.source.source_layer_kind,
+                        &gui_role.source.sha256,
+                        gui_role.source.bytes,
+                    )
+                })
+                .count();
+            if gui_matches != 1 {
+                return Err(PowerBalanceAssetError::InvalidGuiManifest);
+            }
+            for slot in slots {
+                let texture_path = slot
+                    .resolved_texturefile
+                    .as_deref()
+                    .ok_or_else(|| {
+                        PowerBalanceAssetError::MissingTextureIdentity(format!(
+                            "{}:{}",
+                            sprite.name, slot.slot
+                        ))
+                    })?;
+                let texture_layer = slot.texture_layer.as_deref().ok_or_else(|| {
+                    PowerBalanceAssetError::MissingTextureIdentity(format!(
+                        "{}:{}",
+                        sprite.name, slot.slot
+                    ))
+                })?;
+                let texture_layer_kind =
+                    slot.texture_layer_kind.as_deref().ok_or_else(|| {
+                        PowerBalanceAssetError::MissingTextureIdentity(format!(
+                            "{}:{}",
+                            sprite.name, slot.slot
+                        ))
+                    })?;
+                let texture_sha256 = slot.texture_sha256.as_deref().ok_or_else(|| {
+                    PowerBalanceAssetError::MissingTextureIdentity(format!(
+                        "{}:{}",
+                        sprite.name, slot.slot
+                    ))
+                })?;
+                let texture_bytes = slot.texture_bytes.ok_or_else(|| {
+                    PowerBalanceAssetError::MissingTextureIdentity(format!(
+                        "{}:{}",
+                        sprite.name, slot.slot
+                    ))
+                })?;
+                let matches = content
+                    .bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.role == role
+                            && binding.sprite_name == sprite.name
+                            && binding.drawable_kind == sprite.drawable_kind
+                            && binding.texture_slot.eq_ignore_ascii_case(&slot.slot)
+                            && binding.selected_frame == selected_frame
+                            && static_content_identity_matches(
+                                &binding.gui_source,
+                                &gui_role.source_file,
+                                &gui_role.source.source_layer,
+                                &gui_role.source.source_layer_kind,
+                                &gui_role.source.sha256,
+                                gui_role.source.bytes,
+                            )
+                            && static_source_identity_matches(
+                                &binding.source_gfx,
+                                &sprite.source_file,
+                                &sprite.source_layer,
+                                &sprite.source_layer_kind,
+                            )
+                            && static_content_identity_matches(
+                                &binding.texture,
+                                texture_path,
+                                texture_layer,
+                                texture_layer_kind,
+                                texture_sha256,
+                                texture_bytes,
+                            )
+                    })
+                    .count();
+                if matches != 1 {
+                    return Err(PowerBalanceAssetError::MissingTextureIdentity(format!(
+                        "packaged-static/runtime mismatch:{}:{}",
+                        sprite.name, slot.slot
+                    )));
+                }
+                expected_binding_count += 1;
+            }
+        }
+        if expected_binding_count != content.bindings.len() {
+            return Err(PowerBalanceAssetError::InvalidGuiManifest);
+        }
+        Ok(())
+    }
+}
+
+fn static_content_identity_matches(
+    content: &UsedContentKey,
+    path: &str,
+    layer: &str,
+    layer_kind: &str,
+    payload_sha256: &str,
+    payload_bytes: u64,
+) -> bool {
+    normalize(&content.normalized_game_relative_path).eq_ignore_ascii_case(&normalize(path))
+        && static_layer_matches(content, layer, layer_kind)
+        && content.payload_sha256 == payload_sha256
+        && content.payload_bytes == payload_bytes
+}
+
+fn static_source_identity_matches(
+    content: &UsedContentKey,
+    path: &str,
+    layer: &str,
+    layer_kind: &str,
+) -> bool {
+    normalize(&content.normalized_game_relative_path).eq_ignore_ascii_case(&normalize(path))
+        && static_layer_matches(content, layer, layer_kind)
+}
+
+fn static_layer_matches(content: &UsedContentKey, layer: &str, layer_kind: &str) -> bool {
+    let content_kind = match &content.layer_kind {
+        replay_core::ContentLayerKind::Base => "base",
+        replay_core::ContentLayerKind::IntegratedDlc => "integrated_dlc",
+        replay_core::ContentLayerKind::Dlc => "dlc",
+        replay_core::ContentLayerKind::Mod => "mod",
+    };
+    if layer_kind.eq_ignore_ascii_case("vanilla") {
+        return content_kind == "base"
+            && matches!(layer.to_ascii_lowercase().as_str(), "vanilla" | "base");
+    }
+    content_kind.eq_ignore_ascii_case(layer_kind) && content.layer_id.eq_ignore_ascii_case(layer)
+}
+
+/// Production adapter that consumes both authorities: the exact effective VFS
+/// selected by the replay and the authenticated recorder-packaged static GFX
+/// catalog. Either side disagreeing fails the feature closed.
+pub fn resolve_power_balance_content_assets_with_static_manifest(
+    runtime: &PowerBalanceRuntimeSupplement,
+    registry: &SpriteRegistry,
+    resolver: &AssetResolver,
+    static_manifest_bytes: &[u8],
+) -> Result<PortablePowerBalanceContentSet, PowerBalanceAssetError> {
+    let static_manifest = std::str::from_utf8(static_manifest_bytes)
+        .map_err(|_| PowerBalanceAssetError::InvalidJson)?;
+    let catalog = PowerBalanceAssetCatalog::from_static_manifest_json(static_manifest)?;
+    let content = resolve_power_balance_content_assets(runtime, registry, resolver)?;
+    catalog.validate_runtime_content_set(runtime, &content)?;
+    Ok(content)
 }
 
 /// Resolve the same roles directly against the selected-Present resolver.

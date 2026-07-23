@@ -1015,7 +1015,7 @@ mod tests {
                 "passed": true,
                 "bundle_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "artifact_count": 7,
+                "artifact_count": 8,
                 "token_join_status": "deferred",
                 "verification_phase": "pre_injection_deferred_allowed",
             }))
@@ -1032,7 +1032,7 @@ mod tests {
                 "passed": true,
                 "bundle_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "artifact_count": 7,
+                "artifact_count": 8,
                 "token_join_status": "passed",
                 "verification_phase": "post_capture_finalized",
             }))
@@ -1072,8 +1072,8 @@ mod tests {
             invocation: Mutex::new(None),
         };
         let verified = verify_with_process(&request, &process).unwrap();
-        assert_eq!(verified.artifact_count, 7);
-        assert_eq!(verified.artifacts.len(), 7);
+        assert_eq!(verified.artifact_count, 8);
+        assert_eq!(verified.artifacts.len(), 8);
         assert_eq!(verified.evidence["admission"], "passed");
         assert_eq!(
             verified.evidence["verification_phase"],
@@ -1100,7 +1100,7 @@ mod tests {
             verified.evidence["final_token_gate_required_before_validated_publication"],
             true
         );
-        assert_eq!(verified.evidence["artifacts"].as_array().unwrap().len(), 7);
+        assert_eq!(verified.evidence["artifacts"].as_array().unwrap().len(), 8);
         assert_eq!(verified.evidence["bindings"]["executable"]["bytes"], 16);
         assert_eq!(
             verified.evidence["bindings"]["source_inventory"]["bytes"],
@@ -1236,7 +1236,7 @@ mod tests {
             "passed": true,
             "bundle_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "artifact_count": 7,
+            "artifact_count": 8,
             "token_join_status": "passed",
             "verification_phase": "post_capture_finalized",
         }))

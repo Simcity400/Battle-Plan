@@ -1964,6 +1964,7 @@ fn required_static_artifact_relative_path(name: &str) -> Option<String> {
         compact_contract::STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => {
             "technology_sharing_static.json"
         }
+        compact_contract::STATIC_ARTIFACT_FOCUS_DEFS_STATIC => "focus_defs_static.json",
         _ => return None,
     };
     Some(format!("static/{name}/{file_name}"))
@@ -1989,6 +1990,9 @@ fn required_static_bundle_file(name: &str) -> Option<&'static str> {
         }
         compact_contract::STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => {
             "artifacts/technology_sharing_static.json"
+        }
+        compact_contract::STATIC_ARTIFACT_FOCUS_DEFS_STATIC => {
+            "artifacts/focus_defs_static.json"
         }
         _ => return None,
     })
@@ -6934,15 +6938,18 @@ mod tests {
     }
 
     #[test]
-    fn every_contract_routes_to_a_canonical_structural_decoder() {
-        for contract in DOMAIN_CONTRACTS {
-            let result =
-                recorder_host::stream_fold::validate_domain_data_payload(contract.id, &[], 0);
+    fn every_production_domain_routes_to_a_canonical_structural_decoder() {
+        for descriptor in compact_contract::production_profile_domains() {
+            let result = recorder_host::stream_fold::validate_domain_data_payload(
+                descriptor.id,
+                &[],
+                0,
+            );
             assert!(
                 !matches!(result, Err(ref error) if error.contains("no exact structural decoder")),
                 "domain {} ({}): {result:?}",
-                contract.id,
-                contract.name
+                descriptor.id,
+                descriptor.wire_name
             );
         }
     }

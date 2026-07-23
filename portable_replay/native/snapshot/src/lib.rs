@@ -542,7 +542,7 @@ impl Store {
     /// container resolves the file through the INDEX, never by synthesizing a name,
     /// so a segment-prefixed rollback file loads correctly.
     pub fn load(&self, game: &str, hour_index: i64) -> Result<Snapshot, LoadError> {
-        match &self.backend {
+        let file = match &self.backend {
             Backend::Dir { .. } => {
                 // Resolve the file through the INDEX, exactly like the container
                 // backend: `index.snapshots[*].file` is the only filename
@@ -560,18 +560,194 @@ impl Store {
                             "no snapshot for hour_index {hour_index}"
                         )))
                     })?;
-                self.read_dir_snapshot(game, &file)
+                file
             }
-            Backend::Replay { container } => Ok(container.load(hour_index)?),
-        }
+            Backend::Replay { container } => container
+                .index()
+                .snapshots
+                .iter()
+                .find(|entry| entry.hour_index == Some(hour_index))
+                .map(|entry| entry.file.clone())
+                .ok_or_else(|| {
+                    LoadError::Container(ContainerError::Reject(format!(
+                        "no snapshot for hour_index {hour_index}"
+                    )))
+                })?,
+        };
+        self.load_file(game, &file)
     }
 
     /// Load a snapshot by its explicit file name (from an [`IndexEntry`]).
     pub fn load_file(&self, game: &str, file: &str) -> Result<Snapshot, LoadError> {
-        match &self.backend {
+        let mut snapshot = match &self.backend {
             Backend::Dir { .. } => self.read_dir_snapshot(game, file),
             Backend::Replay { container } => Ok(container.load_file(file)?),
+        }?;
+        self.hydrate_external_production_render_blobs(game, &mut snapshot)?;
+        Ok(snapshot)
+    }
+
+    fn hydrate_external_production_render_blobs(
+        &self,
+        game: &str,
+        snapshot: &mut Snapshot,
+    ) -> Result<(), LoadError> {
+        let Some(render) = snapshot.rest.get_mut("production_render") else {
+            return Ok(());
+        };
+        let mut cache = BTreeMap::<String, String>::new();
+        let mut reference_count = 0usize;
+        self.hydrate_external_base64_value(
+            game,
+            render,
+            &mut cache,
+            &mut reference_count,
+            0,
+        )
+    }
+
+    fn hydrate_external_base64_value(
+        &self,
+        game: &str,
+        value: &mut Value,
+        cache: &mut BTreeMap<String, String>,
+        reference_count: &mut usize,
+        depth: usize,
+    ) -> Result<(), LoadError> {
+        const MAX_DEPTH: usize = 96;
+        const MAX_REFERENCES: usize = 16_384;
+        if depth > MAX_DEPTH {
+            return Err(LoadError::Container(ContainerError::Reject(
+                "production_render external-blob graph exceeds depth limit".to_string(),
+            )));
         }
+
+        if let Some(object) = value.as_object() {
+            if object.len() == 1 {
+                if let Some(descriptor) = object.get("$hoi4replay_external_base64") {
+                    let descriptor = descriptor.as_object().ok_or_else(|| {
+                        LoadError::Container(ContainerError::Reject(
+                            "production_render external-base64 descriptor is not an object"
+                                .to_string(),
+                        ))
+                    })?;
+                    if descriptor.len() != 3 {
+                        return Err(LoadError::Container(ContainerError::Reject(
+                            "production_render external-base64 descriptor has unexpected fields"
+                                .to_string(),
+                        )));
+                    }
+                    let path = descriptor
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            LoadError::Container(ContainerError::Reject(
+                                "production_render external-base64 descriptor lacks path"
+                                    .to_string(),
+                            ))
+                        })?;
+                    let expected_sha256 = descriptor
+                        .get("sha256")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            LoadError::Container(ContainerError::Reject(
+                                "production_render external-base64 descriptor lacks sha256"
+                                    .to_string(),
+                            ))
+                        })?;
+                    let expected_len = descriptor
+                        .get("byte_len")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .ok_or_else(|| {
+                            LoadError::Container(ContainerError::Reject(
+                                "production_render external-base64 descriptor has invalid byte_len"
+                                    .to_string(),
+                            ))
+                        })?;
+                    if expected_len > 256 * 1024 * 1024 {
+                        return Err(LoadError::Container(ContainerError::Reject(
+                            "production_render external-base64 blob exceeds 256 MiB"
+                                .to_string(),
+                        )));
+                    }
+                    let expected_path = format!(
+                        "production_render_blobs/{expected_sha256}.base64"
+                    );
+                    if path != expected_path
+                        || expected_sha256.len() != 64
+                        || !expected_sha256
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    {
+                        return Err(LoadError::Container(ContainerError::Reject(
+                            "production_render external-base64 path/digest is not canonical"
+                                .to_string(),
+                        )));
+                    }
+                    *reference_count += 1;
+                    if *reference_count > MAX_REFERENCES {
+                        return Err(LoadError::Container(ContainerError::Reject(
+                            "production_render external-base64 reference count exceeds limit"
+                                .to_string(),
+                        )));
+                    }
+                    let encoded = if let Some(encoded) = cache.get(path) {
+                        encoded.clone()
+                    } else {
+                        let bytes = self.read_game_file_bytes_required(game, path)?;
+                        if bytes.len() != expected_len {
+                            return Err(LoadError::Container(ContainerError::Reject(format!(
+                                "production_render external-base64 {path:?} length {} != declared {expected_len}",
+                                bytes.len()
+                            ))));
+                        }
+                        let actual_sha256 = sha256::Sha256::hex(&bytes);
+                        if actual_sha256 != expected_sha256 {
+                            return Err(LoadError::Container(ContainerError::Reject(format!(
+                                "production_render external-base64 {path:?} hashes to {actual_sha256}, expected {expected_sha256}"
+                            ))));
+                        }
+                        let encoded = String::from_utf8(bytes).map_err(|_| {
+                            LoadError::Container(ContainerError::Reject(format!(
+                                "production_render external-base64 {path:?} is not UTF-8"
+                            )))
+                        })?;
+                        cache.insert(path.to_string(), encoded.clone());
+                        encoded
+                    };
+                    *value = Value::String(encoded);
+                    return Ok(());
+                }
+            }
+        }
+
+        match value {
+            Value::Array(values) => {
+                for child in values {
+                    self.hydrate_external_base64_value(
+                        game,
+                        child,
+                        cache,
+                        reference_count,
+                        depth + 1,
+                    )?;
+                }
+            }
+            Value::Object(values) => {
+                for child in values.values_mut() {
+                    self.hydrate_external_base64_value(
+                        game,
+                        child,
+                        cache,
+                        reference_count,
+                        depth + 1,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Read one game-relative file through the anchored directory walk, or one

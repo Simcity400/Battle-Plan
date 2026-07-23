@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v12";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v13";
+pub const INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA: &str =
+    "hoi4.production-render-submit.v12";
 pub const INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA: &str =
     "hoi4.production-render-submit.v11";
 pub const RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256: &str =
@@ -169,6 +171,102 @@ mod decimal_u64 {
     }
 }
 
+/// Canonical padded RFC 4648 base64 for large inline GPU payloads.
+///
+/// JSON's default `Vec<u8>` representation expands every byte into a decimal
+/// integer. Full-map D3D resources are tens of MiB, so that representation can
+/// exceed the H4CR record bound even before duplicated draw bindings are
+/// removed. Keep the in-memory contract as exact bytes while using one compact,
+/// deterministic string representation on the wire.
+pub(crate) mod base64_bytes {
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(deserializer)?;
+        let decoded = decode(&encoded).map_err(D::Error::custom)?;
+        if encode(&decoded) != encoded {
+            return Err(D::Error::custom("inline byte payload is not canonical base64"));
+        }
+        Ok(decoded)
+    }
+
+    pub(super) fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let a = chunk[0];
+            let b = chunk.get(1).copied().unwrap_or(0);
+            let c = chunk.get(2).copied().unwrap_or(0);
+            out.push(ALPHABET[(a >> 2) as usize] as char);
+            out.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+            if chunk.len() >= 2 {
+                out.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+            } else {
+                out.push('=');
+            }
+            if chunk.len() == 3 {
+                out.push(ALPHABET[(c & 0x3f) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+        out
+    }
+
+    pub(super) fn decode(encoded: &str) -> Result<Vec<u8>, String> {
+        let bytes = encoded.as_bytes();
+        if bytes.len() % 4 != 0 {
+            return Err("inline byte payload base64 length is not divisible by four".into());
+        }
+        let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+        for (group_index, group) in bytes.chunks_exact(4).enumerate() {
+            let final_group = group_index + 1 == bytes.len() / 4;
+            let a = sextet(group[0])?;
+            let b = sextet(group[1])?;
+            let c_padding = group[2] == b'=';
+            let d_padding = group[3] == b'=';
+            if c_padding && !d_padding {
+                return Err("inline byte payload base64 has invalid padding".into());
+            }
+            if (!final_group && (c_padding || d_padding))
+                || (c_padding && (b & 0x0f) != 0)
+            {
+                return Err("inline byte payload base64 has noncanonical padding".into());
+            }
+            let c = if c_padding { 0 } else { sextet(group[2])? };
+            if d_padding && !c_padding && (c & 0x03) != 0 {
+                return Err("inline byte payload base64 has noncanonical tail bits".into());
+            }
+            let d = if d_padding { 0 } else { sextet(group[3])? };
+            out.push((a << 2) | (b >> 4));
+            if !c_padding {
+                out.push((b << 4) | (c >> 2));
+            }
+            if !d_padding {
+                out.push((c << 6) | d);
+            }
+        }
+        Ok(out)
+    }
+
+    fn sextet(byte: u8) -> Result<u8, String> {
+        match byte {
+            b'A'..=b'Z' => Ok(byte - b'A'),
+            b'a'..=b'z' => Ok(byte - b'a' + 26),
+            b'0'..=b'9' => Ok(byte - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("inline byte payload contains a non-base64 character".into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProductionRenderFrame {
@@ -251,6 +349,7 @@ pub struct SnowMudTexturePacket {
     pub row_pitch: u32,
     pub bytes_per_texel: u32,
     pub format: String,
+    #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
     pub payload_sha256: String,
     /// Canonical hash of the complete selected-Present receipt. This closes
@@ -765,6 +864,12 @@ pub struct RenderSubmit {
     /// consumers are feature-local omissions, never inferred programs.
     #[serde(default)]
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
+    /// Content-addressed exact draw-time texture resources used by static
+    /// bindings that have neither effective-VFS bytes nor an in-frame render
+    /// target producer. Large immutable maps occur in many draws; storing the
+    /// resource once per submit prevents payload and replay-memory explosion.
+    #[serde(default)]
+    pub authenticated_texture_snapshots: Vec<AuthenticatedTextureSnapshotPacket>,
     /// Exact C07 join over authenticated selected-submit tree operations.
     /// Absence means per-frame tree selection is unavailable. A present
     /// carrier selects only observed draws from the complete 296-bucket /
@@ -1269,6 +1374,17 @@ pub enum StaticShaderResourceSource {
         resource: TextureResourceDesc,
         view: ShaderResourceViewDesc,
     },
+    /// Exact authenticated draw-time resource snapshot for an engine-generated
+    /// texture that has no direct effective-VFS payload identity and no prior
+    /// render-target writer in the selected operation stream. The complete
+    /// resource descriptor, pitches, inline bytes, and per-subresource hashes
+    /// are carried once in the containing submit's content-addressed snapshot
+    /// table; this binding carries only that digest plus the exact view. No
+    /// slot-based semantic reconstruction occurs during playback.
+    AuthenticatedSnapshot {
+        snapshot_sha256: String,
+        view: ShaderResourceViewDesc,
+    },
     PreparedTarget {
         target: PreparedRenderTarget,
         resource: TextureResourceDesc,
@@ -1308,6 +1424,42 @@ pub enum StaticShaderResourceSource {
         resource: TextureResourceDesc,
         view: ShaderResourceViewDesc,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticatedTextureSnapshotPacket {
+    pub snapshot_sha256: String,
+    pub resource: TextureResourceDesc,
+}
+
+impl AuthenticatedTextureSnapshotPacket {
+    pub fn sealed(resource: TextureResourceDesc) -> Result<Self, String> {
+        validate_authenticated_snapshot_texture_resource(&resource)?;
+        Ok(Self {
+            snapshot_sha256: authenticated_texture_snapshot_sha256(&resource)?,
+            resource,
+        })
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        validate_authenticated_snapshot_texture_resource(&self.resource)?;
+        check_sha256(&self.snapshot_sha256, None)?;
+        if self.snapshot_sha256 != authenticated_texture_snapshot_sha256(&self.resource)? {
+            return Err("authenticated texture snapshot packet SHA-256 mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+fn authenticated_texture_snapshot_sha256(
+    resource: &TextureResourceDesc,
+) -> Result<String, String> {
+    let canonical = serde_json::to_vec(resource).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"hoi4.authenticated-draw-time-texture-snapshot.v1\0");
+    hasher.update(canonical);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1362,12 +1514,14 @@ pub struct ParticlePacket {
     /// Exact 0x70 submit packet with the process-local pointer at +0x48
     /// canonicalized to zero. Portable replay must never persist or reuse the
     /// captured address; `ordered_gpu_instance_records` is its replacement.
+    #[serde(with = "base64_bytes")]
     pub canonical_packet_112_bytes: Vec<u8>,
     pub canonical_packet_sha256: String,
     pub packet_matrix_4x4_f32_bits: [u32; 16],
     pub live_count: u32,
     pub record_stride: u32,
     pub max_count: u32,
+    #[serde(with = "base64_bytes")]
     pub ordered_gpu_instance_records: Vec<u8>,
     pub gpu_instance_records_sha256: String,
     pub elapsed_f32_bits: u32,
@@ -1457,6 +1611,7 @@ pub struct CompiledShaderPayload {
     pub compiler_identity: String,
     pub target_profile: String,
     pub compiler_flags_u64: u64,
+    #[serde(with = "base64_bytes")]
     pub bytecode: Vec<u8>,
     pub sha256: String,
 }
@@ -2143,6 +2298,7 @@ pub struct IndexBufferBinding {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BufferSource {
     Inline {
+        #[serde(with = "base64_bytes")]
         bytes: Vec<u8>,
         sha256: String,
     },
@@ -2326,6 +2482,7 @@ pub struct RenderTargetInitialSubresource {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RenderTargetInitialSource {
     Inline {
+        #[serde(with = "base64_bytes")]
         bytes: Vec<u8>,
         sha256: String,
     },
@@ -2508,6 +2665,7 @@ pub enum Skinning {
     NotSkinned,
     Palette {
         palette_sha256: String,
+        #[serde(with = "base64_bytes")]
         palette_3200_bytes: Vec<u8>,
     },
 }
@@ -2618,8 +2776,10 @@ pub struct TiledLightSubmission {
     #[serde(with = "decimal_u64")]
     pub last_sequence: u64,
     pub grid_start_inv_cell_size_float4_bits: [u32; 4],
+    #[serde(with = "base64_bytes")]
     pub light_index_map_64x64_bgra8: Vec<u8>,
     pub light_index_map_sha256: String,
+    #[serde(with = "base64_bytes")]
     pub light_data_map_128x1_rgba32f: Vec<u8>,
     pub light_data_map_sha256: String,
     pub ordered_slot_semantic_joins: Vec<LightSlotJoin>,
@@ -3055,6 +3215,7 @@ pub struct PoliticalTexturePacket {
     pub height: u32,
     pub row_pitch: u32,
     pub format: PoliticalTextureFormat,
+    #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3082,11 +3243,37 @@ pub enum PoliticalTextureFormat {
 #[derive(Deserialize)]
 struct SchemaProbe {
     schema: String,
+    #[serde(default)]
+    wire_schema: Option<String>,
+}
+
+const PRODUCTION_RENDER_WIRE_SCHEMA: &str = "hoi4.production-render-wire.v1";
+const INLINE_BLOB_REFERENCE_FIELD: &str = "blob_sha256";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionRenderWire {
+    schema: String,
+    wire_schema: String,
+    inline_blobs: Vec<InlineBlobWire>,
+    frame: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InlineBlobWire {
+    sha256: String,
+    base64: String,
 }
 
 /// Shared schema gate: every explicit incompatible-version refusal must fire
 /// before any typed field error.
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve authenticated draw-time bytes for engine-generated textures that are neither direct effective-VFS payloads nor prior render-target outputs"
+        ));
+    }
     if schema == INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: its recorded-input variant can carry only a digest and cannot preserve or replay-validate the immutable in-hook selected-Present observation chronology"
@@ -3145,11 +3332,139 @@ fn check_schema(schema: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn deduplicate_inline_blob_references(
+    value: &mut serde_json::Value,
+    blobs: &mut BTreeMap<String, String>,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                deduplicate_inline_blob_references(value, blobs)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.get("kind").and_then(serde_json::Value::as_str) == Some("inline") {
+                let sha256 = object
+                    .get("sha256")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("inline buffer source has no SHA-256")?
+                    .to_string();
+                let encoded = object
+                    .get("bytes")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("inline buffer source has no canonical base64 payload")?
+                    .to_string();
+                check_sha256(&sha256, None)?;
+                let decoded = base64_bytes::decode(&encoded)?;
+                if format!("{:x}", Sha256::digest(&decoded)) != sha256 {
+                    return Err("inline buffer source bytes do not match its SHA-256".into());
+                }
+                match blobs.entry(sha256.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(encoded);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry)
+                        if entry.get() != &encoded =>
+                    {
+                        return Err(
+                            "equal inline buffer SHA-256 values carry different bytes".into(),
+                        )
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {}
+                }
+                object.insert(
+                    "bytes".into(),
+                    serde_json::json!({ INLINE_BLOB_REFERENCE_FIELD: sha256 }),
+                );
+            }
+            for value in object.values_mut() {
+                deduplicate_inline_blob_references(value, blobs)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn restore_inline_blob_references(
+    value: &mut serde_json::Value,
+    blobs: &BTreeMap<String, String>,
+    used: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                restore_inline_blob_references(value, blobs, used)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.get("kind").and_then(serde_json::Value::as_str) == Some("inline") {
+                let reference = object
+                    .get("bytes")
+                    .and_then(serde_json::Value::as_object)
+                    .ok_or("inline wire buffer source has no blob reference")?;
+                if reference.len() != 1 {
+                    return Err("inline wire buffer source blob reference is malformed".into());
+                }
+                let sha256 = reference
+                    .get(INLINE_BLOB_REFERENCE_FIELD)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("inline wire buffer source blob reference has no SHA-256")?
+                    .to_string();
+                if object.get("sha256").and_then(serde_json::Value::as_str)
+                    != Some(sha256.as_str())
+                {
+                    return Err(
+                        "inline wire buffer source reference differs from source SHA-256".into(),
+                    );
+                }
+                let encoded = blobs
+                    .get(&sha256)
+                    .ok_or("inline wire buffer source references an absent blob")?
+                    .clone();
+                used.insert(sha256);
+                object.insert("bytes".into(), serde_json::Value::String(encoded));
+            }
+            for value in object.values_mut() {
+                restore_inline_blob_references(value, blobs, used)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 impl ProductionRenderFrame {
     pub fn decode_json(bytes: &[u8]) -> Result<Self, String> {
         let probe: SchemaProbe = serde_json::from_slice(bytes)
             .map_err(|error| format!("production render JSON: {error}"))?;
         check_schema(&probe.schema)?;
+        if probe.wire_schema.is_some() {
+            let wire: ProductionRenderWire = serde_json::from_slice(bytes)
+                .map_err(|error| format!("production render wire JSON: {error}"))?;
+            if wire.schema != SCHEMA || wire.wire_schema != PRODUCTION_RENDER_WIRE_SCHEMA {
+                return Err("production render wire identity mismatch".into());
+            }
+            let mut blobs = BTreeMap::new();
+            for blob in wire.inline_blobs {
+                check_sha256(&blob.sha256, None)?;
+                let decoded = base64_bytes::decode(&blob.base64)?;
+                if format!("{:x}", Sha256::digest(&decoded)) != blob.sha256
+                    || blobs.insert(blob.sha256, blob.base64).is_some()
+                {
+                    return Err(
+                        "production render wire blob table is hash-invalid or duplicated".into(),
+                    );
+                }
+            }
+            let mut frame = wire.frame;
+            let mut used = BTreeSet::new();
+            restore_inline_blob_references(&mut frame, &blobs, &mut used)?;
+            if used.len() != blobs.len() {
+                return Err("production render wire contains an unreferenced inline blob".into());
+            }
+            return Self::decode_value(&frame);
+        }
         let frame: Self = serde_json::from_slice(bytes)
             .map_err(|error| format!("production render JSON: {error}"))?;
         frame.validate()?;
@@ -3174,7 +3489,19 @@ impl ProductionRenderFrame {
 
     pub fn encode_json(&self) -> Result<Vec<u8>, String> {
         self.validate()?;
-        serde_json::to_vec(self).map_err(|error| error.to_string())
+        let mut frame = serde_json::to_value(self).map_err(|error| error.to_string())?;
+        let mut blobs = BTreeMap::new();
+        deduplicate_inline_blob_references(&mut frame, &mut blobs)?;
+        let wire = ProductionRenderWire {
+            schema: SCHEMA.into(),
+            wire_schema: PRODUCTION_RENDER_WIRE_SCHEMA.into(),
+            inline_blobs: blobs
+                .into_iter()
+                .map(|(sha256, base64)| InlineBlobWire { sha256, base64 })
+                .collect(),
+            frame,
+        };
+        serde_json::to_vec(&wire).map_err(|error| error.to_string())
     }
 
     pub fn submit(&self, submit_index: u64) -> Option<&RenderSubmit> {
@@ -3982,6 +4309,27 @@ impl RenderSubmit {
         }
         check_sha256(&self.particle_packet_set_sha256, None)?;
         validate_constant_buffers(&self.ordered_scene_constant_buffers)?;
+        let mut authenticated_texture_snapshots = BTreeMap::new();
+        let mut prior_authenticated_texture_snapshot = None;
+        for packet in &self.authenticated_texture_snapshots {
+            packet.validate()?;
+            if prior_authenticated_texture_snapshot
+                .is_some_and(|prior: &str| packet.snapshot_sha256.as_str() <= prior)
+            {
+                return Err(
+                    "authenticated texture snapshot packets are not in strict digest order".into(),
+                );
+            }
+            prior_authenticated_texture_snapshot = Some(packet.snapshot_sha256.as_str());
+            if authenticated_texture_snapshots
+                .insert(packet.snapshot_sha256.as_str(), packet)
+                .is_some()
+            {
+                return Err(
+                    "render submit repeats an authenticated texture snapshot packet".into(),
+                );
+            }
+        }
         validate_static_map_programs(
             &self.ordered_static_map_programs,
             self.ordered_scene_constant_buffers.as_slice(),
@@ -5186,6 +5534,33 @@ fn validate_unified_render_operations(submit: &RenderSubmit) -> Result<(), Strin
     {
         return Err("unified render-operation order has incomplete one-to-one coverage".into());
     }
+    let referenced_snapshots = submit
+        .ordered_static_map_programs
+        .iter()
+        .flat_map(|program| &program.ordered_operations)
+        .filter_map(|operation| match &operation.command {
+            StaticMapCommand::Draw { draw } => Some(draw),
+            StaticMapCommand::ClearColor { .. }
+            | StaticMapCommand::ClearDepthStencil { .. } => None,
+        })
+        .flat_map(|draw| &draw.ordered_shader_resources)
+        .filter_map(|binding| match &binding.source {
+            StaticShaderResourceSource::AuthenticatedSnapshot {
+                snapshot_sha256, ..
+            } => Some(snapshot_sha256.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let carried_snapshots = submit
+        .authenticated_texture_snapshots
+        .iter()
+        .map(|packet| packet.snapshot_sha256.as_str())
+        .collect::<BTreeSet<_>>();
+    if referenced_snapshots != carried_snapshots {
+        return Err(
+            "authenticated texture snapshot packet table has missing or unreferenced rows".into(),
+        );
+    }
     Ok(())
 }
 
@@ -5279,6 +5654,21 @@ fn validate_static_submit_sources(
                 {
                     return Err("tiled-light data texture identity/descriptor mismatch".into());
                 }
+            }
+            StaticShaderResourceSource::AuthenticatedSnapshot {
+                snapshot_sha256,
+                view,
+            } => {
+                check_sha256(snapshot_sha256, None)?;
+                let packet = submit
+                    .authenticated_texture_snapshots
+                    .iter()
+                    .find(|packet| packet.snapshot_sha256 == *snapshot_sha256)
+                    .ok_or(
+                        "static draw references an absent authenticated texture snapshot packet",
+                    )?;
+                view.validate()?;
+                view.validate_against(&packet.resource)?;
             }
             StaticShaderResourceSource::UsedContent { .. } => {}
         }
@@ -5388,6 +5778,13 @@ fn validate_static_map_draw(draw: &StaticMapDraw) -> Result<(), String> {
                 view.validate()?;
                 view.validate_against(resource)?;
             }
+            StaticShaderResourceSource::AuthenticatedSnapshot {
+                snapshot_sha256,
+                view,
+            } => {
+                check_sha256(snapshot_sha256, None)?;
+                view.validate()?;
+            }
             StaticShaderResourceSource::PreparedTarget {
                 target,
                 resource,
@@ -5473,6 +5870,13 @@ fn validate_static_draw_vfs_authority(
             } => {
                 check(content)?;
                 validate_texture_resource_vfs_authority(resource, &check)?;
+            }
+            StaticShaderResourceSource::AuthenticatedSnapshot {
+                snapshot_sha256,
+                view,
+            } => {
+                check_sha256(snapshot_sha256, None)?;
+                view.validate()?;
             }
             StaticShaderResourceSource::PreparedTarget { resource, .. } => {
                 validate_texture_resource_vfs_authority(resource, &check)?;
@@ -5568,6 +5972,7 @@ fn collect_static_draw_used_content(draw: &StaticMapDraw) -> Vec<UsedContentKey>
                 push_unique(&mut out, content);
                 collect_resource(&mut out, resource);
             }
+            StaticShaderResourceSource::AuthenticatedSnapshot { .. } => {}
             StaticShaderResourceSource::PreparedTarget { resource, .. }
             | StaticShaderResourceSource::SnowMudTexture { resource, .. }
             | StaticShaderResourceSource::PoliticalTexture { resource, .. }
@@ -6191,6 +6596,25 @@ fn validate_submit_payload_texture_resource(resource: &TextureResourceDesc) -> R
     validate_prepared_texture_resource(resource)?;
     if resource.sample_count != 1 {
         return Err("submit-carried dynamic texture is unexpectedly multisampled".into());
+    }
+    Ok(())
+}
+
+fn validate_authenticated_snapshot_texture_resource(
+    resource: &TextureResourceDesc,
+) -> Result<(), String> {
+    resource.validate()?;
+    if resource.sample_count != 1
+        || resource.ordered_subresources.is_empty()
+        || resource
+            .ordered_subresources
+            .iter()
+            .any(|subresource| !matches!(&subresource.source, BufferSource::Inline { .. }))
+    {
+        return Err(
+            "authenticated draw-time texture snapshot must carry complete inline non-MSAA subresources"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -6998,6 +7422,7 @@ mod tests {
                 camera_carrier: None,
                 ordered_scene_constant_buffers: vec![],
                 ordered_static_map_programs: vec![],
+                authenticated_texture_snapshots: vec![],
                 tree_runtime: None,
                 s1_shadow: None,
                 effect_lifecycle_events: vec![],
@@ -7048,6 +7473,7 @@ mod tests {
             camera_carrier: None,
             ordered_scene_constant_buffers: vec![],
             ordered_static_map_programs: vec![],
+            authenticated_texture_snapshots: vec![],
             tree_runtime: None,
             s1_shadow: None,
             effect_lifecycle_events: vec![],
@@ -7380,6 +7806,61 @@ mod tests {
                 mip_levels: 1,
             },
         }
+    }
+
+    #[test]
+    fn authenticated_draw_time_texture_snapshot_is_exact_and_fail_closed() {
+        let texture = texture();
+        let mut packet =
+            AuthenticatedTextureSnapshotPacket::sealed(texture.resource).unwrap();
+        let mut draw = StaticMapDraw {
+            draw_token: "static.generated.terrain_id".into(),
+            shader_program: shader(),
+            ordered_shader_resources: vec![StaticShaderResourceBinding {
+                stage: texture.stage,
+                slot: texture.slot,
+                semantic_token: "TerrainIDMap".into(),
+                source: StaticShaderResourceSource::AuthenticatedSnapshot {
+                    snapshot_sha256: packet.snapshot_sha256.clone(),
+                    view: texture.view,
+                },
+            }],
+            pipeline: pipeline(),
+            geometry: StaticGeometrySource::Exact {
+                geometry: entity_geometry(),
+            },
+            ordered_constant_buffers: vec![constant_buffer()],
+            output_state: output_state(),
+            payload_sha256: String::new(),
+        };
+        draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
+        validate_static_map_draw(&draw).expect("complete authenticated snapshot");
+        packet.resource.ordered_subresources.clear();
+        assert!(packet
+            .validate()
+            .unwrap_err()
+            .contains("complete inline non-MSAA subresources"));
+    }
+
+    #[test]
+    fn production_wire_base64_deduplicates_equal_inline_gpu_payloads() {
+        let bytes = vec![0, 1, 2, 3, 127, 128, 254, 255];
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let inline = serde_json::json!({
+            "kind": "inline",
+            "bytes": base64_bytes::encode(&bytes),
+            "sha256": sha256,
+        });
+        let mut value = serde_json::json!([inline.clone(), inline]);
+        let original = value.clone();
+        let mut blobs = BTreeMap::new();
+        deduplicate_inline_blob_references(&mut value, &mut blobs).unwrap();
+        assert_eq!(blobs.len(), 1);
+        assert_ne!(value, original);
+        let mut used = BTreeSet::new();
+        restore_inline_blob_references(&mut value, &blobs, &mut used).unwrap();
+        assert_eq!(used.len(), 1);
+        assert_eq!(value, original);
     }
 
     fn particle_geometry(instance_count: u32) -> GeometryBinding {
@@ -8608,6 +9089,7 @@ mod tests {
                 camera_carrier: None,
                 ordered_scene_constant_buffers: vec![constant_buffer()],
                 ordered_static_map_programs: vec![],
+                authenticated_texture_snapshots: vec![],
                 tree_runtime: None,
                 s1_shadow: None,
                 particle_packet_set_sha256: "5".repeat(64),
@@ -9100,6 +9582,10 @@ mod tests {
         let v11 = serde_json::json!({"schema": INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v11).unwrap_err();
         assert!(error.contains("recorded-input variant"));
+        let v12 =
+            serde_json::json!({"schema": INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v12).unwrap_err();
+        assert!(error.contains("engine-generated textures"));
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
         let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
         assert!(error.contains("unsupported production render schema"));
@@ -9212,6 +9698,7 @@ mod tests {
                 camera_carrier: None,
                 ordered_scene_constant_buffers: vec![],
                 ordered_static_map_programs: vec![],
+                authenticated_texture_snapshots: vec![],
                 tree_runtime: None,
                 s1_shadow: None,
                 particle_packet_set_sha256: "5".repeat(64),

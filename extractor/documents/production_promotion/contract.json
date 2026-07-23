@@ -5,10 +5,10 @@
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
   },
   "central_rust_validation": {
-    "output_sha256": "d968506164f5eeaa084215219183d9c51e1fcc71790f2e61a9bcba2b5e9f8383",
+    "output_sha256": "027c66034dcdad24d83fbd25373123ec884418cba18af5ba12a1aaf9e60cd9df",
     "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
     "result": "PASS_FINAL_ALL",
-    "sha256": "1dc233aa8babd332fa33e132f7113be8016153134d4e1a35e0c24bc4eb177b96"
+    "sha256": "669f76964a1e3b82f67a86d9ea43a76516349513c7b7b74f2a565f81032c1fc5"
   },
   "fail_closed": true,
   "global_extractor_completion": false,
@@ -113,7 +113,7 @@
     {
       "path": "extractor/native/domain_registry.json",
       "role": "schedulable domain roster and status",
-      "sha256": "ccd7eacbc34dd5706bf58e51205b89019a4cd79ae99d82a85db683d509dcd39f"
+      "sha256": "2bfffc789db74c04d36faf88caca5f09d567bb2943bb7e8bf36d3c3722bc0895"
     },
     {
       "path": "extractor/native/compact_contract/src/build_profile.rs",
@@ -128,27 +128,27 @@
     {
       "path": "extractor/native/compact_contract/src/lib.rs",
       "role": "compact schema and fail-closed interpretation",
-      "sha256": "b96b46262eb4dac7cefa8b57cf2a25657c4b3c1b8f08338021495e0c0971570b"
+      "sha256": "51e94dc16b9be88b58a8106204451d5abfe874228a0e801c9c9f36639193d25b"
     },
     {
       "path": "extractor/native/collector/src/lib.rs",
       "role": "live read and compact emission",
-      "sha256": "f0660ef92836ba91e420dce795c2cfb2a3f4f3cd6a4b1781bec0674968fe5e8c"
+      "sha256": "3e7c25893007fe1636eec9ca822092ded13c91176398544220f7b75fe90c1e0d"
     },
     {
       "path": "extractor/native/recorder_host/src/domain_data_authority.rs",
       "role": "domain admission and authority accounting",
-      "sha256": "f4b941bd127ce3c672769d91d21086e653a7190120f8c610e477af4e1d834c0e"
+      "sha256": "97bf7b96a6697132b374e01456aa41c59a6e32acb9cc102b6734629b356feb8b"
     },
     {
       "path": "extractor/native/recorder_host/src/world_fold.rs",
       "role": "authoritative replay world folds",
-      "sha256": "c800294ca19456911f16b2f52de62f463d467c5b46de18ea904423c140905657"
+      "sha256": "527827a2b7dc8c83d917fd2f7c336379fb143ab6a44a964ad17a5cbaeeaa31db"
     },
     {
       "path": "extractor/native/recorder_host/src/main.rs",
       "role": "recorder gate and production composition",
-      "sha256": "e84fdb13f3801c39568a27fd79e7baa7aea452e40794e25e70cce442d67d09fe"
+      "sha256": "2dec2e98a2926d5a323be49000b78c3fc0caf0d83ead2ee73eb8c043d3341632"
     }
   ],
   "residuals": [],

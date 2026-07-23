@@ -871,6 +871,52 @@ pub fn land_counter_content(row: &DivisionUnitRow) -> CounterContent {
     }
 }
 
+/// Identity-only land counter authorized by D95 map visibility without exact
+/// detail visibility. Every semantic field sourced from D20 (including owner,
+/// role, bars, supply, orders, abilities, and badges) is replaced by one
+/// constant fail-closed form so hidden values cannot influence replay output.
+fn redacted_land_counter_content(row: &DivisionUnitRow) -> CounterContent {
+    CounterContent {
+        uid: row.div_uid.clone(),
+        domain: CounterDomain::Land,
+        owner: None,
+        country_color_key: None,
+        name: None,
+        nato_symbol_key: None,
+        symbol_source: NatoKeySource::LandRoleUnavailable,
+        symbol_hint: None,
+        strength: None,
+        organisation: None,
+        max_organisation: None,
+        str_bar_fraction: None,
+        org_bar_fraction: None,
+        current_supply: None,
+        max_supply: None,
+        supply_ratio: None,
+        counter_supply_status: None,
+        low_supply_frame: None,
+        remaining_supply: Leaf::Unobtained,
+        experience: None,
+        dig_in: None,
+        dig_in_cap: None,
+        dig_in_fraction: None,
+        dig_in_frame: None,
+        current_order_kind: Leaf::Unobtained,
+        active_ability_kinds: Leaf::Unobtained,
+        count: None,
+        badges: CounterBadges {
+            orders: ServedBadge::AbsentThisHour,
+            combat: ServedBadge::AbsentThisHour,
+            low_supply: ServedBadge::AbsentThisHour,
+            dig_in: ServedBadge::AbsentThisHour,
+            training: ServedBadge::AbsentThisHour,
+            invalid_orders: ServedBadge::AbsentThisHour,
+            attrition: ServedBadge::AbsentThisHour,
+            active_ability: ServedBadge::AbsentThisHour,
+        },
+    }
+}
+
 fn land_counter_content_with_joins(
     row: &DivisionUnitRow,
     battleplans: &ArmyBattleplansView,
@@ -968,11 +1014,11 @@ pub fn air_counter_content(row: &WingUnitRow) -> CounterContent {
 }
 
 /// Build the counter-content set for one world frame. When `pov_tag` is
-/// `Some(tag)`, only units whose measured `owner == tag` are included (own-unit
-/// counters — visibility of foreign units is a separate concern, see
-/// `fx_pov_visibility`); when `None`, every served unit is bound. Each domain
-/// carries its source-view [`ViewStatus`]; a non-`Present` domain yields an
-/// empty list (fail-closed).
+/// `Some(tag)`, own divisions and exact D95 map-visible foreign divisions are
+/// admitted; foreign D20 details are redacted unless D95 marks them exact.
+/// Naval and air remain own-unit-only. When `None`, every served unit is bound
+/// for omniscient observer mode. Each domain carries its source-view
+/// [`ViewStatus`].
 pub fn counter_contents_from_frame(frame: &WorldFrame, pov_tag: Option<&str>) -> CounterContentSet {
     let keep = |owner: &Leaf<String>| match pov_tag {
         Some(tag) => owner_is(owner, tag),
@@ -982,16 +1028,22 @@ pub fn counter_contents_from_frame(frame: &WorldFrame, pov_tag: Option<&str>) ->
     let land = frame
         .division_units()
         .iter()
-        .filter(|d| keep(&d.owner))
-        .map(|row| {
+        .filter_map(|row| {
+            let exact_details = match pov_tag {
+                Some(tag) => frame.division_pov_exact_details(tag, row)?,
+                None => true,
+            };
+            if !exact_details {
+                return Some(redacted_land_counter_content(row));
+            }
             let ability_tag = pov_tag.or_else(|| row.owner.measured().map(String::as_str));
             let politics = ability_tag.and_then(|tag| frame.politics_detail(tag));
-            land_counter_content_with_joins(
+            Some(land_counter_content_with_joins(
                 row,
                 &battleplans,
                 politics,
                 frame.exact_province_supply_tooltip(),
-            )
+            ))
         })
         .collect();
     let naval = frame
@@ -1191,6 +1243,7 @@ mod tests {
         };
         DivisionUnitRow {
             raw_division_id: 101,
+            raw_division_type: Leaf::Measured(1),
             div_uid: "101:1".into(),
             owner: Leaf::Measured("GER".into()),
             location_province: Leaf::Measured(1000),
@@ -1263,6 +1316,32 @@ mod tests {
         assert_eq!(c.count, None);
         assert_eq!(c.badges.orders, ServedBadge::Measured(true));
         assert_eq!(c.badges.combat, ServedBadge::Measured(false));
+    }
+
+    #[test]
+    fn non_exact_d95_land_counter_redacts_every_d20_detail() {
+        let mut row = land_row(Some("infantry"), Leaf::Measured(0.95), Leaf::Measured(true));
+        row.max_organisation = Leaf::Measured(84.0);
+        row.experience = Leaf::Measured(0.75);
+        row.current_supply = Leaf::Measured(12.0);
+        row.counter_training_visible = Leaf::Measured(true);
+        row.in_combat = Leaf::Measured(true);
+        let content = redacted_land_counter_content(&row);
+        assert_eq!(content.uid, "101:1");
+        assert_eq!(content.domain, CounterDomain::Land);
+        assert!(content.owner.is_none());
+        assert!(content.country_color_key.is_none());
+        assert!(content.name.is_none());
+        assert!(content.nato_symbol_key.is_none());
+        assert!(content.strength.is_none());
+        assert!(content.organisation.is_none());
+        assert!(content.max_organisation.is_none());
+        assert!(content.experience.is_none());
+        assert!(content.current_supply.is_none());
+        assert_eq!(content.current_order_kind, Leaf::Unobtained);
+        assert_eq!(content.active_ability_kinds, Leaf::Unobtained);
+        assert_eq!(content.badges.combat, ServedBadge::AbsentThisHour);
+        assert_eq!(content.badges.training, ServedBadge::AbsentThisHour);
     }
 
     #[test]

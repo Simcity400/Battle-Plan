@@ -1,4 +1,4 @@
-//! E6 Observer POV mode UX (SHELL ONLY).
+//! E6 Observer POV mode UX.
 //!
 //! Product model (REPLAY_PRODUCTION_PLAN §0 / observer-mode directive): the
 //! default view is the omniscient world (no fog). The viewer may pick one of
@@ -6,16 +6,16 @@
 //! to the world. This module owns:
 //!
 //! * [`PovState`] — the POV state object + a stateless, idempotent toggle.
-//! * [`povs_from_session`] — the country picker source, derived from the
-//!   `replay_core` session view (`SessionMetadataView.player_countries`).
+//! * [`povs_from_frame`] — the country picker source, derived from typed
+//!   `replay_core` D57 session and D68 local-player views.
 //! * [`PovState::render_status`] — the fail-closed render contract: because
-//!   the FoW *render* layer is only law-certified as tooling so far (plan C8),
-//!   POV entry surfaces [`FOW_NOT_LAW_CERTIFIED`] and keeps showing the
-//!   omniscient view rather than faking a fog look. Hidden-unit / UI re-keying
-//!   is a later lane.
+//!   a selected POV requires authenticated current-frame replay inputs;
+//!   POV entry binds to the current frame's exact d94 province visibility and
+//!   d95 spotted-unit state. Missing or incomplete data is unavailable rather
+//!   than an invitation to display omniscient pixels.
 //!
-//! The POV *state* still flips on entry (so the UI can show which country is
-//! observed and offer the toggle); only the fog RENDER is blocked.
+//! The POV *state* still flips on entry so the UI can show which country is
+//! observed and offer the toggle.
 //!
 //! Player-list sourcing: the session view's `player_countries` reads a
 //! top-level `session.player_countries` and, when that key is absent, falls
@@ -25,13 +25,14 @@
 //! [`SESSION_PLAYERS_GAP`] instead of parsing the raw snapshot behind the
 //! seam.
 
-use replay_core::{Leaf, SessionMetadataView};
+use replay_core::{
+    Leaf, PovVisibilityView, SessionHeaderView, SessionMetadataView, SpottedUnitsView, ViewStatus,
+    WorldFrame,
+};
 
-/// Fail-closed diagnostic surfaced when a country POV is active: the FoW
-/// render layer is not yet certified for the product path.
-pub const FOW_NOT_LAW_CERTIFIED: &str =
-    "observer POV FoW layer not yet law-certified (plan C8 is tooling-only); \
-     showing the omniscient world view, not a faked fog look";
+/// Fail-closed diagnostic prefix for an unavailable selected-POV frame join.
+pub const POV_RECORDED_STATE_UNAVAILABLE: &str =
+    "selected POV has no complete current-frame d94/d95 visibility and spotted-unit evidence";
 
 /// Fail-closed diagnostic surfaced when the recording carries no
 /// player-country list the picker can use (see the module note).
@@ -71,11 +72,20 @@ pub enum PovPicker {
 pub enum PovRenderStatus {
     /// Omniscient world view — render normally.
     Omniscient,
-    /// A country POV is active but the FoW render is blocked; render the
-    /// omniscient view and surface the diagnostic. Never fake fog.
-    FowBlocked {
+    /// Exact current-frame d94/d95 inputs admitted for this POV.
+    Recorded {
         pov: String,
-        diagnostic: &'static str,
+        province_slot_count: usize,
+        visibility_capture_sequence: u64,
+        pov_country_id: u32,
+        spotted_land_unit_count: Option<usize>,
+        spotted_taskforce_count: Option<usize>,
+    },
+    /// A selected POV lacks complete current-frame inputs. The caller must
+    /// omit the POV-dependent render, never substitute the omniscient world.
+    Unavailable {
+        pov: String,
+        diagnostic: String,
     },
 }
 
@@ -145,15 +155,117 @@ impl PovState {
         };
     }
 
-    /// The render contract for the current mode (fail-closed on POV).
-    pub fn render_status(&self) -> PovRenderStatus {
+    /// Join the observer mode to the displayed frame (fail-closed on POV).
+    pub fn render_status(&self, frame: Option<&WorldFrame>) -> PovRenderStatus {
         match &self.mode {
             ObserverMode::Omniscient => PovRenderStatus::Omniscient,
-            ObserverMode::Pov(tag) => PovRenderStatus::FowBlocked {
-                pov: tag.clone(),
-                diagnostic: FOW_NOT_LAW_CERTIFIED,
-            },
+            ObserverMode::Pov(tag) => {
+                let Some(frame) = frame else {
+                    return PovRenderStatus::Unavailable {
+                        pov: tag.clone(),
+                        diagnostic: format!(
+                            "{POV_RECORDED_STATE_UNAVAILABLE}: displayed WorldFrame is absent"
+                        ),
+                    };
+                };
+                if frame.visibility_status() != ViewStatus::Present {
+                    return PovRenderStatus::Unavailable {
+                        pov: tag.clone(),
+                        diagnostic: format!(
+                            "{POV_RECORDED_STATE_UNAVAILABLE}: visibility status is {:?}",
+                            frame.visibility_status()
+                        ),
+                    };
+                }
+                let visibility = frame.visibility_for(tag);
+                let spotted = frame.spotted_units_for(tag);
+                match admit_recorded_pov(tag, visibility.as_ref(), &spotted) {
+                    Ok(status) => status,
+                    Err(reason) => PovRenderStatus::Unavailable {
+                        pov: tag.clone(),
+                        diagnostic: format!("{POV_RECORDED_STATE_UNAVAILABLE}: {reason}"),
+                    },
+                }
+            }
         }
+    }
+}
+
+fn admit_recorded_pov(
+    pov: &str,
+    visibility: &PovVisibilityView,
+    spotted: &SpottedUnitsView,
+) -> Result<PovRenderStatus, String> {
+    if visibility.status != ViewStatus::Present {
+        return Err(format!("POV visibility status is {:?}", visibility.status));
+    }
+    let Leaf::Measured(levels) = &visibility.raw_province_levels else {
+        return Err("exact d94 province visibility vector is not measured".into());
+    };
+    if levels.is_empty() || visibility.provinces.len() != levels.len() {
+        return Err("exact d94 province vector is empty or not a complete slot census".into());
+    }
+    let Leaf::Measured(visibility_capture_sequence) = &visibility.capture_sequence else {
+        return Err("exact d94 capture sequence is not measured".into());
+    };
+    if *visibility_capture_sequence == 0 {
+        return Err("exact d94 capture sequence is zero".into());
+    }
+    let Leaf::Measured(pov_country_id) = &visibility.pov_country_id else {
+        return Err("exact d94 POV country identity is not measured".into());
+    };
+    if *pov_country_id == 0 {
+        return Err("exact d94 POV country identity is zero".into());
+    }
+    if &visibility.spotted_units != spotted {
+        return Err("d95 accessor disagrees with the d94-attached spotted-unit view".into());
+    }
+    if spotted.status != ViewStatus::Present {
+        return Err(format!("spotted-unit status is {:?}", spotted.status));
+    }
+
+    let spotted_land_unit_count = exact_spotted_surface(
+        "land",
+        &spotted.land_units,
+        &spotted.divisions,
+        &spotted.land_frame_sequence,
+    )?;
+    let spotted_taskforce_count = exact_spotted_surface(
+        "taskforce",
+        &spotted.taskforce_units,
+        &spotted.fleets,
+        &spotted.taskforce_frame_sequence,
+    )?;
+    if spotted_land_unit_count.is_none() && spotted_taskforce_count.is_none() {
+        return Err("exact d95 carries no complete land or taskforce frame".into());
+    }
+
+    Ok(PovRenderStatus::Recorded {
+        pov: pov.to_string(),
+        province_slot_count: levels.len(),
+        visibility_capture_sequence: *visibility_capture_sequence,
+        pov_country_id: *pov_country_id,
+        spotted_land_unit_count,
+        spotted_taskforce_count,
+    })
+}
+
+fn exact_spotted_surface<T>(
+    label: &str,
+    rows: &Leaf<Vec<T>>,
+    handles: &Leaf<Vec<String>>,
+    sequence: &Leaf<u64>,
+) -> Result<Option<usize>, String> {
+    match (rows, handles, sequence) {
+        (Leaf::Measured(rows), Leaf::Measured(handles), Leaf::Measured(sequence))
+            if *sequence != 0 && rows.len() == handles.len() =>
+        {
+            Ok(Some(rows.len()))
+        }
+        (Leaf::Unobtained, Leaf::Unobtained, Leaf::Unobtained) => Ok(None),
+        _ => Err(format!(
+            "exact d95 {label} rows, handles, and nonzero frame sequence are incomplete"
+        )),
     }
 }
 
@@ -189,10 +301,53 @@ pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
     }
 }
 
+/// Build the production POV picker from typed recorder carriers.
+///
+/// D57 remains the authoritative multiplayer roster. For an ordinary
+/// single-player recording where that optional multiplayer carrier is absent,
+/// the exact D68 local-player pair supplies the one recorded POV. When both
+/// carriers exist they must agree; disagreement is unavailable rather than
+/// choosing one source.
+pub fn povs_from_frame(frame: &WorldFrame) -> PovPicker {
+    povs_from_session_and_header(frame.session_metadata(), frame.session_header())
+}
+
+fn povs_from_session_and_header(
+    session: &SessionMetadataView,
+    header: &SessionHeaderView,
+) -> PovPicker {
+    let session_picker = povs_from_session(session);
+    match (
+        &session.player_countries,
+        &session_picker,
+        &header.player,
+    ) {
+        (_, PovPicker::Available(choices), Leaf::Measured(player))
+            if !choices.iter().any(|choice| choice.tag == player.country_tag) =>
+        {
+            PovPicker::Unavailable(format!(
+                "D68 local player {} is absent from the measured D57 player-country roster",
+                player.country_tag
+            ))
+        }
+        (_, PovPicker::Available(_), _) => session_picker,
+        (Leaf::Absent, PovPicker::Unavailable(_), Leaf::Measured(player)) => {
+            PovPicker::Available(vec![CountryChoice {
+                tag: player.country_tag.clone(),
+                label: None,
+            }])
+        }
+        (_, PovPicker::Unavailable(_), _) => session_picker,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_core::{PlayerCountry, ViewStatus};
+    use replay_core::{
+        PlayerCountry, ProvinceVisibility, SessionHeaderPlayer, SessionHeaderView,
+    };
+    use std::collections::BTreeMap;
 
     fn session(player_countries: Leaf<Vec<PlayerCountry>>) -> SessionMetadataView {
         SessionMetadataView {
@@ -210,23 +365,104 @@ mod tests {
         let state = PovState::new();
         assert!(state.is_omniscient());
         assert_eq!(state.active_pov(), None);
-        assert_eq!(state.render_status(), PovRenderStatus::Omniscient);
+        assert_eq!(state.render_status(None), PovRenderStatus::Omniscient);
     }
 
     #[test]
-    fn enter_pov_flips_state_but_render_fails_closed() {
+    fn enter_pov_without_world_frame_fails_closed() {
         let mut state = PovState::new();
         state.enter_pov("GER");
         assert_eq!(state.active_pov(), Some("GER"));
-        // State flips, but the FoW render is blocked (no faked fog).
-        match state.render_status() {
-            PovRenderStatus::FowBlocked { pov, diagnostic } => {
+        match state.render_status(None) {
+            PovRenderStatus::Unavailable { pov, diagnostic } => {
                 assert_eq!(pov, "GER");
-                assert_eq!(diagnostic, FOW_NOT_LAW_CERTIFIED);
-                assert!(diagnostic.contains("not yet law-certified"));
+                assert!(diagnostic.contains(POV_RECORDED_STATE_UNAVAILABLE));
+                assert!(diagnostic.contains("WorldFrame is absent"));
             }
-            other => panic!("expected FowBlocked, got {other:?}"),
+            other => panic!("expected Unavailable, got {other:?}"),
         }
+    }
+
+    fn session_header(player: Leaf<SessionHeaderPlayer>) -> SessionHeaderView {
+        SessionHeaderView {
+            status: if player.is_measured() {
+                ViewStatus::Present
+            } else {
+                ViewStatus::DomainAbsent
+            },
+            player,
+            ideology: Leaf::Absent,
+            cosmetic_tag: Leaf::Absent,
+            dlc_mask: Leaf::Absent,
+            start_date_raw: Leaf::Absent,
+            save_version: Leaf::Absent,
+            session: Leaf::Absent,
+            version: Leaf::Absent,
+        }
+    }
+
+    #[test]
+    fn exact_d94_d95_views_admit_selected_pov() {
+        let spotted = SpottedUnitsView {
+            status: ViewStatus::Present,
+            divisions: Leaf::Measured(Vec::new()),
+            fleets: Leaf::Unobtained,
+            wings: Leaf::Unobtained,
+            land_units: Leaf::Measured(Vec::new()),
+            taskforce_units: Leaf::Unobtained,
+            land_frame_sequence: Leaf::Measured(9),
+            taskforce_frame_sequence: Leaf::Unobtained,
+        };
+        let visibility = PovVisibilityView {
+            status: ViewStatus::Present,
+            provinces: BTreeMap::from([(
+                0,
+                Leaf::Measured(ProvinceVisibility {
+                    level: "2".into(),
+                }),
+            )]),
+            raw_province_levels: Leaf::Measured(vec![2]),
+            capture_sequence: Leaf::Measured(7),
+            pov_country_id: Leaf::Measured(42),
+            spotted_units: spotted.clone(),
+        };
+
+        assert_eq!(
+            admit_recorded_pov("GER", &visibility, &spotted),
+            Ok(PovRenderStatus::Recorded {
+                pov: "GER".into(),
+                province_slot_count: 1,
+                visibility_capture_sequence: 7,
+                pov_country_id: 42,
+                spotted_land_unit_count: Some(0),
+                spotted_taskforce_count: None,
+            })
+        );
+    }
+
+    #[test]
+    fn present_but_nonexact_visibility_cannot_admit_selected_pov() {
+        let spotted = SpottedUnitsView {
+            status: ViewStatus::Present,
+            divisions: Leaf::Measured(Vec::new()),
+            fleets: Leaf::Unobtained,
+            wings: Leaf::Unobtained,
+            land_units: Leaf::Measured(Vec::new()),
+            taskforce_units: Leaf::Unobtained,
+            land_frame_sequence: Leaf::Measured(1),
+            taskforce_frame_sequence: Leaf::Unobtained,
+        };
+        let visibility = PovVisibilityView {
+            status: ViewStatus::Present,
+            provinces: BTreeMap::new(),
+            raw_province_levels: Leaf::Absent,
+            capture_sequence: Leaf::Absent,
+            pov_country_id: Leaf::Absent,
+            spotted_units: spotted.clone(),
+        };
+        assert!(admit_recorded_pov("GER", &visibility, &spotted)
+            .expect_err("legacy visibility must not be admitted")
+            .contains("d94 province visibility vector"));
     }
 
     #[test]
@@ -308,6 +544,55 @@ mod tests {
         match povs_from_session(&session(Leaf::Measured(vec![]))) {
             PovPicker::Unavailable(reason) => assert!(reason.contains("no measured TAGs")),
             other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_uses_exact_d68_player_when_multiplayer_roster_is_absent() {
+        let header = session_header(Leaf::Measured(SessionHeaderPlayer {
+            tag_db_id: 368,
+            country_tag: "D04".into(),
+        }));
+        match povs_from_session_and_header(&session(Leaf::Absent), &header) {
+            PovPicker::Available(choices) => {
+                assert_eq!(choices.len(), 1);
+                assert_eq!(choices[0].tag, "D04");
+                assert_eq!(choices[0].label, None);
+            }
+            other => panic!("expected D68 single-player POV, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_does_not_hide_an_unobtained_d57_roster_with_d68() {
+        let header = session_header(Leaf::Measured(SessionHeaderPlayer {
+            tag_db_id: 368,
+            country_tag: "D04".into(),
+        }));
+        match povs_from_session_and_header(&session(Leaf::Unobtained), &header) {
+            PovPicker::Unavailable(reason) => {
+                assert!(reason.contains("captured-but-unobtained"));
+            }
+            other => panic!("expected unavailable D57 roster to stay fail-closed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_rejects_d57_d68_player_disagreement() {
+        let header = session_header(Leaf::Measured(SessionHeaderPlayer {
+            tag_db_id: 368,
+            country_tag: "D04".into(),
+        }));
+        let roster = vec![PlayerCountry {
+            tag: Leaf::Measured("GER".into()),
+            player_name: Leaf::Measured("Alice".into()),
+        }];
+        match povs_from_session_and_header(&session(Leaf::Measured(roster)), &header) {
+            PovPicker::Unavailable(reason) => {
+                assert!(reason.contains("D68 local player D04"));
+                assert!(reason.contains("D57 player-country roster"));
+            }
+            other => panic!("expected fail-closed D57/D68 disagreement, got {other:?}"),
         }
     }
 }

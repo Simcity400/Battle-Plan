@@ -1,6 +1,8 @@
-# A24 politics-tooltip upstream RE and d73 carrier
+# A24 politics-tooltip upstream RE and retired d73 carrier
 
-Status: **exact diagnostic detours, pointer-free owner capture, and the typed extractor-to-replay/UI carrier are complete; the production semantic PTI1 row producer is not implemented, so d73 remains reserved, unschedulable, and fail closed.**
+Status: **retained forensic path complete; d73 is retired as a product
+dependency. Production politics state is carried by d14/d15, exact visible
+tooltip output by scheduled d72, and XUI11 pixels by `AuthenticatedUiPass`.**
 
 This report belongs only to the extractor A24 lane. It does not amend or reuse the rendering-laws `PROGRAM_STATUS` surface.
 
@@ -119,7 +121,8 @@ Reserved unscheduled domain 73 uses `PTI1` schema v2. Its exact row key is `{fra
 
 The six typed families are trigger result/reason tree, effective hire/removal cost, conditional-modifier aggregate with exact source terms, advisor-slot capacity/vacancy/eligibility/disabled reasons, timed dynamic modifier value/source/expiry, and displayed party-popularity change sources. Validation rejects duplicate keys, mismatched typed variants, malformed reason trees, nonmonotonic source ordinals, aggregate sum disagreement, scale disagreement, inconsistent advisor vacancy, invalid expiry order, unauthenticated source admission, and cross-hour snapshot attachment.
 
-The collector exposes `encode_a24_exact_politics_tooltip_frame`.
+The collector retains `encode_a24_exact_politics_tooltip_frame` for historical
+recordings and forensic inspection.
 `recorder_host` folds clean frames to `_r2_politics_tooltip_inputs_live`,
 preserves status flags and provenance, distinguishes absent from authenticated
 measured-empty, emits null on failure or frame-hour mismatch, and never carries
@@ -129,7 +132,17 @@ invariants, recomputes and joins the PTI1 selected-Present receipt against the
 production-render receipt, rejects unknown country joins, and projects measured rows to
 `PoliticsDetailView::tooltip_inputs`. `game_ui::politics_tooltips` exposes only
 exact target-key selection and preserves absent versus unobtained versus
-measured-empty. It does not evaluate triggers or infer missing rows.
+measured-empty. It does not evaluate triggers or infer missing rows. This
+inspection API has no production caller: d14/d15 provide politics state, d72
+provides the exact visible final tooltip blob and rectangle, and the
+selected-Present UI pass owns the pixels. Immediately before the first target
+write, `replay_app::ui_runtime` rejects any authenticated
+`interface/countrypoliticsview.gui` operation unless the selected POV has a
+Present d14/d15 row. When the same pass contains the authenticated global
+`ToolTip` operation, it additionally requires one Present d72 instance with
+the same frame hour, selected-Present receipt, POV/global scope, and authored
+tooltip owner. The pass is then executed once; d72 is authority for the
+measured tooltip operation, not a second draw path.
 
 Prior lane, contract, collector, and recorder test results predate this recovery
 and are retained only as historical evidence. They do not validate the new
@@ -210,6 +223,13 @@ read-only on `shard-07` against image base `0x140000000` and executable SHA-256
 | country gate and party-change source arithmetic | `20260722T071400Z-final-a24-party-source-term-producer-con-c8fdacbc` | `b595f4b0ce20df02e2fa7fb2e39653cbfbad4e31ddcfa7bcd14887b3044ca9e4` |
 | modifier-tree and slot-roster roots and callers | `20260722T071409Z-final-a24-modifier-roster-producer-consu-825a8c29` | `a3b42976692f4f583ea8e4cd620020e4bfd83d9aadabaf87843209c80423f715` |
 
+The current-authority confirmation pass re-exported the nine product-relevant
+politics producers with p-code and a depth-two caller graph under job
+`20260723T042831Z-final-d73-production-abi-mining-bea52db9`, manifest SHA-256
+`079ddfb13e41c661fef4d15c3023ab1d9b88a8799fd4975b0f5eaa35f9d09d73`.
+It confirms the same final localized strings, predicates, and scalars, with no
+new complete typed reason-tree, source-list, or frame-roster ABI.
+
 The final mechanical disposition is:
 
 - `0x140FBEB00` and `0x140FBEA50` each construct a trigger evaluation
@@ -270,6 +290,7 @@ localized strings there, but not the typed reason-tree, sum-complete source-term
 or frame-complete roster objects required by PTI1 v2. Fabricating those objects
 from strings, residual arithmetic, or constructor widgets would violate the
 lane's exact-or-fail contract. The production-safe disposition is to keep d73
-unscheduled and omit the optional politics-tooltip semantic leaf. No human
-input, passive capture, or client-driving workflow can change that static ABI
-fact; any later observation is regression validation only.
+retired and unscheduled: its semantic leaf is not needed by the d14/d15, d72,
+and authenticated-UI-pass product path. No human input, passive capture, or
+client-driving workflow can change that static ABI fact; any later observation
+is regression validation only.

@@ -273,6 +273,8 @@ pub struct DecisionPanelRow {
     pub presentation_index: u32,
     pub availability: DecisionAvailability,
     pub lifecycle: DecisionLifecycle,
+    pub interface_state: Option<u32>,
+    pub on_map_entry_ordinal: Option<u32>,
     pub target: Option<DecisionTarget>,
     pub cost: Option<DecisionCostState>,
     pub remaining_timer_days: Option<i32>,
@@ -379,6 +381,8 @@ pub fn decision_panel_snapshot_from_world(
                 replay_core::DecisionLifecycleExact::Failed => DecisionLifecycle::Failed,
                 replay_core::DecisionLifecycleExact::Removed => DecisionLifecycle::Removed,
             },
+            interface_state: row.interface_state,
+            on_map_entry_ordinal: row.on_map_entry_ordinal,
             target: row.target.as_ref().map(|target| match target {
                 replay_core::DecisionTargetExact::Country { tag } => {
                     DecisionTarget::Country { tag: tag.clone() }
@@ -469,6 +473,8 @@ pub struct DecisionCard {
     pub select_icon_sprite: &'static str,
     pub availability: DecisionAvailability,
     pub lifecycle: DecisionLifecycle,
+    pub interface_state: Option<u32>,
+    pub on_map_entry_ordinal: Option<u32>,
     pub target: Option<DecisionTarget>,
     pub cost: Option<DecisionCostState>,
     pub remaining_timer_days: Option<i32>,
@@ -611,7 +617,11 @@ pub fn bind_decision_panel(
                 row.decision_id, row.category_id, def.category_id
             )));
         }
-        if !identities.insert((row.decision_id.clone(), row.target.clone())) {
+        if !identities.insert((
+            row.decision_id.clone(),
+            row.target.clone(),
+            row.on_map_entry_ordinal,
+        )) {
             return Err(GameUiError::parse(format!(
                 "duplicate decision/target identity {}",
                 row.decision_id
@@ -644,8 +654,48 @@ pub fn bind_decision_panel(
         }
         if row.remaining_timer_days.is_some_and(|days| days < 0)
             || row.cooldown_remaining_days.is_some_and(|days| days < 0)
+            || row.interface_state.is_some_and(|state| state > 12)
+            || row.on_map_entry_ordinal == Some(u32::MAX)
         {
-            return Err(GameUiError::parse("decision timer/cooldown is negative"));
+            return Err(GameUiError::parse(
+                "decision timer/cooldown/interface/on-map state is invalid",
+            ));
+        }
+        let interface_state_valid = if row.interface_state.is_none()
+            != row.on_map_entry_ordinal.is_some()
+        {
+            false
+        } else if row
+            .cooldown_remaining_days
+            .is_some_and(|days| days > 0)
+        {
+            row.availability == DecisionAvailability::OnCooldown
+                && row.lifecycle == DecisionLifecycle::Pending
+        } else {
+            match row.interface_state {
+                None | Some(1 | 6 | 9) => {
+                    row.availability == DecisionAvailability::Available
+                        && row.lifecycle == DecisionLifecycle::Pending
+                }
+                Some(3 | 4 | 10 | 11) => {
+                    row.availability == DecisionAvailability::Active
+                        && row.lifecycle == DecisionLifecycle::Running
+                }
+                Some(12) => {
+                    row.availability == DecisionAvailability::Unavailable
+                        && row.lifecycle == DecisionLifecycle::Completed
+                }
+                Some(0 | 2 | 5 | 7 | 8) => {
+                    row.availability == DecisionAvailability::Unavailable
+                        && row.lifecycle == DecisionLifecycle::Pending
+                }
+                _ => false,
+            }
+        };
+        if !interface_state_valid {
+            return Err(GameUiError::parse(
+                "decision raw interface state disagrees with availability/lifecycle",
+            ));
         }
         let has_timer = row.remaining_timer_days.is_some() || row.cooldown_remaining_days.is_some();
         if has_timer != row.timer_text.is_some() {
@@ -698,6 +748,8 @@ pub fn bind_decision_panel(
             select_icon_sprite: DECISION_SELECT_ICON,
             availability: row.availability,
             lifecycle: row.lifecycle,
+            interface_state: row.interface_state,
+            on_map_entry_ordinal: row.on_map_entry_ordinal,
             target: row.target.clone(),
             cost: row.cost.clone(),
             remaining_timer_days: row.remaining_timer_days,

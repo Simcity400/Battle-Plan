@@ -77,6 +77,8 @@ fn valid_snapshot() -> DecisionPanelSnapshot {
                 presentation_index: 0,
                 availability: DecisionAvailability::Available,
                 lifecycle: DecisionLifecycle::Pending,
+                interface_state: Some(1),
+                on_map_entry_ordinal: None,
                 target: None,
                 cost: Some(DecisionCostState {
                     political_power: Some(50),
@@ -96,6 +98,8 @@ fn valid_snapshot() -> DecisionPanelSnapshot {
                 presentation_index: 1,
                 availability: DecisionAvailability::Active,
                 lifecycle: DecisionLifecycle::Running,
+                interface_state: Some(3),
+                on_map_entry_ordinal: None,
                 target: None,
                 cost: None,
                 remaining_timer_days: Some(24),
@@ -110,7 +114,9 @@ fn valid_snapshot() -> DecisionPanelSnapshot {
                 category_id: "political".into(),
                 presentation_index: 2,
                 availability: DecisionAvailability::OnCooldown,
-                lifecycle: DecisionLifecycle::Completed,
+                lifecycle: DecisionLifecycle::Pending,
+                interface_state: Some(12),
+                on_map_entry_ordinal: None,
                 target: Some(DecisionTarget::State { state_id: 64 }),
                 cost: Some(DecisionCostState {
                     political_power: None,

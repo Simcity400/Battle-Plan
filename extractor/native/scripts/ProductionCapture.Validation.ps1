@@ -294,6 +294,7 @@ function Test-ProductionCaptureArtifacts {
 
     if ([string](Get-ObjectProperty $manifest "stream_format") -ne "compact") { Add-CaptureProblem $problems "stream_format_not_compact" }
     if ((Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "enabled") -ne $true) { Add-CaptureProblem $problems "production_profile_not_enabled" }
+    if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "mandatory_domains_not_production_complete").Count -ne 0) { Add-CaptureProblem $problems "mandatory_domains_not_production_complete" }
     if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "profile_domains_not_scheduled").Count -ne 0) { Add-CaptureProblem $problems "profile_domains_not_scheduled" }
     if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "missing_required_static_artifacts").Count -ne 0) { Add-CaptureProblem $problems "required_static_artifacts_missing_from_profile" }
 

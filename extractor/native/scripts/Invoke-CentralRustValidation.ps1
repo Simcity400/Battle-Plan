@@ -507,6 +507,22 @@ try {
         }
     }
 
+    if ($Mode -eq "Lock" -and $Workspace -in @("All", "Extractor")) {
+        $standaloneRoots = @(
+            (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),
+            (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify")
+        )
+        foreach ($standaloneRoot in $standaloneRoots) {
+            Push-Location $standaloneRoot
+            try {
+                Invoke-Checked -Program "cargo" -Arguments @("generate-lockfile")
+            }
+            finally {
+                Pop-Location
+            }
+        }
+    }
+
     if ($Package.Count -eq 0 -and $Workspace -in @("All", "Extractor") -and $Mode -in @("Final", "Release")) {
         $standaloneRoots = @(
             (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),

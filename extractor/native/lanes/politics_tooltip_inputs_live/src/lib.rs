@@ -1,8 +1,11 @@
-//! A24 exact politics-tooltip computation carrier (reserved d73).
+//! Retained A24 politics-tooltip semantic carrier (retired d73).
 //!
-//! This lane preserves engine-evaluated semantic inputs. It deliberately does
+//! Production uses d14/d15 for politics state, d72 for exact visible final
+//! tooltip text/geometry, and `AuthenticatedUiPass` for XUI11 pixels. PTI1 is
+//! therefore not scheduled and is not a product dependency. The decoder is
+//! retained for old recordings and forensic inspection. It deliberately does
 //! not accept static-script presence, OCR, RenderDoc text, or replay-side
-//! trigger/modifier evaluation as a production source.
+//! trigger/modifier evaluation as authority.
 
 use std::collections::BTreeSet;
 

@@ -32,7 +32,7 @@ fn focus() -> FocusCanvasRequest {
             source_record_id: "producer:GER:frame38304".to_string(),
             state_id: "frame38304".to_string(),
             viewport: [2752, 1152],
-            scale: 0.7698728191475303,
+            scale: [0.7698728191475303, 0.7698728191475303],
             offset_pixels: [1631.9478310913767, -82.74048494411414],
         }),
         node_ids: vec!["GER_focus_a".to_string(), "joint_focus_0".to_string()],
@@ -308,7 +308,7 @@ fn replay_technology_canvas_view() -> TechnologyCanvasView {
     TechnologyCanvasView {
         status: ViewStatus::Present,
         observation: Some(TechnologyCanvasObservation {
-            schema_version: 1,
+            schema_version: 2,
             authority: TechnologyCanvasAuthority {
                 executable_sha256:
                     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
@@ -320,6 +320,9 @@ fn replay_technology_canvas_view() -> TechnologyCanvasView {
                 live_observation_receipt_sha256: hash.clone(),
                 live_producer_manifest_sha256: hash.clone(),
                 owner_registry_manifest_sha256: hash.clone(),
+                selected_present_receipt_sha256: hash.clone(),
+                selected_present_pass_identity_sha256: hash.clone(),
+                selected_present_producer_manifest_sha256: hash.clone(),
                 content_manifest_sha256: hash,
             },
             source_record_id: "a729:technology_canvas:record".into(),
@@ -327,8 +330,18 @@ fn replay_technology_canvas_view() -> TechnologyCanvasView {
             frame_hour: 42,
             elapsed_wall_ms: 7,
             capture_sequence: 3,
+            callback_qpc_ticks: 10,
+            selected_present_candidate_id: 11,
+            selected_present_ordinal: 0,
+            selected_present_qpc_ticks: 12,
+            selected_present_cutoff_qpc_ticks: 12,
+            selected_present_engine_instance_token: 13,
             boundary: TechnologyCanvasBoundary::PopulationCommitted,
             controller_mode: 6,
+            authored_surface_identity: "technology_canvas".into(),
+            runtime_root_identity: "countrytechtreeview".into(),
+            effective_interface_winner: "interface/countrytechtreeview.gui".into(),
+            active_root_identity: "countrytechtreeview/infantry".into(),
             source_items: vec![TechnologyCanvasSourceItem {
                 stable_item_id: "infantry_weapons".into(),
                 hierarchy_path: "countrytechtree/infantry/folder/infantry_weapons".into(),
@@ -339,6 +352,7 @@ fn replay_technology_canvas_view() -> TechnologyCanvasView {
                 exclusion_reason: None,
             }],
             final_draw_order: vec!["infantry_weapons".into()],
+            selected_present_ui_operation_order: vec![3],
             materialized_drawables: vec![TechnologyCanvasDrawable {
                 drawable_id: "infantry_weapons".into(),
                 hierarchy_path: "countrytechtree/infantry/folder/infantry_weapons".into(),
@@ -350,6 +364,7 @@ fn replay_technology_canvas_view() -> TechnologyCanvasView {
                     width: 183,
                     height: 84,
                 },
+                ui_pass_ordinals: vec![3],
             }],
             clip_rect: DynamicCollectionRect {
                 x: 21,
@@ -359,6 +374,10 @@ fn replay_technology_canvas_view() -> TechnologyCanvasView {
             },
             content_extent_pixels: [2706, 1500],
             viewport_extent_pixels: [2706, 990],
+            render_target_extent_pixels: [2752, 1152],
+            client_extent_pixels: [2752, 1152],
+            canvas_origin_pixels_fixed5: [672, 4416],
+            canvas_scale_bits: [1.0f32.to_bits(), 1.0f32.to_bits()],
             pan_pixels_fixed5: [16, -1280],
             horizontal_scroll_fixed5: TechnologyCanvasAxisState {
                 min: 0,

@@ -10,8 +10,9 @@ use game_ui::research_canvas::{
     RecordedFocusTransform, ResearchCanvasRequest,
 };
 use replay_core::{
-    FocusView, Leaf, NationalFocusPresentationExact, NationalFocusPresentationExactView,
-    NationalFocusPresentationItemExact, NationalFocusSelectedPresentExact, ViewStatus,
+    DynamicCollectionRect, FocusView, Leaf, NationalFocusPresentationExact,
+    NationalFocusPresentationExactView, NationalFocusPresentationItemExact,
+    NationalFocusSelectedPresentExact, ViewStatus,
 };
 
 fn ids() -> Vec<String> {
@@ -94,7 +95,7 @@ fn canvas(order: Vec<String>) -> ResearchCanvasRequest {
             source_record_id: "capture-focus-1".into(),
             state_id: "focus-state-1".into(),
             viewport: [1920, 1080],
-            scale: 1.0,
+            scale: [1.0, 1.0],
             offset_pixels: [100.0, 80.0],
         }),
         node_ids: order.clone(),
@@ -115,7 +116,7 @@ fn exact() -> NationalFocusPresentationExactView {
     NationalFocusPresentationExactView {
         status: ViewStatus::Present,
         presentation: Some(NationalFocusPresentationExact {
-            schema_version: 2,
+            schema_version: 3,
             authority: "exact_a729_national_focus_view_items".into(),
             executable_sha256:
                 "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
@@ -132,9 +133,30 @@ fn exact() -> NationalFocusPresentationExactView {
             selected_present: NationalFocusSelectedPresentExact {
                 frame_hour: 900,
                 selected_present_global_order: 7,
+                selected_present_candidate_id: 3,
+                selected_present_ordinal: 0,
                 selected_present_qpc_ticks: 100,
+                selected_present_cutoff_qpc_ticks: 110,
                 qpc_frequency_hz: 10_000_000,
                 selected_present_receipt_sha256: "ab".repeat(32),
+                selected_present_pass_identity_sha256: "cd".repeat(32),
+                selected_present_engine_instance_token: 17,
+                authored_surface_identity: "national_focus_canvas".into(),
+                runtime_root_identity: "nationalfocusview".into(),
+                effective_interface_winner: "interface/nationalfocusview.gui".into(),
+                render_target_extent_pixels: [1920, 1080],
+                client_extent_pixels: [1920, 1080],
+                clip_rect: DynamicCollectionRect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                content_extent_pixels: [1920, 1080],
+                viewport_extent_pixels: [1920, 1080],
+                canvas_origin_pixels_fixed5: [0, 0],
+                pan_pixels_fixed5: [0, 0],
+                canvas_scale_bits: [1.0f32.to_bits(), 1.0f32.to_bits()],
             },
             source_sequence: 11,
             producer_complete: true,
@@ -142,6 +164,8 @@ fn exact() -> NationalFocusPresentationExactView {
             view_id: "nationalfocusview:GER".into(),
             producer_record_identity: "a729:a31:900:GER:11".into(),
             expected_visible_item_count: 4,
+            selected_present_canvas_operation_ordinals: vec![2, 3],
+            selected_present_ui_operation_order: vec![2, 3, 4, 5, 6, 7],
             items: ids()
                 .into_iter()
                 .enumerate()
@@ -158,6 +182,13 @@ fn exact() -> NationalFocusPresentationExactView {
                     highlight_glow_visible: ordinal == 2,
                     historical_marker_visible: ordinal == 0,
                     joint_viewing_country_tag: (ordinal == 3).then(|| "ITA".into()),
+                    selected_present_ui_operation_ordinals: vec![ordinal as u32 + 4],
+                    selected_present_screen_rect: DynamicCollectionRect {
+                        x: ordinal as i32 * 96,
+                        y: ordinal as i32 * 130,
+                        width: 80,
+                        height: 80,
+                    },
                 })
                 .collect(),
         }),

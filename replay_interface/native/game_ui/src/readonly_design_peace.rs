@@ -9,8 +9,8 @@ use crate::design_catalog::{
 use replay_core::world::ViewStatus;
 use replay_core::{
     DesignCatalogJoinError, DesignRecord, SelectedDesignerFamilyExact,
-    SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
-    WorldFrame,
+    PeaceConferenceObservationExact, SelectedDesignerIdentityExactView,
+    SelectedDesignerOwnerExact, StableDesignIdentityExact, WorldFrame,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -896,4 +896,30 @@ pub fn admit_peace_conference(
     Ok(AdmittedPeaceConference {
         snapshot: snapshot.clone(),
     })
+}
+
+/// Bind the recorder-owned PCS1 observation to the inert XUI08 snapshot.
+///
+/// Inactive is a complete semantic state and can be admitted directly. PCS1
+/// active v1 intentionally lacks participant/allocation/result rows, so it
+/// remains typed incomplete until a later complete carrier is authenticated.
+pub fn peace_conference_snapshot_from_world(
+    frame: &WorldFrame,
+) -> Result<PeaceConferenceSnapshot, Xui08Rejection> {
+    let exact = frame
+        .peace_conference_exact()
+        .conference
+        .as_ref()
+        .ok_or(Xui08Rejection::MissingProvenance)?;
+    match &exact.observation {
+        PeaceConferenceObservationExact::Inactive { refresh_sequence } => {
+            Ok(PeaceConferenceSnapshot::Inactive {
+                source_record_id: format!(
+                    "pcs1:{}:{}:{}",
+                    exact.producer_manifest_sha256, exact.frame_hour, refresh_sequence
+                ),
+            })
+        }
+        PeaceConferenceObservationExact::Active { .. } => Err(Xui08Rejection::Incomplete),
+    }
 }

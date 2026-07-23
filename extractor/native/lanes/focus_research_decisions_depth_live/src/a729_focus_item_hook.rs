@@ -12,16 +12,18 @@ use crate::a729_focus_item_producer::{
     ProcessLocalFrameObservation, ProcessLocalItemObservation, VectorHeader,
     DETAIL_REFRESH_RVA, DYNAMIC_REFRESH_RVA, HIGHLIGHT_PRODUCER_RVA, ITEM_STATE_PRODUCER_RVA,
     ITEM_STATE_WRITER_RVA,
-    VECTOR_PUBLISHER_RVA,
+    VECTOR_PUBLISHER_RVA, VIEW_VTABLE,
 };
 use crate::a729_focus_item_inline;
 use compact_contract::national_focus_presentation::{
-    encode_payload, validate_snapshot, AuthorityState, Frame, SelectedPresentBinding, Snapshot,
+    encode_payload, validate_snapshot, AuthorityState, Frame, RectI32, SelectedPresentBinding,
+    Snapshot, AUTHORED_SURFACE_IDENTITY, EFFECTIVE_INTERFACE_WINNER,
     EXACT20_FUNCTION_MANIFEST_SHA256, EXACT20_JOB_RECEIPT_SHA256, EXECUTABLE_SHA256,
+    MAX_UI_PASS_OPERATIONS, RUNTIME_ROOT_IDENTITY,
 };
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::cell::Cell;
 use std::mem;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -64,6 +66,10 @@ pub const INLINE_INSTRUMENTATION_MANIFEST_SHA256: &str =
     "76cb5caf7dc418b5fbe79dac037440ccb3cecd34140ee9019ad33c96950e0273";
 pub const INLINE_INSTRUMENTATION_JOB_RECEIPT_SHA256: &str =
     "5c0dcd6032b2aa747ed02bec309c9c41d0697e445b46b86b91f9fb4132f5059a";
+pub const FOCUS_GUI_ROOT_JOB_ID: &str =
+    "20260723T045841Z-a31-focus-canvas-runtime-graphical-root-d0639223";
+pub const FOCUS_GUI_ROOT_MANIFEST_SHA256: &str =
+    "95e8555d6c6444f54acb03d9fa93f259c3cd75c9e5220ec155a79b9adb0d76b4";
 
 /// The exact passive observer is admitted by executable identity, sentinels,
 /// complete callback witnesses and a selected-Present frontier. A missing
@@ -72,6 +78,26 @@ pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = true;
 pub const COMPACT_DOMAIN_89_SCHEDULED: bool = true;
 
 const MAX_ITEMS: usize = 131_072;
+/// `CNationalFocusView` installs its secondary graphical vtable at +0x30 in
+/// the exact-a729 constructor. This is the common GUI traversal owner; the
+/// enclosing focus controller at +0 is retained separately and is not
+/// registered as the drawable root.
+const FOCUS_GUI_SUBOBJECT_OFFSET: usize = 0x30;
+/// Runtime `CContainerWindow*` used by `0x141377E00`.
+const FOCUS_CANVAS_RUNTIME_ROOT_OFFSET: usize = 0x588;
+/// `CNationalFocusTreeItem` constructor `0x14136A5C0` stores the runtime GUI
+/// object used for every named child lookup in `param_1[2]`.
+const FOCUS_ITEM_RUNTIME_GUI_ROOT_OFFSET: usize = 0x10;
+/// Uniform focus-canvas scale consumed and clamped by `0x141377E00`.
+const FOCUS_CANVAS_SCALE_OFFSET: usize = 0x2118;
+const FOCUS_CANVAS_POSITION_WIDGET_OFFSET: usize = 0x590;
+const GRAPHICAL_POSITION_SUBOBJECT_OFFSET: usize = 0x30;
+const GRAPHICAL_POSITION_VSLOT: usize = 0x98;
+const CONTAINER_CONTENT_EXTENT_VSLOT: usize = 0x0e8;
+const CONTAINER_VERTICAL_SCROLLBAR_OFFSET: usize = 0x15e0;
+const CONTAINER_HORIZONTAL_SCROLLBAR_OFFSET: usize = 0x15e8;
+const SCROLLBAR_VALUE_SUBOBJECT_OFFSET: usize = 0x80;
+const SCROLLBAR_VALUE_VSLOT: usize = 0x20;
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
 const VECTOR_PUBLISHER_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10,
@@ -150,6 +176,83 @@ pub struct SelectedPresentStamp {
     pub portable_selected_present_receipt_sha256: String,
 }
 
+/// Process-local owner registration consumed by the selected-Present GUI
+/// bridge. `focus_view_ptr` is the paired-refresh controller and
+/// `runtime_graphical_root_ptr` is its exact +0x30 graphical subobject; neither
+/// pointer can enter NFP1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NationalFocusCanvasPresentRegistration {
+    pub authored_surface_identity: &'static str,
+    pub runtime_root_identity: &'static str,
+    pub effective_interface_winner: &'static str,
+    pub callback_qpc_ticks: u64,
+    pub frame_hour: u64,
+    pub focus_view_ptr: usize,
+    pub runtime_root_ptr: usize,
+    pub runtime_graphical_root_ptr: usize,
+}
+
+/// Process-local identity for one visible focus and the runtime GUI subtree
+/// constructed for it. These pointers are join keys only and must be erased
+/// before NFP1 or the selected-Present UI pass is serialized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NationalFocusGuiItemRegistration {
+    pub focus_id: String,
+    pub item_ptr: usize,
+    pub runtime_gui_root_ptr: usize,
+}
+
+/// Complete process-local A31 side of the common-GUI join.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingNationalFocusGuiJoin {
+    pub root: NationalFocusCanvasPresentRegistration,
+    pub items: Vec<NationalFocusGuiItemRegistration>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NationalFocusCanvasRuntimeGeometry {
+    pub sample_started_qpc_ticks: u64,
+    pub sample_completed_qpc_ticks: u64,
+    pub qpc_frequency_hz: u64,
+    pub content_extent_pixels: [i32; 2],
+    pub canvas_origin_pixels_fixed5: [i64; 2],
+    pub pan_pixels_fixed5: [i64; 2],
+    pub canvas_scale_bits: [u32; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusSelectedPresentOperations {
+    pub focus_id: String,
+    pub operation_ordinals: Vec<u32>,
+    pub selected_present_screen_rect: RectI32,
+}
+
+/// Exact values returned by the global selected-Present owner/GUI bridge.
+/// There are deliberately no defaults. The focus lane remains unavailable
+/// until the bridge supplies this complete record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedPresentCanvasBinding {
+    pub selected_present_candidate_id: u64,
+    pub selected_present_ordinal: u32,
+    pub selected_present_cutoff_qpc_ticks: u64,
+    pub selected_present_pass_identity_sha256: String,
+    pub selected_present_engine_instance_token: u64,
+    pub authored_surface_identity: String,
+    pub runtime_root_identity: String,
+    pub effective_interface_winner: String,
+    pub render_target_extent_pixels: [i32; 2],
+    pub client_extent_pixels: [i32; 2],
+    pub clip_rect: RectI32,
+    pub content_extent_pixels: [i32; 2],
+    pub viewport_extent_pixels: [i32; 2],
+    pub canvas_origin_pixels_fixed5: [i64; 2],
+    pub pan_pixels_fixed5: [i64; 2],
+    pub canvas_scale_bits: [u32; 2],
+    pub focus_operations: Vec<FocusSelectedPresentOperations>,
+    pub canvas_operation_ordinals: Vec<u32>,
+    pub selected_present_ui_operation_order: Vec<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRefreshEpoch {
     pub generation: u64,
@@ -183,6 +286,11 @@ pub trait ExactA729FocusLiveDecoder: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Candidate {
     snapshot: Snapshot,
+    focus_view_ptr: usize,
+    runtime_root_ptr: usize,
+    runtime_graphical_root_ptr: usize,
+    runtime_geometry: NationalFocusCanvasRuntimeGeometry,
+    focus_gui_items: Vec<NationalFocusGuiItemRegistration>,
     same_epoch_vector_publish_seen: bool,
     generation: u64,
     callback_sequence: u64,
@@ -207,6 +315,7 @@ pub struct AcquisitionReceipt {
     pub qpc_frequency_hz: u64,
     pub selected_present_receipt_sha256: String,
     pub portable_selected_present_receipt_sha256: String,
+    pub selected_present_binding: SelectedPresentBinding,
     pub source_sequence: u64,
     pub visible_item_count: u32,
     pub same_epoch_vector_publish_seen: bool,
@@ -421,6 +530,140 @@ pub fn cancel_active_epoch() -> Result<(), String> {
     Ok(())
 }
 
+/// Return the exact process-local focus root that the global GUI owner registry
+/// must register before it can seal the selected Present. Absence of a complete
+/// refresh is a hard unavailable result; callers must not substitute the
+/// country tag, focus-tree id, or authored GUI file for this runtime owner.
+pub fn pending_canvas_present_registration(
+    generation: u64,
+) -> Result<NationalFocusCanvasPresentRegistration, String> {
+    Ok(pending_focus_gui_join(generation)?.root)
+}
+
+/// Return the exact focus canvas root and every visible focus's runtime GUI
+/// subtree. The selected-Present owner bridge joins draws through the runtime
+/// parent link at +0x108; authored names and screen rectangles are never used
+/// as ownership keys.
+pub fn pending_focus_gui_join(
+    generation: u64,
+) -> Result<PendingNationalFocusGuiJoin, String> {
+    let state = state().lock().map_err(|_| "A31 hook state poisoned")?;
+    if let Some(error) = &state.fatal_error {
+        return Err(error.clone());
+    }
+    let active = state
+        .active
+        .as_ref()
+        .ok_or("A31 no focus epoch is active")?;
+    if active.generation != generation {
+        return Err("A31 focus registration generation differs".into());
+    }
+    let candidate = active
+        .candidate
+        .as_ref()
+        .ok_or("A31 focus canvas has no complete refresh to register")?;
+    if candidate.runtime_graphical_root_ptr == 0 {
+        return Err("A31 focus canvas runtime graphical root is null".into());
+    }
+    let graphical_vtable = read_process_usize(candidate.runtime_graphical_root_ptr)
+        .ok_or("A31 focus canvas graphical subobject vtable is unreadable")?;
+    authenticate_and_normalize_image_address(graphical_vtable, VIEW_VTABLE)
+        .map_err(|_| "A31 focus canvas graphical subobject vtable is foreign".to_string())?;
+    if candidate.focus_gui_items.len() != candidate.snapshot.visible_items.len() {
+        return Err("A31 focus GUI item-root frontier is incomplete".into());
+    }
+    let root = NationalFocusCanvasPresentRegistration {
+        authored_surface_identity: AUTHORED_SURFACE_IDENTITY,
+        runtime_root_identity: RUNTIME_ROOT_IDENTITY,
+        effective_interface_winner: EFFECTIVE_INTERFACE_WINNER,
+        callback_qpc_ticks: candidate.completion_qpc_ticks,
+        frame_hour: active.frame_hour,
+        focus_view_ptr: candidate.focus_view_ptr,
+        runtime_root_ptr: candidate.runtime_root_ptr,
+        runtime_graphical_root_ptr: candidate.runtime_graphical_root_ptr,
+    };
+    Ok(PendingNationalFocusGuiJoin {
+        root,
+        items: candidate.focus_gui_items.clone(),
+    })
+}
+
+/// Sample the exact focus ContainerWindow geometry through the same pure
+/// getters consumed by `0x141377E00`. The returned QPC bounds the observation;
+/// callers must reject it when it cannot be joined to their selected Present.
+pub fn sample_pending_focus_gui_geometry(
+    generation: u64,
+) -> Result<NationalFocusCanvasRuntimeGeometry, String> {
+    let state = state().lock().map_err(|_| "A31 hook state poisoned")?;
+    if let Some(error) = &state.fatal_error {
+        return Err(error.clone());
+    }
+    let active = state
+        .active
+        .as_ref()
+        .ok_or("A31 no focus epoch is active")?;
+    if active.generation != generation {
+        return Err("A31 focus geometry generation differs".into());
+    }
+    let candidate = active
+        .candidate
+        .as_ref()
+        .ok_or("A31 focus canvas has no completed geometry observation")?;
+    Ok(candidate.runtime_geometry.clone())
+}
+
+fn sample_focus_gui_geometry(
+    focus_view_ptr: usize,
+    runtime_root_ptr: usize,
+) -> Result<NationalFocusCanvasRuntimeGeometry, String> {
+    let (sample_started_qpc_ticks, qpc_frequency_hz) =
+        qpc_now().ok_or("A31 focus geometry QPC read failed")?;
+    let content_extent_pixels = runtime_content_extent(runtime_root_ptr)?;
+    let horizontal_pan =
+        runtime_scrollbar_value(runtime_root_ptr, CONTAINER_HORIZONTAL_SCROLLBAR_OFFSET)?;
+    let vertical_pan =
+        runtime_scrollbar_value(runtime_root_ptr, CONTAINER_VERTICAL_SCROLLBAR_OFFSET)?;
+    let canvas_origin_pixels = runtime_canvas_origin_pixels(focus_view_ptr)?;
+    let scale_address = focus_view_ptr
+        .checked_add(FOCUS_CANVAS_SCALE_OFFSET)
+        .ok_or("A31 focus canvas scale address overflowed")?;
+    let scale_bits =
+        read_process_u32(scale_address).ok_or("A31 focus canvas scale was unreadable")?;
+    let scale = f32::from_bits(scale_bits);
+    if content_extent_pixels.iter().any(|value| *value <= 0)
+        || !scale.is_finite()
+        || scale <= 0.0
+    {
+        return Err("A31 focus canvas runtime geometry is invalid".into());
+    }
+    let (sample_completed_qpc_ticks, completed_frequency_hz) =
+        qpc_now().ok_or("A31 focus geometry closing QPC read failed")?;
+    if completed_frequency_hz != qpc_frequency_hz
+        || sample_completed_qpc_ticks < sample_started_qpc_ticks
+    {
+        return Err("A31 focus geometry QPC interval is invalid".into());
+    }
+    Ok(NationalFocusCanvasRuntimeGeometry {
+        sample_started_qpc_ticks,
+        sample_completed_qpc_ticks,
+        qpc_frequency_hz,
+        content_extent_pixels,
+        canvas_origin_pixels_fixed5: [
+            i64::from(canvas_origin_pixels[0])
+                .checked_mul(32)
+                .ok_or("A31 focus canvas origin X fixed5 overflowed")?,
+            i64::from(canvas_origin_pixels[1])
+                .checked_mul(32)
+                .ok_or("A31 focus canvas origin Y fixed5 overflowed")?,
+        ],
+        pan_pixels_fixed5: [
+            exact_fixed5(horizontal_pan)?,
+            exact_fixed5(vertical_pan)?,
+        ],
+        canvas_scale_bits: [scale_bits, scale_bits],
+    })
+}
+
 /// Exact internal-callsite instrumentation owned by the custom harness feeds
 /// the final `ESI -> EDX` value from `0x141bb636e` through this bounded join.
 /// A function-entry observation alone is deliberately insufficient.
@@ -501,8 +744,19 @@ fn active_generation(
 }
 
 pub fn seal_selected_present_epoch(
+    _generation: u64,
+    _selected: SelectedPresentStamp,
+) -> Result<AcquisitionReceipt, String> {
+    Err(
+        "A31 selected Present omitted exact focus-canvas owner/geometry/operation binding"
+            .into(),
+    )
+}
+
+pub fn seal_selected_present_epoch_with_canvas(
     generation: u64,
     selected: SelectedPresentStamp,
+    canvas: SelectedPresentCanvasBinding,
 ) -> Result<AcquisitionReceipt, String> {
     if !capture_gate_open() {
         return Err("A31 fixture hooks are not lifecycle-healthy".into());
@@ -515,6 +769,16 @@ pub fn seal_selected_present_epoch(
     {
         return Err("A31 selected-Present stamp is incomplete".into());
     }
+    if canvas.selected_present_candidate_id == 0
+        || canvas.selected_present_cutoff_qpc_ticks < selected.selected_present_qpc_ticks
+        || !is_sha256(&canvas.selected_present_pass_identity_sha256)
+        || canvas.selected_present_engine_instance_token == 0
+        || canvas.authored_surface_identity != AUTHORED_SURFACE_IDENTITY
+        || canvas.runtime_root_identity != RUNTIME_ROOT_IDENTITY
+        || canvas.effective_interface_winner != EFFECTIVE_INTERFACE_WINNER
+    {
+        return Err("A31 focus-canvas selected-Present owner binding is incomplete or foreign".into());
+    }
     let mut state = state().lock().map_err(|_| "A31 hook state poisoned")?;
     if let Some(error) = &state.fatal_error {
         return Err(error.clone());
@@ -524,7 +788,7 @@ pub fn seal_selected_present_epoch(
         state.fatal_error = Some("A31 fixture and selected-Present identities differ".into());
         return Err(state.fatal_error.clone().unwrap());
     }
-    let candidate = active
+    let mut candidate = active
         .candidate
         .ok_or("A31 epoch contained no complete focus refresh")?;
     if candidate.generation != generation
@@ -548,8 +812,36 @@ pub fn seal_selected_present_epoch(
         state.fatal_error = Some("A31 transaction-local hook witnesses are incomplete".into());
         return Err(state.fatal_error.clone().unwrap());
     }
+    bind_canvas_to_snapshot(&mut candidate.snapshot, &canvas)?;
+    let selected_present_binding = SelectedPresentBinding {
+        materialization_qpc_ticks: candidate.completion_qpc_ticks,
+        selected_present_global_order: selected.selected_present_global_order,
+        selected_present_candidate_id: canvas.selected_present_candidate_id,
+        selected_present_ordinal: canvas.selected_present_ordinal,
+        selected_present_qpc_ticks: selected.selected_present_qpc_ticks,
+        selected_present_cutoff_qpc_ticks: canvas.selected_present_cutoff_qpc_ticks,
+        qpc_frequency_hz: selected.qpc_frequency_hz,
+        selected_present_receipt_sha256: selected
+            .portable_selected_present_receipt_sha256
+            .clone(),
+        selected_present_pass_identity_sha256: canvas
+            .selected_present_pass_identity_sha256
+            .clone(),
+        selected_present_engine_instance_token: canvas.selected_present_engine_instance_token,
+        authored_surface_identity: canvas.authored_surface_identity.clone(),
+        runtime_root_identity: canvas.runtime_root_identity.clone(),
+        effective_interface_winner: canvas.effective_interface_winner.clone(),
+        render_target_extent_pixels: canvas.render_target_extent_pixels,
+        client_extent_pixels: canvas.client_extent_pixels,
+        clip_rect: canvas.clip_rect,
+        content_extent_pixels: canvas.content_extent_pixels,
+        viewport_extent_pixels: canvas.viewport_extent_pixels,
+        canvas_origin_pixels_fixed5: canvas.canvas_origin_pixels_fixed5,
+        pan_pixels_fixed5: canvas.pan_pixels_fixed5,
+        canvas_scale_bits: canvas.canvas_scale_bits,
+    };
     let receipt = AcquisitionReceipt {
-        schema: "hoi4.a31.selected_present_acquisition_receipt.v2",
+        schema: "hoi4.a31.selected_present_acquisition_receipt.v3",
         binary_sha256: EXECUTABLE_SHA256,
         function_manifest_sha256: EXACT20_FUNCTION_MANIFEST_SHA256,
         job_receipt_sha256: EXACT20_JOB_RECEIPT_SHA256,
@@ -565,6 +857,7 @@ pub fn seal_selected_present_epoch(
         selected_present_receipt_sha256: selected.selected_present_receipt_sha256,
         portable_selected_present_receipt_sha256:
             selected.portable_selected_present_receipt_sha256,
+        selected_present_binding,
         source_sequence: candidate.snapshot.source_sequence,
         visible_item_count: candidate.snapshot.visible_items.len() as u32,
         same_epoch_vector_publish_seen: candidate.same_epoch_vector_publish_seen,
@@ -579,6 +872,125 @@ pub fn seal_selected_present_epoch(
     };
     state.admitted = Some((candidate.snapshot, receipt.clone()));
     Ok(receipt)
+}
+
+fn bind_canvas_to_snapshot(
+    snapshot: &mut Snapshot,
+    canvas: &SelectedPresentCanvasBinding,
+) -> Result<(), String> {
+    let positive_extent = |extent: [i32; 2]| extent.iter().all(|value| *value > 0);
+    let scale_valid = canvas.canvas_scale_bits.iter().all(|bits| {
+        let scale = f32::from_bits(*bits);
+        scale.is_finite() && scale > 0.0
+    });
+    let clip_right = canvas.clip_rect.x.checked_add(canvas.clip_rect.width);
+    let clip_bottom = canvas.clip_rect.y.checked_add(canvas.clip_rect.height);
+    if !positive_extent(canvas.render_target_extent_pixels)
+        || !positive_extent(canvas.client_extent_pixels)
+        || !positive_extent(canvas.content_extent_pixels)
+        || !positive_extent(canvas.viewport_extent_pixels)
+        || canvas.clip_rect.x < 0
+        || canvas.clip_rect.y < 0
+        || canvas.clip_rect.width <= 0
+        || canvas.clip_rect.height <= 0
+        || clip_right.is_none_or(|right| {
+            right > canvas.render_target_extent_pixels[0]
+                || right > canvas.client_extent_pixels[0]
+        })
+        || clip_bottom.is_none_or(|bottom| {
+            bottom > canvas.render_target_extent_pixels[1]
+                || bottom > canvas.client_extent_pixels[1]
+        })
+        || canvas.viewport_extent_pixels[0] > canvas.content_extent_pixels[0]
+        || canvas.viewport_extent_pixels[1] > canvas.content_extent_pixels[1]
+        || canvas.viewport_extent_pixels[0] > canvas.client_extent_pixels[0]
+        || canvas.viewport_extent_pixels[1] > canvas.client_extent_pixels[1]
+        || !scale_valid
+    {
+        return Err("A31 focus-canvas geometry/transform is incomplete or out of bounds".into());
+    }
+    if canvas.focus_operations.len() != snapshot.visible_items.len()
+        || canvas.selected_present_ui_operation_order.is_empty()
+        || canvas.selected_present_ui_operation_order.len() > MAX_UI_PASS_OPERATIONS
+        || canvas.canvas_operation_ordinals.len() > MAX_UI_PASS_OPERATIONS
+    {
+        return Err("A31 focus-canvas operation ownership does not cover every visible focus".into());
+    }
+    let mut by_focus = BTreeMap::new();
+    let mut mapped = BTreeSet::new();
+    for operations in &canvas.focus_operations {
+        if operations.operation_ordinals.is_empty()
+            || operations.operation_ordinals.len() > MAX_UI_PASS_OPERATIONS
+            || operations
+                .operation_ordinals
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || by_focus
+                .insert(
+                    operations.focus_id.as_str(),
+                    operations.operation_ordinals.as_slice(),
+                )
+                .is_some()
+        {
+            return Err("A31 focus-canvas per-focus operation set is empty, duplicate, or unordered".into());
+        }
+        for ordinal in &operations.operation_ordinals {
+            if !mapped.insert(*ordinal) {
+                return Err("A31 selected-Present operation belongs to multiple focuses".into());
+            }
+            if mapped.len() > MAX_UI_PASS_OPERATIONS {
+                return Err("A31 selected-Present operation union exceeds carrier bound".into());
+            }
+        }
+        if operations.selected_present_screen_rect.width <= 0
+            || operations.selected_present_screen_rect.height <= 0
+        {
+            return Err("A31 focus selected-Present screen rectangle is empty".into());
+        }
+    }
+    for item in &mut snapshot.visible_items {
+        let operations = by_focus
+            .remove(item.focus_id.as_str())
+            .ok_or("A31 selected-Present omitted one focus identity")?;
+        let screen_rect = canvas
+            .focus_operations
+            .iter()
+            .find(|candidate| candidate.focus_id == item.focus_id)
+            .ok_or("A31 selected-Present focus rectangle join was lost")?
+            .selected_present_screen_rect;
+        item.selected_present_ui_operation_ordinals = operations.to_vec();
+        item.selected_present_screen_rect = screen_rect;
+    }
+    if canvas
+        .canvas_operation_ordinals
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        return Err("A31 canvas-level selected-Present operations are unordered".into());
+    }
+    for ordinal in &canvas.canvas_operation_ordinals {
+        if !mapped.insert(*ordinal) {
+            return Err("A31 selected-Present operation has multiple focus-canvas owners".into());
+        }
+        if mapped.len() > MAX_UI_PASS_OPERATIONS {
+            return Err("A31 selected-Present operation union exceeds carrier bound".into());
+        }
+    }
+    if !by_focus.is_empty()
+        || canvas
+            .selected_present_ui_operation_order
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || canvas.selected_present_ui_operation_order
+            != mapped.iter().copied().collect::<Vec<_>>()
+    {
+        return Err("A31 selected-Present operation union is not complete exact order".into());
+    }
+    snapshot.selected_present_ui_operation_order =
+        canvas.selected_present_ui_operation_order.clone();
+    snapshot.selected_present_canvas_operation_ordinals =
+        canvas.canvas_operation_ordinals.clone();
+    validate_snapshot(snapshot).map_err(|error| format!("{error:?}"))
 }
 
 /// Evidence-mode drain. It uses the same NFP1 validator and encoder but does
@@ -596,15 +1008,7 @@ pub fn drain_evidence_record(elapsed_wall_ms: u64) -> Result<EvidenceRecord, Str
         frame_hour: receipt.frame_hour,
         status_flags: 0,
         authority: AuthorityState::Exact20Receipt,
-        selected_present: Some(SelectedPresentBinding {
-            materialization_qpc_ticks: receipt.completion_qpc_ticks,
-            selected_present_global_order: receipt.selected_present_global_order,
-            selected_present_qpc_ticks: receipt.selected_present_qpc_ticks,
-            qpc_frequency_hz: receipt.qpc_frequency_hz,
-            selected_present_receipt_sha256: receipt
-                .portable_selected_present_receipt_sha256
-                .clone(),
-        }),
+        selected_present: Some(receipt.selected_present_binding.clone()),
         snapshot: Some(snapshot),
     };
     let encoded_nfp1 = encode_payload(&frame).map_err(|error| format!("{error:?}"))?;
@@ -1054,6 +1458,59 @@ fn capture_completed_refresh(view: usize) {
         Ok(value) => value,
         Err(error) => { poison(&format!("A31 pointer-free materialization failed: {error}")); return; }
     };
+    let mut focus_gui_items = Vec::with_capacity(observation.items.len());
+    for (item, visible) in observation.items.iter().zip(&snapshot.visible_items) {
+        let Some(root_address) = item
+            .item_address
+            .checked_add(FOCUS_ITEM_RUNTIME_GUI_ROOT_OFFSET)
+        else {
+            poison("A31 focus item GUI-root address overflowed");
+            return;
+        };
+        let Some(runtime_gui_root_ptr) = read_process_usize(root_address) else {
+            poison("A31 focus item GUI root was unreadable");
+            return;
+        };
+        if runtime_gui_root_ptr == 0 || read_process_usize(runtime_gui_root_ptr).is_none() {
+            poison("A31 focus item GUI root was null or had no readable vtable");
+            return;
+        }
+        focus_gui_items.push(NationalFocusGuiItemRegistration {
+            focus_id: visible.focus_id.clone(),
+            item_ptr: item.item_address,
+            runtime_gui_root_ptr,
+        });
+    }
+    let Some(runtime_graphical_root_ptr) = observation
+        .view_address
+        .checked_add(FOCUS_GUI_SUBOBJECT_OFFSET)
+    else {
+        poison("A31 focus graphical subobject address overflowed");
+        return;
+    };
+    let Some(runtime_root_address) = observation
+        .view_address
+        .checked_add(FOCUS_CANVAS_RUNTIME_ROOT_OFFSET)
+    else {
+        poison("A31 focus canvas runtime-root address overflowed");
+        return;
+    };
+    let Some(runtime_root_ptr) = read_process_usize(runtime_root_address) else {
+        poison("A31 focus canvas runtime root was unreadable");
+        return;
+    };
+    if runtime_root_ptr == 0 || read_process_usize(runtime_root_ptr).is_none() {
+        poison("A31 focus canvas runtime root was null or had no readable vtable");
+        return;
+    }
+    let runtime_geometry =
+        match sample_focus_gui_geometry(observation.view_address, runtime_root_ptr) {
+            Ok(value) => value,
+            Err(error) => {
+                poison(&format!("A31 focus canvas geometry sampling failed: {error}"));
+                return;
+            }
+        };
     let mut state = match state().lock() { Ok(value) => value, Err(_) => return };
     if state
         .active
@@ -1066,11 +1523,16 @@ fn capture_completed_refresh(view: usize) {
     let active = state.active.as_mut().expect("checked above");
     active.candidate = Some(Candidate {
         snapshot,
+        focus_view_ptr: observation.view_address,
+        runtime_root_ptr,
+        runtime_graphical_root_ptr,
+        runtime_geometry: runtime_geometry.clone(),
+        focus_gui_items,
         same_epoch_vector_publish_seen: raw.vector_publish_seen,
         generation: raw.generation,
         callback_sequence: sequence,
-        completion_qpc_ticks: ticks,
-        qpc_frequency_hz: frequency,
+        completion_qpc_ticks: runtime_geometry.sample_completed_qpc_ticks,
+        qpc_frequency_hz: runtime_geometry.qpc_frequency_hz,
     });
 }
 
@@ -1162,6 +1624,108 @@ fn read_process_u32(address: usize) -> Option<u32> {
         )
     };
     (ok != 0 && read == core::mem::size_of::<u32>()).then_some(value)
+}
+
+fn read_process_usize(address: usize) -> Option<usize> {
+    let mut value = 0usize;
+    let mut read = 0usize;
+    let ok = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            address as *const c_void,
+            (&mut value as *mut usize).cast(),
+            core::mem::size_of::<usize>(),
+            &mut read,
+        )
+    };
+    (ok != 0 && read == core::mem::size_of::<usize>()).then_some(value)
+}
+
+fn runtime_content_extent(runtime_root: usize) -> Result<[i32; 2], String> {
+    type ContentExtentFn = unsafe extern "system" fn(usize, *mut [i32; 2]) -> *const i32;
+    let vtable = read_process_usize(runtime_root)
+        .ok_or("A31 focus ContainerWindow vtable was unreadable")?;
+    let target = vtable
+        .checked_add(CONTAINER_CONTENT_EXTENT_VSLOT)
+        .and_then(read_process_usize)
+        .ok_or("A31 focus ContainerWindow content-extent getter was unreadable")?;
+    if target == 0 {
+        return Err("A31 focus ContainerWindow content-extent getter is null".into());
+    }
+    let getter: ContentExtentFn = unsafe { mem::transmute(target) };
+    let mut extent = [0i32; 2];
+    let returned = unsafe { getter(runtime_root, &mut extent) };
+    if returned.is_null() || extent.iter().any(|value| *value <= 0) {
+        return Err("A31 focus ContainerWindow returned an invalid content extent".into());
+    }
+    Ok(extent)
+}
+
+fn runtime_canvas_origin_pixels(focus_view: usize) -> Result<[i32; 2], String> {
+    type GraphicalPositionFn = unsafe extern "system" fn(usize, *mut [i32; 2]) -> *const i32;
+    let widget = focus_view
+        .checked_add(FOCUS_CANVAS_POSITION_WIDGET_OFFSET)
+        .and_then(read_process_usize)
+        .ok_or("A31 focus canvas position widget was unreadable")?;
+    let graphical = widget
+        .checked_add(GRAPHICAL_POSITION_SUBOBJECT_OFFSET)
+        .ok_or("A31 focus canvas graphical-position address overflowed")?;
+    let vtable = read_process_usize(graphical)
+        .ok_or("A31 focus canvas graphical-position vtable was unreadable")?;
+    let target = vtable
+        .checked_add(GRAPHICAL_POSITION_VSLOT)
+        .and_then(read_process_usize)
+        .ok_or("A31 focus canvas graphical-position getter was unreadable")?;
+    if target == 0 {
+        return Err("A31 focus canvas graphical-position getter is null".into());
+    }
+    let getter: GraphicalPositionFn = unsafe { mem::transmute(target) };
+    let mut position = [0i32; 2];
+    let returned = unsafe { getter(graphical, &mut position) };
+    if returned.is_null() {
+        return Err("A31 focus canvas graphical-position getter returned null".into());
+    }
+    Ok(position)
+}
+
+fn runtime_scrollbar_value(
+    runtime_root: usize,
+    scrollbar_offset: usize,
+) -> Result<f32, String> {
+    type ScrollbarValueFn = unsafe extern "system" fn(usize, u8) -> f32;
+    let scrollbar = runtime_root
+        .checked_add(scrollbar_offset)
+        .and_then(read_process_usize)
+        .ok_or("A31 focus ContainerWindow scrollbar was unreadable")?;
+    let value_subobject = scrollbar
+        .checked_add(SCROLLBAR_VALUE_SUBOBJECT_OFFSET)
+        .ok_or("A31 focus scrollbar value-subobject address overflowed")?;
+    let vtable = read_process_usize(value_subobject)
+        .ok_or("A31 focus scrollbar value vtable was unreadable")?;
+    let target = vtable
+        .checked_add(SCROLLBAR_VALUE_VSLOT)
+        .and_then(read_process_usize)
+        .ok_or("A31 focus scrollbar value getter was unreadable")?;
+    if target == 0 {
+        return Err("A31 focus scrollbar value getter is null".into());
+    }
+    let getter: ScrollbarValueFn = unsafe { mem::transmute(target) };
+    let value = unsafe { getter(value_subobject, 1) };
+    if !value.is_finite() {
+        return Err("A31 focus scrollbar returned a non-finite value".into());
+    }
+    Ok(value)
+}
+
+fn exact_fixed5(value: f32) -> Result<i64, String> {
+    let scaled = f64::from(value) * 32.0;
+    if !scaled.is_finite() || scaled.fract() != 0.0 {
+        return Err("A31 focus runtime value is not exactly representable in fixed5".into());
+    }
+    if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+        return Err("A31 focus runtime fixed5 value exceeds i64".into());
+    }
+    Ok(scaled as i64)
 }
 
 fn consume_pending_dynamic_view(pending: &mut Option<usize>, detail_view: usize) -> bool {

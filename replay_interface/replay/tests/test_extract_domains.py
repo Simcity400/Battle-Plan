@@ -83,7 +83,8 @@ def _make_oracle_dir(root, *, with_extract=True):
         "divisions": [
             {"div_id": 100, "div_type": 4713, "owner": "GER",
              "location_province": 5, "template_id": 1, "template_type": 2,
-             "template_name": "Inf", "organisation": 50.0, "strength": 1.0,
+             "template_name": "Inf", "organisation": 50.0,
+             "max_organisation": 75.0, "strength": 1.0,
              "equipment": [{"archetype": "infantry_equipment_0", "amount": 100}]}]})
     if with_extract:
         _dump(root, "supply.json", {
@@ -368,6 +369,7 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(d100["dig_in"], 12.18)
         self.assertEqual(d100["killed"], 5091)
         self.assertEqual(d100["division_name"]["name_order"], 1029)
+        self.assertEqual(d100["max_organisation"], 75.0)
         # ...while the original divisions.json equipment is NOT lost
         self.assertTrue(d100["equipment"])
         self.assertEqual(d100["equipment"][0]["archetype"], "infantry_equipment_0")

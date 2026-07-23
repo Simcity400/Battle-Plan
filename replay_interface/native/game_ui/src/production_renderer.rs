@@ -17,6 +17,9 @@ use crate::hud::{
     compose_authenticated_hud, HudBinding, HudSpriteStats, MinimapBinding, TooltipBinding,
 };
 use crate::loc::Localisation;
+use crate::research_canvas::{
+    admit_technology_canvas_render_route, TechnologyCanvasRenderRoute,
+};
 use crate::trade_state::{
     admit_trade_screen, render_trade_screen, AdmittedTradeScreen, TradeData,
 };
@@ -174,7 +177,8 @@ pub const REQUIRED_AUTHORED_HUD_SOURCES: &[&str] = &[
 /// The historical public name denotes route eligibility, not proof that every
 /// extractor-side authority producer is active. In particular, XUI25 still
 /// rejects until d77 carries its authenticated same-launch input-family receipt.
-pub const PROMOTED_XUI_PACKETS: &[&str] = &["XUI15", "XUI24", "XUI25"];
+pub const PROMOTED_XUI_PACKETS: &[&str] =
+    &["XUI09", "XUI10", "XUI15", "XUI24", "XUI25"];
 
 /// XUI27 is the post-XUI26 producer-role extension that makes the four core
 /// HUD roots routable. It is reported separately so the historical XUI01-26
@@ -185,14 +189,6 @@ pub const PROMOTED_EXTENSION_PACKETS: &[&str] = &["XUI27"];
 /// product-routed because the replay does not authenticate the live product
 /// surface activation and semantic window/root binding.
 pub const OMITTED_PIXEL_CANVAS_ROUTES: &[(&str, &str)] = &[
-    (
-        "XUI09",
-        "authenticated research/doctrine surface activation and semantic GUI-root binding; the XUI09 canvas/data law itself is promotion-ready",
-    ),
-    (
-        "XUI10",
-        "authenticated focus-view surface activation and semantic GUI-root binding; the XUI10 focus presentation/canvas law itself is promotion-ready",
-    ),
     (
         "XUI13",
         "authenticated designer surface activation and semantic GUI-root binding; canonical A27 catalog packaging and d78 display order are admitted",
@@ -243,7 +239,10 @@ pub const OMITTED_AUTHORITY_BLOCKED_PACKETS: &[(&str, &str)] = &[
         "runtime text and authenticated collection ordering",
     ),
     ("XUI17", "runtime text and authenticated visible order"),
-    ("XUI18", "A37 power-balance runtime presentation inputs"),
+    (
+        "XUI18",
+        "optional A37 semantic companion; visible power-balance pixels are owned by the authenticated selected-Present UI pass",
+    ),
     ("XUI19", "A34 complete ordered decision-panel carrier"),
     (
         "XUI20",
@@ -399,6 +398,42 @@ impl ProductionUiRenderer {
 
     pub fn registry(&self) -> &SpriteRegistry {
         &self.registry
+    }
+
+    /// Admit UI09's real product render route.
+    ///
+    /// The returned route selects operations from the already-authenticated
+    /// selected-Present frontier. It is not a second compositor and never
+    /// reconstructs the technology tree from an authored or estimated pitch.
+    /// A recording with no current-hour TCV1 observation omits the surface;
+    /// a claimed TCV1 surface that does not join the exact a729 runtime root,
+    /// target, clip, and operation stream is rejected.
+    pub fn admit_xui09_selected_present_route(
+        &self,
+        frame: &WorldFrame,
+        pass: &replay_core::AuthenticatedUiPass,
+    ) -> std::result::Result<Option<TechnologyCanvasRenderRoute>, ProductionUiRejection> {
+        if frame.technology_canvas_exact().status != replay_core::ViewStatus::Present {
+            return Ok(None);
+        }
+        let expected_hour = u64::try_from(frame.hour_index()).map_err(|_| {
+            ProductionUiRejection::IncompleteComposition(
+                "XUI09 cannot admit a negative replay hour".into(),
+            )
+        })?;
+        admit_technology_canvas_render_route(
+            frame.technology_canvas_exact(),
+            pass,
+            expected_hour,
+        )
+        .map(Some)
+        .map_err(|rejection| {
+            ProductionUiRejection::IncompleteComposition(format!(
+                "XUI09 selected-Present route rejected [{}]: {}",
+                rejection.code.regime_id(),
+                rejection.reason
+            ))
+        })
     }
 
     /// Admit the exact XUI16 occupation/garrison panel model for production
@@ -665,9 +700,9 @@ impl ProductionUiRenderer {
                 &clock_binding_from_frame(frame, playback_speed_step, &self.localisation),
             );
         }
-        // The d72 scheduler remains reserved pending its live matrix, but the
-        // consumer is complete and fail-closed: only a selected-Present-joined
-        // TTI2 exact blob for this POV and physical viewport reaches the HUD.
+        // The ordinary production collector schedules d72. The consumer stays
+        // fail-closed: only a selected-Present-joined TTI2 exact blob for this
+        // POV and physical viewport reaches the HUD.
         binding.tooltip =
             tooltip_binding_from_frame(frame, pov_tag, viewport_width, viewport_height);
 
@@ -850,10 +885,12 @@ mod tests {
             .map(|(packet, _)| *packet)
             .collect::<std::collections::BTreeSet<_>>();
         assert!(promoted.is_disjoint(&omitted_canvas));
-        assert_eq!(omitted_canvas.len(), 3);
+        assert_eq!(omitted_canvas.len(), 1);
         assert_eq!(
             promoted,
-            ["XUI15", "XUI24", "XUI25"].into_iter().collect()
+            ["XUI09", "XUI10", "XUI15", "XUI24", "XUI25"]
+                .into_iter()
+                .collect()
         );
         assert_eq!(omitted.len(), 20);
         assert_eq!(PROMOTED_EXTENSION_PACKETS, ["XUI27"]);

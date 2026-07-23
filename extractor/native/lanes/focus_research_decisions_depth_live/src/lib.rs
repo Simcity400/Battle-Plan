@@ -3963,14 +3963,14 @@ mod tests {
             &mut sequence,
             100,
             &DepthFrameRows::default(),
-            compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            0,
         );
         append_depth_frame(
             &mut clean,
             &mut sequence,
             101,
             &DepthFrameRows::default(),
-            compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            0,
         );
         let clean_summary = gate_existing_depth_stream(&clean, 1);
         assert!(

@@ -1,9 +1,9 @@
 {
   "central_rust_validation": {
-    "output_sha256": "d968506164f5eeaa084215219183d9c51e1fcc71790f2e61a9bcba2b5e9f8383",
+    "output_sha256": "027c66034dcdad24d83fbd25373123ec884418cba18af5ba12a1aaf9e60cd9df",
     "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
     "result": "PASS_FINAL_ALL",
-    "sha256": "1dc233aa8babd332fa33e132f7113be8016153134d4e1a35e0c24bc4eb177b96"
+    "sha256": "669f76964a1e3b82f67a86d9ea43a76516349513c7b7b74f2a565f81032c1fc5"
   },
   "checks": [
     {
@@ -493,14 +493,14 @@
   ],
   "checks_passed": 121,
   "frozen_inputs": {
-    "extractor/documents/MASTER_EXTRACTION_CONTRACT.md": "381b9b1b0c38a3bae2e36775a8debc26c78c09b6826ef78376b4d6c7579651a3",
-    "extractor/documents/RE_REMAINING.md": "96368f7e84357737c56e06c4913f6162d1ebaaa66cb20bbeff9bac49656a99fb",
+    "extractor/documents/MASTER_EXTRACTION_CONTRACT.md": "8e2320db1858afc5cb90660a6d14c6214688b2e0f8799a5b907c67eccb5b767f",
+    "extractor/documents/RE_REMAINING.md": "14b2f51ca40ce7c8595886d6e9d94fed1ff33984131118ef16cb3d172152139b",
     "extractor/documents/production_seal_common.py": "c40e0daa4b3c04ccb9142d801974449c807b6ca0be74f13b199903838a23f3e2",
-    "extractor/native/collector/src/lib.rs": "f0660ef92836ba91e420dce795c2cfb2a3f4f3cd6a4b1781bec0674968fe5e8c",
+    "extractor/native/collector/src/lib.rs": "3e7c25893007fe1636eec9ca822092ded13c91176398544220f7b75fe90c1e0d",
     "extractor/native/compact_contract/src/build_profile.rs": "30173d63d38ae22c6140ebe7d24e89c31613fc4d6f2e34de47254b3a5fdf49b9",
     "extractor/native/compact_contract/src/building_registry.rs": "77271f7cd09d346b02e0a0af80490cd5a23cd84b181f8bf069c3db7e1dc76928",
-    "extractor/native/compact_contract/src/lib.rs": "b96b46262eb4dac7cefa8b57cf2a25657c4b3c1b8f08338021495e0c0971570b",
-    "extractor/native/domain_registry.json": "ccd7eacbc34dd5706bf58e51205b89019a4cd79ae99d82a85db683d509dcd39f",
+    "extractor/native/compact_contract/src/lib.rs": "51e94dc16b9be88b58a8106204451d5abfe874228a0e801c9c9f36639193d25b",
+    "extractor/native/domain_registry.json": "2bfffc789db74c04d36faf88caca5f09d567bb2943bb7e8bf36d3c3722bc0895",
     "extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md": "962159d461bd63b9ac993f99d7f69b8010f42296236f0367d11c7ee57984ba8a",
     "extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md": "aaf4f8dae1486d0726d723383a57f4554a68a9c98ed33f5fa8e8f9e35a58075a",
     "extractor/native/lanes/air_loss_stats_live/INTEGRATION_PACKET.md": "bd7100d91b7e974eb76afed484b2e3f12ca32f2ba2a9faaf425c548833603b4e",
@@ -514,11 +514,11 @@
     "extractor/native/lanes/hub_motorization_live/INTEGRATION_PACKET.md": "6640bee7c82167665f633bdeeeeb8d1efe59d63936c94ff13b8813cefd4902ea",
     "extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md": "594abde60d89cc1de4268871f412f2e6536892e0f6f4bbc8e6a95efdafe63e52",
     "extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md": "1e43fee802fa77865ea0a6cb723f1b6171312b1f8d0a6b15e9b2fac72e9c407f",
-    "extractor/native/recorder_host/src/domain_data_authority.rs": "f4b941bd127ce3c672769d91d21086e653a7190120f8c610e477af4e1d834c0e",
-    "extractor/native/recorder_host/src/main.rs": "e84fdb13f3801c39568a27fd79e7baa7aea452e40794e25e70cce442d67d09fe",
-    "extractor/native/recorder_host/src/world_fold.rs": "c800294ca19456911f16b2f52de62f463d467c5b46de18ea904423c140905657",
+    "extractor/native/recorder_host/src/domain_data_authority.rs": "97bf7b96a6697132b374e01456aa41c59a6e32acb9cc102b6734629b356feb8b",
+    "extractor/native/recorder_host/src/main.rs": "2dec2e98a2926d5a323be49000b78c3fc0caf0d83ead2ee73eb8c043d3341632",
+    "extractor/native/recorder_host/src/world_fold.rs": "527827a2b7dc8c83d917fd2f7c336379fb143ab6a44a964ad17a5cbaeeaa31db",
     "replay_interface/documents/lane_reports/rendering_laws/XN07.md": "fa8553c881e88f5c7042e3152e0627d74db4b75947755f37c06632a6571be2c9",
-    "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json": "1dc233aa8babd332fa33e132f7113be8016153134d4e1a35e0c24bc4eb177b96",
+    "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json": "669f76964a1e3b82f67a86d9ea43a76516349513c7b7b74f2a565f81032c1fc5",
     "replay_interface/re_evidence/rendering_laws/XN07/verification_result.json": "74595e68e8fbe61cb89d7c39200117c39e8d12470fa8c66363ad34b272b0957d",
     "replay_interface/re_evidence/rendering_laws/XN07/verify_xn07.py": "88f6f7d737bb70b71a60d5c412797deed93a0058b2c092a21d499e50442ff997"
   },

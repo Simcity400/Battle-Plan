@@ -79,6 +79,8 @@ pub struct PreparedProductionD3dFrame {
     pub tiled_lights: Vec<replay_core::TiledLightSubmission>,
     pub ordered_static_used_content: Vec<UsedContentKey>,
     pub ordered_static_programs: Vec<StaticMapPassProgram>,
+    pub authenticated_texture_snapshots:
+        Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
     /// Exact D81 semantic binding to the retained D80 railroad operations.
     pub rail_ribbon: Option<ExactRailD80Binding>,
     /// B10 compatibility/admission state of the selected submit's D80 mapname
@@ -419,6 +421,31 @@ pub fn prepare_production_d3d_frame(
         _ => return Err("prepared mapname D80 state disagrees with retained programs".into()),
     }
 
+    let retained_authenticated_texture_snapshots = ordered_static_programs
+        .iter()
+        .flat_map(|program| &program.ordered_operations)
+        .filter_map(|operation| match &operation.command {
+            StaticMapCommand::Draw { draw } => Some(draw),
+            StaticMapCommand::ClearColor { .. }
+            | StaticMapCommand::ClearDepthStencil { .. } => None,
+        })
+        .flat_map(|draw| &draw.ordered_shader_resources)
+        .filter_map(|binding| match &binding.source {
+            StaticShaderResourceSource::AuthenticatedSnapshot {
+                snapshot_sha256, ..
+            } => Some(snapshot_sha256.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let authenticated_texture_snapshots = frame
+        .authenticated_texture_snapshots
+        .iter()
+        .filter(|packet| {
+            retained_authenticated_texture_snapshots.contains(packet.snapshot_sha256.as_str())
+        })
+        .cloned()
+        .collect();
+
     let mut ordered_static_used_content = Vec::new();
     let mut output_states = Vec::new();
     for program in &ordered_static_programs {
@@ -505,6 +532,7 @@ pub fn prepare_production_d3d_frame(
         tiled_lights: frame.tiled_lights.clone(),
         ordered_static_used_content,
         ordered_static_programs,
+        authenticated_texture_snapshots,
         rail_ribbon: frame.rail_ribbon.clone(),
         mapname_d80_state,
         tree_runtime: frame.tree_runtime.clone(),

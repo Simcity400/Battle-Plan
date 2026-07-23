@@ -1236,10 +1236,8 @@ fn validate_war_pairs(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFailu
         if row.key.trim().is_empty() {
             return Err(invalid(format!("wars[{index}].key is empty")));
         }
-        if row.first.is_measured() || row.second.is_measured() {
-            required(&row.first, &format!("wars[{index}].first"))?;
-            required(&row.second, &format!("wars[{index}].second"))?;
-        }
+        required(&row.first, &format!("wars[{index}].first"))?;
+        required(&row.second, &format!("wars[{index}].second"))?;
     }
     Ok(rows.len())
 }
@@ -1346,18 +1344,37 @@ fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, Ga
 
 fn validate_war_overview(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFailure> {
     let rows = required(rows, "wars")?;
+    let mut war_ids = BTreeSet::new();
+    let mut producer_ordinals = BTreeSet::new();
     for (index, row) in rows.iter().enumerate() {
         let prefix = format!("wars[{index}]");
         if row.key.trim().is_empty() {
             return Err(invalid(format!("{prefix}.key is empty")));
         }
-        for (leaf, field) in [(&row.war_name, "war_name"), (&row.front, "front")] {
-            if required(leaf, &format!("{prefix}.{field}"))?
-                .trim()
-                .is_empty()
-            {
-                return Err(invalid(format!("{prefix}.{field} is empty")));
+        if required(&row.war_name, &format!("{prefix}.war_name"))?
+            .trim()
+            .is_empty()
+        {
+            return Err(invalid(format!("{prefix}.war_name is empty")));
+        }
+        if let Leaf::Measured(front) = &row.front {
+            if front.trim().is_empty() {
+                return Err(invalid(format!("{prefix}.front is empty")));
             }
+        }
+        let war_id = *required(&row.war_id, &format!("{prefix}.war_id"))?;
+        let producer_ordinal =
+            *required(&row.producer_ordinal, &format!("{prefix}.producer_ordinal"))?;
+        required(
+            &row.aggregate_summary_flag,
+            &format!("{prefix}.aggregate_summary_flag"),
+        )?;
+        if war_id <= 0
+            || producer_ordinal < 0
+            || !war_ids.insert(war_id)
+            || !producer_ordinals.insert(producer_ordinal)
+        {
+            return Err(invalid(format!("{prefix} identity/order is invalid")));
         }
         if *required(&row.start_hour, &format!("{prefix}.start_hour"))? < 0 {
             return Err(invalid(format!("{prefix}.start_hour is negative")));
@@ -1389,6 +1406,9 @@ fn validate_war_overview(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFa
                 "wars[{index}].overall_progress_raw bounds"
             )));
         }
+    }
+    if producer_ordinals != (0..rows.len() as i64).collect() {
+        return Err(invalid("wars producer order is not contiguous"));
     }
     Ok(rows.len())
 }

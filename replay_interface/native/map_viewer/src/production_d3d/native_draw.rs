@@ -101,6 +101,11 @@ pub(super) struct PreparedTargetTexture {
     pub resource: *mut ID3D11Resource,
 }
 
+pub(super) struct AuthenticatedTextureGpu {
+    pub snapshot_sha256: String,
+    resource: TextureResourceGpu,
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe fn execute_draw(
     gfx: &Gfx,
@@ -335,6 +340,7 @@ pub(super) unsafe fn execute_static_exact_used_draw(
         &mut occupation_secondary_proof,
         &mut occupation_terrain_t6_binding_count,
         &mut occupation_water_t3_binding_count,
+        &[],
         political_textures,
         tiled_lights,
         prepared_targets,
@@ -356,6 +362,7 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
     occupation_secondary_proof: &mut Option<super::OccupationSecondaryD3dExecutionProof>,
     occupation_terrain_t6_binding_count: &mut u32,
     occupation_water_t3_binding_count: &mut u32,
+    authenticated_textures: &[AuthenticatedTextureGpu],
     political_textures: &[replay_core::PoliticalTexturePacket],
     tiled_lights: &[replay_core::TiledLightSubmission],
     prepared_targets: &[PreparedTargetTexture],
@@ -387,6 +394,24 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
                 resource: resource.clone(),
                 view: view.clone(),
             }),
+            replay_core::StaticShaderResourceSource::AuthenticatedSnapshot {
+                snapshot_sha256,
+                view,
+            } => {
+                let snapshot = authenticated_textures
+                    .iter()
+                    .find(|snapshot| snapshot.snapshot_sha256 == *snapshot_sha256)
+                    .ok_or(
+                        "authenticated draw-time texture snapshot has no materialized frame resource",
+                    )?;
+                dynamic_views.push(create_authenticated_snapshot_texture_view(
+                    gfx,
+                    binding.stage,
+                    binding.slot.into(),
+                    snapshot,
+                    view,
+                )?);
+            }
             replay_core::StaticShaderResourceSource::PreparedTarget {
                 target,
                 resource: _,
@@ -1161,7 +1186,7 @@ unsafe fn bind_constant_buffers(context: *mut ID3D11DeviceContext, buffers: &[Co
     }
 }
 
-enum TextureResourceGpu {
+pub(super) enum TextureResourceGpu {
     Texture1d(ComPtr<ID3D11Texture1D>),
     Texture2d(ComPtr<ID3D11Texture2D>),
     Texture3d(ComPtr<ID3D11Texture3D>),
@@ -1218,6 +1243,53 @@ unsafe fn create_texture_views(
             })
         })
         .collect()
+}
+
+pub(super) unsafe fn create_authenticated_snapshot_texture_gpu(
+    gfx: &Gfx,
+    resolver: &GameFileResolver,
+    packet: &replay_core::AuthenticatedTextureSnapshotPacket,
+) -> Result<AuthenticatedTextureGpu> {
+    let resource_desc = &packet.resource;
+    if resource_desc.sample_count != 1 || resource_desc.ordered_subresources.is_empty() {
+        return Err(
+            "authenticated draw-time texture snapshot is empty or unexpectedly multisampled"
+                .into(),
+        );
+    }
+    let (resource, storage, init) =
+        create_texture_resource(gfx, resolver, resource_desc, None)?;
+    let _storage = storage;
+    let _init = init;
+    Ok(AuthenticatedTextureGpu {
+        snapshot_sha256: packet.snapshot_sha256.clone(),
+        resource,
+    })
+}
+
+unsafe fn create_authenticated_snapshot_texture_view(
+    gfx: &Gfx,
+    stage: ShaderStage,
+    slot: u32,
+    snapshot: &AuthenticatedTextureGpu,
+    view_desc: &ShaderResourceViewDesc,
+) -> Result<TextureViewGpu> {
+    let native_desc = srv_desc(view_desc)?;
+    let mut view = ptr::null_mut();
+    hr_ok(
+        (*gfx.device.as_raw()).CreateShaderResourceView(
+            snapshot.resource.as_resource(),
+            &native_desc,
+            &mut view,
+        ),
+        "CreateShaderResourceView for authenticated draw-time texture snapshot",
+    )?;
+    Ok(TextureViewGpu {
+        stage,
+        slot,
+        _resource: None,
+        view: ComPtr::from_raw(view, "authenticated draw-time texture snapshot view")?,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

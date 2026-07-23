@@ -90,6 +90,7 @@ pub struct NativeProductionD3dExecutor<'a> {
     occupation_secondary_proof: Option<OccupationSecondaryD3dExecutionProof>,
     occupation_terrain_t6_binding_count: u32,
     occupation_water_t3_binding_count: u32,
+    authenticated_textures: Vec<super::native_draw::AuthenticatedTextureGpu>,
     political_textures: Vec<replay_core::PoliticalTexturePacket>,
     tiled_lights: Vec<replay_core::TiledLightSubmission>,
     graph_colors: BTreeMap<PreparedRenderTarget, NativeGraphColorTarget>,
@@ -131,6 +132,7 @@ impl<'a> NativeProductionD3dExecutor<'a> {
             occupation_secondary_proof: None,
             occupation_terrain_t6_binding_count: 0,
             occupation_water_t3_binding_count: 0,
+            authenticated_textures: Vec::new(),
             political_textures: Vec::new(),
             tiled_lights: Vec::new(),
             graph_colors: BTreeMap::new(),
@@ -386,6 +388,16 @@ impl<'a> NativeProductionD3dExecutor<'a> {
 
 impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
     fn begin_frame(&mut self, frame: &PreparedProductionD3dFrame) -> Result<()> {
+        self.authenticated_textures.clear();
+        for packet in &frame.authenticated_texture_snapshots {
+            self.authenticated_textures.push(unsafe {
+                super::native_draw::create_authenticated_snapshot_texture_gpu(
+                    &self.gfx,
+                    self.resolver,
+                    packet,
+                )?
+            });
+        }
         self.political_textures = frame.political_textures.clone();
         self.snow_mud_texture = frame.snow_mud_texture.clone();
         self.snow_mud_proof = None;
@@ -566,6 +578,7 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                         &mut self.occupation_secondary_proof,
                         &mut self.occupation_terrain_t6_binding_count,
                         &mut self.occupation_water_t3_binding_count,
+                        &self.authenticated_textures,
                         &self.political_textures,
                         &self.tiled_lights,
                         &prepared_targets,
@@ -625,6 +638,7 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                 &mut self.occupation_secondary_proof,
                 &mut self.occupation_terrain_t6_binding_count,
                 &mut self.occupation_water_t3_binding_count,
+                &self.authenticated_textures,
                 &self.political_textures,
                 &self.tiled_lights,
                 &prepared_targets,

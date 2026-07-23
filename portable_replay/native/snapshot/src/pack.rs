@@ -320,7 +320,9 @@ impl ZipCompression {
 }
 
 fn is_zstd_candidate(name: &str) -> bool {
-    name.ends_with(".snapshot.json") || name.contains("/collector_raw/")
+    name.ends_with(".snapshot.json")
+        || name.contains("/collector_raw/")
+        || name.contains("/production_render_blobs/")
 }
 
 /// Build a complete `.battleplan` (manifest written last) from the given entries.

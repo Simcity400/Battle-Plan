@@ -83,6 +83,7 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertIsNone(snap["provenance"]["memory"])
         # memory-sourced fields that the save doesn't carry stay null
         self.assertIsNone(snap["divisions"][0]["organisation"])
+        self.assertIsNone(snap["divisions"][0]["max_organisation"])
 
     def test_store_write_and_reload(self):
         snap = store.build_snapshot_from_oracle(self.oracle, "syn")

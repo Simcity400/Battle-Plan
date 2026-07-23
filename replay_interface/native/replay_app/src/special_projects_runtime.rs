@@ -6,8 +6,10 @@
 //! identity, and exact-bound checks before exposing a selected-country model.
 
 use game_ui::special_projects::{
-    admit_special_project_breakthroughs, admit_special_project_progress,
+    admit_special_project_breakthroughs, admit_special_project_programs,
+    admit_special_project_progress,
     SpecialProjectBreakthroughPresentation, SpecialProjectProgressPresentation,
+    SpecialProjectProgramPresentation,
 };
 use replay_core::WorldFrame;
 
@@ -41,5 +43,16 @@ pub fn admit_global_special_project_breakthroughs(
     frame: &WorldFrame,
 ) -> std::result::Result<Vec<SpecialProjectBreakthroughPresentation>, String> {
     admit_special_project_breakthroughs(frame.special_project_breakthrough_exact(), None)
+        .map_err(|error| error.0)
+}
+
+/// Product-facing D65 route for the selected country's complete program
+/// roster. Every program id, province, and unread reward count reaches the UI
+/// model; measured empty remains an admitted empty vector.
+pub fn admit_country_special_project_programs(
+    frame: &WorldFrame,
+    country_tag: &str,
+) -> std::result::Result<Vec<SpecialProjectProgramPresentation>, String> {
+    admit_special_project_programs(frame.special_project_programs(country_tag))
         .map_err(|error| error.0)
 }

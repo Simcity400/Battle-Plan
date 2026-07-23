@@ -28,6 +28,7 @@ from pathlib import Path
 
 import resolver as R
 from paradox_parser import Node, coerce_scalar
+from static_artifact_common import validate_clausewitz_text
 
 
 def _scalar(v):
@@ -49,7 +50,7 @@ def _prereq_groups(node: Node):
     return groups
 
 
-def parse_focus(node: Node, loc, rel) -> dict:
+def parse_focus(node: Node, loc, rel, source_layer=None) -> dict:
     fid = _scalar(node.get("id"))
     if not fid:
         return None
@@ -57,6 +58,8 @@ def parse_focus(node: Node, loc, rel) -> dict:
     desc = loc.resolve(fid + "_desc") if loc else None
     return {
         "id": fid,
+        "title_loc_key": fid,
+        "description_loc_key": fid + "_desc",
         "icon": _scalar(node.get("icon")),
         "overlay": _scalar(node.get("overlay")),
         "text_icon": _scalar(node.get("text_icon")),
@@ -76,10 +79,26 @@ def parse_focus(node: Node, loc, rel) -> dict:
                            if k == "" and isinstance(v, str)],
         "loc": {"title": title, "desc": desc},
         "source_file": rel,
+        "source_layer": source_layer,
     }
 
 
-def parse_focus_defs(layers, loc) -> dict:
+def _source_layer(layers, path: Path) -> str:
+    resolved = Path(path).resolve()
+    matches = []
+    for layer in layers:
+        root = Path(layer.root).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        matches.append((len(root.parts), layer.label))
+    if not matches:
+        raise RuntimeError(f"focus definition source is outside all admitted layers: {path}")
+    return max(matches)[1]
+
+
+def parse_focus_defs(layers, loc, *, strict=False) -> dict:
     trees: dict[str, dict] = {}
     focuses: dict[str, dict] = {}
     shared: dict[str, dict] = {}
@@ -88,9 +107,14 @@ def parse_focus_defs(layers, loc) -> dict:
     collisions = []
     ordered = R.ordered_files(layers, "common/national_focus", (".txt",))
     for rel, abspath in ordered:
+        source_layer = _source_layer(layers, abspath)
         try:
+            if strict:
+                validate_clausewitz_text(R.read_text(abspath), rel)
             root = R.parse_file(abspath)
         except Exception as e:
+            if strict:
+                raise RuntimeError(f"focus definition parse failed for {rel}: {e}") from e
             print(f"[focus_def] WARN {rel}: {e}", file=sys.stderr)
             continue
         for k, v in root.entries:
@@ -100,7 +124,7 @@ def parse_focus_defs(layers, loc) -> dict:
                 tree_focuses = []
                 for fk, fv in v.entries:
                     if fk.lower() == "focus" and isinstance(fv, Node):
-                        rec = parse_focus(fv, loc, rel)
+                        rec = parse_focus(fv, loc, rel, source_layer)
                         if rec:
                             rec["kind"] = "focus"
                             tree_focuses.append(rec["id"])
@@ -124,9 +148,10 @@ def parse_focus_defs(layers, loc) -> dict:
                     "shared_focus_refs": [vv for kk, vv in v.entries
                                           if kk.lower() == "shared_focus" and isinstance(vv, str)],
                     "source_file": rel,
+                    "source_layer": source_layer,
                 }
             elif kl in ("shared_focus", "joint_focus") and isinstance(v, Node):
-                rec = parse_focus(v, loc, rel)
+                rec = parse_focus(v, loc, rel, source_layer)
                 if rec:
                     rec["kind"] = kl
                     if kl == "shared_focus":
@@ -145,6 +170,7 @@ def parse_focus_defs(layers, loc) -> dict:
                         "current": _scalar(v.get("current")),
                         "completed": _scalar(v.get("completed")),
                         "source_file": rel,
+                        "source_layer": source_layer,
                     }
     default_styles = [name for name, style in styles.items() if style["default"]]
     default_style = default_styles[0] if len(default_styles) == 1 else None

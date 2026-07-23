@@ -30,8 +30,14 @@ pub const MAX_COMPLETED_OWNER_GLYPH_CANDIDATES: usize = 16_384;
 pub const GLYPH_BUFFER_CACHE_SIDECAR_SLOT_COUNT: usize =
     crate::owner_glyph_capture::GLYPH_BUFFER_CACHE_ENTRY_COUNT as usize;
 
-static EVIDENCE_AUTOMATION: OnceLock<Mutex<Option<OwnerGlyphEvidenceAutomation>>> =
+static OWNER_GLYPH_AUTOMATION: OnceLock<Mutex<Option<OwnerGlyphEvidenceAutomation>>> =
     OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutomationMode {
+    Evidence,
+    Production,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OwnerGlyphPresentCandidate {
@@ -438,6 +444,7 @@ struct CompletedInvocation {
 /// One hook-thread state machine.  The owner-render detour owns this value;
 /// glyph/font/icon callbacks on any other thread cannot accidentally join it.
 pub struct OwnerGlyphEvidenceAutomation {
+    mode: AutomationMode,
     process_identity: String,
     process_start_nonce: u64,
     hook_epoch_nonce: u64,
@@ -455,6 +462,33 @@ impl OwnerGlyphEvidenceAutomation {
         process_start_nonce: u64,
         hook_epoch_nonce: u64,
     ) -> Result<Self, String> {
+        Self::new(
+            AutomationMode::Evidence,
+            process_identity,
+            process_start_nonce,
+            hook_epoch_nonce,
+        )
+    }
+
+    fn production(
+        process_identity: String,
+        process_start_nonce: u64,
+        hook_epoch_nonce: u64,
+    ) -> Result<Self, String> {
+        Self::new(
+            AutomationMode::Production,
+            process_identity,
+            process_start_nonce,
+            hook_epoch_nonce,
+        )
+    }
+
+    fn new(
+        mode: AutomationMode,
+        process_identity: String,
+        process_start_nonce: u64,
+        hook_epoch_nonce: u64,
+    ) -> Result<Self, String> {
         if process_identity.trim().is_empty()
             || process_start_nonce == 0
             || hook_epoch_nonce == 0
@@ -462,6 +496,7 @@ impl OwnerGlyphEvidenceAutomation {
             return Err("A25 owner-glyph evidence epoch is incomplete".into());
         }
         Ok(Self {
+            mode,
             process_identity,
             process_start_nonce,
             hook_epoch_nonce,
@@ -534,6 +569,15 @@ impl OwnerGlyphEvidenceAutomation {
         if active.cache_hit_replayed || active.cache_population_sealed {
             return Err("A25 font callback followed a sealed glyph-cache replay".into());
         }
+        if let Some(existing) = active
+            .fonts
+            .iter()
+            .find(|existing| existing.identity == receipt.identity)
+        {
+            return (existing == &receipt)
+                .then_some(())
+                .ok_or_else(|| "A25 font identity was rebound within one owner render".into());
+        }
         active.fonts.push(receipt);
         Ok(())
     }
@@ -545,6 +589,15 @@ impl OwnerGlyphEvidenceAutomation {
         let active = self.active_mut()?;
         if active.cache_hit_replayed || active.cache_population_sealed {
             return Err("A25 icon-asset callback followed a sealed glyph-cache replay".into());
+        }
+        if let Some(existing) = active
+            .icon_assets
+            .iter()
+            .find(|existing| existing.identity == receipt.identity)
+        {
+            return (existing == &receipt)
+                .then_some(())
+                .ok_or_else(|| "A25 inline-icon identity was rebound within one owner render".into());
         }
         active.icon_assets.push(receipt);
         Ok(())
@@ -863,6 +916,40 @@ impl OwnerGlyphEvidenceAutomation {
         Ok(())
     }
 
+    /// Record the exact absolute coordinates accepted by
+    /// `CGameBitmapFont::DrawInlineIcon`.  The owner destination is the sole
+    /// coordinate-space authority; live absolute coordinates never escape
+    /// into the portable replay payload.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_inline_icon_absolute(
+        &mut self,
+        token: String,
+        sprite_identity: String,
+        frame: u32,
+        absolute_x: i32,
+        absolute_y: i32,
+        advance: i32,
+        draw_receipt_sha256: String,
+    ) -> Result<(), String> {
+        let active = self.active_mut()?;
+        let owner_relative_x = absolute_x
+            .checked_sub(active.destination_rect[0])
+            .ok_or("A25 inline-icon owner-relative x overflow")?;
+        let owner_relative_y = absolute_y
+            .checked_sub(active.destination_rect[1])
+            .ok_or("A25 inline-icon owner-relative y overflow")?;
+        self.record_inline_icon(
+            token,
+            sprite_identity,
+            frame,
+            owner_relative_x,
+            owner_relative_y,
+            owner_relative_y,
+            advance,
+            draw_receipt_sha256,
+        )
+    }
+
     pub fn note_parse_failure(&mut self) {
         self.note_active_failure(|health| {
             health.parse_failure_count = health.parse_failure_count.saturating_add(1)
@@ -1083,7 +1170,32 @@ impl OwnerGlyphEvidenceAutomation {
 }
 
 fn automation_slot() -> &'static Mutex<Option<OwnerGlyphEvidenceAutomation>> {
-    EVIDENCE_AUTOMATION.get_or_init(|| Mutex::new(None))
+    OWNER_GLYPH_AUTOMATION.get_or_init(|| Mutex::new(None))
+}
+
+/// Install the passive production owner/glyph state machine for one exact
+/// render-hook epoch. Unlike the historical evidence switch, this API is
+/// authorized by the authenticated production-render bootstrap and requires
+/// the same nonzero process/hook identities later carried by the selected
+/// Present. It installs no client driver and performs no active interaction.
+pub fn install_production_automation(
+    process_identity: String,
+    process_start_nonce: u64,
+    hook_epoch_nonce: u64,
+) -> Result<(), String> {
+    let automation = OwnerGlyphEvidenceAutomation::production(
+        process_identity,
+        process_start_nonce,
+        hook_epoch_nonce,
+    )?;
+    let mut slot = automation_slot()
+        .lock()
+        .map_err(|_| "A25 owner-glyph automation state poisoned".to_string())?;
+    if slot.is_some() {
+        return Err("A25 owner-glyph automation is already installed".into());
+    }
+    *slot = Some(automation);
+    Ok(())
 }
 
 /// Explicit harness-only activation. Production scheduling does not call this
@@ -1129,6 +1241,27 @@ mod activation_tests {
         )
         .expect_err("false evidence latch must reject before installing state");
         assert!(error.contains("lane-owned evidence latch"));
+    }
+
+    #[test]
+    fn production_automation_is_epoch_bound_and_distinct_from_evidence_mode() {
+        install_production_automation("exact-a729-production".into(), 7, 11).unwrap();
+        assert!(production_automation_is_active());
+        let selected = OwnerGlyphPresentCandidate {
+            process_start_nonce: 7,
+            hook_epoch_nonce: 11,
+            submit_index: 1,
+            frame_sequence: 1,
+            frame_hour: 42,
+        };
+        assert_eq!(
+            admit_selected_present_if_production_active(selected).unwrap(),
+            Some(Vec::new())
+        );
+        assert!(with_dormant_evidence_automation(|_| Ok(())).unwrap().is_none());
+        let telemetry = uninstall_production_automation().unwrap();
+        assert_eq!(telemetry, OwnerGlyphProbeTelemetry::default());
+        assert!(!production_automation_is_active());
     }
 }
 
@@ -1578,15 +1711,34 @@ mod cache_sidecar_tests {
 }
 
 pub fn uninstall_dormant_evidence_automation() -> Result<OwnerGlyphProbeTelemetry, String> {
+    uninstall_automation(AutomationMode::Evidence)
+}
+
+pub fn uninstall_production_automation() -> Result<OwnerGlyphProbeTelemetry, String> {
+    uninstall_automation(AutomationMode::Production)
+}
+
+pub fn production_automation_is_active() -> bool {
+    automation_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|automation| automation.mode))
+        == Some(AutomationMode::Production)
+}
+
+fn uninstall_automation(
+    expected_mode: AutomationMode,
+) -> Result<OwnerGlyphProbeTelemetry, String> {
     let mut slot = automation_slot()
         .lock()
         .map_err(|_| "A25 owner-glyph evidence automation state poisoned".to_string())?;
-    if slot
+    let installed = slot
         .as_ref()
-        .ok_or("A25 owner-glyph evidence automation is not installed")?
-        .active
-        .is_some()
-    {
+        .ok_or("A25 owner-glyph automation is not installed")?;
+    if installed.mode != expected_mode {
+        return Err("A25 owner-glyph automation mode differs during teardown".into());
+    }
+    if installed.active.is_some() {
         return Err("A25 owner-glyph automation teardown crossed an active render".into());
     }
     let mut automation = slot.take().expect("automation presence checked above");
@@ -1603,7 +1755,131 @@ pub fn with_dormant_evidence_automation<T>(
     let Some(automation) = slot.as_mut() else {
         return Ok(None);
     };
+    if automation.mode != AutomationMode::Evidence {
+        return Ok(None);
+    }
     operation(automation).map(Some)
+}
+
+fn with_active_automation<T>(
+    operation: impl FnOnce(&mut OwnerGlyphEvidenceAutomation) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let mut slot = automation_slot()
+        .lock()
+        .map_err(|_| "A25 owner-glyph automation state poisoned".to_string())?;
+    let Some(automation) = slot.as_mut() else {
+        return Ok(None);
+    };
+    operation(automation).map(Some)
+}
+
+pub fn with_production_automation<T>(
+    operation: impl FnOnce(&mut OwnerGlyphEvidenceAutomation) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let mut slot = automation_slot()
+        .lock()
+        .map_err(|_| "A25 owner-glyph production automation state poisoned".to_string())?;
+    let Some(automation) = slot.as_mut() else {
+        return Ok(None);
+    };
+    if automation.mode != AutomationMode::Production {
+        return Ok(None);
+    }
+    operation(automation).map(Some)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn begin_production_owner_render(
+    layout_object: usize,
+    candidate: OwnerGlyphPresentCandidate,
+    gui_engine_instance_token: u64,
+    paint_ordinal: u32,
+    destination_rect: [i32; 4],
+    ui_clip: Option<[i32; 4]>,
+    clip: Option<[i32; 4]>,
+) -> Result<bool, String> {
+    with_production_automation(|automation| {
+        automation.begin_owner_render(
+            layout_object,
+            candidate,
+            candidate.frame_hour,
+            gui_engine_instance_token,
+            paint_ordinal,
+            destination_rect,
+            ui_clip,
+            clip,
+        )
+    })
+    .map(|value| value.is_some())
+}
+
+pub fn finish_production_owner_render() -> Result<bool, String> {
+    with_production_automation(|automation| automation.finish_owner_render())
+        .map(|value| value.is_some())
+}
+
+pub fn record_production_font_asset(
+    receipt: FontAssetReceipt,
+) -> Result<bool, String> {
+    with_production_automation(|automation| automation.record_font_asset(receipt))
+        .map(|value| value.is_some())
+}
+
+pub fn record_production_inline_icon_asset(
+    receipt: InlineIconAssetReceipt,
+) -> Result<bool, String> {
+    with_production_automation(|automation| automation.record_inline_icon_asset(receipt))
+        .map(|value| value.is_some())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_production_inline_icon(
+    token: String,
+    sprite_identity: String,
+    frame: u32,
+    owner_relative_x: i32,
+    owner_relative_y: i32,
+    baseline: i32,
+    advance: i32,
+    draw_receipt_sha256: String,
+) -> Result<bool, String> {
+    with_production_automation(|automation| {
+        automation.record_inline_icon(
+            token,
+            sprite_identity,
+            frame,
+            owner_relative_x,
+            owner_relative_y,
+            baseline,
+            advance,
+            draw_receipt_sha256,
+        )
+    })
+    .map(|value| value.is_some())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_production_inline_icon_absolute(
+    token: String,
+    sprite_identity: String,
+    frame: u32,
+    absolute_x: i32,
+    absolute_y: i32,
+    advance: i32,
+    draw_receipt_sha256: String,
+) -> Result<bool, String> {
+    with_production_automation(|automation| {
+        automation.record_inline_icon_absolute(
+            token,
+            sprite_identity,
+            frame,
+            absolute_x,
+            absolute_y,
+            advance,
+            draw_receipt_sha256,
+        )
+    })
+    .map(|value| value.is_some())
 }
 
 /// Passive native-hook insertion API for exact-a729 `0x14228C585`. Returns
@@ -1614,7 +1890,7 @@ pub fn with_dormant_evidence_automation<T>(
 pub fn observe_post_emit_ordinary_glyph_if_active(
     observation: PostEmitOrdinaryGlyphObservation,
 ) -> Result<bool, String> {
-    with_dormant_evidence_automation(|automation| {
+    with_active_automation(|automation| {
         automation.record_post_emit_ordinary_glyph(observation)
     })
     .map(|recorded| recorded.is_some())
@@ -1625,7 +1901,7 @@ pub fn observe_post_emit_ordinary_glyph_if_active(
 pub fn observe_glyph_buffer_cache_population_if_active(
     identity: GlyphBufferCacheIdentity,
 ) -> Result<bool, String> {
-    with_dormant_evidence_automation(|automation| {
+    with_active_automation(|automation| {
         automation.seal_glyph_buffer_cache_population(identity)
     })
     .map(|recorded| recorded.is_some())
@@ -1636,7 +1912,7 @@ pub fn observe_glyph_buffer_cache_population_if_active(
 pub fn observe_glyph_buffer_cache_hit_if_active(
     identity_before_hit: GlyphBufferCacheIdentity,
 ) -> Result<bool, String> {
-    with_dormant_evidence_automation(|automation| {
+    with_active_automation(|automation| {
         automation.record_glyph_buffer_cache_hit(identity_before_hit)
     })
     .map(|recorded| recorded.is_some())
@@ -1647,7 +1923,7 @@ pub fn observe_glyph_buffer_cache_hit_if_active(
 pub fn observe_glyph_buffer_cache_zero_invalidation_if_active(
     identity_before_zero: GlyphBufferCacheIdentity,
 ) -> Result<bool, String> {
-    with_dormant_evidence_automation(|automation| {
+    with_active_automation(|automation| {
         automation.invalidate_glyph_buffer_cache_slot(&identity_before_zero)
     })
     .map(|recorded| recorded.is_some())
@@ -1659,7 +1935,7 @@ pub fn observe_glyph_buffer_cache_font_teardown_if_active(
     font_instance_token: u64,
     font_identity: String,
 ) -> Result<bool, String> {
-    with_dormant_evidence_automation(|automation| {
+    with_active_automation(|automation| {
         automation.teardown_glyph_buffer_cache_font(font_instance_token, &font_identity)
     })
     .map(|recorded| recorded.is_some())
@@ -1672,4 +1948,12 @@ pub fn admit_selected_present_if_evidence_active(
         automation.admit_selected_present(selected, selected.frame_hour)
     })
     .map(|selected| selected.unwrap_or_default())
+}
+
+pub fn admit_selected_present_if_production_active(
+    selected: OwnerGlyphPresentCandidate,
+) -> Result<Option<Vec<SelectedOwnerGlyphCapture>>, String> {
+    with_production_automation(|automation| {
+        automation.admit_selected_present(selected, selected.frame_hour)
+    })
 }

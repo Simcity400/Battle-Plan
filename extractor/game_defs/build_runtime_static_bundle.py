@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild all seven static catalogs for an already-resolved live binding set."""
+"""Rebuild all eight static catalogs for an already-resolved live binding set."""
 
 from __future__ import annotations
 
@@ -302,24 +302,25 @@ def _extract_archive(source: Path, destination: Path) -> None:
         raise LR.ResolutionError(f"invalid resolved mod archive: {source}") from exc
     with archive:
         for info in archive.infolist():
-            name = info.filename.replace("\\", "/")
+            if info.is_dir():
+                continue
+            name = LR._normalize_archive_member(info.filename)
             path = Path(name)
-            if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-                raise LR.ResolutionError(f"unsafe member in resolved mod archive: {name!r}")
-            key = name.rstrip("/").casefold()
+            key = LR._ascii_fold(name)
             if key in seen:
                 raise LR.ResolutionError(f"duplicate member in resolved mod archive: {name!r}")
             seen.add(key)
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
                 raise LR.ResolutionError(f"symlink member in resolved mod archive: {name!r}")
+            if info.flag_bits & 0x1:
+                raise LR.ResolutionError(f"encrypted member in resolved mod archive: {name!r}")
             target = destination.joinpath(*path.parts)
-            if info.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
+    if not seen:
+        raise LR.ResolutionError(f"resolved mod archive has no regular files: {source}")
 
 
 def _stage_mod_descriptor(source: dict[str, Any], destination: Path, content_root: Path) -> Path:
@@ -691,6 +692,14 @@ def runtime_specs(root: Path) -> tuple[SB.ArtifactSpec, ...]:
             "technology_sharing_static.json",
             True,
         ),
+        SB.ArtifactSpec(
+            "focus_defs_static",
+            root / "focus_defs/focus_defs_static/focus_defs_catalog.json",
+            root / "focus_defs/focus_defs_static_gate_report.json",
+            "focus_defs_static.static_artifact.v1",
+            "focus_defs_static.json",
+            True,
+        ),
     )
 
 
@@ -862,6 +871,11 @@ def build(
                     catalogs,
                 ),
             ),
+            (
+                "focus_defs",
+                [sys.executable, str(HERE / "focus_defs_static_gate.py"), *common,
+                 "--localisation-catalog", str(loc_catalog), "--out-dir", str(catalogs / "focus_defs")],
+            ),
         ]
     )
     report_by_name = {
@@ -871,6 +885,7 @@ def build(
         "ships": catalogs / "ships/ship_definitions_gate_report.json",
         "gfx": catalogs / "gfx/gfx_icon_manifest_gate_report.json",
         "technology_sharing": catalogs / "technology_sharing/technology_sharing_gate_report.json",
+        "focus_defs": catalogs / "focus_defs/focus_defs_static_gate_report.json",
     }
     commands = [
         (name, command)

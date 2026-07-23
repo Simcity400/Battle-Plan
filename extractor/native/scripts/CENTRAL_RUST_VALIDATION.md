@@ -43,8 +43,9 @@ Available modes:
 - `Evidence`: explicitly selected game-install, capture-corpus, or live-resource tests; includes matching ignored tests.
 - `Release`: release build and release-profile nextest run.
 - `Lock`: regenerate `Cargo.lock` serially for the selected top-level workspace
-  or workspaces; accepts no package, filter, target, or timing selectors and
-  never visits standalone workspaces.
+  or workspaces; extractor selection also refreshes the two standalone
+  workspaces exercised by `Final` and `Release`. It accepts no package, filter,
+  target, or timing selectors.
 - `Stats`: show sccache statistics without compiling.
 
 Full extractor `Final` and `Release` runs also own the two intentionally

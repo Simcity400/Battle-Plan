@@ -192,6 +192,9 @@ impl From<&WarParticipantOverviewRow> for WarParticipantSummary {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarObjectSummary {
     pub source_key: String,
+    pub war_id: Leaf<i64>,
+    pub producer_ordinal: Leaf<i64>,
+    pub aggregate_summary_flag: Leaf<bool>,
     pub war_name: Leaf<String>,
     pub attackers: Leaf<Vec<String>>,
     pub defenders: Leaf<Vec<String>>,
@@ -223,6 +226,9 @@ fn participant_summaries(
 fn war_object(row: &WarObjectRow) -> WarObjectSummary {
     WarObjectSummary {
         source_key: row.key.clone(),
+        war_id: row.war_id.clone(),
+        producer_ordinal: row.producer_ordinal.clone(),
+        aggregate_summary_flag: row.aggregate_summary_flag.clone(),
         war_name: row.war_name.clone(),
         attackers: row.attackers.clone(),
         defenders: row.defenders.clone(),
@@ -431,6 +437,7 @@ mod tests {
             agency_upgrade_controller_refresh: Leaf::Absent,
             cipher_controller_refresh: Leaf::Absent,
             intelligence_controller_companion: Leaf::Absent,
+            domain53_snapshot_payload_sha256: Leaf::Absent,
             relation_flags: BTreeMap::new(),
         }
     }
@@ -539,6 +546,9 @@ mod tests {
     fn d60_war_object_preserves_pair_identity_and_b5_tuple() {
         let row = WarObjectRow {
             key: "GER|ENG".to_string(),
+            war_id: Leaf::Absent,
+            producer_ordinal: Leaf::Absent,
+            aggregate_summary_flag: Leaf::Absent,
             attackers: Leaf::Absent,
             defenders: Leaf::Absent,
             war_name: Leaf::Absent,

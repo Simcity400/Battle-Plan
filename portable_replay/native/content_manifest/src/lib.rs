@@ -13,7 +13,6 @@ use crate::hud_role::validate_sha256;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use unicode_normalization::UnicodeNormalization;
 
 pub const SCHEMA: &str = "hoi4.portable-content-manifest.v2";
 
@@ -1110,9 +1109,7 @@ pub fn normalize_game_relative_path(path: &str) -> Result<String, String> {
     let normalized = path
         .trim()
         .replace('\\', "/")
-        .nfc()
-        .collect::<String>()
-        .to_lowercase();
+        .to_ascii_lowercase();
     if normalized.is_empty()
         || normalized.starts_with('/')
         || normalized.contains(':')
@@ -1781,7 +1778,7 @@ mod tests {
         );
         assert_eq!(
             normalize_game_relative_path("gfx/Cafe\u{301}.asset").unwrap(),
-            "gfx/caf\u{e9}.asset"
+            "gfx/cafe\u{301}.asset"
         );
         assert!(normalize_game_relative_path("../escape").is_err());
         assert!(normalize_game_relative_path("C:/absolute").is_err());

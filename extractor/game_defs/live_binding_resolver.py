@@ -43,8 +43,12 @@ def _load_ui14_engine_vfs(
         raise ResolutionError("UI14 engine VFS receipt has unknown or missing fields")
     if receipt["schema"] != UI14_ENGINE_VFS_SCHEMA or receipt["executable_sha256"] != exe_sha:
         raise ResolutionError("UI14 engine VFS receipt executable/schema mismatch")
-    ids = [token.replace("\\", "/") for token in enabled_mods]
-    if len(ids) != len(set(ids)):
+    ids = [
+        _normalize_vfs_relpath(token, "launcher mod descriptor")
+        for token in enabled_mods
+    ]
+    ids_by_key = {_ascii_fold(layer_id): layer_id for layer_id in ids}
+    if len(ids) != len(ids_by_key):
         raise ResolutionError("launcher repeats an enabled mod descriptor")
     layers = receipt.get("layers")
     if not isinstance(layers, list) or len(layers) != len(ids):
@@ -57,24 +61,34 @@ def _load_ui14_engine_vfs(
             "id", "descriptor_sha256", "engine_descriptor_ordinal", "engine_mount_ordinal"
         }:
             raise ResolutionError("UI14 engine VFS layer row is malformed")
-        layer_id = row["id"].replace("\\", "/") if isinstance(row["id"], str) else ""
+        try:
+            layer_id = _normalize_vfs_relpath(
+                row["id"], "UI14 mod descriptor"
+            ) if isinstance(row["id"], str) else ""
+        except ResolutionError:
+            layer_id = ""
+        layer_key = _ascii_fold(layer_id)
         descriptor_ordinal = row["engine_descriptor_ordinal"]
         mount_ordinal = row["engine_mount_ordinal"]
         if (
-            layer_id not in ids or layer_id in seen_ids
+            layer_key not in ids_by_key or layer_key in seen_ids
             or not isinstance(descriptor_ordinal, int) or descriptor_ordinal < 0
             or not isinstance(mount_ordinal, int) or mount_ordinal < 0
             or descriptor_ordinal in descriptor_ordinals or mount_ordinal in mount_ordinals
         ):
             raise ResolutionError("UI14 engine VFS layer identity/ordinal is invalid")
+        layer_id = ids_by_key[layer_key]
         descriptor = (userdir / layer_id).resolve()
         descriptor_sha, _ = _hash_file_stable(descriptor)
         if descriptor_sha != row["descriptor_sha256"]:
             raise ResolutionError(f"UI14 engine VFS descriptor hash mismatch: {layer_id}")
-        seen_ids.add(layer_id)
+        seen_ids.add(layer_key)
         descriptor_ordinals.add(descriptor_ordinal)
         mount_ordinals.add(mount_ordinal)
         row["id"] = layer_id
+    expected_ordinals = set(range(len(ids)))
+    if descriptor_ordinals != expected_ordinals or mount_ordinals != expected_ordinals:
+        raise ResolutionError("UI14 engine VFS layer ordinals are not contiguous")
     winners = receipt.get("effective_winners")
     if not isinstance(winners, list):
         raise ResolutionError("UI14 engine VFS effective_winners is not an array")
@@ -82,16 +96,28 @@ def _load_ui14_engine_vfs(
     for row in winners:
         if not isinstance(row, dict) or set(row) != {"relpath", "winner_id", "sha256"}:
             raise ResolutionError("UI14 engine VFS winner row is malformed")
-        relpath = row["relpath"].replace("\\", "/") if isinstance(row["relpath"], str) else ""
-        key = relpath.casefold()
+        try:
+            relpath = _normalize_vfs_relpath(
+                row["relpath"], "UI14 winner path"
+            ) if isinstance(row["relpath"], str) else ""
+            winner_id = _normalize_vfs_relpath(
+                row["winner_id"], "UI14 winner mod descriptor"
+            ) if isinstance(row["winner_id"], str) else ""
+        except ResolutionError:
+            relpath = ""
+            winner_id = ""
+        key = _ascii_fold(relpath)
+        winner_key = _ascii_fold(winner_id)
         if (
-            not relpath or relpath.startswith("/") or ".." in Path(relpath).parts
-            or key in winner_keys or row["winner_id"] not in seen_ids
-            or not isinstance(row["sha256"], str) or len(row["sha256"]) != 64
+            not relpath
+            or key in winner_keys or winner_key not in seen_ids
+            or not isinstance(row["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
         ):
             raise ResolutionError("UI14 engine VFS winner identity/path/hash is invalid")
         winner_keys.add(key)
         row["relpath"] = relpath
+        row["winner_id"] = ids_by_key[winner_key]
     return receipt
 ACTIVE_COUNT_RE = re.compile(r"Active (DLC|Mod) Count:\s*(\d+)\s*$")
 ACTIVE_NAME_RE = re.compile(r"Active (DLC|Mod):\s*(.+?)\s*$")
@@ -105,6 +131,36 @@ QUOTED_VALUE_RE = re.compile(r'"([^"]*)"')
 
 class ResolutionError(SB.BundleError):
     pass
+
+
+_ASCII_FOLD = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+)
+
+
+def _ascii_fold(value: str) -> str:
+    return value.translate(_ASCII_FOLD)
+
+
+def _normalize_vfs_relpath(raw_name: str, label: str) -> str:
+    slash = raw_name.replace("\\", "/")
+    if (
+        not slash
+        or slash.startswith("/")
+        or "\x00" in slash
+        or (len(slash) >= 2 and slash[0].isalpha() and slash[1] == ":")
+    ):
+        raise ResolutionError(f"unsafe {label}: {raw_name!r}")
+    parts: list[str] = []
+    for part in slash.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == ".." or ":" in part:
+            raise ResolutionError(f"unsafe {label}: {raw_name!r}")
+        parts.append(part)
+    if not parts:
+        raise ResolutionError(f"empty {label}: {raw_name!r}")
+    return "/".join(parts)
 
 
 def parse_descriptor(path: Path) -> dict[str, Any]:
@@ -129,10 +185,13 @@ def parse_descriptor(path: Path) -> dict[str, Any]:
         if values and key != "replace_path"
     }
     fields["replace_path"] = [
-        value.replace("\\", "/").strip("/")
+        _normalize_vfs_relpath(value, "descriptor replace_path")
         for value in matches.get("replace_path", [])
-        if value.replace("\\", "/").strip("/")
     ]
+    if len(fields["replace_path"]) != len(
+        {_ascii_fold(value) for value in fields["replace_path"]}
+    ):
+        raise ResolutionError(f"descriptor repeats normalized replace_path: {path}")
     fields["dependencies"] = _descriptor_quoted_list(text, "dependencies")
     return fields
 
@@ -339,15 +398,15 @@ def hash_tree(
 ) -> tuple[str, list[dict[str, Any]]]:
     if not root.is_dir():
         raise ResolutionError(f"missing content root: {root}")
-    exclude_top = {name.casefold() for name in (exclude_top or set())}
+    exclude_top = {_ascii_fold(name) for name in (exclude_top or set())}
     def enumerate_files() -> list[tuple[str, Path, tuple[int, int]]]:
         found: list[tuple[str, Path, tuple[int, int]]] = []
         seen: set[str] = set()
-        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
+        for path in sorted(root.rglob("*"), key=lambda item: _ascii_fold(item.as_posix())):
             if not path.is_file():
                 continue
             rel = path.relative_to(root).as_posix()
-            if rel.split("/", 1)[0].casefold() in exclude_top:
+            if _ascii_fold(rel.split("/", 1)[0]) in exclude_top:
                 continue
             if (
                 "\\" in rel
@@ -358,7 +417,7 @@ def hash_tree(
                 )
             ):
                 raise ResolutionError(f"unsafe content namespace path: {root} / {rel}")
-            folded = rel.casefold()
+            folded = _ascii_fold(rel)
             if folded in seen:
                 raise ResolutionError(f"case-fold collision in content namespace: {root} / {rel}")
             seen.add(folded)
@@ -407,7 +466,7 @@ def classify_descriptorless_asset_layers(
     prefixed_rows: list[dict[str, Any]] = []
     for asset_layer in sorted(
         (path for path in dlc_root.iterdir() if path.is_dir() and path.name not in descriptor_parent_ids),
-        key=lambda path: path.name.casefold(),
+        key=lambda path: _ascii_fold(path.name),
     ):
         asset_id = asset_layer.name
         content_sha, inventory = hash_tree(
@@ -437,6 +496,11 @@ def classify_descriptorless_asset_layers(
     return classifications, prefixed_rows
 
 
+def _normalize_archive_member(raw_name: str) -> str:
+    """Return the engine-equivalent canonical virtual path for one ZIP member."""
+    return _normalize_vfs_relpath(raw_name, "mod archive member")
+
+
 def _zip_namespace_rows(
     path: Path, layer_id: str, *, layer_kind: str = "mod"
 ) -> tuple[str, list[dict[str, Any]], str, int]:
@@ -448,19 +512,13 @@ def _zip_namespace_rows(
     except (OSError, zipfile.BadZipFile) as exc:
         raise ResolutionError(f"invalid mod archive: {path}") from exc
     with archive, path.open("rb") as raw_archive:
-        for info in sorted(archive.infolist(), key=lambda item: item.filename.casefold()):
+        for info in sorted(
+            archive.infolist(), key=lambda item: _ascii_fold(item.filename)
+        ):
             if info.is_dir():
                 continue
-            rel = info.filename.replace("\\", "/")
-            parts = PurePosixPath(rel).parts
-            if (
-                PurePosixPath(rel).is_absolute()
-                or "\\" in rel
-                or (len(rel) >= 2 and rel[0].isalpha() and rel[1] == ":")
-                or any(part in {"", ".", ".."} for part in parts)
-            ):
-                raise ResolutionError(f"unsafe mod archive member: {rel!r}")
-            folded = rel.casefold()
+            rel = _normalize_archive_member(info.filename)
+            folded = _ascii_fold(rel)
             if folded in seen:
                 raise ResolutionError(f"case-fold/duplicate mod archive member: {rel!r}")
             seen.add(folded)
@@ -496,6 +554,9 @@ def _zip_namespace_rows(
                 "source_byte_count": info.compress_size,
                 "source_range_sha256": SB.sha256_bytes(compressed),
             })
+    if not rows:
+        raise ResolutionError(f"mod archive has no regular files: {path}")
+    rows.sort(key=lambda row: _ascii_fold(row["relpath"]))
     after_sha, _ = _hash_file_stable(path)
     if before_sha != after_sha:
         raise ResolutionError(f"mod archive changed while hashing: {path}")
@@ -767,6 +828,21 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
         replacement = namespace.get("replace_paths")
         if not isinstance(replacement, list) or not all(isinstance(item, str) and item for item in replacement):
             raise ResolutionError(f"namespace {ordinal}.replace_paths is malformed")
+        try:
+            canonical_replacement = [
+                _normalize_vfs_relpath(item, "source namespace replace_path")
+                for item in replacement
+            ]
+        except ResolutionError as exc:
+            raise ResolutionError(
+                f"namespace {ordinal}.replace_paths is malformed"
+            ) from exc
+        if canonical_replacement != replacement or len(canonical_replacement) != len(
+            {_ascii_fold(item) for item in canonical_replacement}
+        ):
+            raise ResolutionError(
+                f"namespace {ordinal}.replace_paths is non-canonical or repeated"
+            )
         file_count = namespace.get("file_count")
         if not isinstance(file_count, int) or isinstance(file_count, bool) or file_count < 0:
             raise ResolutionError(f"namespace {ordinal}.file_count is invalid")
@@ -795,7 +871,7 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
             "binding": namespace["binding"],
             "id": SB._required_string(namespace.get("id"), f"namespace {ordinal}.id"),
             "label": label,
-            "replace_paths": replacement,
+            "replace_paths": canonical_replacement,
             "storage_kind": storage_kind,
             "source_container_sha256": source_container_sha256,
             "source_container_bytes": source_container_bytes,
@@ -819,16 +895,13 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not 0 <= ordinal < len(namespaces):
             raise ResolutionError(f"source row {index}.namespace_ordinal is invalid")
         relpath = SB._required_string(row.get("relpath"), f"source row {index}.relpath")
-        if (
-            "\\" in relpath
-            or (len(relpath) >= 2 and relpath[0].isalpha() and relpath[1] == ":")
-            or PurePosixPath(relpath).is_absolute()
-            or any(
-            part in {"", ".", ".."} for part in PurePosixPath(relpath).parts
-            )
-        ):
+        try:
+            canonical_relpath = _normalize_archive_member(relpath)
+        except ResolutionError:
+            canonical_relpath = ""
+        if canonical_relpath != relpath:
             raise ResolutionError(f"source row {index}.relpath is unsafe")
-        key = (ordinal, relpath.casefold())
+        key = (ordinal, _ascii_fold(relpath))
         if key in seen_rows:
             raise ResolutionError(f"duplicate/case-colliding source row: {key}")
         seen_rows.add(key)
@@ -934,7 +1007,13 @@ def _launcher_state(userdir: Path) -> tuple[dict[str, Any], bytes]:
         raise ResolutionError("dlc_load.json has an unsupported schema")
     if not all(isinstance(value, list) and all(isinstance(item, str) for item in value) for value in state.values()):
         raise ResolutionError("dlc_load.json lists must contain strings")
-    if len(state["enabled_mods"]) != len(set(state["enabled_mods"])):
+    state["enabled_mods"] = [
+        _normalize_vfs_relpath(token, "launcher mod descriptor")
+        for token in state["enabled_mods"]
+    ]
+    if len(state["enabled_mods"]) != len(
+        {_ascii_fold(token) for token in state["enabled_mods"]}
+    ):
         raise ResolutionError("dlc_load.json contains duplicate enabled mods")
     return state, before
 
@@ -950,9 +1029,9 @@ def _disabled_dlc_layer_ids(
         parts = PurePosixPath(normalized).parts
         if (
             len(parts) != 3
-            or parts[0].casefold() != "dlc"
+            or _ascii_fold(parts[0]) != "dlc"
             or not parts[1]
-            or not parts[2].casefold().endswith(".dlc")
+            or not _ascii_fold(parts[2]).endswith(".dlc")
         ):
             raise ResolutionError(f"invalid disabled DLC descriptor token: {token!r}")
         if parts[1] not in installed_descriptor_ids:
@@ -1021,7 +1100,7 @@ def validate_ui14_mod_collision_winners(
     for layer_id, inventory in mod_inventory_by_id.items():
         for row in inventory:
             collision_candidates.setdefault(
-                row["relpath"].replace("\\", "/").casefold(), []
+                _ascii_fold(row["relpath"].replace("\\", "/")), []
             ).append((layer_id, row))
     collisions = {
         key: rows for key, rows in collision_candidates.items() if len(rows) > 1
@@ -1035,15 +1114,15 @@ def validate_ui14_mod_collision_winners(
         payload_sha = row.get("sha256")
         if not isinstance(relpath, str):
             raise ResolutionError(f"UI14 engine VFS winner row {index} path is invalid")
-        normalized = relpath.replace("\\", "/")
-        parts = PurePosixPath(normalized).parts
-        key = normalized.casefold()
+        try:
+            normalized = _normalize_vfs_relpath(relpath, "UI14 winner path")
+        except ResolutionError as exc:
+            raise ResolutionError(
+                f"UI14 engine VFS winner row {index} identity is invalid"
+            ) from exc
+        key = _ascii_fold(normalized)
         if (
-            not normalized
-            or PurePosixPath(normalized).is_absolute()
-            or (len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":")
-            or any(part in {"", ".", ".."} for part in parts)
-            or winner_id not in mod_inventory_by_id
+            winner_id not in mod_inventory_by_id
             or not isinstance(payload_sha, str)
             or re.fullmatch(r"[0-9a-f]{64}", payload_sha) is None
             or key in winner_rows

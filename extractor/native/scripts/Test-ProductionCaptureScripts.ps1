@@ -89,7 +89,7 @@ try {
         replay_file="native_session.battleplan"; skipped_game_hours=0; unique_game_hour_count=10
         first_game_hour_raw=10;last_game_hour_raw=19
         parse_errors=@(); ordering_errors=@(); hourly_requirement=[ordered]@{met=$true;requested_game_hours=9}
-        production_profile=[ordered]@{enabled=$true;profile_domains_not_scheduled=@();missing_required_static_artifacts=@()}
+        production_profile=[ordered]@{enabled=$true;mandatory_domains_not_production_complete=@();profile_domains_not_scheduled=@();missing_required_static_artifacts=@()}
         compact_stream=[ordered]@{
             frame_end_record_count=10;frame_time_us=[ordered]@{count=10;avg=20000;p50=25000;p95=30000;p99=32000;max=99000};decodable=$true;parse_errors=@();ordering_errors=@();failure_status_flags_or=0;failure_status_seen=$false
             domain_coverage=[ordered]@{ok=$true;errors=@()};per_domain=$perDomain

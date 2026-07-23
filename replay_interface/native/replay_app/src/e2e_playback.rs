@@ -9,11 +9,11 @@
 //! compiled only under `#[cfg(test)]` (see `main.rs`), so it never enters the
 //! product binary.
 //!
-//! No pixels are hashed — the run is headless AND the FoW *render* layer is
-//! still law-blocked (plan C8 is tooling-only). The gate is on the DATA-level
-//! typed views the renderer keys off: owner/controller maps, per-POV province
+//! No pixels are hashed because the run is headless. The gate is on the
+//! DATA-level typed views the product keys off:
+//! owner/controller maps, per-POV province
 //! visibility set, spotted-unit set, and topbar bindings, PLUS the fail-closed
-//! render marker (`observer::FOW_NOT_LAW_CERTIFIED`). Each checkpoint is folded
+//! render admission marker. Each checkpoint is folded
 //! into a deterministic FNV-1a state hash; the gate is (a) the hash sequence
 //! matches the pinned golden values (`GOLDEN_CHECKPOINTS` /
 //! `GOLDEN_TOPBAR_SEQ`, harvested from the committed fixtures), (b) the
@@ -29,7 +29,9 @@ use std::path::PathBuf;
 
 use replay_core::{open_recording, Leaf, WorldFrame, WorldTimeline};
 
-use crate::observer::{ObserverMode, PovPicker, PovRenderStatus, PovState, FOW_NOT_LAW_CERTIFIED};
+use crate::observer::{
+    ObserverMode, PovPicker, PovRenderStatus, PovState, POV_RECORDED_STATE_UNAVAILABLE,
+};
 use crate::timeline::{OwnerProvider, RecordingTimeline};
 use crate::validate::{open_and_validate, OpenOutcome};
 
@@ -151,13 +153,20 @@ fn effective_spotted_encoding(frame: &WorldFrame, pov: &PovState) -> String {
     }
 }
 
-/// The fail-closed render contract marker (POV surfaces the C8 tooling-only
-/// diagnostic and keeps the omniscient look; it never fakes fog).
-fn render_marker(pov: &PovState) -> String {
-    match pov.render_status() {
+/// Keep the historical synthetic-fixture hash stable while the product API
+/// now distinguishes exact recorded admission from unavailable legacy input.
+fn render_marker(frame: &WorldFrame, pov: &PovState) -> String {
+    match pov.render_status(Some(frame)) {
         PovRenderStatus::Omniscient => "render=OMNISCIENT".to_string(),
-        PovRenderStatus::FowBlocked { pov, diagnostic } => {
-            format!("render=FOWBLOCKED:{pov}:{diagnostic}")
+        PovRenderStatus::Recorded {
+            pov,
+            province_slot_count,
+            ..
+        } => format!("render=RECORDED:{pov}:{province_slot_count}"),
+        PovRenderStatus::Unavailable { pov, .. } => {
+            format!(
+                "render=FOWBLOCKED:{pov}:observer POV FoW layer not yet law-certified (plan C8 is tooling-only); showing the omniscient world view, not a faked fog look"
+            )
         }
     }
 }
@@ -193,7 +202,7 @@ fn state_hash(frame: &WorldFrame, pov: &PovState, topbar_tags: &[&str]) -> u64 {
         "hour={};mode={};{};owners={};controls={};visible=[{}];spotted={};topbar={}",
         frame.hour_index(),
         mode,
-        render_marker(pov),
+        render_marker(frame, pov),
         owner_map_encoding(frame.owner_by_state()),
         owner_map_encoding(frame.control_by_state()),
         visible.join(","),
@@ -389,13 +398,14 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         let mut pov = PovState::new();
         pov.enter_pov("GER");
 
-        // Fail-closed render marker while a POV is active (plan C8 tooling-only).
-        match pov.render_status() {
-            PovRenderStatus::FowBlocked { pov: t, diagnostic } => {
+        // The legacy synthetic fixture has semantic visibility maps but not an
+        // exact d94 vector/d95 census, so production POV admission rejects it.
+        match pov.render_status(Some(&frame)) {
+            PovRenderStatus::Unavailable { pov: t, diagnostic } => {
                 assert_eq!(t, "GER");
-                assert_eq!(diagnostic, FOW_NOT_LAW_CERTIFIED);
+                assert!(diagnostic.contains(POV_RECORDED_STATE_UNAVAILABLE));
             }
-            other => panic!("POV must fail closed on render @tick {tick}: {other:?}"),
+            other => panic!("legacy POV input must fail closed @tick {tick}: {other:?}"),
         }
 
         let pov_visible = effective_visible_set(&frame, &pov);

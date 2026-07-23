@@ -32,6 +32,17 @@ pub struct RawStaticContentJoin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawStaticShaderResourceSource {
     UsedContent,
+    /// Exact draw-time texture bytes retained by the authenticated D3D11
+    /// resource snapshot. This is used for engine-generated immutable/runtime
+    /// resources (for example TerrainIDMap, RiverData, gradient-border fields,
+    /// and season-dependent atlases) that are neither direct effective-VFS
+    /// payloads nor render-target producer edges.
+    ///
+    /// The marker carries no pointer or semantic guess. The resource
+    /// descriptor, view, subresource pitches, bytes, and hashes are supplied by
+    /// the same exact snapshot row already joined by stage/slot/resource
+    /// identity.
+    AuthenticatedSnapshot,
     /// Exact selected-Present SnowMudData upload joined by the process-local
     /// resource identity while capture is still in-process, after the exact
     /// draw-time resource snapshot matches H row-for-row. Only the pointer-free
@@ -354,6 +365,7 @@ impl RawStaticProgramCapture {
             }
             for semantic in &draw.ordered_texture_semantics {
                 match &semantic.source {
+                    RawStaticShaderResourceSource::AuthenticatedSnapshot => {}
                     RawStaticShaderResourceSource::SnowMudTexture {
                         producer_ordinal,
                         payload_sha256,

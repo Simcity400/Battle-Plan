@@ -5,13 +5,14 @@ use game_ui::deployment_queue_state::AdmittedDeploymentQueue;
 use game_ui::gfx::SpriteRegistry;
 use game_ui::power_balance::PowerBalanceRuntimeSupplement;
 use game_ui::power_balance_assets::{
-    resolve_power_balance_content_assets, PortablePowerBalanceContentSet,
+    resolve_power_balance_content_assets_with_static_manifest, PortablePowerBalanceContentSet,
 };
 use game_ui::production_renderer::production_ui_variant_key;
 use game_ui::variant_admission::{
     DisplayVariantKey, ExactKeyVariantContract, InputVariant, PixelExtent,
 };
 use replay_core::{ArmyBattleplanOrderKey, RecordedInputVariant, WorldFrame};
+use std::sync::Arc;
 
 use crate::d3d::Gfx;
 use crate::text::ImageRenderer;
@@ -64,6 +65,30 @@ pub enum SelectedPresentUiOutcome {
     Omitted(String),
 }
 
+fn missing_authenticated_ui_pass_reason(
+    has_power_balance_semantic_companion: bool,
+) -> &'static str {
+    if has_power_balance_semantic_companion {
+        "XUI18 semantic companion is present, but it cannot substitute for the complete authenticated selected-Present UI-pass carrier"
+    } else {
+        "complete authenticated selected-Present UI-pass carrier is absent"
+    }
+}
+
+fn preferred_tactic_consumption(
+    model: Option<&game_ui::preferred_tactic::PreferredTacticUi>,
+) -> (Option<bool>, Option<i64>) {
+    match model {
+        Some(game_ui::preferred_tactic::PreferredTacticUi::NoneSelected) => {
+            (Some(false), None)
+        }
+        Some(game_ui::preferred_tactic::PreferredTacticUi::Selected(model)) => {
+            (Some(true), Some(model.multiplier_numerator_raw))
+        }
+        None => (None, None),
+    }
+}
+
 /// Pointer-free product-consumption receipt for typed late-RE models whose
 /// pixels, when visible, are already owned by `AuthenticatedUiPass`.
 /// `None` means feature-local unavailable; measured empty remains `Some(0)`.
@@ -74,6 +99,38 @@ pub struct SelectedPresentTypedConsumption {
     /// like a measured-empty surface in interactive logs or headless receipts.
     pub feature_local_unavailable: Vec<String>,
     pub national_focus_node_count: Option<usize>,
+    /// Exact D89 ordinals covering the complete national-focus canvas root in
+    /// the authenticated selected-Present pass.
+    pub national_focus_ui_pass_ordinals: Option<Vec<u32>>,
+    /// Exact TCV1 technology-canvas drawables admitted with same-hour A25
+    /// text. Pixels remain owned by the authenticated selected-Present pass.
+    pub technology_canvas_drawable_count: Option<usize>,
+    /// Exact ordinals of the authenticated selected-Present operations that
+    /// paint the active countrytechtreeview root. `None` means the TCV1/pass
+    /// join failed closed; an empty admitted route is never accepted.
+    pub technology_canvas_ui_pass_ordinals: Option<Vec<u32>>,
+    /// Exact selected-country D3 identifiers resolved through the
+    /// recorder-packaged technology catalog.
+    pub research_in_progress_label_count: Option<usize>,
+    pub research_completed_label_count: Option<usize>,
+    pub active_idea_label_count: Option<usize>,
+    pub national_spirit_label_count: Option<usize>,
+    pub advisor_idea_label_count: Option<usize>,
+    /// Exact D69 group/definition/member join consumed for this frame.
+    pub technology_sharing_group_count: Option<usize>,
+    pub technology_sharing_member_count: Option<usize>,
+    /// Exact DCT1 collection/row models, including heterogeneous MIO bonus
+    /// rows, consumed as companions to the authenticated selected-Present.
+    pub dynamic_collection_count: Option<usize>,
+    pub dynamic_collection_item_count: Option<usize>,
+    /// Exact D92 officer-corps selection state for the selected POV. This
+    /// receipt is created only after an authenticated selected-Present pass
+    /// exists; it is a semantic companion and never a pixel authority.
+    pub preferred_tactic_selected: Option<bool>,
+    /// Exact D96 fixed-five multiplier numerator for a selected tactic.
+    /// `None` with `preferred_tactic_selected=Some(false)` is an authenticated
+    /// no-selection measurement. Both `None` means fail-closed unavailable.
+    pub preferred_tactic_multiplier_numerator_raw: Option<i64>,
     pub active_ability_count: Option<usize>,
     pub character_leader_count: Option<usize>,
     pub character_ace_count: Option<usize>,
@@ -93,6 +150,14 @@ pub struct SelectedPresentTypedConsumption {
     pub trade_deal_count: Option<usize>,
     pub trade_market_stockpile_count: Option<usize>,
     pub special_project_breakthrough_count: Option<usize>,
+    /// Complete selected-country D65 program facilities consumed by the
+    /// special-project UI model. `Some(0)` is an authenticated measured-empty
+    /// roster, distinct from a missing or rejected carrier.
+    pub special_project_program_count: Option<usize>,
+    /// Exact per-country politics models folded from production d14/d15.
+    /// XUI11 pixels remain wholly owned by `AuthenticatedUiPass`; the
+    /// retired d73/PTI1 semantic decomposition is not a product dependency.
+    pub politics_country_count: Option<usize>,
     pub resolved_tooltip_instance_count: Option<usize>,
     /// Exact A6 rows from the bounded CSupplySystem owner census. This is a
     /// product-consumption count only; no province/node identity is inferred
@@ -106,6 +171,19 @@ pub struct SelectedPresentTypedConsumption {
     /// membership. Legacy topology without operative membership stays local-
     /// unavailable instead of appearing as an empty assignment list.
     pub operative_network_assignment_count: Option<usize>,
+    /// Exact A30/D53 sources consumed independently of the optional XUI14
+    /// semantic trace. These authenticate the models behind pass-owned pixels
+    /// without assigning meaning to the deliberately unresolved raw fields.
+    pub intelligence_controller_companion_present: Option<bool>,
+    pub intelligence_operation_instance_count: Option<usize>,
+    pub intelligence_level_row_count: Option<usize>,
+    pub intelligence_network_row_count: Option<usize>,
+    /// Exact D52/D66 sources consumed independently of the optional XUI16
+    /// semantic request. Counts remain unavailable unless the corresponding
+    /// typed carrier and completeness witness are present.
+    pub occupation_exact_state_count: Option<usize>,
+    pub occupation_exact_history_count: Option<usize>,
+    pub occupation_exact_alert_count: Option<usize>,
     /// Exact d64 lifecycle history. The count is populated only when the
     /// producer's completeness witness is measured true.
     pub delayed_event_lifecycle_count: Option<usize>,
@@ -129,6 +207,21 @@ pub struct SelectedPresentTypedConsumption {
     /// Exact current-hour B4 monthly sunk-convoy history. D70 aggregates and
     /// route-less terminal evidence never substitute for this field.
     pub exact_sunk_convoy_history_count: Option<usize>,
+    /// Complete D48 gameplay aggregates consumed from this WorldFrame and
+    /// paired with the same selected Present. O05 counts, when present, are
+    /// the exact per-instance/D80 join; aggregate D48 rows never substitute.
+    pub d48_production_companion:
+        Option<game_ui::d48_production::AdmittedD48SelectedPresentCompanion>,
+    /// Complete D91 model joined to this exact selected-Present. The receipt
+    /// carries the authenticated pass identity; those pixels are never
+    /// reconstructed by the semantic adapter.
+    pub d91_raid_companion:
+        Option<game_ui::late_domain_companions::AdmittedRaidSelectedPresentCompanion>,
+    /// Complete D93 model joined to this exact selected-Present. The receipt
+    /// carries the authenticated pass identity; those pixels are never
+    /// reconstructed by the semantic adapter.
+    pub d93_army_upgrade_companion:
+        Option<game_ui::late_domain_companions::AdmittedArmyUpgradeSelectedPresentCompanion>,
     /// CAP6/X-COUNTER-BIND is consumed only when the exact selected-Present
     /// frontier contains authenticated `mapicons_container` counter owners.
     /// The HUD commands remain sole pixel authority; these counts prove that
@@ -188,6 +281,7 @@ pub struct ProductSelectedPresentRuntime {
     power_balance_runtime_error: Option<String>,
     power_balance_assets: Vec<PortablePowerBalanceContentSet>,
     power_balance_asset_error: Option<String>,
+    gfx_icon_asset_manifest_static: Option<Vec<u8>>,
     intelligence_panel_count: Option<usize>,
     intelligence_error: Option<String>,
     production_ui_renderer: Option<game_ui::production_renderer::ProductionUiRenderer>,
@@ -196,7 +290,15 @@ pub struct ProductSelectedPresentRuntime {
     special_project_breakthroughs:
         Vec<game_ui::special_projects::SpecialProjectBreakthroughPresentation>,
     special_project_breakthrough_error: Option<String>,
+    special_project_programs:
+        Vec<game_ui::special_projects::SpecialProjectProgramPresentation>,
+    special_project_program_error: Option<String>,
     selected_pov_runtime: crate::selected_pov_runtime::SelectedPovRuntime,
+    static_research_catalogs: Arc<game_ui::static_research::StaticResearchUiCatalog>,
+    static_focus_definitions: Arc<replay_core::AdmittedStaticFocusDefinitions>,
+    static_focus_catalog: Arc<game_ui::national_focus::FocusCatalog>,
+    focus_canvas_ui_pass_ordinals: Option<Vec<u32>>,
+    focus_canvas_error: Option<String>,
 }
 
 /// Performance-only selected-Present stress adapter.
@@ -238,6 +340,10 @@ impl ProductSelectedPresentRuntime {
         content_admission: &replay_core::ValidatedContentAdmission,
         pass: &replay_core::AuthenticatedUiPass,
         decision_catalog_bytes: Option<&[u8]>,
+        gfx_icon_asset_manifest_static: Option<&[u8]>,
+        static_research_catalogs: Arc<game_ui::static_research::StaticResearchUiCatalog>,
+        static_focus_definitions: Arc<replay_core::AdmittedStaticFocusDefinitions>,
+        static_focus_catalog: Arc<game_ui::national_focus::FocusCatalog>,
     ) -> Result<Self> {
         let assets =
             game_ui::selected_present::admitted_asset_resolver(resolver, content_admission, pass)?;
@@ -278,6 +384,8 @@ impl ProductSelectedPresentRuntime {
             power_balance_runtime_error: None,
             power_balance_assets: Vec::new(),
             power_balance_asset_error: None,
+            gfx_icon_asset_manifest_static: gfx_icon_asset_manifest_static
+                .map(|bytes| bytes.to_vec()),
             intelligence_panel_count: None,
             intelligence_error: Some("XUI14 supplemental semantic rows are unavailable".into()),
             production_ui_renderer,
@@ -287,7 +395,16 @@ impl ProductSelectedPresentRuntime {
             special_project_breakthrough_error: Some(
                 "X9 selected country POV has not been evaluated".into(),
             ),
+            special_project_programs: Vec::new(),
+            special_project_program_error: Some(
+                "D65 selected country POV has not been evaluated".into(),
+            ),
             selected_pov_runtime,
+            static_research_catalogs,
+            static_focus_definitions,
+            static_focus_catalog,
+            focus_canvas_ui_pass_ordinals: None,
+            focus_canvas_error: Some("A31 focus canvas has not been evaluated".into()),
         })
     }
 
@@ -340,6 +457,21 @@ impl ProductSelectedPresentRuntime {
         }
     }
 
+    /// Complete D65 program facilities for the selected POV. Unlike the
+    /// topbar aggregate, each row retains program id, province, and unread
+    /// reward count for the actual special-project panel.
+    pub fn special_project_programs(
+        &self,
+    ) -> std::result::Result<
+        &[game_ui::special_projects::SpecialProjectProgramPresentation],
+        &str,
+    > {
+        match self.special_project_program_error.as_deref() {
+            Some(error) => Err(error),
+            None => Ok(&self.special_project_programs),
+        }
+    }
+
     pub fn execute(
         &mut self,
         gfx: &Gfx,
@@ -347,6 +479,7 @@ impl ProductSelectedPresentRuntime {
         prepared_frame: &map_viewer::PreparedProductionD3dFrame,
         world_frame: &WorldFrame,
         pov_tag: Option<&str>,
+        recorded_text_pov_country_or_global: &str,
         runtime_text: Option<&replay_core::RuntimeTextCatalog>,
         army_inputs: ArmyBattleplanUiSupplementalInputs<'_>,
         intelligence_inputs: IntelligenceUiSupplementalInputs<'_>,
@@ -367,10 +500,96 @@ impl ProductSelectedPresentRuntime {
         self.special_project_breakthroughs.clear();
         self.special_project_breakthrough_error =
             Some("X9 selected country POV is unavailable".into());
+        self.special_project_programs.clear();
+        self.special_project_program_error =
+            Some("D65 selected country POV is unavailable".into());
+        self.focus_canvas_ui_pass_ordinals = None;
+        self.focus_canvas_error = None;
+        let mut focus_route_unavailable_reason = None;
+        let focus_route = match (
+            pov_tag,
+            crate::selected_pov_runtime::focus_text_witness(world_frame, runtime_text),
+            prepared_frame.authenticated_ui_pass.as_ref(),
+        ) {
+            (Some(_), Some(text), Some(pass)) => {
+                match game_ui::research_canvas::admit_focus_canvas_render_route(
+                    world_frame,
+                    pass,
+                    text,
+                ) {
+                    Ok(route) => route,
+                    Err(error) => {
+                        focus_route_unavailable_reason = Some(format!(
+                            "A31 focus canvas selected-Present route rejected: {}",
+                            error.reason
+                        ));
+                        None
+                    }
+                }
+            }
+            (Some(_), None, _) => {
+                focus_route_unavailable_reason =
+                    Some("A31 focus canvas exact same-hour A25 text is unavailable".into());
+                None
+            }
+            (Some(_), Some(_), None) => {
+                focus_route_unavailable_reason =
+                    Some("A31 focus canvas has no authenticated selected-Present UI pass".into());
+                None
+            }
+            (None, _, _) => None,
+        };
+        let focus_topology = match (pov_tag, focus_route.as_ref()) {
+            (Some(pov), Some(route)) => world_frame
+                .focus(pov)
+                .and_then(|focus| focus.focus_tree.measured())
+                .and_then(|tree_id| {
+                    match game_ui::static_focus_defs::focus_topology_for_runtime_visible(
+                        &self.static_focus_definitions,
+                        tree_id,
+                        &route.canvas_request.node_ids,
+                    ) {
+                        Ok(topology) => Some(topology),
+                        Err(error) => {
+                            focus_route_unavailable_reason = Some(error.to_string());
+                            None
+                        }
+                    }
+                }),
+            _ => None,
+        };
+        let focus_canvas_request = focus_route
+            .as_ref()
+            .map(|route| game_ui::research_canvas::ResearchCanvasRequest::Focus(
+                route.canvas_request.clone(),
+            ));
+        let static_focus_catalog = Arc::clone(&self.static_focus_catalog);
+        let focus_supplemental = match (
+            focus_topology.as_ref(),
+            focus_canvas_request.as_ref(),
+        ) {
+            (Some(topology), Some(canvas)) => {
+                Some((topology, static_focus_catalog.as_ref(), canvas))
+            }
+            _ => None,
+        };
+        if pov_tag.is_some()
+            && focus_supplemental.is_none()
+            && focus_route_unavailable_reason.is_none()
+        {
+            focus_route_unavailable_reason =
+                Some("A31 exact focus canvas or packaged topology is unavailable".into());
+        }
+        self.focus_canvas_ui_pass_ordinals = focus_route
+            .as_ref()
+            .map(|route| route.ui_pass_ordinals.clone());
+        self.focus_canvas_error = focus_route_unavailable_reason;
         self.selected_pov_runtime.refresh(
             world_frame,
             pov_tag,
             crate::selected_pov_runtime::SelectedPovSupplementalInputs {
+                focus: focus_supplemental,
+                static_research: Some(self.static_research_catalogs.as_ref()),
                 selected_battleplan_owner: army_inputs.selected_owner,
                 selected_order_key: army_inputs.selected_order_key,
                 ..Default::default()
@@ -389,16 +608,34 @@ impl ProductSelectedPresentRuntime {
                 }
                 Err(error) => self.special_project_breakthrough_error = Some(error),
             }
+            match crate::special_projects_runtime::admit_country_special_project_programs(
+                world_frame,
+                country_tag,
+            ) {
+                Ok(rows) => {
+                    self.special_project_programs = rows;
+                    self.special_project_program_error = None;
+                }
+                Err(error) => self.special_project_program_error = Some(error),
+            }
             match crate::power_balance_runtime::power_balance_runtime_supplements(
                 world_frame,
                 country_tag,
             ) {
                 Ok(runtime) => {
                     for row in &runtime {
-                        match resolve_power_balance_content_assets(
-                            row,
-                            &self.registry,
-                            &self.resolver,
+                        let Some(static_manifest) =
+                            self.gfx_icon_asset_manifest_static.as_deref()
+                        else {
+                            self.power_balance_assets.clear();
+                            self.power_balance_asset_error = Some(
+                                "XUI18 recorder-packaged gfx_icon_asset_manifest_static is unavailable"
+                                    .into(),
+                            );
+                            break;
+                        };
+                        match resolve_power_balance_content_assets_with_static_manifest(
+                            row, &self.registry, &self.resolver, static_manifest,
                         ) {
                             Ok(assets) => self.power_balance_assets.push(assets),
                             Err(error) => {
@@ -424,7 +661,7 @@ impl ProductSelectedPresentRuntime {
         self.refresh_occupation_surface(world_frame, occupation_inputs);
         let Some(pass) = prepared_frame.authenticated_ui_pass.as_ref() else {
             return Ok(SelectedPresentUiOutcome::Omitted(
-                "complete authenticated selected-Present UI-pass carrier is absent".into(),
+                missing_authenticated_ui_pass_reason(!self.power_balance_runtime.is_empty()).into(),
             ));
         };
         if pass.target.prepared_target != replay_core::PreparedRenderTarget::SwapchainBackBuffer {
@@ -448,6 +685,12 @@ impl ProductSelectedPresentRuntime {
             ));
         }
         self.variant_key = Some(variant_key);
+
+        if let Err(reason) = preflight_xui11_politics_authority(world_frame, pass, pov_tag) {
+            return Ok(SelectedPresentUiOutcome::Omitted(format!(
+                "XUI11 authenticated politics UI rejected before target write: {reason}"
+            )));
+        }
 
         let (xui15_output, xui15_unavailable_reason) =
             match self.production_ui_renderer.as_ref() {
@@ -529,7 +772,7 @@ impl ProductSelectedPresentRuntime {
 
         let playback_context = game_ui::selected_present::SelectedPresentPlaybackContext {
             frame_hour: world_frame.hour_index(),
-            pov_country_or_global: pov_tag.unwrap_or("global"),
+            pov_country_or_global: recorded_text_pov_country_or_global,
         };
 
         let prepared = match game_ui::selected_present::prepare_selected_present_ui_pass(
@@ -680,7 +923,25 @@ impl ProductSelectedPresentRuntime {
             ("A30_AGENCY", snapshot.agency_controller.unavailable_reason.as_deref()),
             ("A30_CIPHER", snapshot.cipher_controller.unavailable_reason.as_deref()),
             ("A31_FOCUS", snapshot.national_focus.unavailable_reason.as_deref()),
+            ("D3_STATIC_RESEARCH", snapshot.research.unavailable_reason.as_deref()),
+            (
+                "D14_D15_STATIC_IDEAS",
+                snapshot.politics_ideas.unavailable_reason.as_deref(),
+            ),
+            (
+                "D69_TECHNOLOGY_SHARING",
+                snapshot.technology_sharing.unavailable_reason.as_deref(),
+            ),
+            (
+                "A28_DYNAMIC_COLLECTIONS",
+                snapshot.dynamic_collections.unavailable_reason.as_deref(),
+            ),
+            (
+                "D92_D96_PREFERRED_TACTIC",
+                snapshot.preferred_tactic.unavailable_reason.as_deref(),
+            ),
             ("A36_ABILITIES", snapshot.active_abilities.unavailable_reason.as_deref()),
+            ("D47_CABINET", snapshot.cabinet.unavailable_reason.as_deref()),
             ("A39_CHARACTERS", snapshot.characters.unavailable_reason.as_deref()),
             ("A40_DESIGNER", snapshot.selected_designer.unavailable_reason.as_deref()),
             ("A40_PEACE", snapshot.peace_conference.unavailable_reason.as_deref()),
@@ -699,6 +960,12 @@ impl ProductSelectedPresentRuntime {
         if let Some(reason) = self.special_project_breakthrough_error.as_deref() {
             feature_local_unavailable.push(format!("X9_BREAKTHROUGHS:{reason}"));
         }
+        if let Some(reason) = self.special_project_program_error.as_deref() {
+            feature_local_unavailable.push(format!("D65_SPECIAL_PROJECT_PROGRAMS:{reason}"));
+        }
+        if let Some(reason) = self.focus_canvas_error.as_deref() {
+            feature_local_unavailable.push(format!("A31_FOCUS_CANVAS:{reason}"));
+        }
         let resolved_tooltip_instance_count = match world_frame.resolved_tooltip_exact() {
             view if view.status == replay_core::ViewStatus::Present => match view.frame.as_ref() {
                 Some(frame) => Some(frame.instances.len()),
@@ -713,6 +980,17 @@ impl ProductSelectedPresentRuntime {
                 feature_local_unavailable.push(format!(
                     "A26_RESOLVED_TOOLTIP:{:?}",
                     view.status
+                ));
+                None
+            }
+        };
+        let politics_country_count = match world_frame.politics_detail_status() {
+            replay_core::ViewStatus::Present => {
+                Some(world_frame.politics_detail_by_country().len())
+            }
+            status => {
+                feature_local_unavailable.push(format!(
+                    "D14_D15_POLITICS_STATE:{status:?}"
                 ));
                 None
             }
@@ -772,6 +1050,79 @@ impl ProductSelectedPresentRuntime {
                     );
                     None
                 }
+            };
+        let intelligence_sources = world_frame.intelligence_ui_exact_sources();
+        let intelligence_controller_companion_present = intelligence_sources
+            .snapshot_bound_controller_companion()
+            .map(|_| true);
+        if intelligence_controller_companion_present.is_none() {
+            feature_local_unavailable.push(
+                "XUI14_A30_EXACT_SOURCES:D53 payload identity and controller companion are absent, unavailable, or mismatched"
+                    .into(),
+            );
+        }
+        let intelligence_operation_instance_count = intelligence_controller_companion_present
+            .and_then(|_| {
+                exact_leaf_count(
+                    intelligence_sources.operation_instances,
+                    "XUI14_D53_OPERATIONS",
+                    &mut feature_local_unavailable,
+                )
+            });
+        let intelligence_level_row_count = intelligence_controller_companion_present
+            .and_then(|_| {
+                exact_leaf_count(
+                    intelligence_sources.intel_levels,
+                    "XUI14_D53_INTEL_LEVELS",
+                    &mut feature_local_unavailable,
+                )
+            });
+        let intelligence_network_row_count = intelligence_controller_companion_present
+            .and_then(|_| {
+                exact_leaf_count(
+                    intelligence_sources.intel_network_graphs,
+                    "XUI14_D53_NETWORKS",
+                    &mut feature_local_unavailable,
+                )
+            });
+
+        let occupation_sources = world_frame.occupation_ui_exact_sources();
+        let occupation_exact_state_count =
+            if occupation_sources.occupation_status == replay_core::ViewStatus::Present {
+                Some(occupation_sources.occupation_rows.len())
+            } else {
+                feature_local_unavailable.push(format!(
+                    "XUI16_D52_D66_STATES:{:?}",
+                    occupation_sources.occupation_status
+                ));
+                None
+            };
+        let occupation_exact_history_count = match (
+            occupation_sources.history,
+            occupation_sources.history_complete,
+        ) {
+            (replay_core::Leaf::Measured(rows), replay_core::Leaf::Measured(true)) => {
+                Some(rows.len())
+            }
+            _ => {
+                feature_local_unavailable
+                    .push("XUI16_D66_HISTORY:exact complete history unavailable".into());
+                None
+            }
+        };
+        let occupation_exact_alert_count =
+            if occupation_sources.garrison_alert.status == replay_core::ViewStatus::Present {
+                Some(if occupation_sources.garrison_alert.alert.is_some() {
+                    1
+                } else {
+                    0
+                })
+            } else {
+                feature_local_unavailable.push(format!(
+                    "XUI16_D66_ALERT:{:?}",
+                    occupation_sources.garrison_alert.status
+                ));
+                None
             };
 
         let (delayed_event_lifecycle_count, delayed_event_lifecycle_complete) =
@@ -864,11 +1215,76 @@ impl ProductSelectedPresentRuntime {
                     None
                 }
             };
+        let d48_production_companion =
+            match game_ui::d48_production::admit_d48_selected_present_companion(
+                world_frame,
+                pass,
+            ) {
+                Ok(companion) => Some(companion),
+                Err(reason) => {
+                    feature_local_unavailable.push(format!("D48_PRODUCTION:{reason}"));
+                    None
+                }
+            };
+        let d91_raid_companion =
+            match game_ui::late_domain_companions::admit_d91_raid_selected_present_companion(
+                world_frame,
+                pass,
+            ) {
+                Ok(companion) => Some(companion),
+                Err(reason) => {
+                    feature_local_unavailable.push(format!("D91_RAIDS:{reason}"));
+                    None
+                }
+            };
+        let d93_army_upgrade_companion =
+            match game_ui::late_domain_companions::admit_d93_army_upgrade_selected_present_companion(
+                world_frame,
+                pass,
+            ) {
+                Ok(companion) => Some(companion),
+                Err(reason) => {
+                    feature_local_unavailable.push(format!("D93_ARMY_UPGRADES:{reason}"));
+                    None
+                }
+            };
         let counter_binding = game_ui::binding_counters::counter_binding_for_selected_present(
             world_frame,
             self.selected_pov_runtime.snapshot().pov_country.as_deref(),
             pass,
         );
+        let (technology_canvas_ui_pass_ordinals, technology_canvas_drawable_count) =
+            match self.production_ui_renderer.as_ref() {
+            Some(renderer) => match renderer.admit_xui09_selected_present_route(world_frame, pass) {
+                Ok(Some(route)) => (
+                    Some(route.ui_pass_ordinals),
+                    Some(route.final_draw_order.len()),
+                ),
+                Ok(None) => {
+                    if world_frame.technology_canvas_exact_status()
+                        == replay_core::ViewStatus::Present
+                    {
+                        feature_local_unavailable.push(
+                            "XUI09_TECHNOLOGY_CANVAS:Present TCV1 produced no selected-Present route"
+                                .into(),
+                        );
+                    }
+                    (None, None)
+                }
+                Err(error) => {
+                    feature_local_unavailable.push(format!(
+                        "XUI09_TECHNOLOGY_CANVAS:selected-Present route rejected: {error:?}"
+                    ));
+                    (None, None)
+                }
+            },
+            None => {
+                feature_local_unavailable.push(
+                    "XUI09_TECHNOLOGY_CANVAS:production UI renderer is unavailable".into(),
+                );
+                (None, None)
+            }
+        };
         let (
             counter_hud_authenticated_owner_count,
             counter_hud_authenticated_command_count,
@@ -920,6 +1336,10 @@ impl ProductSelectedPresentRuntime {
         if let Some(reason) = deployment_queue.unavailable_reason.as_deref() {
             feature_local_unavailable.push(format!("X4_DEPLOYMENT_QUEUE:{reason}"));
         }
+        let (
+            preferred_tactic_selected,
+            preferred_tactic_multiplier_numerator_raw,
+        ) = preferred_tactic_consumption(snapshot.preferred_tactic.value.as_ref());
         let mut receipt = SelectedPresentTypedConsumption {
             feature_local_unavailable,
             national_focus_node_count: snapshot
@@ -927,6 +1347,70 @@ impl ProductSelectedPresentRuntime {
                 .value
                 .as_ref()
                 .map(|model| model.nodes.len()),
+            national_focus_ui_pass_ordinals: self
+                .focus_canvas_ui_pass_ordinals
+                .clone(),
+            technology_canvas_drawable_count,
+            technology_canvas_ui_pass_ordinals,
+            research_in_progress_label_count: snapshot
+                .research
+                .value
+                .as_ref()
+                .and_then(|research| research.in_progress.measured())
+                .map(Vec::len),
+            research_completed_label_count: snapshot
+                .research
+                .value
+                .as_ref()
+                .and_then(|research| research.completed.measured())
+                .map(Vec::len),
+            active_idea_label_count: snapshot
+                .politics_ideas
+                .value
+                .as_ref()
+                .and_then(|ideas| ideas.ideas.measured())
+                .map(Vec::len),
+            national_spirit_label_count: snapshot
+                .politics_ideas
+                .value
+                .as_ref()
+                .and_then(|ideas| ideas.national_spirits.measured())
+                .map(Vec::len),
+            advisor_idea_label_count: snapshot
+                .politics_ideas
+                .value
+                .as_ref()
+                .and_then(|ideas| ideas.advisor_ideas.measured())
+                .map(|groups| groups.values().map(Vec::len).sum()),
+            technology_sharing_group_count: snapshot
+                .technology_sharing
+                .value
+                .as_ref()
+                .and_then(|sharing| sharing.groups.measured())
+                .map(Vec::len),
+            technology_sharing_member_count: snapshot
+                .technology_sharing
+                .value
+                .as_ref()
+                .and_then(|sharing| sharing.groups.measured())
+                .map(|groups| groups.iter().map(|group| group.members.len()).sum()),
+            dynamic_collection_count: snapshot
+                .dynamic_collections
+                .value
+                .as_ref()
+                .map(Vec::len),
+            dynamic_collection_item_count: snapshot
+                .dynamic_collections
+                .value
+                .as_ref()
+                .map(|collections| {
+                    collections
+                        .iter()
+                        .map(|collection| collection.ordered_item_ids.len())
+                        .sum()
+                }),
+            preferred_tactic_selected,
+            preferred_tactic_multiplier_numerator_raw,
             active_ability_count: snapshot
                 .active_abilities
                 .value
@@ -979,10 +1463,22 @@ impl ProductSelectedPresentRuntime {
                 .special_project_breakthrough_error
                 .is_none()
                 .then_some(self.special_project_breakthroughs.len()),
+            special_project_program_count: self
+                .special_project_program_error
+                .is_none()
+                .then_some(self.special_project_programs.len()),
+            politics_country_count,
             resolved_tooltip_instance_count,
             disrupted_supply_exact_row_count,
             foreign_homebase_exact_row_count,
             operative_network_assignment_count,
+            intelligence_controller_companion_present,
+            intelligence_operation_instance_count,
+            intelligence_level_row_count,
+            intelligence_network_row_count,
+            occupation_exact_state_count,
+            occupation_exact_history_count,
+            occupation_exact_alert_count,
             delayed_event_lifecycle_count,
             delayed_event_lifecycle_complete,
             deployment_queue_conveyor_count: deployment_queue.conveyor_count,
@@ -993,6 +1489,9 @@ impl ProductSelectedPresentRuntime {
             exact_ace_owner_count,
             exact_ace_row_count,
             exact_sunk_convoy_history_count,
+            d48_production_companion,
+            d91_raid_companion,
+            d93_army_upgrade_companion,
             counter_hud_authenticated_owner_count,
             counter_hud_authenticated_command_count,
             counter_hud_land_content_count,
@@ -1285,6 +1784,154 @@ fn exact_variant_admission_key(
     Ok(key)
 }
 
+fn exact_leaf_count<T>(
+    leaf: &replay_core::Leaf<Vec<T>>,
+    feature: &str,
+    unavailable: &mut Vec<String>,
+) -> Option<usize> {
+    match leaf {
+        replay_core::Leaf::Measured(rows) => Some(rows.len()),
+        replay_core::Leaf::Absent => {
+            unavailable.push(format!("{feature}:DomainAbsent"));
+            None
+        }
+        replay_core::Leaf::Unobtained => {
+            unavailable.push(format!("{feature}:DomainUnavailable"));
+            None
+        }
+    }
+}
+
+const XUI11_POLITICS_GUI_DEFINITION: &str = "interface/countrypoliticsview.gui";
+const GLOBAL_TOOLTIP_GUI_DEFINITION: &str = "interface/core.gui";
+const GLOBAL_TOOLTIP_AUTHORED_IDENTITY: &str = "ToolTip";
+
+fn preflight_xui11_politics_authority(
+    world_frame: &WorldFrame,
+    pass: &replay_core::AuthenticatedUiPass,
+    pov_tag: Option<&str>,
+) -> std::result::Result<(), String> {
+    let politics_commands = pass
+        .ui_pass_operations
+        .iter()
+        .filter_map(|operation| match operation {
+            replay_core::UiPassOperation::HudCommand { command }
+                if command
+                    .identity
+                    .selected_gui_definition
+                    .normalized_game_relative_path
+                    == XUI11_POLITICS_GUI_DEFINITION =>
+            {
+                Some(command)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if politics_commands.is_empty() {
+        return Ok(());
+    }
+
+    let pov_tag = pov_tag.ok_or(
+        "politics-panel operations have no selected-POV country identity",
+    )?;
+    if world_frame.politics_detail_status() != replay_core::ViewStatus::Present {
+        return Err(format!(
+            "d14/d15 politics view is {:?}, not Present",
+            world_frame.politics_detail_status()
+        ));
+    }
+    if world_frame.politics_detail(pov_tag).is_none() {
+        return Err(format!(
+            "d14/d15 politics view has no row for selected POV {pov_tag}"
+        ));
+    }
+
+    let tooltip_commands = pass
+        .ui_pass_operations
+        .iter()
+        .filter_map(|operation| match operation {
+            replay_core::UiPassOperation::HudCommand { command }
+                if command
+                    .identity
+                    .selected_gui_definition
+                    .normalized_game_relative_path
+                    == GLOBAL_TOOLTIP_GUI_DEFINITION
+                    && [
+                        command.identity.authored_surface_identity.as_str(),
+                        command.identity.runtime_root.as_str(),
+                        command.identity.name.as_str(),
+                    ]
+                    .into_iter()
+                    .any(|identity| {
+                        identity.eq_ignore_ascii_case(GLOBAL_TOOLTIP_AUTHORED_IDENTITY)
+                    }) =>
+            {
+                Some(command)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if tooltip_commands.is_empty() {
+        return Ok(());
+    }
+
+    let tooltip = world_frame.resolved_tooltip_exact();
+    if tooltip.status != replay_core::ViewStatus::Present {
+        return Err(format!(
+            "d72 resolved-tooltip view is {:?}, not Present",
+            tooltip.status
+        ));
+    }
+    let exact = tooltip
+        .frame
+        .as_ref()
+        .ok_or("d72 Present view omitted its exact frame")?;
+    if u64::try_from(world_frame.hour_index()).ok() != Some(exact.frame_hour) {
+        return Err(format!(
+            "d72 frame hour {} differs from world-frame hour {}",
+            exact.frame_hour,
+            world_frame.hour_index()
+        ));
+    }
+    if exact.selected_present_receipt_sha256 != pass.selected_present_receipt_sha256 {
+        return Err(
+            "d72 tooltip and authenticated UI pass name different selected Presents".into(),
+        );
+    }
+    let [instance] = exact.instances.as_slice() else {
+        return Err(format!(
+            "tooltip operation requires exactly one measured d72 instance, found {}",
+            exact.instances.len()
+        ));
+    };
+    if instance.frame_hour != exact.frame_hour {
+        return Err("d72 tooltip instance is not bound to its exact frame hour".into());
+    }
+    if instance.pov_country_or_global != pov_tag
+        && instance.pov_country_or_global != "global"
+    {
+        return Err(format!(
+            "d72 tooltip POV {} differs from selected POV {pov_tag}",
+            instance.pov_country_or_global
+        ));
+    }
+    if !tooltip_commands.iter().any(|command| {
+        [
+            command.identity.authored_surface_identity.as_str(),
+            command.identity.runtime_root.as_str(),
+            command.identity.name.as_str(),
+        ]
+        .into_iter()
+        .any(|identity| identity == instance.tooltip_owner_authored_name)
+    }) {
+        return Err(format!(
+            "d72 tooltip owner {} does not match an authenticated tooltip operation",
+            instance.tooltip_owner_authored_name
+        ));
+    }
+    Ok(())
+}
+
 fn exact_variant_key(
     display: Option<&replay_core::world::DisplayVariantMetadata>,
     language: Option<&str>,
@@ -1322,6 +1969,51 @@ fn exact_variant_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xui18_semantic_companion_never_substitutes_for_authenticated_pixels() {
+        let absent = missing_authenticated_ui_pass_reason(false);
+        let companion_only = missing_authenticated_ui_pass_reason(true);
+        assert!(absent.contains("carrier is absent"));
+        assert!(companion_only.contains("cannot substitute"));
+        assert!(companion_only.contains("authenticated selected-Present UI-pass"));
+    }
+
+    #[test]
+    fn d92_d96_receipt_distinguishes_none_selected_selected_and_unavailable() {
+        use game_ui::preferred_tactic::{PreferredTacticOddsUi, PreferredTacticUi};
+
+        assert_eq!(
+            preferred_tactic_consumption(Some(&PreferredTacticUi::NoneSelected)),
+            (Some(false), None)
+        );
+        let selected = PreferredTacticUi::Selected(PreferredTacticOddsUi {
+            tactic_database_id: 19,
+            tactic_id: "tactic_basic_attack".into(),
+            accumulator_entry_present: true,
+            country_factor_raw: 25_000,
+            accumulator_raw: 100_000,
+            effective_bonus_raw: 125_000,
+            multiplier_numerator_raw: 225_000,
+        });
+        assert_eq!(
+            preferred_tactic_consumption(Some(&selected)),
+            (Some(true), Some(225_000))
+        );
+        assert_eq!(preferred_tactic_consumption(None), (None, None));
+    }
+
+    #[test]
+    fn d92_d96_semantic_receipt_is_downstream_of_authenticated_pass_gate() {
+        let source = include_str!("ui_runtime.rs");
+        let pass_gate = source
+            .find("let Some(pass) = prepared_frame.authenticated_ui_pass.as_ref()")
+            .expect("authenticated selected-Present pass gate");
+        let typed_receipt = source
+            .find("let typed_consumption = self.selected_present_typed_consumption(world_frame, pass);")
+            .expect("selected-Present typed receipt");
+        assert!(pass_gate < typed_receipt);
+    }
 
     #[test]
     fn exact_route_source_has_no_flattened_product_ui_fallback() {

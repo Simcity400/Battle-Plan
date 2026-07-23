@@ -762,6 +762,7 @@ mod tests {
         pack, CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, PackEntry,
         PackIdentity, PrefoldDecodeError, PrefoldedSpool, PrefoldedSpoolEntry,
     };
+    use std::collections::BTreeMap;
 
     struct FixtureSpoolDecoder;
 
@@ -805,6 +806,46 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
+    fn portable_content_manifest() -> portable_content_manifest::ContentManifest {
+        let mut manifest = portable_content_manifest::ContentManifest {
+            schema: portable_content_manifest::SCHEMA.into(),
+            product_modset_sha256: "33".repeat(32),
+            source_game: portable_content_manifest::SourceGameIdentity {
+                version: "1.19.2".into(),
+                build: "a729".into(),
+                executable_sha256: "44".repeat(32),
+                build_profile: "hoi4-a729".into(),
+            },
+            source_profile: portable_content_manifest::SourceProfileIdentity {
+                profile_id: "rollover-fixture-profile".into(),
+                playset_id: "rollover-fixture-playset".into(),
+                selection_sha256: "00".repeat(32),
+            },
+            effective_vfs_manifest_sha256: "55".repeat(32),
+            ordered_layers: Vec::new(),
+            dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(),
+            required_settings: BTreeMap::from([
+                ("physical_width".into(), "1920".into()),
+                ("physical_height".into(), "1080".into()),
+                ("min_gui_width".into(), "1280".into()),
+                ("min_gui_height".into(), "720".into()),
+                ("gui_scale_f32_bits".into(), 1.0f32.to_bits().to_string()),
+                ("refresh_rate_hz".into(), "60".into()),
+                ("max_refresh_rate_hz".into(), "60".into()),
+                ("fullscreen".into(), "false".into()),
+                ("borderless".into(), "true".into()),
+                ("display_mode".into(), "borderless_fullscreen".into()),
+                ("settings_file_sha256".into(), "aa".repeat(32)),
+            ]),
+            required_content: Vec::new(),
+            manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 =
+            manifest.computed_selection_sha256().unwrap();
+        manifest.with_computed_digest().unwrap()
+    }
+
     fn fixture(tag: &str) -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "replay_core_rollover_set_{tag}_{}_{}",
@@ -833,6 +874,7 @@ mod tests {
             "transitions": []
         }))
         .unwrap();
+        let content_manifest = portable_content_manifest();
         let manifest = serde_json::to_vec(&json!({
             "logical_stream_id": 0,
             "campaign_identity": {
@@ -854,9 +896,11 @@ mod tests {
                     "modset_identity": null
                 }
             },
+            "portable_content_manifest": serde_json::to_value(&content_manifest).unwrap(),
             "modset": {
                 "resolved": true,
                 "errors": [],
+                "game": {"exe_sha256": content_manifest.source_game.executable_sha256.clone()},
                 "dlc": {"enabled": []},
                 "dlc_display_names": {},
                 "localisation_language": "l_english",
@@ -875,7 +919,8 @@ mod tests {
                 }
             },
             "raw_stream": "logical-streams/logical-stream-0.sealed.h4cr",
-            "replay_file": "native_session.battleplan"
+            "replay_file": "native_session.battleplan",
+            "replay_packaging": {"static_artifacts": []}
         }))
         .unwrap();
         fs::write(root.join("logical-streams/logical-stream-set.json"), &source).unwrap();
@@ -893,7 +938,17 @@ mod tests {
                     bytes: serde_json::to_vec(&json!({
                         "game_id": game,
                         "schema_version": "1",
-                        "snapshots": []
+                        "snapshots": [],
+                        "static_artifacts": [
+                            {"name": "templates_equipment_catalog", "present": false},
+                            {"name": "localisation_join", "present": false},
+                            {"name": "decisions_static_definitions", "present": false},
+                            {"name": "idea_tech_loc_xref_static", "present": false},
+                            {"name": "ship_definitions_static", "present": false},
+                            {"name": "gfx_icon_asset_manifest_static", "present": false},
+                            {"name": "technology_sharing_static", "present": false},
+                            {"name": "focus_defs_static", "present": false}
+                        ]
                     }))
                     .unwrap(),
                     role: "index",
@@ -903,7 +958,7 @@ mod tests {
                     path: format!("payload/{game}/timeline.json"),
                     bytes: serde_json::to_vec(&json!({
                         "format": "hoi4_compact_stream_timeline_v1",
-                        "stream_format": "compact_h4cr_v1",
+                        "stream_format": "compact",
                         "stream": stream_reference,
                         "session_manifest": manifest_reference,
                         "raw_stream_role": "collector_compact_stream",
@@ -928,6 +983,7 @@ mod tests {
             ],
             &PackIdentity {
                 schema_version: Some("1".to_string()),
+                content_manifest: Some(content_manifest),
                 ..Default::default()
             },
             true,

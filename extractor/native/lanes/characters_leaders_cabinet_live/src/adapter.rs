@@ -312,28 +312,16 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
         }
     }
     stats.advisor_roster_rows = frame.advisor_roster.len().min(u32::MAX as usize) as u32;
-    // Appointed (currently-hired) advisors are a KNOWN-OPEN sub-scope for this
-    // lane: the validated CAdvisor scan yields the full available ROSTER
-    // (roster + slot + idea token, oracle-validated 9549/9549 rows, slot
-    // 9547/9547 this build), but "currently appointed" needs the CAdvisor
-    // hired bool, which the lane's INTEGRATION_PACKET.md keeps explicitly
-    // out-of-scope (domain 14 owns politics.appointed_advisors). The exact
-    // active-idea intersection below is a conservative proxy that is correct
-    // when hired advisors surface as literal active-idea tokens (vanilla) and
-    // legitimately empty on overhaul-mod fixtures whose hired advisors use
-    // leveled variant tokens (D04: 8615 roster rows, 0 intersection). It is
-    // fail-closed: it never fabricates an appointment, only under-reports.
-    // The clean deliverable is roster + traits + slot; no new schema bit is
-    // emitted so real captures stay at the established schema value.
-    // Fail-closed (orchestrator wave-3 review): appointment needs the CAdvisor
-    // hired bool (domain 14 owns politics.appointed_advisors). The active-idea
-    // intersection is an UNVALIDATED proxy that yields 0 on the D04 fixture but
-    // could emit unproven appointed rows on other saves and break the
-    // appointed_advisor_rows==0 merge-ready/integration validators. Do NOT emit
-    // it in production. `appointed_advisors_from_country_active_ideas` + its unit
-    // test are retained so it can be enabled once the hired bool is validated.
-    frame.appointed_advisors = Vec::new();
-    stats.appointed_advisor_rows = 0;
+    // A currently appointed advisor is the exact intersection of the validated
+    // CAdvisor roster and this country's same-frame active-idea identities.
+    // `SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS` has described that wire contract
+    // since v1; do not replace a measured non-empty intersection with a forced
+    // empty list. Leveled/modded idea identities remain fail-closed because
+    // only literal identity equality is admitted.
+    frame.appointed_advisors =
+        appointed_advisors_from_country_active_ideas(&frame.advisor_roster, &input.countries);
+    stats.appointed_advisor_rows =
+        frame.appointed_advisors.len().min(u32::MAX as usize) as u32;
 
     stats.portrait_inputs_seen = input.portraits.len().min(u32::MAX as usize) as u32;
     for portrait in &input.portraits {
@@ -835,10 +823,7 @@ mod tests {
         assert_eq!(result.stats.rejected_roots, 0);
         assert!(!result.stats.has_rejections());
         assert_eq!(result.stats.advisor_roster_rows, 1);
-        // Appointed is fail-closed off in production (see build path); the
-        // intersection derivation is validated directly in
-        // appointed_intersection_is_country_scoped below.
-        assert_eq!(result.stats.appointed_advisor_rows, 0);
+        assert_eq!(result.stats.appointed_advisor_rows, 1);
         assert_eq!(result.stats.portrait_rows, 1);
 
         let payload = extractor::encode_frame_payload(&result.frame);
@@ -849,7 +834,7 @@ mod tests {
             summary.parse_errors
         );
         assert_eq!(summary.character_portrait_rows, 1);
-        assert_eq!(summary.appointed_advisor_rows, 0);
+        assert_eq!(summary.appointed_advisor_rows, 1);
     }
 
     /// Memory that misses ONE address exactly once, then serves the backing

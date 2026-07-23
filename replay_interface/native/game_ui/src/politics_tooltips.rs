@@ -1,9 +1,11 @@
-//! A24/XUI11 fail-closed politics-tooltip binding.
+//! Retained A24/PTI1 semantic-inspection binding.
 //!
-//! This module never evaluates Clausewitz triggers, recomputes modifier
-//! aggregates, derives advisor eligibility from the static catalog, or
-//! invents a missing runtime line. It exposes only the exact PTI1 rows admitted
-//! by `replay_core` for the selected frame and politics target.
+//! Production XUI11 pixels are replayed by the authenticated selected-Present
+//! UI pass, while the exact currently visible tooltip is carried by d72/TTI2.
+//! Country politics state comes from d14/d15. Consequently d73/PTI1 is not a
+//! production dependency. The API remains available for retained recordings
+//! and forensic inspection; it never evaluates Clausewitz triggers, recomputes
+//! modifier aggregates, derives advisor eligibility, or invents a missing row.
 
 use replay_core::{Leaf, PoliticsDetailView, PoliticsTooltipInputExact};
 

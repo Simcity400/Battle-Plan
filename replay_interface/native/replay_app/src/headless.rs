@@ -9,6 +9,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use map_viewer::GameFileResolver;
 use serde::Serialize;
@@ -31,7 +32,9 @@ static IMMUTABLE_PUBLISH_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Machine-readable product-render observation consumed by the close-zoom
 /// golden/pixel gate.  The execution receipt and BGRA pixels are bound in the
 /// same record so a pixel hash can never be promoted from a different ordered
-/// D3D execution.  This receipt is an observation, not engine parity authority.
+/// D3D execution. When the selected recording carries an admitted G2 engine
+/// readback, the enclosing v5 receipt is published only after exact scene and
+/// byte-for-byte engine/replay pixel admission succeeds.
 #[derive(Debug, Serialize)]
 struct ProductionG2CaptureBinding {
     selected_game_id: String,
@@ -92,6 +95,24 @@ struct ProductionSelectedPresentCompanionReceipt {
     remaining: crate::ui_runtime::SelectedPresentTypedConsumption,
 }
 
+/// Product-owned admission of the synchronized recorder engine readback
+/// against the replay render produced from that same recording. This record is
+/// emitted only after every scene identity joins and every BGRA channel is
+/// byte-identical. A mismatch fails the production dump before either the BMP
+/// or its completion receipt is published.
+#[derive(Debug, Serialize)]
+struct ProductionG2ExactPixelAdmission {
+    schema: &'static str,
+    status: &'static str,
+    engine_observation_id: String,
+    selected_present_sequence: u32,
+    engine_bgra_sha256: String,
+    replay_bgra_sha256: String,
+    pixel_byte_len: usize,
+    mismatch_pixels: usize,
+    max_channel_delta: u8,
+}
+
 #[derive(Debug, Serialize)]
 struct ProductionPixelGateReceipt {
     schema: &'static str,
@@ -116,7 +137,7 @@ struct ProductionPixelGateReceipt {
     selected_present_operations: usize,
     selected_present_m02_draws: usize,
     /// The G2 parity route suppresses selected-Present writers and therefore
-    /// omits this key, preserving the exact v4 G2 receipt schema. Ordinary
+    /// omits this key, preserving the exact v5 G2 receipt schema. Ordinary
     /// selected-Present dumps carry it as an additive typed-consumption
     /// extension of the same product observation.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +148,95 @@ struct ProductionPixelGateReceipt {
     bgra_sha256: String,
     pixel_byte_len: usize,
     g2_engine_capture: Option<ProductionG2CaptureBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    g2_exact_pixel_admission: Option<ProductionG2ExactPixelAdmission>,
+}
+
+struct G2ReplayScene<'a> {
+    authority_exe_sha256: &'a str,
+    launch_epoch_sha256: &'a str,
+    capture_receipt_sha256: &'a str,
+    effective_vfs_manifest_sha256: &'a str,
+    content_manifest_digest_sha256: &'a str,
+    settings_file_sha256: &'a str,
+    localisation_language: &'a str,
+    camera_payload_sha256: Option<&'a str>,
+    selected_hour: i64,
+    viewport_width: u32,
+    viewport_height: u32,
+}
+
+fn admit_g2_exact_pixels(
+    capture: &replay_core::PackagedG2EngineCapture,
+    scene: G2ReplayScene<'_>,
+    replay_bgra: &[u8],
+) -> Result<ProductionG2ExactPixelAdmission> {
+    let witness = &capture.witness;
+    if witness.authority_exe_sha256 != scene.authority_exe_sha256
+        || witness.launch_epoch_sha256 != scene.launch_epoch_sha256
+        || witness.capture_receipt_sha256 != scene.capture_receipt_sha256
+        || witness.effective_vfs_manifest_sha256 != scene.effective_vfs_manifest_sha256
+        || capture.replay_content_manifest_digest_sha256 != scene.content_manifest_digest_sha256
+        || witness.settings_file_sha256 != scene.settings_file_sha256
+        || witness.localisation_language != scene.localisation_language
+        || Some(witness.camera_payload_sha256.as_str()) != scene.camera_payload_sha256
+        || witness.pov_country_or_global != "global"
+        || witness.selected_hour != scene.selected_hour
+        || witness.viewport_width != scene.viewport_width
+        || witness.viewport_height != scene.viewport_height
+    {
+        return Err(
+            "G2 engine readback does not join the selected replay scene exactly".into(),
+        );
+    }
+    let engine_bgra = capture.engine_bgra();
+    if engine_bgra.len() != replay_bgra.len()
+        || u64::try_from(engine_bgra.len()).ok() != Some(witness.pixel_byte_len)
+    {
+        return Err("G2 engine/replay pixel plane lengths differ".into());
+    }
+    let mut mismatch_pixels = 0usize;
+    let mut max_channel_delta = 0u8;
+    for (engine, replay) in engine_bgra
+        .chunks_exact(4)
+        .zip(replay_bgra.chunks_exact(4))
+    {
+        let mut pixel_differs = false;
+        for (&engine_channel, &replay_channel) in engine.iter().zip(replay) {
+            let delta = engine_channel.abs_diff(replay_channel);
+            pixel_differs |= delta != 0;
+            max_channel_delta = max_channel_delta.max(delta);
+        }
+        if pixel_differs {
+            mismatch_pixels += 1;
+        }
+    }
+    if mismatch_pixels != 0 || max_channel_delta != 0 {
+        return Err(format!(
+            "G2 exact pixel admission failed: {mismatch_pixels} mismatched pixels, maximum channel delta {max_channel_delta}"
+        )
+        .into());
+    }
+    let engine_bgra_sha256 = format!("{:x}", Sha256::digest(engine_bgra));
+    let replay_bgra_sha256 = format!("{:x}", Sha256::digest(replay_bgra));
+    if engine_bgra_sha256 != witness.engine_bgra_sha256
+        || engine_bgra_sha256 != replay_bgra_sha256
+    {
+        return Err(
+            "G2 exact pixels passed byte comparison but their authenticated digests differ".into(),
+        );
+    }
+    Ok(ProductionG2ExactPixelAdmission {
+        schema: "hoi4-g2-production-exact-pixel-admission-v1",
+        status: "PASS_AUTHENTICATED_SYNCHRONIZED_ENGINE_REPLAY_EXACT_PIXELS",
+        engine_observation_id: witness.observation_id.clone(),
+        selected_present_sequence: witness.selected_present_sequence,
+        engine_bgra_sha256,
+        replay_bgra_sha256,
+        pixel_byte_len: replay_bgra.len(),
+        mismatch_pixels,
+        max_channel_delta,
+    })
 }
 
 fn production_pixel_gate_receipt_path(out: &Path) -> PathBuf {
@@ -612,7 +722,33 @@ fn dump_production_recording_frame(
     let content_manifest = provider
         .content_manifest()
         .ok_or("portable playback has no admitted content manifest after binding")?;
-    let admitted_g2_capture = provider.g2_engine_capture().map(ProductionG2CaptureBinding::from);
+    let static_unit_catalogs = game_ui::static_unit_catalogs::admit_static_unit_catalogs(
+        provider.static_artifact(
+            game_ui::static_unit_catalogs::TEMPLATES_EQUIPMENT_ARTIFACT,
+        ),
+        provider.static_artifact(game_ui::static_unit_catalogs::SHIP_DEFINITIONS_ARTIFACT),
+    )
+    .map_err(|error| format!("admit packaged static unit catalogs: {error}"))?;
+    let static_research_catalogs = Arc::new(
+        game_ui::static_research::admit_static_research_catalogs(
+            provider.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
+            provider.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
+            provider.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
+        )
+        .map_err(|error| format!("admit packaged static research catalogs: {error}"))?,
+    );
+    let static_focus_definitions = Arc::new(
+        replay_core::admit_static_focus_definitions(
+            provider
+                .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
+                .ok_or("portable playback has no authenticated focus_defs_static artifact")?,
+        )
+        .map_err(|error| format!("admit packaged static focus definitions: {error}"))?,
+    );
+    let static_focus_catalog = Arc::new(
+        game_ui::static_focus_defs::focus_catalog_from_static(&static_focus_definitions),
+    );
+    let admitted_g2_capture = provider.g2_engine_capture();
     let hours = provider.hours();
     let selected_hour = match (hour, nth_hour) {
         (Some(hour), None) => resolve_dump_hour(hours, DumpHourRequest::Canonical(hour))?,
@@ -639,6 +775,14 @@ fn dump_production_recording_frame(
     let frame = provider
         .world_frame_at(selected_hour)?
         .ok_or("selected exact replay frame is unavailable")?;
+    let static_unit_frame_bindings = static_unit_catalogs.bind_frame(&frame);
+    let static_research_frame_bindings = static_research_catalogs
+        .bind_frame(&frame)
+        .map_err(|error| {
+            format!(
+                "bind packaged static research catalogs at hour {selected_hour}: {error}"
+            )
+        })?;
     let production_render = frame
         .production_render()
         .ok_or("selected replay hour has no authenticated production_render carrier")?;
@@ -646,9 +790,8 @@ fn dump_production_recording_frame(
         format!("{:x}", Sha256::digest(production_render.encode_json()?));
     let selected_present_sha256 = production_render.selected_present.computed_sha256()?;
     let selected_submit = production_render
-        .submits
-        .first()
-        .ok_or("authenticated production_render has no selected submit")?;
+        .submit(production_render.selected_present.selected_candidate_id)
+        .ok_or("authenticated selected Present has no retained submit")?;
     let camera_payload_sha256 = selected_submit
         .camera_carrier
         .as_ref()
@@ -770,30 +913,45 @@ fn dump_production_recording_frame(
     let mut selected_present_typed_companions = None;
     let mut selected_present_executed = false;
     if admitted_g2_capture.is_none() {
-        if let Some(pass) = prepared.authenticated_ui_pass.as_ref() {
-            let mut runtime =
-                crate::ui_runtime::ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
-                    &gfx,
-                    &game_resolver,
-                    &content_admission,
-                    pass,
-                    provider.decision_catalog().map(|catalog| catalog.bytes()),
-                )?;
-            let runtime_text = match frame.runtime_text()? {
-                replay_core::Leaf::Measured(catalog) => Some(catalog),
-                replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
-            };
-            match runtime.execute(
+        let pass = prepared.authenticated_ui_pass.as_ref().ok_or(
+            "production recording dump has no complete authenticated selected-Present UI pass",
+        )?;
+        let mut runtime =
+            crate::ui_runtime::ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
                 &gfx,
                 &game_resolver,
-                &prepared,
-                frame.as_ref(),
-                None,
-                runtime_text.as_ref(),
-                crate::ui_runtime::ArmyBattleplanUiSupplementalInputs::default(),
-                crate::ui_runtime::IntelligenceUiSupplementalInputs::default(),
-                crate::ui_runtime::OccupationUiSupplementalInputs::default(),
-            )? {
+                &content_admission,
+                pass,
+                provider.decision_catalog().map(|catalog| catalog.bytes()),
+                provider
+                    .static_artifact("gfx_icon_asset_manifest_static")
+                    .map(|artifact| artifact.bytes()),
+                Arc::clone(&static_research_catalogs),
+                Arc::clone(&static_focus_definitions),
+                Arc::clone(&static_focus_catalog),
+            )?;
+        let runtime_text = match frame.runtime_text()? {
+            replay_core::Leaf::Measured(catalog) => Some(catalog),
+            replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
+        };
+        let recorded_ui = crate::recorded_ui_owner::recorded_ui_owner(frame.as_ref(), pass)
+            .map_err(|error| {
+                format!(
+                    "production dump recorder-owned selected-Present UI identity is unavailable: {error}"
+                )
+            })?;
+        match runtime.execute(
+            &gfx,
+            &game_resolver,
+            &prepared,
+            frame.as_ref(),
+            recorded_ui.country.as_deref(),
+            recorded_ui.runtime_text_pov_country_or_global.as_str(),
+            runtime_text.as_ref(),
+            crate::ui_runtime::ArmyBattleplanUiSupplementalInputs::default(),
+            crate::ui_runtime::IntelligenceUiSupplementalInputs::default(),
+            crate::ui_runtime::OccupationUiSupplementalInputs::default(),
+        )? {
                 crate::ui_runtime::SelectedPresentUiOutcome::Executed {
                     operation_count,
                     m02_draw_count,
@@ -834,11 +992,11 @@ fn dump_production_recording_frame(
                     );
                     selected_present_executed = true;
                 }
-                crate::ui_runtime::SelectedPresentUiOutcome::Omitted(reason) => {
-                    eprintln!(
-                        "replay_app: production dump feature omitted [SELECTED_PRESENT_UI] {reason}"
-                    );
-                }
+            crate::ui_runtime::SelectedPresentUiOutcome::Omitted(reason) => {
+                return Err(format!(
+                    "production recording dump could not execute its complete authenticated selected-Present UI frontier: {reason}"
+                )
+                .into());
             }
         }
     }
@@ -853,6 +1011,28 @@ fn dump_production_recording_frame(
     }
     let pixels = gfx.read_target()?;
     let pixel_sha256 = format!("{:x}", Sha256::digest(&pixels));
+    let g2_exact_pixel_admission = admitted_g2_capture
+        .map(|capture| {
+            admit_g2_exact_pixels(
+                capture,
+                G2ReplayScene {
+                    authority_exe_sha256: &content_manifest.source_game.executable_sha256,
+                    launch_epoch_sha256: &production_render.authority.launch_epoch_sha256,
+                    capture_receipt_sha256: &production_render.authority.capture_receipt_sha256,
+                    effective_vfs_manifest_sha256: &content_manifest
+                        .effective_vfs_manifest_sha256,
+                    content_manifest_digest_sha256: &content_manifest_digest_sha256,
+                    settings_file_sha256: &initial_display.settings_file_sha256,
+                    localisation_language: &content_manifest.localisation_language,
+                    camera_payload_sha256: camera_payload_sha256.as_deref(),
+                    selected_hour,
+                    viewport_width: output_width,
+                    viewport_height: output_height,
+                },
+                &pixels,
+            )
+        })
+        .transpose()?;
     write_bmp(out, output_width, output_height, &pixels)?;
     let snow_mud_h2_receipt_path = snow_mud_h2_receipt
         .as_ref()
@@ -870,7 +1050,11 @@ fn dump_production_recording_frame(
         })
         .transpose()?;
     let pixel_gate_receipt = ProductionPixelGateReceipt {
-        schema: "battle-plan-production-pixel-gate-receipt-v4",
+        schema: if admitted_g2_capture.is_some() {
+            "battle-plan-production-pixel-gate-receipt-v5"
+        } else {
+            "battle-plan-production-pixel-gate-receipt-v4"
+        },
         render_boundary: "post_authenticated_map_bgra8_no_selected_present_writers",
         authority_exe_sha256: content_manifest.source_game.executable_sha256.clone(),
         recording_sha256,
@@ -902,7 +1086,8 @@ fn dump_production_recording_frame(
         receipt_sha256: (map_receipt != "none").then(|| map_receipt.clone()),
         bgra_sha256: pixel_sha256.clone(),
         pixel_byte_len: pixels.len(),
-        g2_engine_capture: admitted_g2_capture,
+        g2_engine_capture: admitted_g2_capture.map(ProductionG2CaptureBinding::from),
+        g2_exact_pixel_admission,
     };
     let pixel_gate_receipt_path =
         write_production_pixel_gate_receipt(out, &pixel_gate_receipt)?;
@@ -917,6 +1102,32 @@ fn dump_production_recording_frame(
         map_receipt,
         pixel_sha256,
         pixel_gate_receipt_path.display(),
+    );
+    println!(
+        "consumed packaged static unit catalogs {} and {}: templates {}/{}, equipment archetypes {}/{}, ship definitions {}/{}; unresolved dynamic identities templates={:?} equipment={:?} ships={:?}",
+        static_unit_catalogs.templates_equipment.identity.payload_sha256,
+        static_unit_catalogs.ships.identity.payload_sha256,
+        static_unit_frame_bindings.authored_template_matches,
+        static_unit_frame_bindings.measured_template_names,
+        static_unit_frame_bindings.authored_equipment_matches,
+        static_unit_frame_bindings.measured_equipment_archetypes,
+        static_unit_frame_bindings.authored_ship_hull_matches,
+        static_unit_frame_bindings.measured_ship_definitions,
+        static_unit_frame_bindings.unresolved_template_names,
+        static_unit_frame_bindings.unresolved_equipment_archetypes,
+        static_unit_frame_bindings.unresolved_ship_definitions,
+    );
+    println!(
+        "consumed packaged static research catalogs: focus labels {} across {} countries, technology labels {} across {} countries, technology-sharing groups {}; unavailable focus={:?} research={:?} sharing definition ordinals={:?}",
+        static_research_frame_bindings.focus_labels,
+        static_research_frame_bindings.focus_countries,
+        static_research_frame_bindings.technology_labels,
+        static_research_frame_bindings.research_countries,
+        static_research_frame_bindings.technology_sharing_groups,
+        static_research_frame_bindings.focus_unavailable,
+        static_research_frame_bindings.research_unavailable,
+        static_research_frame_bindings
+            .technology_sharing_definition_unavailable_ordinals,
     );
     if let Some(path) = snow_mud_h2_receipt_path {
         println!(
@@ -1214,6 +1425,7 @@ mod tests {
             c03_camera_replay: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            authenticated_texture_snapshots: Vec::new(),
             rail_ribbon: None,
             snow_mud_texture: None,
             tree_runtime: None,
@@ -1247,6 +1459,7 @@ mod tests {
             tiled_lights: Vec::new(),
             ordered_static_used_content: Vec::new(),
             ordered_static_programs: Vec::new(),
+            authenticated_texture_snapshots: Vec::new(),
             rail_ribbon: None,
             mapname_d80_state: replay_core::MapnameD80State::Missing,
             tree_runtime: None,
@@ -1320,8 +1533,18 @@ mod tests {
         let readback = production
             .find("let pixels = gfx.read_target()?")
             .expect("headless exact target readback");
+        let exact_admission = production
+            .find("admit_g2_exact_pixels(")
+            .expect("product-owned G2 exact pixel admission");
+        let publish = production
+            .find("write_bmp(out, output_width, output_height, &pixels)?")
+            .expect("headless BMP publication");
         assert!(g2_guard < selected_start && execute < readback);
-        assert!(production.contains("g2_engine_capture: admitted_g2_capture"));
+        assert!(readback < exact_admission && exact_admission < publish);
+        assert!(production.contains(
+            "g2_engine_capture: admitted_g2_capture.map(ProductionG2CaptureBinding::from)"
+        ));
+        assert!(production.contains("g2_exact_pixel_admission,"));
         let forbidden_legacy_omission = ["interactive Present", "-stage surface"].concat();
         assert!(!production.contains(&forbidden_legacy_omission));
         assert!(production.contains("selected_present_m02_draws"));

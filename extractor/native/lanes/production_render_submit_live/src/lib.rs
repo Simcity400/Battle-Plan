@@ -1622,8 +1622,8 @@ impl RawMapShaderLookup {
         {
             return invalid("map shader lookup receipt is incomplete or malformed");
         }
-        if !is_authenticated_map_registration_root(self.registration_root_rva) {
-            return invalid("map shader lookup registration root is not authenticated");
+        if !is_authenticated_program_registration_root(self.registration_root_rva) {
+            return invalid("shader lookup registration root is not authenticated");
         }
         Ok(())
     }
@@ -1643,6 +1643,28 @@ pub const AUTHENTICATED_MAP_REGISTRATION_ROOTS: [u32; 6] = [
 
 pub fn is_authenticated_map_registration_root(registration_root_rva: u32) -> bool {
     AUTHENTICATED_MAP_REGISTRATION_ROOTS.contains(&registration_root_rva)
+}
+
+/// Exact successful program lookup made outside one of the role-specific map
+/// registration brackets.  The value deliberately identifies the common
+/// engine lookup itself; it must never be relabelled as a map producer.
+///
+/// Production may consume this root only through the generic-GUI authority
+/// constructor, which independently requires the selected owner's exact
+/// `interface/*.gui` effective-VFS winner plus the normal source-open,
+/// creation, and reflection joins.
+pub const GENERIC_ENGINE_PROGRAM_LOOKUP_ROOT_RVA: u32 = ENGINE_SHADER_EFFECT_LOOKUP_RVA;
+
+pub const AUTHENTICATED_GUI_PROGRAM_REGISTRATION_ROOTS: [u32; 1] =
+    [GENERIC_ENGINE_PROGRAM_LOOKUP_ROOT_RVA];
+
+pub fn is_authenticated_gui_program_registration_root(registration_root_rva: u32) -> bool {
+    AUTHENTICATED_GUI_PROGRAM_REGISTRATION_ROOTS.contains(&registration_root_rva)
+}
+
+pub fn is_authenticated_program_registration_root(registration_root_rva: u32) -> bool {
+    is_authenticated_map_registration_root(registration_root_rva)
+        || is_authenticated_gui_program_registration_root(registration_root_rva)
 }
 
 // Test-only archive of the superseded fixed-role d80 classifier. Production

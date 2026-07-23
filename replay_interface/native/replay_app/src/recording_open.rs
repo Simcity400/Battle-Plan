@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use replay_core::{
     CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, ContentManifest,
-    PackagedDecisionCatalog, PackagedG2EngineCapture, PortableDesignCatalog, PrefoldDecodeError,
-    PrefoldSourceReceipt, PrefoldStreamIdentityMode, PrefoldedSpool, PrefoldedSpoolEntry, RawFrame,
-    RecordedCampaignIdentity, ReplaySource, SourceError,
+    PackagedDecisionCatalog, PackagedG2EngineCapture, PackagedStaticArtifact,
+    PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldStreamIdentityMode,
+    PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity, ReplaySource,
+    SourceError,
 };
 
 #[cfg(all(windows, not(test)))]
@@ -1359,6 +1360,9 @@ impl ReplaySource for ProductReplaySource {
     }
     fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
         self.inner.decision_catalog()
+    }
+    fn static_artifact(&self, name: &str) -> Option<&PackagedStaticArtifact> {
+        self.inner.static_artifact(name)
     }
     fn prefold_receipt(&self) -> Option<&PrefoldSourceReceipt> {
         self.inner.prefold_receipt()

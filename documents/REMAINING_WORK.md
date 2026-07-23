@@ -10,9 +10,11 @@ Canonical dependency authority is
 55 historical H-* cards are optional, nonblocking regression/evidence
 acquisitions; zero require user action and none globally gates product
 activation. Known unsupported feature slices remain explicitly unavailable:
-d71 technology-canvas and heterogeneous MIO aggregate-bonus identity, d73 complete politics producer taps,
-d74 power-balance semantic sealing, d87 complete decision-panel semantic-supplement production,
-and A25 common-GUI pre-render owner authority. All 12
+d71 technology-canvas and heterogeneous MIO aggregate-bonus identity,
+d87 complete decision-panel semantic-supplement production, and A25 common-GUI
+pre-render owner authority. D74/PBP2 is not a product-completion blocker: it is
+an optional typed semantic companion, while exact visible power-balance pixels
+are owned by the mandatory authenticated selected-Present UI pass. All 12
 product decisions are resolved. The
 sole genuine external dependency is CID1 multiplayer arm M3, which requires a
 second physical machine and is tracked separately. Historical Wave 6 static RE
@@ -133,18 +135,19 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
   review was deferred until after freeze; it has never run.
 - **Reissue the finalization receipt** with stable SHAs after the fix wave
   (current receipt drifted same-day; not a freeze authority).
-- **C07 tree/shadow disposition:** the retained 4,781-cell T1 scope and the
-  129-frame L02/L03/W23 S1 execution chain are authorized and wired. The former
-  T1 one-cell discriminator and S1 labelled single-caster pair are optional
-  automated/golden validation, not human blockers. Complete-pool trees remain
-  fail-closed for the other 95,275 selected-submit cells until an authenticated
-  visibility/model/LOD carrier exists. The cross-capture immutable library
-  authenticates 11,365 cells and refuses 87,691; retained custom/harness
-  bundles additionally reobserve 21 authenticated buckets and identify
-  main-only candidates 357 and 613 (152 cells), but
-  their missing executable identity and shadow/unlit joins correctly prevent
-  promotion. Newly recorded replays still require
-  independently authenticated L02/L03/S1 observations in the promoted submit.
+- **C07 tree/shadow disposition is closed for single-machine production.**
+  The exact-a729 producer and hash-pinned shipped inputs authenticate the full
+  296-bucket, 99,056-cell immutable tree library with zero unavailable cells.
+  Every newly recorded selected submit derives its visibility, palette/model,
+  squared-distance LOD, mesh state and ordered shadow/unlit/main draws from that
+  submit's authenticated static operation stream; exact slot-1 payload identity
+  binds those observations to the complete library. The same selected submit's
+  L02/L03/S1 observations carry the selected light, typed tree casters,
+  producer/blur/consumer resources and execution order. Missing observations
+  remain feature-local fail-closed; files-only selection, camera-distance
+  reconstruction and cross-frame draw-state union remain forbidden. The
+  historical 4,781-cell frame36669 carrier and optional one-cell/single-caster
+  captures are regression fixtures, not production coverage limits.
 - **Robustness fix wave LANDED 2026-07-19** (Fable workflow: 304 findings →
   274 confirmed → 190 implemented; full gate green — 1,824 Rust + 251 Python
   tests). Notable closures: strict JSON parsing across the container stack,

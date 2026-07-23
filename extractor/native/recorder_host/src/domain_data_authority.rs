@@ -12,6 +12,7 @@ use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
 use country_economy_production_stockpile_live_lane as production11;
 use design_catalog_context_live_lane as design78;
+use design_catalog_context_live_lane::peace_conference_live as peace97;
 use design_catalog_context_live_lane::selected_designer_identity as selected85;
 use decision_panel_live_lane as decision87;
 use diplomacy_intel_operatives_live as diplomacy53;
@@ -126,7 +127,7 @@ pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
     62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89,
-    90, 91, 92, 93, 94, 95, 96,
+    90, 91, 92, 93, 94, 95, 96, 97,
 ];
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
@@ -11831,9 +11832,9 @@ fn decode_compact_country_core_scalars_data_payload(
         ));
         return;
     }
-    if changed_rows > row_count {
+    if changed_rows != row_count {
         summary.parse_errors.push(format!(
-            "offset {offset}: country_core_scalars changed_rows {changed_rows} > row_count {row_count}"
+            "offset {offset}: country_core_scalars changed_rows {changed_rows} != full-replace row_count {row_count}"
         ));
     }
     for i in 0..row_count {
@@ -12727,17 +12728,17 @@ fn decode_compact_tech_sharing_groups_data_payload(
     summary: &mut DomainDataDecodeSummary,
 ) {
     // Preserve raw/global status observability in partial authority even when
-    // the v2 discriminator or body is malformed. Rows/units are committed only
+    // the v3 discriminator or body is malformed. Rows/units are committed only
     // after the complete shared decoder and host policy both succeed.
     if payload.len() >= 16 {
         add_decoder_status(summary, read_u32_le(payload, 12));
     }
-    let decoded = match compact_contract::tech_sharing_groups::decode_payload_with_bonuses(payload)
-    {
+    let decoded =
+        match compact_contract::tech_sharing_groups::decode_payload_with_definition_ids(payload) {
         Ok(decoded) => decoded,
         Err(error) => {
             summary.parse_errors.push(format!(
-                "offset {offset}: tech_sharing_groups TSG2 payload invalid: {error}"
+                "offset {offset}: tech_sharing_groups TSG3 payload invalid: {error}"
             ));
             return;
         }
@@ -12769,7 +12770,7 @@ fn decode_compact_tech_sharing_groups_data_payload(
     }
     if !policy_errors.is_empty() {
         summary.parse_errors.push(format!(
-            "offset {offset}: tech_sharing_groups TSG2 policy failure: {}",
+            "offset {offset}: tech_sharing_groups TSG3 policy failure: {}",
             policy_errors.join(", ")
         ));
         return;
@@ -12800,6 +12801,16 @@ fn decode_compact_tech_sharing_groups_data_payload(
         COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE,
         "tech_sharing_groups_dynamic_bonus_rows",
         pair_total,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE,
+        "tech_sharing_groups_definition_id_rows",
+        if decoded.definition_ids_present {
+            decoded.rows.len()
+        } else {
+            0
+        },
     );
 }
 
@@ -13461,6 +13472,45 @@ fn decode_compact_selected_designer_identity_data_payload(
         selected85::DOMAIN_ID,
         "selected_designer_ordered_designs",
         ordered_rows,
+    );
+}
+
+fn decode_compact_peace_conference_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match peace97::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: peace_conference PCS1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let frame_rows = usize::from(decoded.observation.is_some());
+    let active_rows = usize::from(matches!(
+        decoded.observation,
+        Some(peace97::PeaceConferenceObservation::Active(_))
+    ));
+    if let Some(domain) = summary.per_domain.get_mut(&peace97::DOMAIN_ID) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(frame_rows as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        peace97::DOMAIN_ID,
+        "peace_conference_frames",
+        frame_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        peace97::DOMAIN_ID,
+        "peace_conference_active_frames",
+        active_rows,
     );
 }
 
@@ -16757,6 +16807,9 @@ pub fn summarize_domain_data_payload(
         }
         selected85::DOMAIN_ID => {
             decode_compact_selected_designer_identity_data_payload(offset, payload, &mut summary)
+        }
+        peace97::DOMAIN_ID => {
+            decode_compact_peace_conference_data_payload(offset, payload, &mut summary)
         }
         sunk86::DOMAIN_ID => {
             decode_compact_sunk_ship_history_data_payload(offset, payload, &mut summary)

@@ -9,6 +9,7 @@
 
 pub mod army_battleplans;
 pub mod design_catalog;
+pub mod frd_depth;
 pub mod g2_engine_capture;
 pub mod agency_upgrade_controller;
 pub mod cipher_controller;
@@ -17,7 +18,10 @@ pub mod runtime_text;
 pub mod orders_group_manager;
 pub mod rollover_package_set;
 pub mod source;
+pub mod static_research_catalog;
+pub mod static_focus_defs;
 pub mod tactic_weight;
+pub mod tech_sharing;
 pub mod world;
 
 pub use portable_content_manifest::{
@@ -32,7 +36,8 @@ pub use portable_content_manifest::{
 pub use portable_render_stream::{
     compute_render_launch_epoch_sha256, A729CameraEventBatch, A729CameraInputEvent,
     A729CameraMapPick, A729CameraOwnerKind, ActiveMapmodeState, AdditionalShaderStage, AddressMode,
-    AuthenticatedCameraCarrier, AuthenticatedUiPass, BlendDesc, BlendFactor, BlendOperation,
+    AuthenticatedCameraCarrier, AuthenticatedTextureSnapshotPacket, AuthenticatedUiPass,
+    BlendDesc, BlendFactor, BlendOperation,
     BufferSource, C07TreeBucketCarrier, C07TreeCellOrdinalRange, C07TreeContentLibrary,
     C07TreeContentSelection, C07TreeCoverage, C07TreeCoverageKind, C07TreeCoverageRequirement,
     C07TreeDrawRef, C07TreeImmutableBucketContent, C07TreePassCarrier, C07TreePassKind,
@@ -125,6 +130,11 @@ pub use runtime_text::{
     RuntimeTextProducer, RuntimeTextRecord, RuntimeTextSource, A729_FORMATTER_RVA,
     A729_TEXT_SETTER_RVA, RUNTIME_TEXT_SCHEMA,
 };
+pub use static_focus_defs::{
+    admit_static_focus_definitions, AdmittedStaticFocusDefinitions, StaticFocusBackgroundStyle,
+    StaticFocusDefinition, StaticFocusDefinitionKind, StaticFocusDefsError, StaticFocusTree,
+    FOCUS_DEFS_STATIC_ARTIFACT,
+};
 pub use intelligence_controller_companion::{
     admit_intelligence_controller_companion, AdmittedIntelligenceControllerCompanion,
     IntelligenceControllerAuthorityExact, IntelligenceControllerCompanionExact,
@@ -161,15 +171,29 @@ pub use snapshot::{
 pub use source::{
     open_container_with_spooled_decoder, open_prefolded_replay, open_recording, open_recording_game, open_recording_game_with_decoder,
     open_recording_game_with_spooled_decoder, open_recording_with_decoder,
-    open_recording_with_spooled_decoder, PackagedDecisionCatalog, RawFrame,
+    open_recording_with_spooled_decoder, PackagedDecisionCatalog, PackagedStaticArtifact, RawFrame,
     RecordedCampaignIdentity, RecordedCampaignIdentityWitnesses, ReplaySource, SourceError,
+};
+pub use static_research_catalog::{
+    admit_static_research_catalogs, AdmittedStaticResearchCatalogs,
+    IdeaTechnologyDefinition, IdeaTechnologyLocalisationCatalog,
+    LocalisationCatalogEntry, LocalisationJoinCatalog, StaticResearchCatalogError,
+    TechnologySharingCatalog, TechnologySharingDefinition,
+    IDEA_TECH_LOC_XREF_ARTIFACT, LOCALISATION_JOIN_ARTIFACT,
+    TECHNOLOGY_SHARING_ARTIFACT,
+};
+pub use tech_sharing::{
+    technology_sharing_runtime, TechnologySharingRuntimeError,
+    TechnologySharingRuntimeGroup, TechnologySharingRuntimeMember,
+    TechnologySharingRuntimeView, TECH_SHARING_BONUS_FIXED5_SCALE,
 };
 pub use world::{
     alert_icon_frame_for_type, AceExactRow, AceLifecycleState, AceRosterExactView, ActiveAlertRow,
-    ActiveRulerExactRow, AlertDedupIdentity, AirCombatLossRow,
-    AirRegionCombatRow, AirRegionDamageRow, AirSuperiorityRow, AppointedAdvisorRow, BuildingStatus,
+    ActiveRulerExactRow, AdvisorRosterExactRow, AlertDedupIdentity, AirCombatLossRow,
+    AirLossStatsChannel, AirLossStatsRow, AirLossStatsView, AirRegionCombatRow,
+    AirRegionDamageRow, AirSuperiorityRow, AppointedAdvisorRow, BuildingStatus,
     ChannelCoverage, CharacterAceListContext, CharacterAcePortraitObservation,
-    CharacterIdentityExactRow,
+    CharacterIdentityExactRow, CharacterPortraitExactRow,
     CharacterPresentationExact, CharacterPresentationExactView, CharacterRosterExactView,
     CharacterTraitNodeObservation, CharacterTraitNodeState, CharacterTraitTreeObservation,
     CombatParticipantEvent,
@@ -201,8 +225,9 @@ pub use world::{
     FrdDirectTransitionPhase, FrdDirectTransitionRow, FrdDirectTransitionSummary,
     FleetUnitRow, FocusView, ForeignHomebaseExactRow, ForeignHomebaseExactView,
     ForeignHomebaseIdentityExact, GarrisonReinforcementExactRow, HudSurfaceActivation,
-    HudSurfaceActivationKind, HudSurfaceActivationRoot, HudSurfaceActivationView, IntelLevelRow,
-    IntelNetworkGraphRow, IntelNetworkNationalCoverage, IntelView,
+    HubMotorizationRow, HubMotorizationView, HudSurfaceActivationKind, HudSurfaceActivationRoot,
+    HudSurfaceActivationView, IntelLevelRow,
+    IntelNetworkGraphRow, IntelNetworkNationalCoverage, IntelView, IntelligenceUiExactSources,
     OperativeNetworkAssignment,
     LandCombatCurrentLossObservation, LandCombatDetail, LandCombatEquipmentLossDelta,
     LandCombatSideDetail, LandCombatTacticIdentity, LandCombatWidthObservation,
@@ -219,8 +244,9 @@ pub use world::{
     DecisionPanelGridExact, DecisionPanelRowExact, DecisionPanelSelectedPresentExact,
     DecisionTargetExact,
     OccupationEquipmentExactRow, OccupationHistoryExactRow, OccupationManpowerExactRow,
-    OccupationRow, OperationRow, OperationRuntimeRow, OperationRuntimeStatus,
-    OperationRuntimeTarget, OperativeRow, PlayerCountry, PoliticsDetailView,
+    OccupationRow, OccupationUiExactSources, OperationRow, OperationRuntimeRow,
+    OperationRuntimeStatus, OperationRuntimeTarget, OperativeRow, PlayerCountry,
+    PoliticsDetailView,
     PoliticsTooltipCostActionExact, PoliticsTooltipInputExact, PoliticsTooltipLineKindExact,
     PoliticsTooltipNumericTermExact, PoliticsTooltipReasonExact, PoliticsTooltipValueExact,
     PovVisibilityView,
@@ -230,7 +256,8 @@ pub use world::{
     PowerBalanceSelectedPresentExact,
     ProjectSpecializationExact, SpecialProjectBreakthroughExactRow,
     SpecialProjectBreakthroughExactView, SpecialProjectProgressExactRow,
-    SpecialProjectProgressExactView,
+    SpecialProjectProgressExactView, SpecialProjectProgramRow,
+    D48ConstructionQueueRow, D48ConstructionResourceView,
     ProductionLicenseAgreementRow, ProductionLicenseVariantRow, ProductionLineRow,
     RailwayConstructionActiveEdge, RailwayConstructionLineRow,
     ProductionView, ProvenanceView, ResolvedPowerBalanceTextRefsExact,
@@ -243,9 +270,12 @@ pub use world::{
     ResearchLiveProgressRow, ResearchProgressRow, ResearchTechnologyRow, ResearchView,
     EngineMaterialized, ResourceTradeDealRow, ScriptedGuiDefinitionIdentityView,
     ScriptedGuiManagerOrderView, ScriptedGuiRuntimeAuthorityView, ScriptedGuiRuntimeInputs,
-    ScriptedGuiTombstoneView, ScriptedGuiView, ScriptedFlagStateView, SessionMetadataView,
+    ScriptedGuiTombstoneView, ScriptedGuiView, ScriptedFlagStateView, SessionHeaderPlayer,
+    SessionHeaderView, SessionMetadataView,
     OrderedDesignIdentityExact, SelectedDesignerFamilyExact, SelectedDesignerIdentityExact,
     SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
+    PeaceConferenceExact, PeaceConferenceExactView, PeaceConferenceObservationExact,
+    PeaceConferenceReferenceExact,
     ShipCompositionRow, SnowMudCell, SnowMudView, SpeedEvent, SpottedUnitsView, StateBuildings,
     SubjectAutonomyCurrentRow, SubjectAutonomyDirection,
     SunkShipEventExact, SunkShipHistoryExact, SunkShipHistoryExactView,

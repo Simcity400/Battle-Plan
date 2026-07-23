@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use map_viewer::GameFileResolver;
@@ -329,6 +330,7 @@ pub fn run(
     water_full: bool,
 ) -> Result<()> {
     let debug_overlay_enabled = capture_dir.is_some();
+    let production_recording = matches!(&mode, TimelineMode::Recording { .. });
     let (provider, mode_label) = build_provider(bundle.as_ref(), &mode)?;
     let (game_resolver, content_admission) =
         crate::content_compatibility::bind_provider_content(provider.as_ref(), &product_paths)
@@ -336,6 +338,35 @@ pub fn run(
     let content_manifest = provider
         .content_manifest()
         .ok_or("portable playback has no admitted content manifest after binding")?;
+    // Consume the authenticated recorder payload bytes as semantic catalogs
+    // during ordinary product construction.  Missing/malformed artifacts abort
+    // playback; no installed-game or built-in catalog may replace them.
+    let static_unit_catalogs = game_ui::static_unit_catalogs::admit_static_unit_catalogs(
+        provider.static_artifact(
+            game_ui::static_unit_catalogs::TEMPLATES_EQUIPMENT_ARTIFACT,
+        ),
+        provider.static_artifact(game_ui::static_unit_catalogs::SHIP_DEFINITIONS_ARTIFACT),
+    )
+    .map_err(|error| format!("admit packaged static unit catalogs: {error}"))?;
+    let static_research_catalogs = Arc::new(
+        game_ui::static_research::admit_static_research_catalogs(
+            provider.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
+            provider.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
+            provider.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
+        )
+        .map_err(|error| format!("admit packaged static research catalogs: {error}"))?,
+    );
+    let static_focus_definitions = Arc::new(
+        replay_core::admit_static_focus_definitions(
+            provider
+                .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
+                .ok_or("portable playback has no authenticated focus_defs_static artifact")?,
+        )
+        .map_err(|error| format!("admit packaged static focus definitions: {error}"))?,
+    );
+    let static_focus_catalog = Arc::new(
+        game_ui::static_focus_defs::focus_catalog_from_static(&static_focus_definitions),
+    );
     let mut production_map = map_viewer::ProductionMapRenderer::new(
         &game_resolver,
         &content_admission,
@@ -370,6 +401,14 @@ pub fn run(
     let initial_frame = provider
         .world_frame_at(hours[0])?
         .ok_or("initial replay frame is unavailable")?;
+    if production_recording
+        && initial_frame.production_render_status() != replay_core::ViewStatus::Present
+    {
+        return Err(
+            "initial production replay frame has no authenticated production-render program"
+                .into(),
+        );
+    }
     transport.apply_recorded_session_timing(initial_frame.session_metadata());
     let initial_display = initial_frame
         .session_metadata()
@@ -638,8 +677,77 @@ pub fn run(
         if uploaded_hour_index != Some(hour_index) {
             if let Some(frame) = world_frame.as_deref() {
                 transport.apply_recorded_session_timing(frame.session_metadata());
+                let bindings = static_unit_catalogs.bind_frame(frame);
+                let identity = format!(
+                    "STATIC_UNIT_CATALOGS\0{}\0{}\0{}\0{}\0{}\0{}\0{:?}\0{:?}\0{:?}",
+                    bindings.measured_template_names,
+                    bindings.authored_template_matches,
+                    bindings.measured_equipment_archetypes,
+                    bindings.authored_equipment_matches,
+                    bindings.measured_ship_definitions,
+                    bindings.authored_ship_hull_matches,
+                    bindings.unresolved_template_names,
+                    bindings.unresolved_equipment_archetypes,
+                    bindings.unresolved_ship_definitions,
+                );
+                if reported_production_data_needs.insert(identity) {
+                    eprintln!(
+                        "replay_app: packaged static unit catalogs consumed for hour {}: templates {}/{}, equipment archetypes {}/{}, ship definitions {}/{}; unresolved dynamic identities templates={:?} equipment={:?} ships={:?}",
+                        frame.hour_index(),
+                        bindings.authored_template_matches,
+                        bindings.measured_template_names,
+                        bindings.authored_equipment_matches,
+                        bindings.measured_equipment_archetypes,
+                        bindings.authored_ship_hull_matches,
+                        bindings.measured_ship_definitions,
+                        bindings.unresolved_template_names,
+                        bindings.unresolved_equipment_archetypes,
+                        bindings.unresolved_ship_definitions,
+                    );
+                }
+                let research_bindings = static_research_catalogs
+                    .bind_frame(frame)
+                    .map_err(|error| {
+                        format!(
+                            "bind packaged static research catalogs at hour {}: {error}",
+                            frame.hour_index()
+                        )
+                    })?;
+                let research_identity = format!(
+                    "STATIC_RESEARCH_CATALOGS\0{}\0{}\0{}\0{}\0{:?}\0{:?}\0{:?}",
+                    research_bindings.focus_countries,
+                    research_bindings.focus_labels,
+                    research_bindings.research_countries,
+                    research_bindings.technology_labels,
+                    research_bindings.focus_unavailable,
+                    research_bindings.research_unavailable,
+                    research_bindings
+                        .technology_sharing_definition_unavailable_ordinals,
+                );
+                if reported_production_data_needs.insert(research_identity) {
+                    eprintln!(
+                        "replay_app: packaged static research catalogs consumed for hour {}: focus labels {} across {} countries, technology labels {} across {} countries, technology-sharing groups {}; unavailable focus={:?} research={:?} sharing definition ordinals={:?}",
+                        frame.hour_index(),
+                        research_bindings.focus_labels,
+                        research_bindings.focus_countries,
+                        research_bindings.technology_labels,
+                        research_bindings.research_countries,
+                        research_bindings.technology_sharing_groups,
+                        research_bindings.focus_unavailable,
+                        research_bindings.research_unavailable,
+                        research_bindings
+                            .technology_sharing_definition_unavailable_ordinals,
+                    );
+                }
             }
-            production_map_refused_for_displayed_hour = false;
+            // The retained capture bundle is not a temporal fallback. Product
+            // playback requires the current WorldFrame's authenticated render
+            // carrier; absent/unavailable state must remain visually
+            // unavailable rather than showing pixels from the bundle's
+            // unrelated historical moment.
+            production_map_refused_for_displayed_hour = world_frame
+                .as_deref()
+                .is_none_or(|frame| frame.production_render_status() != ViewStatus::Present);
             let owners = provider.owners_at(hour)?;
             let controllers = provider.controllers_at(hour)?;
             if let (Some(renderer), Some(bundle)) = (renderer.as_mut(), bundle.as_ref()) {
@@ -674,6 +782,12 @@ pub fn run(
                 &production_plan,
                 production_map.resources(),
             )?;
+            if production_d3d_plan.authenticated_ui_pass.is_none() {
+                return Err(
+                    "production replay frame has no complete authenticated selected-Present UI pass"
+                        .into(),
+                );
+            }
             prepared_selected_present_ui = production_d3d_plan
                 .authenticated_ui_pass
                 .as_ref()
@@ -726,10 +840,23 @@ pub fn run(
         } else {
             ""
         };
-        // E6 observer status: world vs a fail-closed POV (FoW render blocked).
-        let observer_note = match pov.render_status() {
+        // A selected POV is display-admitted only when this exact WorldFrame
+        // carries complete d94 visibility and d95 spotted-unit state.
+        let observer_render_status = pov.render_status(world_frame.as_deref());
+        let observer_render_admitted =
+            !matches!(&observer_render_status, PovRenderStatus::Unavailable { .. });
+        let observer_note = match &observer_render_status {
             PovRenderStatus::Omniscient => String::from("observer: world"),
-            PovRenderStatus::FowBlocked { pov, diagnostic } => {
+            PovRenderStatus::Recorded {
+                pov,
+                province_slot_count,
+                spotted_land_unit_count,
+                spotted_taskforce_count,
+                ..
+            } => format!(
+                "observer: {pov} (d94 provinces {province_slot_count}; d95 land {spotted_land_unit_count:?}, taskforces {spotted_taskforce_count:?})"
+            ),
+            PovRenderStatus::Unavailable { pov, diagnostic } => {
                 format!("observer: {pov} ({diagnostic})")
             }
         };
@@ -783,10 +910,20 @@ pub fn run(
                     .map(replay_core::WorldFrame::d48_buildings_status)
                     .unwrap_or(replay_core::ViewStatus::DomainAbsent),
             );
+            let exact_render_epoch_selected = world_frame
+                .as_deref()
+                .is_some_and(|frame| frame.production_render_status() == ViewStatus::Present);
+            if production_recording && !exact_render_epoch_selected {
+                return Err(format!(
+                    "production replay hour {hour} has no authenticated production-render program"
+                )
+                .into());
+            }
             let authenticated_production_selected = production_map_refused_for_displayed_hour
+                || exact_render_epoch_selected
                 || building_priority
                     == map_viewer::BuildingPresentationPriority::AuthenticatedD80Operations;
-            if authenticated_production_selected {
+            if authenticated_production_selected && observer_render_admitted {
                 if let Some(frame) = prepared_production_d3d.as_ref() {
                     match product_production_d3d.execute(
                         &gfx,
@@ -806,53 +943,43 @@ pub fn run(
                             }
                         }
                         Ok(_) => {
-                            let reason = "authenticated production operations contain no carried SwapchainBackBuffer output";
-                            let identity =
-                                format!("PRODUCTION_MAP_D3D\0visible execution\0{reason}");
-                            if reported_production_data_needs.insert(identity) {
-                                eprintln!(
-                                    "replay_app: production non-UI omitted [PRODUCTION_MAP_D3D] visible execution: {reason}"
-                                );
-                            }
+                            return Err(
+                                "authenticated production operations produced no carried SwapchainBackBuffer output"
+                                    .into(),
+                            )
                         }
                         Err(error) => {
-                            // A removed/reset/hung device invalidates every
-                            // renderer cache, including the app target. It is
-                            // never a feature-local omission: preserve the
-                            // typed error and unwind the process fail-closed.
-                            if crate::d3d::is_device_loss_error(error.as_ref()) {
-                                return Err(error);
-                            }
-                            let reason = error.to_string();
-                            let identity =
-                                format!("PRODUCTION_MAP_D3D\0native execution\0{reason}");
-                            if reported_production_data_needs.insert(identity) {
-                                eprintln!(
-                                    "replay_app: production non-UI omitted [PRODUCTION_MAP_D3D] native execution: {reason}"
-                                );
-                            }
-                            // Feature-local fail-closed omission: discard any
-                            // partially executed map target for this hour, keep
-                            // transport/HUD alive, and never substitute pixels.
-                            production_map_refused_for_displayed_hour = true;
-                            prepared_production_d3d = None;
-                            product_production_d3d.invalidate();
+                            // The headless product route propagates every
+                            // authenticated production execution error. The
+                            // interactive route must do the same: continuing
+                            // transport over a cleared black target would make
+                            // a failed replay look successfully playable.
+                            return Err(error);
                         }
                     }
+                } else {
+                    return Err(
+                        "authenticated production map was selected without a prepared D3D frame"
+                            .into(),
+                    );
                 }
-            } else if let (Some(renderer), Some(camera)) = (renderer.as_mut(), camera.as_ref()) {
-                // The legacy captured renderer remains available only when the
-                // displayed hour has no authenticated D80 map operation set.
-                // Once exact carried operations are selected, an omission or
-                // refusal cannot silently fall back to different pixels.
-                renderer.render(&gfx, camera, day_night_hour, None)?;
-                legacy_presented = true;
+            } else if observer_render_admitted {
+                if let (Some(renderer), Some(camera)) = (renderer.as_mut(), camera.as_ref()) {
+                    // The legacy captured renderer remains available only when the
+                    // displayed hour has no authenticated D80 map operation set.
+                    // Once exact carried operations are selected, an omission or
+                    // refusal cannot silently fall back to different pixels.
+                    renderer.render(&gfx, camera, day_night_hour, None)?;
+                    legacy_presented = true;
+                }
             }
             if !legacy_presented && !production_presented {
                 gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
             }
             let mut selected_present_executed = false;
-            if let Some(frame) = prepared_selected_present_ui.as_ref() {
+            if let (true, Some(frame)) =
+                (observer_render_admitted, prepared_selected_present_ui.as_ref())
+            {
                 let pass = frame
                     .authenticated_ui_pass
                     .as_ref()
@@ -868,15 +995,28 @@ pub fn run(
                             &content_admission,
                             pass,
                             provider.decision_catalog().map(|catalog| catalog.bytes()),
+                            provider
+                                .static_artifact("gfx_icon_asset_manifest_static")
+                                .map(|artifact| artifact.bytes()),
+                            Arc::clone(&static_research_catalogs),
+                            Arc::clone(&static_focus_definitions),
+                            Arc::clone(&static_focus_catalog),
                         )?,
                     );
                 }
-                let runtime_text = match world_frame.as_deref() {
-                    Some(frame) => match frame.runtime_text()? {
-                        replay_core::Leaf::Measured(catalog) => Some(catalog),
-                        replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
-                    },
-                    None => None,
+                let current_world_frame = world_frame
+                    .as_deref()
+                    .ok_or("selected-Present UI has no current world frame")?;
+                let recorded_ui =
+                    crate::recorded_ui_owner::recorded_ui_owner(current_world_frame, pass)
+                        .map_err(|error| {
+                            format!(
+                                "selected-Present recorder-owned UI identity is unavailable: {error}"
+                            )
+                        })?;
+                let runtime_text = match current_world_frame.runtime_text()? {
+                    replay_core::Leaf::Measured(catalog) => Some(catalog),
+                    replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
                 };
                 match product_selected_present_ui
                     .as_mut()
@@ -885,10 +1025,9 @@ pub fn run(
                         &gfx,
                         &game_resolver,
                         frame,
-                        world_frame
-                            .as_deref()
-                            .ok_or("selected-Present UI has no current world frame")?,
-                        pov.active_pov(),
+                        current_world_frame,
+                        recorded_ui.country.as_deref(),
+                        recorded_ui.runtime_text_pov_country_or_global.as_str(),
                         runtime_text.as_ref(),
                         battleplan_selection.supplemental_inputs(),
                         IntelligenceUiSupplementalInputs::default(),
@@ -923,12 +1062,10 @@ pub fn run(
                         }
                     }
                     SelectedPresentUiOutcome::Omitted(reason) => {
-                        let identity = format!("SELECTED_PRESENT_UI\0omitted\0{reason}");
-                        if reported_production_data_needs.insert(identity) {
-                            eprintln!(
-                                "replay_app: production selected-Present UI omitted locally: {reason}"
-                            );
-                        }
+                        return Err(format!(
+                            "production selected-Present UI could not execute its complete authenticated frontier: {reason}"
+                        )
+                        .into());
                     }
                 }
             }
@@ -1382,6 +1519,7 @@ mod product_production_d3d_tests {
                 ordered_operations: vec![operation],
                 payload_sha256: "44".repeat(32),
             }],
+            authenticated_texture_snapshots: Vec::new(),
             rail_ribbon: None,
             mapname_d80_state: replay_core::MapnameD80State::Missing,
             tree_runtime: None,
@@ -1664,16 +1802,46 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
             .find("match product_production_d3d.execute(")
             .unwrap();
         let legacy = source
-            .find("} else if let (Some(renderer), Some(camera))")
+            .find("} else if observer_render_admitted")
             .unwrap();
         let selected_present = source
-            .find("if let Some(frame) = prepared_selected_present_ui.as_ref()")
+            .find("if let (true, Some(frame))")
             .unwrap();
         let hud = source.find("overlay.draw(&gfx").unwrap();
         assert!(execute < legacy);
         assert!(execute < selected_present);
         assert!(selected_present < hud);
         assert!(source.contains("if debug_overlay_enabled && !selected_present_executed"));
+        assert!(source.contains("pov.render_status(world_frame.as_deref())"));
+        assert!(source.contains("authenticated_production_selected && observer_render_admitted"));
+        assert!(source.contains(
+            "(observer_render_admitted, prepared_selected_present_ui.as_ref())"
+        ));
+        assert!(
+            source.contains(
+                "is_none_or(|frame| frame.production_render_status() != ViewStatus::Present)"
+            ),
+            "missing/unavailable per-hour render state must refuse the historical capture fallback"
+        );
+        assert!(
+            source.contains("|| exact_render_epoch_selected"),
+            "a present per-hour render carrier must select the exact production path even when its visible operation set is empty"
+        );
+        assert!(source.contains(
+            "initial production replay frame has no authenticated production-render program"
+        ));
+        assert!(source.contains(
+            "authenticated production operations produced no carried SwapchainBackBuffer output"
+        ));
+        assert!(source.contains(
+            "authenticated production map was selected without a prepared D3D frame"
+        ));
+        assert!(
+            !source.contains(
+                "production non-UI omitted [PRODUCTION_MAP_D3D] native execution"
+            ),
+            "authenticated map execution errors must terminate playback, not become black-frame omissions"
+        );
         let forbidden_dimension_consumer = ["production_map.province", "_raster"].concat();
         let forbidden_dimension_gate = ["PRODUCTION_MAP", "_DIMENSIONS"].concat();
         assert!(!source.contains(&forbidden_dimension_consumer));
@@ -1687,7 +1855,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
         let source = include_str!("app.rs");
         let source = &source[..source.find("#[cfg(test)]").expect("test module marker")];
         let selected_present = source
-            .find("if let Some(frame) = prepared_selected_present_ui.as_ref()")
+            .find("if let (true, Some(frame))")
             .expect("selected-Present product route");
         let selected_present = &source[selected_present..];
 

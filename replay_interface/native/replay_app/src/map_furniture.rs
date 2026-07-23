@@ -2,8 +2,11 @@
 //!
 //! The furniture law lives in `map_viewer::map_furniture`; this module gives
 //! replay_app a product-side module boundary without re-deriving placement,
-//! tiering, relation color, labels, or capital selection. The CLI remains
-//! fail-closed until the remaining draw-time residuals are captured/decompiled.
+//! tiering, relation color, labels, or capital selection. The exact frame law is
+//! proven (including the apparent highlight ring as bitmap content), but the CLI
+//! remains fail-closed until ordinary recording can authenticate/materialize
+//! the complete selected-Present GUI frontier. The reconstruction path is not a
+//! substitute because it lacks exact current VP values and placement.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

@@ -93,6 +93,35 @@ impl PackagedDecisionCatalog {
     }
 }
 
+/// One recorder-owned static catalog after the complete
+/// recorder→index→container-role→content-epoch→bytes join.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackagedStaticArtifact {
+    name: String,
+    path: String,
+    sha256: String,
+    content_manifest_digest_sha256: String,
+    bytes: Arc<[u8]>,
+}
+
+impl PackagedStaticArtifact {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+    pub fn content_manifest_digest_sha256(&self) -> &str {
+        &self.content_manifest_digest_sha256
+    }
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecorderDisplayVariant {
@@ -200,6 +229,9 @@ pub trait ReplaySource: Send + Sync {
     /// Exact effective decision catalog authenticated through the portable
     /// package's recorder, index, content-manifest, and entry hashes.
     fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
+        None
+    }
+    fn static_artifact(&self, _name: &str) -> Option<&PackagedStaticArtifact> {
         None
     }
     /// Exact source-byte and decoder identity for an explicitly prefolded
@@ -322,6 +354,7 @@ pub fn open_prefolded_replay(
         recorder_binding: None,
         design_catalog: None,
         decision_catalog: None,
+        static_artifacts: BTreeMap::new(),
         prefold_receipt: None,
         g2_engine_capture: None,
     }))
@@ -428,6 +461,7 @@ fn open_store_impl(
     let index = store
         .index(&game_id)
         .map_err(|e| SourceError::Open(format!("read index for game {game_id:?}: {e}")))?;
+    validate_recorder_portable_container_contract(&store, &game_id, &index, &metadata)?;
 
     // FAIL-CLOSED by default. Only an explicit portable certified pre-folder
     // can turn a verified compact-only container into immutable canonical
@@ -493,7 +527,17 @@ fn open_store_impl(
     }
 
     let hours: Vec<i64> = files_by_hour.keys().copied().collect();
-    let design_catalog = read_portable_design_catalog(&store, &game_id, &hours)?;
+    let static_artifacts = validate_packaged_static_artifact_roster(
+        &store,
+        &game_id,
+        metadata.recorder_manifest.as_ref(),
+    )?;
+    let design_catalog = read_portable_design_catalog(
+        &store,
+        &game_id,
+        &hours,
+        metadata.recorder_manifest.as_ref(),
+    )?;
     let decision_catalog =
         read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     Ok(Box::new(StoreSource {
@@ -506,6 +550,7 @@ fn open_store_impl(
         recorder_binding: metadata.binding,
         design_catalog,
         decision_catalog,
+        static_artifacts,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
@@ -542,6 +587,13 @@ fn open_compact_stream_with_decoder(
     };
     validate_index_schema_version(declared_schema_version.as_ref())?;
     validate_compact_stream_entry_identity(&entry.path, &game_id, metadata.timeline.as_ref())?;
+    validate_recorder_compact_stream_join(
+        &entry.path,
+        entry.bytes,
+        &entry.sha256,
+        &game_id,
+        metadata.recorder_manifest.as_ref(),
+    )?;
     let raw_h4cr = container.read_entry_bytes(&entry.path).map_err(|error| {
         SourceError::Open(format!(
             "read verified compact stream role entry {:?}: {error}",
@@ -578,10 +630,16 @@ fn open_compact_stream_with_decoder(
     }
     validate_prefolded_container_identity(container, certified.replay())?;
 
+    let static_artifacts = validate_packaged_static_artifact_roster(
+        &store,
+        &game_id,
+        metadata.recorder_manifest.as_ref(),
+    )?;
     let design_catalog = read_portable_design_catalog(
         &store,
         &game_id,
         certified.replay().index().hours(),
+        metadata.recorder_manifest.as_ref(),
     )?;
     let decision_catalog =
         read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
@@ -593,6 +651,7 @@ fn open_compact_stream_with_decoder(
         recorder_binding: metadata.binding,
         design_catalog,
         decision_catalog,
+        static_artifacts,
         prefold_receipt,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
@@ -636,6 +695,13 @@ fn open_compact_stream_with_spooled_decoder(
         };
         validate_index_schema_version(declared_schema_version.as_ref())?;
         validate_compact_stream_entry_identity(&entry.path, &game_id, metadata.timeline.as_ref())?;
+        validate_recorder_compact_stream_join(
+            &entry.path,
+            entry.bytes,
+            &entry.sha256,
+            &game_id,
+            metadata.recorder_manifest.as_ref(),
+        )?;
         admit_product_compact_stream_bytes(entry.bytes)?;
         let receipt = container
             .spool_entry_to_file_transactionally_bounded(
@@ -717,7 +783,17 @@ fn open_compact_stream_with_spooled_decoder(
         .iter()
         .map(|entry| entry.hour_index())
         .collect::<Vec<_>>();
-    let design_catalog = read_portable_design_catalog(&store, &game_id, &spool_hours)?;
+    let static_artifacts = validate_packaged_static_artifact_roster(
+        &store,
+        &game_id,
+        metadata.recorder_manifest.as_ref(),
+    )?;
+    let design_catalog = read_portable_design_catalog(
+        &store,
+        &game_id,
+        &spool_hours,
+        metadata.recorder_manifest.as_ref(),
+    )?;
     let decision_catalog =
         read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     Ok(Box::new(SpooledPrefoldedSource {
@@ -729,6 +805,7 @@ fn open_compact_stream_with_spooled_decoder(
         recorder_binding: metadata.binding,
         design_catalog,
         decision_catalog,
+        static_artifacts,
         prefold_receipt,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
@@ -879,7 +956,145 @@ fn read_portable_design_catalog(
     store: &Store,
     game_id: &str,
     hours: &[i64],
+    recorder_manifest: Option<&Map<String, Value>>,
 ) -> Result<Option<Arc<crate::design_catalog::PortableDesignCatalog>>, SourceError> {
+    let recorder_row = recorder_manifest
+        .and_then(|manifest| manifest.get("replay_packaging"))
+        .and_then(|packaging| packaging.get("design_catalog_live"))
+        .filter(|value| !value.is_null());
+
+    // Legacy stores without a recorder binding keep the historical optional
+    // path. A recorder-owned package must join recorder seal, selected index,
+    // dedicated role, content-manifest epoch, and the verified payload bytes.
+    if recorder_manifest.is_some() {
+        let index_bytes = store
+            .read_game_file_bytes(game_id, "index.json")
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "read authenticated index for A27 design-catalog join: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                SourceError::Open(
+                    "selected game index disappeared during A27 design-catalog join".into(),
+                )
+            })?;
+        let index = snapshot::parse_json_strict(&index_bytes).map_err(|error| {
+            SourceError::Open(format!(
+                "strict parse selected game index for A27 design-catalog join: {error}"
+            ))
+        })?;
+        let index_row = index
+            .get("design_catalog_live")
+            .filter(|value| value.get("present").and_then(Value::as_bool) == Some(true));
+        match (recorder_row, index_row) {
+            (None, None) => {
+                if store
+                    .container()
+                    .is_some_and(|container| {
+                        !container.entries_by_role("design_catalog_live").is_empty()
+                    })
+                {
+                    return Err(SourceError::Open(
+                        "A27 design-catalog role exists without recorder/index authority".into(),
+                    ));
+                }
+                return Ok(None);
+            }
+            (None, Some(_)) => {
+                return Err(SourceError::Open(
+                    "index records A27 design catalog present but recorder manifest omits it"
+                        .into(),
+                ))
+            }
+            (Some(_), None) => {
+                return Err(SourceError::Open(
+                    "recorder manifest records A27 design catalog but index omits it".into(),
+                ))
+            }
+            (Some(recorder_row), Some(index_row)) => {
+                let expected_path = crate::design_catalog::PORTABLE_ARTIFACT_PATH;
+                let recorder_path = recorder_row.get("path").and_then(Value::as_str);
+                let recorder_sha = recorder_row.get("sha256").and_then(Value::as_str);
+                let recorder_len = recorder_row.get("bytes").and_then(Value::as_u64);
+                let recorder_content_digest = recorder_row
+                    .get("content_manifest_digest_sha256")
+                    .and_then(Value::as_str);
+                if recorder_path != Some(expected_path)
+                    || recorder_sha.is_none_or(|value| !lower_sha256(value))
+                    || recorder_len.is_none()
+                    || recorder_content_digest.is_none_or(|value| !lower_sha256(value))
+                {
+                    return Err(SourceError::Open(
+                        "recorder manifest A27 design-catalog identity is invalid".into(),
+                    ));
+                }
+                let recorder_sha = recorder_sha.expect("validated A27 sha");
+                let recorder_len = recorder_len.expect("validated A27 byte length");
+                let recorder_content_digest =
+                    recorder_content_digest.expect("validated A27 content digest");
+                if index_row.get("role").and_then(Value::as_str)
+                    != Some("design_catalog_live")
+                    || index_row.get("path").and_then(Value::as_str) != Some(expected_path)
+                    || index_row.get("sha256").and_then(Value::as_str) != Some(recorder_sha)
+                    || index_row.get("bytes").and_then(Value::as_u64) != Some(recorder_len)
+                    || index_row.get("source_sha256").and_then(Value::as_str)
+                        != recorder_row.get("source_sha256").and_then(Value::as_str)
+                {
+                    return Err(SourceError::Open(
+                        "index A27 design-catalog identity disagrees with recorder manifest"
+                            .into(),
+                    ));
+                }
+
+                let container = store.container().ok_or_else(|| {
+                    SourceError::Open(
+                        "A27 design catalog requires a portable container authority".into(),
+                    )
+                })?;
+                let content_digest = container
+                    .content_manifest()
+                    .and_then(|manifest| manifest.manifest_digest_sha256.as_deref())
+                    .ok_or_else(|| {
+                        SourceError::Open(
+                            "A27 design catalog has no finalized portable content-manifest epoch"
+                                .into(),
+                        )
+                    })?;
+                if content_digest != recorder_content_digest {
+                    return Err(SourceError::Open(
+                        "A27 design catalog is not bound to the selected content manifest".into(),
+                    ));
+                }
+                let container_path = format!("payload/{game_id}/{expected_path}");
+                let entries = container
+                    .entries_by_role("design_catalog_live")
+                    .into_iter()
+                    .filter(|entry| entry.path == container_path)
+                    .collect::<Vec<_>>();
+                let entry = match entries.as_slice() {
+                    [entry] => entry,
+                    [] => {
+                        return Err(SourceError::Open(
+                            "A27 design-catalog index row has no matching dedicated role".into(),
+                        ))
+                    }
+                    _ => {
+                        return Err(SourceError::Open(
+                            "A27 design catalog has duplicate dedicated role entries".into(),
+                        ))
+                    }
+                };
+                if entry.sha256 != recorder_sha || entry.bytes != recorder_len {
+                    return Err(SourceError::Open(
+                        "A27 design-catalog role entry disagrees with recorder/index hashes"
+                            .into(),
+                    ));
+                }
+            }
+        }
+    }
+
     let bytes = store
         .read_game_file_bytes(game_id, crate::design_catalog::PORTABLE_ARTIFACT_PATH)
         .map_err(|error| {
@@ -890,6 +1105,24 @@ fn read_portable_design_catalog(
         })?;
     bytes
         .map(|bytes| {
+            if let Some(recorder_row) = recorder_row {
+                let expected_sha = recorder_row
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .expect("recorder-owned A27 identity validated above");
+                let expected_len = recorder_row
+                    .get("bytes")
+                    .and_then(Value::as_u64)
+                    .expect("recorder-owned A27 identity validated above");
+                let actual_sha =
+                    snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(&bytes));
+                if bytes.len() as u64 != expected_len || actual_sha != expected_sha {
+                    return Err(SourceError::Open(
+                        "verified A27 design-catalog bytes disagree with package authorities"
+                            .into(),
+                    ));
+                }
+            }
             crate::design_catalog::PortableDesignCatalog::decode_a27_live_json(&bytes)
                 .and_then(|catalog| {
                     catalog.validate_replay_hours(hours)?;
@@ -901,6 +1134,257 @@ fn read_portable_design_catalog(
                 })
         })
         .transpose()
+}
+
+const REQUIRED_PACKAGED_STATIC_ARTIFACTS: &[(&str, &str)] = &[
+    (
+        "templates_equipment_catalog",
+        "static/templates_equipment_catalog/domain59_static_catalog.json",
+    ),
+    (
+        "localisation_join",
+        "static/localisation_join/localisation_catalog.json",
+    ),
+    (
+        "decisions_static_definitions",
+        "static/decisions_static_definitions/decision_definitions_catalog.json",
+    ),
+    (
+        "idea_tech_loc_xref_static",
+        "static/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json",
+    ),
+    (
+        "ship_definitions_static",
+        "static/ship_definitions_static/ship_definitions_catalog.json",
+    ),
+    (
+        "gfx_icon_asset_manifest_static",
+        "static/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json",
+    ),
+    (
+        "technology_sharing_static",
+        "static/technology_sharing_static/technology_sharing_static.json",
+    ),
+    (
+        "focus_defs_static",
+        "static/focus_defs_static/focus_defs_static.json",
+    ),
+];
+const LEGACY_PACKAGED_STATIC_ARTIFACT_COUNT: usize =
+    REQUIRED_PACKAGED_STATIC_ARTIFACTS.len() - 1;
+
+/// Consume the complete recorder-owned static-artifact roster at replay
+/// admission.  Semantic adapters may select individual catalogs later, but no
+/// producer binding is allowed to sit in the portable file unchecked.
+fn validate_packaged_static_artifact_roster(
+    store: &Store,
+    game_id: &str,
+    recorder_manifest: Option<&Map<String, Value>>,
+) -> Result<BTreeMap<String, PackagedStaticArtifact>, SourceError> {
+    let Some(recorder_manifest) = recorder_manifest else {
+        return Ok(BTreeMap::new());
+    };
+    let recorder_rows = recorder_manifest
+        .get("replay_packaging")
+        .and_then(|packaging| packaging.get("static_artifacts"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SourceError::Open(
+                "recorder-owned replay has no static-artifact packaging roster".into(),
+            )
+        })?;
+    let index_bytes = store
+        .read_game_file_bytes(game_id, "index.json")
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "read authenticated index for static-artifact roster join: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            SourceError::Open(
+                "selected game index disappeared during static-artifact roster join".into(),
+            )
+        })?;
+    let index = snapshot::parse_json_strict(&index_bytes).map_err(|error| {
+        SourceError::Open(format!(
+            "strict parse selected game index for static-artifact roster join: {error}"
+        ))
+    })?;
+    let index_rows = index
+        .get("static_artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SourceError::Open("recorder-owned replay index has no static-artifact roster".into())
+        })?;
+    let legacy_without_focus_defs =
+        index_rows.len() == LEGACY_PACKAGED_STATIC_ARTIFACT_COUNT;
+    if !legacy_without_focus_defs
+        && index_rows.len() != REQUIRED_PACKAGED_STATIC_ARTIFACTS.len()
+    {
+        return Err(SourceError::Open(format!(
+            "static-artifact index roster has {} rows; expected current {} or legacy {}",
+            index_rows.len(),
+            REQUIRED_PACKAGED_STATIC_ARTIFACTS.len(),
+            LEGACY_PACKAGED_STATIC_ARTIFACT_COUNT,
+        )));
+    }
+    let container = store.container().ok_or_else(|| {
+        SourceError::Open("static-artifact roster requires a portable container authority".into())
+    })?;
+    let content_digest = container
+        .content_manifest()
+        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref())
+        .ok_or_else(|| {
+            SourceError::Open(
+                "static-artifact roster has no finalized portable content-manifest epoch".into(),
+            )
+        })?;
+
+    let mut expected_container_paths = std::collections::BTreeSet::new();
+    let mut admitted = BTreeMap::new();
+    for &(name, expected_path) in REQUIRED_PACKAGED_STATIC_ARTIFACTS {
+        let recorder_matches = recorder_rows
+            .iter()
+            .filter(|row| row.get("name").and_then(Value::as_str) == Some(name))
+            .collect::<Vec<_>>();
+        if recorder_matches.len() > 1 {
+            return Err(SourceError::Open(format!(
+                "recorder manifest declares static artifact {name:?} more than once"
+            )));
+        }
+        let index_matches = index_rows
+            .iter()
+            .filter(|row| row.get("name").and_then(Value::as_str) == Some(name))
+            .collect::<Vec<_>>();
+        if legacy_without_focus_defs
+            && name == "focus_defs_static"
+            && recorder_matches.is_empty()
+            && index_matches.is_empty()
+        {
+            // A pre-focus-carrier recording remains readable but exposes no
+            // focus definitions. A31 stays unavailable; there is no local VFS
+            // or playback-machine fallback.
+            continue;
+        }
+        if index_matches.len() != 1 {
+            return Err(SourceError::Open(format!(
+                "index must declare static artifact {name:?} exactly once"
+            )));
+        }
+        let index_row = index_matches[0];
+        let present = index_row.get("present").and_then(Value::as_bool);
+        match (present, recorder_matches.as_slice()) {
+            (Some(false), []) => continue,
+            (Some(false), [_]) => {
+                return Err(SourceError::Open(format!(
+                    "recorder manifest records {name:?} present while index records it absent"
+                )))
+            }
+            (Some(true), [recorder_row]) => {
+                let sha = recorder_row.get("sha256").and_then(Value::as_str);
+                let bytes = recorder_row.get("bytes").and_then(Value::as_u64);
+                let epoch = recorder_row
+                    .get("content_manifest_digest_sha256")
+                    .and_then(Value::as_str);
+                if recorder_row.get("path").and_then(Value::as_str) != Some(expected_path)
+                    || sha.is_none_or(|value| !lower_sha256(value))
+                    || bytes.is_none()
+                    || epoch != Some(content_digest)
+                {
+                    return Err(SourceError::Open(format!(
+                        "recorder manifest static artifact {name:?} identity is invalid"
+                    )));
+                }
+                let sha = sha.expect("validated static-artifact sha");
+                let bytes = bytes.expect("validated static-artifact length");
+                if index_row.get("role").and_then(Value::as_str) != Some("static_artifact")
+                    || index_row.get("path").and_then(Value::as_str) != Some(expected_path)
+                    || index_row.get("sha256").and_then(Value::as_str) != Some(sha)
+                    || index_row.get("bytes").and_then(Value::as_u64) != Some(bytes)
+                {
+                    return Err(SourceError::Open(format!(
+                        "index static artifact {name:?} disagrees with recorder manifest"
+                    )));
+                }
+                let container_path = format!("payload/{game_id}/{expected_path}");
+                let entries = container
+                    .entries_by_role("static_artifact")
+                    .into_iter()
+                    .filter(|entry| entry.path == container_path)
+                    .collect::<Vec<_>>();
+                let entry = match entries.as_slice() {
+                    [entry] => entry,
+                    [] => {
+                        return Err(SourceError::Open(format!(
+                            "static artifact {name:?} has no matching container role"
+                        )))
+                    }
+                    _ => {
+                        return Err(SourceError::Open(format!(
+                            "static artifact {name:?} has duplicate container roles"
+                        )))
+                    }
+                };
+                if entry.sha256 != sha || entry.bytes != bytes {
+                    return Err(SourceError::Open(format!(
+                        "container static artifact {name:?} disagrees with recorder/index hashes"
+                    )));
+                }
+                let payload = store
+                    .read_game_file_bytes(game_id, expected_path)
+                    .map_err(|error| {
+                        SourceError::Open(format!(
+                            "read verified static artifact {name:?}: {error}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        SourceError::Open(format!(
+                            "verified static artifact {name:?} payload is absent"
+                        ))
+                    })?;
+                let actual_sha =
+                    snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(&payload));
+                if payload.len() as u64 != bytes || actual_sha != sha {
+                    return Err(SourceError::Open(format!(
+                        "verified static artifact {name:?} bytes disagree with package authorities"
+                    )));
+                }
+                admitted.insert(
+                    name.to_string(),
+                    PackagedStaticArtifact {
+                        name: name.to_string(),
+                        path: expected_path.to_string(),
+                        sha256: actual_sha,
+                        content_manifest_digest_sha256: content_digest.to_string(),
+                        bytes: Arc::from(payload),
+                    },
+                );
+                expected_container_paths.insert(container_path);
+            }
+            (Some(true), []) => {
+                return Err(SourceError::Open(format!(
+                    "index records static artifact {name:?} present but recorder manifest omits it"
+                )))
+            }
+            _ => {
+                return Err(SourceError::Open(format!(
+                    "index static artifact {name:?} has no boolean present disposition"
+                )))
+            }
+        }
+    }
+    let actual_container_paths = container
+        .entries_by_role("static_artifact")
+        .into_iter()
+        .map(|entry| entry.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual_container_paths != expected_container_paths {
+        return Err(SourceError::Open(
+            "container static-artifact roles do not exactly match the recorder/index roster"
+                .into(),
+        ));
+    }
+    Ok(admitted)
 }
 
 const DECISION_CATALOG_NAME: &str = "decisions_static_definitions";
@@ -1132,6 +1616,348 @@ fn same_supported_schema_version(left: &Value, right: &Value) -> bool {
     is_v1(left) && is_v1(right)
 }
 
+/// Require the recorder-owned content authority to be the exact authority the
+/// container reader exposed to playback.  Both objects are individually
+/// digest-validated, but without this join a package could carry two valid,
+/// different manifests and the replay would silently follow only the outer
+/// container copy.
+fn validate_recorder_content_manifest_join(
+    recorder_session_manifest: &Map<String, Value>,
+    container_manifest: Option<&portable_content_manifest::ContentManifest>,
+) -> Result<(), SourceError> {
+    let recorder_value = recorder_session_manifest.get("portable_content_manifest");
+    match (recorder_value, container_manifest) {
+        (None | Some(Value::Null), None) => Ok(()),
+        (Some(Value::Object(_)), Some(container_manifest)) => {
+            let recorder_manifest: portable_content_manifest::ContentManifest =
+                serde_json::from_value(
+                    recorder_value
+                        .expect("object arm has a recorder content manifest")
+                        .clone(),
+                )
+                .map_err(|error| {
+                    SourceError::Open(format!(
+                        "recorder portable_content_manifest is malformed: {error}"
+                    ))
+                })?;
+            recorder_manifest.validate().map_err(|error| {
+                SourceError::Open(format!(
+                    "recorder portable_content_manifest failed validation: {error}"
+                ))
+            })?;
+            if &recorder_manifest != container_manifest {
+                return Err(SourceError::Open(
+                    "recorder portable_content_manifest disagrees with container content_manifest"
+                        .into(),
+                ));
+            }
+            let modset = recorder_session_manifest
+                .get("modset")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    SourceError::Open(
+                        "recorder portable content has no launch-bound modset authority".into(),
+                    )
+                })?;
+            let recorder_executable = modset
+                .get("game")
+                .and_then(Value::as_object)
+                .and_then(|game| game.get("exe_sha256"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    SourceError::Open(
+                        "recorder portable content has no launch-bound executable SHA-256".into(),
+                    )
+                })?;
+            if recorder_executable != container_manifest.source_game.executable_sha256 {
+                return Err(SourceError::Open(
+                    "recorder modset executable disagrees with portable content source game"
+                        .into(),
+                ));
+            }
+            let recorder_language = modset
+                .get("localisation_language")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    SourceError::Open(
+                        "recorder portable content has no launch-bound localisation language"
+                            .into(),
+                    )
+                })?;
+            if recorder_language != container_manifest.localisation_language {
+                return Err(SourceError::Open(
+                    "recorder modset language disagrees with portable content language".into(),
+                ));
+            }
+            let display: RecorderDisplayVariant = serde_json::from_value(
+                modset
+                    .get("display_variant")
+                    .cloned()
+                    .ok_or_else(|| {
+                        SourceError::Open(
+                            "recorder portable content has no launch-bound display variant".into(),
+                        )
+                    })?,
+            )
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "recorder portable-content display variant is malformed: {error}"
+                ))
+            })?;
+            let expected_settings = BTreeMap::from([
+                ("physical_width".into(), display.physical_width.to_string()),
+                ("physical_height".into(), display.physical_height.to_string()),
+                ("min_gui_width".into(), display.min_gui_width.to_string()),
+                ("min_gui_height".into(), display.min_gui_height.to_string()),
+                (
+                    "gui_scale_f32_bits".into(),
+                    display.gui_scale_f32_bits.to_string(),
+                ),
+                (
+                    "refresh_rate_hz".into(),
+                    display.refresh_rate_hz.to_string(),
+                ),
+                (
+                    "max_refresh_rate_hz".into(),
+                    display
+                        .max_refresh_rate_hz
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unavailable".into()),
+                ),
+                ("fullscreen".into(), display.fullscreen.to_string()),
+                ("borderless".into(), display.borderless.to_string()),
+                ("display_mode".into(), display.display_mode),
+                (
+                    "settings_file_sha256".into(),
+                    display.settings_file_sha256,
+                ),
+            ]);
+            if container_manifest.required_settings != expected_settings {
+                return Err(SourceError::Open(
+                    "recorder display variant disagrees with portable content required settings"
+                        .into(),
+                ));
+            }
+            Ok(())
+        }
+        (None | Some(Value::Null), Some(_)) => Err(SourceError::Open(
+            "container declares portable content but recorder manifest omits its matching authority"
+                .into(),
+        )),
+        (Some(value), Some(_)) => Err(SourceError::Open(format!(
+            "recorder portable_content_manifest must be an object when the container declares one; found {value}"
+        ))),
+        (Some(_), None) => Err(SourceError::Open(
+            "recorder declares portable content but container manifest omits it".into(),
+        )),
+    }
+}
+
+/// Reconcile the recorder's portable-file declarations before selecting either
+/// the snapshot or compact-prefold playback path.
+///
+/// Legacy directory fixtures do not have a container manifest and remain
+/// covered by their existing compatibility path.  A recorder-owned portable
+/// container, however, must present one exact role/schema graph: manifest and
+/// index schema v1, one canonical index role, and a one-to-one index ↔
+/// role:snapshot mapping including hour metadata.  This prevents an entry from
+/// being selected by path while its declared role says something else.
+fn validate_recorder_portable_container_contract(
+    store: &Store,
+    game_id: &str,
+    index: &snapshot::Index,
+    metadata: &MetadataRoute,
+) -> Result<(), SourceError> {
+    let Some(recorder_manifest) = metadata.recorder_manifest.as_ref() else {
+        return Ok(());
+    };
+    let container = store.container().ok_or_else(|| {
+        SourceError::Open(
+            "recorder-owned replay metadata requires a portable container authority".into(),
+        )
+    })?;
+    validate_recorder_content_manifest_join(recorder_manifest, container.content_manifest())?;
+    if let Some(declared_game_id) = recorder_manifest.get("replay_game_id") {
+        if declared_game_id.as_str() != Some(game_id) {
+            return Err(SourceError::Open(format!(
+                "recorder replay_game_id {declared_game_id} disagrees with selected container game_id {game_id:?}"
+            )));
+        }
+    }
+
+    let manifest_schema = container
+        .manifest()
+        .get("schema_version")
+        .ok_or_else(|| {
+            SourceError::Open(
+                "recorder-owned container manifest has no schema_version authority".into(),
+            )
+        })?;
+    let index_schema = index.schema_version.as_ref().ok_or_else(|| {
+        SourceError::Open("recorder-owned replay index has no schema_version authority".into())
+    })?;
+    if !same_supported_schema_version(manifest_schema, index_schema) {
+        return Err(SourceError::Open(format!(
+            "recorder-owned container manifest schema_version {manifest_schema} disagrees with index schema_version {index_schema}"
+        )));
+    }
+
+    let canonical_index = format!("payload/{game_id}/index.json");
+    let index_roles = container.entries_by_role("index");
+    if index_roles.len() != 1 || index_roles[0].path != canonical_index {
+        return Err(SourceError::Open(format!(
+            "recorder-owned replay requires exactly one canonical index role {canonical_index:?}; found {:?}",
+            index_roles
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>()
+        )));
+    }
+    let index_bytes = container
+        .read_entry_bytes(&canonical_index)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "read canonical index for recorder fold-disposition join: {error}"
+            ))
+        })?;
+    let raw_index = snapshot::parse_json_strict(&index_bytes).map_err(|error| {
+        SourceError::Open(format!(
+            "strict parse canonical index for recorder fold-disposition join: {error}"
+        ))
+    })?;
+    if let Some(disposition) = raw_index.get("host_fold_skipped") {
+        let skipped = disposition.as_bool().ok_or_else(|| {
+            SourceError::Open(
+                "recorder-owned index host_fold_skipped must be a boolean".into(),
+            )
+        })?;
+        if skipped != index.snapshots.is_empty() {
+            return Err(SourceError::Open(format!(
+                "recorder-owned index host_fold_skipped={skipped} contradicts snapshot count {}",
+                index.snapshots.len()
+            )));
+        }
+    }
+
+    let snapshot_roles = container.entries_by_role("snapshot");
+    if snapshot_roles.len() != index.snapshots.len() {
+        return Err(SourceError::Open(format!(
+            "recorder-owned replay index lists {} snapshots but container declares {} snapshot roles",
+            index.snapshots.len(),
+            snapshot_roles.len()
+        )));
+    }
+    for indexed in &index.snapshots {
+        let expected_path = format!("payload/{game_id}/{}", indexed.file);
+        let matches = snapshot_roles
+            .iter()
+            .filter(|entry| entry.path == expected_path)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(SourceError::Open(format!(
+                "indexed snapshot {:?} requires exactly one matching snapshot role; found {}",
+                indexed.file,
+                matches.len()
+            )));
+        }
+        let snapshot_bytes = container
+            .read_entry_bytes(&matches[0].path)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "read indexed snapshot {:?} for hour binding: {error}",
+                    matches[0].path
+                ))
+            })?;
+        let snapshot_value = snapshot::parse_json_strict(&snapshot_bytes).map_err(|error| {
+            SourceError::Open(format!(
+                "strict parse indexed snapshot {:?} for hour binding: {error}",
+                matches[0].path
+            ))
+        })?;
+        let body_hour = snapshot_value.get("hour_index").and_then(Value::as_i64);
+        if body_hour != indexed.hour_index {
+            return Err(SourceError::Open(format!(
+                "snapshot role {:?} hour_index {:?} disagrees with index hour_index {:?}",
+                matches[0].path, body_hour, indexed.hour_index
+            )));
+        }
+    }
+
+    let timeline = metadata
+        .timeline
+        .as_ref()
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            SourceError::Open("recorder-owned replay has no timeline object".into())
+        })?;
+    for (field, expected) in [
+        ("format", COMPACT_STREAM_TIMELINE_FORMAT),
+        ("stream_format", "compact"),
+        ("raw_stream_role", COMPACT_STREAM_ROLE),
+        ("session_manifest_role", "recorder_manifest"),
+    ] {
+        if timeline.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(SourceError::Open(format!(
+                "recorder-owned timeline {field} must be {expected:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Bind the recorder's capture-time compact-stream authority to the exact role
+/// entry selected for prefolding. Older recorder manifests may omit these
+/// objects; once either object exists, all of its current identity fields are
+/// required and must agree with the authenticated container entry.
+fn validate_recorder_compact_stream_join(
+    entry_path: &str,
+    entry_bytes: u64,
+    entry_sha256: &str,
+    game_id: &str,
+    recorder_manifest: Option<&Map<String, Value>>,
+) -> Result<(), SourceError> {
+    let Some(recorder_manifest) = recorder_manifest else {
+        return Ok(());
+    };
+    let relative_path = entry_path
+        .strip_prefix(&format!("payload/{game_id}/"))
+        .ok_or_else(|| {
+            SourceError::Open(format!(
+                "compact stream role entry {entry_path:?} is outside selected game {game_id:?}"
+            ))
+        })?;
+
+    if let Some(storage_value) = recorder_manifest.get("stream_storage") {
+        let storage = storage_value.as_object().ok_or_else(|| {
+            SourceError::Open("recorder stream_storage authority is not an object".into())
+        })?;
+        if storage.get("decoded_bytes").and_then(Value::as_u64) != Some(entry_bytes)
+            || storage.get("decoded_sha256").and_then(Value::as_str) != Some(entry_sha256)
+        {
+            return Err(SourceError::Open(
+                "recorder stream_storage decoded identity disagrees with selected compact stream role"
+                    .into(),
+            ));
+        }
+    }
+
+    if let Some(entries_value) = recorder_manifest.get("replay_entries") {
+        let entries = entries_value.as_object().ok_or_else(|| {
+            SourceError::Open("recorder replay_entries authority is not an object".into())
+        })?;
+        if entries.get("stream").and_then(Value::as_str) != Some(relative_path)
+            || entries.get("stream_role").and_then(Value::as_str)
+                != Some(snapshot::COMPACT_STREAM_ROLE)
+        {
+            return Err(SourceError::Open(
+                "recorder replay_entries stream binding disagrees with selected compact stream role"
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute, SourceError> {
     if let Some(container) = store.container() {
         let timeline_path = format!("payload/{game_id}/timeline.json");
@@ -1217,6 +2043,7 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
         })?;
         let recorder_manifest =
             parse_metadata_object(&manifest_bytes, &format!("recorder manifest {reference:?}"))?;
+        validate_recorder_product_admission(&recorder_manifest)?;
         let binding = recorder_manifest_binding_value(&recorder_manifest, &reference)?;
         return Ok(MetadataRoute {
             binding: Some(binding),
@@ -1273,6 +2100,7 @@ where
             "timeline.json.session_manifest references missing recorder manifest {reference:?}"
         ))
     })?;
+    validate_recorder_product_admission(&manifest)?;
     let binding = recorder_manifest_binding_value(&manifest, &reference)?;
     Ok(MetadataRoute {
         binding: Some(binding),
@@ -1289,6 +2117,62 @@ fn parse_metadata_object(bytes: &[u8], context: &str) -> Result<Map<String, Valu
         .as_object()
         .cloned()
         .ok_or_else(|| SourceError::Open(format!("{context} must decode as a JSON object")))
+}
+
+/// Reject recorder manifests that explicitly describe a recovery/quarantined
+/// artifact or an incomplete production profile. Missing fields remain legacy
+/// compatibility; once an authority is present it must positively admit the
+/// artifact rather than relying on defaults.
+fn validate_recorder_product_admission(
+    manifest: &Map<String, Value>,
+) -> Result<(), SourceError> {
+    if let Some(value) = manifest.get("replay_artifact") {
+        let artifact = value.as_object().ok_or_else(|| {
+            SourceError::Open("recorder replay_artifact authority is not an object".into())
+        })?;
+        if artifact.get("recovery").and_then(Value::as_bool) != Some(false)
+            || artifact.get("reason").and_then(Value::as_str) != Some("gate_passed")
+            || !artifact
+                .get("gate_problems")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        {
+            return Err(SourceError::Open(
+                "recorder replay_artifact is recovery-only or did not positively pass its gate"
+                    .into(),
+            ));
+        }
+    }
+    if let Some(value) = manifest.get("production_profile") {
+        let profile = value.as_object().ok_or_else(|| {
+            SourceError::Open("recorder production_profile authority is not an object".into())
+        })?;
+        if profile.get("enabled").and_then(Value::as_bool) != Some(true) {
+            return Err(SourceError::Open(
+                "recorder production profile is not positively enabled".into(),
+            ));
+        }
+        for field in [
+            "mandatory_domains_not_production_complete",
+            "profile_domains_not_scheduled",
+            "missing_required_static_artifacts",
+        ] {
+            let rows = profile
+                .get(field)
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    SourceError::Open(format!(
+                        "recorder production_profile.{field} is absent or is not an array"
+                    ))
+                })?;
+            if !rows.is_empty() {
+                return Err(SourceError::Open(format!(
+                    "recorder production_profile.{field} is nonempty"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_optional_metadata_object_once<F>(
@@ -2161,6 +3045,7 @@ struct StoreSource {
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
     decision_catalog: Option<PackagedDecisionCatalog>,
+    static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
@@ -2173,6 +3058,7 @@ struct SpooledPrefoldedSource {
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
     decision_catalog: Option<PackagedDecisionCatalog>,
+    static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     prefold_receipt: snapshot::PrefoldSourceReceipt,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
@@ -2187,6 +3073,7 @@ struct PrefoldedSource {
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
     decision_catalog: Option<PackagedDecisionCatalog>,
+    static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     prefold_receipt: Option<snapshot::PrefoldSourceReceipt>,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
@@ -2224,6 +3111,10 @@ impl ReplaySource for SpooledPrefoldedSource {
 
     fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
         self.decision_catalog.as_ref()
+    }
+
+    fn static_artifact(&self, name: &str) -> Option<&PackagedStaticArtifact> {
+        self.static_artifacts.get(name)
     }
 
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
@@ -2320,6 +3211,10 @@ impl ReplaySource for PrefoldedSource {
         self.decision_catalog.as_ref()
     }
 
+    fn static_artifact(&self, name: &str) -> Option<&PackagedStaticArtifact> {
+        self.static_artifacts.get(name)
+    }
+
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
         self.prefold_receipt.as_ref()
     }
@@ -2404,6 +3299,9 @@ impl ReplaySource for StoreSource {
     }
     fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
         self.decision_catalog.as_ref()
+    }
+    fn static_artifact(&self, name: &str) -> Option<&PackagedStaticArtifact> {
+        self.static_artifacts.get(name)
     }
     fn date_at(&self, hour_index: i64) -> Result<Option<String>, SourceError> {
         self.dates_by_hour.get(&hour_index).cloned().ok_or_else(|| {
@@ -2637,6 +3535,220 @@ mod tests {
     }
 
     #[test]
+    fn recorder_recovery_and_incomplete_production_profiles_are_not_playable() {
+        let admitted = json!({
+            "replay_artifact": {
+                "recovery": false,
+                "reason": "gate_passed",
+                "gate_problems": [],
+            },
+            "production_profile": {
+                "enabled": true,
+                "mandatory_domains_not_production_complete": [],
+                "profile_domains_not_scheduled": [],
+                "missing_required_static_artifacts": [],
+            },
+        });
+        validate_recorder_product_admission(admitted.as_object().unwrap()).unwrap();
+
+        let mut recovery = admitted.clone();
+        recovery["replay_artifact"]["recovery"] = json!(true);
+        recovery["replay_artifact"]["reason"] = json!("gate_failed");
+        recovery["replay_artifact"]["gate_problems"] = json!(["domain_missing"]);
+        let error = validate_recorder_product_admission(recovery.as_object().unwrap())
+            .expect_err("recovery replay must never enter production playback");
+        assert!(error.to_string().contains("recovery-only"));
+
+        let mut incomplete = admitted;
+        incomplete["production_profile"]["mandatory_domains_not_production_complete"] =
+            json!(["weather_live"]);
+        let error = validate_recorder_product_admission(incomplete.as_object().unwrap())
+            .expect_err("non-complete mandatory production domain must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("mandatory_domains_not_production_complete")
+        );
+
+        let mut incomplete = json!({
+            "replay_artifact": {
+                "recovery": false,
+                "reason": "gate_passed",
+                "gate_problems": [],
+            },
+            "production_profile": {
+                "enabled": true,
+                "mandatory_domains_not_production_complete": [],
+                "profile_domains_not_scheduled": [],
+                "missing_required_static_artifacts": [],
+            },
+        });
+        incomplete["production_profile"]["profile_domains_not_scheduled"] =
+            json!(["technology_mio_live"]);
+        let error = validate_recorder_product_admission(incomplete.as_object().unwrap())
+            .expect_err("incomplete production profile must fail closed");
+        assert!(error.to_string().contains("profile_domains_not_scheduled"));
+
+        let missing_positive_authority = json!({
+            "replay_artifact": {
+                "recovery": false,
+                "reason": "gate_passed",
+            },
+            "production_profile": {
+                "mandatory_domains_not_production_complete": [],
+                "profile_domains_not_scheduled": [],
+                "missing_required_static_artifacts": [],
+            },
+        });
+        assert!(
+            validate_recorder_product_admission(
+                missing_positive_authority.as_object().unwrap()
+            )
+            .is_err(),
+            "present admission authorities must be complete and positive"
+        );
+    }
+
+    #[test]
+    fn recorder_compact_stream_identity_must_match_selected_role() {
+        let manifest = json!({
+            "stream_storage": {
+                "decoded_bytes": 4096,
+                "decoded_sha256": "a".repeat(64),
+            },
+            "replay_entries": {
+                "stream": "collector_raw/collector_stream.bin",
+                "stream_role": "collector_compact_stream",
+            },
+        });
+        let manifest = manifest.as_object().unwrap();
+        validate_recorder_compact_stream_join(
+            "payload/game/collector_raw/collector_stream.bin",
+            4096,
+            &"a".repeat(64),
+            "game",
+            Some(manifest),
+        )
+        .unwrap();
+
+        let error = validate_recorder_compact_stream_join(
+            "payload/game/collector_raw/collector_stream.bin",
+            4097,
+            &"a".repeat(64),
+            "game",
+            Some(manifest),
+        )
+        .expect_err("different role bytes must not enter prefolding");
+        assert!(error.to_string().contains("decoded identity"));
+    }
+
+    fn portable_content_manifest_fixture() -> portable_content_manifest::ContentManifest {
+        let mut manifest = portable_content_manifest::ContentManifest {
+            schema: portable_content_manifest::SCHEMA.into(),
+            product_modset_sha256: "a".repeat(64),
+            source_game: portable_content_manifest::SourceGameIdentity {
+                version: "1.0".into(),
+                build: "fixture".into(),
+                executable_sha256: "b".repeat(64),
+                build_profile: "fixture-profile".into(),
+            },
+            source_profile: portable_content_manifest::SourceProfileIdentity {
+                profile_id: "fixture-profile".into(),
+                playset_id: "fixture-playset".into(),
+                selection_sha256: "0".repeat(64),
+            },
+            effective_vfs_manifest_sha256: "c".repeat(64),
+            ordered_layers: Vec::new(),
+            dlc_selection: Vec::new(),
+            localisation_language: "english".into(),
+            required_settings: BTreeMap::from([
+                ("physical_width".into(), "1920".into()),
+                ("physical_height".into(), "1080".into()),
+                ("min_gui_width".into(), "1920".into()),
+                ("min_gui_height".into(), "1080".into()),
+                ("gui_scale_f32_bits".into(), 1.0f32.to_bits().to_string()),
+                ("refresh_rate_hz".into(), "60".into()),
+                ("max_refresh_rate_hz".into(), "unavailable".into()),
+                ("fullscreen".into(), "false".into()),
+                ("borderless".into(), "true".into()),
+                ("display_mode".into(), "borderless_fullscreen".into()),
+                ("settings_file_sha256".into(), "e".repeat(64)),
+            ]),
+            required_content: Vec::new(),
+            manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 =
+            manifest.computed_selection_sha256().unwrap();
+        manifest.with_computed_digest().unwrap()
+    }
+
+    #[test]
+    fn recorder_and_container_content_authorities_must_join_exactly() {
+        let container = portable_content_manifest_fixture();
+        let recorder = json!({
+            "portable_content_manifest": serde_json::to_value(&container).unwrap(),
+            "modset": {
+                "game": {"exe_sha256": container.source_game.executable_sha256.clone()},
+                "localisation_language": container.localisation_language.clone(),
+                "display_variant": {
+                    "physical_width": 1920,
+                    "physical_height": 1080,
+                    "min_gui_width": 1920,
+                    "min_gui_height": 1080,
+                    "gui_scale_f32_bits": 1.0f32.to_bits(),
+                    "refresh_rate_hz": 60,
+                    "max_refresh_rate_hz": null,
+                    "fullscreen": false,
+                    "borderless": true,
+                    "display_mode": "borderless_fullscreen",
+                    "settings_file_sha256": "e".repeat(64),
+                },
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        validate_recorder_content_manifest_join(&recorder, Some(&container)).unwrap();
+
+        let mut wrong_launch = recorder.clone();
+        wrong_launch
+            .get_mut("modset")
+            .unwrap()
+            .get_mut("game")
+            .unwrap()["exe_sha256"] = json!("d".repeat(64));
+        let error = validate_recorder_content_manifest_join(&wrong_launch, Some(&container))
+            .expect_err("content authority must join the recorded launch executable");
+        assert!(error.to_string().contains("executable disagrees"));
+
+        let mut wrong_display = recorder.clone();
+        wrong_display
+            .get_mut("modset")
+            .unwrap()
+            .get_mut("display_variant")
+            .unwrap()["physical_width"] = json!(2560);
+        let error = validate_recorder_content_manifest_join(&wrong_display, Some(&container))
+            .expect_err("content settings must join the recorded display variant");
+        assert!(error.to_string().contains("display variant disagrees"));
+
+        let missing = Map::new();
+        let error = validate_recorder_content_manifest_join(&missing, Some(&container))
+            .expect_err("container-only authority must fail closed");
+        assert!(error.to_string().contains("recorder manifest omits"));
+
+        let mut different = container.clone();
+        different.product_modset_sha256 = "d".repeat(64);
+        different.manifest_digest_sha256 = None;
+        different = different.with_computed_digest().unwrap();
+        let error = validate_recorder_content_manifest_join(&recorder, Some(&different))
+            .expect_err("different valid authorities must fail closed");
+        assert!(error.to_string().contains("disagrees"));
+
+        let error = validate_recorder_content_manifest_join(&recorder, None)
+            .expect_err("recorder-only authority must fail closed");
+        assert!(error.to_string().contains("container manifest omits"));
+    }
+
+    #[test]
     fn private_prefold_spool_cleanup_is_identity_gated() {
         let base = temp_root("prefold_spool_owner");
         let owner = PrefoldSpoolOwner::create(&base).unwrap();
@@ -2712,6 +3824,119 @@ mod tests {
         } else {
             fs::write(game_dir.join("timeline.json"), br#"{"legacy":true}"#).unwrap();
         }
+    }
+
+    fn write_portable_recorder_fixture(
+        path: &Path,
+        game: &str,
+        label: &str,
+        campaign_identity: Option<Value>,
+    ) {
+        let content = portable_content_manifest_fixture();
+        let absent_static_artifacts = REQUIRED_PACKAGED_STATIC_ARTIFACTS
+            .iter()
+            .map(|(name, path)| {
+                json!({
+                    "name": name,
+                    "path": path,
+                    "present": false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut recorder_manifest = json!({
+            "replay_game_id": game,
+            "replay_packaging": {
+                "static_artifacts": [],
+            },
+            "portable_content_manifest": serde_json::to_value(&content).unwrap(),
+            "modset": {
+                "resolved": true,
+                "errors": [],
+                "game": {"exe_sha256": content.source_game.executable_sha256.clone()},
+                "dlc": {"enabled": []},
+                "dlc_display_names": {},
+                "localisation_language": content.localisation_language.clone(),
+                "display_variant": {
+                    "physical_width": 1920,
+                    "physical_height": 1080,
+                    "min_gui_width": 1920,
+                    "min_gui_height": 1080,
+                    "gui_scale_f32_bits": 1.0f32.to_bits(),
+                    "refresh_rate_hz": 60,
+                    "max_refresh_rate_hz": null,
+                    "fullscreen": false,
+                    "borderless": true,
+                    "display_mode": "borderless_fullscreen",
+                    "settings_file_sha256": "e".repeat(64),
+                },
+            },
+        });
+        if let Some(campaign_identity) = campaign_identity {
+            recorder_manifest["campaign_identity"] = campaign_identity;
+        }
+        let entries = vec![
+            snapshot::PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "game_id": game,
+                    "schema_version": "1",
+                    "host_fold_skipped": false,
+                    "static_artifacts": absent_static_artifacts,
+                    "snapshots": [{
+                        "hour_index": 1,
+                        "file": "000000000001.snapshot.json",
+                    }],
+                }))
+                .unwrap(),
+                role: "index",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/timeline.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "format": COMPACT_STREAM_TIMELINE_FORMAT,
+                    "stream_format": "compact",
+                    "raw_stream_role": COMPACT_STREAM_ROLE,
+                    "session_manifest": "recorder/native_session_manifest.json",
+                    "session_manifest_role": "recorder_manifest",
+                }))
+                .unwrap(),
+                role: "timeline",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/recorder/native_session_manifest.json"),
+                bytes: serde_json::to_vec(&recorder_manifest).unwrap(),
+                role: "recorder_manifest",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/000000000001.snapshot.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "game_id": game,
+                    "schema_version": "1",
+                    "hour_index": 1,
+                    "marker": label,
+                }))
+                .unwrap(),
+                role: "snapshot",
+                hour_index: Some(1),
+            },
+        ];
+        let packed = snapshot::pack(
+            game,
+            &entries,
+            &snapshot::PackIdentity {
+                schema_version: Some("1".into()),
+                build_exe_sha256: Some(content.source_game.executable_sha256.clone()),
+                build_pinned: true,
+                content_manifest: Some(content),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        fs::write(path, packed).unwrap();
     }
 
     fn known_campaign_identity_value() -> Value {
@@ -2820,17 +4045,15 @@ mod tests {
     #[test]
     fn opened_recording_exposes_only_the_validated_recorder_campaign_identity() {
         let root = temp_root("campaign_identity_exposure");
-        write_playable_store(&root, "g", true, "CAMPAIGN");
-        let manifest_path = root
-            .join("g")
-            .join("recorder")
-            .join("native_session_manifest.json");
-        let mut manifest: Value =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest["campaign_identity"] = known_campaign_identity_value();
-        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let recording = root.join("campaign.battleplan");
+        write_portable_recorder_fixture(
+            &recording,
+            "g",
+            "CAMPAIGN",
+            Some(known_campaign_identity_value()),
+        );
 
-        let source = open_recording(&root).unwrap();
+        let source = open_recording(&recording).unwrap();
         let identity = source
             .campaign_identity()
             .expect("valid recorder identity must survive source admission");
@@ -2930,24 +4153,36 @@ mod tests {
     #[test]
     fn root_swap_full_lifecycle_stays_in_anchored_graph() {
         let parent = temp_root("root_swap");
-        let root = parent.join("store");
-        fs::create_dir_all(&root).unwrap();
-        write_playable_store(&root, "g", true, "ANCHORED");
-        let moved = parent.join("anchored_object");
-        let source = open_recording_impl_with_post_anchor(&root, None, None, None, |_| {
-            fs::rename(&root, &moved).unwrap();
-            fs::create_dir_all(&root).unwrap();
-            write_playable_store(&root, "g", false, "IMPOSTOR");
+        let recording = parent.join("store.battleplan");
+        write_portable_recorder_fixture(&recording, "g", "ANCHORED", None);
+        let moved = parent.join("anchored_object.battleplan");
+        let source = open_recording_impl_with_post_anchor(&recording, None, None, None, |_| {
+            // Windows gives the retained container handle delete-denial
+            // semantics, so pathname replacement itself must fail. Unix
+            // permits unlink/rename of an open object; there the replacement
+            // succeeds and the retained handle must still supply ANCHORED.
+            #[cfg(windows)]
+            {
+                fs::rename(&recording, &moved)
+                    .expect_err("the retained container handle must deny pathname replacement");
+                assert!(recording.is_file());
+                assert!(!moved.exists());
+            }
+            #[cfg(not(windows))]
+            {
+                fs::rename(&recording, &moved).unwrap();
+                write_portable_recorder_fixture(&recording, "g", "IMPOSTOR", None);
+            }
         })
         .unwrap();
 
         let frame = source.frame(1).unwrap();
         assert_eq!(frame.rest["marker"], "ANCHORED");
-        assert_eq!(frame.rest["session"]["active_dlcs"], json!(["DLC A"]));
-        assert_eq!(frame.rest["session"]["localisation_language"], "l_english");
+        assert_eq!(frame.rest["session"]["active_dlcs"], json!([]));
+        assert_eq!(frame.rest["session"]["localisation_language"], "english");
         assert_eq!(
             frame.rest["session"]["display_variant"]["physical_width"],
-            2752
+            1920
         );
         drop(source);
         let _ = fs::remove_dir_all(parent);
@@ -3037,7 +4272,11 @@ mod tests {
         let parent = temp_root("selected_game_swap");
         let root = parent.join("store");
         fs::create_dir_all(&root).unwrap();
-        write_playable_store(&root, "g", true, "OBJECT_A");
+        // Directory stores are a legacy compatibility surface. Recorder-owned
+        // metadata is portable-container-only, so this object-swap test keeps
+        // the directory fixture explicitly legacy while exercising the same
+        // retained selected-game handle boundary.
+        write_playable_store(&root, "g", false, "OBJECT_A");
         let source = open_recording(&root).unwrap();
 
         let original = root.join("g");
@@ -3686,6 +4925,13 @@ mod tests {
                     | "let ectx = format!(\"{ctx}.{}[{i}]\", path.join(\".\"));"
                     | "let rctx = format!(\"{ctx}.{}[{i}]\", path.join(\".\"));"
                     | "path.join(\".\")"
+            ),
+            "replay_core/lib.rs" => matches!(
+                line,
+                // Exact module re-export. The lexical F4 lint sees the `fs`
+                // suffix in `defs`; this line exposes no filesystem
+                // capability and performs no pathname operation.
+                "pub use static_focus_defs::{"
             ),
             _ => false,
         }

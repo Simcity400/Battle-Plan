@@ -1,6 +1,7 @@
 //! A34 complete heterogeneous country-decision panel carrier (compact d87).
 //!
-//! DPN1 v2 preserves the exact materialized grid, not merely decision cards.
+//! DPN1 v3 preserves the exact materialized grid and raw interface state, not
+//! merely decision cards.
 //! Runtime order, geometry, category/event structure, scroll state, text, and
 //! alert membership come from the receipt-bound country-view update. The
 //! selected-Present receipt proves that materialization completed before the
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub const DOMAIN_ID: u16 = 87;
 pub const DOMAIN_NAME: &str = "decision_panel_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DPN1");
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const EXECUTABLE_SHA256: [u8; 32] =
     hex32(b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad");
 pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
@@ -27,7 +28,16 @@ pub const EXACT20_DATA_ARTIFACT_SHA256: [u8; 32] =
 /// `20260720T130318Z-wave5-a34-country-view-owner-tag-join-ro-f6d9b428`.
 pub const COUNTRY_VIEW_OWNER_TAG_MANIFEST_SHA256: [u8; 32] =
     hex32(b"a31b9fa4d886d509ceceef46819b6048331ef65065c2f07a8cc086e0868dd07a");
-pub const PRODUCTION_SCHEDULING_ENABLED: bool = false;
+/// Exact interface-state and numeric timer/cooldown leaf producers used by the
+/// ordinary semantic resolver.
+pub const SEMANTIC_LEAF_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"082d3f982a260c085f19c320bf1368e79395821e3b0a42007eb1648bcee6348e");
+/// Exact decision-definition +0x220/0x22c on-map vector and 0x130 entry stride.
+pub const ON_MAP_IDENTITY_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"a412d4480732030ae8bbffd5c135f9e22029bdcdee40dcd760c025da30fc0130");
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
+/// Optional regression evidence only. Production is owned by the exact static
+/// hook graph and fail-closed ordinary collector transaction.
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 pub const MAX_ROWS: usize = 32_768;
 pub const MAX_TEXT_BYTES: usize = 16_384;
@@ -147,6 +157,12 @@ pub struct DecisionRow {
     pub presentation_index: u32,
     pub availability: Availability,
     pub lifecycle: Lifecycle,
+    /// Exact raw result of the engine's decision interface-state helper.
+    /// On-map materializers have no equivalent helper and retain `None`.
+    pub interface_state: Option<u32>,
+    /// Stable ordinal in the owning decision definition's +0x220 on-map
+    /// descriptor vector. Present only for on-map materializer children.
+    pub on_map_entry_ordinal: Option<u32>,
     pub target: Option<Target>,
     pub cost: Option<Cost>,
     pub remaining_timer_days: Option<i32>,
@@ -220,6 +236,39 @@ fn event_identity_ok(value: &str) -> bool {
                 && id.bytes().all(|byte| byte.is_ascii_digit())
                 && id.parse::<u32>().is_ok()
         })
+}
+
+fn interface_state_matches(row: &DecisionRow) -> bool {
+    if row.interface_state.is_none() != row.on_map_entry_ordinal.is_some() {
+        return false;
+    }
+    if row.cooldown_remaining_days.is_some_and(|days| days > 0) {
+        return row.availability == Availability::OnCooldown
+            && row.lifecycle == Lifecycle::Pending;
+    }
+    match row.interface_state {
+        None => {
+            row.availability == Availability::Available
+                && row.lifecycle == Lifecycle::Pending
+        }
+        Some(1 | 6 | 9) if row.on_map_entry_ordinal.is_none() => {
+            row.availability == Availability::Available
+                && row.lifecycle == Lifecycle::Pending
+        }
+        Some(3 | 4 | 10 | 11) if row.on_map_entry_ordinal.is_none() => {
+            row.availability == Availability::Active
+                && row.lifecycle == Lifecycle::Running
+        }
+        Some(12) if row.on_map_entry_ordinal.is_none() => {
+            row.availability == Availability::Unavailable
+                && row.lifecycle == Lifecycle::Completed
+        }
+        Some(0 | 2 | 5 | 7 | 8) if row.on_map_entry_ordinal.is_none() => {
+            row.availability == Availability::Unavailable
+                && row.lifecycle == Lifecycle::Pending
+        }
+        _ => false,
+    }
 }
 
 pub fn validate_snapshot(snapshot: &DecisionPanelSnapshot) -> Result<(), CarrierError> {
@@ -328,10 +377,17 @@ pub fn validate_snapshot(snapshot: &DecisionPanelSnapshot) -> Result<(), Carrier
             || row.timer_text.as_deref().is_some_and(|v| !text_ok(v, true))
             || row.remaining_timer_days.is_some_and(|v| v < 0)
             || row.cooldown_remaining_days.is_some_and(|v| v < 0)
+            || row.interface_state.is_some_and(|value| value > 12)
+            || row.on_map_entry_ordinal == Some(u32::MAX)
+            || !interface_state_matches(row)
         {
             return invalid("DPN1 decision row identity/text/timer invalid");
         }
-        if !identities.insert((row.decision_id.clone(), row.target.clone())) {
+        if !identities.insert((
+            row.decision_id.clone(),
+            row.target.clone(),
+            row.on_map_entry_ordinal,
+        )) {
             return invalid("DPN1 duplicate decision target");
         }
         match &row.target {
@@ -392,7 +448,7 @@ pub fn collect_and_encode<S: ExactDecisionPanelSource>(
     frame_hour: u64,
     elapsed_wall_ms: u64,
 ) -> Result<Vec<u8>, CarrierError> {
-    if !PRODUCTION_SCHEDULING_ENABLED || !LIVE_FIXTURE_ACCEPTED {
+    if !PRODUCTION_SCHEDULING_ENABLED {
         return Err(CarrierError::ActivationDisabled);
     }
     if !source.is_exact_a729_materializer_source() {
@@ -444,6 +500,8 @@ pub fn encode_payload(frame: &DecisionPanelFrame) -> Result<Vec<u8>, CarrierErro
     output.extend_from_slice(&EXECUTABLE_SHA256);
     output.extend_from_slice(&EXACT20_FUNCTION_MANIFEST_SHA256);
     output.extend_from_slice(&EXACT20_DATA_ARTIFACT_SHA256);
+    output.extend_from_slice(&SEMANTIC_LEAF_MANIFEST_SHA256);
+    output.extend_from_slice(&ON_MAP_IDENTITY_MANIFEST_SHA256);
     output.push(u8::from(frame.snapshot.is_some()));
     output.extend_from_slice(&[0; 3]);
     if let Some(snapshot) = &frame.snapshot {
@@ -522,6 +580,8 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecisionPanelFrame, CarrierError
     if reader.bytes(32)? != EXECUTABLE_SHA256
         || reader.bytes(32)? != EXACT20_FUNCTION_MANIFEST_SHA256
         || reader.bytes(32)? != EXACT20_DATA_ARTIFACT_SHA256
+        || reader.bytes(32)? != SEMANTIC_LEAF_MANIFEST_SHA256
+        || reader.bytes(32)? != ON_MAP_IDENTITY_MANIFEST_SHA256
     {
         return invalid("DPN1 receipt identity mismatch");
     }
@@ -700,6 +760,8 @@ fn encode_row(output: &mut Vec<u8>, row: &DecisionRow) {
     i32v(output, row.cooldown_remaining_days.unwrap_or(-1));
     i64v(output, row.cost.as_ref().and_then(|v| v.political_power).unwrap_or(0));
     u32v(output, match &row.target { Some(Target::State(v)) => *v, _ => 0 });
+    u32v(output, row.interface_state.unwrap_or(u32::MAX));
+    u32v(output, row.on_map_entry_ordinal.unwrap_or(u32::MAX));
     textv(output, &row.decision_id);
     textv(output, &row.category_id);
     textv(output, match &row.target { Some(Target::Country(v)) => v, _ => "" });
@@ -721,6 +783,17 @@ fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
     let cooldown_remaining_days = optional_nonnegative(reader.i32()?, flags & 64 != 0)?;
     let political_power = reader.i64()?;
     let state_id = reader.u32()?;
+    let raw_interface_state = reader.u32()?;
+    let interface_state = if raw_interface_state == u32::MAX {
+        None
+    } else if raw_interface_state <= 12 {
+        Some(raw_interface_state)
+    } else {
+        return invalid("DPN1 interface state encoding invalid");
+    };
+    let raw_on_map_entry_ordinal = reader.u32()?;
+    let on_map_entry_ordinal = (raw_on_map_entry_ordinal != u32::MAX)
+        .then_some(raw_on_map_entry_ordinal);
     let decision_id = reader.text()?;
     let category_id = reader.text()?;
     let target_country = reader.text()?;
@@ -756,6 +829,8 @@ fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
         presentation_index,
         availability,
         lifecycle,
+        interface_state,
+        on_map_entry_ordinal,
         target,
         cost,
         remaining_timer_days,
@@ -833,6 +908,8 @@ mod tests {
             presentation_index: 1,
             availability: Availability::Available,
             lifecycle: Lifecycle::Pending,
+            interface_state: Some(1),
+            on_map_entry_ordinal: None,
             target: None,
             cost: Some(Cost { political_power: Some(50), custom_cost_available: None, formatted_text: Some("50".into()) }),
             remaining_timer_days: None,
@@ -873,6 +950,34 @@ mod tests {
     }
 
     #[test]
+    fn on_map_ordinals_preserve_duplicate_definition_rows() {
+        let mut frame = frame();
+        let snapshot = frame.snapshot.as_mut().unwrap();
+        snapshot.rows[0].interface_state = None;
+        snapshot.rows[0].on_map_entry_ordinal = Some(0);
+        let mut second = snapshot.rows[0].clone();
+        second.presentation_index = 2;
+        second.on_map_entry_ordinal = Some(1);
+        snapshot.rows.push(second);
+        snapshot.children.push(DecisionPanelChild {
+            presentation_index: 2,
+            kind: PanelChildKind::Decision,
+            decision_row_index: Some(1),
+            identity: "decision_one".into(),
+            name_text: Some("Exact decision".into()),
+            secondary_text: None,
+            expanded: None,
+            x: 0,
+            y: 99,
+            width: 502,
+            height: 41,
+        });
+        snapshot.available_alert_count = 2;
+        let encoded = encode_payload(&frame).unwrap();
+        assert_eq!(decode_payload(&encoded).unwrap(), frame);
+    }
+
+    #[test]
     fn orphan_decision_row_rejects_whole_panel() {
         let mut frame = frame();
         frame.snapshot.as_mut().unwrap().children.pop();
@@ -880,12 +985,12 @@ mod tests {
     }
 
     #[test]
-    fn production_source_remains_inert() {
+    fn production_source_codec_is_enabled() {
         struct Source;
         impl ExactDecisionPanelSource for Source {
             fn is_exact_a729_materializer_source(&self) -> bool { true }
             fn read_decision_panel(&self, _: u64) -> Result<DecisionPanelSnapshot, String> { Ok(frame().snapshot.unwrap()) }
         }
-        assert_eq!(collect_and_encode(&Source, 55, 0), Err(CarrierError::ActivationDisabled));
+        assert!(collect_and_encode(&Source, 55, 0).is_ok());
     }
 }

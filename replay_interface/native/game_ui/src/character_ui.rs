@@ -14,8 +14,9 @@ use crate::gui::{GuiElement, LayoutSet};
 use crate::paradox_text::{parse_file, Document};
 use crate::{GameUiError, Result};
 use replay_core::{
-    AceRosterExactView, CharacterAceListContext, CharacterPresentationExactView, CharacterRosterExactView,
-    CharacterTraitNodeState, UnitLeaderExactRow, ViewStatus,
+    AceRosterExactView, AdvisorRosterExactRow, CharacterAceListContext,
+    CharacterPresentationExactView, CharacterRosterExactView, CharacterTraitNodeState,
+    UnitLeaderExactRow, ViewStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -197,8 +198,8 @@ pub enum LeaderPortraitContext {
 impl LeaderPortraitContext {
     pub fn from_exact_leader(row: &UnitLeaderExactRow) -> Result<Self> {
         match (row.leader_kind_raw, row.leader_kind.as_str()) {
-            (0, "army") => Ok(Self::Army),
-            (1, "navy") => Ok(Self::Navy),
+            (1, "army") => Ok(Self::Army),
+            (2, "navy") => Ok(Self::Navy),
             (raw, kind) => Err(invalid(format!(
                 "leader {} portrait role contradicts kind/raw {kind:?}/{raw}",
                 row.unit_leader_id
@@ -290,6 +291,21 @@ impl CharacterPortraitCatalog {
                 .then(|| unique.iter().next().copied())
                 .flatten()?
         };
+        let sprite = sprites.get(gfx)?;
+        Some((gfx.to_string(), sprite.primary_texture()?.to_string()))
+    }
+
+    pub fn resolve_role(
+        &self,
+        token: &str,
+        role: &str,
+        sprites: &SpriteRegistry,
+    ) -> Option<(String, String)> {
+        let choices = &self.by_token.get(token)?.0;
+        let keys = choices.get(&role.to_ascii_lowercase())?;
+        let gfx = (keys.len() == 1)
+            .then(|| keys.iter().next().map(String::as_str))
+            .flatten()?;
         let sprite = sprites.get(gfx)?;
         Some((gfx.to_string(), sprite.primary_texture()?.to_string()))
     }
@@ -524,6 +540,112 @@ pub struct CharacterPresentationInput {
 pub struct AdmittedCharacterUi {
     pub leaders: Vec<LeaderPresentationInput>,
     pub aces: Vec<AcePresentationInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedAdvisorRow {
+    pub producer_ordinal: usize,
+    pub char_id: u64,
+    pub character_token: String,
+    pub idea_token: String,
+    pub slot: Option<String>,
+    pub ledger: Option<String>,
+    pub appointed: bool,
+    pub portrait_gfx: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedCabinetUi {
+    pub advisors: Vec<AdmittedAdvisorRow>,
+}
+
+/// Production cabinet consumer for d47. Membership and appointment come only
+/// from the authenticated live rows; portrait identity comes from either the
+/// exact prewarmed d47 character row or the effective game-file civilian role.
+pub fn admit_exact_cabinet(
+    roster: &CharacterRosterExactView,
+    portraits: &CharacterPortraitCatalog,
+    sprites: &SpriteRegistry,
+) -> Result<AdmittedCabinetUi> {
+    if roster.status != ViewStatus::Present {
+        return Err(invalid("character/advisor roster is not Present"));
+    }
+    if !roster.advisor_roster_complete || !roster.appointed_advisors_complete {
+        return Err(invalid(
+            "advisor roster or appointed-advisor set is not complete",
+        ));
+    }
+    let characters = roster
+        .characters
+        .iter()
+        .map(|row| (row.char_id, row.token.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    if characters.len() != roster.characters.len() {
+        return Err(invalid("exact roster contains duplicate character identity"));
+    }
+    let roster_keys = advisor_keys(&roster.advisor_roster)?;
+    let appointed_keys = advisor_keys(&roster.appointed_advisors)?;
+    if appointed_keys.iter().any(|key| !roster_keys.contains(key)) {
+        return Err(invalid("appointed advisor is absent from the exact roster"));
+    }
+    let mut admitted = Vec::with_capacity(roster.advisor_roster.len());
+    for row in &roster.advisor_roster {
+        let token = characters
+            .get(&row.char_id)
+            .ok_or_else(|| invalid(format!("advisor {} has no character", row.idea_token)))?;
+        let exact_gfx = {
+            let matches = roster
+                .character_portraits
+                .iter()
+                .filter(|portrait| portrait.char_id == row.char_id && portrait.size == "large")
+                .map(|portrait| portrait.gfx.as_str())
+                .collect::<BTreeSet<_>>();
+            (matches.len() == 1)
+                .then(|| matches.iter().next().copied())
+                .flatten()
+        };
+        let portrait_gfx = if let Some(gfx) = exact_gfx {
+            let sprite = sprites
+                .get(gfx)
+                .and_then(|sprite| sprite.primary_texture())
+                .ok_or_else(|| invalid(format!("advisor portrait {gfx} has no physical sprite")))?;
+            let _ = sprite;
+            gfx.to_string()
+        } else {
+            portraits
+                .resolve_role(token, "civilian", sprites)
+                .map(|(gfx, _)| gfx)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "advisor {} has no exact physical portrait identity",
+                        row.idea_token
+                    ))
+                })?
+        };
+        admitted.push(AdmittedAdvisorRow {
+            producer_ordinal: row.producer_ordinal,
+            char_id: row.char_id,
+            character_token: (*token).to_string(),
+            idea_token: row.idea_token.clone(),
+            slot: row.slot.clone(),
+            ledger: row.ledger.clone(),
+            appointed: appointed_keys.contains(&(row.char_id, row.idea_token.as_str())),
+            portrait_gfx,
+        });
+    }
+    Ok(AdmittedCabinetUi { advisors: admitted })
+}
+
+fn advisor_keys<'a>(
+    rows: &'a [AdvisorRosterExactRow],
+) -> Result<BTreeSet<(u64, &'a str)>> {
+    let mut keys = BTreeSet::new();
+    for row in rows {
+        if row.idea_token.is_empty() || !keys.insert((row.char_id, row.idea_token.as_str())) {
+            return Err(invalid("empty or duplicate advisor identity"));
+        }
+    }
+    Ok(keys)
 }
 
 /// Overlay every unambiguous effective-game-file leader portrait onto the
@@ -920,7 +1042,8 @@ pub fn required_character_presentation_inputs(
 mod tests {
     use super::*;
     use replay_core::{
-        AceExactRow, CharacterIdentityExactRow, UnitLeaderAssignmentExact,
+        AceExactRow, AdvisorRosterExactRow, CharacterIdentityExactRow,
+        CharacterPortraitExactRow, UnitLeaderAssignmentExact,
         UnitLeaderAssignmentKind, UnitLeaderExactRow,
     };
 
@@ -936,12 +1059,17 @@ mod tests {
             }],
             country_leader_roles: Vec::new(),
             active_rulers: Vec::new(),
+            advisor_roster_complete: true,
+            advisor_roster: Vec::new(),
+            appointed_advisors_complete: true,
+            appointed_advisors: Vec::new(),
+            character_portraits: Vec::new(),
             unit_leaders: vec![UnitLeaderExactRow {
                 producer_ordinal: 0,
                 unit_leader_id: 7,
                 char_id: 2,
                 leader_kind: "army".into(),
-                leader_kind_raw: 0,
+                leader_kind_raw: 1,
                 skill: 4,
                 experience_raw: 100,
                 attack: 4,
@@ -1246,6 +1374,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unresolved.leaders[0].portrait_gfx, "GFX_portrait");
+    }
+
+    #[test]
+    fn exact_d47_advisor_roster_and_appointment_reach_production_cabinet() {
+        let mut exact = roster();
+        exact.advisor_roster.push(AdvisorRosterExactRow {
+            producer_ordinal: 0,
+            char_id: 2,
+            slot: Some("political_advisor".into()),
+            ledger: Some("political_advisor".into()),
+            idea_token: "GER_test_advisor".into(),
+        });
+        exact.appointed_advisors = exact.advisor_roster.clone();
+        exact.character_portraits.push(CharacterPortraitExactRow {
+            producer_ordinal: 0,
+            char_id: 2,
+            role: "civilian".into(),
+            size: "large".into(),
+            gfx: "GFX_portrait_GER_test_civilian".into(),
+        });
+        let gfx_doc = crate::paradox_text::parse_str(
+            r#"spriteTypes = {
+                spriteType = {
+                    name = GFX_portrait_GER_test_civilian
+                    texturefile = "gfx/leaders/GER/test_civilian.dds"
+                }
+            }"#,
+        );
+        let mut sprites = SpriteRegistry::new();
+        sprites.add_document("interface/test.gfx", &gfx_doc);
+        let admitted = admit_exact_cabinet(
+            &exact,
+            &CharacterPortraitCatalog::default(),
+            &sprites,
+        )
+        .unwrap();
+        assert_eq!(admitted.advisors.len(), 1);
+        assert!(admitted.advisors[0].appointed);
+        assert_eq!(
+            admitted.advisors[0].portrait_gfx,
+            "GFX_portrait_GER_test_civilian"
+        );
+
+        exact.appointed_advisors[0].idea_token = "GER_not_in_roster".into();
+        assert!(admit_exact_cabinet(
+            &exact,
+            &CharacterPortraitCatalog::default(),
+            &sprites,
+        )
+        .is_err());
     }
 
     #[test]

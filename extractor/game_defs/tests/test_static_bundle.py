@@ -261,6 +261,32 @@ def _fixture(tmp_path: Path):
                 {"label": "Fixture Mod", "replace_path": []},
             ],
         ),
+        _artifact(
+            src,
+            "focus_defs_static",
+            "focus_defs_static.static_artifact.v1",
+            {
+                "meta": {
+                    "tree_count": 1,
+                    "focus_count": 1,
+                    "shared_focus_count": 0,
+                    "joint_focus_count": 0,
+                    "focus_background_style_count": 1,
+                    "files_parsed": 1,
+                },
+                "trees": {"fixture_tree": {"id": "fixture_tree"}},
+                "focuses": {"fixture_focus": {"id": "fixture_focus"}},
+                "focus_background_styles": {
+                    "default_style": {"name": "default_style"}
+                },
+            },
+            loc_sha=loc_sha,
+            layers=[
+                {"label": "vanilla", "replace_path": []},
+                {"label": "dlc/dlc-1", "replace_path": []},
+                {"label": "Fixture Mod", "replace_path": []},
+            ],
+        ),
     ]
     exe = tmp_path / "hoi4.exe"
     exe.write_bytes(b"test executable")
@@ -414,7 +440,7 @@ def test_create_and_verify_bound_bundle_with_closed_token_join(tmp_path):
     assert report["counts"] == {"resolved": 2, "explicitly_omitted": 1, "unknown": 0}
     assert SB.verify_bundle(
         bundle, exe=exe, mod_state=mod, dlc_state=dlc, load_order=load
-    )["artifact_count"] == 7
+    )["artifact_count"] == 8
 
 
 def test_technology_sharing_intern_ordinal_is_never_static_joined(tmp_path):
@@ -745,7 +771,7 @@ def test_deferred_join_requires_provenance_and_is_structurally_verified(tmp_path
         "passed": True,
         "bundle_id": admitted["bundle_id"],
         "product_modset_sha256": admitted["product_modset_sha256"],
-        "artifact_count": 7,
+        "artifact_count": 8,
         "token_join_status": "deferred",
         "verification_phase": "pre_injection_deferred_allowed",
     }
@@ -1015,7 +1041,7 @@ def test_verify_cli_explicit_deferred_phase_requires_deferred_result(tmp_path, m
         return {
             "passed": True,
             "bundle_id": "a" * 64,
-            "artifact_count": 7,
+            "artifact_count": 8,
             "token_join_status": "deferred",
             "verification_phase": "pre_injection_deferred_allowed",
         }
@@ -1032,7 +1058,7 @@ def test_verify_cli_deferred_phase_rejects_finalized_result(tmp_path, monkeypatc
         lambda *args, **kwargs: {
             "passed": True,
             "bundle_id": "a" * 64,
-            "artifact_count": 7,
+            "artifact_count": 8,
             "token_join_status": "passed",
             "verification_phase": "post_capture_finalized",
         },

@@ -1268,7 +1268,7 @@ fn compact_stream_container_fails_closed() {
     let game = "native_session_fixture";
     let index = json!({
         "game_id": game,
-        "schema_version": "native_collector_session_v1",
+        "schema_version": "1",
         "snapshots": []
     });
     // Mirrors extractor/native/recorder_host's production layout.
@@ -1325,7 +1325,7 @@ fn compact_stream_container_fails_closed() {
         },
     ];
     let identity = PackIdentity {
-        schema_version: Some("native_collector_session_v1".to_string()),
+        schema_version: Some("1".to_string()),
         ..Default::default()
     };
     let path = root.join("compact_only.battleplan");
@@ -1582,6 +1582,172 @@ fn metadata_snapshot(game: &str, rest: Value) -> Value {
     snapshot
 }
 
+fn recorder_portable_timeline() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "format": "hoi4_compact_stream_timeline_v1",
+        "stream_format": "compact",
+        "stream": "collector_raw/collector_stream.bin",
+        "session_manifest": "recorder/native_session_manifest.json",
+        "raw_stream_role": "collector_compact_stream",
+        "session_manifest_role": "recorder_manifest"
+    }))
+    .unwrap()
+}
+
+fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
+    let mut manifest = replay_core::ContentManifest {
+        schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "a".repeat(64),
+        source_game: replay_core::SourceGameIdentity {
+            version: "1.0".into(),
+            build: "metadata-fixture".into(),
+            executable_sha256: "b".repeat(64),
+            build_profile: "metadata-fixture".into(),
+        },
+        source_profile: replay_core::SourceProfileIdentity {
+            profile_id: "metadata-fixture".into(),
+            playset_id: "metadata-fixture".into(),
+            selection_sha256: "0".repeat(64),
+        },
+        effective_vfs_manifest_sha256: "c".repeat(64),
+        ordered_layers: Vec::new(),
+        dlc_selection: Vec::new(),
+        localisation_language: "l_english".into(),
+        required_settings: std::collections::BTreeMap::from([
+            ("physical_width".into(), "2752".into()),
+            ("physical_height".into(), "1152".into()),
+            ("min_gui_width".into(), "1280".into()),
+            ("min_gui_height".into(), "720".into()),
+            ("gui_scale_f32_bits".into(), 1.0f32.to_bits().to_string()),
+            ("refresh_rate_hz".into(), "60".into()),
+            ("max_refresh_rate_hz".into(), "75".into()),
+            ("fullscreen".into(), "false".into()),
+            ("borderless".into(), "true".into()),
+            ("display_mode".into(), "borderless_fullscreen".into()),
+            ("settings_file_sha256".into(), "aa".repeat(32)),
+        ]),
+        required_content: Vec::new(),
+        manifest_digest_sha256: None,
+    };
+    manifest.source_profile.selection_sha256 =
+        manifest.computed_selection_sha256().unwrap();
+    manifest.with_computed_digest().unwrap()
+}
+
+fn absent_static_artifact_roster() -> Vec<Value> {
+    [
+        (
+            "templates_equipment_catalog",
+            "static/templates_equipment_catalog/domain59_static_catalog.json",
+        ),
+        (
+            "localisation_join",
+            "static/localisation_join/localisation_catalog.json",
+        ),
+        (
+            "decisions_static_definitions",
+            "static/decisions_static_definitions/decision_definitions_catalog.json",
+        ),
+        (
+            "idea_tech_loc_xref_static",
+            "static/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json",
+        ),
+        (
+            "ship_definitions_static",
+            "static/ship_definitions_static/ship_definitions_catalog.json",
+        ),
+        (
+            "gfx_icon_asset_manifest_static",
+            "static/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json",
+        ),
+        (
+            "technology_sharing_static",
+            "static/technology_sharing_static/technology_sharing_static.json",
+        ),
+        (
+            "focus_defs_static",
+            "static/focus_defs_static/focus_defs_static.json",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, path)| json!({"name": name, "path": path, "present": false}))
+    .collect()
+}
+
+fn write_portable_metadata_container(root: &Path, tag: &str, snapshot: Value) -> PathBuf {
+    let game = format!("metadata_{tag}");
+    let content = portable_content_manifest_fixture();
+    let mut recorder_manifest = resolved_recorder_manifest();
+    recorder_manifest["replay_game_id"] = json!(game);
+    recorder_manifest["replay_packaging"] = json!({"static_artifacts": []});
+    recorder_manifest["portable_content_manifest"] =
+        serde_json::to_value(&content).unwrap();
+    recorder_manifest["modset"]["game"] =
+        json!({"exe_sha256": content.source_game.executable_sha256.clone()});
+    let entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "host_fold_skipped": false,
+                "static_artifacts": absent_static_artifact_roster(),
+                "snapshots": [{
+                    "hour_index": 1,
+                    "date": "1936.1.1.1",
+                    "file": "000000000001.snapshot.json"
+                }]
+            }))
+            .unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/timeline.json"),
+            bytes: recorder_portable_timeline(),
+            role: "timeline",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/000000000001.snapshot.json"),
+            bytes: serde_json::to_vec(&snapshot).unwrap(),
+            role: "snapshot",
+            hour_index: Some(1),
+        },
+        PackEntry {
+            path: format!("payload/{game}/recorder/native_session_manifest.json"),
+            bytes: serde_json::to_vec(&recorder_manifest).unwrap(),
+            role: "recorder_manifest",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+            bytes: b"H4CR portable metadata fixture".to_vec(),
+            role: "collector_compact_stream",
+            hour_index: None,
+        },
+    ];
+    let path = root.join(format!("{tag}.battleplan"));
+    fs::write(
+        &path,
+        pack(
+            &game,
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".into()),
+                build_exe_sha256: Some(content.source_game.executable_sha256.clone()),
+                build_pinned: true,
+                content_manifest: Some(content),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
 fn write_metadata_container(
     root: &Path,
     tag: &str,
@@ -1712,17 +1878,10 @@ fn write_metadata_container_without_timeline(
 #[test]
 fn recorder_metadata_binds_session_metadata_end_to_end() {
     let root = unique_temp_dir("recorder_metadata_e2e");
-    let manifest = serde_json::to_vec(&resolved_recorder_manifest()).unwrap();
-    let path = write_metadata_container(
+    let path = write_portable_metadata_container(
         &root,
         "canonical",
-        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec(),
         metadata_snapshot("metadata_canonical", json!({"world": {"scenario": {}}})),
-        vec![(
-            "recorder/native_session_manifest.json".into(),
-            manifest,
-            "recorder_manifest",
-        )],
     );
     let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
     let frame = timeline.frame(1).unwrap();
@@ -2004,8 +2163,6 @@ fn unresolved_or_incomplete_recorder_binding_fails_closed() {
 #[test]
 fn snapshot_session_or_scenario_conflicts_are_rejected_before_injection() {
     let root = unique_temp_dir("metadata_conflicts");
-    let timeline = br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec();
-    let manifest = serde_json::to_vec(&resolved_recorder_manifest()).unwrap();
     let cases = [
         (
             "session_conflict",
@@ -2024,16 +2181,10 @@ fn snapshot_session_or_scenario_conflicts_are_rejected_before_injection() {
         ),
     ];
     for (tag, rest, expected_context) in cases {
-        let path = write_metadata_container(
+        let path = write_portable_metadata_container(
             &root,
             tag,
-            timeline.clone(),
             metadata_snapshot(&format!("metadata_{tag}"), rest),
-            vec![(
-                "recorder/native_session_manifest.json".into(),
-                manifest.clone(),
-                "recorder_manifest",
-            )],
         );
         let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
         let message = timeline.frame(1).err().expect("must reject").to_string();
@@ -2251,17 +2402,30 @@ fn same_parent_metadata_hard_link_alias_is_ambiguous() {
 }
 
 #[test]
-fn canonical_and_genuinely_legacy_directory_stores_both_open() {
+fn canonical_portable_opens_recorder_directory_rejects_and_legacy_directory_opens() {
     let root = unique_temp_dir("metadata_directory_positives");
-    let canonical_root = root.join("canonical");
-    let canonical_game = "canonical_directory";
+    let recorder_directory_root = root.join("recorder_directory_rejected");
     write_metadata_directory(
-        &canonical_root,
-        canonical_game,
-        br#"{"session_manifest":"recorder/native_session_manifest.json"}"#,
+        &recorder_directory_root,
+        "recorder_directory",
+        &recorder_portable_timeline(),
         &serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
     );
-    let timeline = WorldTimeline::open(open_recording(&canonical_root).unwrap()).unwrap();
+    let message = open_recording(&recorder_directory_root)
+        .err()
+        .expect("recorder-owned metadata must not bypass portable container authority")
+        .to_string();
+    assert!(
+        message.contains("requires a portable container authority"),
+        "{message}"
+    );
+
+    let canonical_path = write_portable_metadata_container(
+        &root,
+        "canonical_portable",
+        metadata_snapshot("metadata_canonical_portable", json!({})),
+    );
+    let timeline = WorldTimeline::open(open_recording(&canonical_path).unwrap()).unwrap();
     let frame = timeline.frame(1).unwrap();
     assert_eq!(
         frame.session_metadata().active_dlcs,

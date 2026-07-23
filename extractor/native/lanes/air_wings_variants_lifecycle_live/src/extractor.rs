@@ -7,8 +7,7 @@ use crate::domain46_air_ace_roster_live::{
 };
 use crate::domain46_air_variant_archetypes_live::{
     AirVariantArchetypeHeader, AirVariantArchetypeRow, FIXED_SCALE_RAW, SOURCE_LIVE_STATS,
-    SOURCE_LIVE_TOKEN_DICTIONARY, SOURCE_STATIC_HEURISTIC, SOURCE_STATIC_SOURCE_ENUM,
-    STATUS_DELTA_DATA,
+    SOURCE_LIVE_TOKEN_DICTIONARY, STATUS_DELTA_DATA,
 };
 use std::collections::BTreeMap;
 
@@ -248,19 +247,10 @@ pub fn build_air_variant_archetype_payload_with_token_dictionary(
 }
 
 pub fn build_air_variant_archetype_row(input: &LiveVariantInput) -> AirVariantArchetypeRow {
-    let closure = close_or_badge_equipment_token(
-        input.equipment_token_raw,
-        input.equipment_token_name.as_deref(),
-    );
+    let closure = close_or_badge_equipment_token(input.equipment_token_name.as_deref());
     let mut source_mask = SOURCE_LIVE_STATS;
     if input.equipment_token_name.is_some() {
         source_mask |= SOURCE_LIVE_TOKEN_DICTIONARY;
-    }
-    if input.equipment_token_name.is_none() {
-        source_mask |= SOURCE_STATIC_HEURISTIC;
-    }
-    if closure.base_airframe_token.is_some() {
-        source_mask |= SOURCE_STATIC_SOURCE_ENUM;
     }
 
     AirVariantArchetypeRow {
@@ -277,189 +267,24 @@ pub fn build_air_variant_archetype_row(input: &LiveVariantInput) -> AirVariantAr
     }
 }
 
-pub fn close_or_badge_equipment_token(
-    equipment_token_raw: u32,
-    token_name: Option<&str>,
-) -> ArchetypeClosure {
-    if let Some(token) = token_name {
-        return classify_equipment_token(token).unwrap_or(ArchetypeClosure {
-            archetype_token: Some(token.to_string()),
-            base_airframe_token: None,
-            role_token: None,
-        });
-    }
+/// Bind only an authenticated live token-dictionary identity.
+///
+/// A raw numeric token is not a string identity, and spelling-based airframe
+/// or role classification is not static-catalog authority. Missing dictionary
+/// entries therefore remain unresolved. Static catalog enrichments may be
+/// added only by a producer that also supplies its admitted catalog hash.
+pub fn close_or_badge_equipment_token(token_name: Option<&str>) -> ArchetypeClosure {
     ArchetypeClosure {
-        archetype_token: Some(format!("equipment_token_raw_{equipment_token_raw}")),
+        archetype_token: token_name.map(str::to_string),
         base_airframe_token: None,
         role_token: None,
     }
-}
-
-pub fn classify_equipment_token(token: &str) -> Option<ArchetypeClosure> {
-    for rule in BASE_AIRFRAME_RULES {
-        if matches_airframe_rule(token, rule.needle) {
-            return Some(ArchetypeClosure {
-                archetype_token: Some(token.to_string()),
-                base_airframe_token: Some(rule.base_airframe.to_string()),
-                role_token: rule.role.map(str::to_string),
-            });
-        }
-    }
-    None
-}
-
-fn matches_airframe_rule(token: &str, needle: &str) -> bool {
-    if token == needle {
-        return true;
-    }
-    if let Some(suffix) = token.strip_prefix(needle) {
-        return suffix.starts_with('_') && suffix[1..].chars().all(|ch| ch.is_ascii_digit());
-    }
-    false
 }
 
 pub fn fixed_one_raw() -> i32 {
     FIXED_SCALE_RAW as i32
 }
 
-struct AirframeRule {
-    needle: &'static str,
-    base_airframe: &'static str,
-    role: Option<&'static str>,
-}
-
-const BASE_AIRFRAME_RULES: &[AirframeRule] = &[
-    AirframeRule {
-        needle: "cv_small_plane_naval_bomber_airframe",
-        base_airframe: "cv_small_plane_naval_bomber_airframe",
-        role: Some("naval_bomber"),
-    },
-    AirframeRule {
-        needle: "small_plane_naval_bomber_airframe",
-        base_airframe: "small_plane_naval_bomber_airframe",
-        role: Some("naval_bomber"),
-    },
-    AirframeRule {
-        needle: "medium_plane_scout_plane_airframe",
-        base_airframe: "medium_plane_scout_plane_airframe",
-        role: Some("scout"),
-    },
-    AirframeRule {
-        needle: "medium_plane_fighter_airframe",
-        base_airframe: "medium_plane_fighter_airframe",
-        role: Some("heavy_fighter"),
-    },
-    AirframeRule {
-        needle: "large_plane_maritime_patrol_plane_airframe",
-        base_airframe: "large_plane_maritime_patrol_plane_airframe",
-        role: Some("maritime_patrol_plane"),
-    },
-    AirframeRule {
-        needle: "cv_small_plane_cas_airframe",
-        base_airframe: "cv_small_plane_cas_airframe",
-        role: Some("cas"),
-    },
-    AirframeRule {
-        needle: "small_plane_cas_airframe",
-        base_airframe: "small_plane_cas_airframe",
-        role: Some("cas"),
-    },
-    AirframeRule {
-        needle: "cv_small_plane_airframe",
-        base_airframe: "cv_small_plane_airframe",
-        role: None,
-    },
-    AirframeRule {
-        needle: "small_plane_airframe",
-        base_airframe: "small_plane_airframe",
-        role: None,
-    },
-    AirframeRule {
-        needle: "medium_plane_airframe",
-        base_airframe: "medium_plane_airframe",
-        role: None,
-    },
-    AirframeRule {
-        needle: "large_plane_airframe",
-        base_airframe: "large_plane_airframe",
-        role: None,
-    },
-    AirframeRule {
-        needle: "transport_plane_equipment",
-        base_airframe: "transport_plane_equipment",
-        role: Some("transport"),
-    },
-    AirframeRule {
-        needle: "cv_CAS_equipment",
-        base_airframe: "cv_small_plane_cas_airframe",
-        role: Some("cas"),
-    },
-    AirframeRule {
-        needle: "CAS_equipment",
-        base_airframe: "small_plane_cas_airframe",
-        role: Some("cas"),
-    },
-    AirframeRule {
-        needle: "cv_nav_bomber_equipment",
-        base_airframe: "cv_small_plane_naval_bomber_airframe",
-        role: Some("naval_bomber"),
-    },
-    AirframeRule {
-        needle: "nav_bomber_equipment",
-        base_airframe: "small_plane_naval_bomber_airframe",
-        role: Some("naval_bomber"),
-    },
-    AirframeRule {
-        needle: "cv_fighter_equipment",
-        base_airframe: "cv_small_plane_airframe",
-        role: Some("fighter"),
-    },
-    AirframeRule {
-        needle: "fighter_equipment",
-        base_airframe: "small_plane_airframe",
-        role: Some("fighter"),
-    },
-    AirframeRule {
-        needle: "jet_fighter_equipment",
-        base_airframe: "small_plane_airframe",
-        role: Some("fighter"),
-    },
-    AirframeRule {
-        needle: "supersonic_fighter_equipment",
-        base_airframe: "small_plane_airframe",
-        role: Some("fighter"),
-    },
-    AirframeRule {
-        needle: "heavy_fighter_equipment",
-        base_airframe: "medium_plane_fighter_airframe",
-        role: Some("heavy_fighter"),
-    },
-    AirframeRule {
-        needle: "tac_bomber_equipment",
-        base_airframe: "medium_plane_airframe",
-        role: Some("tactical_bomber"),
-    },
-    AirframeRule {
-        needle: "jet_tac_bomber_equipment",
-        base_airframe: "medium_plane_airframe",
-        role: Some("tactical_bomber"),
-    },
-    AirframeRule {
-        needle: "strat_bomber_equipment",
-        base_airframe: "large_plane_airframe",
-        role: Some("strategic_bomber"),
-    },
-    AirframeRule {
-        needle: "jet_strat_bomber_equipment",
-        base_airframe: "large_plane_airframe",
-        role: Some("strategic_bomber"),
-    },
-    AirframeRule {
-        needle: "scout_plane_equipment",
-        base_airframe: "medium_plane_scout_plane_airframe",
-        role: Some("scout"),
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -470,65 +295,14 @@ mod tests {
     };
 
     #[test]
-    fn classifies_active_token_dictionary_airframe() {
-        let closure = classify_equipment_token("small_plane_cas_airframe_2").unwrap();
+    fn live_dictionary_identity_is_not_heuristically_classified() {
+        let closure = close_or_badge_equipment_token(Some("small_plane_cas_airframe_2"));
         assert_eq!(
             closure.archetype_token.as_deref(),
             Some("small_plane_cas_airframe_2")
         );
-        assert_eq!(
-            closure.base_airframe_token.as_deref(),
-            Some("small_plane_cas_airframe")
-        );
-        assert_eq!(closure.role_token.as_deref(), Some("cas"));
-    }
-
-    #[test]
-    fn classifies_transport_airframe() {
-        let closure = classify_equipment_token("transport_plane_equipment_1").unwrap();
-        assert_eq!(
-            closure.base_airframe_token.as_deref(),
-            Some("transport_plane_equipment")
-        );
-        assert_eq!(closure.role_token.as_deref(), Some("transport"));
-    }
-
-    #[test]
-    fn classifies_maritime_patrol_airframe() {
-        let closure =
-            classify_equipment_token("large_plane_maritime_patrol_plane_airframe_1").unwrap();
-        assert_eq!(
-            closure.base_airframe_token.as_deref(),
-            Some("large_plane_maritime_patrol_plane_airframe")
-        );
-        assert_eq!(closure.role_token.as_deref(), Some("maritime_patrol_plane"));
-    }
-
-    #[test]
-    fn classifies_legacy_equipment_tokens() {
-        let fighter = classify_equipment_token("fighter_equipment_0").unwrap();
-        assert_eq!(
-            fighter.base_airframe_token.as_deref(),
-            Some("small_plane_airframe")
-        );
-        assert_eq!(fighter.role_token.as_deref(), Some("fighter"));
-
-        let carrier_cas = classify_equipment_token("cv_CAS_equipment_2").unwrap();
-        assert_eq!(
-            carrier_cas.base_airframe_token.as_deref(),
-            Some("cv_small_plane_cas_airframe")
-        );
-        assert_eq!(carrier_cas.role_token.as_deref(), Some("cas"));
-
-        let tactical_bomber = classify_equipment_token("tac_bomber_equipment_3").unwrap();
-        assert_eq!(
-            tactical_bomber.base_airframe_token.as_deref(),
-            Some("medium_plane_airframe")
-        );
-        assert_eq!(
-            tactical_bomber.role_token.as_deref(),
-            Some("tactical_bomber")
-        );
+        assert_eq!(closure.base_airframe_token, None);
+        assert_eq!(closure.role_token, None);
     }
 
     #[test]
@@ -551,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_token_name_gets_raw_fail_closed_badge() {
+    fn missing_token_name_remains_unresolved_without_fabricated_badge() {
         let row = build_air_variant_archetype_row(&LiveVariantInput {
             variant_id: 5085,
             equipment_token_raw: 20_378,
@@ -560,12 +334,8 @@ mod tests {
             air_superiority_weight_raw: None,
             equipment_token_name: None,
         });
-        assert_eq!(
-            row.archetype_token.as_deref(),
-            Some("equipment_token_raw_20378")
-        );
+        assert_eq!(row.archetype_token, None);
         assert_eq!(row.base_airframe_token, None);
-        assert_ne!(row.source_mask & SOURCE_STATIC_HEURISTIC, 0);
         assert_eq!(row.source_mask & SOURCE_LIVE_TOKEN_DICTIONARY, 0);
     }
 
@@ -614,14 +384,14 @@ mod tests {
                 .data_units_total
                 .get("air_variant_archetype_base_airframe_string_rows")
                 .copied(),
-            Some(1)
+            Some(0)
         );
         assert_eq!(
             summary
                 .data_units_total
                 .get("air_variant_archetype_role_string_rows")
                 .copied(),
-            Some(1)
+            Some(0)
         );
     }
 
@@ -667,7 +437,7 @@ mod tests {
                 .data_units_total
                 .get("air_variant_archetype_static_source_enum_rows")
                 .copied(),
-            Some(1)
+            Some(0)
         );
     }
 

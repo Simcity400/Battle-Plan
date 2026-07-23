@@ -6,7 +6,8 @@
 //! manifest consumed by the independently distributed replayer.
 
 use hud_role_observer_live_lane::{
-    EffectiveVfsHudRoleResolver, HudRoleSnapshot, HudSurfaceActivationFrame,
+    EffectiveVfsHudRoleResolver, HudContentObservation, HudRoleSnapshot, HudSurface,
+    HudSurfaceActivationFrame, OmittedHudSurface,
 };
 use portable_content_manifest::{
     normalize_game_relative_path, ContentLayerKind, ContentManifest, DlcSelection,
@@ -193,6 +194,9 @@ fn validate_observation_header(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortableLaunchBinding {
     pub executable_sha256: String,
+    /// Launcher-selected mod membership. The launcher array is not engine
+    /// precedence: the finalized source inventory supplies the authenticated
+    /// engine descriptor/mount order.
     pub ordered_mods: Vec<BoundMod>,
     pub enabled_dlc_ids: BTreeSet<String>,
     pub enabled_dlc_layers: BTreeMap<String, BoundDlcLayer>,
@@ -975,7 +979,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
     )?;
     let runtime =
         scan_runtime_content_snapshots(compact_stream_path, identity_mode, early_admission)?;
-    let selected_vfs = (runtime.hud_activation.is_some()
+    let selected_vfs = (!runtime.hud_activations.is_empty()
         || !runtime.static_program_frames.is_empty())
     .then(|| {
         effective_vfs_from_launch(
@@ -985,23 +989,27 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         )
     })
     .transpose()?;
-    let hud_snapshot = match runtime.hud_activation {
-        Some(frame) => {
-            let vfs = selected_vfs
-                .as_ref()
-                .ok_or("HUD activation requires the selected launch VFS")?;
-            let index = portable_content_manifest::hud_emitter::emit_effective_vfs_hud_role_index(
-                vfs,
-                &frame,
-                &base.effective_vfs_manifest_sha256,
-                &base.localisation_language,
-            )?;
-            let mut winning_content = base
-                .required_content
-                .iter()
-                .map(|required| required.content.clone())
-                .map(|content| (content.normalized_game_relative_path.clone(), content))
-                .collect::<BTreeMap<_, _>>();
+    let hud_snapshot = if runtime.hud_activations.is_empty() {
+        None
+    } else {
+        let vfs = selected_vfs
+            .as_ref()
+            .ok_or("HUD activation requires the selected launch VFS")?;
+        let mut winning_content = base
+            .required_content
+            .iter()
+            .map(|required| required.content.clone())
+            .map(|content| (content.normalized_game_relative_path.clone(), content))
+            .collect::<BTreeMap<_, _>>();
+        let mut closures = BTreeMap::new();
+        for frame in &runtime.hud_activations {
+            let index =
+                portable_content_manifest::hud_emitter::emit_effective_vfs_hud_role_index(
+                    vfs,
+                    frame,
+                    &base.effective_vfs_manifest_sha256,
+                    &base.localisation_language,
+                )?;
             for content in index.winning_content {
                 match winning_content.get(&content.normalized_game_relative_path) {
                     Some(existing) if existing != &content => {
@@ -1016,16 +1024,33 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
                     }
                 }
             }
-            let resolver = EffectiveVfsHudRoleResolver::new(
-                base.effective_vfs_manifest_sha256.clone(),
-                winning_content.into_values(),
-                index.closures,
-            )?;
-            Some(hud_role_observer_live_lane::promote_activation_frame(
-                &frame, &resolver,
-            )?)
+            for closure in index.closures {
+                let key = (closure.surface, closure.runtime_root_name.clone());
+                match closures.get(&key) {
+                    Some(existing) if existing != &closure => {
+                        return Err(format!(
+                            "HUD effective-VFS closure changed within recording for {}/{}",
+                            closure.surface.token(),
+                            closure.runtime_root_name
+                        ));
+                    }
+                    _ => {
+                        closures.insert(key, closure);
+                    }
+                }
+            }
         }
-        None => None,
+        let resolver = EffectiveVfsHudRoleResolver::new(
+            base.effective_vfs_manifest_sha256.clone(),
+            winning_content.into_values(),
+            closures.into_values(),
+        )?;
+        let snapshots = runtime
+            .hud_activations
+            .iter()
+            .map(|frame| hud_role_observer_live_lane::promote_activation_frame(frame, &resolver))
+            .collect::<Result<Vec<_>, _>>()?;
+        Some(merge_hud_role_snapshots(snapshots)?)
     };
     let mut static_program_content = if runtime.static_program_frames.is_empty() {
         Vec::new()
@@ -1073,9 +1098,74 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
 
 #[derive(Debug)]
 struct RuntimeContentSnapshots {
-    hud_activation: Option<HudSurfaceActivationFrame>,
+    hud_activations: Vec<HudSurfaceActivationFrame>,
     static_program_frames: Vec<ProductionRenderFrame>,
     m02_used_content: Vec<UsedContentKey>,
+}
+
+fn merge_hud_role_snapshots(snapshots: Vec<HudRoleSnapshot>) -> Result<HudRoleSnapshot, String> {
+    let mut snapshots = snapshots.into_iter();
+    let first = snapshots
+        .next()
+        .ok_or("HUD activation history produced no role snapshots")?;
+    let schema = first.schema.clone();
+    let authority_manifest_sha256 = first.authority_manifest_sha256.clone();
+    let mut activated_surfaces = BTreeSet::new();
+    let mut observations = BTreeMap::<(String, String), HudContentObservation>::new();
+    let mut omitted_surfaces = BTreeMap::<HudSurface, OmittedHudSurface>::new();
+
+    let mut merge = |snapshot: HudRoleSnapshot| -> Result<(), String> {
+        if snapshot.schema != schema
+            || snapshot.authority_manifest_sha256 != authority_manifest_sha256
+        {
+            return Err("HUD role snapshot history changed schema or VFS authority".into());
+        }
+        activated_surfaces.extend(snapshot.activated_surfaces);
+        for observation in snapshot.observations {
+            let key = (
+                observation.content_key.clone(),
+                observation.consumer.clone(),
+            );
+            match observations.get(&key) {
+                Some(existing) if existing != &observation => {
+                    return Err(format!(
+                        "HUD role observation changed within recording for {}/{}",
+                        observation.content_key, observation.consumer
+                    ));
+                }
+                _ => {
+                    observations.insert(key, observation);
+                }
+            }
+        }
+        for omitted in snapshot.omitted_surfaces {
+            match omitted_surfaces.get(&omitted.surface) {
+                Some(existing) if existing != &omitted => {
+                    return Err(format!(
+                        "HUD omitted-surface disposition changed within recording for {}",
+                        omitted.surface.token()
+                    ));
+                }
+                _ => {
+                    omitted_surfaces.insert(omitted.surface, omitted);
+                }
+            }
+        }
+        Ok(())
+    };
+    merge(first)?;
+    for snapshot in snapshots {
+        merge(snapshot)?;
+    }
+    let merged = HudRoleSnapshot {
+        schema,
+        authority_manifest_sha256,
+        activated_surfaces: activated_surfaces.into_iter().collect(),
+        observations: observations.into_values().collect(),
+        omitted_surfaces: omitted_surfaces.into_values().collect(),
+    };
+    merged.validate()?;
+    Ok(merged)
 }
 
 pub(crate) fn validate_render_frame_early_admission(
@@ -1133,7 +1223,9 @@ fn scan_runtime_content_snapshots(
             StatefulStreamValidator::identity_v1()
         }
     };
-    let mut hud_activation = None;
+    let mut hud_activations = Vec::new();
+    let mut hud_roots = BTreeMap::<HudSurface, String>::new();
+    let mut hud_partitions = BTreeSet::<Vec<(HudSurface, String)>>::new();
     let mut static_program_frames = Vec::new();
     let mut last_static_program_update_index = None;
     let mut m02_used_content = BTreeMap::<String, UsedContentKey>::new();
@@ -1179,7 +1271,31 @@ fn scan_runtime_content_snapshots(
                     .map_err(|error| {
                         format!("d79 activation at {stream_offset} invalid: {error}")
                     })?;
-                hud_activation = (frame.status_flags == 0).then_some(frame);
+                if frame.status_flags == 0 {
+                    for row in &frame.active_surfaces {
+                        match hud_roots.get(&row.surface) {
+                            Some(existing) if existing != &row.runtime_root_name => {
+                                return Err(format!(
+                                    "d79 runtime root changed within recording for {}: {:?} -> {:?}",
+                                    row.surface.token(),
+                                    existing,
+                                    row.runtime_root_name
+                                ));
+                            }
+                            _ => {
+                                hud_roots.insert(row.surface, row.runtime_root_name.clone());
+                            }
+                        }
+                    }
+                    let partition = frame
+                        .active_surfaces
+                        .iter()
+                        .map(|row| (row.surface, row.runtime_root_name.clone()))
+                        .collect::<Vec<_>>();
+                    if hud_partitions.insert(partition) {
+                        hud_activations.push(frame);
+                    }
+                }
             } else if header.domain_id == LEGACY_FIXED_ROLE_MAP_SNAPSHOT_DOMAIN_ID {
                 return Err(format!(
                     "legacy fixed-role map snapshot at {stream_offset} is not admitted by the opaque production finalizer"
@@ -1238,7 +1354,7 @@ fn scan_runtime_content_snapshots(
             .ok_or_else(|| "runtime-content stream offset overflow".to_string())?;
     }
     Ok(RuntimeContentSnapshots {
-        hud_activation,
+        hud_activations,
         static_program_frames,
         m02_used_content: m02_used_content.into_values().collect(),
     })
@@ -1399,21 +1515,28 @@ fn build_from_finalized_static_bundle_inner(
         if source_container_sha256 != inventory_source_container {
             return Err("source namespace container identity differs from launch binding".into());
         }
-        let mut replace_paths = row
+        let raw_replace_paths = row
             .get("replace_paths")
             .and_then(serde_json::Value::as_array)
-            .ok_or("source namespace replace_paths is not an array")?
-            .iter()
-            .map(|value| {
-                normalize_game_relative_path(
-                    value
-                        .as_str()
-                        .ok_or("source namespace replace_path is not a string")?,
-                )
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        replace_paths.sort();
-        replace_paths.dedup();
+            .ok_or("source namespace replace_paths is not an array")?;
+        let mut replace_paths = Vec::with_capacity(raw_replace_paths.len());
+        let mut seen_replace_paths = BTreeSet::new();
+        for value in raw_replace_paths {
+            let normalized = normalize_game_relative_path(
+                value
+                    .as_str()
+                    .ok_or("source namespace replace_path is not a string")?,
+            )?;
+            if !seen_replace_paths.insert(normalized.clone()) {
+                return Err(
+                    "source namespace repeats a replace_path after normalization".into(),
+                );
+            }
+            // Preserve descriptor declaration order in the portable contract.
+            // Resolution treats the entries as a set, but reordering them here
+            // would make the recorded descriptor binding lossy.
+            replace_paths.push(normalized);
+        }
         let layer_ordinal = ordered_layers.len() as u32;
         raw_to_layer_ordinal.push(Some(layer_ordinal));
         ordered_layers.push(RecordedContentLayer {
@@ -2266,15 +2389,33 @@ fn validate_launch_binding(
     if trace_mods.len() != launch.ordered_mods.len() {
         return Err("portable content trace mod count differs from launch binding".into());
     }
-    for (ordinal, (trace_mod, launch_mod)) in
-        trace_mods.iter().zip(&launch.ordered_mods).enumerate()
-    {
+    let mut launch_mods = BTreeMap::new();
+    for launch_mod in &launch.ordered_mods {
+        if launch_mods
+            .insert(launch_mod.layer_id.as_str(), launch_mod)
+            .is_some()
+        {
+            return Err("portable launch binding repeats a mod layer ID".into());
+        }
+    }
+    let mut seen_trace_mods = BTreeSet::new();
+    for trace_mod in trace_mods {
+        if !seen_trace_mods.insert(trace_mod.layer_id.as_str()) {
+            return Err("portable content trace repeats a mod layer ID".into());
+        }
+        let launch_mod = launch_mods.get(trace_mod.layer_id.as_str()).ok_or_else(|| {
+            format!(
+                "portable content trace engine-ordered mod {} is absent from launcher membership",
+                trace_mod.layer_id
+            )
+        })?;
         if trace_mod.layer_id != launch_mod.layer_id
             || trace_mod.descriptor_sha256.as_deref() != Some(launch_mod.descriptor_sha256.as_str())
             || trace_mod.storage_kind != launch_mod.storage_kind
         {
             return Err(format!(
-                "portable content trace mod at enabled ordinal {ordinal} differs from launch binding"
+                "portable content trace mod {} differs from launch binding",
+                trace_mod.layer_id
             ));
         }
         let expected_container = (launch_mod.storage_kind == LayerStorageKind::ZipArchive)
@@ -2594,6 +2735,44 @@ mod tests {
     }
 
     #[test]
+    fn launch_membership_accepts_distinct_authenticated_engine_mod_order() {
+        let (mut trace, mut launch) = base_trace();
+        trace.ordered_layers.insert(
+            3,
+            RecordedContentLayer {
+                ordinal: 3,
+                layer_kind: ContentLayerKind::Mod,
+                layer_id: "mod/a-first.mod".into(),
+                display_name: "Engine first".into(),
+                descriptor_sha256: Some(sha('7')),
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: Vec::new(),
+                required_for_playback: false,
+            },
+        );
+        for (ordinal, layer) in trace.ordered_layers.iter_mut().enumerate() {
+            layer.ordinal = ordinal as u32;
+        }
+        trace.observations[1].content.winning_layer_ordinal = 4;
+        // Launcher membership deliberately lists the archive mod first. The
+        // source inventory's engine ordinals, not this array, own precedence.
+        launch.ordered_mods.push(BoundMod {
+            layer_id: "mod/a-first.mod".into(),
+            descriptor_sha256: sha('7'),
+            content_sha256: sha('8'),
+            storage_kind: LayerStorageKind::Directory,
+        });
+        validate_launch_binding(&trace, &launch)
+            .expect("launcher membership must not override authenticated engine order");
+
+        launch.ordered_mods[1] = launch.ordered_mods[0].clone();
+        assert!(validate_launch_binding(&trace, &launch)
+            .unwrap_err()
+            .contains("repeats a mod layer ID"));
+    }
+
+    #[test]
     fn recorder_aggregation_writes_standard_trace_atomically() {
         let (mut trace, launch) = base_trace();
         let original = trace.observations.clone();
@@ -2769,14 +2948,20 @@ mod tests {
 
     #[test]
     fn normal_runtime_stream_scanner_carries_d79_and_rejects_legacy_fixed_role_map_snapshot() {
-        fn push_record(out: &mut Vec<u8>, sequence: u64, domain_id: u16, payload: &[u8]) {
+        fn push_record(
+            out: &mut Vec<u8>,
+            sequence: u64,
+            game_hour_raw: i32,
+            domain_id: u16,
+            payload: &[u8],
+        ) {
             out.extend_from_slice(compact_contract::COMPACT_RECORD_MAGIC);
             out.extend_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
             out.extend_from_slice(
                 &(compact_contract::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes(),
             );
             out.extend_from_slice(&sequence.to_le_bytes());
-            out.extend_from_slice(&123i32.to_le_bytes());
+            out.extend_from_slice(&game_hour_raw.to_le_bytes());
             out.extend_from_slice(&domain_id.to_le_bytes());
             out.extend_from_slice(&compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
             out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -2811,7 +2996,13 @@ mod tests {
         )
         .unwrap();
         let mut bytes = Vec::new();
-        push_record(&mut bytes, 1, hud_role_observer_live_lane::DOMAIN_ID, &d79);
+        push_record(
+            &mut bytes,
+            1,
+            123,
+            hud_role_observer_live_lane::DOMAIN_ID,
+            &d79,
+        );
         let dir = std::env::temp_dir().join(format!(
             "hoi4_runtime_content_stream_{}_{}",
             std::process::id(),
@@ -2829,12 +3020,39 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(runtime.hud_activation.unwrap().observation_sequence, 9);
+        assert_eq!(runtime.hud_activations.len(), 1);
+        assert_eq!(runtime.hud_activations[0].observation_sequence, 9);
+
+        let mut conflicting_frame =
+            hud_role_observer_live_lane::decode_activation_payload(&d79).unwrap();
+        conflicting_frame.frame_hour = 124;
+        conflicting_frame.observation_sequence = 10;
+        conflicting_frame.active_surfaces[0].runtime_root_name = "changed_topbar_root".into();
+        let conflicting_d79 =
+            hud_role_observer_live_lane::encode_activation_payload(&conflicting_frame).unwrap();
+        let mut conflicting = bytes.clone();
+        push_record(
+            &mut conflicting,
+            2,
+            124,
+            hud_role_observer_live_lane::DOMAIN_ID,
+            &conflicting_d79,
+        );
+        let conflicting_path = dir.join("conflicting.h4cr");
+        fs::write(&conflicting_path, conflicting).unwrap();
+        assert!(scan_runtime_content_snapshots(
+            &conflicting_path,
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            None,
+        )
+        .unwrap_err()
+        .contains("runtime root changed within recording"));
 
         let mut legacy = bytes;
         push_record(
             &mut legacy,
             2,
+            124,
             LEGACY_FIXED_ROLE_MAP_SNAPSHOT_DOMAIN_ID,
             b"legacy-fixed-role-map-snapshot",
         );
@@ -2870,6 +3088,8 @@ mod tests {
                     "interface/theatreselector.gui",
                     gui("theatre_selection_window"),
                 ),
+                ("interface/tank_designer.gui", gui("tank_designer_view")),
+                ("interface/plane_designer.gui", gui("plane_designer_view")),
                 ("common/base.txt", "base-static".into()),
             ];
             let mut rows = Vec::new();
@@ -2894,14 +3114,19 @@ mod tests {
             rows.push((1, "interface/topbar.gui".into(), mod_text.into_bytes()));
             (game, user, rows)
         }
-        fn push_d79(out: &mut Vec<u8>, payload: &[u8]) {
+        fn push_d79(
+            out: &mut Vec<u8>,
+            sequence: u64,
+            game_hour_raw: i32,
+            payload: &[u8],
+        ) {
             out.extend_from_slice(compact_contract::COMPACT_RECORD_MAGIC);
             out.extend_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
             out.extend_from_slice(
                 &(compact_contract::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes(),
             );
-            out.extend_from_slice(&1u64.to_le_bytes());
-            out.extend_from_slice(&10i32.to_le_bytes());
+            out.extend_from_slice(&sequence.to_le_bytes());
+            out.extend_from_slice(&game_hour_raw.to_le_bytes());
             out.extend_from_slice(&hud_role_observer_live_lane::DOMAIN_ID.to_le_bytes());
             out.extend_from_slice(&compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
             out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -2993,7 +3218,7 @@ mod tests {
         fs::write(&inventory_path, serde_json::to_vec(&inventory).unwrap()).unwrap();
         fs::write(&join_path, serde_json::to_vec(&join).unwrap()).unwrap();
         fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
-        let frame = hud_role_observer_live_lane::HudSurfaceActivationFrame {
+        let mut frame = hud_role_observer_live_lane::HudSurfaceActivationFrame {
             frame_hour: 10,
             status_flags: 0,
             observation_sequence: 1,
@@ -3014,11 +3239,43 @@ mod tests {
                     surface: hud_role_observer_live_lane::HudSurface::TheatreSelector,
                     runtime_root_name: "theatre_selection_window".into(),
                 },
+                hud_role_observer_live_lane::HudSurfaceActivation {
+                    surface: hud_role_observer_live_lane::HudSurface::DesignerTank,
+                    runtime_root_name: "tank_designer_view".into(),
+                },
             ],
         };
         let mut stream = Vec::new();
         push_d79(
             &mut stream,
+            1,
+            10,
+            &hud_role_observer_live_lane::encode_activation_payload(&frame).unwrap(),
+        );
+        frame.frame_hour = 11;
+        frame.observation_sequence = 2;
+        frame.active_surfaces.pop();
+        frame
+            .active_surfaces
+            .push(hud_role_observer_live_lane::HudSurfaceActivation {
+                surface: hud_role_observer_live_lane::HudSurface::DesignerPlane,
+                runtime_root_name: "plane_designer_view".into(),
+            });
+        push_d79(
+            &mut stream,
+            2,
+            11,
+            &hud_role_observer_live_lane::encode_activation_payload(&frame).unwrap(),
+        );
+        // Closing the designer before recording stops must not erase the
+        // authenticated dependencies of either earlier designer family.
+        frame.frame_hour = 12;
+        frame.observation_sequence = 3;
+        frame.active_surfaces.pop();
+        push_d79(
+            &mut stream,
+            3,
+            12,
             &hud_role_observer_live_lane::encode_activation_payload(&frame).unwrap(),
         );
         let stream_path = bundle.join("capture.h4cr");
@@ -3069,13 +3326,19 @@ mod tests {
                     .any(|consumer| consumer.starts_with("hud_role/v1/"))
             })
             .collect::<Vec<_>>();
-        assert_eq!(hud.len(), 4);
+        assert_eq!(hud.len(), 6);
         assert!(hud.iter().any(|row| {
             row.content.normalized_game_relative_path == "interface/topbar.gui"
                 && row.content.layer_kind == ContentLayerKind::Mod
                 && row.content.layer_id == "mod/portable.mod"
         }));
         for surface in ["topbar", "minimap", "mapmodes", "theatre_selector"] {
+            assert!(hud.iter().any(|row| row
+                .consumers
+                .iter()
+                .any(|consumer| consumer.starts_with(&format!("hud_role/v1/{surface}/")))));
+        }
+        for surface in ["designer/tank", "designer/plane"] {
             assert!(hud.iter().any(|row| row
                 .consumers
                 .iter()
@@ -3111,6 +3374,8 @@ mod tests {
         let mut incompatible_stream = Vec::new();
         push_d79(
             &mut incompatible_stream,
+            1,
+            11,
             &hud_role_observer_live_lane::encode_activation_payload(&incompatible_frame).unwrap(),
         );
         fs::write(&stream_path, incompatible_stream).unwrap();
@@ -3310,7 +3575,7 @@ mod tests {
             hour_index: None,
         }];
         let identity = snapshot::PackIdentity {
-            schema_version: Some("native_collector_session_v1".into()),
+            schema_version: Some("1".into()),
             content_manifest: Some(manifest.clone()),
             ..Default::default()
         };

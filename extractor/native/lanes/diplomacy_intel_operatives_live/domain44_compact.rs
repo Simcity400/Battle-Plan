@@ -227,6 +227,18 @@ const OPERATION_TOKEN_ROW_HEADER_LEN: usize = 12;
 pub const MAX_OPERATION_TOKEN_ROWS: usize = 65_536;
 pub const MAX_OPERATION_TOKEN_ID_LEN: usize = 128;
 
+// Exact W1A/W1B war-overview family. This is an atomic complete-set trailer:
+// an emitted zero-row W1AB means measured empty; absence means unavailable.
+// It is deliberately separate from the bilateral 32-byte WarRelationRow.
+const WAR_LIFECYCLE_TRAILER_MAGIC: &[u8; 4] = b"W1AB";
+const WAR_LIFECYCLE_TRAILER_VERSION: u16 = 1;
+const WAR_LIFECYCLE_TRAILER_HEADER_LEN: usize = 12;
+const WAR_LIFECYCLE_ROW_HEADER_LEN: usize = 48;
+const WAR_LIFECYCLE_PARTICIPANT_LEN: usize = 88;
+pub const MAX_WAR_LIFECYCLE_ROWS: usize = 4_096;
+pub const MAX_WAR_LIFECYCLE_SIDE_PARTICIPANTS: usize = 1_024;
+pub const MAX_WAR_LIFECYCLE_TEXT_LEN: usize = 4_096;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
     pub elapsed_wall_ms: u64,
@@ -270,6 +282,10 @@ pub struct DiplomacyIntelSnapshot {
     /// additive complete-set trailer and is not part of the base row count.
     pub operation_tokens: Vec<OperationTokenMembershipRow>,
     pub operation_tokens_complete: bool,
+    /// Exact grouped W1A/W1B war objects. W1AB is a positive complete-set
+    /// witness and is emitted even when the measured set is empty.
+    pub war_lifecycle: Vec<WarLifecycleRow>,
+    pub war_lifecycle_complete: bool,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -349,6 +365,10 @@ fn encoded_payload_capacity(snapshot: &DiplomacyIntelSnapshot) -> usize {
     .saturating_add(operation_token_trailer_capacity(
         &snapshot.operation_tokens,
         snapshot.operation_tokens_complete,
+    ))
+    .saturating_add(war_lifecycle_trailer_capacity(
+        &snapshot.war_lifecycle,
+        snapshot.war_lifecycle_complete,
     ))
 }
 
@@ -692,11 +712,70 @@ fn operation_token_trailer_capacity(
     }
 }
 
+fn war_lifecycle_trailer_capacity(rows: &[WarLifecycleRow], complete: bool) -> usize {
+    if !complete {
+        return 0;
+    }
+    rows.iter().fold(WAR_LIFECYCLE_TRAILER_HEADER_LEN, |total, row| {
+        total
+            .saturating_add(WAR_LIFECYCLE_ROW_HEADER_LEN)
+            .saturating_add(row.war_name.len())
+            .saturating_add(row.front.as_deref().map_or(0, str::len))
+            .saturating_add(
+                row.attackers
+                    .len()
+                    .saturating_add(row.defenders.len())
+                    .saturating_mul(WAR_LIFECYCLE_PARTICIPANT_LEN),
+            )
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OperationTokenMembershipRow {
     pub owner_tag_db_id: u32,
     pub target_tag_db_id: u32,
     pub token_id: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WarParticipationBreakdownRow {
+    pub land_damage: i64,
+    pub occupation: i64,
+    pub air_damage: i64,
+    pub strategic_bombing: i64,
+    pub sunk_ships: i64,
+    pub sunk_convoys: i64,
+    pub casualties: i64,
+    pub lend_lease_given: i64,
+    pub lend_lease_received: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WarLifecycleParticipantRow {
+    pub tag_db_id: u32,
+    pub participation_raw: i32,
+    pub capitulation_progress_raw: i32,
+    pub breakdown: WarParticipationBreakdownRow,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WarLifecycleRow {
+    /// Pointer-free stable identity derived by the exact producer from the
+    /// relation start scalar and ordered side identities.
+    pub war_id: u64,
+    /// Stable producer order. JSON object-map order is not authoritative.
+    pub producer_ordinal: u32,
+    /// True only for the engine's aggregate/summary war row.
+    pub aggregate_summary_flag: bool,
+    pub war_name: String,
+    /// Optional legacy/display grouping. Exact-a729 W1A/W1B has no proved
+    /// mandatory `front` producer, so absence is distinct from an empty value.
+    pub front: Option<String>,
+    pub start_date_raw: i32,
+    pub attackers: Vec<WarLifecycleParticipantRow>,
+    pub defenders: Vec<WarLifecycleParticipantRow>,
+    /// Signed fixed-five progress: positive favours attackers.
+    pub overall_progress_raw: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1024,6 +1103,11 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         &snapshot.operation_tokens,
         snapshot.operation_tokens_complete,
     );
+    append_war_lifecycle_trailer(
+        &mut payload,
+        &snapshot.war_lifecycle,
+        snapshot.war_lifecycle_complete,
+    );
     payload
 }
 
@@ -1318,6 +1402,11 @@ pub fn summarize_snapshot_instrumented(
         &snapshot.operation_tokens,
         snapshot.operation_tokens_complete,
     );
+    append_war_lifecycle_trailer(
+        &mut trailer_bytes,
+        &snapshot.war_lifecycle,
+        snapshot.war_lifecycle_complete,
+    );
 
     let mut operation_instance_rows = 0usize;
     let mut operation_instance_country_rows = 0usize;
@@ -1329,6 +1418,8 @@ pub fn summarize_snapshot_instrumented(
     let mut faction_rows = 0usize;
     let mut faction_member_rows = 0usize;
     let mut operation_token_rows = 0usize;
+    let mut war_lifecycle_rows = 0usize;
+    let mut war_lifecycle_participant_rows = 0usize;
     let operative_owners = snapshot
         .operatives
         .iter()
@@ -1381,6 +1472,12 @@ pub fn summarize_snapshot_instrumented(
             .map(|row| row.member_tag_db_ids.len())
             .sum();
         operation_token_rows = trailer_rows.operation_tokens.len();
+        war_lifecycle_rows = trailer_rows.war_lifecycle.len();
+        war_lifecycle_participant_rows = trailer_rows
+            .war_lifecycle
+            .iter()
+            .map(|row| row.attackers.len().saturating_add(row.defenders.len()))
+            .sum();
     }
     add_unit(
         &mut summary,
@@ -1420,6 +1517,12 @@ pub fn summarize_snapshot_instrumented(
     add_unit(&mut summary, "faction_rows", faction_rows);
     add_unit(&mut summary, "faction_member_rows", faction_member_rows);
     add_unit(&mut summary, "operation_token_rows", operation_token_rows);
+    add_unit(&mut summary, "war_lifecycle_rows", war_lifecycle_rows);
+    add_unit(
+        &mut summary,
+        "war_lifecycle_participant_rows",
+        war_lifecycle_participant_rows,
+    );
 
     // `decoded_counts != expected_counts` (decode_payload:1596) is impossible on a
     // valid encode (decoded counts == header counts == snapshot vec lens).
@@ -1437,10 +1540,11 @@ pub fn summarize_snapshot_instrumented(
         ));
     }
     if status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
+        && !snapshot.war_lifecycle_complete
         && (live_war_rows != 0 || country_war_projection_rows != 0)
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED; schema v{SCHEMA_VERSION} has no war name/grouping/start-date fields",
+            "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without a complete W1AB lifecycle witness; STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED is clear but exact war name/grouping/start-date fields are absent",
             live_war_rows, country_war_projection_rows
         ));
     }
@@ -1615,6 +1719,70 @@ fn append_operation_token_trailer(
         payload.extend_from_slice(&(row.token_id.len().min(u16::MAX as usize) as u16).to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
         payload.extend_from_slice(row.token_id.as_bytes());
+    }
+}
+
+fn append_war_lifecycle_trailer(
+    payload: &mut Vec<u8>,
+    rows: &[WarLifecycleRow],
+    complete: bool,
+) {
+    if !complete {
+        return;
+    }
+    payload.extend_from_slice(WAR_LIFECYCLE_TRAILER_MAGIC);
+    payload.extend_from_slice(&WAR_LIFECYCLE_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(WAR_LIFECYCLE_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        let name = row.war_name.as_bytes();
+        let front = row.front.as_deref().unwrap_or_default().as_bytes();
+        let row_len = WAR_LIFECYCLE_ROW_HEADER_LEN
+            .saturating_add(name.len())
+            .saturating_add(front.len())
+            .saturating_add(
+                row.attackers
+                    .len()
+                    .saturating_add(row.defenders.len())
+                    .saturating_mul(WAR_LIFECYCLE_PARTICIPANT_LEN),
+            );
+        payload.extend_from_slice(&(row_len.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&(name.len().min(u16::MAX as usize) as u16).to_le_bytes());
+        payload.extend_from_slice(&(front.len().min(u16::MAX as usize) as u16).to_le_bytes());
+        payload.extend_from_slice(&row.start_date_raw.to_le_bytes());
+        let flags = if row.aggregate_summary_flag { 1u32 } else { 0 };
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&row.overall_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.war_id.to_le_bytes());
+        payload.extend_from_slice(
+            &(row.attackers.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(row.defenders.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+        );
+        payload.extend_from_slice(&row.producer_ordinal.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(name);
+        payload.extend_from_slice(front);
+        for participant in row.attackers.iter().chain(&row.defenders) {
+            payload.extend_from_slice(&participant.tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&participant.participation_raw.to_le_bytes());
+            payload.extend_from_slice(&participant.capitulation_progress_raw.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            for value in [
+                participant.breakdown.land_damage,
+                participant.breakdown.occupation,
+                participant.breakdown.air_damage,
+                participant.breakdown.strategic_bombing,
+                participant.breakdown.sunk_ships,
+                participant.breakdown.sunk_convoys,
+                participant.breakdown.casualties,
+                participant.breakdown.lend_lease_given,
+                participant.breakdown.lend_lease_received,
+            ] {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
     }
 }
 
@@ -2354,6 +2522,196 @@ fn decode_operation_token_trailer(
     (rows, cursor)
 }
 
+fn decode_war_lifecycle_trailer(
+    offset: usize,
+    payload: &[u8],
+    start: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<WarLifecycleRow>, usize) {
+    let Some(header_end) = start.checked_add(WAR_LIFECYCLE_TRAILER_HEADER_LEN) else {
+        errors.push(format!("offset {offset}: war-lifecycle trailer header overflow"));
+        return (Vec::new(), 0);
+    };
+    if header_end > payload.len() {
+        errors.push(format!("offset {offset}: truncated war-lifecycle trailer header"));
+        return (Vec::new(), 0);
+    }
+    let trailer = &payload[start..];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    if version != WAR_LIFECYCLE_TRAILER_VERSION
+        || header_len != WAR_LIFECYCLE_TRAILER_HEADER_LEN
+        || row_count > MAX_WAR_LIFECYCLE_ROWS
+    {
+        errors.push(format!("offset {offset}: war-lifecycle trailer header shape invalid"));
+        return (Vec::new(), 0);
+    }
+    let mut rows = Vec::with_capacity(row_count);
+    let mut cursor = WAR_LIFECYCLE_TRAILER_HEADER_LEN;
+    let mut seen_ids = BTreeSet::new();
+    let mut seen_ordinals = BTreeSet::new();
+    for _ in 0..row_count {
+        let Some(fixed_end) = cursor.checked_add(WAR_LIFECYCLE_ROW_HEADER_LEN) else {
+            errors.push(format!("offset {offset}: war-lifecycle row header overflow"));
+            return (Vec::new(), 0);
+        };
+        if fixed_end > trailer.len() {
+            errors.push(format!("offset {offset}: truncated war-lifecycle row header"));
+            return (Vec::new(), 0);
+        }
+        let row_len = read_u32_le(trailer, cursor) as usize;
+        let name_len = read_u16_le(trailer, cursor + 4) as usize;
+        let front_len = read_u16_le(trailer, cursor + 6) as usize;
+        let start_date_raw = read_i32_le(trailer, cursor + 8);
+        let flags = read_u32_le(trailer, cursor + 12);
+        let overall_progress_raw = read_i64_le(trailer, cursor + 16);
+        let war_id = read_u64_le(trailer, cursor + 24);
+        let attacker_count = read_u32_le(trailer, cursor + 32) as usize;
+        let defender_count = read_u32_le(trailer, cursor + 36) as usize;
+        let producer_ordinal = read_u32_le(trailer, cursor + 40);
+        let reserved = read_u32_le(trailer, cursor + 44);
+        let participant_count = match attacker_count.checked_add(defender_count) {
+            Some(value) => value,
+            None => {
+                errors.push(format!("offset {offset}: war-lifecycle participant count overflow"));
+                return (Vec::new(), 0);
+            }
+        };
+        let expected_len = WAR_LIFECYCLE_ROW_HEADER_LEN
+            .checked_add(name_len)
+            .and_then(|value| value.checked_add(front_len))
+            .and_then(|value| {
+                participant_count
+                    .checked_mul(WAR_LIFECYCLE_PARTICIPANT_LEN)
+                    .and_then(|bytes| value.checked_add(bytes))
+            });
+        let Some(expected_len) = expected_len else {
+            errors.push(format!("offset {offset}: war-lifecycle row length overflow"));
+            return (Vec::new(), 0);
+        };
+        let Some(row_end) = cursor.checked_add(row_len) else {
+            errors.push(format!("offset {offset}: war-lifecycle row end overflow"));
+            return (Vec::new(), 0);
+        };
+        if row_end > trailer.len() {
+            errors.push(format!("offset {offset}: truncated war-lifecycle row"));
+            return (Vec::new(), 0);
+        }
+        if row_len != expected_len
+            || name_len == 0
+            || name_len > MAX_WAR_LIFECYCLE_TEXT_LEN
+            || front_len > MAX_WAR_LIFECYCLE_TEXT_LEN
+            || attacker_count == 0
+            || defender_count == 0
+            || attacker_count > MAX_WAR_LIFECYCLE_SIDE_PARTICIPANTS
+            || defender_count > MAX_WAR_LIFECYCLE_SIDE_PARTICIPANTS
+            || flags & !1 != 0
+            || reserved != 0
+            || war_id == 0
+            || !(-i64::from(FIXED_SCALE_RAW)..=i64::from(FIXED_SCALE_RAW))
+                .contains(&overall_progress_raw)
+        {
+            errors.push(format!(
+                "offset {offset}: war-lifecycle row violates the exact portable contract"
+            ));
+            return (Vec::new(), 0);
+        }
+        let mut body_cursor = fixed_end;
+        let name_end = body_cursor + name_len;
+        let war_name = match std::str::from_utf8(&trailer[body_cursor..name_end]) {
+            Ok(value) if !value.trim().is_empty() => value.to_owned(),
+            _ => {
+                errors.push(format!("offset {offset}: war-lifecycle name is invalid UTF-8"));
+                return (Vec::new(), 0);
+            }
+        };
+        body_cursor = name_end;
+        let front_end = body_cursor + front_len;
+        let front = if front_len == 0 {
+            None
+        } else {
+            match std::str::from_utf8(&trailer[body_cursor..front_end]) {
+                Ok(value) if !value.trim().is_empty() => Some(value.to_owned()),
+                _ => {
+                    errors.push(format!(
+                        "offset {offset}: war-lifecycle front is invalid UTF-8"
+                    ));
+                    return (Vec::new(), 0);
+                }
+            }
+        };
+        body_cursor = front_end;
+        let mut participants = Vec::with_capacity(participant_count);
+        let mut seen_tags = BTreeSet::new();
+        for _ in 0..participant_count {
+            let tag_db_id = read_u32_le(trailer, body_cursor);
+            let participation_raw = read_i32_le(trailer, body_cursor + 4);
+            let capitulation_progress_raw = read_i32_le(trailer, body_cursor + 8);
+            let participant_reserved = read_u32_le(trailer, body_cursor + 12);
+            if !valid_tag(tag_db_id)
+                || !seen_tags.insert(tag_db_id)
+                || !(0..=FIXED_SCALE_RAW as i32).contains(&participation_raw)
+                || !(0..=FIXED_SCALE_RAW as i32).contains(&capitulation_progress_raw)
+                || participant_reserved != 0
+            {
+                errors.push(format!(
+                    "offset {offset}: war-lifecycle participant violates the exact portable contract"
+                ));
+                return (Vec::new(), 0);
+            }
+            participants.push(WarLifecycleParticipantRow {
+                tag_db_id,
+                participation_raw,
+                capitulation_progress_raw,
+                breakdown: WarParticipationBreakdownRow {
+                    land_damage: read_i64_le(trailer, body_cursor + 16),
+                    occupation: read_i64_le(trailer, body_cursor + 24),
+                    air_damage: read_i64_le(trailer, body_cursor + 32),
+                    strategic_bombing: read_i64_le(trailer, body_cursor + 40),
+                    sunk_ships: read_i64_le(trailer, body_cursor + 48),
+                    sunk_convoys: read_i64_le(trailer, body_cursor + 56),
+                    casualties: read_i64_le(trailer, body_cursor + 64),
+                    lend_lease_given: read_i64_le(trailer, body_cursor + 72),
+                    lend_lease_received: read_i64_le(trailer, body_cursor + 80),
+                },
+            });
+            body_cursor += WAR_LIFECYCLE_PARTICIPANT_LEN;
+        }
+        if body_cursor != row_end
+            || !seen_ids.insert(war_id)
+            || !seen_ordinals.insert(producer_ordinal)
+        {
+            errors.push(format!(
+                "offset {offset}: duplicate or malformed war-lifecycle identity/order"
+            ));
+            return (Vec::new(), 0);
+        }
+        let defenders = participants.split_off(attacker_count);
+        rows.push(WarLifecycleRow {
+            war_id,
+            producer_ordinal,
+            aggregate_summary_flag: flags & 1 != 0,
+            war_name,
+            front,
+            start_date_raw,
+            attackers: participants,
+            defenders,
+            overall_progress_raw,
+        });
+        cursor = row_end;
+    }
+    if seen_ordinals
+        != (0..u32::try_from(row_count).unwrap_or(u32::MAX)).collect::<BTreeSet<_>>()
+    {
+        errors.push(format!(
+            "offset {offset}: war-lifecycle producer ordinals are not contiguous"
+        ));
+        return (Vec::new(), 0);
+    }
+    (rows, cursor)
+}
+
 #[derive(Default)]
 struct DecodedTrailers {
     operation_instances: Vec<OperationInstanceRow>,
@@ -2365,6 +2723,8 @@ struct DecodedTrailers {
     subject_autonomy_status_complete: bool,
     operation_tokens: Vec<OperationTokenMembershipRow>,
     operation_tokens_complete: bool,
+    war_lifecycle: Vec<WarLifecycleRow>,
+    war_lifecycle_complete: bool,
 }
 
 fn decode_domain53_trailers(
@@ -2380,6 +2740,7 @@ fn decode_domain53_trailers(
     let mut seen_facs = false;
     let mut seen_aust = false;
     let mut seen_optk = false;
+    let mut seen_w1ab = false;
     while cursor < payload.len() {
         if payload.get(cursor..cursor + 4) == Some(OPERATION_INSTANCE_TRAILER_MAGIC) {
             if seen_opin {
@@ -2470,6 +2831,19 @@ fn decode_domain53_trailers(
             decoded.operation_tokens = rows;
             decoded.operation_tokens_complete = true;
             seen_optk = true;
+            cursor += consumed;
+        } else if payload.get(cursor..cursor + 4) == Some(WAR_LIFECYCLE_TRAILER_MAGIC) {
+            if seen_w1ab {
+                errors.push(format!("offset {offset}: duplicate war-lifecycle trailer"));
+                return decoded;
+            }
+            let (rows, consumed) = decode_war_lifecycle_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.war_lifecycle = rows;
+            decoded.war_lifecycle_complete = true;
+            seen_w1ab = true;
             cursor += consumed;
         } else {
             errors.push(format!(
@@ -3270,7 +3644,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     }
 
     // Any bytes after the self-delimiting base payload are append-only
-    // trailers (`OPIN`, `DIAQ`); anything else is a trailing-byte error.
+    // trailers; anything else is a trailing-byte error.
     let mut operation_instance_rows = 0usize;
     let mut operation_instance_country_rows = 0usize;
     let mut operation_instance_def_ref_ok_rows = 0usize;
@@ -3281,6 +3655,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut faction_rows = 0usize;
     let mut faction_member_rows = 0usize;
     let mut operation_token_rows = 0usize;
+    let mut war_lifecycle_rows = 0usize;
+    let mut war_lifecycle_participant_rows = 0usize;
+    let mut war_lifecycle_complete = false;
     if cursor != payload.len() {
         let trailer_rows =
             decode_domain53_trailers(offset, payload, cursor, &mut summary.parse_errors);
@@ -3322,6 +3699,13 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             .map(|row| row.member_tag_db_ids.len())
             .sum();
         operation_token_rows = trailer_rows.operation_tokens.len();
+        war_lifecycle_rows = trailer_rows.war_lifecycle.len();
+        war_lifecycle_participant_rows = trailer_rows
+            .war_lifecycle
+            .iter()
+            .map(|row| row.attackers.len().saturating_add(row.defenders.len()))
+            .sum();
+        war_lifecycle_complete = trailer_rows.war_lifecycle_complete;
     }
     add_unit(
         &mut summary,
@@ -3361,6 +3745,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     add_unit(&mut summary, "faction_rows", faction_rows);
     add_unit(&mut summary, "faction_member_rows", faction_member_rows);
     add_unit(&mut summary, "operation_token_rows", operation_token_rows);
+    add_unit(&mut summary, "war_lifecycle_rows", war_lifecycle_rows);
+    add_unit(
+        &mut summary,
+        "war_lifecycle_participant_rows",
+        war_lifecycle_participant_rows,
+    );
     if decoded_counts != expected_counts {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel per-kind counts decoded {:?} != header {:?}",
@@ -3376,10 +3766,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         ));
     }
     if status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
+        && !war_lifecycle_complete
         && (live_war_rows != 0 || country_war_projection_rows != 0)
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED; schema v{SCHEMA_VERSION} has no war name/grouping/start-date fields",
+            "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without a complete W1AB lifecycle witness; STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED is clear but exact war name/grouping/start-date fields are absent",
             live_war_rows, country_war_projection_rows
         ));
     }
@@ -3630,6 +4021,8 @@ pub fn decode_snapshot_payload(
             trailers.subject_autonomy_status_complete;
         snapshot.operation_tokens = trailers.operation_tokens;
         snapshot.operation_tokens_complete = trailers.operation_tokens_complete;
+        snapshot.war_lifecycle = trailers.war_lifecycle;
+        snapshot.war_lifecycle_complete = trailers.war_lifecycle_complete;
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
         }
@@ -6987,6 +7380,8 @@ mod tests {
             faction_roster_complete: false,
             operation_tokens: Vec::new(),
             operation_tokens_complete: false,
+            war_lifecycle: Vec::new(),
+            war_lifecycle_complete: false,
         }
     }
 

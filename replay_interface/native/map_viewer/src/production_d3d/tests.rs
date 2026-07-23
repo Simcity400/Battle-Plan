@@ -58,6 +58,7 @@ impl ProductionD3dExecutionBridge for TraceBridge {
 fn empty_frame() -> PreparedProductionMapFrame {
     PreparedProductionMapFrame {
         ordered_static_map_programs: Vec::new(),
+        authenticated_texture_snapshots: Vec::new(),
         rail_ribbon: None,
         snow_mud_texture: None,
         tree_runtime: None,
@@ -127,6 +128,7 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
             ordered_operations: operations,
             payload_sha256: "33".repeat(32),
         }],
+        authenticated_texture_snapshots: Vec::new(),
         rail_ribbon: None,
         mapname_d80_state: replay_core::MapnameD80State::Missing,
         tree_runtime: None,
@@ -1007,6 +1009,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
             }],
             payload_sha256: "66".repeat(32),
         }],
+        authenticated_texture_snapshots: Vec::new(),
         rail_ribbon: None,
         mapname_d80_state: replay_core::MapnameD80State::Missing,
         tree_runtime: None,

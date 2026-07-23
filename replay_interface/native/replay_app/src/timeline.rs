@@ -329,6 +329,10 @@ pub trait OwnerProvider {
         None
     }
 
+    fn static_artifact(&self, _name: &str) -> Option<&replay_core::PackagedStaticArtifact> {
+        None
+    }
+
     fn admit_playback_content(
         &self,
         _inventory: &replay_core::PlaybackContentInventory,
@@ -672,10 +676,12 @@ impl OwnerProvider for RecordingTimeline {
     }
 
     fn pov_picker(&self) -> crate::observer::PovPicker {
-        // Player countries are session-level; read them from the first frame's
-        // session view through the typed seam (never a raw snapshot parse).
+        // Read the first frame's typed recorder carriers (never a raw snapshot
+        // parse). D57 supplies the multiplayer roster; exact D68 supplies the
+        // ordinary single-player local country when that optional roster is
+        // absent, and the consumer rejects disagreement when both exist.
         match self.selected_frame(self.timeline.first_hour()) {
-            Ok(frame) => crate::observer::povs_from_session(frame.session_metadata()),
+            Ok(frame) => crate::observer::povs_from_frame(&frame),
             Err(err) => {
                 crate::observer::PovPicker::Unavailable(format!("session view unavailable: {err}"))
             }
@@ -699,6 +705,10 @@ impl OwnerProvider for RecordingTimeline {
 
     fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
         self.timeline.decision_catalog()
+    }
+
+    fn static_artifact(&self, name: &str) -> Option<&replay_core::PackagedStaticArtifact> {
+        self.timeline.static_artifact(name)
     }
 
     fn admit_playback_content(

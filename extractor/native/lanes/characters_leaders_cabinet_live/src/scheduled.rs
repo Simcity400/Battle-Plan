@@ -339,11 +339,19 @@ mod tests {
         assert_eq!(read.domain_id, 47);
         assert_eq!(read.status_flags, 0);
         assert!(read.parse_errors.is_empty(), "{:?}", read.parse_errors);
-        // Appointed advisors are fail-closed off in production (unvalidated
-        // active-idea proxy); the row that would have carried it is gone.
-        assert_eq!(read.row_count, 7);
-        assert_eq!(read.adapter_stats.appointed_advisor_rows, 0);
+        assert_eq!(read.row_count, 8);
+        assert_eq!(read.adapter_stats.appointed_advisor_rows, 1);
         assert_eq!(read.adapter_stats.portrait_rows, 1);
+        let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
+        assert!(decoded.rows.iter().any(|row| matches!(
+            row,
+            compact::DecodedDomain47Row::AppointedAdvisor {
+                country_tag_db_id: 2,
+                char_id: 1458,
+                idea_token,
+                ..
+            } if idea_token == "ENG_maxwell_aitken"
+        )));
     }
 
     #[test]

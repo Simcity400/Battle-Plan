@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 pub mod a729_hook;
 #[cfg(windows)]
 pub mod a40_peace_evidence;
+pub mod peace_conference_live;
 pub mod selected_designer_identity;
 
 pub const DOMAIN_ID: u16 = 78;

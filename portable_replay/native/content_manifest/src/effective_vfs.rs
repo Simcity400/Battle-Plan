@@ -349,18 +349,33 @@ fn index_zip_layer(local_source: &Path, expected_sha256: &str) -> Result<ZipLaye
         .map_err(|error| format!("rewind effective VFS archive failed: {error}"))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|error| format!("parse effective VFS archive failed: {error}"))?;
+    if archive.is_empty() {
+        return Err("effective VFS archive is empty".into());
+    }
     let mut entries = BTreeMap::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
             .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
+        if entry.encrypted() {
+            return Err("effective VFS archive contains an encrypted entry".into());
+        }
+        if entry.is_symlink() {
+            return Err("effective VFS archive contains a symbolic-link entry".into());
+        }
         if entry.is_dir() {
             continue;
+        }
+        if !entry.is_file() {
+            return Err("effective VFS archive contains an unsupported entry type".into());
         }
         let name = normalize_archive_entry(entry.name())?;
         if entries.insert(name, index).is_some() {
             return Err("effective VFS archive repeats a case-insensitive path".into());
         }
+    }
+    if entries.is_empty() {
+        return Err("effective VFS archive has no regular files".into());
     }
     Ok(ZipLayerIndex {
         entries,
@@ -447,11 +462,27 @@ fn walk_directory(
 }
 
 fn normalize_archive_entry(name: &str) -> Result<String, String> {
-    let normalized = name.replace('\\', "/");
-    if normalized.starts_with('/') {
+    let slash = name.replace('\\', "/");
+    if slash.starts_with('/') || slash.contains('\0') {
         return Err("effective VFS archive contains an absolute entry path".into());
     }
-    normalize_game_relative_path(&normalized)
+    // PHYSFS treats duplicate separators and `.` components as the same
+    // virtual name. Canonicalize those spellings before collision selection,
+    // while parent traversal and drive/URI grammars remain hard failures.
+    let mut parts = Vec::new();
+    for part in slash.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." || part.contains(':') {
+            return Err("effective VFS archive contains an unsafe entry path".into());
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return Err("effective VFS archive contains an empty entry path".into());
+    }
+    normalize_game_relative_path(&parts.join("/"))
 }
 
 fn path_from_logical(root: &Path, logical_path: &str) -> PathBuf {
@@ -678,5 +709,46 @@ mod tests {
     fn archive_entry_normalization_refuses_absolute_names() {
         assert!(normalize_archive_entry("/gfx/fx/value.shader").is_err());
         assert!(normalize_archive_entry(r"\gfx\fx\value.shader").is_err());
+        assert!(normalize_archive_entry("../gfx/fx/value.shader").is_err());
+        assert_eq!(
+            normalize_archive_entry("gfx//./fx/value.shader").unwrap(),
+            "gfx/fx/value.shader"
+        );
+    }
+
+    #[test]
+    fn empty_archive_is_refused_at_mount() {
+        let root = temp("empty_archive");
+        fs::create_dir_all(root.join("game")).unwrap();
+        let archive_path = root.join("empty.zip");
+        let writer = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
+        writer.finish().unwrap();
+        let archive_sha = sha256_bytes(&fs::read(&archive_path).unwrap());
+        let error = EffectiveVfs::new(
+            "d".repeat(64),
+            [
+                EffectiveVfsLayerMount {
+                    ordinal: 0,
+                    layer_kind: ContentLayerKind::Base,
+                    layer_id: "base".into(),
+                    storage_kind: LayerStorageKind::Directory,
+                    local_source: root.join("game"),
+                    source_container_sha256: None,
+                    replace_paths: Vec::new(),
+                },
+                EffectiveVfsLayerMount {
+                    ordinal: 1,
+                    layer_kind: ContentLayerKind::Mod,
+                    layer_id: "mod/empty.mod".into(),
+                    storage_kind: LayerStorageKind::ZipArchive,
+                    local_source: archive_path,
+                    source_container_sha256: Some(archive_sha),
+                    replace_paths: Vec::new(),
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(error.contains("empty"), "unexpected mount error: {error}");
+        fs::remove_dir_all(root).unwrap();
     }
 }

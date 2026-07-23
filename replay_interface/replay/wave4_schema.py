@@ -1719,6 +1719,7 @@ def _validate_a34(snap: Dict[str, Any], problems: List[str]) -> None:
     root_keys = {
         "schema_version", "authority", "executable_sha256", "function_manifest_sha256",
         "data_artifact_sha256", "country_view_owner_tag_manifest_sha256",
+        "semantic_leaf_manifest_sha256", "on_map_identity_manifest_sha256",
         "elapsed_wall_ms", "frame_hour", "source_sequence",
         "producer_complete", "country_tag", "decision_catalog_sha256",
         "materialization_qpc_ticks", "selected_present", "grid", "children",
@@ -1730,11 +1731,13 @@ def _validate_a34(snap: Dict[str, Any], problems: List[str]) -> None:
     children, rows = root.get("children"), root.get("rows")
     country = root.get("country_tag")
     d18 = _d18_map(snap)
-    if (root.get("schema_version") != 2 or root.get("authority") != "exact_a729_decision_panel"
+    if (root.get("schema_version") != 3 or root.get("authority") != "exact_a729_decision_panel"
             or root.get("executable_sha256") != EXECUTABLE_SHA256
             or root.get("function_manifest_sha256") != DECISION_PANEL_MANIFEST_SHA256
             or root.get("data_artifact_sha256") != DECISION_PANEL_DATA_SHA256
             or root.get("country_view_owner_tag_manifest_sha256") != DECISION_PANEL_COUNTRY_OWNER_SHA256
+            or root.get("semantic_leaf_manifest_sha256") != "082d3f982a260c085f19c320bf1368e79395821e3b0a42007eb1648bcee6348e"
+            or root.get("on_map_identity_manifest_sha256") != "a412d4480732030ae8bbffd5c135f9e22029bdcdee40dcd760c025da30fc0130"
             or not _uint(root.get("elapsed_wall_ms"), (1 << 64) - 1)
             or not _uint(root.get("frame_hour"), (1 << 64) - 1)
             or root.get("frame_hour") != snap.get("hour_index")
@@ -1830,7 +1833,7 @@ def _validate_a34(snap: Dict[str, Any], problems: List[str]) -> None:
     lifecycle = {"pending", "running", "completed", "failed", "removed"}
     for index, raw in enumerate(rows):
         path = f"{key}.rows[{index}]"
-        row = _exact_keys(raw, {"decision_id", "category_id", "presentation_index", "availability", "lifecycle", "target", "cost", "remaining_timer_days", "cooldown_remaining_days", "name_text", "timer_text", "alert_to_take", "alert_timeout"}, path, problems)
+        row = _exact_keys(raw, {"decision_id", "category_id", "presentation_index", "availability", "lifecycle", "interface_state", "on_map_entry_ordinal", "target", "cost", "remaining_timer_days", "cooldown_remaining_days", "name_text", "timer_text", "alert_to_take", "alert_timeout"}, path, problems)
         if row is None:
             continue
         presentation_index = row.get("presentation_index")
@@ -1855,7 +1858,41 @@ def _validate_a34(snap: Dict[str, Any], problems: List[str]) -> None:
                         and (cooldown is None or (_is_int(cooldown) and 0 <= cooldown < (1 << 31)))
                         and ((remaining is not None or cooldown is not None) == (row.get("timer_text") is not None))
                         and (row.get("timer_text") is None or valid_text(row.get("timer_text"))))
-        identity = (row.get("decision_id"), target_key)
+        interface_state = row.get("interface_state")
+        on_map_entry_ordinal = row.get("on_map_entry_ordinal")
+        family_shape_valid = (
+            (interface_state is None) == (on_map_entry_ordinal is not None)
+            and (on_map_entry_ordinal is None
+                 or _uint(on_map_entry_ordinal, 0xFFFFFFFE))
+        )
+        if cooldown is not None and cooldown > 0:
+            interface_state_valid = (
+                row.get("availability") == "on_cooldown"
+                and row.get("lifecycle") == "pending"
+            )
+        elif interface_state is None or interface_state in {1, 6, 9}:
+            interface_state_valid = (
+                row.get("availability") == "available"
+                and row.get("lifecycle") == "pending"
+            )
+        elif interface_state in {3, 4, 10, 11}:
+            interface_state_valid = (
+                row.get("availability") == "active"
+                and row.get("lifecycle") == "running"
+            )
+        elif interface_state == 12:
+            interface_state_valid = (
+                row.get("availability") == "unavailable"
+                and row.get("lifecycle") == "completed"
+            )
+        elif interface_state in {0, 2, 5, 7, 8}:
+            interface_state_valid = (
+                row.get("availability") == "unavailable"
+                and row.get("lifecycle") == "pending"
+            )
+        else:
+            interface_state_valid = False
+        identity = (row.get("decision_id"), target_key, on_map_entry_ordinal)
         child_join = (_uint(presentation_index) and presentation_index < len(children)
                       and isinstance(children[presentation_index], dict)
                       and children[presentation_index].get("kind") == "decision"
@@ -1866,6 +1903,10 @@ def _validate_a34(snap: Dict[str, Any], problems: List[str]) -> None:
         if (not child_join or not valid_text(row.get("decision_id")) or not valid_text(row.get("category_id"))
                 or not valid_text(row.get("name_text")) or row.get("availability") not in availability
                 or row.get("lifecycle") not in lifecycle or not target_valid or not cost_valid or not timers_valid
+                or not (row.get("interface_state") is None
+                        or _uint(row.get("interface_state"), 12))
+                or not interface_state_valid
+                or not family_shape_valid
                 or type(row.get("alert_to_take")) is not bool or type(row.get("alert_timeout")) is not bool
                 or identity in identities):
             problems.append(f"{path} ordered identity/content invalid")

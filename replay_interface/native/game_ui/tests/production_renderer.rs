@@ -281,9 +281,12 @@ fn minimal_hud_route_admission(
 
 #[test]
 fn product_packet_partition_is_exact_and_authority_blocked_surfaces_have_no_render_route() {
-    assert_eq!(PROMOTED_XUI_PACKETS, ["XUI15", "XUI24", "XUI25"]);
+    assert_eq!(
+        PROMOTED_XUI_PACKETS,
+        ["XUI09", "XUI10", "XUI15", "XUI24", "XUI25"]
+    );
     assert_eq!(OMITTED_AUTHORITY_BLOCKED_PACKETS.len(), 20);
-    assert_eq!(OMITTED_PIXEL_CANVAS_ROUTES.len(), 3);
+    assert_eq!(OMITTED_PIXEL_CANVAS_ROUTES.len(), 1);
     assert_eq!(PROMOTED_EXTENSION_PACKETS, ["XUI27"]);
     assert!(OMITTED_EXTENSION_PACKETS.is_empty());
     for (packet, dependency) in OMITTED_AUTHORITY_BLOCKED_PACKETS {
@@ -373,7 +376,10 @@ fn production_app_routes_only_authenticated_selected_present_ui() {
     assert!(text.contains("debug_overlay_enabled.then(|| Overlay::create"));
     assert!(!text.contains("let mut overlay = Overlay::create"));
     assert!(text.contains("if debug_overlay_enabled"));
-    assert_eq!(PROMOTED_XUI_PACKETS, ["XUI15", "XUI24", "XUI25"]);
+    assert_eq!(
+        PROMOTED_XUI_PACKETS,
+        ["XUI09", "XUI10", "XUI15", "XUI24", "XUI25"]
+    );
     assert_eq!(PROMOTED_EXTENSION_PACKETS, ["XUI27"]);
     for packet in ["XUI01", "XUI02", "XUI04", "XUI07", "XUI26"] {
         assert!(OMITTED_AUTHORITY_BLOCKED_PACKETS

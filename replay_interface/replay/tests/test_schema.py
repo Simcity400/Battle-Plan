@@ -156,6 +156,8 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("divisions.0.owner"), "C/M/S")
         self.assertEqual(schema.source_of("divisions.0.location_province"), "C/M/S")
         self.assertEqual(schema.source_of("divisions.0.organisation"), "C/M")
+        self.assertIn("max_organisation", contract["first_slice_fields"])
+        self.assertEqual(schema.source_of("divisions.0.max_organisation"), "C/M")
         self.assertEqual(schema.source_of("divisions.0.move_progress"), "C/M*")
         # Equipment remains separate from the first collector `divisions` slice.
         self.assertEqual(schema.source_of("divisions.0.equipment"), "M/S")
@@ -906,6 +908,7 @@ class TestValidator(unittest.TestCase):
             "template_type": 52,
             "template_name": "Infantry",
             "organisation": 42.5,
+            "max_organisation": 84.0,
             "strength": 0.97,
             "experience": 1.0,
             "moving": True,
@@ -943,10 +946,12 @@ class TestValidator(unittest.TestCase):
 
         div.pop("body_addr")
         div["move_progress"] = float("nan")
+        div["max_organisation"] = float("inf")
         div["moving"] = 1
         div["owner"] = "Germany"
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("move_progress" in p for p in probs), probs)
+        self.assertTrue(any("max_organisation" in p for p in probs), probs)
         self.assertTrue(any("moving" in p for p in probs), probs)
         self.assertTrue(any("owner" in p for p in probs), probs)
 
@@ -1637,15 +1642,19 @@ class TestWave4ExactSchema(unittest.TestCase):
         history["events"][0]["victim_ship_reference_raw"] = [0, 0]
         self.assertTrue(any("writer event" in p for p in schema.validate_snapshot(snap)))
 
-    def test_a34_decision_panel_v2_receipt_metadata_and_empty_bijection(self):
+    def test_a34_decision_panel_v3_receipt_metadata_and_empty_bijection(self):
         snap = self._base()
         snap["_r2_decision_panel_live"] = {
-            "schema_version": 2, "authority": "exact_a729_decision_panel",
+            "schema_version": 3, "authority": "exact_a729_decision_panel",
             "executable_sha256": self.EXECUTABLE,
             "function_manifest_sha256": "712233abfbd1352f0c84ede6267a99f4de8f5406cabfd20d76046a094b5fec0a",
             "data_artifact_sha256": "ccca7fbfe0378821f22ed82d1a371a58ea12c24a9601fd3dd36d97bef093f0ea",
             "country_view_owner_tag_manifest_sha256":
                 "a31b9fa4d886d509ceceef46819b6048331ef65065c2f07a8cc086e0868dd07a",
+            "semantic_leaf_manifest_sha256":
+                "082d3f982a260c085f19c320bf1368e79395821e3b0a42007eb1648bcee6348e",
+            "on_map_identity_manifest_sha256":
+                "a412d4480732030ae8bbffd5c135f9e22029bdcdee40dcd760c025da30fc0130",
             "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"], "source_sequence": 1,
             "producer_complete": True, "country_tag": "ENG",
             "decision_catalog_sha256": "c" * 64, "materialization_qpc_ticks": 90,

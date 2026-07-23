@@ -7,7 +7,7 @@
 //! returned pointer-free snapshot can enter compact domain 89.
 
 use compact_contract::national_focus_presentation::{
-    valid_focus_id, validate_snapshot, ExactNationalFocusPresentationSource,
+    valid_focus_id, validate_semantic_snapshot, ExactNationalFocusPresentationSource,
     FocusPresentationItem, Snapshot, EXACT20_FUNCTION_MANIFEST_SHA256,
 };
 use std::collections::BTreeSet;
@@ -189,6 +189,9 @@ pub fn materialize_pointer_free_snapshot<B: ExactA729FocusObservationBoundary>(
             highlight_glow_visible,
             historical_marker_visible: item.historical_marker_visible,
             joint_viewing_country_tag,
+            selected_present_ui_operation_ordinals: Vec::new(),
+            selected_present_screen_rect:
+                compact_contract::national_focus_presentation::RectI32::EMPTY,
         });
     }
 
@@ -203,8 +206,10 @@ pub fn materialize_pointer_free_snapshot<B: ExactA729FocusObservationBoundary>(
         ),
         expected_visible_item_count: observation.items.len() as u32,
         visible_items,
+        selected_present_canvas_operation_ordinals: Vec::new(),
+        selected_present_ui_operation_order: Vec::new(),
     };
-    validate_snapshot(&snapshot).map_err(|error| format!("{error:?}"))?;
+    validate_semantic_snapshot(&snapshot).map_err(|error| format!("{error:?}"))?;
     Ok(snapshot)
 }
 

@@ -2,10 +2,13 @@
 //!
 //! The retained controller roots prove where the mode-6
 //! `CCountryTechTreeView` is owned and where population/refresh commits occur,
-//! and the exact20 root/helper receipt and sentinels are now frozen. Final
-//! static exhaustion identified one two-dimensional GUI root at
-//! `controller+0x578`, but did not identify an authenticated producer for the
-//! two axis records carried by TCV1. It also proved that connector segment objects are reused across
+//! and the exact20 root/helper receipt and sentinels are now frozen. A later
+//! literal lookup proved that `controller+0x578` is `close_button`, not a
+//! two-dimensional canvas or axis owner. The active folder roots instead live
+//! in the populated vector at `controller+0x19f8` (count `+0x1a04`, active
+//! ordinal `+0x1a90`). Static evidence does not close their final
+//! selected-Present geometry, origin, scale, clipping, or draw order. It also
+//! proved that connector segment objects are reused across
 //! logical edges, so a post-return pool scan cannot recover portable endpoint
 //! identity. This module therefore supplies a complete fail-closed engineering
 //! seam while
@@ -19,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"TCV1");
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const PRODUCTION_ACTIVATION: bool = false;
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
@@ -113,6 +116,8 @@ pub struct AuthenticatedLiveProducerContract {
     pub live_observation_receipt_sha256: &'static str,
     pub live_producer_manifest_sha256: &'static str,
     pub owner_registry_manifest_sha256: &'static str,
+    pub selected_present_producer_manifest_sha256: &'static str,
+    pub owner_hook: LiveHookInstallationContract,
     pub population_hook: LiveHookInstallationContract,
     pub refresh_hook: LiveHookInstallationContract,
 }
@@ -186,11 +191,13 @@ pub const AUTHENTICATED_EXACT20_HOOK_CONTRACT: Option<Exact20HookContract> =
 /// gate absent until the canonical pool/job ledger supplies one.
 pub const PERSISTED_EXACT20_PREFLIGHT_RECEIPT_SHA256: Option<&str> = None;
 
-/// Deliberately absent. The retained static exports did not identify an exact
-/// producer for TCV1's two axis records. Portable connector identity additionally
-/// requires a contextual bracket around `CONNECTOR_PATH_MATERIALIZER_RVA` and
-/// every segment-helper emission because the post-return pool merges/reuses
-/// segment objects. Neither value may be synthesized from the final pool.
+/// Deliberately absent. The retained static exports identify the active folder
+/// root but do not bind it to an authenticated selected Present or recover its
+/// exact final screen-space origin/scale/clip/order. Portable connector identity
+/// additionally requires a contextual bracket around
+/// `CONNECTOR_PATH_MATERIALIZER_RVA` and every segment-helper emission because
+/// the post-return pool merges/reuses segment objects. None of these values may
+/// be synthesized from the final pool.
 pub const AUTHENTICATED_LIVE_PRODUCER_CONTRACT: Option<AuthenticatedLiveProducerContract> = None;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,6 +282,11 @@ pub struct TechnologyCanvasAuthority {
     pub live_observation_receipt_sha256: String,
     pub live_producer_manifest_sha256: String,
     pub owner_registry_manifest_sha256: String,
+    /// Authenticated receipt for the exact selected Present whose final UI
+    /// state is carried by this frame. A same-game-hour receipt is not enough.
+    pub selected_present_receipt_sha256: String,
+    pub selected_present_pass_identity_sha256: String,
+    pub selected_present_producer_manifest_sha256: String,
     pub content_manifest_sha256: String,
 }
 
@@ -282,6 +294,7 @@ pub struct TechnologyCanvasAuthority {
 pub struct OwnerRegistryWitness {
     pub registry_epoch: u64,
     pub owner_sequence: u64,
+    pub construction_qpc_ticks: u64,
     pub owner_construction_record_sha256: String,
     pub registry_manifest_sha256: String,
 }
@@ -304,10 +317,14 @@ pub struct MaterializedDrawable {
     pub slot_id: String,
     pub draw_ordinal: u32,
     pub rect: RectI32,
+    /// Exact selected-Present UI operation ordinals emitted for this
+    /// drawable by the same GUI traversal. Container-rectangle matching is
+    /// explicitly not a valid substitute.
+    pub ui_pass_ordinals: Vec<u32>,
 }
 
-/// Complete, portable same-transition technology-canvas observation. No raw
-/// process pointer is representable in this type.
+/// Complete, portable callback-to-selected-Present technology-canvas
+/// observation. No raw process pointer is representable in this type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechnologyCanvasFrame {
     pub authority: TechnologyCanvasAuthority,
@@ -316,14 +333,40 @@ pub struct TechnologyCanvasFrame {
     pub frame_hour: u64,
     pub elapsed_wall_ms: u64,
     pub capture_sequence: u64,
+    /// QPC at the completed population/refresh callback.
+    pub callback_qpc_ticks: u64,
+    /// Monotonic identity and QPC of the selected Present that consumed this
+    /// active technology root. These bind callback state to one render submit;
+    /// game hour alone is deliberately insufficient.
+    pub selected_present_candidate_id: u64,
+    pub selected_present_ordinal: u32,
+    pub selected_present_qpc_ticks: u64,
+    pub selected_present_cutoff_qpc_ticks: u64,
+    /// Pointer-free token assigned by the selected-Present producer to the
+    /// exact runtime GUI instance registered by the technology hook.
+    pub selected_present_engine_instance_token: u64,
     pub boundary: ObserverBoundary,
     pub controller_mode: u32,
+    pub authored_surface_identity: String,
+    pub runtime_root_identity: String,
+    pub effective_interface_winner: String,
+    pub active_root_identity: String,
     pub source_items: Vec<TechnologySourceItem>,
     pub final_draw_order: Vec<String>,
+    /// Strictly ordered complete union of all drawable `ui_pass_ordinals`.
+    pub selected_present_ui_operation_order: Vec<u32>,
     pub materialized_drawables: Vec<MaterializedDrawable>,
     pub clip_rect: RectI32,
     pub content_extent_pixels: [i32; 2],
     pub viewport_extent_pixels: [i32; 2],
+    pub render_target_extent_pixels: [i32; 2],
+    pub client_extent_pixels: [i32; 2],
+    /// Exact fixed-5 screen-space origin of the selected active folder root.
+    pub canvas_origin_pixels_fixed5: [i64; 2],
+    /// Raw IEEE-754 bit patterns for the exact selected-Present X/Y canvas
+    /// scale. The producer must read or statically prove these values; identity
+    /// scale must never be assumed.
+    pub canvas_scale_bits: [u32; 2],
     /// Explicit fixed-5 pixel translation. It is not reconstructed from either
     /// axis' scroll current value.
     pub pan_pixels_fixed5: [i64; 2],
@@ -350,6 +393,7 @@ pub struct RawBoundaryObservation {
     pub frame_hour: u64,
     pub elapsed_wall_ms: u64,
     pub capture_sequence: u64,
+    pub callback_qpc_ticks: u64,
     pub boundary: ObserverBoundary,
 }
 
@@ -389,7 +433,7 @@ pub fn activation_blockers() -> Vec<&'static str> {
         blockers.push("persisted same-session exact20 preflight receipt is absent");
     }
     if AUTHENTICATED_LIVE_PRODUCER_CONTRACT.is_none() {
-        blockers.push("no authenticated TCV1 axis producer was identified from the exact-a729 2D GUI root at controller+0x578; connector objects are reused across logical edges and cannot yield portable endpoint identity in a post-return pool scan");
+        blockers.push("no authenticated selected-Present producer resolves controller+0x19f8[controller+0x1a90] to a portable active-root identity and exact final origin/scale/clip/extents/order; controller+0x578 is close_button, and reused connector objects cannot yield portable endpoint identity from a post-return pool scan");
     }
     blockers
 }
@@ -398,7 +442,20 @@ pub fn expected_source_record_id(
     owner_instance_id: &str,
     frame_hour: u64,
     capture_sequence: u64,
+    callback_qpc_ticks: u64,
+    selected_present_candidate_id: u64,
+    selected_present_ordinal: u32,
+    selected_present_qpc_ticks: u64,
+    selected_present_cutoff_qpc_ticks: u64,
+    selected_present_engine_instance_token: u64,
     boundary: ObserverBoundary,
+    authored_surface_identity: &str,
+    runtime_root_identity: &str,
+    effective_interface_winner: &str,
+    active_root_identity: &str,
+    selected_present_receipt_sha256: &str,
+    selected_present_pass_identity_sha256: &str,
+    selected_present_producer_manifest_sha256: &str,
     exact20_preflight_receipt_sha256: &str,
     root_producer_manifest_sha256: &str,
     helper_producer_manifest_sha256: &str,
@@ -408,11 +465,30 @@ pub fn expected_source_record_id(
     content_manifest_sha256: &str,
 ) -> String {
     let mut canonical = Vec::new();
-    canonical.extend_from_slice(b"the game:a729:technology-canvas-source-record:v1\0");
+    canonical.extend_from_slice(b"the game:a729:technology-canvas-source-record:v2\0");
     put_len_prefixed_unchecked(&mut canonical, owner_instance_id.as_bytes());
     put_u64(&mut canonical, frame_hour);
     put_u64(&mut canonical, capture_sequence);
+    put_u64(&mut canonical, callback_qpc_ticks);
+    put_u64(&mut canonical, selected_present_candidate_id);
+    put_u32(&mut canonical, selected_present_ordinal);
+    put_u64(&mut canonical, selected_present_qpc_ticks);
+    put_u64(&mut canonical, selected_present_cutoff_qpc_ticks);
+    put_u64(&mut canonical, selected_present_engine_instance_token);
     put_u32(&mut canonical, boundary as u32);
+    put_len_prefixed_unchecked(&mut canonical, authored_surface_identity.as_bytes());
+    put_len_prefixed_unchecked(&mut canonical, runtime_root_identity.as_bytes());
+    put_len_prefixed_unchecked(&mut canonical, effective_interface_winner.as_bytes());
+    put_len_prefixed_unchecked(&mut canonical, active_root_identity.as_bytes());
+    put_len_prefixed_unchecked(&mut canonical, selected_present_receipt_sha256.as_bytes());
+    put_len_prefixed_unchecked(
+        &mut canonical,
+        selected_present_pass_identity_sha256.as_bytes(),
+    );
+    put_len_prefixed_unchecked(
+        &mut canonical,
+        selected_present_producer_manifest_sha256.as_bytes(),
+    );
     put_len_prefixed_unchecked(&mut canonical, exact20_preflight_receipt_sha256.as_bytes());
     put_len_prefixed_unchecked(&mut canonical, root_producer_manifest_sha256.as_bytes());
     put_len_prefixed_unchecked(&mut canonical, helper_producer_manifest_sha256.as_bytes());
@@ -465,6 +541,8 @@ pub fn collect_after_boundary<S: ExactTechnologyCanvasObserverSource>(
         || authority.live_producer_manifest_sha256 != live_contract.live_producer_manifest_sha256
         || authority.owner_registry_manifest_sha256
             != live_contract.owner_registry_manifest_sha256
+        || authority.selected_present_producer_manifest_sha256
+            != live_contract.selected_present_producer_manifest_sha256
     {
         return Err(ObserverError::Unauthenticated(
             "observer authority does not match the pinned exact20 contract".into(),
@@ -478,6 +556,7 @@ pub fn collect_after_boundary<S: ExactTechnologyCanvasObserverSource>(
         || frame.frame_hour != raw.frame_hour
         || frame.elapsed_wall_ms != raw.elapsed_wall_ms
         || frame.capture_sequence != raw.capture_sequence
+        || frame.callback_qpc_ticks != raw.callback_qpc_ticks
         || frame.boundary != raw.boundary
     {
         return invalid("bridge changed authority or callback transition identity");
@@ -514,12 +593,16 @@ pub fn validate_live_contract(
     if !lower_hex_sha256(contract.live_observation_receipt_sha256)
         || !lower_hex_sha256(contract.live_producer_manifest_sha256)
         || !lower_hex_sha256(contract.owner_registry_manifest_sha256)
+        || !lower_hex_sha256(contract.selected_present_producer_manifest_sha256)
+        || contract.owner_hook.callback_rva != OWNER_CONSTRUCTOR_RVA
         || contract.population_hook.callback_rva != POPULATION_COMMIT_RVA
         || contract.refresh_hook.callback_rva != REFRESH_COMMIT_RVA
         || !lower_hex_sha256(contract.population_hook.installed_patch_sha256)
         || !lower_hex_sha256(contract.population_hook.trampoline_sha256)
         || !lower_hex_sha256(contract.refresh_hook.installed_patch_sha256)
         || !lower_hex_sha256(contract.refresh_hook.trampoline_sha256)
+        || !lower_hex_sha256(contract.owner_hook.installed_patch_sha256)
+        || !lower_hex_sha256(contract.owner_hook.trampoline_sha256)
     {
         return Err(ObserverError::Unauthenticated(
             "live producer contract is absent, malformed, or bound to foreign hooks".into(),
@@ -533,6 +616,7 @@ pub fn expected_owner_instance_id(witness: &OwnerRegistryWitness) -> String {
     canonical.extend_from_slice(b"the game:a729:technology-canvas-owner-registry:v1\0");
     put_u64(&mut canonical, witness.registry_epoch);
     put_u64(&mut canonical, witness.owner_sequence);
+    put_u64(&mut canonical, witness.construction_qpc_ticks);
     put_len_prefixed_unchecked(
         &mut canonical,
         witness.owner_construction_record_sha256.as_bytes(),
@@ -542,6 +626,20 @@ pub fn expected_owner_instance_id(witness: &OwnerRegistryWitness) -> String {
     let mut array = [0u8; 32];
     array.copy_from_slice(&digest);
     format!("a729:technology_canvas_owner:{}", hex32(array))
+}
+
+pub fn expected_owner_construction_record_sha256(witness: &OwnerRegistryWitness) -> String {
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(b"the game:a729:technology-canvas-owner-construction:v1\0");
+    put_u64(&mut canonical, witness.registry_epoch);
+    put_u64(&mut canonical, witness.owner_sequence);
+    put_u64(&mut canonical, witness.construction_qpc_ticks);
+    put_u32(&mut canonical, TECHNOLOGY_MODE);
+    canonical.extend_from_slice(witness.registry_manifest_sha256.as_bytes());
+    let digest = Sha256::digest(canonical);
+    let mut array = [0u8; 32];
+    array.copy_from_slice(&digest);
+    hex32(array)
 }
 
 fn validate_raw_boundary(
@@ -554,6 +652,7 @@ fn validate_raw_boundary(
     }
     if raw.owner_registry_witness.registry_epoch == 0
         || raw.owner_registry_witness.owner_sequence == 0
+        || raw.owner_registry_witness.construction_qpc_ticks == 0
         || !lower_hex_sha256(
             &raw
                 .owner_registry_witness
@@ -561,6 +660,8 @@ fn validate_raw_boundary(
         )
         || raw.owner_registry_witness.registry_manifest_sha256
             != live_contract.owner_registry_manifest_sha256
+        || raw.owner_registry_witness.owner_construction_record_sha256
+            != expected_owner_construction_record_sha256(&raw.owner_registry_witness)
     {
         return Err(ObserverError::Unauthenticated(
             "owner registry witness is absent or foreign".into(),
@@ -595,6 +696,7 @@ fn validate_raw_boundary(
         || raw.owner_mode6_slot_value != raw.controller_ptr
         || raw.controller_mode_raw != TECHNOLOGY_MODE
         || raw.capture_sequence == 0
+        || raw.callback_qpc_ticks == 0
     {
         return invalid("mode-6 owner/controller/capture identity is not exact");
     }
@@ -619,7 +721,20 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
                 &frame.owner_instance_id,
                 frame.frame_hour,
                 frame.capture_sequence,
+                frame.callback_qpc_ticks,
+                frame.selected_present_candidate_id,
+                frame.selected_present_ordinal,
+                frame.selected_present_qpc_ticks,
+                frame.selected_present_cutoff_qpc_ticks,
+                frame.selected_present_engine_instance_token,
                 frame.boundary,
+                &frame.authored_surface_identity,
+                &frame.runtime_root_identity,
+                &frame.effective_interface_winner,
+                &frame.active_root_identity,
+                &frame.authority.selected_present_receipt_sha256,
+                &frame.authority.selected_present_pass_identity_sha256,
+                &frame.authority.selected_present_producer_manifest_sha256,
                 &frame.authority.exact20_preflight_receipt_sha256,
                 &frame.authority.root_producer_manifest_sha256,
                 &frame.authority.helper_producer_manifest_sha256,
@@ -634,26 +749,73 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
     if !frame.boundary.is_complete_snapshot_boundary()
         || frame.controller_mode != TECHNOLOGY_MODE
         || frame.capture_sequence == 0
+        || frame.callback_qpc_ticks == 0
+        || frame.selected_present_candidate_id == 0
+        || frame.selected_present_qpc_ticks < frame.callback_qpc_ticks
+        || frame.selected_present_cutoff_qpc_ticks < frame.selected_present_qpc_ticks
+        || frame.selected_present_engine_instance_token == 0
     {
-        return invalid("frame is not a complete mode-6 population/refresh observation");
+        return invalid(
+            "frame is not a complete mode-6 callback joined to a later selected Present",
+        );
+    }
+    portable_canvas_atom(
+        &frame.authored_surface_identity,
+        "authored_surface_identity",
+    )?;
+    portable_canvas_atom(&frame.runtime_root_identity, "runtime_root_identity")?;
+    portable_canvas_path(
+        &frame.effective_interface_winner,
+        "effective_interface_winner",
+    )?;
+    portable_canvas_path(&frame.active_root_identity, "active_root_identity")?;
+    if frame.authored_surface_identity != "technology_canvas"
+        || frame.runtime_root_identity != "countrytechtreeview"
+        || frame.effective_interface_winner != "interface/countrytechtreeview.gui"
+        || !frame
+            .active_root_identity
+            .starts_with("countrytechtreeview/")
+    {
+        return invalid("selected-Present technology root registration is foreign");
     }
     positive_rect(frame.clip_rect, "clip_rect")?;
     if frame.content_extent_pixels.iter().any(|value| *value <= 0)
         || frame.viewport_extent_pixels.iter().any(|value| *value <= 0)
+        || frame
+            .render_target_extent_pixels
+            .iter()
+            .any(|value| *value <= 0)
+        || frame.client_extent_pixels.iter().any(|value| *value <= 0)
     {
-        return invalid("content/viewport extents are invalid");
+        return invalid("content/viewport/render-target/client extents are invalid");
+    }
+    for (index, bits) in frame.canvas_scale_bits.iter().copied().enumerate() {
+        let scale = f32::from_bits(bits);
+        if !scale.is_finite() || scale <= 0.0 {
+            return invalid(&format!("canvas scale component {index} is invalid"));
+        }
     }
     validate_axis(frame.horizontal_scroll_fixed5, "horizontal scroll")?;
     validate_axis(frame.vertical_scroll_fixed5, "vertical scroll")?;
+    let mapped_operation_count = frame
+        .materialized_drawables
+        .iter()
+        .try_fold(0usize, |total, drawable| {
+            total.checked_add(drawable.ui_pass_ordinals.len())
+        })
+        .ok_or_else(|| ObserverError::Invalid("UI operation count overflow".into()))?;
     if frame.source_items.len() > MAX_DRAWABLES
         || frame.final_draw_order.len() > MAX_DRAWABLES
         || frame.materialized_drawables.len() > MAX_DRAWABLES
+        || frame.selected_present_ui_operation_order.len() > MAX_DRAWABLES
+        || mapped_operation_count > MAX_DRAWABLES
     {
         return invalid("technology canvas exceeds carrier bounds");
     }
     if frame.source_items.is_empty()
         || frame.final_draw_order.is_empty()
         || frame.materialized_drawables.is_empty()
+        || frame.selected_present_ui_operation_order.is_empty()
     {
         return invalid("complete technology canvas has an empty source/order/drawable set");
     }
@@ -703,6 +865,8 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
 
     let mut drawables = BTreeSet::new();
     let mut slots = BTreeSet::new();
+    let mut mapped_ui_operations = BTreeSet::new();
+    let mut previous_ui_operation = None;
     for (expected_ordinal, drawable) in frame.materialized_drawables.iter().enumerate() {
         portable_canvas_atom(&drawable.drawable_id, "drawable_id")?;
         portable_canvas_path(&drawable.hierarchy_path, "drawable hierarchy_path")?;
@@ -718,9 +882,33 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
             return invalid("materialized drawable identity/order/path/slot mismatch");
         }
         positive_rect(drawable.rect, "materialized drawable rect")?;
+        if drawable.ui_pass_ordinals.is_empty() {
+            return invalid("materialized drawable has no selected-Present operations");
+        }
+        for operation_ordinal in &drawable.ui_pass_ordinals {
+            if previous_ui_operation.is_some_and(|previous| previous >= *operation_ordinal)
+                || !mapped_ui_operations.insert(*operation_ordinal)
+            {
+                return invalid(
+                    "drawable selected-Present operations are duplicate or out of final order",
+                );
+            }
+            previous_ui_operation = Some(*operation_ordinal);
+        }
     }
     if drawables != included || frame.materialized_drawables.len() != frame.final_draw_order.len() {
         return invalid("materialized drawables do not exactly cover final order");
+    }
+    if frame
+        .selected_present_ui_operation_order
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+        || frame.selected_present_ui_operation_order
+            != mapped_ui_operations.iter().copied().collect::<Vec<_>>()
+    {
+        return invalid(
+            "selected-Present operation order is not the exact ordered drawable union",
+        );
     }
     if frame.authority.content_manifest_sha256 != compute_content_manifest_sha256(frame)? {
         return Err(ObserverError::Unauthenticated(
@@ -742,6 +930,9 @@ fn validate_authority(authority: &TechnologyCanvasAuthority) -> Result<(), Obser
         || !lower_hex_sha256(&authority.live_observation_receipt_sha256)
         || !lower_hex_sha256(&authority.live_producer_manifest_sha256)
         || !lower_hex_sha256(&authority.owner_registry_manifest_sha256)
+        || !lower_hex_sha256(&authority.selected_present_receipt_sha256)
+        || !lower_hex_sha256(&authority.selected_present_pass_identity_sha256)
+        || !lower_hex_sha256(&authority.selected_present_producer_manifest_sha256)
         || !lower_hex_sha256(&authority.content_manifest_sha256)
         || authority.exact20_receipt_sha256 != contract.exact20_receipt_sha256
         || authority.root_producer_manifest_sha256 != contract.root_producer_manifest_sha256
@@ -773,6 +964,12 @@ fn encode_payload(frame: &TechnologyCanvasFrame) -> Result<Vec<u8>, ObserverErro
     put_u64(&mut out, frame.frame_hour);
     put_u64(&mut out, frame.elapsed_wall_ms);
     put_u64(&mut out, frame.capture_sequence);
+    put_u64(&mut out, frame.callback_qpc_ticks);
+    put_u64(&mut out, frame.selected_present_candidate_id);
+    put_u32(&mut out, frame.selected_present_ordinal);
+    put_u64(&mut out, frame.selected_present_qpc_ticks);
+    put_u64(&mut out, frame.selected_present_cutoff_qpc_ticks);
+    put_u64(&mut out, frame.selected_present_engine_instance_token);
     put_u32(&mut out, frame.boundary as u32);
     put_u32(&mut out, frame.controller_mode);
     put_string(&mut out, &frame.authority.executable_sha256)?;
@@ -783,15 +980,40 @@ fn encode_payload(frame: &TechnologyCanvasFrame) -> Result<Vec<u8>, ObserverErro
     put_string(&mut out, &frame.authority.live_observation_receipt_sha256)?;
     put_string(&mut out, &frame.authority.live_producer_manifest_sha256)?;
     put_string(&mut out, &frame.authority.owner_registry_manifest_sha256)?;
+    put_string(&mut out, &frame.authority.selected_present_receipt_sha256)?;
+    put_string(
+        &mut out,
+        &frame.authority.selected_present_pass_identity_sha256,
+    )?;
+    put_string(
+        &mut out,
+        &frame.authority.selected_present_producer_manifest_sha256,
+    )?;
     put_string(&mut out, &frame.authority.content_manifest_sha256)?;
     put_string(&mut out, &frame.source_record_id)?;
     put_string(&mut out, &frame.owner_instance_id)?;
+    put_string(&mut out, &frame.authored_surface_identity)?;
+    put_string(&mut out, &frame.runtime_root_identity)?;
+    put_string(&mut out, &frame.effective_interface_winner)?;
+    put_string(&mut out, &frame.active_root_identity)?;
     put_rect(&mut out, frame.clip_rect);
     for value in frame.content_extent_pixels {
         put_i32(&mut out, value);
     }
     for value in frame.viewport_extent_pixels {
         put_i32(&mut out, value);
+    }
+    for value in frame.render_target_extent_pixels {
+        put_i32(&mut out, value);
+    }
+    for value in frame.client_extent_pixels {
+        put_i32(&mut out, value);
+    }
+    for value in frame.canvas_origin_pixels_fixed5 {
+        put_i64(&mut out, value);
+    }
+    for value in frame.canvas_scale_bits {
+        put_u32(&mut out, value);
     }
     for value in frame.pan_pixels_fixed5 {
         put_i64(&mut out, value);
@@ -801,6 +1023,10 @@ fn encode_payload(frame: &TechnologyCanvasFrame) -> Result<Vec<u8>, ObserverErro
     put_u32(&mut out, frame.source_items.len() as u32);
     put_u32(&mut out, frame.final_draw_order.len() as u32);
     put_u32(&mut out, frame.materialized_drawables.len() as u32);
+    put_u32(
+        &mut out,
+        frame.selected_present_ui_operation_order.len() as u32,
+    );
     for item in &frame.source_items {
         put_string(&mut out, &item.stable_item_id)?;
         put_string(&mut out, &item.hierarchy_path)?;
@@ -813,12 +1039,19 @@ fn encode_payload(frame: &TechnologyCanvasFrame) -> Result<Vec<u8>, ObserverErro
     for id in &frame.final_draw_order {
         put_string(&mut out, id)?;
     }
+    for operation_ordinal in &frame.selected_present_ui_operation_order {
+        put_u32(&mut out, *operation_ordinal);
+    }
     for drawable in &frame.materialized_drawables {
         put_string(&mut out, &drawable.drawable_id)?;
         put_string(&mut out, &drawable.hierarchy_path)?;
         put_string(&mut out, &drawable.slot_id)?;
         put_u32(&mut out, drawable.draw_ordinal);
         put_rect(&mut out, drawable.rect);
+        put_u32(&mut out, drawable.ui_pass_ordinals.len() as u32);
+        for operation_ordinal in &drawable.ui_pass_ordinals {
+            put_u32(&mut out, *operation_ordinal);
+        }
     }
     Ok(out)
 }
@@ -831,6 +1064,12 @@ fn decode_payload(payload: &[u8]) -> Result<TechnologyCanvasFrame, ObserverError
     let frame_hour = reader.u64()?;
     let elapsed_wall_ms = reader.u64()?;
     let capture_sequence = reader.u64()?;
+    let callback_qpc_ticks = reader.u64()?;
+    let selected_present_candidate_id = reader.u64()?;
+    let selected_present_ordinal = reader.u32()?;
+    let selected_present_qpc_ticks = reader.u64()?;
+    let selected_present_cutoff_qpc_ticks = reader.u64()?;
+    let selected_present_engine_instance_token = reader.u64()?;
     let boundary = ObserverBoundary::from_wire(reader.u32()?)?;
     let controller_mode = reader.u32()?;
     let authority = TechnologyCanvasAuthority {
@@ -842,19 +1081,31 @@ fn decode_payload(payload: &[u8]) -> Result<TechnologyCanvasFrame, ObserverError
         live_observation_receipt_sha256: reader.string()?,
         live_producer_manifest_sha256: reader.string()?,
         owner_registry_manifest_sha256: reader.string()?,
+        selected_present_receipt_sha256: reader.string()?,
+        selected_present_pass_identity_sha256: reader.string()?,
+        selected_present_producer_manifest_sha256: reader.string()?,
         content_manifest_sha256: reader.string()?,
     };
     let source_record_id = reader.string()?;
     let owner_instance_id = reader.string()?;
+    let authored_surface_identity = reader.string()?;
+    let runtime_root_identity = reader.string()?;
+    let effective_interface_winner = reader.string()?;
+    let active_root_identity = reader.string()?;
     let clip_rect = reader.rect()?;
     let content_extent_pixels = [reader.i32()?, reader.i32()?];
     let viewport_extent_pixels = [reader.i32()?, reader.i32()?];
+    let render_target_extent_pixels = [reader.i32()?, reader.i32()?];
+    let client_extent_pixels = [reader.i32()?, reader.i32()?];
+    let canvas_origin_pixels_fixed5 = [reader.i64()?, reader.i64()?];
+    let canvas_scale_bits = [reader.u32()?, reader.u32()?];
     let pan_pixels_fixed5 = [reader.i64()?, reader.i64()?];
     let horizontal_scroll_fixed5 = reader.axis()?;
     let vertical_scroll_fixed5 = reader.axis()?;
     let source_count = bounded(reader.u32()?)?;
     let order_count = bounded(reader.u32()?)?;
     let drawable_count = bounded(reader.u32()?)?;
+    let operation_count = bounded(reader.u32()?)?;
     let mut source_items = Vec::with_capacity(source_count);
     for _ in 0..source_count {
         source_items.push(TechnologySourceItem {
@@ -875,14 +1126,36 @@ fn decode_payload(payload: &[u8]) -> Result<TechnologyCanvasFrame, ObserverError
     for _ in 0..order_count {
         final_draw_order.push(reader.string()?);
     }
+    let mut selected_present_ui_operation_order = Vec::with_capacity(operation_count);
+    for _ in 0..operation_count {
+        selected_present_ui_operation_order.push(reader.u32()?);
+    }
     let mut materialized_drawables = Vec::with_capacity(drawable_count);
+    let mut decoded_operation_count = 0usize;
     for _ in 0..drawable_count {
+        let drawable_id = reader.string()?;
+        let hierarchy_path = reader.string()?;
+        let slot_id = reader.string()?;
+        let draw_ordinal = reader.u32()?;
+        let rect = reader.rect()?;
+        let count = bounded(reader.u32()?)?;
+        decoded_operation_count = decoded_operation_count
+            .checked_add(count)
+            .filter(|total| *total <= MAX_DRAWABLES)
+            .ok_or_else(|| {
+                ObserverError::Invalid("decoded UI operation count exceeds bound".into())
+            })?;
+        let mut ui_pass_ordinals = Vec::with_capacity(count);
+        for _ in 0..count {
+            ui_pass_ordinals.push(reader.u32()?);
+        }
         materialized_drawables.push(MaterializedDrawable {
-            drawable_id: reader.string()?,
-            hierarchy_path: reader.string()?,
-            slot_id: reader.string()?,
-            draw_ordinal: reader.u32()?,
-            rect: reader.rect()?,
+            drawable_id,
+            hierarchy_path,
+            slot_id,
+            draw_ordinal,
+            rect,
+            ui_pass_ordinals,
         });
     }
     if !reader.done() {
@@ -895,14 +1168,29 @@ fn decode_payload(payload: &[u8]) -> Result<TechnologyCanvasFrame, ObserverError
         frame_hour,
         elapsed_wall_ms,
         capture_sequence,
+        callback_qpc_ticks,
+        selected_present_candidate_id,
+        selected_present_ordinal,
+        selected_present_qpc_ticks,
+        selected_present_cutoff_qpc_ticks,
+        selected_present_engine_instance_token,
         boundary,
         controller_mode,
+        authored_surface_identity,
+        runtime_root_identity,
+        effective_interface_winner,
+        active_root_identity,
         source_items,
         final_draw_order,
+        selected_present_ui_operation_order,
         materialized_drawables,
         clip_rect,
         content_extent_pixels,
         viewport_extent_pixels,
+        render_target_extent_pixels,
+        client_extent_pixels,
+        canvas_origin_pixels_fixed5,
+        canvas_scale_bits,
         pan_pixels_fixed5,
         horizontal_scroll_fixed5,
         vertical_scroll_fixed5,
@@ -936,6 +1224,8 @@ pub fn decode_authenticated_payload(
             != live_contract.live_producer_manifest_sha256
         || frame.authority.owner_registry_manifest_sha256
             != live_contract.owner_registry_manifest_sha256
+        || frame.authority.selected_present_producer_manifest_sha256
+            != live_contract.selected_present_producer_manifest_sha256
     {
         return Err(ObserverError::Unauthenticated(
             "carrier live authority differs from pinned producer contract".into(),
@@ -951,32 +1241,79 @@ pub fn d71_projection_blockers() -> [&'static str; 0] {
     []
 }
 
-/// Computes the canonical same-transition content manifest. Authority hashes
-/// and `source_record_id` are excluded to avoid circularity; the portable
-/// owner/transition identity and every observed canvas field are included.
+/// Computes the canonical callback-to-selected-Present content manifest.
+/// `content_manifest_sha256` and `source_record_id` are excluded to avoid
+/// circularity. The selected-Present receipt/producer hashes and every portable
+/// observed canvas field are included.
 pub fn compute_content_manifest_sha256(
     frame: &TechnologyCanvasFrame,
 ) -> Result<String, ObserverError> {
+    let mapped_operation_count = frame
+        .materialized_drawables
+        .iter()
+        .try_fold(0usize, |total, drawable| {
+            total.checked_add(drawable.ui_pass_ordinals.len())
+        })
+        .ok_or_else(|| ObserverError::Invalid("UI operation count overflow".into()))?;
     if frame.source_items.len() > MAX_DRAWABLES
         || frame.final_draw_order.len() > MAX_DRAWABLES
         || frame.materialized_drawables.len() > MAX_DRAWABLES
+        || frame.selected_present_ui_operation_order.len() > MAX_DRAWABLES
+        || mapped_operation_count > MAX_DRAWABLES
     {
         return invalid("content manifest input exceeds carrier bounds");
     }
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"the game:a729:technology-canvas-content:v1\0");
+    bytes.extend_from_slice(b"the game:a729:technology-canvas-content:v2\0");
     put_string(&mut bytes, &frame.owner_instance_id)?;
     put_u64(&mut bytes, frame.frame_hour);
     put_u64(&mut bytes, frame.elapsed_wall_ms);
     put_u64(&mut bytes, frame.capture_sequence);
+    put_u64(&mut bytes, frame.callback_qpc_ticks);
+    put_u64(&mut bytes, frame.selected_present_candidate_id);
+    put_u32(&mut bytes, frame.selected_present_ordinal);
+    put_u64(&mut bytes, frame.selected_present_qpc_ticks);
+    put_u64(&mut bytes, frame.selected_present_cutoff_qpc_ticks);
+    put_u64(
+        &mut bytes,
+        frame.selected_present_engine_instance_token,
+    );
     put_u32(&mut bytes, frame.boundary as u32);
     put_u32(&mut bytes, frame.controller_mode);
+    put_string(
+        &mut bytes,
+        &frame.authority.selected_present_receipt_sha256,
+    )?;
+    put_string(
+        &mut bytes,
+        &frame.authority.selected_present_pass_identity_sha256,
+    )?;
+    put_string(
+        &mut bytes,
+        &frame.authority.selected_present_producer_manifest_sha256,
+    )?;
+    put_string(&mut bytes, &frame.authored_surface_identity)?;
+    put_string(&mut bytes, &frame.runtime_root_identity)?;
+    put_string(&mut bytes, &frame.effective_interface_winner)?;
+    put_string(&mut bytes, &frame.active_root_identity)?;
     put_rect(&mut bytes, frame.clip_rect);
     for value in frame.content_extent_pixels {
         put_i32(&mut bytes, value);
     }
     for value in frame.viewport_extent_pixels {
         put_i32(&mut bytes, value);
+    }
+    for value in frame.render_target_extent_pixels {
+        put_i32(&mut bytes, value);
+    }
+    for value in frame.client_extent_pixels {
+        put_i32(&mut bytes, value);
+    }
+    for value in frame.canvas_origin_pixels_fixed5 {
+        put_i64(&mut bytes, value);
+    }
+    for value in frame.canvas_scale_bits {
+        put_u32(&mut bytes, value);
     }
     for value in frame.pan_pixels_fixed5 {
         put_i64(&mut bytes, value);
@@ -997,6 +1334,13 @@ pub fn compute_content_manifest_sha256(
     for id in &frame.final_draw_order {
         put_string(&mut bytes, id)?;
     }
+    put_u32(
+        &mut bytes,
+        frame.selected_present_ui_operation_order.len() as u32,
+    );
+    for operation_ordinal in &frame.selected_present_ui_operation_order {
+        put_u32(&mut bytes, *operation_ordinal);
+    }
     put_u32(&mut bytes, frame.materialized_drawables.len() as u32);
     for drawable in &frame.materialized_drawables {
         put_string(&mut bytes, &drawable.drawable_id)?;
@@ -1004,6 +1348,10 @@ pub fn compute_content_manifest_sha256(
         put_string(&mut bytes, &drawable.slot_id)?;
         put_u32(&mut bytes, drawable.draw_ordinal);
         put_rect(&mut bytes, drawable.rect);
+        put_u32(&mut bytes, drawable.ui_pass_ordinals.len() as u32);
+        for operation_ordinal in &drawable.ui_pass_ordinals {
+            put_u32(&mut bytes, *operation_ordinal);
+        }
     }
     let digest = Sha256::digest(bytes);
     let mut array = [0u8; 32];
@@ -1245,12 +1593,16 @@ mod tests {
     }
 
     fn owner_witness() -> OwnerRegistryWitness {
-        OwnerRegistryWitness {
+        let mut witness = OwnerRegistryWitness {
             registry_epoch: 4,
             owner_sequence: 9,
-            owner_construction_record_sha256: hash('e'),
+            construction_qpc_ticks: 8_000,
+            owner_construction_record_sha256: String::new(),
             registry_manifest_sha256: hash('f'),
-        }
+        };
+        witness.owner_construction_record_sha256 =
+            expected_owner_construction_record_sha256(&witness);
+        witness
     }
 
     fn complete() -> TechnologyCanvasFrame {
@@ -1275,6 +1627,9 @@ mod tests {
                 live_observation_receipt_sha256: hash('1'),
                 live_producer_manifest_sha256: hash('2'),
                 owner_registry_manifest_sha256: owner_witness().registry_manifest_sha256,
+                selected_present_receipt_sha256: hash('4'),
+                selected_present_pass_identity_sha256: hash('5'),
+                selected_present_producer_manifest_sha256: hash('6'),
                 content_manifest_sha256: hash('c'),
             },
             source_record_id: String::new(),
@@ -1282,8 +1637,18 @@ mod tests {
             frame_hour: 900,
             elapsed_wall_ms: 12,
             capture_sequence: 7,
+            callback_qpc_ticks: 10_000,
+            selected_present_candidate_id: 55,
+            selected_present_ordinal: 3,
+            selected_present_qpc_ticks: 10_100,
+            selected_present_cutoff_qpc_ticks: 10_200,
+            selected_present_engine_instance_token: 0x71,
             boundary,
             controller_mode: TECHNOLOGY_MODE,
+            authored_surface_identity: "technology_canvas".into(),
+            runtime_root_identity: "countrytechtreeview".into(),
+            effective_interface_winner: "interface/countrytechtreeview.gui".into(),
+            active_root_identity: "countrytechtreeview/infantry".into(),
             source_items: vec![
                 TechnologySourceItem {
                     stable_item_id: "tech:infantry_weapons".into(),
@@ -1317,6 +1682,7 @@ mod tests {
                 "tech:infantry_weapons".into(),
                 "edge:infantry_weapons->support_weapons:0".into(),
             ],
+            selected_present_ui_operation_order: vec![8, 9, 10],
             materialized_drawables: vec![
                 MaterializedDrawable {
                     drawable_id: "tech:infantry_weapons".into(),
@@ -1329,6 +1695,7 @@ mod tests {
                         width: 183,
                         height: 84,
                     },
+                    ui_pass_ordinals: vec![8, 9],
                 },
                 MaterializedDrawable {
                     drawable_id: "edge:infantry_weapons->support_weapons:0".into(),
@@ -1341,6 +1708,7 @@ mod tests {
                         width: 70,
                         height: 70,
                     },
+                    ui_pass_ordinals: vec![10],
                 },
             ],
             clip_rect: RectI32 {
@@ -1351,6 +1719,10 @@ mod tests {
             },
             content_extent_pixels: [1800, 1400],
             viewport_extent_pixels: [1000, 700],
+            render_target_extent_pixels: [1920, 1080],
+            client_extent_pixels: [1920, 1080],
+            canvas_origin_pixels_fixed5: [320_000, 640_000],
+            canvas_scale_bits: [1.0f32.to_bits(), 1.0f32.to_bits()],
             pan_pixels_fixed5: [-4_000_000, 12_500_000],
             horizontal_scroll_fixed5: AxisStateFixed {
                 min: 0,
@@ -1371,7 +1743,20 @@ mod tests {
             &frame.owner_instance_id,
             frame.frame_hour,
             frame.capture_sequence,
+            frame.callback_qpc_ticks,
+            frame.selected_present_candidate_id,
+            frame.selected_present_ordinal,
+            frame.selected_present_qpc_ticks,
+            frame.selected_present_cutoff_qpc_ticks,
+            frame.selected_present_engine_instance_token,
             frame.boundary,
+            &frame.authored_surface_identity,
+            &frame.runtime_root_identity,
+            &frame.effective_interface_winner,
+            &frame.active_root_identity,
+            &frame.authority.selected_present_receipt_sha256,
+            &frame.authority.selected_present_pass_identity_sha256,
+            &frame.authority.selected_present_producer_manifest_sha256,
             &frame.authority.exact20_preflight_receipt_sha256,
             &frame.authority.root_producer_manifest_sha256,
             &frame.authority.helper_producer_manifest_sha256,
@@ -1408,7 +1793,20 @@ mod tests {
             &frame.owner_instance_id,
             frame.frame_hour,
             frame.capture_sequence + 1,
+            frame.callback_qpc_ticks,
+            frame.selected_present_candidate_id,
+            frame.selected_present_ordinal,
+            frame.selected_present_qpc_ticks,
+            frame.selected_present_cutoff_qpc_ticks,
+            frame.selected_present_engine_instance_token,
             frame.boundary,
+            &frame.authored_surface_identity,
+            &frame.runtime_root_identity,
+            &frame.effective_interface_winner,
+            &frame.active_root_identity,
+            &frame.authority.selected_present_receipt_sha256,
+            &frame.authority.selected_present_pass_identity_sha256,
+            &frame.authority.selected_present_producer_manifest_sha256,
             &frame.authority.exact20_preflight_receipt_sha256,
             &frame.authority.root_producer_manifest_sha256,
             &frame.authority.helper_producer_manifest_sha256,
@@ -1458,6 +1856,15 @@ mod tests {
                 "2222222222222222222222222222222222222222222222222222222222222222",
             owner_registry_manifest_sha256:
                 "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            selected_present_producer_manifest_sha256:
+                "6666666666666666666666666666666666666666666666666666666666666666",
+            owner_hook: LiveHookInstallationContract {
+                callback_rva: OWNER_CONSTRUCTOR_RVA,
+                installed_patch_sha256:
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                trampoline_sha256:
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            },
             population_hook: LiveHookInstallationContract {
                 callback_rva: POPULATION_COMMIT_RVA,
                 installed_patch_sha256:
@@ -1490,6 +1897,7 @@ mod tests {
             frame_hour: 900,
             elapsed_wall_ms: 12,
             capture_sequence: 7,
+            callback_qpc_ticks: 10_000,
             boundary: ObserverBoundary::PopulationCommitted,
         }
     }
@@ -1525,7 +1933,20 @@ mod tests {
             &frame.owner_instance_id,
             frame.frame_hour,
             frame.capture_sequence,
+            frame.callback_qpc_ticks,
+            frame.selected_present_candidate_id,
+            frame.selected_present_ordinal,
+            frame.selected_present_qpc_ticks,
+            frame.selected_present_cutoff_qpc_ticks,
+            frame.selected_present_engine_instance_token,
             frame.boundary,
+            &frame.authored_surface_identity,
+            &frame.runtime_root_identity,
+            &frame.effective_interface_winner,
+            &frame.active_root_identity,
+            &frame.authority.selected_present_receipt_sha256,
+            &frame.authority.selected_present_pass_identity_sha256,
+            &frame.authority.selected_present_producer_manifest_sha256,
             &frame.authority.exact20_preflight_receipt_sha256,
             &frame.authority.root_producer_manifest_sha256,
             &frame.authority.helper_producer_manifest_sha256,

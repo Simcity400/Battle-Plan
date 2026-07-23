@@ -13,12 +13,16 @@ pub mod a729_air_selection_hook;
 #[cfg(windows)]
 pub mod a729_mio_history_hook;
 #[cfg(windows)]
+pub mod a729_mio_bonus_hook;
+#[cfg(windows)]
 pub mod a729_facility_smooth_list_hook;
 #[cfg(windows)]
 pub mod a729_named_overlap_hook;
 #[cfg(windows)]
 pub mod a729_technology_badge_grid_hook;
 pub mod a729_technology_canvas;
+#[cfg(windows)]
+pub mod a729_technology_canvas_hook;
 
 use std::collections::BTreeSet;
 
@@ -35,11 +39,13 @@ pub const A28_DIRECT_ROOT_JOB_ID: &str =
 pub const A28_DIRECT_ROOT_MANIFEST_SHA256: &str =
     "8ce0d88387228dc8a67553e6772c253f40792971760e2f2b695a87af2199b841";
 /// Ordinary production scheduling is active for the independently proven Air
-/// selection and paired MIO-history subfamilies only.
+/// selection, heterogeneous MIO aggregate-bonus, and paired MIO-history
+/// subfamilies.
 pub const A28_D71_SCHEDULED: bool = true;
 pub const A28_PASSIVE_SUBFAMILIES_PRODUCTION_BOUND: bool = true;
-/// Legacy all-families fixture promotion. The exact Air and paired MIO-history
-/// hook-owned constructors do not open this broad latch.
+/// Legacy all-families fixture promotion. The exact Air, MIO aggregate-bonus,
+/// and paired MIO-history hook-owned constructors do not open this broad
+/// latch.
 pub const A28_LIVE_PROMOTION_BOUND: bool = false;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DCT1");
 pub const HEADER_LEN: usize = 40;

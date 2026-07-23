@@ -751,6 +751,7 @@ mod tests {
                     value_raw: 10_000,
                 },
             ],
+            ..DiplomacyIntelSnapshot::default()
         }
     }
 }

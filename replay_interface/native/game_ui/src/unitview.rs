@@ -290,6 +290,32 @@ pub fn land_unit_view_from_frame(frame: &WorldFrame, div_uid: &str) -> Option<La
         .map(|row| land_unit_view_from_row(row, available))
 }
 
+/// Select a land division under one country POV. Own units and D95
+/// map-visible foreign units are admitted by the exact `(div_type, div_id)`
+/// join. A visible foreign unit without exact details returns an identity-only
+/// unavailable panel; an unspotted or unjoinable unit returns `None`.
+pub fn land_unit_view_for_pov(
+    frame: &WorldFrame,
+    div_uid: &str,
+    pov_tag: &str,
+) -> Option<LandUnitView> {
+    let row = frame
+        .division_units()
+        .iter()
+        .find(|division| division.div_uid == div_uid)?;
+    match frame.division_pov_exact_details(pov_tag, row)? {
+        true => Some(land_unit_view_from_row(
+            row,
+            frame.division_units_status() == ViewStatus::Present,
+        )),
+        false => Some(LandUnitView {
+            uid: row.div_uid.clone(),
+            available: false,
+            ..LandUnitView::default()
+        }),
+    }
+}
+
 /// One ship line inside a selected task force (from [`ShipCompositionRow`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavalShipLine {
@@ -484,6 +510,7 @@ mod tests {
     fn absent_land_row_binds_fail_closed_none() {
         let row = DivisionUnitRow {
             raw_division_id: 9,
+            raw_division_type: Leaf::Measured(1),
             div_uid: "9:1".to_string(),
             owner: Leaf::Absent,
             location_province: Leaf::Absent,
@@ -529,6 +556,7 @@ mod tests {
     fn measured_land_row_carries_raw_values() {
         let row = DivisionUnitRow {
             raw_division_id: 101,
+            raw_division_type: Leaf::Measured(1),
             div_uid: "101:1".to_string(),
             owner: Leaf::Measured("GER".to_string()),
             location_province: Leaf::Measured(1000),

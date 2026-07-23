@@ -1,9 +1,10 @@
 //! Product boundary for the authenticated A26/d72 final-tooltip blob.
 //!
-//! d72 remains reserved until the live same-Present matrix is complete. This
-//! adapter intentionally contains no row reconstruction, localisation, OCR, or
-//! geometry inference; it exposes the already validated replay-core view to the
-//! production HUD binding.
+//! The ordinary production collector schedules d72 and passively captures the
+//! exact final post-layout tooltip text and rectangle at the selected Present.
+//! This includes politics tooltips: d73/PTI1 semantic decomposition is not
+//! needed to reproduce their visible pixels. This adapter intentionally
+//! contains no row reconstruction, localisation, OCR, or geometry inference.
 
 use game_ui::hud::TooltipBinding;
 use game_ui::production_renderer::tooltip_binding_from_exact_view;

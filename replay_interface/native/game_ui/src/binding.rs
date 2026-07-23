@@ -1125,4 +1125,19 @@ mod tests {
             supply_ratio: Leaf::Absent,
         }
     }
+
+    #[test]
+    fn d63_typed_topbar_scalars_reach_render_binding_without_defaults() {
+        let mut scalars = all_absent_scalars();
+        scalars.manpower_available = Leaf::Measured(1_640_616);
+        scalars.xp_army = Leaf::Measured(27.500427);
+        scalars.xp_navy = Leaf::Measured(422.10611);
+        scalars.xp_air = Leaf::Measured(500.0);
+        let mut binding = TopbarBinding::default();
+        apply_scalars(&mut binding, &scalars);
+        assert_eq!(binding.manpower.as_deref(), Some("1640616"));
+        assert_eq!(binding.army_experience.as_deref(), Some("27.500427"));
+        assert_eq!(binding.navy_experience.as_deref(), Some("422.10611"));
+        assert_eq!(binding.air_experience.as_deref(), Some("500"));
+    }
 }

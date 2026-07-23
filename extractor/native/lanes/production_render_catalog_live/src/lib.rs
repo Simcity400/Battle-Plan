@@ -171,6 +171,7 @@ pub fn build_authenticated_render_catalog<V: AdmittedVfsPayloads>(
 pub struct AuthenticatedStaticProgramSet {
     pub ordered_programs: Vec<StaticMapPassProgram>,
     pub ordered_execution: Vec<RenderExecutionRef>,
+    pub authenticated_texture_snapshots: Vec<AuthenticatedTextureSnapshotPacket>,
 }
 
 impl AuthenticatedStaticProgramSet {
@@ -631,10 +632,16 @@ pub fn build_authenticated_static_programs<V: AdmittedVfsPayloads>(
             .seal_payload_hashes()
             .map_err(|error| CatalogBuildError(format!("seal static program: {error}")))?;
     }
+    let authenticated_texture_snapshots = builder
+        .authenticated_texture_snapshots
+        .values()
+        .cloned()
+        .collect();
     builder.finish_exact_closure()?;
     let result = AuthenticatedStaticProgramSet {
         ordered_programs: programs,
         ordered_execution,
+        authenticated_texture_snapshots,
     };
     result.validate_canonical_partition()?;
     Ok(result)
@@ -854,6 +861,7 @@ struct Builder<'a, V> {
     used_textures: BTreeSet<(usize, u64)>,
     used_srvs: BTreeSet<(usize, u64)>,
     used_output_views: BTreeSet<(usize, u64)>,
+    authenticated_texture_snapshots: BTreeMap<String, AuthenticatedTextureSnapshotPacket>,
 }
 
 impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
@@ -923,6 +931,7 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
             used_textures: BTreeSet::new(),
             used_srvs: BTreeSet::new(),
             used_output_views: BTreeSet::new(),
+            authenticated_texture_snapshots: BTreeMap::new(),
         })
     }
 
@@ -2028,6 +2037,33 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                             view,
                         }
                     }
+                    RawStaticShaderResourceSource::AuthenticatedSnapshot => {
+                        if resource.ordered_subresources.is_empty() {
+                            return invalid(
+                                "authenticated draw-time texture snapshot has no subresources",
+                            );
+                        }
+                        let packet = AuthenticatedTextureSnapshotPacket::sealed(resource)
+                            .map_err(CatalogBuildError)?;
+                        let snapshot_sha256 = packet.snapshot_sha256.clone();
+                        if let Some(existing) = self
+                            .authenticated_texture_snapshots
+                            .get(&snapshot_sha256)
+                        {
+                            if existing != &packet {
+                                return invalid(
+                                    "authenticated texture snapshot digest collision",
+                                );
+                            }
+                        } else {
+                            self.authenticated_texture_snapshots
+                                .insert(snapshot_sha256.clone(), packet);
+                        }
+                        StaticShaderResourceSource::AuthenticatedSnapshot {
+                            snapshot_sha256,
+                            view,
+                        }
+                    }
                     RawStaticShaderResourceSource::PreparedTarget {
                         target,
                         producer_capture_sequence,
@@ -2951,6 +2987,7 @@ mod static_identity_tests {
                     operation_ordinal: 1,
                 },
             ],
+            authenticated_texture_snapshots: Vec::new(),
         };
         base.validate_canonical_partition().unwrap();
 

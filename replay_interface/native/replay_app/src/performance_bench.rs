@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -273,6 +274,14 @@ pub(crate) fn run(
     let manifest = provider
         .content_manifest()
         .ok_or("performance benchmark recording has no admitted content manifest")?;
+    let static_research = Arc::new(
+        game_ui::static_research::admit_static_research_catalogs(
+            provider.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
+            provider.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
+            provider.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
+        )
+        .map_err(|error| format!("admit packaged static research catalogs: {error}"))?,
+    );
     let hours = provider.hours();
     if hours.len() != contract.recording_hour_count
         || hours.first().copied() != Some(contract.first_hour)
@@ -306,6 +315,13 @@ pub(crate) fn run(
     let frame = provider
         .world_frame_at(selected_hour)?
         .ok_or("performance benchmark selected exact replay frame is unavailable")?;
+    static_research
+        .bind_frame(&frame)
+        .map_err(|error| {
+            format!(
+                "bind packaged static research catalogs at hour {selected_hour}: {error}"
+            )
+        })?;
     let production_render = frame
         .production_render()
         .ok_or("performance benchmark selected frame has no authenticated production_render")?;
@@ -392,6 +408,27 @@ pub(crate) fn run(
     validate_reference_gpu(&gpu_adapter)?;
     let gpu_completion = gfx.create_gpu_completion_query()?;
     let mut map_runtime = ProductProductionD3dRuntime::default();
+    let static_focus_definitions = Arc::new(
+        replay_core::admit_static_focus_definitions(
+            provider
+                .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
+                .ok_or("performance replay has no authenticated focus_defs_static artifact")?,
+        )
+        .map_err(|error| format!("admit performance static focus definitions: {error}"))?,
+    );
+    let static_focus_catalog = Arc::new(
+        game_ui::static_focus_defs::focus_catalog_from_static(&static_focus_definitions),
+    );
+    let recorded_ui = prepared
+        .authenticated_ui_pass
+        .as_ref()
+        .map(|pass| crate::recorded_ui_owner::recorded_ui_owner(frame.as_ref(), pass))
+        .transpose()
+        .map_err(|error| {
+            format!(
+                "performance frame recorder-owned selected-Present UI identity is unavailable: {error}"
+            )
+        })?;
     let mut ui_runtime = match prepared.authenticated_ui_pass.as_ref() {
         Some(pass) => Some(
             ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
@@ -400,6 +437,12 @@ pub(crate) fn run(
                 &content_admission,
                 pass,
                 provider.decision_catalog().map(|catalog| catalog.bytes()),
+                provider
+                    .static_artifact("gfx_icon_asset_manifest_static")
+                    .map(|artifact| artifact.bytes()),
+                Arc::clone(&static_research),
+                Arc::clone(&static_focus_definitions),
+                Arc::clone(&static_focus_catalog),
             )?,
         ),
         _ => None,
@@ -428,7 +471,11 @@ pub(crate) fn run(
                 &resolver,
                 &prepared,
                 frame.as_ref(),
-                None,
+                recorded_ui.as_ref().and_then(|identity| identity.country.as_deref()),
+                recorded_ui
+                    .as_ref()
+                    .map(|identity| identity.runtime_text_pov_country_or_global.as_str())
+                    .unwrap_or("global"),
                 runtime_text.as_ref(),
                 ArmyBattleplanUiSupplementalInputs::default(),
                 IntelligenceUiSupplementalInputs::default(),
@@ -1413,6 +1460,7 @@ fn build_stress_map_frame(
         snow_mud_texture: None,
         political_textures: Vec::new(),
         tiled_lights: Vec::new(),
+        authenticated_texture_snapshots: Vec::new(),
         ordered_static_used_content: vec![source],
         ordered_static_programs: vec![StaticMapPassProgram {
             program_ordinal: 0,

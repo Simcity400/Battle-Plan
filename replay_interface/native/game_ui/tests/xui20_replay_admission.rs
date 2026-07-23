@@ -101,10 +101,13 @@ fn participant(tag: &str, id: i64) -> WarParticipantOverviewRow {
 fn war() -> WarObjectRow {
     WarObjectRow {
         key: "axis_allies_1936".into(),
+        war_id: Leaf::Measured(1),
+        producer_ordinal: Leaf::Measured(0),
+        aggregate_summary_flag: Leaf::Measured(false),
         attackers: Leaf::Measured(vec!["GER".into(), "ITA".into()]),
         defenders: Leaf::Measured(vec!["ENG".into()]),
         war_name: Leaf::Measured("GERMAN_BRITISH_WAR".into()),
-        front: Leaf::Measured("western".into()),
+        front: Leaf::Absent,
         start_hour: Leaf::Measured(100),
         attacker_participants: Leaf::Measured(vec![participant("GER", 1), participant("ITA", 2)]),
         defender_participants: Leaf::Measured(vec![participant("ENG", 3)]),
@@ -298,10 +301,10 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
         admission.air_region_history,
         Xui20SurfaceState::Admitted { row_count: 1 }
     );
-    assert_eq!(
+    assert!(matches!(
         admission.combat_log_families,
-        Xui20SurfaceState::Admitted { row_count: 6 }
-    );
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
     assert!(matches!(
         admission.land_terminal,
         Xui20SurfaceState::ExternalInputRequired { .. }
@@ -317,6 +320,10 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
     assert!(matches!(
         admission.global_cross_family_order,
         Xui20SurfaceState::NotApplicable { .. }
+    ));
+    assert!(matches!(
+        admission.war_pair_history,
+        Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 }
 
@@ -512,7 +519,7 @@ fn w1_requires_complete_unique_ordered_sides_and_metrics() {
     let Leaf::Measured(wars) = &mut binding.wars else {
         panic!("wars")
     };
-    wars[0].front = Leaf::Absent;
+    wars[0].overall_progress_raw = Leaf::Unobtained;
     assert!(matches!(
         admit_xui20_replay(&binding).war_overview_exact,
         Xui20SurfaceState::ExternalInputRequired { .. }

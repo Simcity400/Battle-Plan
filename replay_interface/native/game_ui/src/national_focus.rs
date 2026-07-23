@@ -35,8 +35,10 @@ pub struct FocusNodeDefinition {
     /// Exact optional FILE-authored overlay token. `None` is authored-empty.
     pub overlay_sprite: Option<String>,
     pub title_loc_key: String,
-    /// Required for joint focuses because FILE authors multiple participant-specific
-    /// background families. Local/shared focuses use the four frozen standard sprites.
+    /// Exact authored background family. Legacy callers may omit it for
+    /// local/shared definitions and receive the frozen vanilla standard
+    /// family; production `focus_defs_static` supplies it for every node so
+    /// mod-authored styles are never collapsed to the vanilla defaults.
     pub joint_state_backgrounds: Option<FocusStateBackgroundSprites>,
 }
 
@@ -157,12 +159,23 @@ fn background_sprite(
     state: FocusNodeState,
 ) -> Result<String, FocusAdmissionRejection> {
     let value = match def.kind {
-        FocusDefinitionKind::Local | FocusDefinitionKind::Shared => match state {
-            FocusNodeState::Completed => STANDARD_FOCUS_COMPLETED_SPRITE,
-            FocusNodeState::Current => STANDARD_FOCUS_CURRENT_SPRITE,
-            FocusNodeState::Available => STANDARD_FOCUS_AVAILABLE_SPRITE,
-            FocusNodeState::Unavailable => STANDARD_FOCUS_UNAVAILABLE_SPRITE,
-        },
+        FocusDefinitionKind::Local | FocusDefinitionKind::Shared => {
+            if let Some(sprites) = def.joint_state_backgrounds.as_ref() {
+                match state {
+                    FocusNodeState::Completed => sprites.completed.as_str(),
+                    FocusNodeState::Current => sprites.current.as_str(),
+                    FocusNodeState::Available => sprites.available.as_str(),
+                    FocusNodeState::Unavailable => sprites.unavailable.as_str(),
+                }
+            } else {
+                match state {
+                    FocusNodeState::Completed => STANDARD_FOCUS_COMPLETED_SPRITE,
+                    FocusNodeState::Current => STANDARD_FOCUS_CURRENT_SPRITE,
+                    FocusNodeState::Available => STANDARD_FOCUS_AVAILABLE_SPRITE,
+                    FocusNodeState::Unavailable => STANDARD_FOCUS_UNAVAILABLE_SPRITE,
+                }
+            }
+        }
         FocusDefinitionKind::Joint => {
             let sprites = def.joint_state_backgrounds.as_ref().ok_or_else(|| {
                 reject(

@@ -5,8 +5,9 @@
 //! time. Rows are admitted only from the owner-joined D41 `PPGF` view.
 
 use replay_core::{
-    ProjectSpecializationExact, SpecialProjectBreakthroughExactView,
-    SpecialProjectProgressExactRow, SpecialProjectProgressExactView, ViewStatus,
+    Leaf, ProjectSpecializationExact, SpecialProjectBreakthroughExactView,
+    SpecialProjectProgramRow, SpecialProjectProgressExactRow,
+    SpecialProjectProgressExactView, ViewStatus,
 };
 use std::collections::BTreeSet;
 
@@ -36,6 +37,64 @@ pub struct SpecialProjectBreakthroughPresentation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecialProjectBreakthroughRejection(pub String);
+
+/// Complete D65 facility row consumed by the special-project UI. Numeric
+/// program identity, exact province, and unread reward count are deliberately
+/// retained together so the UI cannot silently collapse D65 back to the
+/// topbar-only reward aggregate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecialProjectProgramPresentation {
+    pub country: String,
+    pub owner_tag_db_id: u32,
+    pub program_id: u32,
+    pub province: u32,
+    pub unread_prototype_rewards: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecialProjectProgramRejection(pub String);
+
+/// Admit one selected country's complete D65 program roster. A measured empty
+/// slice is a valid zero-program roster; absent or unobtained input remains
+/// feature-local unavailable.
+pub fn admit_special_project_programs(
+    rows: Leaf<&[SpecialProjectProgramRow]>,
+) -> Result<Vec<SpecialProjectProgramPresentation>, SpecialProjectProgramRejection> {
+    let rows = match rows {
+        Leaf::Measured(rows) => rows,
+        Leaf::Absent => {
+            return Err(SpecialProjectProgramRejection(
+                "D65 special-project program roster is absent".into(),
+            ));
+        }
+        Leaf::Unobtained => {
+            return Err(SpecialProjectProgramRejection(
+                "D65 special-project program roster is unavailable".into(),
+            ));
+        }
+    };
+    let mut identities = BTreeSet::new();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.country.is_empty()
+            || row.owner_tag_db_id == 0
+            || row.program_id == 0
+            || !identities.insert((row.owner_tag_db_id, row.program_id))
+        {
+            return Err(SpecialProjectProgramRejection(
+                "D65 special-project program row violates exact owner/program identity".into(),
+            ));
+        }
+        out.push(SpecialProjectProgramPresentation {
+            country: row.country.clone(),
+            owner_tag_db_id: row.owner_tag_db_id,
+            program_id: row.program_id,
+            province: row.province,
+            unread_prototype_rewards: row.unread_prototype_rewards,
+        });
+    }
+    Ok(out)
+}
 
 fn admit_row(
     row: &SpecialProjectProgressExactRow,
@@ -168,6 +227,34 @@ mod tests {
             phase_target_raw: 60,
             completed: false,
         }
+    }
+
+    #[test]
+    fn admits_complete_d65_rows_and_preserves_measured_empty() {
+        let rows = [SpecialProjectProgramRow {
+            country: "GER".into(),
+            owner_tag_db_id: 1,
+            program_id: 21,
+            province: 11_366,
+            unread_prototype_rewards: 5,
+        }];
+        assert_eq!(
+            admit_special_project_programs(Leaf::Measured(&rows)).unwrap(),
+            vec![SpecialProjectProgramPresentation {
+                country: "GER".into(),
+                owner_tag_db_id: 1,
+                program_id: 21,
+                province: 11_366,
+                unread_prototype_rewards: 5,
+            }]
+        );
+        assert!(
+            admit_special_project_programs(Leaf::Measured(&[]))
+                .unwrap()
+                .is_empty(),
+            "measured zero-program roster must remain distinct from unavailable"
+        );
+        assert!(admit_special_project_programs(Leaf::Unobtained).is_err());
     }
 
     #[test]

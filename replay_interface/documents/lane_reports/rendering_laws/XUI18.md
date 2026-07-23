@@ -1,12 +1,18 @@
 # XUI18 — power balance
 
-**Status: PROVEN — REPLAY PROMOTION READY, EXACT A37 PRODUCER INPUT REQUIRED**
+**Status: VISIBLE PIXELS OWNED BY AUTHENTICATED UI PASS; PBP2 OPTIONAL**
 
-XUI18 now has a production-owned, fail-closed path from the measured power-
-balance view and effective game-definition catalogs to the shipped panel
-presentation. Position, sides, ranges, modifiers, decisions, thresholds,
-animation state, DLC gating, ordering, and visible composition all have an
-exact disposition. No renderer or integration law remains partial.
+Production replay does not reconstruct visible XUI18 pixels from PBP2. They
+are owned by the mandatory authenticated selected-Present UI pass, which
+preserves the game-rendered panel and launcher directly. D74/PBP2 remains a
+reserved, fail-closed typed semantic companion for inspection and must never
+substitute for missing selected-Present UI evidence.
+
+The current PBP2 shape describes a fully open panel and requires runtime text
+that is materialized only by tooltip or presenter paths. It therefore cannot
+truthfully describe ordinary passive closed-panel hours. Promoting it would
+not improve the shipped pixel path and would mislabel an optional diagnostic
+carrier as a production renderer dependency.
 
 ## Exact static and presentation laws
 

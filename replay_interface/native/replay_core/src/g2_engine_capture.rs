@@ -37,6 +37,17 @@ pub struct PackagedG2EngineCapture {
     pub capture_content_manifest_digest_sha256: String,
     pub replay_content_manifest_digest_sha256: String,
     pub witness: G2EnginePixelWitness,
+    engine_bgra: Box<[u8]>,
+}
+
+impl PackagedG2EngineCapture {
+    /// Exact, top-down, tightly packed BGRA8 engine pixels authenticated by
+    /// the selected replay-container index, role table, witness, and recorder
+    /// authority. Consumers must still join these bytes to the selected replay
+    /// scene before treating them as a parity oracle.
+    pub fn engine_bgra(&self) -> &[u8] {
+        &self.engine_bgra
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -249,6 +260,7 @@ pub(crate) fn admit_from_store(
             .capture_content_manifest_digest_sha256,
         replay_content_manifest_digest_sha256: declaration.replay_content_manifest_digest_sha256,
         witness,
+        engine_bgra: bmp[54..].into(),
     }))
 }
 
@@ -574,6 +586,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use snapshot::pack::{pack, PackEntry, PackIdentity};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -600,8 +613,49 @@ mod tests {
         bmp
     }
 
+    fn portable_content_manifest() -> portable_content_manifest::ContentManifest {
+        let mut manifest = portable_content_manifest::ContentManifest {
+            schema: portable_content_manifest::SCHEMA.into(),
+            product_modset_sha256: "10".repeat(32),
+            source_game: portable_content_manifest::SourceGameIdentity {
+                version: "1.19.2".into(),
+                build: "a729".into(),
+                executable_sha256: "22".repeat(32),
+                build_profile: "hoi4-a729".into(),
+            },
+            source_profile: portable_content_manifest::SourceProfileIdentity {
+                profile_id: "g2-fixture-profile".into(),
+                playset_id: "g2-fixture-playset".into(),
+                selection_sha256: "00".repeat(32),
+            },
+            effective_vfs_manifest_sha256: "33".repeat(32),
+            ordered_layers: Vec::new(),
+            dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(),
+            required_settings: BTreeMap::from([
+                ("physical_width".into(), "1920".into()),
+                ("physical_height".into(), "1080".into()),
+                ("min_gui_width".into(), "1280".into()),
+                ("min_gui_height".into(), "720".into()),
+                ("gui_scale_f32_bits".into(), 1.0f32.to_bits().to_string()),
+                ("refresh_rate_hz".into(), "60".into()),
+                ("max_refresh_rate_hz".into(), "60".into()),
+                ("fullscreen".into(), "false".into()),
+                ("borderless".into(), "true".into()),
+                ("display_mode".into(), "borderless_fullscreen".into()),
+                ("settings_file_sha256".into(), "44".repeat(32)),
+            ]),
+            required_content: Vec::new(),
+            manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 =
+            manifest.computed_selection_sha256().unwrap();
+        manifest.with_computed_digest().unwrap()
+    }
+
     fn authority(receipt_sha: &str) -> Map<String, Value> {
         let hook_set = "11".repeat(32);
+        let content_manifest = portable_content_manifest();
         let launch_epoch = portable_render_stream::compute_render_launch_epoch_sha256(
             4,
             5,
@@ -634,15 +688,11 @@ mod tests {
                 "hook_set_sha256": hook_set
             },
             "early_render_capture_receipt_sha256": receipt_sha,
-            "portable_content_manifest": {
-                "manifest_digest_sha256": "66".repeat(32),
-                "effective_vfs_manifest_sha256": "33".repeat(32),
-                "localisation_language": "l_english",
-                "required_settings": {"settings_file_sha256": "44".repeat(32)}
-            },
+            "portable_content_manifest": serde_json::to_value(&content_manifest).unwrap(),
             "modset": {
                 "resolved": true,
                 "errors": [],
+                "game": {"exe_sha256": content_manifest.source_game.executable_sha256.clone()},
                 "dlc": {"enabled": []},
                 "dlc_display_names": {},
                 "localisation_language": "l_english",
@@ -748,6 +798,12 @@ mod tests {
     fn package(extra_witness_role: bool) -> (PathBuf, Map<String, Value>) {
         let receipt_sha = "99".repeat(32);
         let mut authority = authority(&receipt_sha);
+        let content_manifest: portable_content_manifest::ContentManifest =
+            serde_json::from_value(authority["portable_content_manifest"].clone()).unwrap();
+        let replay_content_manifest_digest_sha256 = content_manifest
+            .manifest_digest_sha256
+            .clone()
+            .expect("finalized portable content manifest");
         let bmp = bmp();
         let witness = witness(&authority, &bmp);
         let declaration = json!({
@@ -759,17 +815,30 @@ mod tests {
             "bmp_sha256": sha(&bmp),
             "bmp_bytes": bmp.len(),
             "capture_content_manifest_digest_sha256": "aa".repeat(32),
-            "replay_content_manifest_digest_sha256": "66".repeat(32)
+            "replay_content_manifest_digest_sha256": replay_content_manifest_digest_sha256
         });
         authority.insert(
             "replay_packaging".into(),
-            json!({"g2_engine_capture": declaration.clone()}),
+            json!({
+                "g2_engine_capture": declaration.clone(),
+                "static_artifacts": []
+            }),
         );
         let index = serde_json::to_vec(&json!({
             "game_id": "g",
             "schema_version": "1",
             "snapshots": [{"hour_index": 12, "file": "000000000012.snapshot.json"}],
-            "g2_engine_capture": declaration
+            "g2_engine_capture": declaration,
+            "static_artifacts": [
+                {"name": "templates_equipment_catalog", "present": false},
+                {"name": "localisation_join", "present": false},
+                {"name": "decisions_static_definitions", "present": false},
+                {"name": "idea_tech_loc_xref_static", "present": false},
+                {"name": "ship_definitions_static", "present": false},
+                {"name": "gfx_icon_asset_manifest_static", "present": false},
+                {"name": "technology_sharing_static", "present": false},
+                {"name": "focus_defs_static", "present": false}
+            ]
         }))
         .unwrap();
         let mut entries = vec![
@@ -793,8 +862,22 @@ mod tests {
             },
             PackEntry {
                 path: "payload/g/timeline.json".into(),
-                bytes: br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.to_vec(),
+                bytes: serde_json::to_vec(&json!({
+                    "format": "hoi4_compact_stream_timeline_v1",
+                    "stream_format": "compact",
+                    "stream": "collector_raw/collector_stream.bin",
+                    "session_manifest": "recorder/native_session_manifest.json",
+                    "raw_stream_role": "collector_compact_stream",
+                    "session_manifest_role": "recorder_manifest"
+                }))
+                .unwrap(),
                 role: "timeline",
+                hour_index: None,
+            },
+            PackEntry {
+                path: "payload/g/collector_raw/collector_stream.bin".into(),
+                bytes: b"H4CRfixture-stream".to_vec(),
+                role: snapshot::COMPACT_STREAM_ROLE,
                 hour_index: None,
             },
             PackEntry {
@@ -818,7 +901,17 @@ mod tests {
                 hour_index: None,
             });
         }
-        let packed = pack("g", &entries, &PackIdentity::default(), false).unwrap();
+        let packed = pack(
+            "g",
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".into()),
+                content_manifest: Some(content_manifest),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
         let path = temp_file(if extra_witness_role { "duplicate" } else { "valid" });
         fs::write(&path, packed).unwrap();
         (path, authority)
@@ -835,6 +928,7 @@ mod tests {
         assert_eq!(capture.bmp_path, BMP_PATH);
         assert_eq!(capture.selected_game_id, "g");
         assert_eq!(capture.selected_index_path, "payload/g/index.json");
+        assert_eq!(capture.engine_bgra(), &[1, 2, 3, 4]);
         let selected_index_bytes = store
             .container()
             .unwrap()
@@ -858,7 +952,12 @@ mod tests {
         assert_eq!(capture.selected_index_path, "payload/g/index.json");
         assert!(canonical_sha256(&capture.selected_index_sha256));
         assert_eq!(capture.capture_content_manifest_digest_sha256, "aa".repeat(32));
-        assert_eq!(capture.replay_content_manifest_digest_sha256, "66".repeat(32));
+        assert_eq!(
+            capture.replay_content_manifest_digest_sha256,
+            portable_content_manifest()
+                .manifest_digest_sha256
+                .expect("finalized portable content manifest")
+        );
         drop(source);
         fs::remove_file(path).unwrap();
     }

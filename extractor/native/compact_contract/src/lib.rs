@@ -143,44 +143,9 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         reason: "oob_command: only invalid army-root or naval task-force-root rows are tolerated; the collector freezes additions/deletes/linkage changes, and the domain/hour remains unknown because omitted command identities are not serialized",
     },
     CompactExpectedPartialTolerance {
-        domain_id: 41,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "projects_live: project lifecycle/reward sub-scopes are contract FIXTURE_BLOCKED; affected rows skip-counted",
-    },
-    CompactExpectedPartialTolerance {
-        domain_id: 45,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "focus_research_decisions_depth_live: decision-target rows outside the validated exact slice are omitted and badged (decision_target_omitted_rows), documented fixture-blocked scope",
-    },
-    CompactExpectedPartialTolerance {
-        domain_id: 48,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "construction_buildings_state_damage_live: transient live-mutation construction-line row skips (invalid line pointer/type/factory/progress), skip-counted; valid construction/building/resource rows retained and sparse fold preserves omitted siblings",
-    },
-    CompactExpectedPartialTolerance {
-        domain_id: 49,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "naval_combat_lifecycle_live: transient live-mutation walk anomalies on an unpaused frame (torn CNavalCombat body/side/front reads, unreadable CFEXGroup owning-side back-refs) fail the whole frame closed with empty rows; the delta baseline is preserved and rows re-emit on the next clean frame",
-    },
-    CompactExpectedPartialTolerance {
-        domain_id: 50,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "naval_combat_members_live: transient live-mutation member-walk anomalies on an unpaused frame (torn CFEXGroup member arrays, unreadable CFEXMember handles/slots, duplicate ship ids from a stale group, missing CShip OOB joins) fail the whole frame closed with empty rows; the delta baseline is preserved and rows re-emit on the next clean frame",
-    },
-    CompactExpectedPartialTolerance {
-        domain_id: 53,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "diplomacy_intel_operatives_live: transient live-mutation per-row skips across families (torn operative/agency/relation/opinion/subject/cryptology/incoming-action slots), skip-counted; valid rows are emitted and the host sparse-merges omitted rows WITHIN THE HOUR (a clean frame full-replaces) so an omitted torn row is never fabricated as a deletion",
-    },
-    CompactExpectedPartialTolerance {
         domain_id: 54,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "army_battleplans_depth_live: inherited d27/d28 partials or counted non-exact/linkage/identity/active/path omissions are diagnostic only; no omitted-order identity list exists, so the domain/hour remains unknown",
-    },
-    CompactExpectedPartialTolerance {
-        domain_id: 65,
-        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "special_project_programs_live: any torn/invalid rooted walk or disagreement between the duplicated serialized CProgram owner/province fields makes the current owner-joined set incomplete; the fold keeps the leaf unknown rather than fabricating deletion or persistence",
     },
 ];
 
@@ -225,6 +190,7 @@ pub const STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC: &str = "idea_tech_loc_xref_
 pub const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str = "ship_definitions_static";
 pub const STATIC_ARTIFACT_GFX_ICON_MANIFEST: &str = "gfx_icon_asset_manifest_static";
 pub const STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC: &str = "technology_sharing_static";
+pub const STATIC_ARTIFACT_FOCUS_DEFS_STATIC: &str = "focus_defs_static";
 
 pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
@@ -234,10 +200,20 @@ pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
     STATIC_ARTIFACT_GFX_ICON_MANIFEST,
     STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
+    STATIC_ARTIFACT_FOCUS_DEFS_STATIC,
 ];
 
 pub const PRODUCTION_PROFILE_RULE: &str =
-    "schedulable compact domains whose descriptor status is Existing, ProductionComplete, ProductionCompleteBase, ValidatedSlice, ValidatedPartialSlice, or ValidatedSliceOpenGaps; validated slice/open-gap members are profile-scheduled for batched live proof and are not PRODUCTION_SLICE_DONE until that proof passes";
+    "mandatory schedulable compact domains must have status Existing, ProductionComplete, or ProductionCompleteBase; validated/partial/open-gap domains are never admitted to the mandatory production profile";
+
+/// Feature-local companions which are intentionally not part of the
+/// single-machine production contract. They remain individually schedulable
+/// for explicit evidence/debug captures, but production neither requests nor
+/// substitutes for them.
+///
+/// D57's multiplayer-only arm is excluded until CID1 M3 can be exercised on a
+/// second physical machine. This exception must stay explicit and domain-local.
+pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] = &[57, 78, 84];
 
 // --- Domain descriptors -----------------------------------------------------
 
@@ -371,25 +347,36 @@ pub fn requires_data_record(id: CompactDomainId) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns true for descriptor statuses scheduled by the production recording
-/// profile. `Existing` is included because it is the legacy status for the base
-/// production compact domains. `ProductionComplete`/`ProductionCompleteBase`
-/// are fully accepted production statuses. `ValidatedSlice`,
-/// `ValidatedPartialSlice`, and `ValidatedSliceOpenGaps` are included so they
-/// are captured in batched production-profile runs; those rows remain pending
-/// proof at their documented scope and are not `PRODUCTION_SLICE_DONE` merely by
-/// being profile-scheduled. `ActiveIntegration`, `Reserved`, and
-/// `Infrastructure` are excluded from the profile, even when schedulable.
+/// Returns true only for statuses which may enter the mandatory production
+/// recording profile. `Existing` is the legacy spelling for the original
+/// production-complete compact domains.
 pub fn status_in_production_profile(status: CompactDomainStatus) -> bool {
     matches!(
         status,
         CompactDomainStatus::Existing
             | CompactDomainStatus::ProductionComplete
             | CompactDomainStatus::ProductionCompleteBase
-            | CompactDomainStatus::ValidatedSlice
-            | CompactDomainStatus::ValidatedPartialSlice
-            | CompactDomainStatus::ValidatedSliceOpenGaps
     )
+}
+
+pub fn is_optional_fail_closed_companion(id: CompactDomainId) -> bool {
+    OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS.contains(&id)
+}
+
+/// Mandatory-by-default is deliberate: adding a schedulable domain can never
+/// silently broaden production with a partial/open-gap contract. A domain must
+/// either be production-complete or be reviewed into the explicit optional
+/// companion list.
+pub fn mandatory_profile_domains_not_production_complete() -> Vec<CompactDomainDescriptor> {
+    ASSIGNED_COMPACT_DOMAINS
+        .iter()
+        .copied()
+        .filter(|descriptor| {
+            descriptor.schedulable
+                && !is_optional_fail_closed_companion(descriptor.id)
+                && !status_in_production_profile(descriptor.status)
+        })
+        .collect()
 }
 
 pub fn production_profile_domains() -> Vec<CompactDomainDescriptor> {
@@ -397,7 +384,9 @@ pub fn production_profile_domains() -> Vec<CompactDomainDescriptor> {
         .iter()
         .copied()
         .filter(|descriptor| {
-            descriptor.schedulable && status_in_production_profile(descriptor.status)
+            descriptor.schedulable
+                && !is_optional_fail_closed_companion(descriptor.id)
+                && status_in_production_profile(descriptor.status)
         })
         .collect()
 }
@@ -619,7 +608,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         18,
         "country_identity",
         "country_identity",
-        CompactDomainStatus::ActiveIntegration,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -664,7 +653,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         24,
         "weather_live",
         "weather_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -808,7 +797,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         41,
         "projects_live",
         "projects_live",
-        CompactDomainStatus::ValidatedPartialSlice,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -817,7 +806,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         42,
         "air_combat_losses_live",
         "air_combat_losses_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -826,7 +815,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         43,
         "market_trade_live",
         "market_trade_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -835,7 +824,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         44,
         "supply_logistics_attrition_live",
         "supply_logistics_attrition_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -844,7 +833,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         45,
         "focus_research_decisions_depth_live",
         "focus_research_decisions_depth_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -853,7 +842,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         46,
         "air_variant_archetypes_live",
         "air_variant_archetypes",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -862,7 +851,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         47,
         "characters_leaders_cabinet_live",
         "characters_leaders_cabinet_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -871,7 +860,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         48,
         "construction_buildings_state_damage_live",
         "construction_buildings_state_damage_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -880,7 +869,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         49,
         "naval_combat_lifecycle_live",
         "naval_combat_lifecycle_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -889,7 +878,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         50,
         "naval_combat_members_live",
         "naval_combat_members_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -898,7 +887,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         51,
         "scripted_state_flags_variables_live",
         "scripted_state_flags_variables_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -907,7 +896,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         52,
         "occupation_resistance_compliance_live",
         "occupation_resistance_compliance_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -916,7 +905,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         53,
         "diplomacy_intel_operatives_live",
         "diplomacy_intel_operatives_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -934,7 +923,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         55,
         "land_combat_detail_events_live",
         "land_combat_detail_events_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -943,7 +932,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         56,
         "naval_missions_status_live",
         "naval_missions_status_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -985,7 +974,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         60,
         "capitulation_war_state_live",
         "capitulation_war_state_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -998,7 +987,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         61,
         "air_loss_stats_live",
         "air_loss_stats_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1011,7 +1000,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         62,
         "hub_motorization_live",
         "hub_motorization_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1028,7 +1017,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         63,
         "country_core_scalars_live",
         "country_core_scalars_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1047,7 +1036,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         64,
         "delayed_events_live",
         "delayed_events_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1067,7 +1056,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         65,
         "special_project_programs_live",
         "special_project_programs_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1098,7 +1087,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         66,
         "occupation_state_extras_live",
         "occupation_state_extras_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1125,7 +1114,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         67,
         "country_dynamic_modifiers_live",
         "country_dynamic_modifiers_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1150,7 +1139,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         68,
         "session_header_live",
         "session_header_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1171,7 +1160,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         69,
         "tech_sharing_groups_live",
         "tech_sharing_groups_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1195,8 +1184,9 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     ),
     // A28/XUI03: exact passive Air-selection and paired MIO-history controller
     // traces. Hook install is executable-hash and sentinel gated; callback
-    // observations are clock-bound and fail closed. Technology canvas and the
-    // heterogeneous aggregate-bonus family remain omitted.
+    // observations are clock-bound and fail closed. The heterogeneous MIO
+    // aggregate-bonus producer is bound to the same D71 session. Technology
+    // canvas remains omitted until its selected-Present producer is exact.
     domain(
         71,
         "dynamic_collection_trace_live",
@@ -1222,11 +1212,11 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // A24/XUI11 (2026-07-17): exact engine-evaluated politics tooltip inputs.
-    // The d73 carrier preserves typed trigger reason trees, effective costs,
-    // modifier terms, advisor-slot state, timed modifier provenance, and party
-    // popularity source terms. Keep reserved and unscheduled until the proven
-    // a729 politicalitems producer seam supplies a complete live fixture.
+    // Retired A24 semantic decomposition. Production politics state is already
+    // carried by d14/d15, exact visible tooltip text/geometry by scheduled d72,
+    // and all XUI11 pixels by AuthenticatedUiPass. PTI1 is retained only for
+    // backwards-compatible forensic decoding; it is deliberately unscheduled
+    // because it has no production consumer or independently visible pixels.
     domain(
         73,
         "politics_tooltip_inputs_live",
@@ -1236,11 +1226,11 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // A37/XUI18 (2026-07-17): exact power-balance presentation state. The d74
-    // carrier preserves active ranges, indicator frame/state, exact trend,
-    // resolved text references, ordered modifiers, and ordered decisions.
-    // Keep reserved and unscheduled until its authenticated a729 controller
-    // hook supplies a complete producer frame.
+    // A37/XUI18: optional typed power-balance semantic companion. Exact visible
+    // product pixels are owned by the mandatory authenticated selected-Present
+    // UI pass, not reconstructed from d74. PBP2 deliberately remains reserved:
+    // its open-panel-only contract cannot represent ordinary passive closed
+    // hours and it must never substitute for the selected-Present pixel path.
     domain(
         74,
         "power_balance_presentation_live",
@@ -1313,7 +1303,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         79,
         "hud_surface_activation_live",
         "hud_surface_activation_live",
-        CompactDomainStatus::ValidatedSlice,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1340,7 +1330,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         81,
         "rail_replay_state_live",
         "rail_replay_state_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1425,18 +1415,18 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // A34/XUI19 (2026-07-20): complete ordered decision-panel materialization
-    // including exact evaluated text and alert membership. The d87 carrier is
-    // receipt-bound and fail-closed. Keep reserved and unscheduled until the
-    // signature-gated materializer/text/alert hook graph passes the production
-    // fixture gate. The installer and scheduler epoch are engineered, but both
-    // activation latches remain false without the authenticated live fixture.
+    // A34/XUI19 (2026-07-23): exact ordered decision-panel materialization,
+    // evaluated text, alert membership and engine interface state. The ordinary
+    // collector owns the passive epoch, selected-Present seal, authenticated
+    // effective decision catalog and same-hour country decision join. Missing
+    // or ambiguous leaves emit typed unavailable; no semantic values are
+    // fabricated.
     domain(
         87,
         "decision_panel_live",
         "decision_panel_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ProductionComplete,
+        true,
         true,
         &[],
     ),
@@ -1561,6 +1551,19 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         96,
         "country_preferred_tactic_weight_live",
         "country_preferred_tactic_weight_live",
+        CompactDomainStatus::ProductionComplete,
+        true,
+        true,
+        &[],
+    ),
+    // A40/XUI08 exact peace-conference refresh presence. PCS1 records the
+    // registered two-word conference reference plus proven turn/completion
+    // scalars. Allocation/result identity is deliberately snapshot-scoped;
+    // v1 leaves the unproven semantic collections typed unavailable.
+    domain(
+        97,
+        "peace_conference_live",
+        "peace_conference_live",
         CompactDomainStatus::ProductionComplete,
         true,
         true,
@@ -1750,7 +1753,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96,
+            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
             1000,
         ];
         for id in expected {
@@ -1854,109 +1857,39 @@ mod tests {
     }
 
     #[test]
-    fn production_profile_is_derived_from_schedulable_validated_descriptors() {
+    fn production_profile_contains_only_complete_mandatory_domains() {
         let profile = production_profile_domains();
         let profile_ids: std::collections::BTreeSet<CompactDomainId> =
             profile.iter().map(|descriptor| descriptor.id).collect();
         for descriptor in ASSIGNED_COMPACT_DOMAINS {
-            let expected =
-                descriptor.schedulable && status_in_production_profile(descriptor.status);
+            let expected = descriptor.schedulable
+                && !is_optional_fail_closed_companion(descriptor.id)
+                && status_in_production_profile(descriptor.status);
             assert_eq!(
                 profile_ids.contains(&descriptor.id),
                 expected,
-                "domain {} profile membership should be derived from descriptor status/schedulability",
+                "domain {} mandatory profile membership should require a complete status",
                 descriptor.id
             );
         }
 
+        let incomplete = mandatory_profile_domains_not_production_complete();
         assert!(
-            profile_ids.contains(&55),
-            "domain 55 is validated/schedulable"
+            incomplete.is_empty(),
+            "mandatory schedulable domains are not production-complete: {:?}",
+            incomplete
+                .iter()
+                .map(|descriptor| (descriptor.id, descriptor.wire_name, descriptor.status))
+                .collect::<Vec<_>>()
         );
-        assert!(
-            profile_ids.contains(&53),
-            "domain 53 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&56),
-            "domain 56 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&57),
-            "domain 57 is a validated partial slice"
-        );
-        assert!(
-            profile_ids.contains(&61),
-            "domain 61 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&54),
-            "domain 54 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&48),
-            "domain 48 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&47),
-            "domain 47 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&49),
-            "domain 49 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&50),
-            "domain 50 is a validated slice with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&63),
-            "domain 63 (country_core_scalars_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&64),
-            "domain 64 (delayed_events_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&65),
-            "domain 65 (special_project_programs_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&66),
-            "domain 66 (occupation_state_extras_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&67),
-            "domain 67 (country_dynamic_modifiers_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&68),
-            "domain 68 (session_header_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&69),
-            "domain 69 (tech_sharing_groups_live) is a validated slice \
-             with explicit open gaps"
-        );
-        assert!(
-            profile_ids.contains(&90),
-            "domain 90 (convoy_transport_attack_live) is exact fail-closed production"
-        );
-        assert!(
-            profile_ids.contains(&71),
-            "domain 71 (dynamic_collection_trace_live) is exact fail-closed production"
-        );
-        assert!(
-            profile_ids.contains(&70),
-            "domain 70 (sunk_convoy_history_live) is exact fail-closed production"
-        );
-        for excluded in [1, 18, 58, 59, 73, 74, 76, 77, 1000] {
+
+        for optional in OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS {
+            assert!(
+                !profile_ids.contains(optional),
+                "optional fail-closed companion domain {optional} must stay out of production"
+            );
+        }
+        for excluded in [1, 58, 59, 73, 74, 76, 77, 80, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"
@@ -1990,6 +1923,7 @@ mod tests {
                 STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
                 STATIC_ARTIFACT_GFX_ICON_MANIFEST,
                 STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
+                STATIC_ARTIFACT_FOCUS_DEFS_STATIC,
             ]
         );
     }
@@ -2031,7 +1965,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 41, 45, 48, 49, 50, 53, 54, 65]);
+        assert_eq!(domains, vec![26, 27, 28, 54]);
     }
 
     #[test]
@@ -2048,10 +1982,10 @@ mod tests {
 
     #[test]
     fn expected_partial_tolerance_lookup_rejects_unaccepted_partial_domains() {
-        for domain_id in [29, 47, 56] {
+        for domain_id in [29, 41, 45, 47, 48, 49, 50, 53, 56, 65] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 41, 45, 48, 49, 50, 53, 54, 65] {
+        for domain_id in [26, 27, 28, 54] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

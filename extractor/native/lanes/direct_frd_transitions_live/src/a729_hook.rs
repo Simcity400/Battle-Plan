@@ -1406,8 +1406,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_build_hook_remains_dormant_without_live_fixture_authority() {
-        assert!(!PRODUCTION_ACTIVATION);
+    fn exact_build_hook_is_scheduled_through_the_authenticated_runtime_seam() {
+        assert!(PRODUCTION_ACTIVATION);
     }
 
     #[test]

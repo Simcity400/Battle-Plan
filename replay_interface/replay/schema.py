@@ -237,8 +237,9 @@ COLLECTOR_DOMAIN_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "first_slice_fields": (
             "div_id", "div_type", "owner", "location_province", "state_id",
             "template_id", "template_type", "template_name", "organisation",
-            "strength", "experience", "moving", "move_target_province",
-            "move_progress", "in_combat", "supply_status",
+            "max_organisation", "strength", "experience", "moving",
+            "move_target_province", "move_progress", "in_combat",
+            "supply_status",
         ),
     },
     "land_combats": {
@@ -949,6 +950,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "divisions.*.template_name": "C/M/S",
     "divisions.*.template_role": "S",
     "divisions.*.organisation": "C/M",
+    "divisions.*.max_organisation": "C/M",
     "divisions.*.strength": "C/M/S",
     "divisions.*.equipment": "M/S",
     # LIVE per-division held-equipment inventory (division_equipment_live, M): {variant_id: count}.
@@ -1729,6 +1731,7 @@ class Division:
     template_name: Optional[str] = None
     template_role: Optional[str] = None
     organisation: Optional[float] = None
+    max_organisation: Optional[float] = None
     strength: Optional[float] = None
     equipment: List[Dict[str, Any]] = field(default_factory=list)
     # LIVE per-division held-equipment inventory (division_equipment_live, M). DISTINCT live-only
@@ -4814,9 +4817,8 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     if (active and duration_remaining[0] == "not_started") or (not active and duration_remaining[0] != "not_started"):
                         problems.append(f"{row_prefix} duration timer disagrees with activity")
                 tooltip, affected = row.get("tooltip"), row.get("affected_division_ids")
-                if (tooltip is not None and
-                        not bounded_utf8(tooltip, 4096, nonempty=True)):
-                    problems.append(f"{row_prefix}.tooltip not null|bounded nonempty str")
+                if not bounded_utf8(tooltip, 4096, nonempty=True):
+                    problems.append(f"{row_prefix}.tooltip not bounded nonempty str")
                 if (not isinstance(affected, list) or len(affected) > 4096
                         or any(not portable(identity) for identity in affected)
                         or len(set(affected)) != len(affected)):
@@ -5132,7 +5134,8 @@ def _validate_collector_division(div: Dict[str, Any], index: int) -> List[str]:
         ):
             problems.append(f"{prefix}.{field_name} {value!r} not nonnegative int|null")
     for field_name in (
-        "organisation", "strength", "experience", "move_progress", "supply_status",
+        "organisation", "max_organisation", "strength", "experience",
+        "move_progress", "supply_status",
     ):
         value = div.get(field_name)
         if value is not None and not _is_finite_number(value):

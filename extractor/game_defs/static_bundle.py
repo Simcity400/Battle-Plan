@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Create and verify the fail-closed seven-artifact extractor static bundle.
+"""Create and verify the fail-closed eight-artifact extractor static bundle.
 
 The individual static gates remain responsible for parsing Clausewitz data.  This
-module is the production composition boundary: it admits exactly the seven
+module is the production composition boundary: it admits exactly the eight
 contract-required catalogs, verifies their own proofs and store hashes, binds the
 set to the executable/mod/DLC/load-order inputs, and optionally closes the
 emitted-token join sweep.
@@ -56,6 +56,7 @@ DEFINITION_SOURCE_PROOF_ROLES = frozenset({
     "idea_tech_loc_xref_static",
     "ship_definitions_static",
     "technology_sharing_static",
+    "focus_defs_static",
 })
 
 
@@ -121,6 +122,14 @@ DEFAULT_SPECS = (
         HERE / "out/technology_sharing_static/technology_sharing_gate_report.json",
         "technology_sharing_static.static_artifact.v1",
         "technology_sharing_static.json",
+        True,
+    ),
+    ArtifactSpec(
+        "focus_defs_static",
+        HERE / "out/focus_defs_static/focus_defs_static/focus_defs_catalog.json",
+        HERE / "out/focus_defs_static/focus_defs_static_gate_report.json",
+        "focus_defs_static.static_artifact.v1",
+        "focus_defs_static.json",
         True,
     ),
 )
@@ -972,6 +981,7 @@ def _lookup_sets(catalogs: dict[str, dict[str, Any]]) -> dict[str, set[str]]:
     decisions = catalogs["decisions_static_definitions"]
     ships = catalogs["ship_definitions_static"]
     gfx = catalogs["gfx_icon_asset_manifest_static"]
+    focus_defs = catalogs["focus_defs_static"]
     template_rows = templates.get("division_templates", []) if isinstance(templates, dict) else []
     return {
         "localisation": keys(catalogs["localisation_join"].get("keys")),
@@ -989,6 +999,8 @@ def _lookup_sets(catalogs: dict[str, dict[str, Any]]) -> dict[str, set[str]]:
             if isinstance(row, dict) and row.get("name") is not None
         },
         "gfx_sprite": keys(gfx.get("sprites")),
+        "focus": keys(focus_defs.get("focuses")),
+        "focus_tree": keys(focus_defs.get("trees")),
     }
 
 
@@ -1230,8 +1242,8 @@ def create_bundle(
     defer_provenance: Path | None = None,
 ) -> dict[str, Any]:
     specs = tuple(specs)
-    if len(specs) != 7 or {spec.role for spec in specs} != {spec.role for spec in DEFAULT_SPECS}:
-        raise BundleError("bundle must contain exactly the seven contract-required artifact roles")
+    if len(specs) != 8 or {spec.role for spec in specs} != {spec.role for spec in DEFAULT_SPECS}:
+        raise BundleError("bundle must contain exactly the eight contract-required artifact roles")
     for spec in specs:
         expected = EXPECTED_SPECS[spec.role]
         if (
@@ -1885,7 +1897,7 @@ def _expected_capture_args(parser: argparse.ArgumentParser, *, required: bool) -
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    create = sub.add_parser("create", help="validate and compose the seven static artifacts")
+    create = sub.add_parser("create", help="validate and compose the eight static artifacts")
     create.add_argument("--out", type=_path, required=True)
     _binding_args(create)
     create.add_argument("--emitted-tokens", type=_path)

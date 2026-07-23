@@ -54,6 +54,7 @@ mod prefold_worker;
 #[cfg(test)]
 mod post_effect;
 mod recording_open;
+mod recorded_ui_owner;
 mod selected_pov_runtime;
 mod special_projects_runtime;
 mod timeline;
@@ -122,7 +123,7 @@ terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD
 --water-full (DEFAULT ON) uploads only the real engine/file-derived water path and fails closed when required inputs are missing; --no-water-full is blocked because it selected the old app-owned approximation; \
 borders are blocked in replay_app until the remaining thin-border fade/loop/sea-region law is ported; use map_viewer border dumps as development tooling; --borders-from-files is blocked; \
 country-label production integration is closed: measured control_by_province feeds the B10 controller law, authenticated reflection stamps mapname CB1, and normal D80 playback executes the exact captured glyph draw automatically; --map-labels remains blocked as a legacy manual-layer switch; \
-map furniture is blocked in replay_app only on highlight ring rendering and the 0.40 map-text scale origin; the relation-column law is engine-traced in map_viewer, but non-neutral capture coverage is still pending; the furniture module/projection API exists but --map-furniture remains blocked; \
+map furniture remains fail-closed: the exact relation/frame law is proven and the apparent highlight ring is part of the selected strip bitmap, but ordinary recording cannot yet authenticate/materialize the complete selected-Present GUI frontier, while reconstruction lacks exact current VP values and placement; \
 tree runtime replay admits exact selected-submit visibility/model/LOD draws against the complete engine-derived 296-bucket/99,056-cell library; --trees-from-files remains blocked because a files-only request has no authenticated per-frame selection, and --tree-seasons-by-date remains separately blocked on CB1; \
 building previews are blocked until map_objects_pass or mesh/material import law exists; --buildings-from-files and --buildings-preview-all are blocked";
 
@@ -1234,8 +1235,26 @@ fn run_validate_playback(args: &[String]) -> Result<()> {
         }
     };
     content_compatibility::validate_timeline_content(&timeline, &paths)
-        .map(|_| ())
-        .map_err(|error| error.into())
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+    let static_research = game_ui::static_research::admit_static_research_catalogs(
+        timeline.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
+        timeline.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
+        timeline.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
+    )
+    .map_err(|error| format!("admit packaged static research catalogs: {error}"))?;
+    replay_core::admit_static_focus_definitions(
+        timeline
+            .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
+            .ok_or("portable playback has no authenticated focus_defs_static artifact")?,
+    )
+    .map_err(|error| format!("admit packaged static focus definitions: {error}"))?;
+    for &hour in timeline.hours() {
+        let frame = timeline.frame(hour)?;
+        static_research.bind_frame(&frame).map_err(|error| {
+            format!("bind packaged static research catalogs at hour {hour}: {error}")
+        })?;
+    }
+    Ok(())
 }
 
 /// E4: open a recording through the shared validator and print a readable

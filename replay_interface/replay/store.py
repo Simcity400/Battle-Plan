@@ -1071,6 +1071,7 @@ def _ingest_divisions(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         rec["template_name"] = d.get("template_name")
         rec["template_role"] = d.get("template_role")
         rec["organisation"] = d.get("organisation")
+        rec["max_organisation"] = d.get("max_organisation")
         rec["strength"] = d.get("strength")
         if isinstance(d.get("equipment"), list):
             rec["equipment"] = d["equipment"]

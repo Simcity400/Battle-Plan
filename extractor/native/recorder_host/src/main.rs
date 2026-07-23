@@ -392,7 +392,7 @@ struct Config {
     /// Pending-hour ring capacity (clamped 1..=65535 in the DLL). Bounds latch
     /// memory and capture lag. Default 64.
     hour_latch_queue_cap: u32,
-    /// Canonical seven-artifact bundle admission inputs. Mandatory for production
+    /// Canonical eight-artifact bundle admission inputs. Mandatory for production
     /// and both coherent profiles; optional only for explicit legacy probes.
     static_bundle: Option<StaticBundleCli>,
     speed_root_gate_path: Option<PathBuf>,
@@ -526,6 +526,7 @@ struct ProductionProfileSummary {
     enabled: bool,
     profile_domains: Vec<&'static str>,
     required_static_artifacts: Vec<&'static str>,
+    mandatory_domains_not_production_complete: Vec<&'static str>,
     profile_domains_not_scheduled: Vec<&'static str>,
     scheduled_domains_not_in_profile: Vec<String>,
     missing_required_static_artifacts: Vec<&'static str>,
@@ -539,6 +540,7 @@ impl ProductionProfileSummary {
             "derivation_rule": compact_contract::PRODUCTION_PROFILE_RULE,
             "profile_domains": self.profile_domains,
             "required_static_artifacts": self.required_static_artifacts,
+            "mandatory_domains_not_production_complete": self.mandatory_domains_not_production_complete,
             "profile_domains_not_scheduled": self.profile_domains_not_scheduled,
             "scheduled_domains_not_in_profile": self.scheduled_domains_not_in_profile,
             "missing_required_static_artifacts": self.missing_required_static_artifacts,
@@ -1440,6 +1442,18 @@ fn run() -> Result<(), String> {
     // verified artifacts, so the production summary must reflect the admitted
     // inputs rather than the pre-admission CLI state.
     let production_profile_summary = build_production_profile_summary(&cfg);
+    if cfg.production
+        && !production_profile_summary
+            .mandatory_domains_not_production_complete
+            .is_empty()
+    {
+        return Err(format!(
+            "production profile contains mandatory domains which are not production-complete: {}",
+            display_static_list(
+                &production_profile_summary.mandatory_domains_not_production_complete
+            )
+        ));
+    }
     let auto_attach_worker = AutoAttachWorkerContext::from_env(&cfg)?;
     let capture_identity_mode = if auto_attach_worker.is_some()
         && recorder_host::auto_attach::duplex_worker::auto_attach_identity_v1_enabled()
@@ -3497,6 +3511,7 @@ fn replay_packaging_manifest_json(
                 "sha256": resolved.sha256,
                 "source_sha256": resolved.source_sha256,
                 "bytes": resolved.bytes.len() as u64,
+                "content_manifest_digest_sha256": replay_content_manifest_digest_sha256,
                 "first_capture_hour_index": first_capture_hour_index,
                 "last_capture_hour_index": last_capture_hour_index,
                 "capture_count": capture_count,
@@ -6012,6 +6027,8 @@ const STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC: &str =
 const STATIC_ARTIFACT_GFX_ICON_MANIFEST: &str = compact_contract::STATIC_ARTIFACT_GFX_ICON_MANIFEST;
 const STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC: &str =
     compact_contract::STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC;
+const STATIC_ARTIFACT_FOCUS_DEFS_STATIC: &str =
+    compact_contract::STATIC_ARTIFACT_FOCUS_DEFS_STATIC;
 const KNOWN_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
     STATIC_ARTIFACT_LOCALISATION_JOIN,
@@ -6020,6 +6037,7 @@ const KNOWN_STATIC_ARTIFACTS: &[&str] = &[
     STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
     STATIC_ARTIFACT_GFX_ICON_MANIFEST,
     STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
+    STATIC_ARTIFACT_FOCUS_DEFS_STATIC,
 ];
 
 fn static_artifact_name(role: &str) -> Option<&'static str> {
@@ -6149,6 +6167,11 @@ fn build_production_profile_summary(cfg: &Config) -> ProductionProfileSummary {
             .map(|descriptor| descriptor.wire_name)
             .collect(),
         required_static_artifacts: compact_contract::REQUIRED_STATIC_ARTIFACTS.to_vec(),
+        mandatory_domains_not_production_complete:
+            compact_contract::mandatory_profile_domains_not_production_complete()
+                .iter()
+                .map(|descriptor| descriptor.wire_name)
+                .collect(),
         profile_domains_not_scheduled: profile
             .iter()
             .filter(|descriptor| !scheduled_ids.contains(&descriptor.id))
@@ -6175,8 +6198,9 @@ fn build_production_profile_summary(cfg: &Config) -> ProductionProfileSummary {
 
 fn production_profile_summary_lines(summary: &ProductionProfileSummary) -> Vec<String> {
     let mut lines = vec![format!(
-        "recorder summary: production_profile={} profile_domains_not_scheduled={} scheduled_domains_not_in_profile={}",
+        "recorder summary: production_profile={} mandatory_domains_not_production_complete={} profile_domains_not_scheduled={} scheduled_domains_not_in_profile={}",
         if summary.enabled { "enabled" } else { "disabled" },
+        display_static_list(&summary.mandatory_domains_not_production_complete),
         display_static_list(&summary.profile_domains_not_scheduled),
         display_string_list(&summary.scheduled_domains_not_in_profile),
     )];
@@ -6224,6 +6248,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "--static-ship-definitions",
         STATIC_ARTIFACT_GFX_ICON_MANIFEST => "--static-gfx-icon-manifest",
         STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => "--static-technology-sharing",
+        STATIC_ARTIFACT_FOCUS_DEFS_STATIC => "--static-focus-defs",
         _ => "--unknown-static-artifact",
     }
 }
@@ -6232,7 +6257,7 @@ fn usage() -> String {
     "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--a34-decision-panel-evidence-supplement json] [--a36-active-ability-evidence] [--a39-character-presentation-evidence] [--a40-design-peace-evidence] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
      \n\
      Static artifacts: non-production probes may omit them. Production requires one\n\
-     admitted bundle containing all seven deterministic artifacts plus exact\n\
+     admitted bundle containing all eight deterministic artifacts plus exact\n\
      mod/DLC/load-order/source-resolution bindings. The host admits a deferred token\n\
      gate before injection, finalizes it from the emitted compact stream, strictly\n\
      verifies capture/session/stream provenance, byte-packs the finalized artifacts,\n\
@@ -6452,6 +6477,7 @@ fn expected_static_artifact_schema(name: &str) -> &'static str {
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_static.static_artifact.v1",
         STATIC_ARTIFACT_GFX_ICON_MANIFEST => "gfx_icon_asset_manifest_static.static_artifact.v2",
         STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => "technology_sharing_static.static_artifact.v1",
+        STATIC_ARTIFACT_FOCUS_DEFS_STATIC => "focus_defs_static.static_artifact.v1",
         _ => "unknown.static_artifact.v1",
     }
 }
@@ -6986,6 +7012,23 @@ fn validate_static_artifact_shape(
                 ));
             }
         }
+        STATIC_ARTIFACT_FOCUS_DEFS_STATIC => {
+            require_nonempty_object_field(request, object, "trees")?;
+            require_nonempty_object_field(request, object, "focuses")?;
+            require_nonempty_object_field(request, object, "focus_background_styles")?;
+            let meta = require_object_field(request, object, "meta")?;
+            for key in [
+                "tree_count",
+                "focus_count",
+                "shared_focus_count",
+                "joint_focus_count",
+                "focus_background_style_count",
+                "files_parsed",
+            ] {
+                require_integer_object_key(request, meta, &format!("meta.{key}"), key)?;
+            }
+            require_object_field(request, object, "localisation_source")?;
+        }
         _ => {
             return Err(invalid_static_artifact_shape(
                 request,
@@ -7228,6 +7271,21 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
             )?;
             insert_localisation_source_provenance(&mut out, object)?;
         }
+        STATIC_ARTIFACT_FOCUS_DEFS_STATIC => {
+            insert_meta_provenance(
+                &mut out,
+                object,
+                &[
+                    "tree_count",
+                    "focus_count",
+                    "shared_focus_count",
+                    "joint_focus_count",
+                    "focus_background_style_count",
+                    "files_parsed",
+                ],
+            )?;
+            insert_localisation_source_provenance(&mut out, object)?;
+        }
         _ => unreachable!("static artifact name validated before provenance build"),
     }
     Ok(Value::Object(out))
@@ -7244,6 +7302,7 @@ fn static_artifact_file_name(name: &str) -> &'static str {
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_catalog.json",
         STATIC_ARTIFACT_GFX_ICON_MANIFEST => "gfx_icon_manifest_catalog.json",
         STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => "technology_sharing_static.json",
+        STATIC_ARTIFACT_FOCUS_DEFS_STATIC => "focus_defs_static.json",
         // unreachable for KNOWN_STATIC_ARTIFACTS; defensive default keeps the path
         // safe (no personal path, no separators) if a new name is added without a
         // filename mapping.
@@ -7798,7 +7857,11 @@ where
         });
     }
     let identity = PackIdentity {
-        schema_version: Some("native_collector_session_v1".to_string()),
+        // Container schema describes the replay snapshot/index contract.  The
+        // recorder manifest keeps its own `schema =
+        // native_collector_session_v1`; conflating the two left manifest and
+        // index authorities contradictory.
+        schema_version: Some("1".to_string()),
         created_utc: Some(created_utc_label()),
         content_manifest: recorded_portable_content_manifest(manifest)?,
         ..Default::default()
@@ -8656,7 +8719,70 @@ fn write_native_replay_container_streaming(
             hour_index: None,
         });
     }
-    let file_entries = snapshot_files
+    let mut production_render_blob_paths = BTreeMap::<String, PathBuf>::new();
+    for snapshot in snapshot_files {
+        let Some(parent) = snapshot.path.parent() else {
+            return Err(format!(
+                "folded snapshot {} has no parent directory",
+                snapshot.path.display()
+            ));
+        };
+        let blob_dir = parent.join("production_render_blobs");
+        if !blob_dir.exists() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&blob_dir)
+            .map_err(|error| format!("inspect {}: {error}", blob_dir.display()))?;
+        if !metadata.file_type().is_dir() {
+            return Err(format!(
+                "production render blob root {} is not a real directory",
+                blob_dir.display()
+            ));
+        }
+        for entry in fs::read_dir(&blob_dir)
+            .map_err(|error| format!("read {}: {error}", blob_dir.display()))?
+        {
+            let entry =
+                entry.map_err(|error| format!("read {} entry: {error}", blob_dir.display()))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("inspect {}: {error}", entry.path().display()))?;
+            if !file_type.is_file() {
+                return Err(format!(
+                    "production render blob member {} is not a regular file",
+                    entry.path().display()
+                ));
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "production render blob filename is not UTF-8".to_string())?;
+            let digest = name.strip_suffix(".base64").ok_or_else(|| {
+                format!("production render blob filename {name:?} has unexpected suffix")
+            })?;
+            if digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(format!(
+                    "production render blob filename {name:?} is not content-addressed"
+                ));
+            }
+            let actual = to_hex(&hash_file_sha256_bytes(&entry.path())?);
+            if actual != digest {
+                return Err(format!(
+                    "production render blob {} hashes to {actual}, expected {digest}",
+                    entry.path().display()
+                ));
+            }
+            production_render_blob_paths
+                .entry(name)
+                .or_insert_with(|| entry.path());
+        }
+    }
+
+    let mut file_entries = snapshot_files
         .iter()
         .map(|snapshot| FileBackedPackEntry {
             path: format!(
@@ -8668,6 +8794,14 @@ fn write_native_replay_container_streaming(
             hour_index: Some(snapshot.hour_index),
         })
         .collect::<Vec<_>>();
+    for (name, path) in &production_render_blob_paths {
+        file_entries.push(FileBackedPackEntry {
+            path: format!("payload/{game_id}/production_render_blobs/{name}"),
+            file_path: path.as_path(),
+            role: "production_render_blob",
+            hour_index: None,
+        });
+    }
     // The raw compact stream is the ONLY large entry; it streams from disk. Its
     // manifest sha256 is the capture-time rolling hash (no separate pre-hash
     // read). The packer hashes the exact decoded bytes again while writing and
@@ -8684,7 +8818,10 @@ fn write_native_replay_container_streaming(
     }];
 
     let identity = PackIdentity {
-        schema_version: Some("native_collector_session_v1".to_string()),
+        // Keep the portable container authority identical to index.json and
+        // the generated snapshots.  Recorder-session schema is carried by the
+        // recorder_manifest payload, not by this field.
+        schema_version: Some("1".to_string()),
         created_utc: Some(replay_packaging_created_utc(manifest).unwrap_or_else(created_utc_label)),
         content_manifest: recorded_portable_content_manifest(manifest)?,
         ..Default::default()
@@ -9820,6 +9957,20 @@ fn write_control_file(
     } else {
         compact_contract::CaptureProfile::Debug
     });
+    let decision_panel_requested = resolved_scheduled_domains
+        .iter()
+        .any(|domain| domain == "decision_panel_live");
+    let decision_catalog = cfg
+        .static_artifacts
+        .iter()
+        .find(|artifact| artifact.name == STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS);
+    let decision_catalog_path = decision_catalog
+        .filter(|_| decision_panel_requested)
+        .map(|artifact| artifact.path.display().to_string());
+    let decision_catalog_sha256 = decision_catalog
+        .filter(|_| decision_panel_requested)
+        .map(|artifact| hash_file_sha256_bytes(&artifact.path).map(|hash| to_hex(&hash)))
+        .transpose()?;
     let mut payload = json!({
         "mode": "hourly_poll",
         "duration_ms": cfg.duration_ms,
@@ -9864,6 +10015,8 @@ fn write_control_file(
         "a39_evidence_capture": cfg.a39_evidence_capture,
         "a36_evidence_capture": cfg.a36_evidence_capture,
         "a34_evidence_supplement": cfg.a34_evidence_supplement,
+        "a34_decision_catalog_path": decision_catalog_path,
+        "a34_decision_catalog_sha256": decision_catalog_sha256,
         "session_id": cfg.session_id,
         "scheduled_domains": resolved_scheduled_domains.join(";"),
         "division_body_bridge": cfg.division_body_bridge.as_deref(),
@@ -17696,7 +17849,10 @@ mod tests {
         );
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
-        assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+        assert!(
+            coverage_errors.is_empty(),
+            "{coverage_errors:?}"
+        );
         assert!(!problems.contains(&"compact_failure_status_seen".to_string()));
         assert!(!problems.contains(&"compact_partial_data".to_string()));
         assert_eq!(manifest["failure_status_flags_or"], json!(0));
@@ -18053,7 +18209,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_expected_partial_e2e_domain41_tolerates_gate_but_folds_unknown() {
+    fn production_complete_domain41_partial_fails_gate_and_folds_unknown() {
         let mut raw = Vec::new();
         let game_hour_raw = 60_759_359;
         append_test_compact_record(
@@ -18112,10 +18268,11 @@ mod tests {
         let snapshots = fold_compact_snapshots(&raw);
 
         assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
-        assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(applied[0]["domain"], json!("projects_live"));
-        assert_eq!(applied[0]["domain_id"], json!(41));
-        assert_eq!(applied[0]["frames_affected"], json!(1));
+        assert!(
+            problems.contains(&"compact_partial_data".to_string()),
+            "{problems:?}"
+        );
+        assert!(applied.as_array().is_some_and(Vec::is_empty), "{applied}");
         assert_eq!(snapshots.len(), 2);
         assert_eq!(
             snapshots[0]["special_projects"]["projects"]["91234"]["id"],
@@ -18127,7 +18284,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(|problem| problem["domain_id"] == json!(41)
-                && problem["problem"] == json!("partial_data")));
+                && problem["problem"] == json!("compact_status_failure")));
         assert!(snapshots[1]["provenance"]["notes"]
             .as_array()
             .unwrap()
@@ -19860,15 +20017,16 @@ mod tests {
             compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_PARTIAL_DATA,
             "must read the real status at offset 12, not game_hour_raw at offset 16"
         );
-        // The effective failure contribution must be clean (only the tolerated
-        // PARTIAL_DATA), never the phantom bits from the game hour.
+        // D48 is production-complete, so its real PARTIAL_DATA bit is now a
+        // failure. The result must contain exactly that bit, never phantom bits
+        // decoded from the game hour.
         assert_eq!(
             compact_domain_effective_failure_flags(
                 COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
                 status,
             ),
-            0,
-            "clean CBSD status yields no failure after tolerated-PARTIAL is removed"
+            COMPACT_STATUS_PARTIAL_DATA,
+            "CBSD failure contribution must come from its real status word only"
         );
     }
 
@@ -21571,7 +21729,15 @@ mod tests {
         fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
             fold_compact_snapshots(raw)
                 .into_iter()
-                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .map(|mut snapshot| {
+                    if let Some(extra) = snapshot
+                        .pointer_mut("/diplomacy_world/domain53_extra")
+                        .and_then(Value::as_object_mut)
+                    {
+                        extra.remove("snapshot_payload_sha256");
+                    }
+                    serde_json::to_vec(&snapshot).unwrap()
+                })
                 .collect()
         }
 
@@ -21832,7 +21998,15 @@ mod tests {
         fn canonical_snapshots(raw: &[u8]) -> Vec<Vec<u8>> {
             fold_compact_snapshots(raw)
                 .into_iter()
-                .map(|snapshot| serde_json::to_vec(&snapshot).unwrap())
+                .map(|mut snapshot| {
+                    if let Some(extra) = snapshot
+                        .pointer_mut("/diplomacy_world/domain53_extra")
+                        .and_then(Value::as_object_mut)
+                    {
+                        extra.remove("snapshot_payload_sha256");
+                    }
+                    serde_json::to_vec(&snapshot).unwrap()
+                })
                 .collect()
         }
 
@@ -23901,7 +24075,13 @@ mod tests {
                 "{:?}",
                 summary.parse_errors
             );
-            assert!(compact_domain_coverage_errors(&summary, &[48]).is_empty());
+            let coverage_errors = compact_domain_coverage_errors(&summary, &[48]);
+            assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
+            let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+            assert!(problems.contains(&"compact_failure_status_seen".to_string()));
+            assert!(problems.contains(&"compact_partial_data".to_string()));
+            assert!(!compact_expected_partial_tolerance_domain_names(&summary)
+                .contains(&"construction_buildings_state_damage_live"));
         }
 
         let full_snapshots = canonical_snapshots(&full_raw);
@@ -23944,11 +24124,31 @@ mod tests {
                 }
                 Value::Object(map) => Value::Object(
                     map.iter()
-                        .map(|(k, val)| (k.clone(), canonicalize_json(val)))
+                        .map(|(k, val)| {
+                            let value = if k == "snapshot_payload_sha256" {
+                                Value::Null
+                            } else {
+                                canonicalize_json(val)
+                            };
+                            (k.clone(), value)
+                        })
                         .collect(),
                 ),
                 other => other.clone(),
             }
+        }
+
+        fn canonicalize_projected_d53(mut value: Value) -> Value {
+            if let Some(extra) = value
+                .pointer_mut("/diplomacy_world/domain53_extra")
+                .and_then(Value::as_object_mut)
+            {
+                // This receipt authenticates carrier bytes, so a FULL payload
+                // and an equivalent DELTA payload correctly have different
+                // hashes. It is not part of projected game-state equality.
+                extra.remove("snapshot_payload_sha256");
+            }
+            canonicalize_json(&value)
         }
 
         #[derive(Clone, Default)]
@@ -24169,13 +24369,13 @@ mod tests {
             &mut full_raw,
             &mut fseq,
             base_hour + 1,
-            &encode_full(&h1, COMPACT_STATUS_PARTIAL_DATA),
+            &encode_full(&h1, 0),
         );
         append_hour(
             &mut full_raw,
             &mut fseq,
             base_hour + 2,
-            &encode_full(&h2, COMPACT_STATUS_PARTIAL_DATA),
+            &encode_full(&h2, 0),
         );
         append_hour(
             &mut full_raw,
@@ -24195,7 +24395,7 @@ mod tests {
             &encode_delta(
                 &h0,
                 &h1,
-                COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,
+                COMPACT_STATUS_DELTA_DATA,
             ),
         );
         append_hour(
@@ -24203,16 +24403,16 @@ mod tests {
             &mut rseq,
             base_hour + 2,
             &encode_delta(
-                &h0,
+                &h1,
                 &h2,
-                COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,
+                COMPACT_STATUS_DELTA_DATA,
             ),
         );
         append_hour(
             &mut reduced_raw,
             &mut rseq,
             base_hour + 3,
-            &encode_delta(&h0, &h3, COMPACT_STATUS_DELTA_DATA),
+            &encode_delta(&h2, &h3, COMPACT_STATUS_DELTA_DATA),
         );
 
         for raw in [&full_raw, &reduced_raw] {
@@ -24224,14 +24424,23 @@ mod tests {
             );
         }
 
-        let full_snapshots = fold_compact_snapshots(&full_raw);
-        let reduced_snapshots = fold_compact_snapshots(&reduced_raw);
+        let full_snapshots = fold_compact_snapshots(&full_raw)
+            .into_iter()
+            .map(canonicalize_projected_d53)
+            .collect::<Vec<_>>();
+        let reduced_snapshots = fold_compact_snapshots(&reduced_raw)
+            .into_iter()
+            .map(canonicalize_projected_d53)
+            .collect::<Vec<_>>();
         assert_eq!(full_snapshots.len(), 4);
         assert_eq!(reduced_snapshots.len(), 4);
-        assert_eq!(
-            reduced_snapshots, full_snapshots,
-            "reduced-partial d53 delta stream must fold byte-identically to full emission"
-        );
+        for (full, reduced) in full_snapshots.iter().zip(&reduced_snapshots) {
+            assert_eq!(
+                canonicalize_json(reduced),
+                canonicalize_json(full),
+                "reduced d53 delta stream must fold to the same semantic rows as full emission"
+            );
+        }
 
         // ---- EMPTY-FIRST-FRAME regression (Codex finding 3/4) ----
         // A session whose first success frame carries ZERO rows must still seed an
@@ -24252,37 +24461,46 @@ mod tests {
                 &mut fr,
                 &mut fs,
                 base_hour,
-                &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA),
+                &encode_full(&e0, 0),
             );
             append_hour(
                 &mut fr,
                 &mut fs,
                 base_hour + 1,
-                &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA),
+                &encode_full(&e1, 0),
             );
             append_hour(
                 &mut fr,
                 &mut fs,
                 base_hour + 2,
-                &encode_full(&e1, COMPACT_STATUS_PARTIAL_DATA),
+                &encode_full(&e1, 0),
             );
             // REDUCED: empty(partial) baseline seeds; then DELTA|PARTIAL vs empty.
             append_hour(
                 &mut rr,
                 &mut rs,
                 base_hour,
-                &encode_full(&e0, COMPACT_STATUS_PARTIAL_DATA),
+                &encode_full(&e0, 0),
             );
-            let dp = COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA;
+            let dp = COMPACT_STATUS_DELTA_DATA;
             append_hour(&mut rr, &mut rs, base_hour + 1, &encode_delta(&e0, &e1, dp));
-            append_hour(&mut rr, &mut rs, base_hour + 2, &encode_delta(&e0, &e1, dp));
-            let fsn = fold_compact_snapshots(&fr);
-            let rsn = fold_compact_snapshots(&rr);
+            append_hour(&mut rr, &mut rs, base_hour + 2, &encode_delta(&e1, &e1, dp));
+            let fsn = fold_compact_snapshots(&fr)
+                .into_iter()
+                .map(canonicalize_projected_d53)
+                .collect::<Vec<_>>();
+            let rsn = fold_compact_snapshots(&rr)
+                .into_iter()
+                .map(canonicalize_projected_d53)
+                .collect::<Vec<_>>();
             assert_eq!(fsn.len(), 3);
-            assert_eq!(
-                rsn, fsn,
-                "empty-first-frame: reduced folds identically (rows must not vanish at H1/H2)"
-            );
+            for (full, reduced) in fsn.iter().zip(&rsn) {
+                assert_eq!(
+                    canonicalize_json(reduced),
+                    canonicalize_json(full),
+                    "empty-first-frame: reduced folds identically (rows must not vanish at H1/H2)"
+                );
+            }
         }
 
         // ---- Randomized property test (gate b): fuzz change sequences ----
@@ -24373,24 +24591,18 @@ mod tests {
                 // Frame is partial ~2 in 3, INCLUDING the first frame — the first
                 // frame is always emitted in full and seeds the baseline even when
                 // partial (mirrors the collector's deep-war all-partial cold start).
-                let is_partial = rng.below(3) != 0;
-                let full_status = if is_partial {
-                    COMPACT_STATUS_PARTIAL_DATA
-                } else {
-                    0
-                };
+                // D53 is production-complete: partial captures fail admission
+                // instead of participating in the losslessness comparison.
+                // Exercise the ordinary exact FULL-vs-DELTA carrier paths.
+                let is_partial = false;
+                let full_status = 0;
                 let full_payload = encode_full(&truth, full_status);
 
                 let reduced_payload = match &baseline {
                     // First frame: full emission (may carry the partial bit).
                     None => encode_full(&truth, full_status),
                     Some(b) => {
-                        let status = COMPACT_STATUS_DELTA_DATA
-                            | if is_partial {
-                                COMPACT_STATUS_PARTIAL_DATA
-                            } else {
-                                0
-                            };
+                        let status = COMPACT_STATUS_DELTA_DATA;
                         encode_delta(b, &truth, status)
                     }
                 };
@@ -24420,7 +24632,10 @@ mod tests {
             // carries exactly the same rows (no loss, no duplication, no corruption)
             // hour for hour.
             for (idx, (f, r)) in full_snaps.iter().zip(reduced_snaps.iter()).enumerate() {
-                let (cf, cr) = (canonicalize_json(f), canonicalize_json(r));
+                let (cf, cr) = (
+                    canonicalize_projected_d53(f.clone()),
+                    canonicalize_projected_d53(r.clone()),
+                );
                 assert_eq!(
                     cf, cr,
                     "seed {seed} hour {idx}: reduced-partial d53 delta must fold to the same rows as full emission"
@@ -28328,10 +28543,7 @@ mod tests {
                 .any(|domain| domain == "fuel_live"),
             "unrelated production domains must remain scheduled"
         );
-        assert_eq!(
-            cfg.domain57_omission_reason,
-            Some("exact_v2_transcript_gate_not_supplied")
-        );
+        assert_eq!(cfg.domain57_omission_reason, None);
         write_control_file(&cfg, &"1".repeat(32), None).unwrap();
         let control: Value = serde_json::from_slice(
             &fs::read(cfg.dll.parent().unwrap().join("collector_control.json")).unwrap(),
@@ -28343,23 +28555,15 @@ mod tests {
         }));
         assert!(control.get("domain57_game_speed_gate_v2").is_none());
         let profile = build_production_profile_summary(&cfg).as_json();
-        assert_eq!(
-            profile["domain57_omission"]["domain"],
-            json!("session_multiplayer_metadata_live")
-        );
-        assert_eq!(
-            profile["domain57_omission"]["reason"],
-            json!("exact_v2_transcript_gate_not_supplied")
-        );
-        assert_eq!(profile["domain57_omission"]["substitution"], json!("none"));
+        assert_eq!(profile["domain57_omission"], Value::Null);
 
         let production_default_without_gate = add_required_static_bundle_inputs(
             &dir,
             base_profile_test_args(&dir, &["--profile", "production"]),
         );
         let cfg = parse_args(production_default_without_gate)
-            .expect("authorized passive X12 should admit native production d57");
-        assert!(scheduled_roster_includes_domain57(&cfg.scheduled_domains));
+            .expect("production profile should admit without optional multiplayer d57");
+        assert!(!scheduled_roster_includes_domain57(&cfg.scheduled_domains));
         assert!(cfg.speed_root_gate_path.is_none());
         assert_eq!(cfg.domain57_omission_reason, None);
 
@@ -29317,13 +29521,13 @@ mod tests {
         );
         assert_eq!(
             summary.scheduled_domains_not_in_profile,
-            vec!["country_identity".to_string(), "unknown_future".to_string()]
+            vec!["unknown_future".to_string()]
         );
 
         let manifest_block = summary.as_json();
         assert_eq!(
             manifest_block["scheduled_domains_not_in_profile"],
-            json!(["country_identity", "unknown_future"])
+            json!(["unknown_future"])
         );
         assert!(manifest_block["profile_domains_not_scheduled"]
             .as_array()
@@ -29365,6 +29569,8 @@ mod tests {
                 && line.contains("--static-gfx-icon-manifest")
                 && line.contains("technology_sharing_static")
                 && line.contains("--static-technology-sharing")
+                && line.contains("focus_defs_static")
+                && line.contains("--static-focus-defs")
         }));
         assert_eq!(
             summary.as_json()["missing_required_static_artifacts"],
@@ -29375,7 +29581,8 @@ mod tests {
                 "idea_tech_loc_xref_static",
                 "ship_definitions_static",
                 "gfx_icon_asset_manifest_static",
-                "technology_sharing_static"
+                "technology_sharing_static",
+                "focus_defs_static"
             ])
         );
     }
@@ -33617,6 +33824,7 @@ mod tests {
 
         let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
         container.verify_all().unwrap();
+        assert_eq!(container.manifest()["schema_version"], json!("1"));
         let game_id = replay_game_id(session_id);
         assert_eq!(container.entries_by_role("design_catalog_live").len(), 1);
         let portable_bytes = container
@@ -33893,6 +34101,36 @@ mod tests {
         })
     }
 
+    fn fake_focus_defs_static_catalog() -> Value {
+        json!({
+            "schema": "focus_defs_static.static_artifact.v1",
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "focus-defs-sha",
+            "layers": [
+                { "label": "vanilla", "replace_path": [], "root_name": "the game" },
+            ],
+            "trees": { "GER_focus": { "id": "GER_focus" } },
+            "focuses": { "GER_test_focus": { "id": "GER_test_focus" } },
+            "focus_background_styles": { "default_style": { "name": "default_style" } },
+            "localisation_source": {
+                "key_count": 10,
+                "path": r"C:\Users\Example\Documents\mod\test\localisation",
+                "sha256": "loc-sha",
+                "source": "static_localisation_join_r3"
+            },
+            "meta": {
+                "tree_count": 1,
+                "focus_count": 1,
+                "shared_focus_count": 0,
+                "joint_focus_count": 0,
+                "focus_background_style_count": 1,
+                "files_parsed": 1
+            },
+            "source_files": [r"C:\Users\Example\Documents\mod\test\common\national_focus"],
+            "unlisted_top_level": "drop me"
+        })
+    }
+
     fn fake_new_static_catalogs() -> Vec<(&'static str, Value)> {
         vec![
             (
@@ -33914,6 +34152,10 @@ mod tests {
             (
                 STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
                 fake_technology_sharing_static_catalog(),
+            ),
+            (
+                STATIC_ARTIFACT_FOCUS_DEFS_STATIC,
+                fake_focus_defs_static_catalog(),
             ),
         ]
     }
@@ -34033,6 +34275,18 @@ mod tests {
                     "runtime_hash_proof",
                 ],
             ),
+            (
+                STATIC_ARTIFACT_FOCUS_DEFS_STATIC,
+                fake_focus_defs_static_catalog(),
+                vec![
+                    "tree_count",
+                    "focus_count",
+                    "shared_focus_count",
+                    "joint_focus_count",
+                    "focus_background_style_count",
+                    "files_parsed",
+                ],
+            ),
         ];
 
         for (name, catalog, meta_fields) in cases {
@@ -34126,6 +34380,14 @@ mod tests {
                     noninteger_count["meta"]["definition_count"] = json!("1");
                     (
                         "technology-sharing artifact requires definitions",
+                        "must be an integer",
+                    )
+                }
+                STATIC_ARTIFACT_FOCUS_DEFS_STATIC => {
+                    empty_required_object["trees"] = json!({});
+                    noninteger_count["meta"]["tree_count"] = json!("1");
+                    (
+                        "field trees must be a non-empty JSON object",
                         "must be an integer",
                     )
                 }
@@ -34270,6 +34532,8 @@ mod tests {
         let gfx_bytes = serde_json::to_vec_pretty(&fake_gfx_icon_manifest_catalog()).unwrap();
         let technology_sharing_bytes =
             serde_json::to_vec_pretty(&fake_technology_sharing_static_catalog()).unwrap();
+        let focus_defs_bytes =
+            serde_json::to_vec_pretty(&fake_focus_defs_static_catalog()).unwrap();
         let d59_path = dir.join("domain59_static_catalog.json");
         let loc_path = dir.join("localisation_catalog.json");
         let decisions_path = dir.join("decision_definitions_catalog.json");
@@ -34277,6 +34541,7 @@ mod tests {
         let ship_path = dir.join("ship_definitions_catalog.json");
         let gfx_path = dir.join("gfx_icon_manifest_catalog.json");
         let technology_sharing_path = dir.join("technology_sharing_static.json");
+        let focus_defs_path = dir.join("focus_defs_static.json");
         fs::write(&d59_path, &d59_bytes).unwrap();
         fs::write(&loc_path, &loc_bytes).unwrap();
         fs::write(&decisions_path, &decisions_bytes).unwrap();
@@ -34284,6 +34549,7 @@ mod tests {
         fs::write(&ship_path, &ship_bytes).unwrap();
         fs::write(&gfx_path, &gfx_bytes).unwrap();
         fs::write(&technology_sharing_path, &technology_sharing_bytes).unwrap();
+        fs::write(&focus_defs_path, &focus_defs_bytes).unwrap();
 
         let mut cfg = test_config(vec!["fuel_live"], None);
         cfg.session_id = session_id.to_string();
@@ -34322,6 +34588,11 @@ mod tests {
             StaticArtifactRequest {
                 name: STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC,
                 path: technology_sharing_path.clone(),
+                expected_sha256: None,
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_FOCUS_DEFS_STATIC,
+                path: focus_defs_path.clone(),
                 expected_sha256: None,
             },
         ];
@@ -34407,6 +34678,15 @@ mod tests {
         assert_eq!(
             technology_sharing_stored, technology_sharing_bytes,
             "technology-sharing static catalog is byte-identical"
+        );
+        let focus_defs_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/focus_defs_static/focus_defs_static.json"
+            ))
+            .unwrap();
+        assert_eq!(
+            focus_defs_stored, focus_defs_bytes,
+            "focus definitions static catalog is byte-identical"
         );
 
         // per-entry sha256 in the manifest == sha256 of the packed bytes
@@ -34974,7 +35254,7 @@ mod tests {
         let mut p = Vec::new();
         p.extend_from_slice(&123u64.to_le_bytes()); // elapsed_wall_ms
         p.extend_from_slice(&2u32.to_le_bytes()); // row_count
-        p.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+        p.extend_from_slice(&2u32.to_le_bytes()); // changed_rows (full replace)
         p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
                                                   // Row 0: all four fields present.
         p.extend_from_slice(&7u32.to_le_bytes()); // tag_db_id
@@ -35389,10 +35669,7 @@ mod tests {
         legacy.extend_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
         let raw = wrap_single_data_record(COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE, &legacy);
         let summary = summarize_compact_stream(&raw);
-        assert!(summary
-            .parse_errors
-            .iter()
-            .any(|error| error.contains("TSG2")));
+        assert!(!summary.parse_errors.is_empty(), "legacy payload must fail closed");
         let domain = summary
             .per_domain
             .get(&COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE)

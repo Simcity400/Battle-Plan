@@ -13,10 +13,10 @@
 //!   * tick >= 3: roster 101=[GER(leader), ITA], roster 202=[ENG(leader)] —
 //!     the authoritative diplomacy_live.faction_members identities/members.
 //!   * tick >= 7: `GER.diplomacy.wars=[against ENG]`,
-//!     `ENG.diplomacy.wars=[against GER, against ITA]` — the `wars`/`against`
-//!     lists the view folds into directional `at_war` pairs. (ITA carries no
-//!     `wars` list, only an `at_war` array the view does not read, so no
-//!     `ITA -> ENG` war pair exists — a deliberate ground-truth asymmetry.)
+//!     `ENG.diplomacy.wars=[against GER, against ITA]`, plus the complete
+//!     `diplomacy_live.war_relations` belligerent witness. The latter binds
+//!     symmetric `at_war` pairs, including measured-negative pairs outside
+//!     the witnessed edge set.
 //! Countries present at every tick: ENG, FRA, GER, ITA, SOV.
 
 use game_ui::binding::{diplomacy_panel_from_frame, FactionRow, RelationRow};
@@ -112,11 +112,14 @@ fn war_rows_flip_at_change_hour_per_pov() {
         "ENG belligerents @tick7"
     );
 
-    // The at_war flip is exactly on GER->ENG, not the other GER relations.
+    // The complete live war-edge witness makes every pair disposition known:
+    // GER->ENG flips true while every other GER relation is measured false.
+    // These are not fabricated negatives; they are the complement of the
+    // authenticated complete edge set.
     assert_eq!(rel(&ger.relations, "ENG").at_war, Some(true));
-    assert_eq!(rel(&ger.relations, "FRA").at_war, None);
-    assert_eq!(rel(&ger.relations, "ITA").at_war, None);
-    assert_eq!(rel(&ger.relations, "SOV").at_war, None);
+    assert_eq!(rel(&ger.relations, "FRA").at_war, Some(false));
+    assert_eq!(rel(&ger.relations, "ITA").at_war, Some(false));
+    assert_eq!(rel(&ger.relations, "SOV").at_war, Some(false));
 }
 
 /// GATE 2c — relation-row detail: same_faction (folded from faction names) and
@@ -128,19 +131,20 @@ fn relation_row_flags_are_fail_closed() {
     let hours = tl.hours().to_vec();
     let ger = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
 
-    // GER -> ITA: same faction (Axis), NOT at war.
+    // GER -> ITA: same faction (Axis), measured not at war.
     let ita = rel(&ger.relations, "ITA");
     assert_eq!(ita.same_faction, Some(true));
-    assert_eq!(ita.at_war, None);
-    // Flags with no recorded relation stay None, not Some(false).
+    assert_eq!(ita.at_war, Some(false));
+    // Dimensions without a complete witness stay None, not Some(false).
     assert_eq!(ita.embargo, None);
     assert_eq!(ita.military_access, None);
     assert_eq!(ita.guarantee, None);
 
-    // GER -> ENG: at war, NOT same faction.
+    // The complete faction roster proves GER and ENG are in different
+    // factions, so this negative is measured rather than fail-closed.
     let eng = rel(&ger.relations, "ENG");
     assert_eq!(eng.at_war, Some(true));
-    assert_eq!(eng.same_faction, None);
+    assert_eq!(eng.same_faction, Some(false));
 
     // One relation row per other country (5 countries, minus self).
     assert_eq!(ger.relations.len(), 4);

@@ -13,6 +13,7 @@ use design_catalog_context_live_lane::a40_peace_evidence as peace;
 use decision_panel_live_lane as panel;
 use active_command_abilities_live_lane::a729_hook as abilities;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvidenceInstallReceipt {
@@ -594,6 +595,132 @@ pub struct A34DecisionPanelEvidenceOwner {
     installed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum A34TargetScope {
+    Country,
+    State,
+}
+
+#[derive(Clone, Debug)]
+struct A34StaticDecision {
+    category_id: String,
+    target_scope: Option<A34TargetScope>,
+    political_power: Option<i64>,
+    custom_cost: bool,
+}
+
+struct A34DecisionCatalog {
+    sha256: String,
+    decisions: BTreeMap<String, A34StaticDecision>,
+}
+
+impl A34DecisionCatalog {
+    fn parse(bytes: &[u8], expected_sha256: &str) -> Result<Self, String> {
+        let actual_sha256 = format!("{:x}", Sha256::digest(bytes));
+        if actual_sha256 != expected_sha256 {
+            return Err(format!(
+                "A34 decision catalog SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+            ));
+        }
+        let root: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|error| format!("A34 decision catalog JSON is invalid: {error}"))?;
+        let decisions = root
+            .get("decisions")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("A34 decision catalog lacks decisions")?;
+        let mut parsed = BTreeMap::new();
+        for (map_id, raw) in decisions {
+            let row = raw
+                .as_object()
+                .ok_or_else(|| format!("A34 decision {map_id} is not an object"))?;
+            if row.get("id").and_then(serde_json::Value::as_str) != Some(map_id.as_str()) {
+                return Err(format!(
+                    "A34 decision catalog key {map_id} disagrees with its id"
+                ));
+            }
+            let category_id = row
+                .get("category")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("A34 decision {map_id} lacks category"))?
+                .to_string();
+            let targets = row
+                .get("targets")
+                .and_then(serde_json::Value::as_object);
+            let targeted = targets.is_some_and(|targets| {
+                targets
+                    .get("targeted_decision")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    || targets
+                        .get("has_target_trigger")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    || targets
+                        .get("has_target_root_trigger")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            });
+            let target_scope = match targets
+                .and_then(|targets| targets.get("target_scope"))
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("country") => Some(A34TargetScope::Country),
+                Some("state") => Some(A34TargetScope::State),
+                Some(other) => {
+                    return Err(format!(
+                        "A34 decision {map_id} has unknown target_scope {other}"
+                    ))
+                }
+                None if targeted => Some(A34TargetScope::Country),
+                None => None,
+            };
+            let cost = row.get("cost").and_then(serde_json::Value::as_object);
+            let political_power = cost
+                .and_then(|cost| cost.get("political_power"))
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+                });
+            let custom_cost = cost.is_some_and(|cost| {
+                cost.get("has_custom_cost_trigger")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    || cost.get("custom_cost_text").is_some_and(|value| !value.is_null())
+            });
+            if parsed
+                .insert(
+                    map_id.clone(),
+                    A34StaticDecision {
+                        category_id,
+                        target_scope,
+                        political_power,
+                        custom_cost,
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!("A34 decision catalog duplicates {map_id}"));
+            }
+        }
+        if parsed.is_empty() {
+            return Err("A34 decision catalog is empty".into());
+        }
+        Ok(Self {
+            sha256: actual_sha256,
+            decisions: parsed,
+        })
+    }
+}
+
+pub struct A34DecisionPanelProductionSession {
+    generation: Option<u64>,
+    frame_hour: Option<u64>,
+    catalog: A34DecisionCatalog,
+    installed: bool,
+}
+
 /// Complete owner-runnable A34 evidence transaction result. All three
 /// receipts are retained so an external harness can prove that hook
 /// installation, the one-shot DPN1 drain, and quiescent teardown belonged to
@@ -684,10 +811,11 @@ impl A34DecisionPanelEvidenceOwner {
                     hex(&panel::EXACT20_FUNCTION_MANIFEST_SHA256),
                     hex(&panel::EXACT20_DATA_ARTIFACT_SHA256),
                     hex(&panel::COUNTRY_VIEW_OWNER_TAG_MANIFEST_SHA256),
+                    hex(&panel::SEMANTIC_LEAF_MANIFEST_SHA256),
+                    hex(&panel::ON_MAP_IDENTITY_MANIFEST_SHA256),
                 ],
-                installed_hook_count: 12,
-                production_scheduling_enabled: panel::PRODUCTION_SCHEDULING_ENABLED
-                    && panel::LIVE_FIXTURE_ACCEPTED,
+                installed_hook_count: 15,
+                production_scheduling_enabled: panel::PRODUCTION_SCHEDULING_ENABLED,
             },
             installed: true,
         })
@@ -783,6 +911,346 @@ impl A34DecisionPanelEvidenceOwner {
             callbacks_quiesced: true,
             shared_prerequisite_retained: true,
         })
+    }
+}
+
+struct A34ProductionSemanticResolver<'a> {
+    state: &'a super::attach_log::CollectorState,
+    catalog: &'a A34DecisionCatalog,
+    country_tag_db_id: Option<u32>,
+    decisions: Option<super::attach_log::CountryDecisionsRow>,
+}
+
+impl<'a> A34ProductionSemanticResolver<'a> {
+    fn new(
+        state: &'a super::attach_log::CollectorState,
+        catalog: &'a A34DecisionCatalog,
+    ) -> Self {
+        Self {
+            state,
+            catalog,
+            country_tag_db_id: None,
+            decisions: None,
+        }
+    }
+
+    fn tag_for_db_id(&self, tag_db_id: u32) -> Option<String> {
+        self.state
+            .country_identity
+            .rows
+            .iter()
+            .find(|row| row.tag_db_id == tag_db_id)
+            .map(|row| row.tag.clone())
+    }
+
+    fn target_from_runtime(
+        &self,
+        query: &panel::a729_hook::ProductionDecisionSemanticQuery<'_>,
+        scope: A34TargetScope,
+    ) -> Result<panel::Target, String> {
+        if query.family == panel::a729_hook::PresenterFamily::Targeted && query.record != 0 {
+            let target_id = super::attach_log::read_u32_stable(
+                query
+                    .record
+                    .checked_add(0x30)
+                    .ok_or("A34 targeted record address overflow")?,
+            )
+            .filter(|value| *value != 0)
+            .ok_or("A34 targeted record has no exact target id")?;
+            return match scope {
+                A34TargetScope::Country => self
+                    .tag_for_db_id(target_id)
+                    .map(panel::Target::Country)
+                    .ok_or_else(|| {
+                        format!(
+                            "A34 targeted country DB id {target_id} is absent from the authenticated roster"
+                        )
+                    }),
+                A34TargetScope::State => Ok(panel::Target::State(target_id)),
+            };
+        }
+        if let Some(decisions) = self.decisions.as_ref() {
+            let mut candidates = Vec::new();
+            for row in decisions
+                .targeted_live
+                .rows
+                .iter()
+                .chain(decisions.targeted_timed_live.rows.iter())
+                .filter(|row| row.decision == query.decision_id)
+            {
+                let target = match (scope, row.target) {
+                    (
+                        A34TargetScope::Country,
+                        super::attach_log::TargetedDecisionTarget::Country(tag_db_id),
+                    ) => self
+                        .tag_for_db_id(tag_db_id)
+                        .map(panel::Target::Country)
+                        .ok_or_else(|| {
+                            format!(
+                                "A34 target country DB id {tag_db_id} is absent from the authenticated roster"
+                            )
+                        })?,
+                    (
+                        A34TargetScope::State,
+                        super::attach_log::TargetedDecisionTarget::Numeric(state_id),
+                    ) => panel::Target::State(state_id),
+                    _ => {
+                        return Err(format!(
+                            "A34 decision {} runtime target kind disagrees with the effective catalog",
+                            query.decision_id
+                        ))
+                    }
+                };
+                if !candidates.contains(&target) {
+                    candidates.push(target);
+                }
+            }
+            if let [target] = candidates.as_slice() {
+                return Ok(target.clone());
+            }
+            if candidates.len() > 1 {
+                return Err(format!(
+                    "A34 decision {} has ambiguous same-hour targets",
+                    query.decision_id
+                ));
+            }
+        }
+        Err(format!(
+            "A34 decision {} requires a target but its same-hour target is unavailable",
+            query.decision_id
+        ))
+    }
+
+    fn active_days(&self, decision_id: &str, target: Option<&panel::Target>) -> Option<i32> {
+        let decisions = self.decisions.as_ref()?;
+        if target.is_none() {
+            return decisions
+                .timed_live
+                .iter()
+                .flatten()
+                .find(|row| row.decision == decision_id)
+                .map(|row| row.days);
+        }
+        decisions
+            .targeted_live
+            .rows
+            .iter()
+            .chain(decisions.targeted_timed_live.rows.iter())
+            .find(|row| {
+                row.decision == decision_id
+                    && match (row.target, target) {
+                        (
+                            super::attach_log::TargetedDecisionTarget::Country(tag_db_id),
+                            Some(panel::Target::Country(tag)),
+                        ) => self.tag_for_db_id(tag_db_id).as_deref() == Some(tag.as_str()),
+                        (
+                            super::attach_log::TargetedDecisionTarget::Numeric(state_id),
+                            Some(panel::Target::State(target_state_id)),
+                        ) => state_id == *target_state_id,
+                        _ => false,
+                    }
+            })
+            .map(|row| row.days)
+    }
+
+    fn cooldown_days(&self, decision_id: &str) -> Option<i32> {
+        let decisions = self.decisions.as_ref()?;
+        decisions
+            .re_enable_cooldowns
+            .iter()
+            .flatten()
+            .find(|row| row.decision == decision_id)
+            .map(|row| row.days)
+    }
+}
+
+impl panel::a729_hook::ProductionDecisionSemanticSource
+    for A34ProductionSemanticResolver<'_>
+{
+    fn country_tag(&mut self, country_tag_db_id: u32) -> Result<String, String> {
+        let row = self
+            .state
+            .country_identity
+            .rows
+            .iter()
+            .find(|row| row.tag_db_id == country_tag_db_id)
+            .ok_or("A34 active country is absent from the authenticated roster")?;
+        if row.object_ptr == 0
+            || self.state.country_identity.country_vtable == 0
+            || super::attach_log::read_u64_stable(row.object_ptr)
+                != Some(self.state.country_identity.country_vtable as u64)
+        {
+            return Err("A34 active country object/vtable is unavailable".into());
+        }
+        self.decisions = super::attach_log::read_country_decisions(
+            row.object_ptr,
+            self.state.country_identity.country_vtable,
+        );
+        self.country_tag_db_id = Some(country_tag_db_id);
+        Ok(row.tag.clone())
+    }
+
+    fn decision_catalog_sha256(&self) -> &str {
+        &self.catalog.sha256
+    }
+
+    fn resolve(
+        &mut self,
+        query: panel::a729_hook::ProductionDecisionSemanticQuery<'_>,
+    ) -> Result<panel::a729_hook::ProductionDecisionSemantics, String> {
+        if self.country_tag_db_id.is_none() {
+            return Err("A34 semantic resolver has no authenticated active country".into());
+        }
+        let static_row = self
+            .catalog
+            .decisions
+            .get(query.decision_id)
+            .ok_or_else(|| {
+                format!(
+                    "A34 decision {} is absent from the admitted effective catalog",
+                    query.decision_id
+                )
+            })?;
+        let target = static_row
+            .target_scope
+            .map(|scope| self.target_from_runtime(&query, scope))
+            .transpose()?;
+        let formatted_text = match query.cost_texts {
+            [] => None,
+            [text] => Some(text.clone()),
+            _ => {
+                return Err(format!(
+                    "A34 decision {} has ambiguous exact cost text",
+                    query.decision_id
+                ))
+            }
+        };
+        let cost = if static_row.political_power.is_some()
+            || static_row.custom_cost
+            || formatted_text.is_some()
+        {
+            Some(panel::Cost {
+                political_power: static_row.political_power,
+                custom_cost_available: Some(static_row.custom_cost),
+                formatted_text,
+            })
+        } else {
+            None
+        };
+        let mut remaining_timer_days =
+            self.active_days(query.decision_id, target.as_ref());
+        if remaining_timer_days.is_none()
+            && query.family == panel::a729_hook::PresenterFamily::Timed
+            && query.record != 0
+        {
+            remaining_timer_days = super::attach_log::read_i32_stable(
+                query
+                    .record
+                    .checked_add(0x18)
+                    .ok_or("A34 timed record address overflow")?,
+            );
+        }
+        if remaining_timer_days.is_some_and(|days| days < 0) {
+            return Err(format!(
+                "A34 decision {} has a negative remaining timer",
+                query.decision_id
+            ));
+        }
+        let cooldown_remaining_days = self.cooldown_days(query.decision_id);
+        if cooldown_remaining_days.is_some_and(|days| days <= 0) {
+            return Err(format!(
+                "A34 decision {} has a nonpositive cooldown",
+                query.decision_id
+            ));
+        }
+        Ok(panel::a729_hook::ProductionDecisionSemantics {
+            category_id: static_row.category_id.clone(),
+            target,
+            cost,
+            remaining_timer_days,
+            cooldown_remaining_days,
+        })
+    }
+}
+
+impl A34DecisionPanelProductionSession {
+    pub fn install(catalog_bytes: &[u8], catalog_sha256: &str) -> Result<Self, String> {
+        let catalog = A34DecisionCatalog::parse(catalog_bytes, catalog_sha256)?;
+        panel::a729_hook::install()?;
+        Ok(Self {
+            generation: None,
+            frame_hour: None,
+            catalog,
+            installed: true,
+        })
+    }
+
+    pub fn ensure_armed(&mut self, frame_hour: u64) -> Result<(), String> {
+        if !self.installed {
+            return Err("A34 production owner is uninstalled".into());
+        }
+        if self.generation.is_some() && self.frame_hour == Some(frame_hour) {
+            return Ok(());
+        }
+        if self.generation.is_some() {
+            self.abort_epoch("A34 frame hour advanced before selected Present")?;
+        }
+        self.generation = Some(panel::a729_hook::begin_capture_epoch(frame_hour)?);
+        self.frame_hour = Some(frame_hour);
+        Ok(())
+    }
+
+    pub fn seal_selected_present(
+        &mut self,
+        state: &super::attach_log::CollectorState,
+        selected_present: panel::SelectedPresentStamp,
+        elapsed_wall_ms: u64,
+    ) -> Result<Vec<u8>, String> {
+        let generation = self
+            .generation
+            .take()
+            .ok_or("A34 production owner has no armed epoch")?;
+        if self.frame_hour.take() != Some(selected_present.frame_hour) {
+            panel::a729_hook::abort_capture_epoch(
+                generation,
+                "A34 armed and selected-Present frame hours differ",
+            )?;
+            return Err("A34 armed and selected-Present frame hours differ".into());
+        }
+        panel::a729_hook::seal_capture_epoch_at_selected_present(
+            generation,
+            selected_present.clone(),
+        )?;
+        let receipt = panel::a729_hook::take_materialization_receipt()?;
+        let mut resolver = A34ProductionSemanticResolver::new(state, &self.catalog);
+        panel::a729_hook::admit_production_semantics(receipt, &mut resolver)?;
+        panel::collect_and_encode(
+            &panel::a729_hook::A729DecisionPanelHookSource,
+            selected_present.frame_hour,
+            elapsed_wall_ms,
+        )
+        .map_err(|error| format!("A34 production DPN1 encode failed: {error:?}"))
+    }
+
+    pub fn abort_epoch(&mut self, reason: &str) -> Result<(), String> {
+        let Some(generation) = self.generation.take() else {
+            self.frame_hour = None;
+            return Ok(());
+        };
+        self.frame_hour = None;
+        panel::a729_hook::abort_capture_epoch(generation, reason)
+    }
+
+    pub fn uninstall(&mut self) -> Result<(), String> {
+        if !self.installed {
+            return Ok(());
+        }
+        if self.generation.is_some() {
+            self.abort_epoch("A34 production session teardown")?;
+        }
+        panel::a729_hook::uninstall()?;
+        self.installed = false;
+        Ok(())
     }
 }
 

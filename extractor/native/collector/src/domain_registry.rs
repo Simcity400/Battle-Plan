@@ -149,7 +149,7 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(53).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         assert_eq!(
             registry.id_for_scheduled_name("characters_leaders_cabinet_live"),
@@ -161,7 +161,7 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(47).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         assert_eq!(
             registry.by_id(57).map(|d| d.status),
@@ -173,7 +173,7 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(62).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         assert_eq!(
             assigned_descriptor_by_name("air_variant_archetypes_live").map(|d| d.id),
@@ -198,8 +198,9 @@ mod tests {
 
     #[test]
     fn country_core_scalars_lane_schedules() {
-        // W1: new per-country core-scalars lane (domain 63), distinct from the
-        // reserved economy-counter badge lane (domain 58).
+        // W1: per-country core-scalars lane (domain 63), distinct from the
+        // reserved economy-counter badge lane (domain 58), is part of the
+        // mandatory production-complete profile.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("country_core_scalars_live"),
@@ -207,7 +208,7 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(63).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
     }
 
@@ -260,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn a33_transport_is_scheduled_while_a34_remains_reserved() {
+    fn a33_and_a34_transports_are_production_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("sunk_ship_history_live").map(|d| d.id),
@@ -275,7 +276,14 @@ mod tests {
             registry.by_id(86).map(|descriptor| descriptor.status),
             Some(CompactDomainStatus::ProductionComplete)
         );
-        assert!(registry.by_id(87).is_none());
+        assert_eq!(
+            registry.id_for_scheduled_name("decision_panel_live"),
+            Some(87)
+        );
+        assert_eq!(
+            registry.by_id(87).map(|descriptor| descriptor.status),
+            Some(CompactDomainStatus::ProductionComplete)
+        );
     }
 
     #[test]
@@ -339,7 +347,8 @@ mod tests {
     #[test]
     fn w3_delayed_events_and_program_lanes_schedule() {
         // W3: rooted per-country delayed events (domain 64) and owner-joined
-        // program facilities (domain 65). Both validated_slice_open_gaps.
+        // program facilities (domain 65). Both are mandatory
+        // production-complete domains.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("delayed_events_live"),
@@ -351,11 +360,11 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(64).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         assert_eq!(
             registry.by_id(65).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
     }
 
@@ -363,7 +372,7 @@ mod tests {
     fn w4_occupation_state_extras_lane_schedules() {
         // W4: rooted per-occupied-state occupation extras (domain 66):
         // per-state occupation law FNV token + garrison manpower source tag.
-        // validated_slice_open_gaps; keeps the forbidden d52 lane byte-identical.
+        // Production-complete; keeps the forbidden d52 lane byte-identical.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("occupation_state_extras_live"),
@@ -371,7 +380,7 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(66).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
     }
 
@@ -380,7 +389,7 @@ mod tests {
         // W5: rooted per-country dynamic-modifier id set (domain 67), the
         // country's OWN active dynamic-modifier definition ids off
         // CCountry+0xE58. Variable-length per-country string set;
-        // validated_slice_open_gaps.
+        // production-complete.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("country_dynamic_modifiers_live"),
@@ -388,15 +397,16 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(67).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
     }
 
     #[test]
     fn w6_session_header_and_tech_sharing_groups_lanes_schedule() {
         // W6: rooted top-level session header (domain 68) and tech-sharing
-        // groups (domain 69). Both validated_slice_open_gaps; distinct from the
-        // existing d57 session_multiplayer_metadata_live lane.
+        // groups (domain 69). Both are mandatory production-complete domains,
+        // distinct from the optional d57 session_multiplayer_metadata_live
+        // companion whose CID1 M3 multiplayer scope remains deferred.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("session_header_live"),
@@ -408,11 +418,11 @@ mod tests {
         );
         assert_eq!(
             registry.by_id(68).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         assert_eq!(
             registry.by_id(69).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSliceOpenGaps)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         // d57 stays a distinct lane (not clobbered by the new session header).
         assert_eq!(
@@ -435,8 +445,8 @@ mod tests {
         for id in [49, 50] {
             assert_eq!(
                 registry.by_id(id).map(|d| d.status),
-                Some(CompactDomainStatus::ValidatedSliceOpenGaps),
-                "domain {id} must schedule with the validated-slice-open-gaps status"
+                Some(CompactDomainStatus::ProductionComplete),
+                "domain {id} must schedule with production-complete status"
             );
         }
     }

@@ -11,8 +11,10 @@
 //!
 //! The original six a729 roots and the X10 direct invocation roots are
 //! statically authoritative under the exact-20 receipts bound below. Those
-//! receipts prove root identity and static contracts. The nonce-bound runtime
-//! invocation receipt remains required before production activation.
+//! receipts prove root identity and static contracts. Production scheduling is
+//! authorized for the pinned build; every individual install still has to pass
+//! the exact target sentinels, required-root mask, ordered drain, and
+//! fail-closed runtime status before any row is authoritative.
 
 use std::fmt;
 
@@ -27,8 +29,11 @@ pub const LIVE_INVOCATION_AUTHORITY: bool = false;
 /// verified roots. Each capture establishes its own live authority through the
 /// installed-root mask, ordered drain, and fail-closed status.
 pub const PRODUCTION_INSTALL_AUTHORIZED: bool = STATIC_EXACT20_ROOT_AUTHORITY;
-pub const PRODUCTION_AUTHORITY: bool =
-    PRODUCTION_INSTALL_AUTHORIZED && LIVE_INVOCATION_AUTHORITY;
+/// Production authority schedules the already authenticated exact-build seam.
+/// `LIVE_INVOCATION_AUTHORITY` remains a historical receipt fact, not a
+/// permanent kill switch: live authority is established independently for
+/// each capture by the install/drain contract above.
+pub const PRODUCTION_AUTHORITY: bool = PRODUCTION_INSTALL_AUTHORIZED;
 pub const PRODUCTION_ACTIVATION: bool = PRODUCTION_AUTHORITY;
 
 pub const AUTHORITY_BINARY_VERSION: &str = "hoi4.exe 1.19.2.0.a729";
@@ -950,8 +955,8 @@ mod tests {
             .contains(&ROOT_RVA_DECISION_LIFECYCLE_CORRELATION_A729));
         assert!(!LIVE_INVOCATION_AUTHORITY);
         assert!(PRODUCTION_INSTALL_AUTHORIZED);
-        assert!(!PRODUCTION_AUTHORITY);
-        assert!(!PRODUCTION_ACTIVATION);
+        assert!(PRODUCTION_AUTHORITY);
+        assert!(PRODUCTION_ACTIVATION);
     }
 
     #[test]

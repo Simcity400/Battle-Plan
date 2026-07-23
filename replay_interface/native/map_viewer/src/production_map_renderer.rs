@@ -211,6 +211,8 @@ pub struct PreparedProductionMapFrame {
     /// An empty vector is authoritative unavailability, never permission to
     /// synthesize pipeline state from vanilla paths or retained captures.
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
+    pub authenticated_texture_snapshots:
+        Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
     /// D81 semantics joined to engine-built D80 railroad draws through the
     /// authenticated a729 registration producer. `None` never authorizes
     /// reconstructed centroid ribbons or shader-name inference.
@@ -352,6 +354,7 @@ impl ProductionMapRenderer {
             c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            authenticated_texture_snapshots,
             snow_mud_texture,
             tree_runtime,
             s1_shadow,
@@ -376,6 +379,7 @@ impl ProductionMapRenderer {
                     None,
                     None,
                     None,
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     None,
@@ -427,6 +431,7 @@ impl ProductionMapRenderer {
                         None,
                         Vec::new(),
                         Vec::new(),
+                        Vec::new(),
                         None,
                         None,
                         None,
@@ -468,6 +473,7 @@ impl ProductionMapRenderer {
                             c03_binding_from_submit(submit)?,
                             submit.ordered_scene_constant_buffers.clone(),
                             submit.ordered_static_map_programs.clone(),
+                            submit.authenticated_texture_snapshots.clone(),
                             frame.snow_mud_texture.clone(),
                             submit.tree_runtime.clone(),
                             submit.s1_shadow.clone(),
@@ -581,6 +587,7 @@ impl ProductionMapRenderer {
             c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            authenticated_texture_snapshots,
             rail_ribbon,
             snow_mud_texture,
             tree_runtime,

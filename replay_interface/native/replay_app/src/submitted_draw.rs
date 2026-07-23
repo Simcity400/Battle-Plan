@@ -1528,6 +1528,7 @@ mod tests {
             camera_carrier: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
             s1_shadow: None,
             effect_lifecycle_events: Vec::new(),
