@@ -26364,6 +26364,20 @@ mod tests {
     }
 
     #[test]
+    fn every_production_profile_domain_is_declared_world_folded() {
+        let missing = compact_contract::production_profile_domains()
+            .into_iter()
+            .filter(|domain| !FOLDED_DOMAIN_IDS.contains(&domain.id))
+            .map(|domain| (domain.id, domain.wire_name))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "production-profile domains missing from FOLDED_DOMAIN_IDS: {missing:?}"
+        );
+    }
+
+    #[test]
     fn compact_summary_keeps_reserved_unfolded_domain_out_of_profile_escalation() {
         let mut raw = Vec::new();
         append_test_compact_record(

@@ -143,12 +143,12 @@
     {
       "path": "extractor/native/recorder_host/src/world_fold.rs",
       "role": "authoritative replay world folds",
-      "sha256": "681c32c1d4f4cd507804124248580ab13dbbe9e6d95bb3483a5c40ee5545b3af"
+      "sha256": "c800294ca19456911f16b2f52de62f463d467c5b46de18ea904423c140905657"
     },
     {
       "path": "extractor/native/recorder_host/src/main.rs",
       "role": "recorder gate and production composition",
-      "sha256": "617b99a8b0773828dc0faff23991eed2cf1d8b24524ff1591b528038b8fd3b0d"
+      "sha256": "e84fdb13f3801c39568a27fd79e7baa7aea452e40794e25e70cce442d67d09fe"
     }
   ],
   "residuals": [],
