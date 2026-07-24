@@ -371,6 +371,12 @@ pub const COMPACT_DELAYED_EVENT_FLAG_ORIGINATOR: u32 = 1 << 1;
 pub const COMPACT_DELAYED_EVENT_KNOWN_FLAGS: u32 =
     COMPACT_DELAYED_EVENT_FLAG_DUE_REMAINING_HOURS | COMPACT_DELAYED_EVENT_FLAG_ORIGINATOR;
 pub const COMPACT_DELAYED_EVENT_MAX_DUE_REMAINING_HOURS: u32 = 500_000;
+pub const COMPACT_DELAYED_EVENT_LIFECYCLE_MAGIC: &[u8; 4] = b"DEL2";
+pub const COMPACT_DELAYED_EVENT_LIFECYCLE_VERSION: u16 = 1;
+pub const COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN: usize = 48;
+pub const COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN: usize = 48;
+pub const COMPACT_DELAYED_EVENT_LIFECYCLE_FLAG_COMPLETE: u32 = 1 << 0;
+pub const COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_FLAG_DUE_AFTER: u32 = 1 << 0;
 
 pub const COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE: u16 = 65;
 pub const COMPACT_SPECIAL_PROJECT_PROGRAM_HEADER_LEN: usize = 24;
@@ -11999,15 +12005,35 @@ fn decode_compact_delayed_events_data_payload(
     let changed_rows = read_u32_le(payload, 12) as usize;
     let status_flags = read_u32_le(payload, 16);
     add_decoder_status(summary, status_flags);
-    let expected = COMPACT_DELAYED_EVENTS_HEADER_LEN
-        .saturating_add(row_count.saturating_mul(COMPACT_DELAYED_EVENT_ROW_LEN));
-    if payload.len() != expected {
+    let Some(rows_bytes) = row_count.checked_mul(COMPACT_DELAYED_EVENT_ROW_LEN) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: delayed_events row length overflow"));
+        return;
+    };
+    let Some(rows_end) = COMPACT_DELAYED_EVENTS_HEADER_LEN.checked_add(rows_bytes) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: delayed_events row length overflow"));
+        return;
+    };
+    if payload.len() < rows_end {
         summary.parse_errors.push(format!(
-            "offset {offset}: delayed_events len {} != {expected}",
+            "offset {offset}: delayed_events len {} is shorter than {rows_end}",
             payload.len()
         ));
         return;
     }
+    let lifecycle_rows = if payload.len() == rows_end {
+        0
+    } else {
+        decode_compact_delayed_event_lifecycle(
+            offset.saturating_add(rows_end),
+            &payload[rows_end..],
+            summary,
+        )
+        .unwrap_or(0)
+    };
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: delayed_events changed_rows {changed_rows} > row_count {row_count}"
@@ -12069,6 +12095,111 @@ fn decode_compact_delayed_events_data_payload(
         "delayed_events_rows",
         row_count,
     );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_DELAYED_EVENTS_LIVE,
+        "delayed_event_lifecycle_rows",
+        lifecycle_rows,
+    );
+}
+
+fn decode_compact_delayed_event_lifecycle(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    if payload.len() < COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_event_lifecycle payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN
+        ));
+        return None;
+    }
+    if payload.get(0..4) != Some(COMPACT_DELAYED_EVENT_LIFECYCLE_MAGIC.as_slice())
+        || read_u16_le(payload, 4) != COMPACT_DELAYED_EVENT_LIFECYCLE_VERSION
+        || read_u16_le(payload, 6) as usize != COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN
+        || read_u16_le(payload, 8) as usize != COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN
+        || read_u16_le(payload, 10) != 0
+        || read_u32_le(payload, 44) != 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_event_lifecycle header rejected"
+        ));
+        return None;
+    }
+    let flags = read_u32_le(payload, 12);
+    if flags & !COMPACT_DELAYED_EVENT_LIFECYCLE_FLAG_COMPLETE != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_event_lifecycle unknown header flags {flags:#x}"
+        ));
+        return None;
+    }
+    let count = read_u32_le(payload, 16) as usize;
+    let hook_epoch = read_u64_le(payload, 20);
+    let first_sequence = read_u64_le(payload, 28);
+    let last_sequence = read_u64_le(payload, 36);
+    let expected = count
+        .checked_mul(COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN)
+        .and_then(|rows| COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN.checked_add(rows));
+    if expected != Some(payload.len())
+        || hook_epoch == 0
+        || (count == 0 && (first_sequence != 0 || last_sequence != 0))
+        || (count != 0
+            && last_sequence
+                .checked_sub(first_sequence)
+                .and_then(|delta| delta.checked_add(1))
+                != Some(count as u64))
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_event_lifecycle count/sequence header rejected"
+        ));
+        return None;
+    }
+    for index in 0..count {
+        let base =
+            COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN + index * COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN;
+        let sequence = read_u64_le(payload, base);
+        let game_hour_raw = read_i32_le(payload, base + 8);
+        let reason = read_u32_le(payload, base + 12);
+        let owner_tag_db_id = read_u32_le(payload, base + 16);
+        let event_id = read_u32_le(payload, base + 20);
+        let originator_tag_db_id = read_u32_le(payload, base + 24);
+        let row_flags = read_u32_le(payload, base + 28);
+        let due_before = read_u32_le(payload, base + 40);
+        let due_after = read_u32_le(payload, base + 44);
+        let expected_sequence = first_sequence.checked_add(index as u64);
+        if expected_sequence != Some(sequence)
+            || game_hour_raw == i32::MIN
+            || owner_tag_db_id == 0
+            || originator_tag_db_id == 0
+            || !(100_000..=100_099_999).contains(&event_id)
+            || row_flags & !COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_FLAG_DUE_AFTER != 0
+            || due_before > COMPACT_DELAYED_EVENT_MAX_DUE_REMAINING_HOURS
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_event_lifecycle row {index} rejected"
+            ));
+            return None;
+        }
+        let has_due_after =
+            row_flags & COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_FLAG_DUE_AFTER != 0;
+        let transform_valid = match (reason, has_due_after) {
+            (1, true) => {
+                due_before.checked_sub(1) == Some(due_after)
+                    && due_after <= COMPACT_DELAYED_EVENT_MAX_DUE_REMAINING_HOURS
+            }
+            (2..=4, false) => due_after == 0,
+            _ => false,
+        };
+        if !transform_valid {
+            summary.parse_errors.push(format!(
+                "offset {offset}: delayed_event_lifecycle row {index} reason/due transform rejected"
+            ));
+            return None;
+        }
+    }
+    Some(count)
 }
 
 // --- W3 domain 65 special_project_programs_live ---------------------------

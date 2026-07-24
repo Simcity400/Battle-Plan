@@ -35957,6 +35957,33 @@ mod tests {
     }
 
     #[test]
+    fn delayed_events_decode_accepts_valid_empty_lifecycle_trailer() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u64.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // row_count
+        p.extend_from_slice(&0u32.to_le_bytes()); // changed_rows
+        p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+        p.extend_from_slice(COMPACT_DELAYED_EVENT_LIFECYCLE_MAGIC);
+        p.extend_from_slice(&COMPACT_DELAYED_EVENT_LIFECYCLE_VERSION.to_le_bytes());
+        p.extend_from_slice(&(COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN as u16).to_le_bytes());
+        p.extend_from_slice(&(COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN as u16).to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes()); // reserved
+        p.extend_from_slice(&COMPACT_DELAYED_EVENT_LIFECYCLE_FLAG_COMPLETE.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // lifecycle row count
+        p.extend_from_slice(&1u64.to_le_bytes()); // hook epoch
+        p.extend_from_slice(&0u64.to_le_bytes()); // first sequence
+        p.extend_from_slice(&0u64.to_le_bytes()); // last sequence
+        p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        let raw = wrap_single_data_record(COMPACT_DOMAIN_DELAYED_EVENTS_LIVE, &p);
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
     fn special_project_programs_decode_accepts_valid_payload() {
         let mut p = Vec::new();
         p.extend_from_slice(&0u64.to_le_bytes());
