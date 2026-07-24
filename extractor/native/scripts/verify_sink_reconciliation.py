@@ -20,6 +20,7 @@ HEX64 = set("0123456789abcdef")
 EXACT_A729_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 EARLY_LAUNCH_SCHEMA = "extractor.early-render-launch-manifest.v1"
 EARLY_CAPTURE_SCHEMA = "extractor.early-render-capture-receipt.v1"
+EARLY_STAGED_HOOK_COUNT = 71
 
 
 def reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -157,8 +158,8 @@ def grade_early_capture(
             "success_staged_hook_generation_invalid", problems)
     require(receipt.get("diagnostic_staged_hook_mask") is None,
             "success_diagnostic_hook_subset_present", problems)
-    require(receipt.get("staged_hook_count") == 62,
-            "success_staged_hook_count_not_62", problems)
+    require(receipt.get("staged_hook_count") == EARLY_STAGED_HOOK_COUNT,
+            "success_staged_hook_count_invalid", problems)
     require(receipt.get("game_d3d_creation_count_at_hook_ready") == 0,
             "success_game_d3d_preexisted_at_ready", problems)
     require(receipt.get("preexisting_game_d3d_object_count") == 0,

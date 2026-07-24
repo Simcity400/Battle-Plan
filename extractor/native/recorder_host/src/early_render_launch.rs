@@ -3702,14 +3702,14 @@ mod tests {
 
     #[test]
     fn diagnostic_stage_masks_have_exact_authenticated_hook_counts() {
-        assert_eq!(staged_hook_count_for_group_mask(0x01).unwrap(), 23);
-        assert_eq!(staged_hook_count_for_group_mask(0x03).unwrap(), 25);
-        assert_eq!(staged_hook_count_for_group_mask(0x1ff).unwrap(), 63);
-        assert_eq!(staged_hook_count_for_group_mask(0x3ff).unwrap(), 66);
+        assert_eq!(staged_hook_count_for_group_mask(0x01).unwrap(), 19);
+        assert_eq!(staged_hook_count_for_group_mask(0x03).unwrap(), 21);
+        assert_eq!(staged_hook_count_for_group_mask(0x1ff).unwrap(), 68);
+        assert_eq!(staged_hook_count_for_group_mask(0x3ff).unwrap(), 71);
         assert!(staged_hook_count_for_group_mask(0).is_err());
         assert!(staged_hook_count_for_group_mask(0x02).is_err());
-        assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 30);
-        assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 26);
+        assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 21);
+        assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 22);
     }
 
     #[test]
@@ -3741,7 +3741,7 @@ mod tests {
 
         let mut diagnostic = production;
         diagnostic.diagnostic_staged_hook_mask = Some(0x01);
-        diagnostic.staged_hook_count = 23;
+        diagnostic.staged_hook_count = 19;
         diagnostic.transcript_sha256 = diagnostic.expected_transcript_sha256().unwrap();
         diagnostic.validate().unwrap();
         assert_eq!(

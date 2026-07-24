@@ -16,8 +16,8 @@ const DIAGNOSTIC_END_MAGIC: &[u8; 4] = b"EDND";
 const G2_CAPTURE_ARM_MAGIC: &[u8; 4] = b"EG2A";
 pub const EARLY_HOOK_COMPLETENESS_MASK: u16 = 0x03ff;
 pub const EARLY_STAGED_HOOK_GENERATION: u64 = 1;
-pub const EARLY_STAGED_HOOK_GROUP_COUNTS: [u32; 10] = [23, 2, 3, 8, 8, 7, 2, 3, 7, 3];
-pub const EARLY_STAGED_HOOK_COUNT: u32 = 23 + 2 + 3 + 8 + 8 + 7 + 2 + 3 + 7 + 3;
+pub const EARLY_STAGED_HOOK_GROUP_COUNTS: [u32; 10] = [19, 2, 3, 8, 17, 7, 7, 3, 2, 3];
+pub const EARLY_STAGED_HOOK_COUNT: u32 = 19 + 2 + 3 + 8 + 17 + 7 + 7 + 3 + 2 + 3;
 pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
@@ -1003,6 +1003,18 @@ pub fn decode_early_render_launch_bind_v2(
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn production_sink_verifier_count_matches_wire_contract() {
+        let verifier = include_str!("../../scripts/verify_sink_reconciliation.py");
+        assert!(verifier.contains(&format!(
+            "EARLY_STAGED_HOOK_COUNT = {EARLY_STAGED_HOOK_COUNT}"
+        )));
+        assert!(verifier.contains(
+            "receipt.get(\"staged_hook_count\") == EARLY_STAGED_HOOK_COUNT"
+        ));
+    }
+
     #[test]
     fn exact_round_trips_and_tamper_rejects() {
         let ready = EarlyHookReadyV1 {
@@ -1056,7 +1068,7 @@ mod tests {
         let mut diagnostic_first = first.clone();
         diagnostic_first.diagnostic_stage_probe = true;
         diagnostic_first.staged_hook_group_mask = 0x01;
-        diagnostic_first.staged_hook_count = 23;
+        diagnostic_first.staged_hook_count = 19;
         assert_eq!(
             decode_early_first_game_d3d(&encode_early_first_game_d3d(&diagnostic_first).unwrap())
                 .unwrap(),

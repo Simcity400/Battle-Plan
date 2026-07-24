@@ -1316,7 +1316,7 @@ mod tests {
             first_creation_sequence: 3,
             first_game_d3d_creation_qpc: 1_000_000,
             staged_hook_generation: EARLY_STAGED_HOOK_GENERATION,
-            staged_hook_count: 23,
+            staged_hook_count: 19,
             staged_hook_set_sha256: "88".repeat(32),
             diagnostic_staged_hook_mask: Some(0x01),
             game_device_ptr: 0x1111,

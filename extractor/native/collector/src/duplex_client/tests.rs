@@ -988,7 +988,7 @@ fn diagnostic_first(binding: &EarlyRenderControlBinding) -> EarlyFirstGameD3dV1 
         first_creation_sequence: 13,
         creation_qpc: 12,
         staged_hook_generation: EARLY_STAGED_HOOK_GENERATION,
-        staged_hook_count: 23,
+        staged_hook_count: 19,
         diagnostic_stage_probe: true,
         staged_hook_group_mask: TEST_DIAGNOSTIC_COM_GROUP_MASK,
         staged_hook_set_sha256: [8; 32],
