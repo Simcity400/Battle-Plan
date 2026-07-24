@@ -101,7 +101,14 @@ pub fn drain_latest() -> Result<Option<PovVisibilitySnapshot>, String> {
         return Err("visibility producer hook is not installed".into());
     }
     let latest = LATEST.get().ok_or("visibility hook state unavailable")?;
-    Ok(latest.lock().map_err(|_| "visibility latest snapshot poisoned")?.take())
+    // This hook captures the engine's current complete visibility buffer, not
+    // a one-shot event. Keep the last authenticated current buffer available
+    // across multiple hourly collector frames until the producer replaces it.
+    // A torn producer observation still clears the slot in `hook_producer`.
+    Ok(latest
+        .lock()
+        .map_err(|_| "visibility latest snapshot poisoned")?
+        .clone())
 }
 
 pub fn uninstall() -> Result<(), String> {
