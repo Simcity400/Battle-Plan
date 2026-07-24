@@ -15,6 +15,7 @@ param(
     [string]$SpeedRootGatePath = '',
     [string]$SpeedEvidenceTranscriptFileSha256 = '',
     [string]$CrashDumpTool = 'procdump.exe',
+    [ValidateRange(30,900)][int]$StaticBundleTimeoutSeconds = 900,
     [ValidateRange(30,1800)][int]$WorldReadyTimeoutSeconds = 600,
     [switch]$KeepGameWindow,
     [switch]$OperatorApproved,
@@ -135,7 +136,7 @@ $arguments=@(
     '--static-bundle-live-resolution-report',[string]$admission.paths.resolution_report,
     '--static-bundle-verifier',$staticBundleVerifier,
     '--static-bundle-python',$python,
-    '--static-bundle-timeout-ms','300000'
+    '--static-bundle-timeout-ms',([string]($StaticBundleTimeoutSeconds * 1000))
 )
 if ($KeepGameWindow) {
     # Window presentation is independent of the PID-bound pause/play/speed
