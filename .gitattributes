@@ -21,6 +21,8 @@ replay_interface/native/replay_app/headless_performance*_workload.json text eol=
 replay_interface/native/replay_app/performance_assets/*.hlsl text eol=lf
 replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json text eol=lf
 replay_interface/re_evidence/rendering_laws/M02/production_interleave_closure/contract.json text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.sha256 text eol=lf
 
 # These Python fixtures are byte-pinned by the offline save-oracle manifest.
 # Preserve their established checkout representation on every host.

@@ -843,10 +843,10 @@ struct CompactSummary {
     domain57_frames: Vec<Domain57FrameEvidence>,
     // lane/hour-latch: zero-skip hour-boundary latch accounting, carried by
     // `hl_*` diagnostic units on the reserved probe domain (250). Counters are
-    // cumulative/monotonic and aggregate by MAX; `last_observe_failed` is a
-    // terminal state marker and therefore aggregates by last value. Surfaced as
-    // `compact_stream.hour_latch`. Kept OUT of per_domain / domains_seen so the
-    // coverage/perf-count gates are unaffected.
+    // cumulative/monotonic and aggregate by MAX. Terminal/transient state
+    // markers (`last_observe_failed` and `capture_barrier_active`) aggregate by
+    // last value. Surfaced as `compact_stream.hour_latch`. Kept OUT of
+    // per_domain / domains_seen so the coverage/perf-count gates are unaffected.
     hour_latch: BTreeMap<String, u64>,
     // Lane-wall counter (deep-war lever #5): per-frame per-lane wall +
     // critical-path aggregates carried by `lw_*` diagnostic units on the same
@@ -16180,13 +16180,17 @@ fn add_compact_domain_perf_diagnostic_unit(
             return;
         }
         // lane/hour-latch: cumulative counters aggregate by MAX (not sum).
-        // `last_observe_failed` is deliberately last-value: a later successful
-        // observe clears an earlier transient failure, while a failing final poll
-        // must survive as the terminal truncation marker.
+        // Terminal/transient state markers are deliberately last-value: a later
+        // successful observe clears an earlier failure, and a later barrier
+        // release clears the active flag. A failing final poll or active final
+        // barrier must still survive as the terminal truncation marker.
         if let Some(rest) = name.strip_prefix("hl_") {
             if matches!(
                 rest,
-                "last_observe_failed" | "sink_time_p50_us" | "sink_time_p99_us"
+                "last_observe_failed"
+                    | "capture_barrier_active"
+                    | "sink_time_p50_us"
+                    | "sink_time_p99_us"
             ) {
                 summary.hour_latch.insert(rest.to_string(), value);
             } else {
@@ -18312,6 +18316,7 @@ mod tests {
                     ("hl_polls", 90_000),
                     ("hl_read_failures", 2),
                     ("hl_last_observe_failed", 1),
+                    ("hl_capture_barrier_active", 1),
                     ("hl_latch_requested_but_inactive", 0),
                     ("hl_sink_write_failures", 0),
                     ("hl_transport_failed", 0),
@@ -18352,6 +18357,7 @@ mod tests {
                     ("hl_polls", 100_000),
                     ("hl_read_failures", 2),
                     ("hl_last_observe_failed", 0),
+                    ("hl_capture_barrier_active", 0),
                     ("hl_latch_requested_but_inactive", 0),
                     ("hl_sink_write_failures", 0),
                     ("hl_transport_failed", 0),
@@ -18391,6 +18397,11 @@ mod tests {
             summary.hour_latch.get("last_observe_failed").copied(),
             Some(0),
             "terminal marker must use the final value, not MAX"
+        );
+        assert_eq!(
+            summary.hour_latch.get("capture_barrier_active").copied(),
+            Some(0),
+            "transient barrier state must use the final value, not MAX"
         );
         // Probe domain must NOT be counted as a scheduled domain.
         assert!(!summary.domains_seen.contains(&RC_PROBE_DOMAIN_ID));
