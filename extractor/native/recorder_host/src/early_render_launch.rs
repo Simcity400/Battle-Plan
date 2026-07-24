@@ -1715,14 +1715,7 @@ mod windows {
     const CREATE_SUSPENDED: Dword = 0x0000_0004;
     const CREATE_UNICODE_ENVIRONMENT: Dword = 0x0000_0400;
     const EXTENDED_STARTUPINFO_PRESENT: Dword = 0x0008_0000;
-    const STARTF_USESHOWWINDOW: Dword = 0x0000_0001;
-    const STARTF_USEPOSITION: Dword = 0x0000_0004;
-    const SW_SHOWNOACTIVATE: u16 = 4;
-    const OFFSCREEN_WINDOW_COORDINATE: Dword = 32_000;
-    const SWP_NOSIZE: Dword = 0x0001;
-    const SWP_NOZORDER: Dword = 0x0004;
-    const SWP_NOACTIVATE: Dword = 0x0010;
-    const SWP_ASYNCWINDOWPOS: Dword = 0x4000;
+    const SW_SHOWMINNOACTIVE: i32 = 7;
     const MEM_COMMIT: Dword = 0x0000_1000;
     const MEM_RESERVE: Dword = 0x0000_2000;
     const MEM_RELEASE: Dword = 0x0000_8000;
@@ -1958,76 +1951,53 @@ mod windows {
             lparam: isize,
         ) -> Bool;
         fn GetWindowThreadProcessId(window: Hwnd, process_id: *mut Dword) -> Dword;
-        fn SetWindowPos(
-            window: Hwnd,
-            insert_after: Hwnd,
-            x: i32,
-            y: i32,
-            width: i32,
-            height: i32,
-            flags: Dword,
-        ) -> Bool;
         fn ShowWindow(window: Hwnd, command: i32) -> Bool;
     }
 
-    struct OffscreenWindowMove {
+    struct MinimizeOwnedWindow {
         process_id: Dword,
     }
 
-    extern "system" fn move_owned_window_offscreen(window: Hwnd, lparam: isize) -> Bool {
-        let context = unsafe { &mut *(lparam as *mut OffscreenWindowMove) };
+    extern "system" fn minimize_owned_window(window: Hwnd, lparam: isize) -> Bool {
+        let context = unsafe { &mut *(lparam as *mut MinimizeOwnedWindow) };
         let mut process_id = 0;
         unsafe {
             GetWindowThreadProcessId(window, &mut process_id);
         }
         if process_id == context.process_id {
-            let moved = unsafe {
-                SetWindowPos(
-                    window,
-                    ptr::null_mut(),
-                    OFFSCREEN_WINDOW_COORDINATE as i32,
-                    OFFSCREEN_WINDOW_COORDINATE as i32,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
-                )
-            };
-            if moved != 0 {
-                unsafe {
-                    ShowWindow(window, i32::from(SW_SHOWNOACTIVATE));
-                }
+            unsafe {
+                ShowWindow(window, SW_SHOWMINNOACTIVE);
             }
         }
         1
     }
 
-    /// Keeps every recorder-owned game window shown but outside the virtual
-    /// desktop. the game requires a shown HWND to create D3D; minimizing or hiding
-    /// it at process start suppresses the authenticated early-render boundary.
-    struct OffscreenPresentationGuard {
+    /// Allows the game to create its renderer through the normal shown-window path,
+    /// then keeps every recorder-owned game window minimized without activation.
+    struct MinimizedPresentationGuard {
         stop: Arc<AtomicBool>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
-    impl OffscreenPresentationGuard {
+    impl MinimizedPresentationGuard {
         fn start(process_id: Dword) -> Result<Self, String> {
             let stop = Arc::new(AtomicBool::new(false));
             let worker_stop = Arc::clone(&stop);
             let worker = std::thread::Builder::new()
-                .name(format!("hoi4-offscreen-presentation-{process_id}"))
+                .name(format!("hoi4-minimized-presentation-{process_id}"))
                 .spawn(move || {
                     while !worker_stop.load(Ordering::Acquire) {
-                        let mut context = OffscreenWindowMove { process_id };
+                        let mut context = MinimizeOwnedWindow { process_id };
                         unsafe {
                             EnumWindows(
-                                move_owned_window_offscreen,
-                                (&mut context as *mut OffscreenWindowMove) as isize,
+                                minimize_owned_window,
+                                (&mut context as *mut MinimizeOwnedWindow) as isize,
                             );
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                     }
                 })
-                .map_err(|error| format!("start offscreen presentation guard failed: {error}"))?;
+                .map_err(|error| format!("start minimized presentation guard failed: {error}"))?;
             Ok(Self {
                 stop,
                 worker: Some(worker),
@@ -2035,7 +2005,7 @@ mod windows {
         }
     }
 
-    impl Drop for OffscreenPresentationGuard {
+    impl Drop for MinimizedPresentationGuard {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
             if let Some(worker) = self.worker.take() {
@@ -2052,7 +2022,7 @@ mod windows {
         pub receipt: EarlyRenderCaptureReceipt,
         diagnostic_no_commit: bool,
         termination_observed: bool,
-        _presentation_guard: OffscreenPresentationGuard,
+        _presentation_guard: MinimizedPresentationGuard,
     }
 
     unsafe impl Send for EarlyRenderProcess {}
@@ -2431,7 +2401,6 @@ mod windows {
                 .hook_ready_sequence
                 .checked_add(1)
                 .ok_or("early launch resume sequence overflow")?;
-            let presentation_guard = OffscreenPresentationGuard::start(self.process_id)?;
             let prior_suspend_count = unsafe { ResumeThread(primary_thread) };
             if prior_suspend_count != 1 {
                 return Err(format!(
@@ -2446,6 +2415,7 @@ mod windows {
                 spec.hook_ready_timeout_ms,
             )?;
             first_device.validate_for(&hook, resume_qpc, spec.diagnostic_staged_hook_mask)?;
+            let presentation_guard = MinimizedPresentationGuard::start(self.process_id)?;
             loader_authority.validate_post_resume(self.process_id)?;
             post_resume_validation()?;
             let runtime_dlc = ready.await_runtime_dlc_roster(
@@ -2623,11 +2593,11 @@ mod windows {
         })
     }
 
-    fn configure_offscreen_startup(startup: &mut StartupInfoExW) {
-        startup.startup_info.flags = STARTF_USESHOWWINDOW | STARTF_USEPOSITION;
-        startup.startup_info.show_window = SW_SHOWNOACTIVATE;
-        startup.startup_info.x = OFFSCREEN_WINDOW_COORDINATE;
-        startup.startup_info.y = OFFSCREEN_WINDOW_COORDINATE;
+    fn configure_normal_startup(startup: &mut StartupInfoExW) {
+        startup.startup_info.flags = 0;
+        startup.startup_info.show_window = 0;
+        startup.startup_info.x = 0;
+        startup.startup_info.y = 0;
     }
 
     pub fn create_suspended_game_process(
@@ -2663,10 +2633,10 @@ mod windows {
         let mut startup: StartupInfoExW = unsafe { zeroed() };
         startup.startup_info.cb = size_of::<StartupInfoExW>() as u32;
         // Production capture is recorder-controlled and must not steal the
-        // desktop while launching the Continue save. the game requires a shown HWND
-        // to initialize D3D, so seed its first window offscreen/no-activate and
-        // retain a PID-bound guard that keeps all later windows offscreen.
-        configure_offscreen_startup(&mut startup);
+        // Use the game's normal shown-window startup so its renderer initializes.
+        // After the authenticated first D3D creation, a PID-bound guard keeps
+        // every game window minimized without activation.
+        configure_normal_startup(&mut startup);
         startup.attribute_list = job_attribute_list.as_ptr();
         let mut process: ProcessInformation = unsafe { zeroed() };
         let create_result = unsafe {
@@ -3253,16 +3223,13 @@ mod windows {
         use std::mem::ManuallyDrop;
 
         #[test]
-        fn recorder_owned_startup_is_shown_offscreen_without_activation() {
+        fn recorder_owned_startup_uses_normal_window_creation() {
             let mut startup: StartupInfoExW = unsafe { zeroed() };
-            configure_offscreen_startup(&mut startup);
-            assert_eq!(
-                startup.startup_info.flags,
-                STARTF_USESHOWWINDOW | STARTF_USEPOSITION
-            );
-            assert_eq!(startup.startup_info.show_window, SW_SHOWNOACTIVATE);
-            assert_eq!(startup.startup_info.x, OFFSCREEN_WINDOW_COORDINATE);
-            assert_eq!(startup.startup_info.y, OFFSCREEN_WINDOW_COORDINATE);
+            configure_normal_startup(&mut startup);
+            assert_eq!(startup.startup_info.flags, 0);
+            assert_eq!(startup.startup_info.show_window, 0);
+            assert_eq!(startup.startup_info.x, 0);
+            assert_eq!(startup.startup_info.y, 0);
         }
 
         struct TestProcess {
