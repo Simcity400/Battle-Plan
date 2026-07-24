@@ -17,6 +17,7 @@ param(
     [string]$CrashDumpTool = 'procdump.exe',
     [ValidateRange(30,900)][int]$StaticBundleTimeoutSeconds = 900,
     [ValidateRange(30,1800)][int]$WorldReadyTimeoutSeconds = 600,
+    [string]$DiagnosticStagedHookMask = '',
     [switch]$KeepGameWindow,
     [switch]$OperatorApproved,
     [switch]$DryRun
@@ -97,6 +98,26 @@ if (-not $DryRun -and -not $OperatorApproved) {
 if ($DurationSeconds -lt 30 -or $DurationSeconds -gt 86400) { throw 'DurationSeconds is outside 30..86400.' }
 if ($MinGameHours -lt 1) { throw 'MinGameHours must be positive.' }
 if ($SampleMilliseconds -lt 1 -or $SampleMilliseconds -gt 10000) { throw 'SampleMilliseconds is outside 1..10000.' }
+$diagnosticStagedHookMaskCanonical=$null
+if (-not [string]::IsNullOrWhiteSpace($DiagnosticStagedHookMask)) {
+    if ($Purpose -cne 'RawDebug') {
+        throw 'DiagnosticStagedHookMask is permitted only for RawDebug isolation.'
+    }
+    $diagnosticDigits=$DiagnosticStagedHookMask.Trim()
+    if ($diagnosticDigits.StartsWith('0x',[StringComparison]::OrdinalIgnoreCase)) {
+        $diagnosticDigits=$diagnosticDigits.Substring(2)
+    }
+    if ($diagnosticDigits -cnotmatch '^[0-9a-fA-F]{1,3}$') {
+        throw 'DiagnosticStagedHookMask must be a hexadecimal staged-hook mask.'
+    }
+    $diagnosticMaskValue=[Convert]::ToUInt64($diagnosticDigits,16)
+    if (($diagnosticMaskValue -band 0x3ff) -ne $diagnosticMaskValue -or
+        ($diagnosticMaskValue -band 0x01) -eq 0 -or
+        $diagnosticMaskValue -eq 0x3ff) {
+        throw 'DiagnosticStagedHookMask must be a strict 0x3ff subset containing COM bit 0x01.'
+    }
+    $diagnosticStagedHookMaskCanonical=('0x{0:x}' -f $diagnosticMaskValue)
+}
 foreach($path in @($Hoi4Exe,$PdxUserDir,$PreparedProductModsetDir,$productModsetVerifier,$staticBundleVerifier,$sinkVerifier,$xn15lVerifier,$safeLateAttachDriver,$headlessControl)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required path is missing: $path" }
 }
@@ -201,6 +222,15 @@ if ($Purpose -ceq 'XN15L') {
         '--raw-debug-output'
     )
 }
+if ($null -ne $diagnosticStagedHookMaskCanonical) {
+    # Bind host validation and child hook selection through the recorder's one
+    # diagnostic authority. The recorder constructs the suspended child's
+    # environment block; callers must not inject an unbound environment-only mask.
+    $arguments += @(
+        '--diagnostic-staged-hook-mask',$diagnosticStagedHookMaskCanonical,
+        '--diagnostic-no-commit'
+    )
+}
 
 $planPath=Join-Path $OutDir 'early_launch_authorization_plan.json'
 $plan=[ordered]@{
@@ -221,6 +251,7 @@ $plan=[ordered]@{
     product_modset_sha256=[string]$admission.product_modset_sha256
     continue_game_sha256=$continueGameSha256
     semantic_arguments=@('--continuelastsave','--gdpr-compliant')
+    diagnostic_staged_hook_mask=$diagnosticStagedHookMaskCanonical
     keep_game_window=[bool]$KeepGameWindow
     static_bundle_timeout_seconds=$StaticBundleTimeoutSeconds
     post_static_world_ready_timeout_seconds=$WorldReadyTimeoutSeconds
