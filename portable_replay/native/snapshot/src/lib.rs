@@ -29,6 +29,7 @@ mod dir_store;
 pub mod pack;
 pub mod prefolded;
 pub mod prefolded_decoder;
+pub mod replay_cache;
 pub mod sha256;
 pub mod stream_verify;
 pub mod strict_json;
@@ -52,6 +53,12 @@ pub use prefolded_decoder::{
     CertifiedPrefoldedReplay, CertifiedPrefoldedSpool, PrefoldDecodeError,
     PrefoldSourceReceipt, PrefoldStreamIdentityMode, PrefoldedSpool, PrefoldedSpoolEntry,
     COMPACT_STREAM_ROLE,
+};
+pub use replay_cache::{
+    CacheBuildHour, CacheIdentityMode, CertifiedReplayCache, ReplayCacheEncoder, ReplayCacheError,
+    ReplayCacheReader, ReplayHourEntry, ReplayHourIndex, ReplaySeekReceipt,
+    CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_ROLE, DEFAULT_CHECKPOINT_INTERVAL_HOURS,
+    HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CHECKPOINT_INTERVAL_HOURS,
 };
 pub use stream_verify::{
     verify_replay_container_streaming, verify_replay_container_streaming_file,

@@ -199,8 +199,9 @@ pub struct RawFrame {
     pub rest: Map<String, Value>,
 }
 
-/// A recording backend. Portable production recordings carry indexed,
-/// canonical per-hour snapshots inside the file.
+/// A recording backend. Portable production recordings carry canonical H4CR
+/// plus a certified hourly offset index and sparse binary checkpoints. Legacy
+/// and debug recordings may carry per-hour JSON snapshots.
 pub trait ReplaySource: Send + Sync {
     fn game_id(&self) -> &str;
     /// Sorted, deduplicated canonical hour indexes, taken from the recording
@@ -234,9 +235,8 @@ pub trait ReplaySource: Send + Sync {
     fn static_artifact(&self, _name: &str) -> Option<&PackagedStaticArtifact> {
         None
     }
-    /// Exact source-byte and decoder identity for an explicitly prefolded
-    /// compact-stream container. Snapshot-native and trusted direct-prefold
-    /// sources return `None`.
+    /// Exact source-byte and decoder identity for a certified compact-stream
+    /// source. Snapshot-native sources return `None`.
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
         None
     }
@@ -467,6 +467,14 @@ fn open_store_impl(
     // can turn a verified compact-only container into immutable canonical
     // snapshots; replay_core never sees H4CR records or extractor fold types.
     if index.snapshots.is_empty() {
+        if packaged_replay_cache_roles_present(&store) {
+            return open_packaged_replay_cache(
+                store,
+                game_id,
+                index.schema_version.clone(),
+                metadata,
+            );
+        }
         if let Some((spool_base, spool_decoder)) = spool_decoder {
             return open_compact_stream_with_spooled_decoder(
                 store,
@@ -655,6 +663,283 @@ fn open_compact_stream_with_decoder(
         prefold_receipt,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
+}
+
+fn packaged_replay_cache_roles_present(store: &Store) -> bool {
+    store.container().is_some_and(|container| {
+        !container
+            .entries_by_role(snapshot::HOUR_INDEX_ROLE)
+            .is_empty()
+            || !container
+                .entries_by_role(snapshot::CHECKPOINT_CACHE_ROLE)
+                .is_empty()
+    })
+}
+
+fn open_packaged_replay_cache(
+    store: Store,
+    game_id: String,
+    declared_schema_version: Option<Value>,
+    metadata: MetadataRoute,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    validate_index_schema_version(declared_schema_version.as_ref())?;
+    let identity_mode = prefold_stream_identity_mode(&metadata);
+    let (cache, prefold_receipt, hours) = {
+        let container = store.container().ok_or_else(|| {
+            SourceError::Unsupported(
+                "packaged replay_decoder artifacts require a portable container authority"
+                    .to_string(),
+            )
+        })?;
+        let select = |role: &str| -> Result<snapshot::container::ContainerEntry, SourceError> {
+            match container.entries_by_role(role).as_slice() {
+                [entry] => Ok(entry.clone()),
+                [] => Err(SourceError::Open(format!(
+                    "packaged replay_decoder container omits required role {role:?}"
+                ))),
+                entries => Err(SourceError::Open(format!(
+                    "packaged replay_decoder container has {} entries for unique role {role:?}",
+                    entries.len()
+                ))),
+            }
+        };
+        let source_entry = select(snapshot::COMPACT_STREAM_ROLE)?;
+        let index_entry = select(snapshot::HOUR_INDEX_ROLE)?;
+        let cache_entry = select(snapshot::CHECKPOINT_CACHE_ROLE)?;
+        let expected_prefix = format!("payload/{game_id}/");
+        let expected_index_path = format!("{expected_prefix}{}", snapshot::HOUR_INDEX_FILE);
+        let expected_cache_path =
+            format!("{expected_prefix}{}", snapshot::CHECKPOINT_CACHE_FILE);
+        if index_entry.path != expected_index_path || cache_entry.path != expected_cache_path {
+            return Err(SourceError::Open(
+                "packaged replay_decoder role paths disagree with the selected game namespace"
+                    .to_string(),
+            ));
+        }
+        validate_compact_stream_entry_identity(
+            &source_entry.path,
+            &game_id,
+            metadata.timeline.as_ref(),
+        )?;
+        validate_recorder_compact_stream_join(
+            &source_entry.path,
+            source_entry.bytes,
+            &source_entry.sha256,
+            &game_id,
+            metadata.recorder_manifest.as_ref(),
+        )?;
+        let source_receipt = container
+            .authenticate_entry(&source_entry.path)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "authenticate canonical H4CR role before replay-cache admission: {error}"
+                ))
+            })?;
+        if source_receipt.uncompressed_len() != source_entry.bytes
+            || source_receipt.sha256() != source_entry.sha256
+        {
+            return Err(SourceError::Open(
+                "canonical H4CR authentication receipt disagrees with its container role"
+                    .to_string(),
+            ));
+        }
+        let index_bytes = container
+            .read_entry_bytes(&index_entry.path)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "read certified replay_decoder hour index: {error}"
+                ))
+            })?;
+        let cache_bytes = container
+            .read_entry_bytes(&cache_entry.path)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "read certified replay_decoder checkpoint cache: {error}"
+                ))
+            })?;
+        let cache = snapshot::CertifiedReplayCache::open(
+            &index_bytes,
+            cache_bytes,
+            source_entry.bytes,
+            &source_entry.sha256,
+        )
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "admit packaged replay_decoder binary artifacts: {error}"
+            ))
+        })?;
+        if cache.index().game_id() != game_id
+            || cache.index().schema_version() != "1"
+            || cache.index().identity_mode()
+                != match identity_mode {
+                    snapshot::PrefoldStreamIdentityMode::Legacy => {
+                        snapshot::CacheIdentityMode::Legacy
+                    }
+                    snapshot::PrefoldStreamIdentityMode::IdentityV1 => {
+                        snapshot::CacheIdentityMode::IdentityV1
+                    }
+                }
+        {
+            return Err(SourceError::Open(
+                "packaged replay_decoder identity disagrees with container/recorder authority"
+                    .to_string(),
+            ));
+        }
+        validate_packaged_replay_cache_index_descriptor(
+            &store,
+            &game_id,
+            cache.index(),
+            &index_entry,
+            &cache_entry,
+        )?;
+        let hours = cache
+            .index()
+            .hours()
+            .iter()
+            .map(snapshot::ReplayHourEntry::hour_index)
+            .collect::<Vec<_>>();
+        let receipt = snapshot::PrefoldSourceReceipt::try_new(
+            "extractor.replay_decoder.binary_seek.v1",
+            source_entry.bytes,
+            source_entry.sha256,
+            identity_mode,
+        )
+        .map_err(|error| SourceError::Open(error.to_string()))?;
+        (cache, receipt, hours)
+    };
+
+    let first_json = cache
+        .reconstruct_json(hours[0])
+        .map_err(|error| SourceError::Open(format!("reconstruct first replay hour: {error}")))?
+        .0;
+    let first: snapshot::Snapshot = snapshot::parse_json_strict(&first_json)
+        .and_then(serde_json::from_value)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "first binary replay reconstruction is not canonical snapshot JSON: {error}"
+            ))
+        })?;
+    validate_snapshot_container_identity(
+        store
+            .container()
+            .expect("packaged replay cache requires a container"),
+        &first,
+    )?;
+    let static_artifacts = validate_packaged_static_artifact_roster(
+        &store,
+        &game_id,
+        metadata.recorder_manifest.as_ref(),
+    )?;
+    let design_catalog = read_portable_design_catalog(
+        &store,
+        &game_id,
+        &hours,
+        metadata.recorder_manifest.as_ref(),
+    )?;
+    let decision_catalog =
+        read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
+    Ok(Box::new(IndexedReplaySource {
+        cache,
+        hours,
+        warnings: Vec::new(),
+        store,
+        recorder_binding: metadata.binding,
+        design_catalog,
+        decision_catalog,
+        static_artifacts,
+        prefold_receipt,
+        g2_engine_capture: metadata.g2_engine_capture,
+    }))
+}
+
+fn validate_packaged_replay_cache_index_descriptor(
+    store: &Store,
+    game_id: &str,
+    replay_index: &snapshot::ReplayHourIndex,
+    index_entry: &snapshot::container::ContainerEntry,
+    cache_entry: &snapshot::container::ContainerEntry,
+) -> Result<(), SourceError> {
+    let bytes = store
+        .read_game_file_bytes(game_id, "index.json")
+        .map_err(|error| SourceError::Open(format!("read replay index descriptor: {error}")))?
+        .ok_or_else(|| SourceError::Open("replay index descriptor disappeared".to_string()))?;
+    let value = snapshot::parse_json_strict(&bytes)
+        .map_err(|error| SourceError::Open(format!("strict replay index descriptor: {error}")))?;
+    let no_legacy_snapshots = value
+        .get("snapshots")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+        && value
+            .get("production_json_snapshots_omitted")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && value
+            .get("canonical_world_source")
+            .and_then(Value::as_str)
+            == Some(snapshot::COMPACT_STREAM_ROLE)
+        && store
+            .container()
+            .is_some_and(|container| container.entries_by_role("snapshot").is_empty());
+    let decoder = value
+        .get("replay_decoder")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            SourceError::Open(
+                "empty snapshot index has replay-cache roles but no replay_decoder descriptor"
+                    .to_string(),
+            )
+        })?;
+    let hour = decoder
+        .get("hour_index")
+        .and_then(Value::as_object)
+        .ok_or_else(|| SourceError::Open("replay_decoder hour_index descriptor missing".into()))?;
+    let checkpoints = decoder
+        .get("checkpoints")
+        .and_then(Value::as_object)
+        .ok_or_else(|| SourceError::Open("replay_decoder checkpoints descriptor missing".into()))?;
+    let exact = no_legacy_snapshots
+        && decoder.get("schema").and_then(Value::as_str)
+        == Some("hoi4.replay_decoder.binary_seek.v1")
+        && decoder
+            .get("exact_reconstruction_parity")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && decoder
+            .get("bounded_seek_certified")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && hour.get("role").and_then(Value::as_str) == Some(snapshot::HOUR_INDEX_ROLE)
+        && hour.get("path").and_then(Value::as_str) == Some(snapshot::HOUR_INDEX_FILE)
+        && hour.get("bytes").and_then(Value::as_u64) == Some(index_entry.bytes)
+        && hour.get("sha256").and_then(Value::as_str) == Some(index_entry.sha256.as_str())
+        && hour.get("hours").and_then(Value::as_u64)
+            == Some(replay_index.hours().len() as u64)
+        && hour.get("source_bytes").and_then(Value::as_u64)
+            == Some(replay_index.source_len())
+        && hour.get("source_sha256").and_then(Value::as_str)
+            == Some(replay_index.source_sha256())
+        && checkpoints.get("role").and_then(Value::as_str)
+            == Some(snapshot::CHECKPOINT_CACHE_ROLE)
+        && checkpoints.get("path").and_then(Value::as_str)
+            == Some(snapshot::CHECKPOINT_CACHE_FILE)
+        && checkpoints.get("bytes").and_then(Value::as_u64) == Some(cache_entry.bytes)
+        && checkpoints.get("sha256").and_then(Value::as_str)
+            == Some(cache_entry.sha256.as_str())
+        && checkpoints
+            .get("checkpoint_interval_hours")
+            .and_then(Value::as_u64)
+            == Some(replay_index.checkpoint_interval_hours() as u64)
+        && checkpoints
+            .get("max_seek_deltas")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value < replay_index.checkpoint_interval_hours() as u64);
+    if !exact {
+        return Err(SourceError::Open(
+            "replay_decoder index descriptor does not exactly join its certified roles or still carries production JSON snapshots"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn open_compact_stream_with_spooled_decoder(
@@ -1825,16 +2110,24 @@ fn validate_recorder_portable_container_contract(
             "strict parse canonical index for recorder fold-disposition join: {error}"
         ))
     })?;
+    let binary_replay_fold = raw_index
+        .get("replay_decoder")
+        .is_some_and(Value::is_object)
+        && raw_index
+            .get("production_json_snapshots_omitted")
+            .and_then(Value::as_bool)
+            == Some(true);
     if let Some(disposition) = raw_index.get("host_fold_skipped") {
         let skipped = disposition.as_bool().ok_or_else(|| {
             SourceError::Open(
                 "recorder-owned index host_fold_skipped must be a boolean".into(),
             )
         })?;
-        if skipped != index.snapshots.is_empty() {
+        let expected_skipped = index.snapshots.is_empty() && !binary_replay_fold;
+        if skipped != expected_skipped {
             return Err(SourceError::Open(format!(
-                "recorder-owned index host_fold_skipped={skipped} contradicts snapshot count {}",
-                index.snapshots.len()
+                "recorder-owned index host_fold_skipped={skipped} contradicts snapshot count {} and binary replay fold={binary_replay_fold}",
+                index.snapshots.len(),
             )));
         }
     }
@@ -2600,9 +2893,9 @@ fn validate_display_variant(
 /// Precise Unsupported message for a recording whose snapshot index is empty,
 /// naming the compact-stream evidence when it is present.
 fn empty_index_message(store: &Store, timeline: Option<&Value>, game_id: &str) -> String {
-    let contract = "playback requires either per-hour snapshot entries per \
-                    HOI4REPLAY_CONTAINER_SPEC.md or an explicitly supplied certified \
-                    portable pre-folder; ordinary product open does not guess or fold \
+    let contract = "playback requires certified replay_decoder hour-index/checkpoint \
+                    roles, legacy per-hour snapshot entries, or an explicitly supplied \
+                    certified portable pre-folder; ordinary product open does not guess \
                     compact record layouts";
     match compact_stream_evidence(store, timeline) {
         Some(evidence) => format!(
@@ -3049,6 +3342,19 @@ struct StoreSource {
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
+struct IndexedReplaySource {
+    cache: snapshot::CertifiedReplayCache,
+    hours: Vec<i64>,
+    warnings: Vec<String>,
+    store: Store,
+    recorder_binding: Option<RecorderSessionBinding>,
+    design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    decision_catalog: Option<PackagedDecisionCatalog>,
+    static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
+    prefold_receipt: snapshot::PrefoldSourceReceipt,
+    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
+}
+
 struct SpooledPrefoldedSource {
     spool: snapshot::PrefoldedSpool,
     snapshot_dir: PathBuf,
@@ -3076,6 +3382,126 @@ struct PrefoldedSource {
     static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     prefold_receipt: Option<snapshot::PrefoldSourceReceipt>,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
+}
+
+impl ReplaySource for IndexedReplaySource {
+    fn game_id(&self) -> &str {
+        self.cache.index().game_id()
+    }
+
+    fn hours(&self) -> &[i64] {
+        &self.hours
+    }
+
+    fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        self.store
+            .container()
+            .and_then(|container| container.content_manifest())
+    }
+
+    fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.campaign_identity.as_ref())
+    }
+
+    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
+        self.g2_engine_capture.as_ref()
+    }
+
+    fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
+        self.design_catalog.as_ref()
+    }
+
+    fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
+        self.decision_catalog.as_ref()
+    }
+
+    fn static_artifact(&self, name: &str) -> Option<&PackagedStaticArtifact> {
+        self.static_artifacts.get(name)
+    }
+
+    fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
+        Some(&self.prefold_receipt)
+    }
+
+    fn date_at(&self, hour_index: i64) -> Result<Option<String>, SourceError> {
+        self.cache
+            .index()
+            .entry(hour_index)
+            .map(|entry| Some(entry.date().to_string()))
+            .ok_or_else(|| {
+                SourceError::Open(format!(
+                    "no indexed replay_decoder hour {hour_index} in game {:?}",
+                    self.game_id()
+                ))
+            })
+    }
+
+    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        let (json, receipt) = self
+            .cache
+            .reconstruct_json(hour_index)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "reconstruct replay_decoder hour {hour_index}: {error}"
+                ))
+            })?;
+        if receipt.applied_deltas > receipt.configured_bound {
+            return Err(SourceError::Open(format!(
+                "replay_decoder hour {hour_index} exceeded its certified seek bound"
+            )));
+        }
+        let mut snapshot: snapshot::Snapshot = snapshot::parse_json_strict(&json)
+            .and_then(serde_json::from_value)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "replay_decoder hour {hour_index} is not canonical snapshot JSON: {error}"
+                ))
+            })?;
+        if snapshot.hour_index != Some(hour_index)
+            || snapshot.game_id.as_deref() != Some(self.game_id())
+        {
+            return Err(SourceError::Open(format!(
+                "replay_decoder reconstructed body identity disagrees at hour {hour_index}"
+            )));
+        }
+        let mut rest = std::mem::take(&mut snapshot.rest);
+        if let Some(binding) = &self.recorder_binding {
+            validate_existing_recorder_metadata(&rest, binding)?;
+            let session = rest
+                .entry("session".to_string())
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
+            bind_or_match(
+                session,
+                "active_dlcs",
+                serde_json::json!(binding.active_dlcs),
+            )?;
+            bind_or_match(
+                session,
+                "localisation_language",
+                serde_json::json!(binding.localisation_language),
+            )?;
+            bind_or_match(
+                session,
+                "display_variant",
+                serde_json::json!(binding.display_variant),
+            )?;
+        }
+        Ok(RawFrame {
+            hour_index,
+            date: snapshot.date,
+            save_version: snapshot.save_version,
+            schema_version: snapshot.schema_version,
+            rest,
+        })
+    }
 }
 
 impl ReplaySource for SpooledPrefoldedSource {
@@ -3937,6 +4363,247 @@ mod tests {
         )
         .unwrap();
         fs::write(path, packed).unwrap();
+    }
+
+    fn write_portable_binary_replay_fixture(path: &Path, valid_checkpoint_role: bool) {
+        let game = "binary-game";
+        let source_bytes = b"H4CRcanonical-world-source";
+        let source_sha256 = snapshot::sha256::Sha256::hex(source_bytes);
+        let worlds = [
+            serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "hour_index": 10,
+                "date": "1936.1.1.10",
+                "countries": {"FRA": {"stability": 0.50}},
+                "states": {},
+            }))
+            .unwrap(),
+            serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "hour_index": 11,
+                "date": "1936.1.1.11",
+                "countries": {"FRA": {"stability": 0.55}},
+                "states": {},
+            }))
+            .unwrap(),
+        ];
+        let first_end = 8;
+        let mut encoder =
+            snapshot::ReplayCacheEncoder::new(Vec::new(), &source_sha256, 2).unwrap();
+        encoder
+            .push(snapshot::CacheBuildHour {
+                hour_index: 10,
+                date: "1936.1.1.10".into(),
+                h4cr_start_offset: 0,
+                h4cr_end_offset: first_end,
+                world_json: worlds[0].clone(),
+            })
+            .unwrap();
+        encoder
+            .push(snapshot::CacheBuildHour {
+                hour_index: 11,
+                date: "1936.1.1.11".into(),
+                h4cr_start_offset: first_end,
+                h4cr_end_offset: source_bytes.len() as u64,
+                world_json: worlds[1].clone(),
+            })
+            .unwrap();
+        let (checkpoint_bytes, replay_index) = encoder
+            .finish(
+                game,
+                "1",
+                snapshot::CacheIdentityMode::Legacy,
+                source_bytes.len() as u64,
+            )
+            .unwrap();
+        let hour_index_bytes = replay_index.to_bytes().unwrap();
+        let hour_index_sha256 = snapshot::sha256::Sha256::hex(&hour_index_bytes);
+        let checkpoint_sha256 = snapshot::sha256::Sha256::hex(&checkpoint_bytes);
+        let absent_static_artifacts = REQUIRED_PACKAGED_STATIC_ARTIFACTS
+            .iter()
+            .map(|(name, artifact_path)| {
+                json!({
+                    "name": name,
+                    "path": artifact_path,
+                    "present": false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let index_bytes = serde_json::to_vec(&json!({
+            "game_id": game,
+            "schema_version": "1",
+            "host_fold_skipped": false,
+            "production_json_snapshots_omitted": true,
+            "canonical_world_source": snapshot::COMPACT_STREAM_ROLE,
+            "snapshots": [],
+            "static_artifacts": absent_static_artifacts,
+            "replay_decoder": {
+                "schema": "hoi4.replay_decoder.binary_seek.v1",
+                "hour_index": {
+                    "role": snapshot::HOUR_INDEX_ROLE,
+                    "path": snapshot::HOUR_INDEX_FILE,
+                    "bytes": hour_index_bytes.len(),
+                    "sha256": hour_index_sha256,
+                    "hours": 2,
+                    "source_bytes": source_bytes.len(),
+                    "source_sha256": source_sha256,
+                },
+                "checkpoints": {
+                    "role": snapshot::CHECKPOINT_CACHE_ROLE,
+                    "path": snapshot::CHECKPOINT_CACHE_FILE,
+                    "bytes": checkpoint_bytes.len(),
+                    "sha256": checkpoint_sha256,
+                    "checkpoint_count": 1,
+                    "checkpoint_interval_hours": 2,
+                    "max_seek_deltas": 1,
+                },
+                "legacy_json_bytes_avoided": worlds.iter().map(Vec::len).sum::<usize>(),
+                "exact_reconstruction_parity": true,
+                "bounded_seek_certified": true,
+            },
+        }))
+        .unwrap();
+        let content = portable_content_manifest_fixture();
+        let recorder_manifest = serde_json::to_vec(&json!({
+            "replay_game_id": game,
+            "replay_packaging": {"static_artifacts": []},
+            "replay_entries": {
+                "stream": "collector_raw/collector_stream.bin",
+                "stream_role": snapshot::COMPACT_STREAM_ROLE,
+            },
+            "stream_storage": {
+                "decoded_bytes": source_bytes.len(),
+                "decoded_sha256": source_sha256,
+            },
+            "portable_content_manifest": serde_json::to_value(&content).unwrap(),
+            "modset": {
+                "resolved": true,
+                "errors": [],
+                "game": {"exe_sha256": content.source_game.executable_sha256.clone()},
+                "dlc": {"enabled": []},
+                "dlc_display_names": {},
+                "localisation_language": content.localisation_language.clone(),
+                "display_variant": {
+                    "physical_width": 1920,
+                    "physical_height": 1080,
+                    "min_gui_width": 1920,
+                    "min_gui_height": 1080,
+                    "gui_scale_f32_bits": 1.0f32.to_bits(),
+                    "refresh_rate_hz": 60,
+                    "max_refresh_rate_hz": null,
+                    "fullscreen": false,
+                    "borderless": true,
+                    "display_mode": "borderless_fullscreen",
+                    "settings_file_sha256": "e".repeat(64),
+                },
+            },
+        }))
+        .unwrap();
+        let entries = vec![
+            snapshot::PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: index_bytes,
+                role: "index",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/timeline.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "format": COMPACT_STREAM_TIMELINE_FORMAT,
+                    "stream_format": "compact",
+                    "stream": "collector_raw/collector_stream.bin",
+                    "raw_stream_role": snapshot::COMPACT_STREAM_ROLE,
+                    "session_manifest": "recorder/native_session_manifest.json",
+                    "session_manifest_role": "recorder_manifest",
+                }))
+                .unwrap(),
+                role: "timeline",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/recorder/native_session_manifest.json"),
+                bytes: recorder_manifest,
+                role: "recorder_manifest",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+                bytes: source_bytes.to_vec(),
+                role: snapshot::COMPACT_STREAM_ROLE,
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/{}", snapshot::HOUR_INDEX_FILE),
+                bytes: hour_index_bytes,
+                role: snapshot::HOUR_INDEX_ROLE,
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game}/{}", snapshot::CHECKPOINT_CACHE_FILE),
+                bytes: checkpoint_bytes,
+                role: if valid_checkpoint_role {
+                    snapshot::CHECKPOINT_CACHE_ROLE
+                } else {
+                    "wrong_checkpoint_role"
+                },
+                hour_index: None,
+            },
+        ];
+        let packed = snapshot::pack(
+            game,
+            &entries,
+            &snapshot::PackIdentity {
+                schema_version: Some("1".into()),
+                build_exe_sha256: Some(content.source_game.executable_sha256.clone()),
+                build_pinned: true,
+                content_manifest: Some(content),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        fs::write(path, packed).unwrap();
+    }
+
+    #[test]
+    fn packaged_binary_replay_reconstructs_exact_hours_without_json_snapshots() {
+        let root = temp_root("binary_replay");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture(&recording, true);
+
+        let source = open_recording(&recording).unwrap();
+        assert_eq!(source.game_id(), "binary-game");
+        assert_eq!(source.hours(), &[10, 11]);
+        assert_eq!(
+            source
+                .prefold_receipt()
+                .expect("binary replay must retain its H4CR receipt")
+                .source_len(),
+            b"H4CRcanonical-world-source".len() as u64
+        );
+        let frame = source.frame(11).unwrap();
+        assert_eq!(frame.hour_index, 11);
+        assert_eq!(frame.date.as_deref(), Some("1936.1.1.11"));
+        assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.55));
+        assert!(source.frame(12).is_err());
+        drop(source);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn packaged_binary_replay_rejects_an_incomplete_role_graph() {
+        let root = temp_root("binary_replay_role");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture(&recording, false);
+
+        let error = match open_recording(&recording) {
+            Ok(_) => panic!("binary replay with a mismatched checkpoint role must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(snapshot::CHECKPOINT_CACHE_ROLE));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn known_campaign_identity_value() -> Value {

@@ -155,6 +155,27 @@ pub struct PrefoldSourceReceipt {
 }
 
 impl PrefoldSourceReceipt {
+    pub fn try_new(
+        decoder_id: impl Into<String>,
+        source_len: u64,
+        source_sha256: impl Into<String>,
+        identity_mode: PrefoldStreamIdentityMode,
+    ) -> Result<Self, PrefoldDecodeError> {
+        let decoder_id = decoder_id.into();
+        let source_sha256 = source_sha256.into();
+        if decoder_id.trim().is_empty() || source_len < 4 || !is_lower_sha256(&source_sha256) {
+            return Err(PrefoldDecodeError::new(
+                "certified replay source receipt identity is invalid",
+            ));
+        }
+        Ok(Self {
+            decoder_id,
+            source_len,
+            source_sha256,
+            identity_mode,
+        })
+    }
+
     pub fn decoder_id(&self) -> &str {
         &self.decoder_id
     }

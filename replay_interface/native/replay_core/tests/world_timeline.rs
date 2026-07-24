@@ -1336,7 +1336,7 @@ fn compact_stream_container_fails_closed() {
         SourceError::Unsupported(msg) => {
             assert!(msg.contains("collector_compact_stream"), "msg: {msg}");
             assert!(msg.contains("compact"), "msg: {msg}");
-            assert!(msg.contains("HOI4REPLAY_CONTAINER_SPEC"), "msg: {msg}");
+            assert!(msg.contains("hour-index/checkpoint"), "msg: {msg}");
             assert!(msg.contains("portable pre-folder"), "msg: {msg}");
             assert!(msg.contains("ordinary product open"), "msg: {msg}");
         }

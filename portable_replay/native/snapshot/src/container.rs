@@ -3506,6 +3506,7 @@ fn verify_and_read(
 mod tests {
     use super::*;
     use crate::pack::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
+    use crate::COMPACT_STREAM_ROLE;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

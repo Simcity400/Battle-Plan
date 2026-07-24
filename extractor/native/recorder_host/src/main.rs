@@ -4,7 +4,6 @@
 // The product recorder already owns the canonical WorldFold. Compile the thin
 // decoder facade and its private worker entry into this executable without
 // creating a replay-workspace dependency on extractor crates.
-#[cfg(not(test))]
 #[path = "../../replay_decoder/src/lib.rs"]
 mod replay_decoder;
 #[cfg(not(test))]
@@ -2894,8 +2893,62 @@ fn run() -> Result<(), String> {
     // Only the compact stream carries H4CR records; the JSON debug stream has no
     // fold and packs an empty snapshots array.
     let mut fold_stats_telemetry: Option<recorder_host::stream_fold::FoldStreamStats> = None;
+    let mut replay_artifacts_telemetry: Option<replay_decoder::CertifiedReplayArtifacts> = None;
     let mut verify_report_telemetry: Option<snapshot::StreamVerifyReport> = None;
     match cfg.stream_format {
+        StreamFormat::Compact if cfg.production => {
+            // Production persistence is H4CR-first: no per-hour JSON spill is
+            // created. replay_decoder folds the certified stream once into a
+            // binary hourly offset index plus sparse checkpoints/bounded
+            // deltas, then reconstructs every hour to prove exact byte parity
+            // before packaging. The artifact spill is retained; finalization
+            // never deletes its active evidence directory.
+            let artifact_spill_dir = create_unique_snapshot_spill_dir(&cfg.out_dir)?;
+            let artifacts = replay_decoder::build_certified_replay_artifacts(
+                &raw_path,
+                &artifact_spill_dir,
+                &replay_game_id,
+                capture_identity_mode,
+                capture.byte_count,
+                &capture.sha256,
+                snapshot::DEFAULT_CHECKPOINT_INTERVAL_HOURS,
+            )
+            .map_err(|error| {
+                let error = format!("build certified replay_decoder artifacts: {error}");
+                mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
+                error
+            })?;
+            verify_static_bundle_before_publication(
+                static_bundle_admission.as_ref(),
+                true,
+            )?;
+            let verify = write_native_replay_container_streaming(
+                &cfg,
+                &raw_path,
+                &capture,
+                &[],
+                Some(&artifacts),
+                None,
+                capture_identity_mode,
+                &manifest,
+                &manifest_path,
+                &replay_path,
+            )
+            .map_err(|error| {
+                mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
+                error
+            })?;
+            eprintln!(
+                "recorder production replay_decoder artifacts retained at {} (hours={}, checkpoints={}, max_seek_deltas={}, legacy_json_bytes_avoided={})",
+                artifact_spill_dir.display(),
+                artifacts.hour_count,
+                artifacts.checkpoint_count,
+                artifacts.max_seek_deltas,
+                artifacts.legacy_json_bytes_avoided,
+            );
+            replay_artifacts_telemetry = Some(artifacts);
+            verify_report_telemetry = Some(verify);
+        }
         StreamFormat::Compact if cfg.skip_host_fold => {
             // Production skip: the raw compact stream is the canonical artifact
             // (replay_decoder D1 folds per-hour on demand); pack the container
@@ -2927,6 +2980,7 @@ fn run() -> Result<(), String> {
                 &raw_path,
                 &capture,
                 &[],
+                None,
                 None,
                 capture_identity_mode,
                 &manifest,
@@ -2994,6 +3048,7 @@ fn run() -> Result<(), String> {
                     &raw_path,
                     &capture,
                     &world_snapshot_files,
+                    None,
                     Some(&fold_stats),
                     capture_identity_mode,
                     &manifest,
@@ -3043,6 +3098,7 @@ fn run() -> Result<(), String> {
         finalize_started.elapsed(),
         fold_stats_telemetry.as_ref(),
         cfg.skip_host_fold && cfg.stream_format == StreamFormat::Compact,
+        replay_artifacts_telemetry.as_ref(),
         verify_report_telemetry.as_ref(),
     );
 
@@ -5013,6 +5069,50 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
 
     let cfg = repack_writer_config(&repack, &manifest, compression_profile)?;
     let finalize_started = Instant::now();
+    if production {
+        let artifact_spill_dir = create_unique_snapshot_spill_dir(&repack.run_dir)?;
+        let artifacts = replay_decoder::build_certified_replay_artifacts(
+            &raw_path,
+            &artifact_spill_dir,
+            &game_id,
+            repack_identity_mode,
+            capture.byte_count,
+            &capture.sha256,
+            snapshot::DEFAULT_CHECKPOINT_INTERVAL_HOURS,
+        )
+        .map_err(|error| format!("build deferred certified replay artifacts: {error}"))?;
+        verify_static_bundle_before_publication(static_bundle_admission.as_ref(), true)?;
+        let verify = write_native_replay_container_streaming(
+            &cfg,
+            &raw_path,
+            &capture,
+            &[],
+            Some(&artifacts),
+            None,
+            repack_identity_mode,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )?;
+        update_host_finalize_telemetry(
+            &manifest_path,
+            &capture,
+            finalize_started.elapsed(),
+            None,
+            false,
+            Some(&artifacts),
+            Some(&verify),
+        )?;
+        eprintln!(
+            "recorder deferred production artifacts retained at {} (hours={}, checkpoints={}, max_seek_deltas={})",
+            artifact_spill_dir.display(),
+            artifacts.hour_count,
+            artifacts.checkpoint_count,
+            artifacts.max_seek_deltas,
+        );
+        println!("{}", replay_path.display());
+        return Ok(());
+    }
     let snapshot_spill_dir = create_unique_snapshot_spill_dir(&repack.run_dir)?;
     let result = (|| -> Result<
         (
@@ -5062,6 +5162,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
             &raw_path,
             &capture,
             &snapshot_files,
+            None,
             Some(&fold_stats),
             repack_identity_mode,
             &manifest,
@@ -5079,6 +5180,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
         finalize_started.elapsed(),
         Some(&fold_stats),
         false,
+        None,
         Some(&verify),
     )?;
     println!("{}", replay_path.display());
@@ -5716,7 +5818,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     }
     if production && skip_host_fold {
         return Err(
-            "production/profile capture cannot use --skip-host-fold: portable .battleplan publication requires indexed folded snapshots"
+            "production/profile capture cannot use --skip-host-fold: portable .battleplan publication requires a certified H4CR hourly index and sparse binary checkpoints"
                 .to_string(),
         );
     }
@@ -8459,7 +8561,43 @@ fn publish_rollover_package_set(
         member_manifest = normalize_session_manifest_value(&member_manifest)?;
         write_synced_json(&member_manifest_path, &member_manifest)?;
 
-        let (fold_stats, verify_report) = if cfg.skip_host_fold {
+        let (fold_stats, replay_artifacts, verify_report) = if cfg.production {
+            let artifact_spill = create_unique_snapshot_spill_dir(&member_dir)?;
+            let artifacts = replay_decoder::build_certified_replay_artifacts(
+                &raw_path,
+                &artifact_spill,
+                &replay_game_id,
+                identity_mode,
+                member_capture.byte_count,
+                &member_capture.sha256,
+                snapshot::DEFAULT_CHECKPOINT_INTERVAL_HOURS,
+            )
+            .map_err(|error| {
+                format!(
+                    "build logical stream {} certified replay artifacts: {error}",
+                    stream.logical_stream_id
+                )
+            })?;
+            verify_static_bundle_before_publication(static_bundle_admission, true)?;
+            let verify = write_native_replay_container_streaming(
+                cfg,
+                &raw_path,
+                &member_capture,
+                &[],
+                Some(&artifacts),
+                None,
+                identity_mode,
+                &member_manifest,
+                &member_manifest_path,
+                &replay_path,
+            )?;
+            eprintln!(
+                "recorder logical stream {} production artifacts retained at {}",
+                stream.logical_stream_id,
+                artifact_spill.display()
+            );
+            (None, Some(artifacts), Some(verify))
+        } else if cfg.skip_host_fold {
             recorder_host::stream_fold::verify_stream_logical_boundary_with_identity_mode(
                 &raw_path,
                 identity_mode,
@@ -8477,12 +8615,13 @@ fn publish_rollover_package_set(
                 &member_capture,
                 &[],
                 None,
+                None,
                 identity_mode,
                 &member_manifest,
                 &member_manifest_path,
                 &replay_path,
             )?;
-            (None, Some(verify))
+            (None, None, Some(verify))
         } else {
             let spill = create_unique_snapshot_spill_dir(&member_dir)?;
             let result = (|| {
@@ -8519,6 +8658,7 @@ fn publish_rollover_package_set(
                     &raw_path,
                     &member_capture,
                     &snapshots,
+                    None,
                     Some(&stats),
                     identity_mode,
                     &member_manifest,
@@ -8529,7 +8669,7 @@ fn publish_rollover_package_set(
             })();
             cleanup_snapshot_spill_dir(&spill);
             let (stats, verify) = result?;
-            (Some(stats), Some(verify))
+            (Some(stats), None, Some(verify))
         };
         write_host_finalize_telemetry(
             &member_manifest_path,
@@ -8537,6 +8677,7 @@ fn publish_rollover_package_set(
             member_finalize_started.elapsed(),
             fold_stats.as_ref(),
             cfg.skip_host_fold,
+            replay_artifacts.as_ref(),
             verify_report.as_ref(),
         );
         let (portable_manifest_sha256, package_sha256) =
@@ -8874,12 +9015,32 @@ fn write_native_replay_container_streaming(
     raw_path: &Path,
     capture: &PipeCapture,
     snapshot_files: &[FoldedSnapshotFile],
+    replay_artifacts: Option<&replay_decoder::CertifiedReplayArtifacts>,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
     identity_mode: compact_contract::stream_validator::StreamIdentityMode,
     manifest: &Value,
     manifest_path: &Path,
     replay_path: &Path,
 ) -> Result<snapshot::StreamVerifyReport, String> {
+    if let Some(artifacts) = replay_artifacts {
+        if !snapshot_files.is_empty() {
+            return Err(
+                "production H4CR artifacts and legacy per-hour JSON snapshots are mutually exclusive"
+                    .to_string(),
+            );
+        }
+        if artifacts.source_len != capture.byte_count
+            || artifacts.source_sha256 != capture.sha256
+            || artifacts.hour_count == 0
+            || artifacts.checkpoint_count == 0
+            || artifacts.max_seek_deltas >= artifacts.checkpoint_interval_hours
+        {
+            return Err(
+                "replay_decoder artifact receipt is not bound to the capture or its seek bound"
+                    .to_string(),
+            );
+        }
+    }
     match fold_stats {
         Some(stats) => {
             recorder_host::stream_fold::strict_stream_certification_verdict(
@@ -8960,14 +9121,47 @@ fn write_native_replay_container_streaming(
     let mut index_value = json!({
         "game_id": game_id.clone(),
         "schema_version": "1",
-        // Explicit skip marker: consumers must never confuse "host fold skipped
-        // by production option" (per-hour access via replay_decoder over the
-        // packed raw stream) with "recording had no hours".
-        "host_fold_skipped": fold_stats.is_none(),
+        // A certified replay_decoder binary fold is a real production fold.
+        // Only the explicit legacy --skip-host-fold route reports a skip.
+        "host_fold_skipped": fold_stats.is_none() && replay_artifacts.is_none(),
+        "production_json_snapshots_omitted": replay_artifacts.is_some(),
         "snapshots": index_snapshots,
         "static_artifacts": static_artifact_index,
         "design_catalog_live": design_catalog_live_index,
+        "canonical_world_source": "collector_compact_stream",
     });
+    if let Some(artifacts) = replay_artifacts {
+        index_value
+            .as_object_mut()
+            .expect("replay index is an object")
+            .insert(
+                "replay_decoder".to_string(),
+                json!({
+                    "schema": "hoi4.replay_decoder.binary_seek.v1",
+                    "hour_index": {
+                        "role": snapshot::HOUR_INDEX_ROLE,
+                        "path": snapshot::HOUR_INDEX_FILE,
+                        "bytes": artifacts.hour_index_len,
+                        "sha256": artifacts.hour_index_sha256,
+                        "hours": artifacts.hour_count,
+                        "source_bytes": artifacts.source_len,
+                        "source_sha256": artifacts.source_sha256,
+                    },
+                    "checkpoints": {
+                        "role": snapshot::CHECKPOINT_CACHE_ROLE,
+                        "path": snapshot::CHECKPOINT_CACHE_FILE,
+                        "bytes": artifacts.checkpoint_cache_len,
+                        "sha256": artifacts.checkpoint_cache_sha256,
+                        "checkpoint_count": artifacts.checkpoint_count,
+                        "checkpoint_interval_hours": artifacts.checkpoint_interval_hours,
+                        "max_seek_deltas": artifacts.max_seek_deltas,
+                    },
+                    "legacy_json_bytes_avoided": artifacts.legacy_json_bytes_avoided,
+                    "exact_reconstruction_parity": true,
+                    "bounded_seek_certified": true,
+                }),
+            );
+    }
     if let Some(g2) = resolved_g2_engine_capture.as_ref() {
         index_value
             .as_object_mut()
@@ -8985,8 +9179,12 @@ fn write_native_replay_container_streaming(
         "session_manifest_role": "recorder_manifest",
     }))
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
-    let manifest_bytes =
-        session_manifest_bytes_with_pre_pack_host_finalize(&session_manifest, capture, fold_stats)?;
+    let manifest_bytes = session_manifest_bytes_with_pre_pack_host_finalize(
+        &session_manifest,
+        capture,
+        fold_stats,
+        replay_artifacts,
+    )?;
     let mut borrowed_entries = vec![
         BorrowedPackEntry {
             path: format!("payload/{game_id}/index.json"),
@@ -9102,6 +9300,46 @@ fn write_native_replay_container_streaming(
                 .or_insert_with(|| entry.path());
         }
     }
+    if let Some(artifacts) = replay_artifacts {
+        let blob_dir = &artifacts.production_render_blob_dir;
+        if blob_dir.exists() {
+            for entry in fs::read_dir(blob_dir)
+                .map_err(|error| format!("read {}: {error}", blob_dir.display()))?
+            {
+                let entry =
+                    entry.map_err(|error| format!("read {} entry: {error}", blob_dir.display()))?;
+                let file_type = entry
+                    .file_type()
+                    .map_err(|error| format!("inspect {}: {error}", entry.path().display()))?;
+                if !file_type.is_file() {
+                    return Err(format!(
+                        "production render blob member {} is not a regular file",
+                        entry.path().display()
+                    ));
+                }
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "production render blob filename is not UTF-8".to_string())?;
+                let digest = name.strip_suffix(".base64").ok_or_else(|| {
+                    format!("production render blob filename {name:?} has unexpected suffix")
+                })?;
+                let actual = to_hex(&hash_file_sha256_bytes(&entry.path())?);
+                if digest.len() != 64 || actual != digest {
+                    return Err(format!(
+                        "production render blob {} is not valid content-addressed evidence",
+                        entry.path().display()
+                    ));
+                }
+                production_render_blob_paths.insert(name, entry.path());
+            }
+        }
+        if production_render_blob_paths.len() as u64 != artifacts.production_render_blob_count {
+            return Err(
+                "preserved production-render artifact count changed before packaging".to_string(),
+            );
+        }
+    }
 
     let mut file_entries = snapshot_files
         .iter()
@@ -9120,6 +9358,20 @@ fn write_native_replay_container_streaming(
             path: format!("payload/{game_id}/production_render_blobs/{name}"),
             file_path: path.as_path(),
             role: "production_render_blob",
+            hour_index: None,
+        });
+    }
+    if let Some(artifacts) = replay_artifacts {
+        file_entries.push(FileBackedPackEntry {
+            path: format!("payload/{game_id}/{}", snapshot::HOUR_INDEX_FILE),
+            file_path: artifacts.hour_index_path.as_path(),
+            role: snapshot::HOUR_INDEX_ROLE,
+            hour_index: None,
+        });
+        file_entries.push(FileBackedPackEntry {
+            path: format!("payload/{game_id}/{}", snapshot::CHECKPOINT_CACHE_FILE),
+            file_path: artifacts.checkpoint_cache_path.as_path(),
+            role: snapshot::CHECKPOINT_CACHE_ROLE,
             hour_index: None,
         });
     }
@@ -9214,6 +9466,7 @@ fn build_host_finalize_telemetry(
     finalize_elapsed: Option<Duration>,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
     fold_skipped: bool,
+    replay_artifacts: Option<&replay_decoder::CertifiedReplayArtifacts>,
     verify: Option<&snapshot::StreamVerifyReport>,
     embedded_pre_pack_copy: bool,
 ) -> Value {
@@ -9251,7 +9504,31 @@ fn build_host_finalize_telemetry(
             ]),
         );
     }
-    if fold_skipped {
+    if let Some(artifacts) = replay_artifacts {
+        obj.insert(
+            "fold".into(),
+            json!({
+                "skipped": false,
+                "producer": "replay_decoder",
+                "canonical_world_source": "collector_compact_stream",
+                "production_json_snapshots_omitted": true,
+                "hour_count": artifacts.hour_count,
+                "hour_index_role": snapshot::HOUR_INDEX_ROLE,
+                "hour_index_bytes": artifacts.hour_index_len,
+                "hour_index_sha256": artifacts.hour_index_sha256,
+                "checkpoint_cache_role": snapshot::CHECKPOINT_CACHE_ROLE,
+                "checkpoint_cache_bytes": artifacts.checkpoint_cache_len,
+                "checkpoint_cache_sha256": artifacts.checkpoint_cache_sha256,
+                "checkpoint_count": artifacts.checkpoint_count,
+                "checkpoint_interval_hours": artifacts.checkpoint_interval_hours,
+                "max_seek_deltas": artifacts.max_seek_deltas,
+                "exact_reconstruction_parity": true,
+                "bounded_seek_certified": true,
+                "legacy_json_bytes_avoided": artifacts.legacy_json_bytes_avoided,
+                "active_spill_retained": true,
+            }),
+        );
+    } else if fold_skipped {
         // Explicit, never-silent skip record (production --skip-host-fold): the
         // packed raw compact stream is the canonical artifact; per-hour world
         // state is derivable on demand via replay_decoder (D1).
@@ -9346,6 +9623,7 @@ fn session_manifest_bytes_with_pre_pack_host_finalize(
     session_manifest: &ValidatedSessionManifest,
     capture: &PipeCapture,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    replay_artifacts: Option<&replay_decoder::CertifiedReplayArtifacts>,
 ) -> Result<Vec<u8>, String> {
     let mut manifest = session_manifest.value.clone();
     manifest
@@ -9353,13 +9631,12 @@ fn session_manifest_bytes_with_pre_pack_host_finalize(
         .ok_or_else(|| "session manifest is not an object".to_string())?
         .insert(
             "host_finalize".to_string(),
-            // This helper is only used by the compact streaming path, where
-            // `fold_stats == None` means exactly one thing: --skip-host-fold.
             build_host_finalize_telemetry(
                 capture,
                 None,
                 fold_stats,
-                fold_stats.is_none(),
+                fold_stats.is_none() && replay_artifacts.is_none(),
+                replay_artifacts,
                 None,
                 true,
             ),
@@ -9378,6 +9655,7 @@ fn write_host_finalize_telemetry(
     finalize_elapsed: Duration,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
     fold_skipped: bool,
+    replay_artifacts: Option<&replay_decoder::CertifiedReplayArtifacts>,
     verify: Option<&snapshot::StreamVerifyReport>,
 ) {
     if let Err(e) = update_host_finalize_telemetry(
@@ -9386,6 +9664,7 @@ fn write_host_finalize_telemetry(
         finalize_elapsed,
         fold_stats,
         fold_skipped,
+        replay_artifacts,
         verify,
     ) {
         eprintln!("recorder warning: could not record host_finalize telemetry: {e}");
@@ -9398,6 +9677,7 @@ fn update_host_finalize_telemetry(
     finalize_elapsed: Duration,
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
     fold_skipped: bool,
+    replay_artifacts: Option<&replay_decoder::CertifiedReplayArtifacts>,
     verify: Option<&snapshot::StreamVerifyReport>,
 ) -> Result<(), String> {
     let block = build_host_finalize_telemetry(
@@ -9405,6 +9685,7 @@ fn update_host_finalize_telemetry(
         Some(finalize_elapsed),
         fold_stats,
         fold_skipped,
+        replay_artifacts,
         verify,
         false,
     );
@@ -17109,6 +17390,7 @@ mod tests {
             &session_manifest,
             &capture,
             Some(&fold_stats),
+            None,
         )
         .unwrap();
         let manifest: Value = serde_json::from_slice(&bytes).unwrap();
@@ -27894,6 +28176,7 @@ mod tests {
             &raw_path,
             &capture,
             &[],
+            None,
             Some(&malformed_stats),
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
@@ -27913,6 +28196,7 @@ mod tests {
             &raw_path,
             &capture,
             &[],
+            None,
             None,
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
@@ -28013,6 +28297,7 @@ mod tests {
             &raw_path,
             &capture,
             &snapshots,
+            None,
             Some(&fold_stats),
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
@@ -28047,6 +28332,196 @@ mod tests {
         let index_json: Value = serde_json::from_slice(&index_bytes).unwrap();
         assert_eq!(index_json["host_fold_skipped"], json!(false));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn production_streaming_container_uses_h4cr_index_and_sparse_binary_checkpoints() {
+        let dir = TmpDir::new("production_binary_replay_pack");
+        let replay_path = dir.join("native_session.battleplan");
+        let raw_path = dir.join("collector_stream.bin");
+        let manifest_path = dir.join("native_session_manifest.json");
+        let artifact_root = dir.join("active_replay_artifact_spill");
+        let artifact_dir = artifact_root.join("replay_decoder");
+        let render_dir = artifact_root.join("production_render_blobs");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        fs::create_dir_all(&render_dir).unwrap();
+
+        let session_id = "production binary replay pack/session";
+        let game_id = replay_game_id(session_id);
+        let raw = b"H4CRcanonical-production-source";
+        fs::write(&raw_path, raw).unwrap();
+        let source_sha256 = to_hex(&Sha256::digest(raw));
+        let capture = PipeCapture {
+            byte_count: raw.len() as u64,
+            stored_byte_count: raw.len() as u64,
+            sha256: source_sha256.clone(),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
+        };
+        let marker = "sparse-binary-checkpoint".repeat(64);
+        let world_a = serde_json::to_vec(&json!({
+            "game_id": game_id,
+            "schema_version": "1",
+            "hour_index": 100,
+            "date": "1936.1.5.4",
+            "countries": {"FRA": {"marker": marker, "stability": 0.5}},
+            "states": {},
+        }))
+        .unwrap();
+        let world_b = serde_json::to_vec(&json!({
+            "game_id": game_id,
+            "schema_version": "1",
+            "hour_index": 101,
+            "date": "1936.1.5.5",
+            "countries": {"FRA": {"marker": marker, "stability": 0.6}},
+            "states": {},
+        }))
+        .unwrap();
+        let first_end = 8;
+        let mut encoder =
+            snapshot::ReplayCacheEncoder::new(Vec::new(), &source_sha256, 168).unwrap();
+        encoder
+            .push(snapshot::CacheBuildHour {
+                hour_index: 100,
+                date: "1936.1.5.4".into(),
+                h4cr_start_offset: 0,
+                h4cr_end_offset: first_end,
+                world_json: world_a.clone(),
+            })
+            .unwrap();
+        encoder
+            .push(snapshot::CacheBuildHour {
+                hour_index: 101,
+                date: "1936.1.5.5".into(),
+                h4cr_start_offset: first_end,
+                h4cr_end_offset: raw.len() as u64,
+                world_json: world_b.clone(),
+            })
+            .unwrap();
+        let (cache_bytes, replay_index) = encoder
+            .finish(
+                &game_id,
+                "1",
+                snapshot::CacheIdentityMode::Legacy,
+                raw.len() as u64,
+            )
+            .unwrap();
+        let index_bytes = replay_index.to_bytes().unwrap();
+        let hour_index_path = artifact_root.join(snapshot::HOUR_INDEX_FILE);
+        let checkpoint_cache_path = artifact_root.join(snapshot::CHECKPOINT_CACHE_FILE);
+        fs::write(&hour_index_path, &index_bytes).unwrap();
+        fs::write(&checkpoint_cache_path, &cache_bytes).unwrap();
+        let artifacts = replay_decoder::CertifiedReplayArtifacts {
+            hour_index_path,
+            checkpoint_cache_path,
+            hour_count: 2,
+            checkpoint_count: 1,
+            checkpoint_interval_hours: 168,
+            max_seek_deltas: 1,
+            source_len: raw.len() as u64,
+            source_sha256: source_sha256.clone(),
+            hour_index_len: index_bytes.len() as u64,
+            hour_index_sha256: to_hex(&Sha256::digest(&index_bytes)),
+            checkpoint_cache_len: cache_bytes.len() as u64,
+            checkpoint_cache_sha256: to_hex(&Sha256::digest(&cache_bytes)),
+            legacy_json_bytes_avoided: (world_a.len() + world_b.len()) as u64,
+            production_render_blob_dir: render_dir,
+            production_render_blob_count: 0,
+            production_render_blob_bytes: 0,
+        };
+        let fold_stats = recorder_host::stream_fold::FoldStreamStats {
+            stream_bytes: raw.len() as u64,
+            bytes_folded: raw.len() as u64,
+            truncated_tail_bytes: 0,
+            records_total: 2,
+            data_records: 0,
+            malformed_payload_records: 0,
+            malformed_payload_domains: Default::default(),
+            frame_end_records: 2,
+            perf_records: 0,
+            other_records: 0,
+            hours_emitted: 2,
+            stop_reason: None,
+            ends_at_frame_end: true,
+            decoded_sha256: source_sha256.clone(),
+        };
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "modset": {"resolved": false, "errors": ["test fixture"], "partial_evidence": {}},
+            "session_id": session_id,
+            "replay_game_id": game_id,
+            "stream_format": "compact",
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut cfg = test_config(vec![], None);
+        cfg.out_dir = dir.0.clone();
+        cfg.session_id = session_id.to_string();
+        cfg.production = true;
+
+        write_native_replay_container_streaming(
+            &cfg,
+            &raw_path,
+            &capture,
+            &[],
+            Some(&artifacts),
+            Some(&fold_stats),
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        assert!(container.entries_by_role("snapshot").is_empty());
+        assert_eq!(container.entries_by_role(snapshot::HOUR_INDEX_ROLE).len(), 1);
+        assert_eq!(
+            container
+                .entries_by_role(snapshot::CHECKPOINT_CACHE_ROLE)
+                .len(),
+            1
+        );
+        let packaged_index: Value = serde_json::from_slice(
+            &container
+                .read_entry_bytes(&format!("payload/{game_id}/index.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(packaged_index["host_fold_skipped"], json!(false));
+        assert_eq!(
+            packaged_index["production_json_snapshots_omitted"],
+            json!(true)
+        );
+        assert_eq!(packaged_index["snapshots"], json!([]));
+        assert_eq!(
+            packaged_index["replay_decoder"]["exact_reconstruction_parity"],
+            json!(true)
+        );
+        assert_eq!(
+            packaged_index["replay_decoder"]["checkpoints"]["max_seek_deltas"],
+            json!(1)
+        );
+        let embedded_manifest: Value = serde_json::from_slice(
+            &container
+                .read_entry_bytes(&format!(
+                    "payload/{game_id}/recorder/native_session_manifest.json"
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            embedded_manifest["host_finalize"]["fold"]["producer"],
+            json!("replay_decoder")
+        );
+        assert_eq!(
+            embedded_manifest["host_finalize"]["fold"]["active_spill_retained"],
+            json!(true)
+        );
     }
 
     #[test]
@@ -28353,6 +28828,7 @@ mod tests {
             &capture,
             &[],
             None,
+            None,
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest_a,
             &manifest_path,
@@ -28437,6 +28913,7 @@ mod tests {
             &raw_path,
             &capture,
             &[],
+            None,
             None,
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
@@ -28589,6 +29066,7 @@ mod tests {
             &inline_raw,
             &capture,
             &inline_snapshots,
+            None,
             Some(&inline_fold_stats),
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
@@ -28611,6 +29089,7 @@ mod tests {
             &deferred_raw,
             &capture,
             &[],
+            None,
             None,
             compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
@@ -28838,7 +29317,8 @@ mod tests {
         .expect("production compact-only package must reject");
         assert!(error.contains("cannot use --skip-host-fold"), "{error}");
         assert!(error.contains("portable .battleplan"), "{error}");
-        assert!(error.contains("indexed folded snapshots"), "{error}");
+        assert!(error.contains("H4CR hourly index"), "{error}");
+        assert!(error.contains("sparse binary checkpoints"), "{error}");
     }
 
     #[test]

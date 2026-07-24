@@ -1498,6 +1498,88 @@ fn certified_raw_h4cr_produces_the_neutral_prefolded_contract() {
 }
 
 #[test]
+fn certified_binary_artifacts_reconstruct_every_hour_and_bound_all_seeks() {
+    let dir = TmpDir::new("certified_binary_artifacts");
+    let source = dir.0.join("collector_stream.bin");
+    let artifact_root = dir.0.join("active_artifact_spill");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let stream = three_hour_stream();
+    std::fs::write(&source, &stream).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+    let reference = reference_fold(&stream, "fold_check");
+
+    let artifacts = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        2,
+    )
+    .unwrap();
+
+    assert_eq!(artifacts.hour_count, reference.len() as u64);
+    assert_eq!(artifacts.checkpoint_count, 2);
+    assert_eq!(artifacts.max_seek_deltas, 1);
+    assert!(
+        artifact_root.is_dir(),
+        "finalization must retain the active binary artifact spill"
+    );
+    let index_bytes = std::fs::read(&artifacts.hour_index_path).unwrap();
+    let cache_bytes = std::fs::read(&artifacts.checkpoint_cache_path).unwrap();
+    let cache = snapshot::CertifiedReplayCache::open(
+        &index_bytes,
+        cache_bytes,
+        stream.len() as u64,
+        &source_sha256,
+    )
+    .unwrap();
+    assert_eq!(
+        cache
+            .index()
+            .hours()
+            .iter()
+            .map(snapshot::ReplayHourEntry::hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_A, HOUR_B, HOUR_C]
+    );
+    assert_eq!(
+        cache.index().hours().first().unwrap().h4cr_start_offset(),
+        0
+    );
+    assert_eq!(
+        cache.index().hours().last().unwrap().h4cr_end_offset(),
+        stream.len() as u64
+    );
+    for (hour, (_, _, expected_json)) in cache.index().hours().iter().zip(reference.iter()) {
+        let (actual_json, receipt) = cache.reconstruct_json(hour.hour_index()).unwrap();
+        assert_eq!(&actual_json, expected_json);
+        assert!(receipt.applied_deltas <= 1);
+    }
+    let mut pending_dirs = vec![artifact_root.clone()];
+    let mut legacy_snapshots = 0;
+    while let Some(current) = pending_dirs.pop() {
+        for entry in std::fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending_dirs.push(entry.path());
+            } else if entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json")
+            {
+                legacy_snapshots += 1;
+            }
+        }
+    }
+    assert_eq!(
+        legacy_snapshots, 0,
+        "production artifact generation must not write per-hour JSON snapshots"
+    );
+}
+
+#[test]
 fn portable_decoder_contract_drives_the_same_certified_world_fold() {
     let request =
         snapshot::CertifiedPrefoldRequest::try_new("fold_check", three_hour_stream()).unwrap();
