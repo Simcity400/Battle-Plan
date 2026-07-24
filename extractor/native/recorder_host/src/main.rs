@@ -317,6 +317,10 @@ struct Config {
     min_game_hours: i32,
     scheduled_domains: Vec<String>,
     production: bool,
+    /// Ordinary resident product capture has separate static-publication
+    /// authority, but its replay persistence is still production binary:
+    /// canonical H4CR plus replay_decoder H4IX/H4CP, never hourly JSON.
+    product_auto_attach_runtime: bool,
     lightweight_root_frame: bool,
     special_projects_scan: bool,
     compact_country_frame: bool,
@@ -2899,14 +2903,14 @@ fn run() -> Result<(), String> {
     let mut replay_artifacts_telemetry: Option<replay_decoder::CertifiedReplayArtifacts> = None;
     let mut verify_report_telemetry: Option<snapshot::StreamVerifyReport> = None;
     match cfg.stream_format {
-        StreamFormat::Compact if cfg.production => {
+        StreamFormat::Compact if uses_binary_replay_persistence(&cfg) => {
             // Production persistence is H4CR-first: no per-hour JSON spill is
             // created. replay_decoder folds the certified stream once into a
             // binary hourly offset index plus sparse checkpoints/bounded
             // deltas, then reconstructs every hour to prove exact byte parity
             // before packaging. The artifact spill is retained; finalization
             // never deletes its active evidence directory.
-            let artifact_spill_dir = create_unique_snapshot_spill_dir(&cfg.out_dir)?;
+            let artifact_spill_dir = create_unique_replay_artifact_spill_dir(&cfg.out_dir)?;
             let artifacts = replay_decoder::build_certified_replay_artifacts(
                 &raw_path,
                 &artifact_spill_dir,
@@ -2923,7 +2927,7 @@ fn run() -> Result<(), String> {
             })?;
             verify_static_bundle_before_publication(
                 static_bundle_admission.as_ref(),
-                true,
+                cfg.production,
             )?;
             let verify = write_native_replay_container_streaming(
                 &cfg,
@@ -4078,6 +4082,7 @@ fn repack_writer_config(
         min_game_hours: 0,
         scheduled_domains: Vec::new(),
         production: false,
+        product_auto_attach_runtime: false,
         lightweight_root_frame: true,
         special_projects_scan: false,
         compact_country_frame: true,
@@ -5071,7 +5076,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
     let cfg = repack_writer_config(&repack, &manifest, compression_profile)?;
     let finalize_started = Instant::now();
     if production {
-        let artifact_spill_dir = create_unique_snapshot_spill_dir(&repack.run_dir)?;
+        let artifact_spill_dir = create_unique_replay_artifact_spill_dir(&repack.run_dir)?;
         let artifacts = replay_decoder::build_certified_replay_artifacts(
             &raw_path,
             &artifact_spill_dir,
@@ -5193,6 +5198,10 @@ fn is_lower_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn uses_binary_replay_persistence(cfg: &Config) -> bool {
+    cfg.production || cfg.product_auto_attach_runtime
 }
 
 fn is_canonical_lower_uuid(value: &str) -> bool {
@@ -6188,6 +6197,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         min_game_hours,
         scheduled_domains,
         production,
+        product_auto_attach_runtime,
         lightweight_root_frame,
         special_projects_scan,
         compact_country_frame,
@@ -8569,8 +8579,8 @@ fn publish_rollover_package_set(
         member_manifest = normalize_session_manifest_value(&member_manifest)?;
         write_synced_json(&member_manifest_path, &member_manifest)?;
 
-        let (fold_stats, replay_artifacts, verify_report) = if cfg.production {
-            let artifact_spill = create_unique_snapshot_spill_dir(&member_dir)?;
+        let (fold_stats, replay_artifacts, verify_report) = if uses_binary_replay_persistence(cfg) {
+            let artifact_spill = create_unique_replay_artifact_spill_dir(&member_dir)?;
             let artifacts = replay_decoder::build_certified_replay_artifacts(
                 &raw_path,
                 &artifact_spill,
@@ -8586,7 +8596,7 @@ fn publish_rollover_package_set(
                     stream.logical_stream_id
                 )
             })?;
-            verify_static_bundle_before_publication(static_bundle_admission, true)?;
+            verify_static_bundle_before_publication(static_bundle_admission, cfg.production)?;
             let verify = write_native_replay_container_streaming(
                 cfg,
                 &raw_path,
@@ -9958,6 +9968,24 @@ fn create_unique_snapshot_spill_dir(out_dir: &Path) -> Result<PathBuf, String> {
     }
     Err(format!(
         "create folded snapshot spill dir failed: could not allocate a unique spill path under {}",
+        out_dir.display()
+    ))
+}
+
+fn create_unique_replay_artifact_spill_dir(out_dir: &Path) -> Result<PathBuf, String> {
+    let token = pipe_token();
+    for attempt in 0..64 {
+        let dir = out_dir.join(format!(".replay_decoder_artifacts-{token}-{attempt}"));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!(
+                "create replay_decoder artifact spill dir failed: {err}"
+            )),
+        }
+    }
+    Err(format!(
+        "create replay_decoder artifact spill dir failed: could not allocate a unique spill path under {}",
         out_dir.display()
     ))
 }
@@ -15347,7 +15375,6 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
 
     let observed = get("observed").unwrap_or(0);
     let attempts = get("attempts").unwrap_or(0);
-    let emitted = get("emitted_to_sink").unwrap_or(0);
     let coalesced = get("coalesced").unwrap_or(0);
     let reason_sum = get("coalesced_superseded")
         .unwrap_or(0)
@@ -15390,9 +15417,6 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
     if coalesced != 0 || observed != attempts {
         problems.push("hour_latch_coalesced_hours".to_string());
     }
-    if emitted != attempts {
-        problems.push("hour_latch_sink_delivery_mismatch".to_string());
-    }
     if get("sink_write_failures").unwrap_or(1) != 0 || get("transport_failed").unwrap_or(1) != 0 {
         problems.push("hour_latch_transport_failure".to_string());
     }
@@ -15413,6 +15437,13 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
     let sink_write_finishes = get("sink_write_finishes").unwrap_or(0);
     let sink_write_commits = get("sink_write_commits").unwrap_or(0);
     let sink_write_failures = get("sink_write_failures").unwrap_or(u64::MAX);
+    // `emitted_to_sink` is the semantic status-complete count, not the
+    // transport commit count: failed/partial frames are still durably emitted
+    // and must remain reconstructable evidence. Transport delivery is exact
+    // when every attempted hourly frame has one committed sink write.
+    if sink_write_commits != attempts {
+        problems.push("hour_latch_sink_delivery_mismatch".to_string());
+    }
     if sink_write_attempts != sink_write_finishes
         || sink_write_finishes != sink_write_commits.saturating_add(sink_write_failures)
         || get("sink_write_in_flight").unwrap_or(1) != 0
@@ -18257,13 +18288,13 @@ mod tests {
             ("sink_requested_count", 1),
             ("sink_opened_count", 1),
             ("sink_open_failures", 0),
-            ("sink_write_attempts", attempts.saturating_sub(1)),
-            ("sink_write_finishes", attempts.saturating_sub(1)),
-            ("sink_write_commits", attempts.saturating_sub(1)),
+            ("sink_write_attempts", attempts),
+            ("sink_write_finishes", attempts),
+            ("sink_write_commits", attempts),
             ("sink_write_in_flight", 0),
             ("sink_file_bytes_committed", 0),
             ("sink_pipe_bytes_committed", 4096),
-            ("sink_time_sample_count", attempts.saturating_sub(1)),
+            ("sink_time_sample_count", attempts),
             ("sink_time_total_us", 300),
             ("sink_time_p50_us", 100),
             ("sink_time_p99_us", 200),
@@ -18303,6 +18334,12 @@ mod tests {
         failed.hour_latch.insert("transport_failed".to_string(), 1);
         failed.hour_latch.insert("finalized".to_string(), 0);
         failed.hour_latch.insert("emitted_to_sink".to_string(), 2);
+        failed
+            .hour_latch
+            .insert("sink_write_commits".to_string(), 2);
+        failed
+            .hour_latch
+            .insert("sink_write_failures".to_string(), 1);
         let problems = hour_latch_gate_problems(&failed, true);
         assert!(problems.contains(&"hour_latch_terminal_proof_missing".to_string()));
         assert!(problems.contains(&"hour_latch_transport_failure".to_string()));
@@ -28061,6 +28098,7 @@ mod tests {
             min_game_hours: 0,
             scheduled_domains: vec!["fuel_live".to_string()],
             production: false,
+            product_auto_attach_runtime: false,
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
@@ -30293,6 +30331,11 @@ mod tests {
             "the passive speed/pause domain must not be silently omitted"
         );
         assert!(!cfg.production, "static publication authority is separate");
+        assert!(cfg.product_auto_attach_runtime);
+        assert!(
+            uses_binary_replay_persistence(&cfg),
+            "ordinary product capture must persist canonical H4CR with certified H4IX/H4CP artifacts"
+        );
         assert_eq!(cfg.profile, None);
         assert!(
             cfg.domain57_without_external_gate_authorized,
@@ -30304,6 +30347,7 @@ mod tests {
         assert_eq!(cfg.sample_ms, 1);
         assert_eq!(cfg.min_game_hours, 48);
         assert_eq!(cfg.reader_concurrency, 12);
+        assert_eq!(cfg.compression_profile.zstd_level, 3);
         assert_eq!(
             cfg.stream_compression,
             compact_stream::StreamCompression::None,
@@ -30903,6 +30947,7 @@ mod tests {
                 .map(|domain| domain.to_string())
                 .collect(),
             production: false,
+            product_auto_attach_runtime: false,
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
