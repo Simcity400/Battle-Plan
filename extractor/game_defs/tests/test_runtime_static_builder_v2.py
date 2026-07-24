@@ -671,6 +671,20 @@ def test_input_fingerprint_binds_the_resolved_vanilla_root(tmp_path: Path, monke
     assert first["fingerprint_sha256"] != second["fingerprint_sha256"]
 
 
+def test_terminal_input_fingerprint_check_fails_closed_on_drift(monkeypatch):
+    expected = {"schema": B.FINGERPRINT_SCHEMA, "fingerprint_sha256": "a" * 64}
+    changed = {"schema": B.FINGERPRINT_SCHEMA, "fingerprint_sha256": "b" * 64}
+    monkeypatch.setattr(B, "_build_input_fingerprint", lambda *_args: changed)
+
+    with pytest.raises(
+        LR.ResolutionError,
+        match="build input fingerprint changed during static generation",
+    ):
+        B._require_build_input_fingerprint_unchanged(
+            expected, Path("bindings"), Path("vanilla"), Path("hoi4.exe"), {}
+        )
+
+
 def test_runtime_userdir_validation_detects_staged_descriptor_tampering(tmp_path: Path):
     bindings_dir, mod_state, sources = _binding_fixture(tmp_path)
     vanilla = tmp_path / "vanilla"

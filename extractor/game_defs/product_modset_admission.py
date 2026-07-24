@@ -24,7 +24,7 @@ POLICY_SCHEMA = "extractor.supported_product_modsets.v1"
 ADMISSION_SCHEMA = "extractor.product_modset_policy_admission.v1"
 DEFAULT_POLICY = Path(__file__).resolve().with_name("supported_product_modsets.json")
 CANONICAL_POLICY_SHA256 = (
-    "33ab5499109236d23fbdef656b66a74dd8eb820ccc12dd7ec046f0b51a71adb3"
+    "cb565aa038e08b79c8f8d7e9d9fcbe56041f7a6ca58455d63b51970091d8b363"
 )
 CLASSIFICATIONS = {"vanilla", "validated_modset"}
 

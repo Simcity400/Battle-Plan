@@ -1060,6 +1060,7 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
     let mut journal_path: Option<PathBuf> = None;
     let mut worker_extra_args: Vec<String> = Vec::new();
     let mut poll_ms: u64 = 2_000;
+    let mut require_visible_window = true;
 
     let mut i = 0;
     while i < args.len() {
@@ -1092,6 +1093,7 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
                     .parse()
                     .map_err(|e| format!("--poll-ms: {e}"))?;
             }
+            "--allow-headless-target" => require_visible_window = false,
             "--worker-arg" => {
                 i += 1;
                 worker_extra_args.push(args.get(i).ok_or("--worker-arg needs a value")?.clone());
@@ -1122,7 +1124,7 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
         journal_path,
         worker_exe,
         worker_extra_args,
-        require_visible_window: true,
+        require_visible_window,
         poll_ms,
     };
     run_supervisor(opts, || graceful_stop.is_requested())

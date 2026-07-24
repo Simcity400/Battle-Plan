@@ -23,12 +23,44 @@ stdlib only.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
 import resolver as R
 from paradox_parser import Node, coerce_scalar
 from static_artifact_common import validate_clausewitz_text
+
+
+# Exact shipped-source compatibility for a729. The Clausewitz focus loader
+# accepts this document's one surplus top-level closing brace at EOF; the
+# generic strict parser correctly rejects the same shape everywhere else.
+# Admission is byte-bound so a changed game file or mod can never borrow it.
+_TRAILING_ROOT_CLOSER_COMPAT = {
+    "common/national_focus/TSR_lingguang_incident_joint_branch.txt":
+        "44bd7c7ae071b45956abe08035dedd955e2f7041c8c144be40803e343207f8a6",
+}
+
+
+def _validate_focus_source(text: str, rel: str, source_path: Path) -> str | None:
+    try:
+        validate_clausewitz_text(text, rel)
+        return None
+    except ValueError as original:
+        expected = _TRAILING_ROOT_CLOSER_COMPAT.get(rel.replace("\\", "/"))
+        actual = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        if expected is None or actual != expected:
+            raise
+        trimmed = text.rstrip()
+        if not trimmed.endswith("}"):
+            raise
+        # Removing exactly the terminal closer must produce an otherwise strict,
+        # fully balanced document. No interior or multiple-brace damage is
+        # tolerated by this exact-byte exception.
+        validate_clausewitz_text(trimmed[:-1], rel)
+        if "unmatched closing brace" not in str(original):
+            raise
+        return "a729_exact_trailing_root_closer"
 
 
 def _scalar(v):
@@ -105,12 +137,21 @@ def parse_focus_defs(layers, loc, *, strict=False) -> dict:
     joint: dict[str, dict] = {}
     styles: dict[str, dict] = {}
     collisions = []
+    source_compatibility = []
     ordered = R.ordered_files(layers, "common/national_focus", (".txt",))
     for rel, abspath in ordered:
         source_layer = _source_layer(layers, abspath)
         try:
             if strict:
-                validate_clausewitz_text(R.read_text(abspath), rel)
+                compatibility = _validate_focus_source(
+                    R.read_text(abspath), rel, Path(abspath)
+                )
+                if compatibility is not None:
+                    source_compatibility.append({
+                        "source_file": rel,
+                        "compatibility": compatibility,
+                        "source_sha256": hashlib.sha256(Path(abspath).read_bytes()).hexdigest(),
+                    })
             root = R.parse_file(abspath)
         except Exception as e:
             if strict:
@@ -192,6 +233,7 @@ def parse_focus_defs(layers, loc, *, strict=False) -> dict:
             "unresolved_focus_background_styles": unresolved_styles,
             "files_parsed": len(ordered),
             "id_collisions_last_wins": collisions,
+            "source_compatibility": source_compatibility,
         },
         "trees": dict(sorted(trees.items())),
         "focuses": dict(sorted(focuses.items())),

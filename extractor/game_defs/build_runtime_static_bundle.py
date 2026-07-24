@@ -613,6 +613,22 @@ def _build_input_fingerprint(
     return value
 
 
+def _require_build_input_fingerprint_unchanged(
+    expected: dict[str, Any],
+    bindings_dir: Path,
+    vanilla: Path,
+    exe: Path,
+    source_inventory: dict[str, Any],
+) -> None:
+    current = _build_input_fingerprint(
+        bindings_dir, vanilla, exe, source_inventory
+    )
+    if current != expected:
+        raise LR.ResolutionError(
+            "build input fingerprint changed during static generation"
+        )
+
+
 def _run(name: str, command: list[str], cwd: Path, logs: Path) -> dict[str, Any]:
     proc = subprocess.run(
         command,
@@ -914,6 +930,9 @@ def build(
     )
     if recomputed_after != recorded_source_inventory:
         raise LR.ResolutionError("live source inventory changed during static generation")
+    _require_build_input_fingerprint_unchanged(
+        fingerprint, bindings_dir, vanilla, exe, recorded_source_inventory
+    )
 
     specs = runtime_specs(catalogs)
     validated = {spec.role: SB.validate_artifact(spec) for spec in specs}
@@ -965,6 +984,9 @@ def build(
         source_inventory=bindings_dir / "source_inventory.json",
         live_resolution_report=bindings_dir / "resolution_report.json",
         require_token_gate=False,
+    )
+    _require_build_input_fingerprint_unchanged(
+        fingerprint, bindings_dir, vanilla, exe, recorded_source_inventory
     )
     report = {
         "schema": BUILD_SCHEMA,

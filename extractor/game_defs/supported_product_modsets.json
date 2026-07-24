@@ -15,6 +15,20 @@
         "effective_vfs_rows_sha256": "80554efa51f51882a5b740b85e95967fc7a43c04ac7d4a019e0561a86c1abc1f",
         "product_modset_sha256": "06997a1c5b6368eff0b15f62e3281f96cda2e056f157f90d24c82852cac841d2"
       }
+    },
+    {
+      "id": "a729-vanilla-current-dlc-vfs-20260724",
+      "classification": "vanilla",
+      "product_modset": {
+        "schema": "extractor.product_modset_key.v1",
+        "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "mod_state_effective_content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "dlc_state_effective_content_sha256": "53eba03d8318e136d639b7ef2382f2c99a4d91390d2df253374497a61239b3c4",
+        "load_order_effective_content_sha256": "4b3f73eff62bbff06c6203552fb8968dacf40a577b7064f93a8add9e1d99f63d",
+        "effective_vfs_namespace_sha256": "f620343cf6be46b6be484886b9ef5b443c120c13974acacae5985ee7f4c2a26c",
+        "effective_vfs_rows_sha256": "6cb271dfdc2d884cc12651141c565b9b575966b56d72ecb91125e460a717930a",
+        "product_modset_sha256": "6ec25e787ed29b4687b3d02489b624f818435ae0a453d15d20b914fc33e850d9"
+      }
     }
   ]
 }

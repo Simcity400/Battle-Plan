@@ -2,7 +2,8 @@
 
 **Status (corrected 2026-07-22):** the auto-attach product code is merged. An ordinary no-argument
 launch of the packaged recorder opens its normal desktop window and owns the resident supervisor;
-`--auto-attach` remains the support/headless entry. The product has no tray process or service.
+`--auto-attach` remains the support entry and `--allow-headless-target` explicitly
+admits a minimized/windowless game there. The product has no tray process or service.
 Closing the window or pressing **Stop and finish recordings** enters coordinator-owned graceful
 shutdown. Duplex activation remains separately governed by P2.
 
@@ -25,8 +26,10 @@ Ship one resident **auto-attach coordinator**:
    seconds until it recovers. These are policy constants, not rig-fitted claims.
 4. Key candidates by `(pid, process_creation_filetime)`, prove same-user,
    same-session `hoi4.exe`, and resolve executable/build/user-dir/modset evidence.
-5. Wait through startup until the process has an injectable visible window and all
-   identity evidence resolves. Do not time out while it lives; show the blocker.
+5. Wait through startup until all identity evidence resolves. The ordinary
+   no-argument product and support `--allow-headless-target` path do not require
+   a visible window; support mode retains the visible-window requirement unless
+   that flag is explicit. Do not time out while the process lives; show the blocker.
 6. Stage a fresh collector DLL directory for every attempt, prove the pipe is
    listening, then reuse the existing Windows-hook injector. Do not report the
    collector resident until a session-matching heartbeat arrives, or report
