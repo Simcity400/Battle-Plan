@@ -156,7 +156,7 @@ impl Coordinator {
                         CandidateState::Finalizing,
                         ReasonCode::ExplicitStop,
                         now,
-                        Some("explicit app stop; draining and verifying replay".into()),
+                        Some("explicit app stop; draining and finalizing capture".into()),
                     )?;
                 }
                 CandidateState::Finalizing => {}

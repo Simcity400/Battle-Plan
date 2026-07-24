@@ -321,6 +321,10 @@ struct Config {
     /// authority, but its replay persistence is still production binary:
     /// canonical H4CR plus replay_decoder H4IX/H4CP, never hourly JSON.
     product_auto_attach_runtime: bool,
+    /// Debug-only fast-turnaround persistence. Seal and hash the raw H4CR,
+    /// retain capture integrity/error telemetry, and deliberately skip every
+    /// derived replay artifact. replay_decoder inspects H4CR directly on demand.
+    raw_debug_output: bool,
     lightweight_root_frame: bool,
     special_projects_scan: bool,
     compact_country_frame: bool,
@@ -1153,7 +1157,7 @@ fn product_auto_attach_runtime_domain_names() -> Vec<&'static str> {
 }
 
 #[cfg(windows)]
-fn product_auto_attach_worker_args() -> Vec<String> {
+fn product_auto_attach_worker_args(raw_debug_output: bool) -> Vec<String> {
     // The desktop product must never inherit the collector's empty-schedule
     // compatibility fallback (domains 10..=17).  That fallback is useful for
     // narrow probes, but it made an apparently verified auto-attach recording
@@ -1186,11 +1190,14 @@ fn product_auto_attach_worker_args() -> Vec<String> {
         .into_iter()
         .map(str::to_string),
     );
+    if raw_debug_output {
+        args.push("--raw-debug-output".to_string());
+    }
     args
 }
 
 #[cfg(windows)]
-fn run_product_auto_attach() -> Result<(), String> {
+fn run_product_auto_attach(raw_debug_output: bool) -> Result<(), String> {
     use recorder_host::auto_attach::{run_supervisor_with_events, SupervisorOptions};
 
     let worker_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
@@ -1206,7 +1213,7 @@ fn run_product_auto_attach() -> Result<(), String> {
         journal_path: out_root.join("auto_attach_journal.jsonl"),
         out_root,
         worker_exe,
-        worker_extra_args: product_auto_attach_worker_args(),
+        worker_extra_args: product_auto_attach_worker_args(raw_debug_output),
         // Headless capture cannot wait for a window: several production lanes
         // install one-shot setup observers that must be resident before the
         // first PID-owned window is created. Exact exe/SHA/session/SID identity
@@ -1255,7 +1262,11 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     #[cfg(windows)]
     if args.is_empty() {
-        return run_product_auto_attach();
+        return run_product_auto_attach(false);
+    }
+    #[cfg(windows)]
+    if args.as_slice() == ["--raw-debug-auto-attach"] {
+        return run_product_auto_attach(true);
     }
     if args.first().map(String::as_str) == Some("--fold-and-repack-existing-run-dir") {
         return fold_and_repack_existing_run_dir(parse_repack_args(&args)?);
@@ -2672,7 +2683,8 @@ fn run() -> Result<(), String> {
     manifest = normalize_session_manifest_value(&manifest)?;
     let gate_problems = manifest_hourly_problems(&manifest);
     let replay_path = replay_path_for_gate(&cfg.out_dir, hourly_met);
-    let normal_quarantine = (!hourly_met).then(|| quarantine_normal_replay(&normal_replay_path));
+    let normal_quarantine = (!hourly_met && !cfg.raw_debug_output)
+        .then(|| quarantine_normal_replay(&normal_replay_path));
     let replay_file_name = replay_path
         .file_name()
         .and_then(|value| value.to_str())
@@ -2864,16 +2876,27 @@ fn run() -> Result<(), String> {
             .and_then(Value::as_bool)
             == Some(true);
     if !hourly_met {
-        eprintln!(
-            "recorder warning: gates failed; writing recovery replay {} instead of normal replay {}; problems={}",
-            replay_path.display(),
-            normal_replay_path.display(),
-            if gate_problems.is_empty() {
-                "unspecified".to_string()
-            } else {
-                gate_problems.join(",")
-            }
-        );
+        if cfg.raw_debug_output {
+            eprintln!(
+                "recorder warning: capture gates failed; retaining sealed raw H4CR with error telemetry; problems={}",
+                if gate_problems.is_empty() {
+                    "unspecified".to_string()
+                } else {
+                    gate_problems.join(",")
+                }
+            );
+        } else {
+            eprintln!(
+                "recorder warning: gates failed; writing recovery replay {} instead of normal replay {}; problems={}",
+                replay_path.display(),
+                normal_replay_path.display(),
+                if gate_problems.is_empty() {
+                    "unspecified".to_string()
+                } else {
+                    gate_problems.join(",")
+                }
+            );
+        }
         if let Some(report) = &normal_quarantine {
             if report.attempted && report.ok {
                 eprintln!(
@@ -2903,6 +2926,29 @@ fn run() -> Result<(), String> {
     let mut replay_artifacts_telemetry: Option<replay_decoder::CertifiedReplayArtifacts> = None;
     let mut verify_report_telemetry: Option<snapshot::StreamVerifyReport> = None;
     match cfg.stream_format {
+        StreamFormat::Compact if cfg.raw_debug_output => {
+            // Raw debug stops at the durable capture boundary. The pipe writer
+            // is closed, rollover publication (when active) has already sealed
+            // and hashed the selected FirstWorld H4CR, and this receipt
+            // independently rebinds the on-disk bytes to that capture hash.
+            //
+            // Do not fold, build H4IX/H4CP, reconstruct hours, or create a
+            // compressed container here. replay_decoder consumes H4CR directly
+            // if and when a later debugging action explicitly requests it.
+            let receipt_path = publish_raw_debug_output_receipt(
+                &cfg,
+                &raw_path,
+                &capture,
+                hourly_met,
+                &gate_problems,
+                &manifest_path,
+                &mut manifest,
+            )?;
+            eprintln!(
+                "recorder raw debug H4CR sealed without fold, index, checkpoints, parity, or compression: {}",
+                receipt_path.display()
+            );
+        }
         StreamFormat::Compact if uses_binary_replay_persistence(&cfg) => {
             // Production persistence is H4CR-first: no per-hour JSON spill is
             // created. replay_decoder folds the certified stream once into a
@@ -2945,6 +2991,7 @@ fn run() -> Result<(), String> {
                 mark_manifest_replay_not_produced(&manifest_path, &mut manifest, &error);
                 error
             })?;
+            verify_report_telemetry = Some(verify);
             eprintln!(
                 "recorder production replay_decoder artifacts retained at {} (hours={}, checkpoints={}, max_seek_deltas={}, legacy_json_bytes_avoided={})",
                 artifact_spill_dir.display(),
@@ -2954,7 +3001,6 @@ fn run() -> Result<(), String> {
                 artifacts.legacy_json_bytes_avoided,
             );
             replay_artifacts_telemetry = Some(artifacts);
-            verify_report_telemetry = Some(verify);
         }
         StreamFormat::Compact if cfg.skip_host_fold => {
             // Production skip: the raw compact stream is the canonical artifact
@@ -3110,19 +3156,26 @@ fn run() -> Result<(), String> {
     );
 
     if let Some(descriptor) = rollover_set.as_ref() {
-        publish_rollover_package_set(
-            &cfg,
-            descriptor,
-            &manifest_path,
-            &manifest,
-            &capture,
-            capture_identity_mode,
-            static_bundle_admission.as_ref(),
-            first_recording_logical_stream_id.ok_or(
-                "rollover finalizer lost the logical stream id that admitted FirstWorld",
-            )?,
-        )?;
-        if cfg.production {
+        if cfg.raw_debug_output {
+            eprintln!(
+                "recorder raw debug output: retaining {} sealed logical streams without compressed package-set publication",
+                descriptor.ordered_streams.len()
+            );
+        } else {
+            publish_rollover_package_set(
+                &cfg,
+                descriptor,
+                &manifest_path,
+                &manifest,
+                &capture,
+                capture_identity_mode,
+                static_bundle_admission.as_ref(),
+                first_recording_logical_stream_id.ok_or(
+                    "rollover finalizer lost the logical stream id that admitted FirstWorld",
+                )?,
+            )?;
+        }
+        if cfg.production && !cfg.raw_debug_output {
             let product_root = cfg
                 .out_dir
                 .parent()
@@ -3148,7 +3201,7 @@ fn run() -> Result<(), String> {
         }
     }
 
-    if cfg.production {
+    if cfg.production && !cfg.raw_debug_output {
         if let Some(request) = cfg.design_catalog_live.as_ref() {
             if let Err(error) = fs::remove_file(&request.path) {
                 eprintln!(
@@ -3165,7 +3218,10 @@ fn run() -> Result<(), String> {
     // Continue that segment can be a loading-world transient which never
     // admitted FirstWorld; the rollover package-set finalizer above is the
     // recording authority and has already failed if any admitted member failed.
-    if !hourly_met && !acceptance_test_met && rollover_set.is_none() {
+    if !hourly_met
+        && !acceptance_test_met
+        && (cfg.raw_debug_output || rollover_set.is_none())
+    {
         let quarantine_detail = normal_quarantine
             .as_ref()
             .filter(|report| report.attempted && !report.ok)
@@ -3177,10 +3233,17 @@ fn run() -> Result<(), String> {
                 )
             })
             .unwrap_or_default();
+        let artifact_detail = if cfg.raw_debug_output {
+            format!("raw debug stream retained at {}", raw_path.display())
+        } else {
+            format!(
+                "recovery replay written to {}; normal replay not updated at {}",
+                replay_path.display(),
+                normal_replay_path.display()
+            )
+        };
         return Err(format!(
-            "hourly requirement not met; recovery replay written to {}; normal replay not updated at {}; manifest written to {}; problems={}{}",
-            replay_path.display(),
-            normal_replay_path.display(),
+            "hourly requirement not met; {artifact_detail}; manifest written to {}; problems={}{}",
             manifest_path.display(),
             if gate_problems.is_empty() {
                 "unspecified".to_string()
@@ -3190,7 +3253,7 @@ fn run() -> Result<(), String> {
             quarantine_detail
         ));
     }
-    if rollover_set.is_some() {
+    if rollover_set.is_some() && !cfg.raw_debug_output {
         println!(
             "{}",
             cfg.out_dir
@@ -3765,9 +3828,21 @@ fn replay_packaging_manifest_json(
         .transpose()?;
     Ok(json!({
         "created_utc": created_utc_label(),
+        "mode": if cfg.raw_debug_output {
+            "raw_debug_uncompressed"
+        } else {
+            "portable_zstd_container"
+        },
+        "container_emitted": !cfg.raw_debug_output,
+        "compression_applied": !cfg.raw_debug_output,
         "compression": {
             "zstd_level": cfg.compression_profile.zstd_level,
             "zstd_window_log": cfg.compression_profile.zstd_window_log,
+            "purpose": if cfg.raw_debug_output {
+                "deferred_repack_profile_only"
+            } else {
+                "applied_to_portable_container"
+            },
         },
         "static_artifacts": static_artifacts,
         "design_catalog_live": design_catalog_live,
@@ -4083,6 +4158,7 @@ fn repack_writer_config(
         scheduled_domains: Vec::new(),
         production: false,
         product_auto_attach_runtime: false,
+        raw_debug_output: false,
         lightweight_root_frame: true,
         special_projects_scan: false,
         compact_country_frame: true,
@@ -5201,7 +5277,7 @@ fn is_lower_sha256(value: &str) -> bool {
 }
 
 fn uses_binary_replay_persistence(cfg: &Config) -> bool {
-    cfg.production || cfg.product_auto_attach_runtime
+    cfg.production || cfg.product_auto_attach_runtime || cfg.raw_debug_output
 }
 
 fn is_canonical_lower_uuid(value: &str) -> bool {
@@ -5244,6 +5320,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     // observer for the ordinary auto-attach runtime roster without claiming
     // that a process-bound static publication bundle exists.
     let mut product_auto_attach_runtime = false;
+    let mut raw_debug_output = false;
     let mut profile: Option<compact_contract::CaptureProfile> = None;
     let mut lightweight_root_frame: Option<bool> = None;
     let mut special_projects_scan = false;
@@ -5392,6 +5469,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--scheduled-domains-exact" => scheduled_domains_exact = true,
             "--production" => production = true,
             "--product-auto-attach-runtime" => product_auto_attach_runtime = true,
+            "--raw-debug-output" => raw_debug_output = true,
             "--acceptance-test-mode" => {
                 i += 1;
                 let value = required(args.get(i), "--acceptance-test-mode")?;
@@ -5817,6 +5895,31 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 .to_string(),
         );
     }
+    if raw_debug_output {
+        if stream_format != StreamFormat::Compact {
+            return Err("--raw-debug-output requires --stream-format compact".to_string());
+        }
+        if stream_compression != compact_stream::StreamCompression::None {
+            return Err(
+                "--raw-debug-output requires raw H4CR storage; remove --stream-compression zstd"
+                    .to_string(),
+            );
+        }
+        if !product_auto_attach_runtime
+            && profile != Some(compact_contract::CaptureProfile::Debug)
+        {
+            return Err(
+                "--raw-debug-output requires --profile debug or the internal ordinary product debug worker"
+                    .to_string(),
+            );
+        }
+        if skip_host_fold {
+            return Err(
+                "--raw-debug-output already skips every host fold and derived artifact; remove --skip-host-fold"
+                    .to_string(),
+            );
+        }
+    }
     if production && portable_content_use_trace.is_some() {
         return Err(
             "production/profile capture cannot use --portable-content-use-trace: production content provenance is generated in-process from the finalized effective-VFS catalog join"
@@ -6198,6 +6301,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         scheduled_domains,
         production,
         product_auto_attach_runtime,
+        raw_debug_output,
         lightweight_root_frame,
         special_projects_scan,
         compact_country_frame,
@@ -6548,7 +6652,8 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--a34-decision-panel-evidence-supplement json] [--a36-active-ability-evidence] [--a39-character-presentation-evidence] [--a40-design-peace-evidence] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
+    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--raw-debug-output] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--a34-decision-panel-evidence-supplement json] [--a36-active-ability-evidence] [--a39-character-presentation-evidence] [--a40-design-peace-evidence] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
+     Special resident debug entry: collector_record --raw-debug-auto-attach\n\
      \n\
      Static artifacts: non-production probes may omit them. Production requires one\n\
      admitted bundle containing all eight deterministic artifacts plus exact\n\
@@ -6602,6 +6707,13 @@ fn usage() -> String {
       finalization time in exchange for smaller replay files. Lower values reduce weak-PC\n\
       finalize CPU/RAM pressure at the cost of larger replay files; finalize\n\
       budget gating is intentionally separate future work.\n\
+      \n\
+      Raw debug output: --raw-debug-output (or the resident\n\
+      --raw-debug-auto-attach entry) seals and hashes uncompressed canonical\n\
+      H4CR and emits capture integrity/error telemetry in raw_debug_output.json.\n\
+      It performs no host fold, H4IX/H4CP build, reconstruction parity, seek\n\
+      certification, .battleplan packaging, or compression. replay_decoder\n\
+      inspects the H4CR directly only when explicitly requested later.\n\
       \n\
         --static-templates-equipment-catalog path   domain-59 templates/equipment catalog JSON\n\
                                                     (templates_equipment_catalog_gate.py out/ dir:\n\
@@ -9988,6 +10100,141 @@ fn create_unique_replay_artifact_spill_dir(out_dir: &Path) -> Result<PathBuf, St
         "create replay_decoder artifact spill dir failed: could not allocate a unique spill path under {}",
         out_dir.display()
     ))
+}
+
+fn raw_debug_relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_raw_debug_output_receipt(
+    cfg: &Config,
+    raw_path: &Path,
+    capture: &PipeCapture,
+    hourly_met: bool,
+    gate_problems: &[String],
+    manifest_path: &Path,
+    manifest: &mut Value,
+) -> Result<PathBuf, String> {
+    let sealed_metadata = fs::symlink_metadata(raw_path)
+        .map_err(|error| format!("stat sealed raw debug H4CR {}: {error}", raw_path.display()))?;
+    if !sealed_metadata.file_type().is_file() || sealed_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "sealed raw debug H4CR is not a regular non-symlink file: {}",
+            raw_path.display()
+        ));
+    }
+    let sealed_sha256 = to_hex(&hash_file_sha256_bytes(raw_path)?);
+    let byte_count_matches = sealed_metadata.len() == capture.byte_count;
+    let sha256_matches = sealed_sha256 == capture.sha256;
+    if !byte_count_matches || !sha256_matches {
+        return Err(format!(
+            "sealed raw debug H4CR differs from capture receipt: path={} sealed_bytes={} capture_bytes={} sealed_sha256={} capture_sha256={}",
+            raw_path.display(),
+            sealed_metadata.len(),
+            capture.byte_count,
+            sealed_sha256,
+            capture.sha256
+        ));
+    }
+    let collector_control_errors = manifest
+        .get("collector_control_errors")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let receipt = json!({
+        "schema": "battle-plan.raw_debug_output.v2",
+        "admissible_for_production": false,
+        "mode": "raw_uncompressed_debug",
+        "container_emitted": false,
+        "container_compression_applied": false,
+        "stream": {
+            "role": "collector_compact_stream",
+            "path": raw_debug_relative_path(&cfg.out_dir, raw_path),
+            "compression": "none",
+            "sealed": true,
+            "bytes": sealed_metadata.len(),
+            "sha256": sealed_sha256,
+        },
+        "capture_integrity": {
+            "sealed_regular_file": true,
+            "byte_count_matches_capture_receipt": byte_count_matches,
+            "sha256_matches_capture_receipt": sha256_matches,
+            "capture_bytes": capture.byte_count,
+            "capture_stored_bytes": capture.stored_byte_count,
+            "capture_sha256": capture.sha256,
+        },
+        "error_telemetry": {
+            "capture_gates_met": hourly_met,
+            "gate_problems": gate_problems,
+            "collector_control_errors": collector_control_errors,
+        },
+        "derived_artifacts": {
+            "host_fold_performed": false,
+            "hour_index_h4ix_built": false,
+            "checkpoint_cache_h4cp_built": false,
+            "reconstruction_parity_run": false,
+            "bounded_seek_certification_run": false,
+            "replay_container_built": false,
+            "compression_run": false,
+        },
+        "inspection": {
+            "decoder": "replay_decoder",
+            "mode": "direct_h4cr_on_demand",
+            "automatic_post_capture_inspection": false,
+        },
+        "hourly_requirement": {
+            "met": hourly_met,
+            "problems": gate_problems,
+        },
+        "retention": {
+            "active_spill_retained": false,
+            "sealed_stream_retained": true,
+            "policy": "delete_after_debugging_unless_required_as_actionable_failure_evidence",
+        },
+    });
+    let object = manifest
+        .as_object_mut()
+        .ok_or_else(|| "raw debug manifest root is not an object".to_string())?;
+    object.insert("replay_file".to_string(), Value::Null);
+    object.insert(
+        "replay_artifact".to_string(),
+        json!({
+            "written_file": Value::Null,
+            "recovery": !hourly_met,
+            "reason": "raw_debug_output_requested",
+            "gate_problems": gate_problems,
+            "container_emitted": false,
+            "derived_artifacts_emitted": false,
+        }),
+    );
+    object.insert(
+        "replay_entries".to_string(),
+        json!({
+            "stream": raw_debug_relative_path(&cfg.out_dir, raw_path),
+            "stream_role": "collector_compact_stream",
+            "session_manifest": "native_session_manifest.json",
+            "session_manifest_role": "recorder_manifest",
+            "derived_entries_emitted": false,
+        }),
+    );
+    object.insert("raw_debug_output".to_string(), receipt.clone());
+    if object.contains_key("logical_stream_package_set") {
+        object.insert(
+            "logical_stream_package_set".to_string(),
+            json!({
+                "emitted": false,
+                "reason": "raw_debug_output_requested",
+                "selection": "first_recording_logical_stream",
+            }),
+        );
+    }
+    write_synced_json(manifest_path, manifest)?;
+    let receipt_path = cfg.out_dir.join("raw_debug_output.json");
+    write_synced_json(&receipt_path, &receipt)?;
+    Ok(receipt_path)
 }
 
 fn cleanup_snapshot_spill_dir(path: &Path) {
@@ -28099,6 +28346,7 @@ mod tests {
             scheduled_domains: vec!["fuel_live".to_string()],
             production: false,
             product_auto_attach_runtime: false,
+            raw_debug_output: false,
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
@@ -30301,7 +30549,8 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
 
-        let product_args = product_auto_attach_worker_args();
+        let product_args = product_auto_attach_worker_args(false);
+        assert!(!product_args.iter().any(|arg| arg == "--raw-debug-output"));
         assert!(!product_args.iter().any(|arg| arg == "--profile"));
         assert!(!product_args.iter().any(|arg| arg == "--production"));
         assert_eq!(
@@ -30352,6 +30601,108 @@ mod tests {
             cfg.stream_compression,
             compact_stream::StreamCompression::None,
             "CID1 rollover streams stay raw until independently compressed during packaging"
+        );
+        let mut raw_args = base_profile_test_args(&dir, &[]);
+        raw_args.push("--stream-format".to_string());
+        raw_args.push("compact".to_string());
+        raw_args.extend(product_auto_attach_worker_args(true));
+        let raw_cfg = parse_args(raw_args).expect("raw product debug args must parse");
+        assert!(raw_cfg.product_auto_attach_runtime);
+        assert!(raw_cfg.raw_debug_output);
+        assert!(uses_binary_replay_persistence(&raw_cfg));
+        assert_eq!(
+            raw_cfg.stream_compression,
+            compact_stream::StreamCompression::None
+        );
+        fs::create_dir_all(&raw_cfg.out_dir).unwrap();
+        let raw_path = raw_cfg.out_dir.join("sealed-debug.h4cr");
+        let raw_bytes = b"H4CR sealed debug fixture";
+        fs::write(&raw_path, raw_bytes).unwrap();
+        let capture = PipeCapture {
+            byte_count: raw_bytes.len() as u64,
+            stored_byte_count: raw_bytes.len() as u64,
+            sha256: to_hex(&Sha256::digest(raw_bytes)),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
+        };
+        let manifest_path = raw_cfg.out_dir.join("native_session_manifest.json");
+        let mut manifest = json!({
+            "collector_control_errors": ["fixture_control_error"],
+            "logical_stream_package_set": {
+                "schema": "must_be_replaced"
+            }
+        });
+        let receipt_path = publish_raw_debug_output_receipt(
+            &raw_cfg,
+            &raw_path,
+            &capture,
+            false,
+            &["fixture_gate_failure".to_string()],
+            &manifest_path,
+            &mut manifest,
+        )
+        .expect("raw debug receipt must seal only the H4CR");
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        assert_eq!(
+            receipt["schema"],
+            json!("battle-plan.raw_debug_output.v2")
+        );
+        assert_eq!(receipt["stream"]["sealed"], json!(true));
+        assert_eq!(
+            receipt["capture_integrity"]["sha256_matches_capture_receipt"],
+            json!(true)
+        );
+        assert_eq!(
+            receipt["derived_artifacts"],
+            json!({
+                "host_fold_performed": false,
+                "hour_index_h4ix_built": false,
+                "checkpoint_cache_h4cp_built": false,
+                "reconstruction_parity_run": false,
+                "bounded_seek_certification_run": false,
+                "replay_container_built": false,
+                "compression_run": false,
+            })
+        );
+        assert_eq!(
+            receipt["inspection"]["mode"],
+            json!("direct_h4cr_on_demand")
+        );
+        assert_eq!(
+            receipt["error_telemetry"]["gate_problems"],
+            json!(["fixture_gate_failure"])
+        );
+        assert_eq!(manifest["replay_file"], Value::Null);
+        assert_eq!(
+            manifest["replay_entries"]["stream"],
+            json!("sealed-debug.h4cr")
+        );
+        assert_eq!(
+            manifest["replay_entries"]["derived_entries_emitted"],
+            json!(false)
+        );
+        assert_eq!(
+            manifest["logical_stream_package_set"]["emitted"],
+            json!(false)
+        );
+        assert!(
+            !raw_cfg
+                .out_dir
+                .join("native_session.battleplan")
+                .exists()
+        );
+        assert!(
+            fs::read_dir(&raw_cfg.out_dir)
+                .unwrap()
+                .all(|entry| {
+                    let path = entry.unwrap().path();
+                    path.extension().and_then(|value| value.to_str())
+                        != Some("h4ix")
+                        && path.extension().and_then(|value| value.to_str())
+                            != Some("h4cp")
+                }),
+            "raw debug receipt must not build decoder artifacts"
         );
         write_control_file(&cfg, "00112233445566778899aabbccddeeff", None).unwrap();
         let control = fs::read_to_string(
@@ -30948,6 +31299,7 @@ mod tests {
                 .collect(),
             production: false,
             product_auto_attach_runtime: false,
+            raw_debug_output: false,
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
