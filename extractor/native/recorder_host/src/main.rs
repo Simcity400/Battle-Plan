@@ -1705,7 +1705,7 @@ fn run() -> Result<(), String> {
             None => RetainedProcessAuthority::open(cfg.pid, None)?,
         });
         process_authority.revalidate_live()?;
-        let design_catalog_timeline_capture = if cfg.production {
+        let mut design_catalog_timeline_capture = if cfg.production {
             let python = cfg
                 .static_bundle
                 .as_ref()
@@ -1880,9 +1880,7 @@ fn run() -> Result<(), String> {
         ready_rx
             .recv()
             .map_err(|_| "capture pipe exited before listening barrier".to_string())??;
-        let early_a27_ready = design_catalog_timeline_capture
-            .as_ref()
-            .map(|capture| capture.ready.clone());
+        let early_a27_capture = design_catalog_timeline_capture.as_mut();
         let mut early_render_process = match early_pending.take() {
             Some(pending) => {
                 let early = cfg
@@ -1942,8 +1940,12 @@ fn run() -> Result<(), String> {
                             validation_result
                                 .set(authority)
                                 .map_err(|_| "post-resume game module authority was already set")?;
-                            if let Some(ready) = early_a27_ready.as_deref() {
-                                wait_owned_design_catalog_ready_path(ready, a27_ready_timeout)?;
+                            if let Some(capture) = early_a27_capture {
+                                wait_owned_design_catalog_timeline_ready_with_timeout(
+                                    capture,
+                                    a27_ready_timeout,
+                                    "post-resume baseline",
+                                )?;
                             }
                             Ok(())
                         },
@@ -7991,7 +7993,19 @@ fn wait_owned_design_catalog_timeline_ready(
     capture: &mut OwnedDesignCatalogTimelineCapture,
 ) -> Result<(), String> {
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    wait_owned_design_catalog_timeline_ready_with_timeout(
+        capture,
+        STARTUP_TIMEOUT,
+        "first coherent census",
+    )
+}
+
+fn wait_owned_design_catalog_timeline_ready_with_timeout(
+    capture: &mut OwnedDesignCatalogTimelineCapture,
+    timeout: Duration,
+    phase: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
     loop {
         if capture.ready.exists() {
             return Ok(());
@@ -8005,31 +8019,12 @@ fn wait_owned_design_catalog_timeline_ready(
             .map_err(|error| format!("poll A27 timeline readiness failed: {error}"))?
         {
             return Err(format!(
-                "authenticated A27 timeline producer exited before its first coherent census: {status}"
+                "authenticated A27 timeline producer exited before its {phase}: {status}"
             ));
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "authenticated A27 timeline producer did not seal its first coherent census within {} ms",
-                STARTUP_TIMEOUT.as_millis()
-            ));
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn wait_owned_design_catalog_ready_path(
-    ready: &Path,
-    timeout: Duration,
-) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if ready.exists() {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "authenticated A27 timeline producer did not seal its post-resume baseline within {} ms",
+                "authenticated A27 timeline producer did not seal its {phase} within {} ms",
                 timeout.as_millis()
             ));
         }

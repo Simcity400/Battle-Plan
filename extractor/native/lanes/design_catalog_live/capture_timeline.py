@@ -233,7 +233,33 @@ def acquire(
     last_hour = None
     previous_snapshot = None
     next_action_sequence = 0
-    with winmem.Process(pid, "hoi4.exe") as process:
+    process = None
+    while process is None:
+        if stop.exists():
+            _atomic_json(output, timeline)
+            return 2
+        try:
+            process = winmem.Process(pid, "hoi4.exe")
+        except (OSError, RuntimeError, ValueError) as error:
+            # Early-launch production capture starts this helper while the game
+            # is still suspended. Windows can return ERROR_PARTIAL_COPY until
+            # the primary thread has entered the user-mode loader, so module
+            # discovery is a retryable observation just like an uninitialized
+            # CGameState root. Do not let that expected pre-resume phase kill
+            # the authenticated producer.
+            rejection = {
+                "sequence_before_retry": len(timeline["captures"]),
+                "error": str(error),
+            }
+            if (
+                not timeline["rejected_observations"]
+                or timeline["rejected_observations"][-1] != rejection
+            ):
+                timeline["rejected_observations"].append(rejection)
+                _atomic_json(output, timeline)
+            time.sleep(poll_ms / 1000.0)
+
+    with process:
         while True:
             if stop.exists():
                 break
