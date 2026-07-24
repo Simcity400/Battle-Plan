@@ -318,7 +318,9 @@ pub struct DisplayVariantSettings {
 /// startup on some machines, so a recorder restart cannot re-prove the
 /// pre-process mtime even though the first generation already did. This cache
 /// is usable only for the identical PID+creation-FILETIME, executable hash,
-/// canonical user directory, and byte-identical current settings file.
+/// canonical user directory, and semantically identical current settings.
+/// the game may rewrite formatting/order after launch, so byte equality is not a
+/// valid same-process reuse requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SameProcessSettingsAuthority {
@@ -425,10 +427,14 @@ pub fn apply_same_process_settings_authority(
         return Err("same-process settings authority user directory mismatch".into());
     }
     let settings_path = user_dir.join("settings.txt");
-    let (_, current_sha256) = hash_file_streaming_stable(&settings_path)
-        .map_err(|error| format!("rehash same-process settings authority: {error}"))?;
-    if current_sha256 != authority.display_variant.settings_file_sha256 {
-        return Err("same-process settings authority current file hash mismatch".into());
+    let current_text = read_text_stable(&settings_path)
+        .map_err(|error| format!("reread same-process settings authority: {error}"))?;
+    let (current_language, current_display) = parse_settings_text(&current_text)
+        .map_err(|error| format!("reparse same-process settings authority: {error}"))?;
+    if current_language.as_deref() != Some(authority.localisation_language.as_str())
+        || !same_display_semantics(&current_display, &authority.display_variant)
+    {
+        return Err("same-process settings authority current semantic settings mismatch".into());
     }
     report.localisation_language = Some(authority.localisation_language);
     report.display_variant = Some(authority.display_variant);
@@ -972,6 +978,32 @@ fn read_text_stable_before_start(path: &Path, process_start: SystemTime) -> Resu
     String::from_utf8(bytes).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))
 }
 
+fn read_text_stable(path: &Path) -> Result<String, String> {
+    let before = file_stamp(path)?;
+    let first = fs::read(path).map_err(|e| format!("{} first read: {e}", path.display()))?;
+    let second = fs::read(path).map_err(|e| format!("{} second read: {e}", path.display()))?;
+    let after = file_stamp(path)?;
+    if after != before {
+        return Err(format!(
+            "{} changed while being read (metadata moved)",
+            path.display()
+        ));
+    }
+    if first != second {
+        return Err(format!(
+            "{} changed while being read (bytes differ between reads)",
+            path.display()
+        ));
+    }
+    if first.len() as u64 != before.len {
+        return Err(format!(
+            "{} read length does not match bracketed metadata",
+            path.display()
+        ));
+    }
+    String::from_utf8(first).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))
+}
+
 /// Return the exact bytes from the same pre-start, metadata-bracketed,
 /// byte-identical read used for descriptor parsing and hashing.
 fn read_bytes_stable_before_start(
@@ -1018,6 +1050,10 @@ fn read_launch_settings(
 ) -> Result<(Option<String>, DisplayVariantSettings), String> {
     let path = user_dir.join("settings.txt");
     let text = read_text_stable_before_start(&path, process_start)?;
+    parse_settings_text(&text)
+}
+
+fn parse_settings_text(text: &str) -> Result<(Option<String>, DisplayVariantSettings), String> {
     let language = clausewitz_string_field(&text, "language")?;
     let graphics = clausewitz_object_field(&text, "graphics")
         .map_err(|e| format!("graphics object: {e}"))?
@@ -1082,6 +1118,22 @@ fn read_launch_settings(
             settings_file_sha256: Sha256::hex(text.as_bytes()),
         },
     ))
+}
+
+fn same_display_semantics(
+    left: &DisplayVariantSettings,
+    right: &DisplayVariantSettings,
+) -> bool {
+    left.physical_width == right.physical_width
+        && left.physical_height == right.physical_height
+        && left.min_gui_width == right.min_gui_width
+        && left.min_gui_height == right.min_gui_height
+        && left.gui_scale_f32_bits == right.gui_scale_f32_bits
+        && left.refresh_rate_hz == right.refresh_rate_hz
+        && left.max_refresh_rate_hz == right.max_refresh_rate_hz
+        && left.fullscreen == right.fullscreen
+        && left.borderless == right.borderless
+        && left.display_mode == right.display_mode
 }
 
 fn required_u32(text: &str, key: &str, context: &str) -> Result<u32, String> {
@@ -2156,14 +2208,26 @@ mod tests {
     }
 
     #[test]
-    fn same_process_settings_authority_recovers_only_matching_identity_and_bytes() {
+    fn same_process_settings_authority_recovers_only_matching_identity_and_semantics() {
         let dir = temp_dir("same_process_settings_authority");
-        fs::write(dir.join("settings.txt"), b"exact settings bytes").unwrap();
-        let settings_sha256 = Sha256::hex(b"exact settings bytes");
+        let initial = "language=\"english\"\ngraphics={\n\
+            size={ x=1920 y=1080 }\nmin_gui={ x=1280 y=720 }\n\
+            gui_scale=1.0\nrefreshRate=60\nmax_refresh_rate=75\n\
+            fullScreen=no\nborderless=yes\n}\n";
+        fs::write(dir.join("settings.txt"), initial).unwrap();
+        let settings_sha256 = Sha256::hex(initial.as_bytes());
         let authority_path = dir.join("authority.json");
         let mut proven = authority_report(&dir, settings_sha256);
         apply_same_process_settings_authority(&mut proven, &authority_path, 77, 88).unwrap();
 
+        // the game may rewrite the same effective settings with different spacing
+        // and field order after launch. The immutable launch authority remains
+        // valid for the identical live process.
+        let rewritten_text = "graphics={ borderless=yes fullScreen=no \
+            max_refresh_rate=75 refreshRate=60 gui_scale=1.000000 \
+            min_gui={y=720 x=1280} size={y=1080 x=1920} }\n\
+            language=\"english\"\n";
+        fs::write(dir.join("settings.txt"), rewritten_text).unwrap();
         let mut rewritten = proven.clone();
         rewritten.resolved = false;
         rewritten.errors =
@@ -2180,10 +2244,14 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .settings_file_sha256,
-            Sha256::hex(b"exact settings bytes")
+            Sha256::hex(initial.as_bytes())
         );
 
-        fs::write(dir.join("settings.txt"), b"different settings bytes").unwrap();
+        fs::write(
+            dir.join("settings.txt"),
+            rewritten_text.replace("x=1920", "x=1600"),
+        )
+        .unwrap();
         let mut changed = proven.clone();
         changed.resolved = false;
         changed.errors =
@@ -2197,7 +2265,7 @@ mod tests {
             88
         )
         .unwrap_err()
-        .contains("current file hash mismatch"));
+        .contains("current semantic settings mismatch"));
         let _ = fs::remove_dir_all(&dir);
     }
 

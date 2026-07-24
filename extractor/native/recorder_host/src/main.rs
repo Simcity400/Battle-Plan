@@ -153,7 +153,10 @@ const INVALID_HANDLE_VALUE: isize = -1;
 const TH32CS_SNAPMODULE: Dword = 0x00000008;
 const TH32CS_SNAPMODULE32: Dword = 0x00000010;
 const PROCESS_TERMINATE: Dword = 0x0001;
+const PROCESS_CREATE_THREAD: Dword = 0x0002;
+const PROCESS_VM_OPERATION: Dword = 0x0008;
 const PROCESS_VM_READ: Dword = 0x0010;
+const PROCESS_VM_WRITE: Dword = 0x0020;
 const PROCESS_SET_QUOTA: Dword = 0x0100;
 const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
 const THREAD_QUERY_LIMITED_INFORMATION: Dword = 0x0800;
@@ -162,6 +165,10 @@ const WAIT_OBJECT_0: Dword = 0;
 const WAIT_TIMEOUT: Dword = 258;
 const WAIT_FAILED: Dword = 0xffff_ffff;
 const STILL_ACTIVE: Dword = 259;
+const MEM_COMMIT: Dword = 0x0000_1000;
+const MEM_RESERVE: Dword = 0x0000_2000;
+const MEM_RELEASE: Dword = 0x0000_8000;
+const PAGE_READWRITE: Dword = 0x04;
 const ERROR_ALREADY_EXISTS: Dword = 183;
 const FILE_SHARE_READ: Dword = 0x0000_0001;
 const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
@@ -191,6 +198,36 @@ extern "system" {
         size: usize,
         bytes_read: *mut usize,
     ) -> Bool;
+    fn WriteProcessMemory(
+        process: Handle,
+        base_address: *mut c_void,
+        buffer: *const c_void,
+        size: usize,
+        bytes_written: *mut usize,
+    ) -> Bool;
+    fn VirtualAllocEx(
+        process: Handle,
+        address: *mut c_void,
+        size: usize,
+        allocation_type: Dword,
+        protection: Dword,
+    ) -> *mut c_void;
+    fn VirtualFreeEx(
+        process: Handle,
+        address: *mut c_void,
+        size: usize,
+        free_type: Dword,
+    ) -> Bool;
+    fn CreateRemoteThread(
+        process: Handle,
+        thread_attributes: *mut c_void,
+        stack_size: usize,
+        start_address: *const c_void,
+        parameter: *mut c_void,
+        creation_flags: Dword,
+        thread_id: *mut Dword,
+    ) -> Handle;
+    fn GetExitCodeThread(thread: Handle, exit_code: *mut Dword) -> Bool;
     fn OpenProcess(desired_access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
     fn OpenEventW(desired_access: Dword, inherit_handle: Bool, name: *const u16) -> Handle;
     fn OpenThread(desired_access: Dword, inherit_handle: Bool, thread_id: Dword) -> Handle;
@@ -1754,9 +1791,9 @@ fn run() -> Result<(), String> {
             let target_proof = target_dll_proof
                 .as_ref()
                 .ok_or("activated duplex worker lost target DLL proof")?;
-            let (data, control, _hook_lease) = prepare_activated_duplex_workers(
+            let (data, control, hook_lease) = prepare_activated_duplex_workers(
                 spec,
-                process_authority.as_ref(),
+                &process_authority,
                 &dll_authority,
                 target_proof,
                 Duration::from_millis(recorder_host::auto_attach::policy::HANDSHAKE_DEADLINE_MS),
@@ -1779,6 +1816,7 @@ fn run() -> Result<(), String> {
                 &cfg.session_id,
                 &stitch_process_start_identity,
             )?;
+            hook_lease.release()?;
             let scientist_authority = if scientist_requested {
                 let game = game_module_authority
                     .take()
@@ -1895,7 +1933,7 @@ fn run() -> Result<(), String> {
             }
             None => {
                 attach_hook(
-                    process_authority.as_ref(),
+                    &process_authority,
                     &dll_authority,
                     hook_target_dll_proof.as_ref(),
                     hook_hold_ms,
@@ -10465,7 +10503,10 @@ impl RetainedProcessAuthority {
         let handle = unsafe {
             OpenProcess(
                 PROCESS_TERMINATE
+                    | PROCESS_CREATE_THREAD
+                    | PROCESS_VM_OPERATION
                     | PROCESS_VM_READ
+                    | PROCESS_VM_WRITE
                     | PROCESS_SET_QUOTA
                     | PROCESS_QUERY_LIMITED_INFORMATION
                     | SYNCHRONIZE,
@@ -11055,10 +11096,14 @@ struct InstalledHookLease {
     module: Hmodule,
     hooks: Vec<(Hhook, Dword)>,
     _thread_authorities: Vec<RetainedThreadAuthority>,
+    remote_library: Option<RemoteLibraryLease>,
 }
 
 impl Drop for InstalledHookLease {
     fn drop(&mut self) {
+        if let Some(remote) = self.remote_library.take() {
+            let _ = release_remote_library(&remote);
+        }
         unsafe {
             for (hook, _) in self.hooks.drain(..) {
                 UnhookWindowsHookEx(hook);
@@ -11071,40 +11116,28 @@ impl Drop for InstalledHookLease {
     }
 }
 
+impl InstalledHookLease {
+    fn release(mut self) -> Result<(), String> {
+        if let Some(remote) = self.remote_library.take() {
+            release_remote_library(&remote)?;
+        }
+        Ok(())
+    }
+}
+
+struct RemoteLibraryLease {
+    process: std::sync::Arc<RetainedProcessAuthority>,
+    module_base: usize,
+    free_library_address: usize,
+}
+
 fn install_hook(
-    process: &RetainedProcessAuthority,
+    process: &std::sync::Arc<RetainedProcessAuthority>,
     dll: &RetainedDllAuthority,
     target_proof: Option<&TargetDllProof>,
-    poke_ms: u64,
+    _poke_ms: u64,
 ) -> Result<InstalledHookLease, String> {
     process.revalidate_live()?;
-    let pid = process.pid;
-    // Product discovery intentionally starts before the game creates its first
-    // visible window. WH_GETMESSAGE still needs a real target GUI thread, so
-    // wait for that thread without activating, restoring, or focusing its
-    // window. The retained process authority is revalidated throughout; a
-    // process exit or identity change fails this one-shot attempt closed.
-    let window_deadline = Instant::now() + Duration::from_secs(30);
-    let hwnd = loop {
-        if let Some(hwnd) = find_main_window(pid) {
-            break hwnd;
-        }
-        process.revalidate_live()?;
-        if Instant::now() >= window_deadline {
-            return Err(format!(
-                "no visible window for pid {pid} within headless injection wait"
-            ));
-        }
-        thread::sleep(Duration::from_millis(25));
-    };
-    let mut owner = 0u32;
-    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
-    if thread_id == 0 || owner != pid {
-        return Err(format!(
-            "GetWindowThreadProcessId failed or returned pid {owner}; last_error={}",
-            last_error()
-        ));
-    }
     let module_name = dll.module_name()?;
     let module_name_wide = wide(module_name);
     if !unsafe { GetModuleHandleW(module_name_wide.as_ptr()) }.is_null() {
@@ -11147,117 +11180,219 @@ fn install_hook(
             return Err(error);
         }
     }
-    // Re-check target residency after local loading and immediately before any
-    // SetWindowsHookExW action. An observed prior module is commitment evidence,
-    // even if a hostile rewrite erased both journal files.
+    // Re-check target residency after local loading and immediately before the
+    // sole remote LoadLibraryW action. An observed prior module is commitment
+    // evidence, even if a hostile rewrite erased both journal files.
     process.revalidate_live()?;
-    if let Err(error) = ensure_target_module_absent(process, module_name) {
+    if let Err(error) = ensure_target_module_absent(process.as_ref(), module_name) {
         unsafe { FreeLibrary(module) };
         return Err(error);
     }
-    let proc =
-        unsafe { GetProcAddress(module, b"Hoi4ReplayGetMsgProc\0".as_ptr() as *const c_char) };
-    if proc.is_null() {
-        unsafe {
-            FreeLibrary(module);
-        }
-        return Err(format!("GetProcAddress failed: {}", last_error()));
-    }
-    // The main-window thread is the one exact GUI message-queue authority
-    // established above. Hooking every process thread allowed unrelated
-    // transient queues to map the DLL late, after the capture worker had
-    // already released its own module reference. Those secondary mappings
-    // made unload timing nondeterministic and could strand a reference across
-    // same-game recorder reuse. One retained main-window thread is sufficient
-    // to deliver WH_GETMESSAGE and gives the hook lease a single auditable
-    // mapping owner.
-    let thread_ids = [thread_id];
-    let mut hooks = Vec::new();
-    let mut thread_authorities = Vec::new();
-    for target_thread_id in thread_ids {
-        let thread_authority = match RetainedThreadAuthority::open(target_thread_id, pid) {
-            Ok(authority) => authority,
-            Err(error) => {
-                unsafe {
-                    for (hook, _) in hooks.drain(..) {
-                        UnhookWindowsHookEx(hook);
-                    }
-                    FreeLibrary(module);
-                }
-                return Err(error);
-            }
-        };
-        // The SAME retained process handle that established creation FILETIME
-        // remains live here. Re-check it immediately before every hook action;
-        // holding the handle also prevents PID reuse if the process exits after
-        // this check but before the syscall consumes the thread id.
-        let hook = match run_authorized_process_action(
-            || {
-                process.revalidate_live()?;
-                thread_authority.revalidate_live()?;
-                // Re-sample commitment evidence at the last pre-action seam.
-                // Repeat while no hook has succeeded; once one succeeds, a
-                // matching target module can legitimately be ours.
-                if hooks.is_empty() {
-                    ensure_target_module_absent(process, module_name)?;
-                }
-                Ok(())
-            },
-            || {
-                Ok::<Hhook, String>(unsafe {
-                    SetWindowsHookExW(WH_GETMESSAGE, proc, module, target_thread_id)
-                })
-            },
-        ) {
-            Ok(hook) => hook,
-            Err(error) => {
-                unsafe {
-                    for (hook, _) in hooks.drain(..) {
-                        UnhookWindowsHookEx(hook);
-                    }
-                    FreeLibrary(module);
-                }
-                return Err(error);
-            }
-        };
-        if !hook.is_null() {
-            hooks.push((hook, target_thread_id));
-            // Keep the thread object alive through hook teardown. If the thread
-            // exits after the last check, Windows cannot reuse its TID for an
-            // unrelated process while this authority handle is retained.
-            thread_authorities.push(thread_authority);
-        }
-    }
-    if hooks.is_empty() {
-        unsafe {
-            FreeLibrary(module);
-        }
-        return Err(format!(
-            "SetWindowsHookExW failed for all target threads: {}",
-            last_error()
-        ));
-    }
-    let poke_started = Instant::now();
-    while duration_millis_u64(poke_started.elapsed()) <= poke_ms {
-        for (_, target_thread_id) in &hooks {
+    let remote_library = match inject_remote_load_library(process, &dll.load_path, module_name) {
+        Ok(remote) => remote,
+        Err(error) => {
             unsafe {
-                PostThreadMessageW(*target_thread_id, WM_NULL, 0, 0);
+                FreeLibrary(module);
             }
+            return Err(error);
         }
-        unsafe {
-            PostMessageW(hwnd, WM_NULL, 0, 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
+    };
+    process.revalidate_live()?;
     Ok(InstalledHookLease {
         module,
-        hooks,
-        _thread_authorities: thread_authorities,
+        hooks: Vec::new(),
+        _thread_authorities: Vec::new(),
+        remote_library: Some(remote_library),
     })
 }
 
+/// Inject the collector without requiring a window, message queue, foreground
+/// activation, or UI thread. The exact retained process handle and DLL file
+/// authority are held by the caller across this one committed action.
+fn inject_remote_load_library(
+    process: &std::sync::Arc<RetainedProcessAuthority>,
+    collector: &Path,
+    collector_module_name: &OsStr,
+) -> Result<RemoteLibraryLease, String> {
+    let collector_wide = wide(collector.as_os_str());
+    let collector_bytes = unsafe {
+        std::slice::from_raw_parts(
+            collector_wide.as_ptr().cast::<u8>(),
+            collector_wide.len() * std::mem::size_of::<u16>(),
+        )
+    };
+    let remote_path = unsafe {
+        VirtualAllocEx(
+            process.handle,
+            ptr::null_mut(),
+            collector_bytes.len(),
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE,
+        )
+    };
+    if remote_path.is_null() {
+        return Err(format!(
+            "VirtualAllocEx for headless collector path failed: {}",
+            last_error()
+        ));
+    }
+    let result = (|| {
+        let mut written = 0usize;
+        if unsafe {
+            WriteProcessMemory(
+                process.handle,
+                remote_path,
+                collector_bytes.as_ptr().cast(),
+                collector_bytes.len(),
+                &mut written,
+            )
+        } == 0
+            || written != collector_bytes.len()
+        {
+            return Err(format!(
+                "WriteProcessMemory for headless collector path failed: {}",
+                last_error()
+            ));
+        }
+        process.revalidate_live()?;
+        let kernel_name = OsStr::new("kernel32.dll");
+        let kernel_name_wide = wide(kernel_name);
+        let local_kernel = unsafe { GetModuleHandleW(kernel_name_wide.as_ptr()) };
+        let local_load_library =
+            unsafe { GetProcAddress(local_kernel, b"LoadLibraryW\0".as_ptr().cast()) };
+        let local_free_library =
+            unsafe { GetProcAddress(local_kernel, b"FreeLibrary\0".as_ptr().cast()) };
+        if local_kernel.is_null()
+            || local_load_library.is_null()
+            || local_free_library.is_null()
+        {
+            return Err("resolve local kernel32 loader exports failed".to_string());
+        }
+        let remote_kernel = target_modules(process.pid)?
+            .into_iter()
+            .find(|module| module_name_matches(&module.module_name, kernel_name))
+            .ok_or_else(|| {
+                format!(
+                    "target process {} has no kernel32.dll module",
+                    process.pid
+                )
+            })?;
+        let load_library_rva = (local_load_library as usize)
+            .checked_sub(local_kernel as usize)
+            .ok_or("LoadLibraryW address precedes local kernel32 base")?;
+        let remote_load_library = remote_kernel
+            .base_address
+            .checked_add(load_library_rva)
+            .ok_or("remote LoadLibraryW address overflow")?;
+        let free_library_rva = (local_free_library as usize)
+            .checked_sub(local_kernel as usize)
+            .ok_or("FreeLibrary address precedes local kernel32 base")?;
+        let remote_free_library = remote_kernel
+            .base_address
+            .checked_add(free_library_rva)
+            .ok_or("remote FreeLibrary address overflow")?;
+        process.revalidate_live()?;
+        let remote_thread = unsafe {
+            CreateRemoteThread(
+                process.handle,
+                ptr::null_mut(),
+                0,
+                remote_load_library as *const c_void,
+                remote_path,
+                0,
+                ptr::null_mut(),
+            )
+        };
+        if remote_thread.is_null() {
+            return Err(format!(
+                "CreateRemoteThread(LoadLibraryW) failed: {}",
+                last_error()
+            ));
+        }
+        let wait = unsafe { WaitForSingleObject(remote_thread, 30_000) };
+        let mut exit_code = 0u32;
+        let exit_ok = unsafe { GetExitCodeThread(remote_thread, &mut exit_code) } != 0;
+        unsafe { CloseHandle(remote_thread) };
+        if wait != WAIT_OBJECT_0 {
+            return Err(format!(
+                "remote LoadLibraryW wait failed or timed out ({wait})"
+            ));
+        }
+        if !exit_ok || exit_code == 0 {
+            return Err(format!(
+                "remote LoadLibraryW did not return a collector module: {}",
+                last_error()
+            ));
+        }
+        process.revalidate_live()?;
+        let loaded_modules: Vec<_> = target_modules(process.pid)?
+            .into_iter()
+            .filter(|module| module_name_matches(&module.module_name, collector_module_name))
+            .collect();
+        if loaded_modules.len() != 1 {
+            return Err(format!(
+                "headless LoadLibraryW expected one target {}, observed {}",
+                collector_module_name.to_string_lossy(),
+                loaded_modules.len()
+            ));
+        }
+        Ok(RemoteLibraryLease {
+            process: process.clone(),
+            module_base: loaded_modules[0].base_address,
+            free_library_address: remote_free_library,
+        })
+    })();
+    // The remote thread has completed on every success path. On a wait timeout,
+    // retain the tiny allocation rather than risk freeing a path buffer the
+    // target may still read; the attempt is already poisoned fail-closed.
+    if !matches!(&result, Err(error) if error.contains("timed out")) {
+        unsafe {
+            VirtualFreeEx(process.handle, remote_path, 0, MEM_RELEASE);
+        }
+    }
+    result
+}
+
+fn release_remote_library(remote: &RemoteLibraryLease) -> Result<(), String> {
+    remote.process.revalidate_live()?;
+    let thread = unsafe {
+        CreateRemoteThread(
+            remote.process.handle,
+            ptr::null_mut(),
+            0,
+            remote.free_library_address as *const c_void,
+            remote.module_base as *mut c_void,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    if thread.is_null() {
+        return Err(format!(
+            "CreateRemoteThread(FreeLibrary) failed: {}",
+            last_error()
+        ));
+    }
+    let wait = unsafe { WaitForSingleObject(thread, 30_000) };
+    let mut exit_code = 0u32;
+    let exit_ok = unsafe { GetExitCodeThread(thread, &mut exit_code) } != 0;
+    unsafe { CloseHandle(thread) };
+    if wait != WAIT_OBJECT_0 {
+        return Err(format!(
+            "remote FreeLibrary wait failed or timed out ({wait})"
+        ));
+    }
+    if !exit_ok || exit_code == 0 {
+        return Err(format!(
+            "remote FreeLibrary failed for collector base 0x{:x}: {}",
+            remote.module_base,
+            last_error()
+        ));
+    }
+    remote.process.revalidate_live()
+}
+
 fn attach_hook(
-    process: &RetainedProcessAuthority,
+    process: &std::sync::Arc<RetainedProcessAuthority>,
     dll: &RetainedDllAuthority,
     target_proof: Option<&TargetDllProof>,
     hold_ms: u64,
@@ -11267,8 +11402,7 @@ fn attach_hook(
     thread::sleep(Duration::from_millis(
         hold_ms.saturating_sub(duration_millis_u64(hold_started.elapsed())),
     ));
-    drop(lease);
-    Ok(())
+    lease.release()
 }
 
 fn process_creation_filetime(handle: Handle, pid: Dword) -> Result<u64, String> {
@@ -12235,7 +12369,7 @@ impl AutoAttachWorkerContext {
 #[allow(dead_code)]
 fn prepare_activated_duplex_workers(
     spec: &recorder_host::auto_attach::sources::WorkerSpec,
-    process: &RetainedProcessAuthority,
+    process: &std::sync::Arc<RetainedProcessAuthority>,
     dll: &RetainedDllAuthority,
     target_dll_proof: &TargetDllProof,
     startup_timeout: Duration,
