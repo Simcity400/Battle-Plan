@@ -609,6 +609,10 @@ pub enum ClientError {
     EarlyRenderRuntimeDlcCodec(EarlyRenderRuntimeDlcCodecError),
     EarlyRenderStartupFailureCodec(EarlyRenderStartupFailureCodecError),
     EarlyRenderBinding,
+    /// Exact local post-READY failure retained for the authenticated startup
+    /// failure report. Unlike `EarlyRenderBinding`, this detail must not be
+    /// collapsed before H4CT transports it to the recorder.
+    EarlyRenderLocal(String),
     EarlyRenderDiagnosticHoldTooShort {
         observed_ms: u64,
         required_ms: u64,
@@ -1769,7 +1773,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             ) {
                 Ok(Some(first)) => break first,
                 Ok(None) => thread::yield_now(),
-                Err(_) => return self.fail(ClientError::EarlyRenderBinding),
+                Err(error) => return self.fail(ClientError::EarlyRenderLocal(error)),
             }
         };
         self.send_early_render_first_game_d3d(&first, first_game_d3d_deadline)?;

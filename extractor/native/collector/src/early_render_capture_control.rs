@@ -37,6 +37,13 @@ fn encode_sha256(value: &[u8; 32]) -> String {
     out
 }
 
+fn reject_staged_hook_failure(error: Option<&str>) -> Result<(), String> {
+    match error {
+        Some(error) => Err(error.to_owned()),
+        None => Ok(()),
+    }
+}
+
 pub fn ready_proof(binding: &EarlyRenderControlBinding) -> Result<EarlyHookReadyV1, String> {
     let ready = a729_hook::early_capture_readiness()?;
     let executable_sha256 = decode_sha256(&ready.process.executable_sha256)?;
@@ -86,6 +93,7 @@ pub fn first_game_d3d_proof(
     {
         return Err("early-render FIRST belongs to a foreign/repeated game D3D epoch".into());
     }
+    reject_staged_hook_failure(ready.staged_hook_failure.as_deref())?;
     let Some(creation_qpc) = ready.d3d_device_created_qpc else {
         return Ok(None);
     };
@@ -215,4 +223,23 @@ pub fn arm_g2_capture(
         return Err("G2 arm differs from the authenticated launch/COMMIT binding".into());
     }
     a729_hook::arm_g2_capture(arm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_staged_hook_failure;
+
+    #[test]
+    fn first_proof_preserves_the_exact_staged_hook_failure() {
+        assert_eq!(reject_staged_hook_failure(None), Ok(()));
+        assert_eq!(
+            reject_staged_hook_failure(Some(
+                "post-device staged hook 0x1234 enable failed at staged index 7: MH_ERROR_MEMORY_PROTECT"
+            )),
+            Err(
+                "post-device staged hook 0x1234 enable failed at staged index 7: MH_ERROR_MEMORY_PROTECT"
+                    .into()
+            )
+        );
+    }
 }
