@@ -21,6 +21,7 @@ pub const EARLY_STAGED_HOOK_COUNT: u32 = 23 + 2 + 3 + 8 + 8 + 7 + 2 + 3 + 7 + 3;
 pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
+pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 600_000;
 
 pub fn staged_hook_count_for_group_mask(group_mask: u64) -> Option<u32> {
     if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0 || group_mask & 1 == 0 {
@@ -852,7 +853,7 @@ pub fn encode_early_render_launch_bind(
 ) -> Result<Vec<u8>, EarlyRenderCodecError> {
     if value.process_id == 0
         || value.process_start_nonce == 0
-        || !(1..=120_000).contains(&value.timeout_ms)
+        || !(1..=MAX_EARLY_RENDER_TIMEOUT_MS).contains(&value.timeout_ms)
         || value.effective_vfs_index_row_count == 0
         || value.effective_vfs_index_chunk_count == 0
         || value.effective_vfs_index_chunk_count > value.effective_vfs_index_row_count
@@ -917,7 +918,7 @@ pub fn encode_early_render_launch_bind_v2(
 ) -> Result<Vec<u8>, EarlyRenderCodecError> {
     if value.process_id == 0
         || value.process_start_nonce == 0
-        || !(1..=120_000).contains(&value.timeout_ms)
+        || !(1..=MAX_EARLY_RENDER_TIMEOUT_MS).contains(&value.timeout_ms)
         || value.effective_vfs_index_row_count == 0
         || value.effective_vfs_index_chunk_count == 0
         || value.effective_vfs_index_chunk_count > value.effective_vfs_index_row_count
@@ -1249,7 +1250,7 @@ mod tests {
             encode_early_render_launch_bind(&invalid),
             Err(EarlyRenderCodecError::InvalidField)
         );
-        invalid.timeout_ms = 120_001;
+        invalid.timeout_ms = MAX_EARLY_RENDER_TIMEOUT_MS + 1;
         assert_eq!(
             encode_early_render_launch_bind(&invalid),
             Err(EarlyRenderCodecError::InvalidField)

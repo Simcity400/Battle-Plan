@@ -29,4 +29,5 @@ pub mod world_fold;
 /// continue-save can spend several minutes between first D3D creation and a
 /// coherent world census, so this shares the safe launcher's world-ready
 /// budget instead of imposing a separate 30-second startup assumption.
-pub const MAX_EARLY_HOOK_TIMEOUT_MS: u32 = 600_000;
+pub const MAX_EARLY_HOOK_TIMEOUT_MS: u32 =
+    compact_contract::early_render_control::MAX_EARLY_RENDER_TIMEOUT_MS;
