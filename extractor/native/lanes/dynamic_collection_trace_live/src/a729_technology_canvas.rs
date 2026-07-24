@@ -149,7 +149,7 @@ pub const AUTHENTICATED_EXACT20_HOOK_CONTRACT: Option<Exact20HookContract> =
             },
             FunctionSiteContract {
                 rva: REFRESH_COMMIT_RVA,
-                entry_sentinel: *b"\x48\x8b\xc4\x48\x89\x40\x08\x55\x53\x56\x57\x41\x54\x41\x55\x41",
+                entry_sentinel: *b"\x48\x8b\xc4\x48\x89\x48\x08\x55\x53\x56\x57\x41\x54\x41\x55\x41",
             },
             FunctionSiteContract {
                 rva: ITEM_REBIND_RVA,
@@ -1918,6 +1918,22 @@ mod tests {
         let mut incomplete = contract();
         incomplete.function_sites[5].rva = 0;
         assert!(validate_exact20_contract(incomplete).is_err());
+    }
+
+    #[test]
+    fn refresh_commit_sentinel_matches_authenticated_exact20_receipt() {
+        let contract = AUTHENTICATED_EXACT20_HOOK_CONTRACT.unwrap();
+        let refresh = contract
+            .function_sites
+            .iter()
+            .find(|site| site.rva == REFRESH_COMMIT_RVA)
+            .unwrap();
+        // replay_interface/re_evidence/rendering_laws/UI09/
+        // H_A29_TECHNOLOGY_CANVAS_EXACT20_RECEIPT_20260720.json
+        assert_eq!(
+            refresh.entry_sentinel,
+            *b"\x48\x8b\xc4\x48\x89\x48\x08\x55\x53\x56\x57\x41\x54\x41\x55\x41"
+        );
     }
 
     #[test]

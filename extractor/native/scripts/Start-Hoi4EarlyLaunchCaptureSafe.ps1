@@ -57,6 +57,40 @@ function ConvertTo-NativeArgumentLine {
     }) -join ' ')
 }
 
+function Stop-OwnedProcessBounded {
+    param(
+        [Parameter(Mandatory=$true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory=$true)][ValidateRange(1000,60000)][int]$TimeoutMilliseconds,
+        [Parameter(Mandatory=$true)][string]$Description
+    )
+    $processId=$Process.Id
+    $wasRunning=-not $Process.HasExited
+    if ($wasRunning) {
+        try {
+            $Process.Kill()
+        } catch {
+            $Process.Refresh()
+            if (-not $Process.HasExited) {
+                throw "Failed to terminate owned $Description PID $processId`: $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not $Process.WaitForExit($TimeoutMilliseconds)) {
+        throw "Owned $Description PID $processId did not exit within $TimeoutMilliseconds milliseconds."
+    }
+    $Process.Refresh()
+    if (-not $Process.HasExited) {
+        throw "Owned $Description PID $processId remained live after its bounded exit wait."
+    }
+    return [ordered]@{
+        process_id=$processId
+        was_running_at_cleanup=$wasRunning
+        exit_code=$Process.ExitCode
+        wait_timeout_milliseconds=$TimeoutMilliseconds
+        status=$(if ($wasRunning) { 'terminated_and_reaped' } else { 'already_exited_and_reaped' })
+    }
+}
+
 if (-not $DryRun -and -not $OperatorApproved) {
     throw 'A live suspended launch requires explicit -OperatorApproved authority.'
 }
@@ -215,6 +249,9 @@ $recorderExitCode=$null
 $rawRecorderExitNonzero=$false
 $headlessControlResult=$null
 $headlessControlError=$null
+$dumpMonitorCleanup=$null
+$dumpMonitorCleanupError=$null
+$dumpMonitorStopTimeoutMilliseconds=15000
 try {
     $dumpMonitor=Start-Process -FilePath $procdump -ArgumentList @(
         '-accepteula','-ma','-e','-w','hoi4.exe',$crashDir
@@ -303,14 +340,37 @@ try {
         $process.Dispose()
     }
     if ($null -ne $dumpMonitor) {
-        if (-not $dumpMonitor.HasExited) { Stop-Process -Id $dumpMonitor.Id -Force -ErrorAction SilentlyContinue }
-        $dumpMonitor.Dispose()
+        try {
+            $dumpMonitorCleanup=Stop-OwnedProcessBounded `
+                -Process $dumpMonitor `
+                -TimeoutMilliseconds $dumpMonitorStopTimeoutMilliseconds `
+                -Description 'ProcDump crash monitor'
+        } catch {
+            $dumpMonitorCleanupError=$_.Exception.Message
+        } finally {
+            # ProcDump owns the redirected log handles until it exits. Closing
+            # our process handle only after the bounded reap prevents the
+            # subsequent evidence hash pass from racing those writers.
+            $dumpMonitor.Dispose()
+        }
     }
     $retainedLogs=Join-Path $OutDir 'game_logs_after_attempt'
     New-Item -ItemType Directory -Path $retainedLogs -Force | Out-Null
     foreach($name in @('error.log','game.log','system.log','setup.log')) {
         $source=Join-Path $PdxUserDir "logs\$name"
         if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination (Join-Path $retainedLogs $name) -Force }
+    }
+    if ($null -ne $dumpMonitorCleanupError) {
+        $cleanupFailurePath=Join-Path $crashDir 'procdump_cleanup_failure.json'
+        Write-DurableJson -Path $cleanupFailurePath -Value ([ordered]@{
+            schema='battle-plan.procdump_cleanup_failure.v1'
+            error=[string]$dumpMonitorCleanupError
+            wait_timeout_milliseconds=$dumpMonitorStopTimeoutMilliseconds
+            failed_utc=[DateTime]::UtcNow.ToString('o')
+            evidence_preserved=$true
+            crash_artifacts_hashed=$false
+        })
+        throw "ProcDump cleanup failed closed before crash-evidence hashing; evidence was preserved and details are in $cleanupFailurePath"
     }
     $crashFiles=@()
     foreach($file in @(Get-ChildItem -LiteralPath $crashDir -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
@@ -323,6 +383,7 @@ try {
     Write-DurableJson -Path (Join-Path $crashDir 'attempt_evidence_manifest.json') -Value ([ordered]@{
         schema='battle-plan.early_launch_crash_evidence.v1'
         recorder_exit_code=$recorderExitCode
+        crash_monitor_cleanup=$dumpMonitorCleanup
         process_dump_count=@($crashFiles | Where-Object { [string]$_.file -like '*.dmp' }).Count
         artifacts=$crashFiles
     })
