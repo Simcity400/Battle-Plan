@@ -15293,6 +15293,12 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
         "in_flight",
         "last_observe_failed",
         "latch_requested_but_inactive",
+        "capture_barrier_acquisitions",
+        "capture_barrier_failures",
+        "capture_barrier_releases",
+        "capture_barrier_restore_failures",
+        "capture_barrier_supported",
+        "capture_barrier_active",
         "sink_write_failures",
         "sink_open_attempts",
         "sink_open_finishes",
@@ -15347,6 +15353,22 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
     }
     if get("latch_requested_but_inactive").unwrap_or(1) != 0 {
         problems.push("hour_latch_inactive".to_string());
+    }
+    if get("capture_barrier_supported") != Some(1) {
+        problems.push("hour_latch_capture_barrier_unavailable".to_string());
+    }
+    if get("capture_barrier_failures").unwrap_or(1) != 0
+        || get("capture_barrier_restore_failures").unwrap_or(1) != 0
+    {
+        problems.push("hour_latch_capture_barrier_failed".to_string());
+    }
+    if get("capture_barrier_active").unwrap_or(1) != 0 {
+        problems.push("hour_latch_capture_barrier_not_released".to_string());
+    }
+    if get("capture_barrier_acquisitions") != Some(attempts)
+        || get("capture_barrier_releases") != Some(attempts)
+    {
+        problems.push("hour_latch_capture_barrier_accounting_invalid".to_string());
     }
     if get("last_observe_failed").unwrap_or(1) != 0 {
         problems.push("hour_latch_terminal_observe_failed".to_string());
@@ -15512,6 +15534,7 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
     let capture_failed = emitted_to_sink.map(|emitted| attempts.saturating_sub(emitted));
     let delivery_problems = hour_latch_delivery_problems(summary);
     let sink_write_success_verified = delivery_problems.is_empty();
+    let capture_barrier_supported = get("capture_barrier_supported") == 1;
     let sink_write_gap = if sink_write_success_verified {
         Value::Null
     } else {
@@ -15523,7 +15546,11 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "latch_requested_but_inactive": latch_requested_but_inactive,
         "accounting_claim": accounting_claim,
         "last_observe_failed": last_observe_failed,
-        "note": "zero-silent-gap accounting through the last good observation, not zero-data-loss; coalesced hours are explicit reason-tagged loss",
+        "note": if capture_barrier_supported {
+            "exact-build capture barrier freezes each observed hour while its full world frame is assembled"
+        } else {
+            "legacy zero-silent-gap accounting only; coalesced hours are explicit reason-tagged loss"
+        },
         "hours_observed": observed,
         "capture_attempts": attempts,
         "in_flight": summary.hour_latch.get("in_flight").copied(),
@@ -15576,6 +15603,15 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "anomalous_jumps": get("anomalous_jumps"),
         "latch_polls": get("polls"),
         "latch_read_failures": get("read_failures"),
+        "capture_barrier": {
+            "supported": capture_barrier_supported,
+            "acquisitions": summary.hour_latch.get("capture_barrier_acquisitions").copied(),
+            "failures": summary.hour_latch.get("capture_barrier_failures").copied(),
+            "releases": summary.hour_latch.get("capture_barrier_releases").copied(),
+            "restore_failures": summary.hour_latch.get("capture_barrier_restore_failures").copied(),
+            "active_at_terminal": summary.hour_latch.get("capture_barrier_active").copied().map(|value| value != 0),
+            "player_pause_sample_preserved": capture_barrier_supported,
+        },
         // Coverage reconciliation — the load-bearing zero-silent-gap invariant.
         "hours_accounted": accounted,
         "coverage_invariant_ok": invariant_ok && !latch_requested_but_inactive,
@@ -18108,6 +18144,12 @@ mod tests {
             ("coalesced", 0),
             ("last_observe_failed", 0),
             ("latch_requested_but_inactive", 0),
+            ("capture_barrier_acquisitions", attempts),
+            ("capture_barrier_failures", 0),
+            ("capture_barrier_releases", attempts),
+            ("capture_barrier_restore_failures", 0),
+            ("capture_barrier_supported", 1),
+            ("capture_barrier_active", 0),
         ] {
             summary.hour_latch.insert(name.to_string(), value);
         }

@@ -149,6 +149,21 @@ pub struct HourLatchTelemetry {
     /// latch thread failed to spawn). The collector falls back to the legacy
     /// loop, but the accounting claim must be INACTIVE rather than COMPLETE.
     pub latch_requested_but_inactive: bool,
+    /// Hour frontiers for which the in-process capture barrier was acquired.
+    /// The barrier temporarily freezes the simulation while the corresponding
+    /// world frame is read; it does not change the recorded player pause state.
+    pub capture_barrier_acquisitions: u64,
+    /// Capture-barrier acquisitions that could not authenticate or freeze the
+    /// exact-build pause clock. Any non-zero value invalidates lossless capture.
+    pub capture_barrier_failures: u64,
+    /// Capture barriers released after their world frame was fully assembled.
+    pub capture_barrier_releases: u64,
+    /// Barrier releases whose exact prior pause state could not be restored.
+    pub capture_barrier_restore_failures: u64,
+    /// Whether the exact-build pause clock was authenticated for this latch.
+    pub capture_barrier_supported: bool,
+    /// Whether a capture barrier remained owned at the telemetry boundary.
+    pub capture_barrier_active: bool,
 }
 
 impl HourLatchTelemetry {
@@ -449,6 +464,12 @@ impl HourLatch {
             read_failures: self.read_failures,
             last_observe_failed: self.last_observe_failed,
             latch_requested_but_inactive: false,
+            capture_barrier_acquisitions: 0,
+            capture_barrier_failures: 0,
+            capture_barrier_releases: 0,
+            capture_barrier_restore_failures: 0,
+            capture_barrier_supported: false,
+            capture_barrier_active: false,
         }
     }
 }
