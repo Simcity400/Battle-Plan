@@ -25,7 +25,6 @@
 
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::mem;
 use std::ptr;
@@ -145,10 +144,6 @@ static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 const OWNER_FIXTURE_ENV: &str = "BATTLE_PLAN_D45_X10_OWNER_FIXTURE";
-
-thread_local! {
-    static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
-}
 
 #[derive(Debug)]
 struct HookState {
@@ -518,104 +513,56 @@ unsafe extern "system" fn hook_focus(
     context40: usize,
 ) {
     let _callback_lease = CallbackLease::enter();
-    let nested = IN_CALLBACK.with(|guard| guard.replace(true));
-    let prepared = (!nested).then(|| prepare_focus(progress, completed_focus, country_key, context40));
+    // Cross-family recursion is part of the engine's real transition order.
+    // Every callback prepares its own pointer-free row before entering the
+    // original, so nested callbacks can be admitted without retaining raw
+    // pointers or suppressing a real event.
+    let prepared = prepare_focus(progress, completed_focus, country_key, context40);
     unsafe { call_original_focus(progress, completed_focus, country_key, context40) };
-    if nested {
-        record_nested_callback("focus");
-    } else {
-        publish(
-            prepared
-                .unwrap_or_else(|| Err("D45 focus preparation missing".into()))
-                .map(Some),
-        );
-    }
-    IN_CALLBACK.with(|guard| guard.set(nested));
+    publish(prepared.map(Some));
 }
 
 unsafe extern "system" fn hook_research(instance: usize, new_progress: i32) {
     let _callback_lease = CallbackLease::enter();
-    let nested = IN_CALLBACK.with(|guard| guard.replace(true));
-    let prepared = (!nested).then(|| prepare_research(instance, new_progress));
+    let prepared = prepare_research(instance, new_progress);
     unsafe { call_original_research(instance, new_progress) };
-    if nested {
-        record_nested_callback("research");
-    } else {
-        publish(prepared.unwrap_or_else(|| Err("D45 research preparation missing".into())));
-    }
-    IN_CALLBACK.with(|guard| guard.set(nested));
+    publish(prepared);
 }
 
 unsafe extern "system" fn hook_ordinary(status: usize, decision: usize) {
     let _callback_lease = CallbackLease::enter();
-    let nested = IN_CALLBACK.with(|guard| guard.replace(true));
-    let prepared = (!nested).then(|| {
-        prepare_decision_row(
-            DirectEventKind::OrdinaryDecisionTaken,
-            status,
-            decision,
-            None,
-        )
-    });
+    let prepared = prepare_decision_row(
+        DirectEventKind::OrdinaryDecisionTaken,
+        status,
+        decision,
+        None,
+    );
     unsafe { call_original_ordinary(status, decision) };
-    if nested {
-        record_nested_callback("ordinary decision");
-    } else {
-        publish(
-            prepared
-                .unwrap_or_else(|| Err("D45 ordinary preparation missing".into()))
-                .map(Some),
-        );
-    }
-    IN_CALLBACK.with(|guard| guard.set(nested));
+    publish(prepared.map(Some));
 }
 
 unsafe extern "system" fn hook_targeted(status: usize, target_descriptor: usize, decision: usize) {
     let _callback_lease = CallbackLease::enter();
-    let nested = IN_CALLBACK.with(|guard| guard.replace(true));
-    let prepared = (!nested).then(|| {
-        prepare_decision_row(
-            DirectEventKind::TargetedDecisionTaken,
-            status,
-            decision,
-            Some(target_descriptor),
-        )
-    });
+    let prepared = prepare_decision_row(
+        DirectEventKind::TargetedDecisionTaken,
+        status,
+        decision,
+        Some(target_descriptor),
+    );
     unsafe { call_original_targeted(status, target_descriptor, decision) };
-    if nested {
-        record_nested_callback("targeted decision");
-    } else {
-        publish(
-            prepared
-                .unwrap_or_else(|| Err("D45 targeted preparation missing".into()))
-                .map(Some),
-        );
-    }
-    IN_CALLBACK.with(|guard| guard.set(nested));
+    publish(prepared.map(Some));
 }
 
 unsafe extern "system" fn hook_timed(status: usize, decision: usize) {
     let _callback_lease = CallbackLease::enter();
-    let nested = IN_CALLBACK.with(|guard| guard.replace(true));
-    let prepared = (!nested).then(|| {
-        prepare_decision_row(
-            DirectEventKind::TimedDecisionActivated,
-            status,
-            decision,
-            None,
-        )
-    });
+    let prepared = prepare_decision_row(
+        DirectEventKind::TimedDecisionActivated,
+        status,
+        decision,
+        None,
+    );
     unsafe { call_original_timed(status, decision) };
-    if nested {
-        record_nested_callback("timed decision");
-    } else {
-        publish(
-            prepared
-                .unwrap_or_else(|| Err("D45 timed preparation missing".into()))
-                .map(Some),
-        );
-    }
-    IN_CALLBACK.with(|guard| guard.set(nested));
+    publish(prepared.map(Some));
 }
 
 unsafe extern "system" fn hook_on_action(
@@ -1013,18 +960,6 @@ fn publish_optional_entry(prepared: Result<Option<PreparedRow>, String>) {
         state.last_game_hour_raw = Some(prepared.game_hour_raw);
         let index = prepared.kind as usize - 1;
         state.kind_witness_counts[index] = state.kind_witness_counts[index].saturating_add(1);
-    }
-}
-
-fn record_nested_callback(kind: &str) {
-    let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
-        return;
-    };
-    state.callback_count = state.callback_count.saturating_add(1);
-    if state.current_error.is_none() {
-        state.current_error = Some(format!(
-            "D45 nested {kind} callback observed; recursion suppression makes the direct-event stream incomplete"
-        ));
     }
 }
 

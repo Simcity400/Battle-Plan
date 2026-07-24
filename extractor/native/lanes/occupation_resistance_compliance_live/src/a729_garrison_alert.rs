@@ -49,18 +49,16 @@ const MANPOWER_KEY: &[u8] = b"alert_not_enough_garrison_delayed\0";
 type AlertProducerFn = unsafe extern "system" fn(usize, usize) -> u8;
 type PoolCtorFn = unsafe extern "system" fn(usize) -> usize;
 type PoolAddFn = unsafe extern "system" fn(usize, usize, i64);
-type LocalizationFn = unsafe extern "system" fn(usize, usize, usize, u32) -> usize;
-
 static ORIGINAL_ALERT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_POOL_CTOR: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_POOL_ADD: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_LOCALIZATION: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static DROPPED_PUBLISH: AtomicBool = AtomicBool::new(false);
 static PUBLISHED: OnceLock<Mutex<BTreeMap<i32, AlertObservation>>> = OnceLock::new();
 static POISONED_HOURS: OnceLock<Mutex<BTreeSet<i32>>> = OnceLock::new();
+static LAST_DELIVERED: OnceLock<Mutex<BTreeMap<i32, AlertObservation>>> = OnceLock::new();
 static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
@@ -138,6 +136,11 @@ pub fn install() -> Result<(), String> {
         .lock()
         .map_err(|_| "a729 garrison-alert poison lock poisoned")?
         .clear();
+    LAST_DELIVERED
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| "a729 garrison-alert delivered-observation lock poisoned")?
+        .clear();
     DROPPED_PUBLISH.store(false, Ordering::Release);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
@@ -158,6 +161,9 @@ pub fn install() -> Result<(), String> {
             ));
         }
     }
+    // The localization builder is shared with A29. Validate it here, but let
+    // the collector's single A29 detour multiplex the A35 observation instead
+    // of asking MinHook to patch the same entry point twice.
     let specs = [
         (
             base + ALERT_PRODUCER_RVA,
@@ -173,11 +179,6 @@ pub fn install() -> Result<(), String> {
             base + ARCHETYPE_POOL_ADD_RVA,
             pool_add_detour as *mut c_void,
             &ORIGINAL_POOL_ADD,
-        ),
-        (
-            base + LOCALIZATION_BUILDER_RVA,
-            localization_detour as *mut c_void,
-            &ORIGINAL_LOCALIZATION,
         ),
     ];
     MODULE_BASE.store(base, Ordering::Release);
@@ -265,7 +266,16 @@ pub fn take_for_hour(game_hour_raw: i32) -> Result<Option<AlertObservation>, Str
     let result = published.remove(&game_hour_raw);
     published.retain(|hour, _| *hour >= game_hour_raw.saturating_sub(1));
     let dropped = DROPPED_PUBLISH.swap(false, Ordering::AcqRel);
-    Ok((!was_poisoned && !dropped).then_some(result).flatten())
+    let admitted = (!was_poisoned && !dropped).then_some(result).flatten();
+    if let Some(observation) = admitted.as_ref() {
+        let mut delivered = LAST_DELIVERED
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .map_err(|_| "a729 garrison-alert delivered-observation lock poisoned")?;
+        delivered.insert(game_hour_raw, observation.clone());
+        delivered.retain(|hour, _| *hour >= game_hour_raw.saturating_sub(1));
+    }
+    Ok(admitted)
 }
 
 pub fn seal_drain_and_uninstall() -> Result<AlertDrain, String> {
@@ -276,7 +286,6 @@ pub fn seal_drain_and_uninstall() -> Result<AlertDrain, String> {
     if base != 0 {
         INSTALLED.store(false, Ordering::Release);
         let targets = [
-            base + LOCALIZATION_BUILDER_RVA,
             base + ARCHETYPE_POOL_ADD_RVA,
             base + ARCHETYPE_POOL_CTOR_RVA,
             base + ALERT_PRODUCER_RVA,
@@ -313,11 +322,31 @@ pub fn seal_drain_and_uninstall() -> Result<AlertDrain, String> {
         .get_or_init(|| Mutex::new(BTreeSet::new()))
         .lock()
         .map_err(|_| "a729 garrison-alert poison lock poisoned")?;
+    let delivered = LAST_DELIVERED
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| "a729 garrison-alert delivered-observation lock poisoned")?;
+    // UI refreshes may republish the exact same current-hour result after the
+    // frame consumed it. Such a refresh carries no new semantic information.
+    // Preserve and fail on every changed or new-hour tail.
+    let observations = novel_terminal_observations(mem::take(&mut *published), &delivered);
     Ok(AlertDrain {
-        observations: mem::take(&mut *published).into_values().collect(),
+        observations,
         poisoned_hours: mem::take(&mut *poisoned).into_iter().collect(),
         publish_lock_dropped: DROPPED_PUBLISH.swap(false, Ordering::AcqRel),
     })
+}
+
+fn novel_terminal_observations(
+    published: BTreeMap<i32, AlertObservation>,
+    delivered: &BTreeMap<i32, AlertObservation>,
+) -> Vec<AlertObservation> {
+    published
+        .into_iter()
+        .filter_map(|(hour, observation)| {
+            (delivered.get(&hour) != Some(&observation)).then_some(observation)
+        })
+        .collect()
 }
 
 fn wait_for_quiescence() -> Result<(), String> {
@@ -335,7 +364,6 @@ fn clear_hook_state() {
     ORIGINAL_ALERT.store(0, Ordering::Release);
     ORIGINAL_POOL_CTOR.store(0, Ordering::Release);
     ORIGINAL_POOL_ADD.store(0, Ordering::Release);
-    ORIGINAL_LOCALIZATION.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
     INSTALLED.store(false, Ordering::Release);
 }
@@ -518,12 +546,15 @@ unsafe extern "system" fn pool_add_detour(pool: usize, archetype: usize, amount_
     original(pool, archetype, amount_raw);
 }
 
-unsafe extern "system" fn localization_detour(
-    out: usize,
+/// A35 observer called by the collector-owned shared localization detour.
+///
+/// This function never calls the engine original. The A29 detour is the sole
+/// owner of that trampoline and invokes this observer before forwarding once.
+pub unsafe extern "system" fn observe_localization(
     key: usize,
     parameters: usize,
     parameter_count: u32,
-) -> usize {
+) {
     let _guard = CallbackGuard::enter();
     ACTIVE.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -540,9 +571,6 @@ unsafe extern "system" fn localization_detour(
             }
         }
     });
-    let original: LocalizationFn =
-        mem::transmute(ORIGINAL_LOCALIZATION.load(Ordering::Acquire));
-    original(out, key, parameters, parameter_count)
 }
 
 fn capture_game_hour_raw() -> Option<i32> {
@@ -575,6 +603,49 @@ fn read_exact(address: usize, len: usize) -> Option<Vec<u8>> {
         )
     };
     (ok != 0 && read == len).then_some(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn observation(hour: i32, manpower: i64) -> AlertObservation {
+        AlertObservation {
+            game_hour_raw: hour,
+            country_ptr: 0x1234,
+            predicate_returned: true,
+            missing_manpower: manpower,
+            missing_equipment: vec![AlertEquipmentShortage {
+                archetype_id: 7,
+                whole_units: 3,
+            }],
+        }
+    }
+
+    #[test]
+    fn terminal_filter_discards_only_exact_same_hour_refreshes() {
+        let delivered_row = observation(100, 50);
+        let mut delivered = BTreeMap::new();
+        delivered.insert(100, delivered_row.clone());
+
+        let mut exact_refresh = BTreeMap::new();
+        exact_refresh.insert(100, delivered_row);
+        assert!(novel_terminal_observations(exact_refresh, &delivered).is_empty());
+
+        let mut changed_refresh = BTreeMap::new();
+        changed_refresh.insert(100, observation(100, 51));
+        assert_eq!(
+            novel_terminal_observations(changed_refresh, &delivered),
+            vec![observation(100, 51)]
+        );
+
+        let mut next_hour = BTreeMap::new();
+        next_hour.insert(101, observation(101, 50));
+        assert_eq!(
+            novel_terminal_observations(next_hour, &delivered),
+            vec![observation(101, 50)]
+        );
+    }
 }
 
 fn read_u32(address: usize) -> Option<u32> {

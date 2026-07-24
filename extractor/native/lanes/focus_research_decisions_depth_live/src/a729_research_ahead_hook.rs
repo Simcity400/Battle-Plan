@@ -99,11 +99,13 @@ type UiYearHelperFn =
 type EffectiveProducerFn =
     unsafe extern "system" fn(usize, *mut i64, usize, usize, i64, i64) -> *mut i64;
 type LocalizationFn = unsafe extern "system" fn(usize, usize, usize, u32) -> usize;
+pub type SharedLocalizationObserver = unsafe extern "system" fn(usize, usize, u32);
 
 static ORIGINAL_UI: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_UI_YEAR_HELPER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_PRODUCER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_FORMATTER: AtomicUsize = AtomicUsize::new(0);
+static SHARED_LOCALIZATION_OBSERVER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static HOOK_SET_PRESENT: AtomicBool = AtomicBool::new(false);
@@ -248,6 +250,26 @@ fn gate_open() -> bool {
 
 pub fn installed() -> bool {
     gate_open()
+}
+
+/// Registers the one additional exact-a729 localization observer which shares
+/// this detour. The formatter trampoline remains owned and called exactly once
+/// by A29.
+pub fn register_shared_localization_observer(
+    observer: SharedLocalizationObserver,
+) -> Result<(), String> {
+    let address = observer as usize;
+    if address == 0 {
+        return Err("A29 shared localization observer is null".into());
+    }
+    SHARED_LOCALIZATION_OBSERVER
+        .compare_exchange(0, address, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|_| "A29 shared localization observer already has an owner".into())
+}
+
+pub fn unregister_shared_localization_observer() {
+    SHARED_LOCALIZATION_OBSERVER.store(0, Ordering::Release);
 }
 
 pub fn drain() -> Result<Vec<SelectedPresentResearchAheadObservation>, String> {
@@ -438,6 +460,7 @@ pub fn uninstall() -> Result<(), String> {
     ORIGINAL_UI_YEAR_HELPER.store(0, Ordering::Release);
     ORIGINAL_PRODUCER.store(0, Ordering::Release);
     ORIGINAL_FORMATTER.store(0, Ordering::Release);
+    SHARED_LOCALIZATION_OBSERVER.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
     HOOK_SET_PRESENT.store(false, Ordering::Release);
     TEARDOWN_ACTIVE.store(false, Ordering::Release);
@@ -711,6 +734,13 @@ unsafe extern "system" fn hook_localization(
     count: u32,
 ) -> usize {
     let _guard = CallbackGuard::enter();
+    let shared = SHARED_LOCALIZATION_OBSERVER.load(Ordering::Acquire);
+    if shared != 0 {
+        let observer: SharedLocalizationObserver = unsafe { mem::transmute(shared) };
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            observer(key, arguments, count);
+        }));
+    }
     if gate_open() {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             observe_substitutions(key, arguments, count);
