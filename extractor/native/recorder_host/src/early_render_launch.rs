@@ -1711,6 +1711,8 @@ mod windows {
     const CREATE_SUSPENDED: Dword = 0x0000_0004;
     const CREATE_UNICODE_ENVIRONMENT: Dword = 0x0000_0400;
     const EXTENDED_STARTUPINFO_PRESENT: Dword = 0x0008_0000;
+    const STARTF_USESHOWWINDOW: Dword = 0x0000_0001;
+    const SW_HIDE: u16 = 0;
     const MEM_COMMIT: Dword = 0x0000_1000;
     const MEM_RESERVE: Dword = 0x0000_2000;
     const MEM_RELEASE: Dword = 0x0000_8000;
@@ -2547,6 +2549,11 @@ mod windows {
         };
         let mut startup: StartupInfoExW = unsafe { zeroed() };
         startup.startup_info.cb = size_of::<StartupInfoExW>() as u32;
+        // Production capture is recorder-controlled and must not steal the
+        // desktop while launching the Continue save. The renderer still starts
+        // in the real game process; only its initial presentation is hidden.
+        startup.startup_info.flags = STARTF_USESHOWWINDOW;
+        startup.startup_info.show_window = SW_HIDE;
         startup.attribute_list = job_attribute_list.as_ptr();
         let mut process: ProcessInformation = unsafe { zeroed() };
         let create_result = unsafe {
