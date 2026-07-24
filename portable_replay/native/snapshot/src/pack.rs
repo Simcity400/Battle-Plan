@@ -216,15 +216,12 @@ pub struct PackOptions {
 
 /// Default zstd compression level for production `.battleplan` payload entries.
 ///
-/// Level 19 is the shipped high-compression point (B3 program, 2026-07-11): on
-/// the w6 corpus (9.65 GB decoded) at window-27 + LDM it packs to 42.37 MB,
-/// −28.2% vs level 3 and −14.7% vs the previous default (level 13, 49.68 MB).
-/// Level 22 at window-30 was DECLINED: only −4.8% smaller than 19 while
-/// window-30 needs ~1 GB to DECODE, violating the weaker-PC replay bound. The
-/// window log therefore stays at [`ZSTD_WINDOW_LOG`] (27); only the effort level
-/// moves. Packing is a one-time post-capture finalization cost (~57 MB/s
-/// single-core over the decoded stream), NOT on the live per-frame path.
-pub const DEFAULT_ZSTD_COMPRESSION_LEVEL: i32 = 19;
+/// Level 3 keeps the window-27 decoder contract while avoiding the excessive
+/// single-core finalization time observed when packaging full-roster, per-hour
+/// snapshots at level 19. The earlier B3 corpus result remains useful as an
+/// opt-in size tradeoff: level 19 packed 9.65 GB decoded to 42.37 MB, 28.2%
+/// smaller than level 3, but production now prioritizes prompt finalization.
+pub const DEFAULT_ZSTD_COMPRESSION_LEVEL: i32 = 3;
 /// Backward-compatible alias for callers/tests that referenced the old constant.
 pub const ZSTD_COMPRESSION_LEVEL: i32 = DEFAULT_ZSTD_COMPRESSION_LEVEL;
 /// The smallest zstd window log accepted by libzstd.

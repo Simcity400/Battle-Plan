@@ -2365,8 +2365,8 @@ mod tests {
         );
     }
 
-    /// B3 flip gate (2026-07-11): the shipped production default (level 19 at
-    /// window-27 + LDM) MUST be losslessly reversible, and the container it
+    /// The opt-in high-compression profile (level 19 at window-27 + LDM) MUST
+    /// remain losslessly reversible, and the container it
     /// produces MUST decode under the production window cap (the weaker-PC
     /// decode bound). This is the zero-data-loss proof for the level flip:
     /// pack a realistic mixed payload (long repetitive runs to exercise LDM at
@@ -2375,11 +2375,12 @@ mod tests {
     /// then read every byte back and assert identity.
     #[test]
     fn level19_window27_roundtrip_is_byte_lossless() {
-        // The shipped default is what production runs use when no --replay-zstd-level
-        // is passed; pin it so a future silent change trips this test.
+        // The production default prioritizes prompt finalization. Pin it so a
+        // future silent change trips this test while retaining the explicit
+        // level-19 roundtrip below.
         assert_eq!(
-            DEFAULT_ZSTD_COMPRESSION_LEVEL, 19,
-            "production default zstd level must be the B3-shipped level 19"
+            DEFAULT_ZSTD_COMPRESSION_LEVEL, 3,
+            "production default zstd level must remain level 3"
         );
         let dir = TmpDir::new("level19_w27_roundtrip");
         let raw_path = dir.join("raw.bin");
@@ -2437,7 +2438,7 @@ mod tests {
             sha256: Some(stream_sha.clone()),
         }];
 
-        // Explicit production profile: level 19, window 27. validate() rejects an
+        // Explicit opt-in profile: level 19, window 27. validate() rejects an
         // out-of-bound window, so this also guards the window cap.
         let profile = CompressionProfile {
             zstd_level: 19,

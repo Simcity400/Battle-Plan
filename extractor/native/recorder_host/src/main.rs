@@ -6464,7 +6464,8 @@ fn usage() -> String {
       \n\
       Replay compression: --replay-zstd-level and --replay-zstd-window-log tune\n\
       the .battleplan Zstandard writer. Defaults preserve the container-v2\n\
-      profile: level=13 and window_log=27 (128 MiB). Lower values reduce weak-PC\n\
+      profile: level=3 and window_log=27 (128 MiB). Higher values increase\n\
+      finalization time in exchange for smaller replay files. Lower values reduce weak-PC\n\
       finalize CPU/RAM pressure at the cost of larger replay files; finalize\n\
       budget gating is intentionally separate future work.\n\
       \n\
@@ -14708,7 +14709,9 @@ fn domain57_frame_evidence_json(summary: &CompactSummary) -> Value {
         "payload_header_hour_mismatch_count": summary.domain57_frames.iter().filter(|record| record.payload_hour_raw != record.header_hour_raw).count(),
         "event_header_hour_mismatch_count": summary.domain57_frames.iter().map(|record| record.speed_rows.iter().chain(record.pause_rows.iter()).filter(|row| row.event_hour_raw != record.header_hour_raw).count()).sum::<usize>(),
         "exact_one_record_per_closed_frame": exact_one_record_per_closed_frame,
-        "all_required_roots_per_record": summary.domain57_frames.iter().all(|record| record.root_evidence_mask == REQUIRED_ROOT_MASK),
+        "all_required_roots_per_record": summary.domain57_frames.iter().all(|record| {
+            has_all_required_root_evidence(record.root_evidence_mask, REQUIRED_ROOT_MASK)
+        }),
         "exact_one_speed_row_per_record": summary.domain57_frames.iter().all(|record| record.speed_rows.len() == 1),
         "exact_one_pause_row_per_record": summary.domain57_frames.iter().all(|record| record.pause_rows.len() == 1),
         "records": summary.domain57_frames.iter().map(|record| json!({
@@ -15888,6 +15891,10 @@ fn compact_hourly_problems(
     problems
 }
 
+fn has_all_required_root_evidence(observed_mask: u32, required_mask: u32) -> bool {
+    observed_mask & required_mask == required_mask
+}
+
 fn domain57_gate_problems(summary: &CompactSummary, required: bool) -> Vec<String> {
     if !required {
         return Vec::new();
@@ -15915,7 +15922,9 @@ fn domain57_gate_problems(summary: &CompactSummary, required: bool) -> Vec<Strin
     if summary
         .domain57_frames
         .iter()
-        .any(|record| record.root_evidence_mask != REQUIRED_ROOT_MASK)
+        .any(|record| {
+            !has_all_required_root_evidence(record.root_evidence_mask, REQUIRED_ROOT_MASK)
+        })
     {
         problems.push("d57_required_root_evidence_missing".to_string());
     }
@@ -36550,5 +36559,12 @@ mod tests {
             summary.parse_errors.len(),
             summary.parse_errors
         );
+    }
+
+    #[test]
+    fn domain57_required_roots_allow_additional_authenticated_evidence_bits() {
+        assert!(has_all_required_root_evidence(0x07, 0x07));
+        assert!(has_all_required_root_evidence(0x37, 0x07));
+        assert!(!has_all_required_root_evidence(0x35, 0x07));
     }
 }
