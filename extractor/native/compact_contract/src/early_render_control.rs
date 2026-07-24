@@ -19,20 +19,55 @@ pub const EARLY_STAGED_HOOK_GENERATION: u64 = 1;
 pub const EARLY_STAGED_HOOK_GROUP_COUNTS: [u32; 10] = [19, 2, 3, 8, 17, 7, 7, 3, 2, 3];
 pub const EARLY_STAGED_HOOK_COUNT: u32 = 19 + 2 + 3 + 8 + 17 + 7 + 7 + 3 + 2 + 3;
 pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
+pub const EARLY_DIAGNOSTIC_COM_HOOK_COUNT: u32 = 19;
+pub const EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT: u32 = 32;
+pub const EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK: u64 =
+    (1u64 << EARLY_DIAGNOSTIC_COM_HOOK_COUNT) - 1;
+pub const EARLY_DIAGNOSTIC_COM_SELECTOR_WIRE_MASK: u64 =
+    EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
 pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 1_800_000;
 
-pub fn staged_hook_count_for_group_mask(group_mask: u64) -> Option<u32> {
-    if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0 || group_mask & 1 == 0 {
+/// Splits the packed staged-hook selection carried in the historical
+/// `staged_hook_group_mask` field. The low ten bits remain the immutable
+/// production group mask. Diagnostic-only bits 32..=50 select individual COM
+/// hooks by their exact staged ordinal. A zero selector preserves the legacy
+/// meaning of COM bit 0: all nineteen COM hooks.
+///
+/// An explicit all-COM selector is rejected because it would provide a second
+/// wire representation for the production/legacy COM inventory.
+pub fn staged_hook_selection_masks(wire_mask: u64) -> Option<(u64, u64)> {
+    let allowed =
+        EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK | EARLY_DIAGNOSTIC_COM_SELECTOR_WIRE_MASK;
+    if wire_mask & !allowed != 0 {
         return None;
     }
+    let group_mask = wire_mask & EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK;
+    let com_selector =
+        (wire_mask >> EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT)
+            & EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK;
+    if group_mask & 1 == 0 || com_selector == EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK {
+        return None;
+    }
+    Some((group_mask, com_selector))
+}
+
+pub fn staged_hook_count_for_group_mask(wire_mask: u64) -> Option<u32> {
+    let (group_mask, com_selector) = staged_hook_selection_masks(wire_mask)?;
+    let com_count = if com_selector == 0 {
+        EARLY_DIAGNOSTIC_COM_HOOK_COUNT
+    } else {
+        com_selector.count_ones()
+    };
     Some(
-        EARLY_STAGED_HOOK_GROUP_COUNTS
+        com_count
+            + EARLY_STAGED_HOOK_GROUP_COUNTS
             .into_iter()
             .enumerate()
+            .skip(1)
             .filter_map(|(bit, count)| (group_mask & (1u64 << bit) != 0).then_some(count))
-            .sum(),
+            .sum::<u32>(),
     )
 }
 
@@ -1016,6 +1051,51 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_com_selector_is_canonical_and_counts_exact_ordinals() {
+        let one_com = 0x01 | (1u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
+        let two_com = 0x01 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
+        let two_com_plus_vfs =
+            0x03 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
+        assert_eq!(staged_hook_selection_masks(0x01), Some((0x01, 0)));
+        assert_eq!(
+            staged_hook_selection_masks(one_com),
+            Some((0x01, 0b001))
+        );
+        assert_eq!(staged_hook_count_for_group_mask(one_com), Some(1));
+        assert_eq!(staged_hook_count_for_group_mask(two_com), Some(2));
+        assert_eq!(
+            staged_hook_count_for_group_mask(two_com_plus_vfs),
+            Some(4)
+        );
+        assert_eq!(
+            staged_hook_count_for_group_mask(EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK),
+            Some(EARLY_STAGED_HOOK_COUNT)
+        );
+        assert_eq!(
+            staged_hook_count_for_group_mask(
+                0x01
+                    | (EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK
+                        << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT)
+            ),
+            None,
+            "the explicit all-COM selector must not alias the canonical zero selector"
+        );
+        assert_eq!(
+            staged_hook_count_for_group_mask(1u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT),
+            None,
+            "a COM selector without the COM group bit is invalid"
+        );
+        assert_eq!(
+            staged_hook_count_for_group_mask(
+                1u64 << (EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT
+                    + EARLY_DIAGNOSTIC_COM_HOOK_COUNT)
+            ),
+            None,
+            "selector bits outside the nineteen-hook inventory are invalid"
+        );
+    }
+
+    #[test]
     fn exact_round_trips_and_tamper_rejects() {
         let ready = EarlyHookReadyV1 {
             launch_manifest_sha256: [1; 32],
@@ -1074,12 +1154,21 @@ mod tests {
                 .unwrap(),
             diagnostic_first
         );
+        diagnostic_first.staged_hook_group_mask =
+            0x01 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
+        diagnostic_first.staged_hook_count = 2;
+        assert_eq!(
+            decode_early_first_game_d3d(&encode_early_first_game_d3d(&diagnostic_first).unwrap())
+                .unwrap(),
+            diagnostic_first
+        );
         diagnostic_first.staged_hook_group_mask = 0x02;
         assert_eq!(
             encode_early_first_game_d3d(&diagnostic_first),
             Err(EarlyRenderCodecError::InvalidField)
         );
         diagnostic_first.staged_hook_group_mask = 0x01;
+        diagnostic_first.staged_hook_count = EARLY_DIAGNOSTIC_COM_HOOK_COUNT;
         let request = EarlyDiagnosticLivenessRequestV1 {
             session_id: [9; 16],
             launch_manifest_sha256: diagnostic_first.launch_manifest_sha256,

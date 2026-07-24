@@ -22,6 +22,10 @@ pub const EARLY_CAPTURE_RECEIPT_SCHEMA: &str = "extractor.early-render-capture-r
 pub const EARLY_DIAGNOSTIC_LIVENESS_SCHEMA: &str = "extractor.early-render-diagnostic-liveness.v1";
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_FULL: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_COM: u64 = 0x01;
+pub const EARLY_DIAGNOSTIC_COM_HOOK_MASK_SHIFT: u32 =
+    compact_contract::early_render_control::EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT;
+pub const EARLY_DIAGNOSTIC_COM_HOOK_MASK_FULL: u64 =
+    compact_contract::early_render_control::EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK;
 pub const G2_CAPTURE_INTENT_SCHEMA: &str = "hoi4-g2-recorder-capture-intent-v1";
 pub const G2_ENGINE_WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v3";
 pub const G2_ENGINE_BMP_FILE: &str = "g2_engine_map_boundary.bmp";
@@ -484,8 +488,47 @@ pub fn seal_g2_capture_artifacts(
 
 pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
     compact_contract::early_render_control::staged_hook_count_for_group_mask(mask).ok_or_else(
-        || "diagnostic staged-hook mask must be within 0x01..=0x3ff and include COM (0x01)".into(),
+        || {
+            "diagnostic staged-hook mask has invalid group or packed COM-selector bits".into()
+        },
     )
+}
+
+pub fn validate_diagnostic_com_hook_mask(mask: u64) -> Result<(), String> {
+    if mask == 0
+        || mask & !EARLY_DIAGNOSTIC_COM_HOOK_MASK_FULL != 0
+        || mask == EARLY_DIAGNOSTIC_COM_HOOK_MASK_FULL
+    {
+        return Err(
+            "diagnostic COM-hook mask must be a nonzero strict 19-bit subset of 0x7ffff".into(),
+        );
+    }
+    Ok(())
+}
+
+pub fn pack_diagnostic_hook_masks(group_mask: u64, com_hook_mask: u64) -> Result<u64, String> {
+    if group_mask == EARLY_DIAGNOSTIC_STAGE_MASK_FULL
+        || group_mask & !EARLY_DIAGNOSTIC_STAGE_MASK_FULL != 0
+        || compact_contract::early_render_control::staged_hook_count_for_group_mask(group_mask)
+            .is_none()
+    {
+        return Err(
+            "diagnostic staged-hook mask must be a strict 0x3ff subset containing COM (0x01)"
+                .into(),
+        );
+    }
+    validate_diagnostic_com_hook_mask(com_hook_mask)?;
+    let packed = group_mask | (com_hook_mask << EARLY_DIAGNOSTIC_COM_HOOK_MASK_SHIFT);
+    staged_hook_count_for_group_mask(packed)?;
+    Ok(packed)
+}
+
+pub fn diagnostic_stage_group_mask(mask: u64) -> u64 {
+    mask & EARLY_DIAGNOSTIC_STAGE_MASK_FULL
+}
+
+pub fn diagnostic_com_hook_mask(mask: u64) -> u64 {
+    (mask >> EARLY_DIAGNOSTIC_COM_HOOK_MASK_SHIFT) & EARLY_DIAGNOSTIC_COM_HOOK_MASK_FULL
 }
 
 fn valid_windows_environment_key(key: &str) -> bool {
@@ -3710,6 +3753,26 @@ mod tests {
         assert!(staged_hook_count_for_group_mask(0x02).is_err());
         assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 21);
         assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 22);
+    }
+
+    #[test]
+    fn diagnostic_com_hook_selector_is_packed_above_the_canonical_group_mask() {
+        let one_com_hook = pack_diagnostic_hook_masks(0x01, 0x00001).unwrap();
+        assert_eq!(one_com_hook, (1u64 << 32) | 0x01);
+        assert_eq!(diagnostic_stage_group_mask(one_com_hook), 0x01);
+        assert_eq!(diagnostic_com_hook_mask(one_com_hook), 0x00001);
+        assert_eq!(staged_hook_count_for_group_mask(one_com_hook).unwrap(), 1);
+
+        let three_com_hooks = pack_diagnostic_hook_masks(0x03, 0x40003).unwrap();
+        assert_eq!(diagnostic_stage_group_mask(three_com_hooks), 0x03);
+        assert_eq!(diagnostic_com_hook_mask(three_com_hooks), 0x40003);
+        assert_eq!(staged_hook_count_for_group_mask(three_com_hooks).unwrap(), 5);
+
+        assert!(pack_diagnostic_hook_masks(0x01, 0).is_err());
+        assert!(pack_diagnostic_hook_masks(0x01, 0x7ffff).is_err());
+        assert!(pack_diagnostic_hook_masks(0x01, 0x80000).is_err());
+        assert!(pack_diagnostic_hook_masks(0x3ff, 0x00001).is_err());
+        assert!(staged_hook_count_for_group_mask((1u64 << 51) | 0x01).is_err());
     }
 
     #[test]

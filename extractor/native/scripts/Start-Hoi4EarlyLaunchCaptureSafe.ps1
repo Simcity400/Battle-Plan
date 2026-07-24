@@ -18,6 +18,7 @@ param(
     [ValidateRange(30,900)][int]$StaticBundleTimeoutSeconds = 900,
     [ValidateRange(30,1800)][int]$WorldReadyTimeoutSeconds = 600,
     [string]$DiagnosticStagedHookMask = '',
+    [string]$DiagnosticComHookMask = '',
     [switch]$KeepGameWindow,
     [switch]$OperatorApproved,
     [switch]$DryRun
@@ -99,6 +100,7 @@ if ($DurationSeconds -lt 30 -or $DurationSeconds -gt 86400) { throw 'DurationSec
 if ($MinGameHours -lt 1) { throw 'MinGameHours must be positive.' }
 if ($SampleMilliseconds -lt 1 -or $SampleMilliseconds -gt 10000) { throw 'SampleMilliseconds is outside 1..10000.' }
 $diagnosticStagedHookMaskCanonical=$null
+$diagnosticComHookMaskCanonical=$null
 if (-not [string]::IsNullOrWhiteSpace($DiagnosticStagedHookMask)) {
     if ($Purpose -cne 'RawDebug') {
         throw 'DiagnosticStagedHookMask is permitted only for RawDebug isolation.'
@@ -117,6 +119,28 @@ if (-not [string]::IsNullOrWhiteSpace($DiagnosticStagedHookMask)) {
         throw 'DiagnosticStagedHookMask must be a strict 0x3ff subset containing COM bit 0x01.'
     }
     $diagnosticStagedHookMaskCanonical=('0x{0:x}' -f $diagnosticMaskValue)
+}
+if (-not [string]::IsNullOrWhiteSpace($DiagnosticComHookMask)) {
+    if ($Purpose -cne 'RawDebug') {
+        throw 'DiagnosticComHookMask is permitted only for RawDebug isolation.'
+    }
+    if ($null -eq $diagnosticStagedHookMaskCanonical) {
+        throw 'DiagnosticComHookMask requires DiagnosticStagedHookMask.'
+    }
+    $diagnosticComDigits=$DiagnosticComHookMask.Trim()
+    if ($diagnosticComDigits.StartsWith('0x',[StringComparison]::OrdinalIgnoreCase)) {
+        $diagnosticComDigits=$diagnosticComDigits.Substring(2)
+    }
+    if ($diagnosticComDigits -cnotmatch '^[0-9a-fA-F]{1,5}$') {
+        throw 'DiagnosticComHookMask must be a hexadecimal 19-bit COM-hook mask.'
+    }
+    $diagnosticComMaskValue=[Convert]::ToUInt64($diagnosticComDigits,16)
+    if ($diagnosticComMaskValue -eq 0 -or
+        ($diagnosticComMaskValue -band 0x7ffff) -ne $diagnosticComMaskValue -or
+        $diagnosticComMaskValue -eq 0x7ffff) {
+        throw 'DiagnosticComHookMask must be a nonzero strict 19-bit subset of 0x7ffff.'
+    }
+    $diagnosticComHookMaskCanonical=('0x{0:x}' -f $diagnosticComMaskValue)
 }
 foreach($path in @($Hoi4Exe,$PdxUserDir,$PreparedProductModsetDir,$productModsetVerifier,$staticBundleVerifier,$sinkVerifier,$xn15lVerifier,$safeLateAttachDriver,$headlessControl)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required path is missing: $path" }
@@ -230,9 +254,12 @@ if ($null -ne $diagnosticStagedHookMaskCanonical) {
         '--production',
         '--scheduled-domains-exact',
         '--scheduled-domain','session_header_live',
-        '--diagnostic-staged-hook-mask',$diagnosticStagedHookMaskCanonical,
-        '--diagnostic-no-commit'
+        '--diagnostic-staged-hook-mask',$diagnosticStagedHookMaskCanonical
     )
+    if ($null -ne $diagnosticComHookMaskCanonical) {
+        $arguments += @('--diagnostic-com-hook-mask',$diagnosticComHookMaskCanonical)
+    }
+    $arguments += '--diagnostic-no-commit'
 }
 
 $planPath=Join-Path $OutDir 'early_launch_authorization_plan.json'
@@ -255,6 +282,7 @@ $plan=[ordered]@{
     continue_game_sha256=$continueGameSha256
     semantic_arguments=@('--continuelastsave','--gdpr-compliant')
     diagnostic_staged_hook_mask=$diagnosticStagedHookMaskCanonical
+    diagnostic_com_hook_mask=$diagnosticComHookMaskCanonical
     keep_game_window=[bool]$KeepGameWindow
     static_bundle_timeout_seconds=$StaticBundleTimeoutSeconds
     post_static_world_ready_timeout_seconds=$WorldReadyTimeoutSeconds
