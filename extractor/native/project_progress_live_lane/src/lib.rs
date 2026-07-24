@@ -455,8 +455,10 @@ pub fn read_breakthrough_rows<M: ProjectMemory>(
     if !is_live_heap_ptr(header) || size > MAX_PROJECT_BREAKTHROUGH_ROWS {
         return Err("breakthrough header/size invalid".to_string());
     }
+    // `tree+0x08` owns the sentinel/header pointer and the sentinel's +0x00
+    // link is the first in-order node; +0x08 is its parent link.
     let root = mem
-        .read_u64(header + 0x08)
+        .read_u64(header)
         .map(|v| v as usize)
         .ok_or_else(|| "breakthrough root unreadable".to_string())?;
     if !is_live_heap_ptr(root) {
@@ -1160,7 +1162,7 @@ mod tests {
         mem.write_u64(breakthrough + 0x08, header as u64);
         mem.write_u64(breakthrough + 0x10, nodes.len() as u64);
         if let Some((root, _, _)) = nodes.first().copied() {
-            mem.write_u64(header + 0x08, root as u64);
+            mem.write_u64(header, root as u64);
         }
         for (index, (node, handle, points_raw)) in nodes.iter().copied().enumerate() {
             mem.write_u64(node, 0);
@@ -1269,7 +1271,7 @@ mod tests {
         mem.write_u64(breakthrough, layout.breakthrough_vtable as u64);
         mem.write_u64(breakthrough + 0x08, header as u64);
         mem.write_u64(breakthrough + 0x10, 1);
-        mem.write_u64(header + 0x08, root as u64);
+        mem.write_u64(header, root as u64);
         mem.write_u64(root, 0);
         mem.write_u64(root + 0x10, 0);
         mem.write_u8(root + 0x19, 0);

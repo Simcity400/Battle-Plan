@@ -700,36 +700,49 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
         );
     }
     let production_descriptors = compact_contract::production_profile_domains();
-    let production_names = production_descriptors
+    let required_domains = options.required_domains.clone();
+    let mut scheduled_descriptors = production_descriptors.clone();
+    for domain in &required_domains {
+        let Some(descriptor) = compact_contract::assigned_descriptor_by_name(domain) else {
+            errors.push(format!("required compact domain {domain:?} is not assigned"));
+            continue;
+        };
+        if !descriptor.schedulable
+            || (!compact_contract::status_in_production_profile(descriptor.status)
+                && !compact_contract::is_optional_fail_closed_companion(descriptor.id))
+        {
+            errors.push(format!(
+                "required compact domain {domain:?} is neither production-complete nor an approved optional fail-closed companion"
+            ));
+            continue;
+        }
+        scheduled_descriptors.push(descriptor);
+    }
+    scheduled_descriptors.sort_by_key(|descriptor| descriptor.id);
+    scheduled_descriptors.dedup_by_key(|descriptor| descriptor.id);
+    let canonical_scheduled_names = scheduled_descriptors
         .iter()
         .map(|descriptor| descriptor.wire_name.to_string())
         .collect::<Vec<_>>();
-    if scheduled_domains != production_names {
+    if scheduled_domains != canonical_scheduled_names {
         errors.push(format!(
-            "scheduled_domains {:?} != canonical compact production roster {:?}",
-            scheduled_domains, production_names
+            "scheduled_domains {:?} != canonical compact production-plus-required roster {:?}",
+            scheduled_domains, canonical_scheduled_names
         ));
     }
-    let required_domains = options.required_domains.clone();
     details.insert("scheduled_domains".to_string(), json!(scheduled_domains));
     details.insert("required_domains".to_string(), json!(required_domains));
 
-    let expected_contracts = production_descriptors
+    let scheduled_ids = scheduled_descriptors
         .iter()
-        .copied()
+        .map(|descriptor| descriptor.id)
+        .collect::<Vec<_>>();
+    let expected_contracts =
+        compact_contract::emitted_domain_ids_for_scheduled_ids(&scheduled_ids)
+        .into_iter()
+        .filter_map(compact_contract::assigned_descriptor_by_id)
         .map(contract_for_descriptor)
         .collect::<Vec<_>>();
-    for domain in &required_domains {
-        let descriptor = compact_contract::assigned_descriptor_by_name(domain);
-        if descriptor.is_none_or(|descriptor| {
-            !compact_contract::status_in_production_profile(descriptor.status)
-                || !descriptor.schedulable
-        }) {
-            errors.push(format!(
-                "required compact domain {domain:?} is not in the production roster"
-            ));
-        }
-    }
     for domain in &required_domains {
         if !scheduled_domains
             .iter()

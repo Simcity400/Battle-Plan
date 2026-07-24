@@ -1836,6 +1836,7 @@ mod windows {
     }
 
     #[link(name = "kernel32")]
+    #[allow(clashing_extern_declarations)]
     extern "system" {
         fn CreateProcessW(
             application_name: *const u16,

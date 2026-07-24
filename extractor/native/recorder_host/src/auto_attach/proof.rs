@@ -1,6 +1,6 @@
 //! Typed H4CT status proof shared by the supervisor and its worker child.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -224,6 +224,11 @@ pub struct WorkerProofEmitter<W: Write> {
     expectation: ProofExpectation,
     hello_emitted: bool,
     first_record_emitted: bool,
+    last_reported_sequence: Option<u64>,
+}
+
+fn monotonic_worker_proof_sequence(previous: Option<u64>, observed: u64) -> u64 {
+    previous.map_or(observed, |previous| previous.max(observed))
 }
 
 impl<W: Write> WorkerProofEmitter<W> {
@@ -242,6 +247,7 @@ impl<W: Write> WorkerProofEmitter<W> {
             expectation,
             hello_emitted: false,
             first_record_emitted: false,
+            last_reported_sequence: None,
         })
     }
 
@@ -287,6 +293,7 @@ impl<W: Write> WorkerProofEmitter<W> {
             )
             .map_err(|e| e.to_string())?;
         self.first_record_emitted = true;
+        self.last_reported_sequence = Some(sequence);
         Ok(())
     }
 
@@ -298,12 +305,22 @@ impl<W: Write> WorkerProofEmitter<W> {
         if !self.first_record_emitted {
             return Err("recurring heartbeat cannot precede first-record proof".to_string());
         }
+        // The first-world data reader can outrun the collector's frame-level
+        // progress publication, and an authenticated logical-stream rollover
+        // intentionally resets the exact H4CR sequence to zero. H4CT validates
+        // those exact per-stream values before they reach this bridge. The
+        // supervisor's durable status stream has no logical-stream-id field, so
+        // publish a process-lifetime high-water mark rather than making either
+        // legitimate reset look like a forged regression.
+        let sequence = monotonic_worker_proof_sequence(self.last_reported_sequence, sequence);
         self.channel
             .send(
                 MessageKind::HeartbeatProof,
                 &heartbeat_proof_payload(&self.expectation, sequence),
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.last_reported_sequence = Some(sequence);
+        Ok(())
     }
 }
 
@@ -501,7 +518,10 @@ pub struct FirstCompactRecordGate {
     buffered: Vec<u8>,
     expected_domain_ids: BTreeSet<u16>,
     last_sequence: Option<u64>,
-    pending_perf: Option<DomainPerfEvidence>,
+    /// The collector emits the complete PERF roster before the complete DATA
+    /// roster for an hour. Retain at most one clean PERF record per expected
+    /// domain until its matching DATA record or the canonical FRAME_END.
+    pending_perf: BTreeMap<u16, DomainPerfEvidence>,
 }
 
 impl Default for FirstCompactRecordGate {
@@ -521,7 +541,7 @@ impl FirstCompactRecordGate {
             buffered: Vec::new(),
             expected_domain_ids: expected_domain_ids.into_iter().collect(),
             last_sequence: None,
-            pending_perf: None,
+            pending_perf: BTreeMap::new(),
         }
     }
 
@@ -606,18 +626,25 @@ impl FirstCompactRecordGate {
     ) -> Result<bool, String> {
         match header.record_type {
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF => {
-                self.pending_perf =
-                    parse_domain_perf_evidence(header, payload, &self.expected_domain_ids)?;
+                // Always discard an older candidate for this domain first. An
+                // invalid/non-baseline PERF record must never leave a previous
+                // clean candidate available for a later DATA record.
+                self.pending_perf.remove(&header.domain_id);
+                if let Some(evidence) =
+                    parse_domain_perf_evidence(header, payload, &self.expected_domain_ids)?
+                {
+                    self.pending_perf.insert(header.domain_id, evidence);
+                }
                 Ok(false)
             }
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA => {
-                let evidence = self.pending_perf.take();
+                let evidence = self.pending_perf.remove(&header.domain_id);
                 let Some(evidence) = evidence else {
                     return Ok(false);
                 };
                 if evidence.header.domain_id != header.domain_id
                     || evidence.header.game_hour_raw != header.game_hour_raw
-                    || evidence.header.sequence.checked_add(1) != Some(header.sequence)
+                    || evidence.header.sequence >= header.sequence
                 {
                     return Ok(false);
                 }
@@ -627,7 +654,7 @@ impl FirstCompactRecordGate {
                 world_fold_proves_material_record(header, payload, evidence.elapsed_wall_ms)
             }
             compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
-                self.pending_perf = None;
+                self.pending_perf.clear();
                 Ok(false)
             }
             other => Err(format!(
@@ -1230,6 +1257,14 @@ mod tests {
     }
 
     #[test]
+    fn worker_status_bridge_preserves_monotonicity_across_progress_lag_and_rollover() {
+        assert_eq!(monotonic_worker_proof_sequence(None, 2), 2);
+        assert_eq!(monotonic_worker_proof_sequence(Some(2), 0), 2);
+        assert_eq!(monotonic_worker_proof_sequence(Some(2), 1), 2);
+        assert_eq!(monotonic_worker_proof_sequence(Some(2), 3), 3);
+    }
+
+    #[test]
     fn torn_first_record_never_proves_recording() {
         let hour = plausible_game_hour();
         let perf = compact_record(
@@ -1808,6 +1843,42 @@ mod tests {
             .observe(&stream)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn perf_roster_then_data_roster_proves_the_matching_domain() {
+        let hour = plausible_game_hour();
+        let mut stream = compact_record(
+            1,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &domain_perf_payload(1, 1, 1, 1, 0),
+        );
+        stream.extend_from_slice(&compact_record(
+            2,
+            hour,
+            68,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &domain_perf_payload(1, 1, 1, 1, 0),
+        ));
+        stream.extend_from_slice(&compact_record(
+            3,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &fuel_payload(&[47], 0),
+        ));
+
+        let proof = FirstCompactRecordGate::new([10, 68])
+            .observe(&stream)
+            .unwrap()
+            .expect("the collector's PERF-roster/DATA-roster order must prove recording");
+        assert_eq!(proof.sequence(), 3);
+        assert_eq!(proof.domain_id(), 10);
     }
 
     #[test]

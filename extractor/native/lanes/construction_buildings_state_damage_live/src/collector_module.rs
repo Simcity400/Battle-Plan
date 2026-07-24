@@ -161,9 +161,7 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
             .iter()
             .all(|row| row.target_state_id.is_some());
     if !all_construction_targets_present {
-        for row in &mut construction_rows {
-            row.target_state_id = None;
-        }
+        badge_construction_target_tuple_unavailable(&mut construction_rows);
     }
 
     let target_state_source_flag = if all_construction_targets_present {
@@ -192,6 +190,17 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
     CollectorOutput { frame, stats }
 }
 
+fn badge_construction_target_tuple_unavailable(rows: &mut [crate::ConstructionQueueRow]) {
+    for row in rows {
+        row.target_state_id = None;
+        // Location and scope are one promoted target tuple with the state
+        // join. Retaining either half while globally badging the join
+        // unavailable creates a self-contradictory wire row.
+        row.target_location_id = None;
+        row.target_scope = None;
+    }
+}
+
 pub fn collect_domain48_compact<M: LaneMemory>(
     mem: &M,
     roots: CollectorRoots,
@@ -203,5 +212,51 @@ pub fn collect_domain48_compact<M: LaneMemory>(
         compact,
         gate,
         stats: output.stats,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_target_join_clears_the_entire_promoted_tuple() {
+        let mut rows = vec![crate::ConstructionQueueRow {
+            tag_db_id: 1,
+            line_id: 2,
+            template_id: Some(12_790),
+            active_factories: 1,
+            cost_raw: 10,
+            produced_raw: 5,
+            priority: 0,
+            target_state_id: Some(42),
+            target_location_id: Some(2_068),
+            target_scope: Some(crate::SCOPE_PROVINCE),
+            repair_levels_remaining: None,
+            created_date_raw: Some(60_000_000),
+        }];
+
+        badge_construction_target_tuple_unavailable(&mut rows);
+
+        assert_eq!(rows[0].target_state_id, None);
+        assert_eq!(rows[0].target_location_id, None);
+        assert_eq!(rows[0].target_scope, None);
+        let frame = crate::LaneFrame {
+            game_hour_raw: 60_000_000,
+            status_flags: 0,
+            source_flags: crate::SOURCE_FLAG_DLL_NATIVE
+                | crate::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+                | crate::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+                | crate::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+                | crate::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+            observed_country_roots: 1,
+            observed_state_roots: 1,
+            observed_province_roots: 1,
+            construction_rows: rows,
+            railway_construction_rows: Some(Vec::new()),
+            building_rows: Vec::new(),
+            resource_rows: Vec::new(),
+        };
+        assert!(crate::decode_lane_frame(&crate::encode_lane_frame(&frame)).is_ok());
     }
 }

@@ -437,6 +437,23 @@ pub struct PreparedWindowsServerPair {
     deadline: ControlDeadline,
     cancellation: ControlCancellation,
     ready: WindowsCombinedListenersReadyProof,
+    setup_worker: Option<SetupWorkerKeepalive>,
+}
+
+struct SetupWorkerKeepalive {
+    release: Option<mpsc::Sender<()>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for SetupWorkerKeepalive {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 /// Create the H4CR inbound and H4CT duplex server handles and arm both accepts.
@@ -487,6 +504,7 @@ fn prepare_server_pair(
             startup_deadline: deadline,
             cancellation,
         },
+        setup_worker: None,
     })
 }
 
@@ -505,11 +523,18 @@ pub fn prepare_server_pair_bounded(
     let spec = spec.clone();
     let worker_cancellation = cancellation.clone();
     let (sender, receiver) = mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = mpsc::channel();
     let worker = thread::Builder::new()
         .name("h4cr-h4ct-pair-setup".to_string())
         .spawn(move || {
             let result = prepare_server_pair(&spec, security, deadline, worker_cancellation);
-            let _ = sender.send(result);
+            if sender.send(result).is_ok() {
+                // Overlapped ConnectNamedPipe operations are owned by the
+                // initiating thread on Windows. Exiting this thread before the
+                // caller reaps them aborts both operations with
+                // ERROR_OPERATION_ABORTED.
+                let _ = release_receiver.recv();
+            }
         })
         .map_err(|error| WindowsCombinedBackendError::SetupWorker(error.to_string()))?;
     loop {
@@ -518,14 +543,23 @@ pub fn prepare_server_pair_bounded(
             .remaining()
             .ok_or(WindowsCombinedBackendError::DeadlineExpired)?;
         match receiver.recv_timeout(remaining.min(Duration::from_millis(10))) {
-            Ok(result) => {
+            Ok(Ok(mut prepared)) => {
+                prepared.setup_worker = Some(SetupWorkerKeepalive {
+                    release: Some(release_sender),
+                    worker: Some(worker),
+                });
+                return Ok(prepared);
+            }
+            Ok(Err(error)) => {
+                let _ = release_sender.send(());
                 worker
                     .join()
                     .map_err(|_| WindowsCombinedBackendError::SetupWorkerPanicked)?;
-                return result;
+                return Err(error);
             }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => {
+                let _ = release_sender.send(());
                 return match worker.join() {
                     Ok(()) => Err(WindowsCombinedBackendError::SetupWorker(
                         "paired setup worker disconnected".to_string(),
@@ -572,6 +606,7 @@ impl PreparedWindowsServerPair {
             target: self.target,
             deadline: self.deadline,
             cancellation: self.cancellation,
+            setup_worker: self.setup_worker,
         })
     }
 }
@@ -583,12 +618,13 @@ pub struct WindowsInjectionCommitted {
     target: BoundTargetProcess,
     deadline: ControlDeadline,
     cancellation: ControlCancellation,
+    setup_worker: Option<SetupWorkerKeepalive>,
 }
 
 impl WindowsInjectionCommitted {
     /// Wait for both already-armed connects, validate both client PID/creation
     /// pairs, then publish both endpoints atomically.
-    fn accept_and_bind(self) -> Result<ConnectedWindowsPipePair, WindowsCombinedBackendError> {
+    fn accept_and_bind(mut self) -> Result<ConnectedWindowsPipePair, WindowsCombinedBackendError> {
         self.target.ensure_live(self.deadline, &self.cancellation)?;
         let data_handle =
             self.data
@@ -597,6 +633,9 @@ impl WindowsInjectionCommitted {
         let control_handle =
             self.control
                 .finish(self.deadline, &self.cancellation, self.target.handle.raw())?;
+        // Both initiating-thread-owned connect operations are now reaped, so
+        // the setup thread may exit without aborting live pipe I/O.
+        drop(self.setup_worker.take());
         self.target.ensure_live(self.deadline, &self.cancellation)?;
 
         let expected = self.authority.expected_peer();
@@ -934,7 +973,7 @@ impl WindowsCombinedRunner {
     /// collector's authenticated graceful-stop receipt.  It intentionally does
     /// not cancel the shared data transport: the caller must continue reading
     /// H4CR to a clean record boundary/EOF, fsync, fold, pack, and verify under
-    /// the outer 30-second graceful-stop deadline.
+    /// the outer bounded graceful-stop deadline.
     pub fn close_control_for_graceful_data_drain(
         &mut self,
     ) -> Result<ControlDeadline, WindowsCombinedBackendError> {
@@ -1345,7 +1384,8 @@ impl WindowsOverlappedPipe {
     ) -> io::Result<()> {
         while !bytes.is_empty() {
             let len = bytes.len().min(Dword::MAX as usize);
-            let (transferred, buffer) = self.transfer(None, len, deadline, caller_cancellation)?;
+            let (transferred, buffer) =
+                self.transfer(None, len, deadline, caller_cancellation)?;
             if transferred == 0 {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "pipe EOF"));
             }

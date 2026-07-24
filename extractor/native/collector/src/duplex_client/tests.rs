@@ -70,6 +70,14 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+#[test]
+fn default_policy_allows_three_missed_heartbeat_intervals() {
+    assert_eq!(
+        DuplexClientPolicy::DEFAULT.heartbeat_liveness,
+        DuplexClientPolicy::DEFAULT.heartbeat_cycle * 3
+    );
+}
+
 // --- fake clock -------------------------------------------------------------
 
 #[derive(Clone)]

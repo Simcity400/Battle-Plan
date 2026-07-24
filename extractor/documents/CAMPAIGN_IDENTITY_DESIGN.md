@@ -199,7 +199,8 @@ record type, or data before the header is a hard decode/pack failure. Legacy str
 readable as identity-unavailable and cannot be stitched automatically across sessions.
 
 `Known` is not admitted merely because the pair is canonical. The CID1 decoder must have two
-complete matching observations bracketing admission, a calendar-valid `game_hour_raw`, a
+complete observations with matching UUID/seed identity components bracketing admission, a
+calendar-valid `game_hour_raw` from the later independently coherent observation, a
 non-empty control-free build-profile id, and a SHA-256 recomputed over the complete validated
 CID1 payload. The manifest carries that payload hash. If the active exact-build reader fails any
 prerequisite, state remains `unavailable` and no digest is authorized for stitching.
@@ -240,6 +241,14 @@ Control-frame sequence never resets during an attach. Logical-stream ids start a
 by exactly one after accepted rollover, and are never reused. H4CR sequence is local to one
 logical stream: CID1 is 0 and following records are contiguous from 1. Only the host cuts files;
 a reset is legal only after the matching ack and only in the newly opened stream.
+
+The recorder separately binds the first logical-stream id whose semantic `FirstWorld` proof
+caused the supervisor to enter `Recording`. Continue may create one or more earlier loading-world
+logical streams which have valid CID1/raw evidence but never satisfy `FirstWorld`. Those members
+remain in the ordered package set as `pre_world_transient=true` forensic artifacts and are not
+allowed to fail the recording-level success gate. Every member at or after the bound
+first-recording id remains subject to the ordinary recovery/coverage gates; this exception cannot
+hide a failure after recording admission.
 
 All control-payload integers are little-endian. Unknown version/enum/flag, bad length/reserved,
 stale nonce, non-contiguous logical id, or hash mismatch poisons the channel. The surrounding
@@ -397,7 +406,8 @@ digest, and payload-hash equality. The manifest never overrides stream bytes.
 
 Static location/representation discovery is complete for the pinned current executable: signed
 `i32 +0x720` and MSVC string `+0x728` under `CGameState`. Production performs hash/root admission,
-same-hour bracketing, one coherent guarded `+0x720..+0x747` read, and complete CID1/CFA1 ordering on
+stable-root and repeated-byte bracketing with calendar-valid leading and trailing hour samples,
+one coherent guarded `+0x720..+0x747` read, and complete CID1/CFA1 ordering on
 every actual session. Any missing guard, hash mismatch, or game patch keeps that session
 unavailable and requires fresh static revalidation. The passive matrix remains a conformance
 receipt: it records only states the user actually reaches and never drives the client.
@@ -493,7 +503,7 @@ extractor/native/lanes/compact_replay_verification_gates/src/*
   and the executable lifecycle owner are complete for the pinned build. There is no
   build-profile fallback.
 - `Invoke-Cid1EndpointOwner.ps1` and `Invoke-Cid1PassiveArmRegistration.ps1` own passive S1-S4/D1-D2
-  acquisition and registration: exact process/save observations, same-hour barriers, save-oracle
+  acquisition and registration: exact process/save observations, calendar-sampled barriers, save-oracle
   joins, and raw-H4CR/durable-rollover receipts. The user alone drives HOI4. The quarantined
   `Invoke-Cid1SdActionDriver.ps1` requires explicit legacy opt-in and is not a promotion route.
 - M1/M2 use the same passive registrar with two real local process endpoints. M3's frozen relation

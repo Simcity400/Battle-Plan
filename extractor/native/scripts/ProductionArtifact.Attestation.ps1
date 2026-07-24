@@ -304,8 +304,12 @@ function Get-ProductionInputFiles {
             $attributes = [System.IO.File]::GetAttributes($entry)
             if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) {
                 $name = [System.IO.Path]::GetFileName($entry)
-                if ($name -eq "target" -or $name -eq ".cargo-target" -or $name.StartsWith(".tmp", [StringComparison]::OrdinalIgnoreCase)) { continue }
+                if ($name -eq "target" -or $name -eq ".cargo-target" -or $name -eq "runs" -or $name.StartsWith(".tmp", [StringComparison]::OrdinalIgnoreCase)) { continue }
                 if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                # Cargo output roots self-identify with a CACHEDIR.TAG marker
+                # whatever the directory is named; capture outputs live under
+                # runs/. Neither is a production build input.
+                if ([System.IO.File]::Exists([System.IO.Path]::Combine($entry, "CACHEDIR.TAG"))) { continue }
                 $pending.Push($entry)
             }
             else {
@@ -395,7 +399,7 @@ function Get-ProductionRustInputDigest {
         schema = "battle-plan.production_rust_input_digest.v1"
         sha256 = $digest
         file_count = $records.Count
-        selection = "production runtime, passive observer, verifier, repository checkout/Cargo/toolchain/nextest, and product-modset inputs; Cargo output roots and all legacy client-driving/evidence-only acquisition helpers excluded by Hoi4ClientDriving.OptIn.ps1"
+        selection = "production runtime, passive observer, verifier, repository checkout/Cargo/toolchain/nextest, and product-modset inputs; Cargo output roots (CACHEDIR.TAG-marked), capture run outputs (runs/), and all legacy client-driving/evidence-only acquisition helpers excluded by Hoi4ClientDriving.OptIn.ps1"
     }
 }
 
@@ -489,7 +493,11 @@ function Test-ProductionArtifactAttestation {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$ReceiptPath,
         [Parameter(Mandatory = $true)][string]$ExpectedDriverPath,
-        $ExpectedBuildEnvironment = $null
+        $ExpectedBuildEnvironment = $null,
+        # Only the centralized Release run itself may pass this, with the
+        # digest it computed after its builds; every external verifier must
+        # omit it so the source-input comparison stays independent.
+        $CurrentSourceDigest = $null
     )
 
     if (-not (Test-Path -LiteralPath $ReceiptPath -PathType Leaf)) {
@@ -540,7 +548,7 @@ function Test-ProductionArtifactAttestation {
         [string]$receipt.capture_driver.sha256 -cne (Get-FileHash -LiteralPath $ExpectedDriverPath -Algorithm SHA256).Hash.ToLowerInvariant()) {
         throw "production capture driver differs from the prebuilt artifact attestation"
     }
-    $currentSource = Get-ProductionRustInputDigest -RepoRoot $repo
+    $currentSource = if ($null -ne $CurrentSourceDigest) { $CurrentSourceDigest } else { Get-ProductionRustInputDigest -RepoRoot $repo }
     if ([string]$receipt.source_input.schema -cne [string]$currentSource.schema -or
         [int]$receipt.source_input.file_count -ne [int]$currentSource.file_count -or
         [string]$receipt.source_input.sha256 -cne [string]$currentSource.sha256) {

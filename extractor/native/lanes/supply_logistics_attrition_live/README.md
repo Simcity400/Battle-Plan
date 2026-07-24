@@ -258,8 +258,8 @@ Shared production row kind `5` carries exact country disrupted-supply rows:
 - `owner_tag_db_id`: exact shared index of `CGameState+0x310` and
   `CSupplySystem+0x108`, revalidated against `CCountry+0x08`.
 - `flags`: `COUNTRY_DISRUPTED_SUPPLY_EXACT` only.
-- `value_a_raw`: signed stored `i64/100000`, range-gated to `0..=100000` and
-  narrowed losslessly to `i32`.
+- `value_a_raw`: signed stored `i64/100000`, narrowed losslessly to the existing
+  without a `0..=100000` clamp; values outside the wire slot remain fail-closed.
 - `value_b_raw`, `value_c_raw`, `value_d_raw`, and `aux_raw`: zero.
 
 The legacy header field named `csupply_input_rows` at `+0x2C` now counts both

@@ -577,7 +577,8 @@ try {
                 -RepoRoot $repoRoot `
                 -ReceiptPath $artifactAttestationPath `
                 -ExpectedDriverPath $captureDriver `
-                -ExpectedBuildEnvironment $releaseBuildEnvironmentAfter
+                -ExpectedBuildEnvironment $releaseBuildEnvironmentAfter `
+                -CurrentSourceDigest $releaseInputDigestAfter
 
             $packageBuilderHash = (Get-FileHash -LiteralPath $portablePackageScript -Algorithm SHA256).Hash.ToLowerInvariant()
             $packageStdout = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `

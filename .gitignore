@@ -66,6 +66,8 @@ replay_interface/native/**/target/
 replay_interface/native/**/proof_out/
 *.pdb
 *.obj
+/.validation-*.log
+/myeasylog.log
 
 # --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
 #     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---

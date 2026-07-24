@@ -855,7 +855,11 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             .parse_errors
             .push(format!("offset {offset}: changed rows exceed row count"));
     }
-    if observed_order_rows < row_count {
+    // A delta can legitimately emit more rows than the live census observed:
+    // removals emit tombstones, and one observed replacement may emit both an
+    // old-generation tombstone and a new-generation row. The full-baseline
+    // invariant remains exact.
+    if status_flags & COMPACT_STATUS_DELTA_DATA == 0 && observed_order_rows < row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: observed order rows below emitted rows"
         ));
@@ -1508,6 +1512,23 @@ mod tests {
             decoded.totals.status_flags_or & COMPACT_STATUS_DELTA_DATA,
             COMPACT_STATUS_DELTA_DATA
         );
+    }
+
+    #[test]
+    fn delta_tombstone_may_exceed_current_observed_order_count() {
+        let mut removed = exact_order(10, 0, 5, vec![44], Vec::new());
+        removed.deleted = true;
+        removed.target_states.clear();
+        let record = collect_and_encode_depth_record(
+            &[removed],
+            10,
+            COMPACT_STATUS_DELTA_DATA,
+            1,
+            0,
+        );
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(decoded.totals.rows, 1);
     }
 
     #[test]

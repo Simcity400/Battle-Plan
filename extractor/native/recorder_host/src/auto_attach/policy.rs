@@ -37,9 +37,17 @@ pub const HEARTBEAT_LIVENESS_MS: u64 = 15_000;
 /// deadline.
 pub const FIRST_FRAME_DEADLINE_MS: u64 = 300_000;
 
-/// Graceful worker finalization budget before the disabled future activation
-/// path may classify the worker failed. It never authorizes reinjection.
-pub const GRACEFUL_STOP_DEADLINE_MS: u64 = 30_000;
+/// A finalizer which produces no durable filesystem progress for this long is
+/// considered stalled. Speed-5 capture can legitimately require a long fold
+/// and pack, so continuous progress resets this deadman rather than being
+/// mistaken for a hang.
+pub const GRACEFUL_STOP_STALL_DEADLINE_MS: u64 = 120_000;
+
+/// Absolute fault-containment bound for one cooperative stop. This is separate
+/// from the progress deadman: a healthy large speed-5 recording may run longer
+/// than two minutes, but an unbounded child can never retain the supervisor
+/// forever. Neither bound authorizes reinjection.
+pub const GRACEFUL_STOP_DEADLINE_MS: u64 = 3_600_000;
 
 /// Readiness backoff for `WaitingForIdentity` / `WaitingForWindow`
 /// (design §4): 250 ms, 500 ms, 1 s, then every 2 s while the process lives.
@@ -123,6 +131,7 @@ mod tests {
         assert!(HEARTBEAT_INTERVAL_MS > 0);
         assert!(HEARTBEAT_LIVENESS_MS >= HEARTBEAT_INTERVAL_MS * 3);
         assert!(FIRST_FRAME_DEADLINE_MS > HEARTBEAT_LIVENESS_MS);
-        assert!(GRACEFUL_STOP_DEADLINE_MS > 0);
+        assert_eq!(GRACEFUL_STOP_STALL_DEADLINE_MS, 120_000);
+        assert_eq!(GRACEFUL_STOP_DEADLINE_MS, 3_600_000);
     }
 }

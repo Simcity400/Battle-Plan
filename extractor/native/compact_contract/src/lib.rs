@@ -398,6 +398,39 @@ pub fn production_profile_scheduled_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// Domains emitted on the wire as owned, same-hour dependencies of an
+/// explicitly scheduled parent domain.
+///
+/// D82 owns D76 because character-presentation reason text must be captured
+/// only after the D82 snapshot has finalized. D76 therefore remains reserved
+/// from independent production scheduling while still being an exact required
+/// record whenever D82 is scheduled.
+pub const OWNED_EMITTED_DOMAIN_DEPENDENCIES: &[(CompactDomainId, CompactDomainId)] =
+    &[(82, 76)];
+
+/// Expand a scheduled domain-id set to the exact domain-id set emitted on the
+/// wire, including transitive owned dependencies. The result is canonicalized
+/// by numeric domain id.
+pub fn emitted_domain_ids_for_scheduled_ids(
+    scheduled_ids: &[CompactDomainId],
+) -> Vec<CompactDomainId> {
+    let mut emitted = scheduled_ids.to_vec();
+    loop {
+        let before = emitted.len();
+        for &(owner, dependency) in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+            if emitted.contains(&owner) && !emitted.contains(&dependency) {
+                emitted.push(dependency);
+            }
+        }
+        if emitted.len() == before {
+            break;
+        }
+    }
+    emitted.sort_unstable();
+    emitted.dedup();
+    emitted
+}
+
 /// Capture profile: one coherent preset cluster selected with a single
 /// `--profile production|debug` switch instead of hand-assembling the individual
 /// collector flags.
@@ -1908,6 +1941,20 @@ mod tests {
             "production profile has {} domains but collector control accepts at most {}",
             profile.len(),
             MAX_SCHEDULED_DOMAINS
+        );
+    }
+
+    #[test]
+    fn emitted_roster_expands_character_presentation_owned_text_dependency() {
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[82, 10, 82]),
+            vec![10, 76, 82]
+        );
+        assert_eq!(emitted_domain_ids_for_scheduled_ids(&[10, 57]), vec![10, 57]);
+        assert_eq!(
+            OWNED_EMITTED_DOMAIN_DEPENDENCIES,
+            &[(82, 76)],
+            "owned wire dependencies require explicit contract review"
         );
     }
 

@@ -550,8 +550,8 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
         if read_u16(row, 30) != 0
             || source_tag_db_id == 0
             || source_tag_db_id > MAX_TAG_DB_ID
-            || !(0..=10_000_000).contains(&current_threat_fixed)
-            || !(0..=10_000_000).contains(&original_threat_fixed)
+            || !(-10_000_000..=10_000_000).contains(&current_threat_fixed)
+            || !(-10_000_000..=10_000_000).contains(&original_threat_fixed)
             || source_sequence != row_index as u64
         {
             return Err("world-tension ledger row outside exact bounds".into());
@@ -2369,6 +2369,40 @@ mod tests {
         });
         assert_eq!(validated.frame.status_flags & STATUS_PARTIAL_DATA, 0);
         assert!(validated.gate.ok, "{:?}", validated.gate.errors);
+    }
+
+    #[test]
+    fn world_tension_details_round_trip_signed_engine_contributions() {
+        let mut frame = sample_frame();
+        frame.world_tension_details = Some(WorldTensionDetails {
+            current_fixed5: 42_000,
+            prior_fixed5: 42_000,
+            increased: false,
+            monthly_decrease_fixed5: 1_000,
+            time_scale_fixed5: 100_000,
+            start_date_raw: 43_800_000,
+            country_rows: Vec::new(),
+            ledger_rows: vec![WorldTensionLedgerRow {
+                source_tag_db_id: 1,
+                date_raw: 60_827_497,
+                current_threat_fixed: -44_465,
+                original_threat_fixed: -44_465,
+                reason: "exact_negative_contribution".to_string(),
+                source_sequence: 0,
+            }],
+        });
+        let payload = encode_payload(&frame);
+        let decoded = decode_world_tension_details(&payload)
+            .expect("signed engine contribution must decode")
+            .expect("world-tension details must be present");
+        assert_eq!(
+            decoded.ledger_rows,
+            frame
+                .world_tension_details
+                .as_ref()
+                .expect("fixture details")
+                .ledger_rows
+        );
     }
 
     pub fn sample_frame() -> SessionMetadataFrame {

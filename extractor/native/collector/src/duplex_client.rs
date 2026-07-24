@@ -496,11 +496,13 @@ impl CollectorIdentity {
 /// Nonzero, versioned product-policy durations. The handshake budget is the one
 /// 30-second initial-handshake budget (§4); heartbeat and first-frame budgets
 /// are separate explicit policies that never reset or extend the handshake or
-/// each other.
+/// each other. The five-minute first-frame window matches the recorder's
+/// Continue-save world-admission deadline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DuplexClientPolicy {
     pub handshake_budget: Duration,
     pub heartbeat_cycle: Duration,
+    pub heartbeat_liveness: Duration,
     pub first_frame_budget: Duration,
 }
 
@@ -508,7 +510,8 @@ impl DuplexClientPolicy {
     pub const DEFAULT: Self = Self {
         handshake_budget: Duration::from_secs(30),
         heartbeat_cycle: Duration::from_secs(5),
-        first_frame_budget: Duration::from_secs(60),
+        heartbeat_liveness: Duration::from_secs(15),
+        first_frame_budget: Duration::from_secs(300),
     };
 }
 
@@ -2046,7 +2049,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
                 self.phase = ClientPhase::Stopped;
                 return Ok(ClientOutcome::StoppedByRequest);
             }
-            let deadline = MonotonicDeadline::from_now(&self.clock, self.policy.heartbeat_cycle);
+            let deadline = MonotonicDeadline::from_now(&self.clock, self.policy.heartbeat_liveness);
             if let ClientEvent::GracefulStop = self.serve_next(deadline)? {
                 return Ok(ClientOutcome::StoppedByPeer);
             }
@@ -2395,6 +2398,8 @@ mod win32 {
             wait: Bool,
         ) -> Bool;
         fn CancelIoEx(handle: Handle, overlapped: *mut Overlapped) -> Bool;
+        #[cfg(test)]
+        fn SetEvent(event: Handle) -> Bool;
         fn WaitForSingleObject(handle: Handle, timeout_ms: Dword) -> Dword;
     }
 
@@ -2492,51 +2497,22 @@ mod win32 {
     /// handle opened with `FILE_FLAG_OVERLAPPED`.
     pub struct Win32OverlappedControlIo {
         handle: SendHandle,
-        event: SendHandle,
     }
 
     impl Win32OverlappedControlIo {
-        /// Wrap a connected overlapped handle for live control I/O. Returns
-        /// `None` if the manual-reset completion event cannot be created.
+        /// Wrap a connected overlapped handle for live control I/O.
         ///
         /// Requires a [`DuplexClientProductPermit`]: this begins live overlapped
         /// pipe I/O, so it stays unreachable while the activation freeze holds.
-        pub fn new(_permit: &DuplexClientProductPermit, handle: SendHandle) -> Option<Self> {
-            let event = unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) };
-            if event.is_null() {
-                return None;
-            }
-            Some(Self {
-                handle,
-                event: SendHandle(event),
-            })
+        pub fn new(_permit: &DuplexClientProductPermit, handle: SendHandle) -> Self {
+            Self { handle }
         }
 
         pub fn new_early_render(
             _permit: &EarlyRenderDuplexProductPermit,
             handle: SendHandle,
-        ) -> Option<Self> {
-            let event = unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) };
-            if event.is_null() {
-                return None;
-            }
-            Some(Self {
-                handle,
-                event: SendHandle(event),
-            })
-        }
-
-        fn make_pending(&self, buffer: Vec<u8>) -> Box<PendingIo> {
-            Box::new(PendingIo {
-                overlapped: Overlapped {
-                    internal: 0,
-                    internal_high: 0,
-                    offset: 0,
-                    offset_high: 0,
-                    h_event: self.event.0,
-                },
-                buffer,
-            })
+        ) -> Self {
+            Self { handle }
         }
 
         /// Wait for one overlapped op to complete within the deadline; on expiry
@@ -2561,7 +2537,7 @@ mod win32 {
                 let Some(ms) = deadline.wait_named_pipe_timeout_ms(clock.now()) else {
                     break;
                 };
-                match unsafe { WaitForSingleObject(self.event.0, ms) } {
+                match unsafe { WaitForSingleObject(pending.event.0, ms) } {
                     WAIT_OBJECT_0 => {
                         let mut transferred: Dword = 0;
                         let ok = unsafe {
@@ -2598,7 +2574,7 @@ mod win32 {
             unsafe {
                 let _ = CancelIoEx(self.handle.0, &mut pending.overlapped);
             }
-            let event = self.event.0;
+            let event = pending.event.0;
             match bounded_reap(CANCEL_REAP_ATTEMPTS, || unsafe {
                 WaitForSingleObject(event, CANCEL_REAP_SLICE_MS) == WAIT_OBJECT_0
             }) {
@@ -2629,13 +2605,41 @@ mod win32 {
         }
     }
 
-    /// Heap-owned state for one in-flight overlapped operation: the `OVERLAPPED`
-    /// and the data buffer the kernel reads from (write) or writes into (read).
+    /// Heap-owned state for one in-flight overlapped operation: the `OVERLAPPED`,
+    /// its one-shot completion event, and the data buffer the kernel reads from
+    /// (write) or writes into (read).
     /// Heap ownership is what makes the pathological-driver leak sound — a leaked
     /// `Box<PendingIo>` keeps both alive for the process lifetime.
     struct PendingIo {
         overlapped: Overlapped,
+        event: SendHandle,
         buffer: Vec<u8>,
+    }
+
+    impl PendingIo {
+        fn new(buffer: Vec<u8>) -> Result<Box<Self>, DuplexIoError> {
+            // A manual-reset event belongs to exactly one OVERLAPPED operation.
+            // Reusing a signalled event for the next header/payload transfer lets
+            // WaitForSingleObject return before that new operation completes;
+            // GetOverlappedResult then reports ERROR_IO_INCOMPLETE and the client
+            // closes the pipe after only the frame header reached the recorder.
+            let event = unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) };
+            if event.is_null() {
+                return Err(DuplexIoError::Disconnected);
+            }
+            let event = SendHandle(event);
+            Ok(Box::new(Self {
+                overlapped: Overlapped {
+                    internal: 0,
+                    internal_high: 0,
+                    offset: 0,
+                    offset_high: 0,
+                    h_event: event.0,
+                },
+                event,
+                buffer,
+            }))
+        }
     }
 
     impl DeadlineControlIo for Win32OverlappedControlIo {
@@ -2653,7 +2657,7 @@ mod win32 {
                 let chunk_len = (bytes.len() - sent).min(Dword::MAX as usize);
                 // Own a heap copy of the chunk: the kernel reads from THIS buffer,
                 // so a leaked pending write never dangles into the caller's slice.
-                let mut pending = self.make_pending(bytes[sent..sent + chunk_len].to_vec());
+                let mut pending = PendingIo::new(bytes[sent..sent + chunk_len].to_vec())?;
                 let mut written: Dword = 0;
                 let ok = unsafe {
                     WriteFile(
@@ -2700,7 +2704,7 @@ mod win32 {
                 // The kernel writes into THIS heap buffer; on success we copy out
                 // to the caller's slice, so a leaked pending read never dangles
                 // into the caller's memory.
-                let mut pending = self.make_pending(vec![0u8; remaining]);
+                let mut pending = PendingIo::new(vec![0u8; remaining])?;
                 let mut read: Dword = 0;
                 let ok = unsafe {
                     ReadFile(
@@ -2741,6 +2745,30 @@ mod win32 {
                 received += count;
             }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn each_pending_transfer_owns_a_fresh_unsignalled_event() {
+            let first = PendingIo::new(vec![0x48; 48]).expect("first pending I/O");
+            let second = PendingIo::new(vec![0x72; 72]).expect("second pending I/O");
+
+            assert_ne!(first.event.0, second.event.0);
+            assert_eq!(first.overlapped.h_event, first.event.0);
+            assert_eq!(second.overlapped.h_event, second.event.0);
+            assert_ne!(unsafe { SetEvent(first.event.0) }, 0);
+            assert_eq!(
+                unsafe { WaitForSingleObject(first.event.0, 0) },
+                WAIT_OBJECT_0
+            );
+            assert_eq!(
+                unsafe { WaitForSingleObject(second.event.0, 0) },
+                WAIT_TIMEOUT
+            );
         }
     }
 

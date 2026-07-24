@@ -399,7 +399,10 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
             .parse_errors
             .push(format!("offset {offset}: changed rows exceed row count"));
     }
-    if observed_order_rows < row_count {
+    // Delta rows include tombstones and generation replacements, so emitted
+    // rows may exceed the current live census. Only a full baseline must be
+    // bounded by observed_order_rows.
+    if status_flags & COMPACT_STATUS_DELTA_DATA == 0 && observed_order_rows < row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: observed order rows below emitted rows"
         ));

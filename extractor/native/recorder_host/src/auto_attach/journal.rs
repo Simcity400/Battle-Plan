@@ -353,6 +353,7 @@ fn parse_reason(s: &str) -> Result<ReasonCode, String> {
         "finalize_verify_failed" => FinalizeVerifyFailed,
         "replay_complete" => ReplayComplete,
         "recovered_nonterminal_reinjection_blocked" => RecoveredNonterminalReinjectionBlocked,
+        "collector_unloaded_rearmed" => CollectorUnloadedRearmed,
         "explicit_stop" => ExplicitStop,
         other => return Err(format!("unknown journal reason {other:?}")),
     })
@@ -671,30 +672,52 @@ pub struct RecoveredIdentity {
     pub key: ProcessKey,
     pub last_state: CandidateState,
     pub injection_committed: bool,
+    /// Staging directory for the latest attach generation. A recovered
+    /// terminal generation may be rearmed only after its exact collector DLL is
+    /// proven absent from the still-live target process.
+    pub staging_dir: Option<PathBuf>,
 }
 
 /// Fold a journal's records into the last-known state per identity (design §8
 /// "replay the journal and reconcile every nonterminal identity").
 pub fn recover(records: &[JournalRecord]) -> Vec<RecoveredIdentity> {
     use std::collections::BTreeMap;
-    let mut last: BTreeMap<ProcessKey, (u64, CandidateState)> = BTreeMap::new();
-    let mut committed: BTreeMap<ProcessKey, bool> = BTreeMap::new();
+    let mut recovered: BTreeMap<
+        ProcessKey,
+        (u64, CandidateState, bool, Option<PathBuf>),
+    > = BTreeMap::new();
     for r in records {
         let key = r.key();
-        let e = committed.entry(key).or_insert(false);
-        *e = *e || r.state_to.injection_committed();
-        match last.get(&key) {
-            Some((seq, _)) if *seq >= r.event_seq => {}
-            _ => {
-                last.insert(key, (r.event_seq, r.state_to));
-            }
+        if recovered
+            .get(&key)
+            .is_some_and(|(seq, _, _, _)| *seq >= r.event_seq)
+        {
+            continue;
         }
+        let previous = recovered.get(&key).cloned();
+        let new_generation = r.reason_code == ReasonCode::CollectorUnloadedRearmed;
+        let mut committed = previous.as_ref().is_some_and(|(_, _, value, _)| *value);
+        let mut staging_dir = previous.and_then(|(_, _, _, path)| path);
+        if new_generation {
+            committed = false;
+            staging_dir = None;
+        }
+        committed |= r.state_to.injection_committed();
+        if let Some(path) = r.staging_dir.as_ref() {
+            staging_dir = Some(PathBuf::from(path));
+        }
+        recovered.insert(
+            key,
+            (r.event_seq, r.state_to, committed, staging_dir),
+        );
     }
-    last.into_iter()
-        .map(|(key, (_, last_state))| RecoveredIdentity {
+    recovered
+        .into_iter()
+        .map(|(key, (_, last_state, injection_committed, staging_dir))| RecoveredIdentity {
             key,
             last_state,
-            injection_committed: committed.get(&key).copied().unwrap_or(false),
+            injection_committed,
+            staging_dir,
         })
         .collect()
 }
@@ -834,6 +857,44 @@ mod tests {
             rec[0].injection_committed,
             "Injecting is past the commit line"
         );
+    }
+
+    #[test]
+    fn recovered_rearm_starts_a_new_injection_generation() {
+        let key = ProcessKey::new(8, 800);
+        let mut injected = JournalRecord::transition(
+            0,
+            1,
+            "old",
+            key,
+            None,
+            CandidateState::Injecting,
+            ReasonCode::Injected,
+        );
+        injected.staging_dir = Some(r"C:\stage\old".to_string());
+        let failed = JournalRecord::transition(
+            1,
+            2,
+            "old",
+            key,
+            Some(CandidateState::Finalizing),
+            CandidateState::Failed,
+            ReasonCode::FinalizeVerifyFailed,
+        );
+        let rearmed = JournalRecord::transition(
+            2,
+            3,
+            "new",
+            key,
+            Some(CandidateState::Failed),
+            CandidateState::Detected,
+            ReasonCode::CollectorUnloadedRearmed,
+        );
+        let recovered = recover(&[injected, failed, rearmed]);
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].last_state, CandidateState::Detected);
+        assert!(!recovered[0].injection_committed);
+        assert!(recovered[0].staging_dir.is_none());
     }
 
     #[test]

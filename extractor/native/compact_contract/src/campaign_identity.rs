@@ -52,7 +52,7 @@ const KNOWN_FLAGS: u32 = FLAG_START_DATE_PRESENT
 
 const CID_PREIMAGE_PREFIX: &[u8] = b"hoi4-campaign-id-v1\0";
 
-/// One complete, hour-bracketed observation supplied to the encoder.
+/// One complete, hour-bracketed identity observation supplied to the encoder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cid1Observation {
     pub game_unique_id: String,
@@ -70,7 +70,8 @@ pub struct Cid1Witnesses {
     pub modset_identity: Option<String>,
 }
 
-/// Encoder input created only from two complete equal observations.
+/// Encoder input created only from two complete observations of the same
+/// UUID/seed identity pair. Each observation carries its own coherent hour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cid1Fields {
     game_unique_id: String,
@@ -96,7 +97,6 @@ impl Cid1Fields {
 
         if first.game_unique_id != second.game_unique_id
             || first.game_unique_seed != second.game_unique_seed
-            || first.game_hour_raw != second.game_hour_raw
         {
             return Err(Cid1Error::ObservationMismatch);
         }
@@ -104,7 +104,11 @@ impl Cid1Fields {
         Ok(Self {
             game_unique_id: first.game_unique_id,
             game_unique_seed: first.game_unique_seed,
-            game_hour_raw: first.game_hour_raw,
+            // The proof concerns the UUID/seed identity pair. At speed 5 the
+            // calendar can legitimately advance between two independently
+            // coherent reads, so bind the payload to the later observation's
+            // own valid bracket rather than falsely requiring a paused clock.
+            game_hour_raw: second.game_hour_raw,
             source_build_profile,
             witnesses,
         })
@@ -273,7 +277,9 @@ impl core::fmt::Display for Cid1Error {
             Self::InvalidGameHour(hour) => write!(f, "CID1 game hour {hour} is outside the calendar window"),
             Self::InvalidBuildProfile => write!(f, "CID1 build profile violates its closed grammar"),
             Self::InvalidWitness(field) => write!(f, "CID1 witness {field} violates its closed grammar"),
-            Self::ObservationMismatch => write!(f, "CID1 stable observations are not identical"),
+            Self::ObservationMismatch => {
+                write!(f, "CID1 stable identity observations are not identical")
+            }
             Self::CampaignDigestMismatch => write!(f, "CID1 campaign digest does not recompute"),
             Self::WrongRecordSequence(v) => write!(f, "CID1 record sequence is {v}, expected 0"),
             Self::WrongRecordDomain(v) => write!(f, "CID1 record domain is {v}, expected 0"),
@@ -1049,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn encoder_requires_two_equal_complete_observations() {
+    fn encoder_requires_two_equal_complete_identity_observations() {
         let mut second = observation();
         second.game_unique_seed += 1;
         assert_eq!(
@@ -1063,15 +1069,15 @@ mod tests {
         );
         let mut second = observation();
         second.game_hour_raw += 1;
-        assert!(matches!(
-            Cid1Fields::from_stable_observations(
-                observation(),
-                second,
-                "profile".to_owned(),
-                Cid1Witnesses::default(),
-            ),
-            Err(Cid1Error::ObservationMismatch)
-        ));
+        let fields = Cid1Fields::from_stable_observations(
+            observation(),
+            second.clone(),
+            "profile".to_owned(),
+            Cid1Witnesses::default(),
+        )
+        .unwrap();
+        let parsed = parse_cid1(&encode_cid1(&fields).unwrap()).unwrap();
+        assert_eq!(parsed.game_hour_raw(), second.game_hour_raw);
     }
 
     #[test]
