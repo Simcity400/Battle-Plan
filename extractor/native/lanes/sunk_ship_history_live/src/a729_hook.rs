@@ -1,12 +1,13 @@
 //! Exact-a729 A33 same-thread writer hook with a raw evidence-only gate.
 //!
-//! Production installation remains blocked while either promotion latch in the
-//! parent module is false. An explicit owner-run environment gate may install
-//! the same byte-checked detours solely to write raw activation evidence; it
-//! cannot emit D86 or satisfy either latch. The outer CFEXMember writer
-//! establishes the exact d49/d50 epoch/slot in TLS. All three global history
-//! writer wrappers are observed after their originals return; each callback
-//! requires exactly one new vector entry and then copies that completed
+//! Production install first decodes the complete existing `CGameState+0x590`
+//! vector into pointer-free rows, then requires the exact vector header, order,
+//! and decoded rows to remain unchanged across detour activation. An explicit
+//! owner-run environment gate may install the same byte-checked detours solely
+//! to write raw activation evidence; it cannot emit D86. The outer CFEXMember
+//! writer establishes the exact d49/d50 epoch/slot in TLS. All three global
+//! history writer wrappers are observed after their originals return; each
+//! callback requires exactly one new vector entry and then copies that completed
 //! CSunkShipInfo. Callback capture is bounded, capacity-bounded, and any loss
 //! poisons completeness.
 
@@ -14,7 +15,7 @@
 
 use core::{cell::Cell, ffi::c_void, mem, ptr};
 use minhook::{MinHook, MH_STATUS};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
@@ -70,6 +71,8 @@ static COMPLETENESS_POISONED: AtomicBool = AtomicBool::new(false);
 static EVIDENCE_INSTALL: AtomicBool = AtomicBool::new(false);
 static BASELINE_MEASURED_EMPTY: AtomicBool = AtomicBool::new(false);
 static BASELINE_REVALIDATED_EMPTY: AtomicBool = AtomicBool::new(false);
+static BASELINE_COMPLETE: AtomicBool = AtomicBool::new(false);
+static BASELINE_REVALIDATED_COMPLETE: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<VecDeque<RawSunkShipCapture>>> = OnceLock::new();
 static HISTORY: OnceLock<Mutex<HistoryState>> = OnceLock::new();
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
@@ -132,6 +135,12 @@ pub struct HookDrain {
     /// three post-append writer detours were active, closing the pre-hook
     /// observation race.
     pub baseline_revalidated_empty: bool,
+    /// A complete pointer-free decode of the existing history vector was
+    /// accepted before the production detours were enabled.
+    pub baseline_complete: bool,
+    /// The exact vector header and pointer-free rows were unchanged after all
+    /// production detours were enabled.
+    pub baseline_revalidated_complete: bool,
     /// True only for the explicit owner-run evidence gate. Such a drain is raw
     /// activation evidence and can never be encoded as an authoritative D86.
     pub evidence_install: bool,
@@ -182,6 +191,13 @@ impl HookDrain {
 #[derive(Default)]
 struct HistoryState {
     baseline_complete: bool,
+    events: Vec<crate::SunkShipEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryVectorBaseline {
+    data: usize,
+    capacity: u32,
     events: Vec<crate::SunkShipEvent>,
 }
 
@@ -246,10 +262,8 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
     for writer in [attributed_writer, combat_source_writer, cause_writer] {
         verify_sentinel(writer, &RECORD_WRITER_SENTINEL)?;
     }
-    let baseline_measured_empty = measure_empty_history_baseline(base)?;
-    if !evidence_install && !baseline_measured_empty {
-        return Err("A33 production install requires a measured-empty complete-history baseline".into());
-    }
+    let baseline_before = read_complete_history_baseline(base)?;
+    let baseline_measured_empty = baseline_before.events.is_empty();
     let hook_epoch = NEXT_HOOK_EPOCH.fetch_add(1, Ordering::AcqRel);
     if hook_epoch == 0 {
         return Err("A33 hook epoch sequence exhausted".into());
@@ -305,7 +319,11 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
     ORIGINAL_CAUSE_WRITER.store(original_cause_writer as usize, Ordering::Release);
     MODULE_BASE.store(base, Ordering::Release);
     ACTIVE_HOOK_EPOCH.store(hook_epoch, Ordering::Release);
-    NEXT_SEQUENCE.store(2, Ordering::Release);
+    let next_sequence = u64::try_from(baseline_before.events.len())
+        .ok()
+        .and_then(|count| count.checked_add(2))
+        .ok_or("A33 baseline event sequence exhausted")?;
+    NEXT_SEQUENCE.store(next_sequence, Ordering::Release);
     DROPPED_UNBOUND.store(0, Ordering::Release);
     DROPPED_REENTRANT.store(0, Ordering::Release);
     DROPPED_UNREADABLE.store(0, Ordering::Release);
@@ -313,6 +331,8 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
     DROPPED_OVERFLOW.store(0, Ordering::Release);
     COMPLETENESS_POISONED.store(false, Ordering::Release);
     BASELINE_MEASURED_EMPTY.store(baseline_measured_empty, Ordering::Release);
+    BASELINE_COMPLETE.store(!evidence_install, Ordering::Release);
+    BASELINE_REVALIDATED_COMPLETE.store(false, Ordering::Release);
     EVIDENCE_INSTALL.store(evidence_install, Ordering::Release);
     for target in [cause_writer, combat_source_writer, attributed_writer, outer] {
         if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
@@ -329,11 +349,13 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
             EVIDENCE_INSTALL.store(false, Ordering::Release);
             BASELINE_MEASURED_EMPTY.store(false, Ordering::Release);
             BASELINE_REVALIDATED_EMPTY.store(false, Ordering::Release);
+            BASELINE_COMPLETE.store(false, Ordering::Release);
+            BASELINE_REVALIDATED_COMPLETE.store(false, Ordering::Release);
             return Err(format!("A33 enable failed: {status}"));
         }
     }
-    let baseline_revalidated_empty = match measure_empty_history_baseline(base) {
-        Ok(empty) => empty,
+    let baseline_after = match read_complete_history_baseline(base) {
+        Ok(baseline) => baseline,
         Err(error) => {
             if let Err(cleanup) = cleanup_after_failed_install(&targets) {
                 INSTALLED.store(true, Ordering::Release);
@@ -347,11 +369,19 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
             EVIDENCE_INSTALL.store(false, Ordering::Release);
             BASELINE_MEASURED_EMPTY.store(false, Ordering::Release);
             BASELINE_REVALIDATED_EMPTY.store(false, Ordering::Release);
+            BASELINE_COMPLETE.store(false, Ordering::Release);
+            BASELINE_REVALIDATED_COMPLETE.store(false, Ordering::Release);
             return Err(format!("A33 post-enable baseline revalidation failed: {error}"));
         }
     };
+    let baseline_revalidated_empty = baseline_after.events.is_empty();
     BASELINE_REVALIDATED_EMPTY.store(baseline_revalidated_empty, Ordering::Release);
-    if !evidence_install && !baseline_revalidated_empty {
+    let baseline_revalidated_complete = baseline_after == baseline_before;
+    BASELINE_REVALIDATED_COMPLETE.store(
+        !evidence_install && baseline_revalidated_complete,
+        Ordering::Release,
+    );
+    if !evidence_install && !baseline_revalidated_complete {
         if let Err(cleanup) = cleanup_after_failed_install(&targets) {
             INSTALLED.store(true, Ordering::Release);
             return Err(format!(
@@ -364,6 +394,8 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
         EVIDENCE_INSTALL.store(false, Ordering::Release);
         BASELINE_MEASURED_EMPTY.store(false, Ordering::Release);
         BASELINE_REVALIDATED_EMPTY.store(false, Ordering::Release);
+        BASELINE_COMPLETE.store(false, Ordering::Release);
+        BASELINE_REVALIDATED_COMPLETE.store(false, Ordering::Release);
         return Err("A33 history changed while the production hooks were activating".into());
     }
     if !evidence_install {
@@ -384,12 +416,14 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
                 ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
                 BASELINE_MEASURED_EMPTY.store(false, Ordering::Release);
                 BASELINE_REVALIDATED_EMPTY.store(false, Ordering::Release);
+                BASELINE_COMPLETE.store(false, Ordering::Release);
+                BASELINE_REVALIDATED_COMPLETE.store(false, Ordering::Release);
                 return Err("A33 history lock poisoned during production install".into());
             }
         };
         *history = HistoryState {
             baseline_complete: true,
-            events: Vec::new(),
+            events: baseline_after.events,
         };
     }
     INSTALLED.store(true, Ordering::Release);
@@ -400,26 +434,20 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Publish the complete pre-hook history before any live event is admitted.
-/// Production installation itself measures and revalidates the empty baseline;
-/// optional evidence capture is not an admission gate.
+/// Revalidate an externally retained copy of the complete pre-hook history.
+/// Production installation already decodes and publishes the exact vector; a
+/// caller may only confirm that same pointer-free baseline, never replace it.
 pub fn publish_complete_baseline(events: Vec<crate::SunkShipEvent>) -> Result<(), String> {
     if !crate::PRODUCTION_SCHEDULING_ENABLED {
         return Err("A33 production scheduling is disabled".into());
     }
     if !INSTALLED.load(Ordering::Acquire)
         || EVIDENCE_INSTALL.load(Ordering::Acquire)
-        || !BASELINE_MEASURED_EMPTY.load(Ordering::Acquire)
-        || !BASELINE_REVALIDATED_EMPTY.load(Ordering::Acquire)
+        || !BASELINE_COMPLETE.load(Ordering::Acquire)
+        || !BASELINE_REVALIDATED_COMPLETE.load(Ordering::Acquire)
     {
         return Err(
-            "A33 complete baseline requires an installed production hook and measured-empty history"
-                .into(),
-        );
-    }
-    if !events.is_empty() {
-        return Err(
-            "A33 production baseline publication currently admits only measured-empty history"
+            "A33 complete baseline requires an installed, coherently revalidated production hook"
                 .into(),
         );
     }
@@ -429,14 +457,13 @@ pub fn publish_complete_baseline(events: Vec<crate::SunkShipEvent>) -> Result<()
         events,
     };
     crate::validate_snapshot(&snapshot).map_err(|error| format!("A33 baseline invalid: {error:?}"))?;
-    *HISTORY
+    let history = HISTORY
         .get_or_init(|| Mutex::new(HistoryState::default()))
         .lock()
-        .map_err(|_| "A33 history lock poisoned")? = HistoryState {
-        baseline_complete: true,
-        events: snapshot.events,
-    };
-    COMPLETENESS_POISONED.store(false, Ordering::Release);
+        .map_err(|_| "A33 history lock poisoned")?;
+    if !history.baseline_complete || history.events != snapshot.events {
+        return Err("A33 supplied baseline does not match the authenticated live vector".into());
+    }
     Ok(())
 }
 
@@ -467,6 +494,7 @@ pub fn drain_before_member_epoch_republish() -> Result<(), String> {
     for capture in drained.events {
         let event = crate::SunkShipEvent {
             event_sequence: capture.event_sequence,
+            combat_join_present: true,
             combat_id: capture.combat_id,
             combat_generation: capture.combat_generation,
             victim_country_id_raw: capture.victim_country_id_raw,
@@ -505,10 +533,12 @@ pub fn drain_before_member_epoch_republish() -> Result<(), String> {
 pub fn current_complete_snapshot() -> Result<crate::SunkShipSnapshot, String> {
     if !INSTALLED.load(Ordering::Acquire)
         || EVIDENCE_INSTALL.load(Ordering::Acquire)
-        || !BASELINE_MEASURED_EMPTY.load(Ordering::Acquire)
-        || !BASELINE_REVALIDATED_EMPTY.load(Ordering::Acquire)
+        || !BASELINE_COMPLETE.load(Ordering::Acquire)
+        || !BASELINE_REVALIDATED_COMPLETE.load(Ordering::Acquire)
     {
-        return Err("A33 production hook is not installed with a measured-empty baseline".into());
+        return Err(
+            "A33 production hook is not installed with a complete revalidated baseline".into(),
+        );
     }
     let history = HISTORY
         .get_or_init(|| Mutex::new(HistoryState::default()))
@@ -540,6 +570,8 @@ pub fn drain() -> Result<HookDrain, String> {
         completeness_poisoned: COMPLETENESS_POISONED.load(Ordering::Acquire),
         baseline_measured_empty: BASELINE_MEASURED_EMPTY.load(Ordering::Acquire),
         baseline_revalidated_empty: BASELINE_REVALIDATED_EMPTY.load(Ordering::Acquire),
+        baseline_complete: BASELINE_COMPLETE.load(Ordering::Acquire),
+        baseline_revalidated_complete: BASELINE_REVALIDATED_COMPLETE.load(Ordering::Acquire),
         evidence_install: EVIDENCE_INSTALL.load(Ordering::Acquire),
     })
 }
@@ -574,6 +606,8 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
     EVIDENCE_INSTALL.store(false, Ordering::Release);
     BASELINE_MEASURED_EMPTY.store(false, Ordering::Release);
     BASELINE_REVALIDATED_EMPTY.store(false, Ordering::Release);
+    BASELINE_COMPLETE.store(false, Ordering::Release);
+    BASELINE_REVALIDATED_COMPLETE.store(false, Ordering::Release);
     naval_combat_live_lane::clear_member_epoch_snapshot()?;
     Ok(drained)
 }
@@ -864,7 +898,9 @@ fn read_msvc_string(address: usize, required: bool) -> Option<String> {
     String::from_utf8(bytes[..len].to_vec()).ok()
 }
 
-fn measure_empty_history_baseline(module_base: usize) -> Result<bool, String> {
+fn read_complete_history_baseline(
+    module_base: usize,
+) -> Result<HistoryVectorBaseline, String> {
     let game_state: usize = read_value(
         module_base
             .checked_add(CGAMESTATE_SINGLETON_RVA)
@@ -885,10 +921,137 @@ fn measure_empty_history_baseline(module_base: usize) -> Result<bool, String> {
     if count > capacity || usize::try_from(capacity).unwrap_or(usize::MAX) > crate::MAX_EVENTS {
         return Err("A33 history vector count/capacity is structurally invalid".into());
     }
-    if count != 0 && data == 0 {
-        return Err("A33 nonempty history vector has a null data pointer".into());
+    if capacity != 0 && data == 0 {
+        return Err("A33 allocated history vector has a null data pointer".into());
     }
-    Ok(count == 0)
+    let current_date: i32 = read_value(
+        game_state
+            .checked_add(CGAMESTATE_CURRENT_DATE_OFFSET)
+            .ok_or("A33 current-date address overflow")?,
+    )
+    .ok_or("A33 current date is unreadable")?;
+    if current_date <= 0 {
+        return Err("A33 current date is invalid".into());
+    }
+
+    let mut record_addresses = Vec::with_capacity(count as usize);
+    let mut unique_addresses = BTreeSet::new();
+    let mut events = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let slot = usize::try_from(index)
+            .ok()
+            .and_then(|value| value.checked_mul(mem::size_of::<usize>()))
+            .and_then(|offset| data.checked_add(offset))
+            .ok_or("A33 history vector slot address overflow")?;
+        let record: usize =
+            read_value(slot).ok_or("A33 history vector record pointer is unreadable")?;
+        if record == 0 || !unique_addresses.insert(record) {
+            return Err("A33 history vector contains a null or duplicate record".into());
+        }
+        let event_sequence = u64::from(index)
+            .checked_add(2)
+            .ok_or("A33 baseline sequence overflow")?;
+        let event = read_baseline_record(module_base, record, event_sequence, current_date)
+            .ok_or("A33 existing sunk-history record is incomplete or unreadable")?;
+        record_addresses.push(record);
+        events.push(event);
+    }
+
+    // Re-read both the vector header and every pointer slot. A writer racing
+    // attach must not turn a prefix read into a claimed complete baseline.
+    let data_after: usize =
+        read_value(vector).ok_or("A33 history vector data revalidation failed")?;
+    let capacity_after: u32 =
+        read_value(vector + 0x08).ok_or("A33 history vector capacity revalidation failed")?;
+    let count_after: u32 =
+        read_value(vector + 0x0c).ok_or("A33 history vector count revalidation failed")?;
+    if (data_after, capacity_after, count_after) != (data, capacity, count) {
+        return Err("A33 history vector changed during baseline decode".into());
+    }
+    for (index, expected) in record_addresses.into_iter().enumerate() {
+        let slot = index
+            .checked_mul(mem::size_of::<usize>())
+            .and_then(|offset| data.checked_add(offset))
+            .ok_or("A33 history vector revalidation address overflow")?;
+        if read_value::<usize>(slot) != Some(expected) {
+            return Err("A33 history vector record order changed during baseline decode".into());
+        }
+    }
+    let snapshot = crate::SunkShipSnapshot {
+        source_sequence: events.last().map_or(1, |event| event.event_sequence),
+        producer_complete: true,
+        events: events.clone(),
+    };
+    crate::validate_snapshot(&snapshot)
+        .map_err(|error| format!("A33 existing history baseline is invalid: {error:?}"))?;
+    Ok(HistoryVectorBaseline {
+        data,
+        capacity,
+        events,
+    })
+}
+
+fn read_baseline_record(
+    module_base: usize,
+    address: usize,
+    event_sequence: u64,
+    current_date: i32,
+) -> Option<crate::SunkShipEvent> {
+    if address == 0
+        || read_value::<usize>(address)? != module_base + SUNK_SHIP_INFO_VTABLE_RVA
+    {
+        return None;
+    }
+    let ship_name = read_msvc_string(address + 0x08, true)?;
+    let class_ptr: usize = read_value(address + 0x68)?;
+    let ship_class_name = read_msvc_string(class_ptr.checked_add(0x68)?, true)?;
+    let attribution_source_name = read_msvc_string(address + 0x28, false)?;
+    let attribution_class_ptr: usize = read_value(address + 0x70)?;
+    let attribution_source_class_name = if attribution_class_ptr == 0 {
+        String::new()
+    } else {
+        read_msvc_string(attribution_class_ptr.checked_add(0x68)?, false)?
+    };
+    let sink_date_raw: i32 = read_value(address + SUNK_SHIP_INFO_SINK_DATE_OFFSET)?;
+    if sink_date_raw <= 0 || sink_date_raw > current_date {
+        return None;
+    }
+    let assisted_kill_raw: u8 = read_value(address + 0xa1)?;
+    let cause_record_flag_raw: u8 = read_value(address + 0xa0)?;
+    if assisted_kill_raw > 1 || cause_record_flag_raw > 1 {
+        return None;
+    }
+    let task_force: usize = read_value(address + 0x90)?;
+    let task_force_id_raw = if task_force == 0 {
+        0
+    } else {
+        read_value(task_force.checked_add(0xa4)?)?
+    };
+    Some(crate::SunkShipEvent {
+        event_sequence,
+        combat_join_present: false,
+        combat_id: 0,
+        combat_generation: 0,
+        victim_country_id_raw: read_value(address + 0x48)?,
+        attacker_country_id_raw: read_value(address + 0x4c)?,
+        ui_source_country_id_raw: read_value(address + 0x78)?,
+        sink_date_raw,
+        victim_member_battle_slot_index: 0,
+        flags: if assisted_kill_raw != 0 {
+            crate::EVENT_FLAG_ASSISTED_KILL
+        } else {
+            crate::EVENT_FLAG_KILLED
+        },
+        victim_ship_reference_raw: [read_value(address + 0x7c)?, read_value(address + 0x80)?],
+        damage_source_reference_raw: [read_value(address + 0x84)?, read_value(address + 0x88)?],
+        task_force_id_raw,
+        terminal_context_raw: [read_value(address + 0x98)?, read_value(address + 0x9c)?],
+        cause_record_flag: cause_record_flag_raw != 0,
+        ship_name,
+        ship_class_name,
+        attribution_source_name,
+        attribution_source_class_name,
+    })
 }
 
 fn read_value<T: Copy>(address: usize) -> Option<T> {

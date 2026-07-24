@@ -130,13 +130,18 @@ pub struct NukeStockpileFrame {
 
 pub trait ExactNukeStockpileSource {
     fn is_exact_a729_country_nuke_source(&self) -> bool;
-    fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, String>;
+    fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, CarrierError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CarrierError {
     AuthorityPending,
     Source(String),
+    CountryRead {
+        tag_db_id: u32,
+        object_ptr: u64,
+        source: Box<CarrierError>,
+    },
     Memory(ReadError),
     Invalid(String),
     Truncated,
@@ -170,7 +175,14 @@ pub fn read_snapshot_from_country_roots<M: NukeMemory>(
         {
             return invalid("country-root identity is zero or duplicated");
         }
-        let snapshot = read_country_nukes(memory, root.object_ptr, module_base)?;
+        let snapshot =
+            read_country_nukes(memory, root.object_ptr, module_base).map_err(|error| {
+                CarrierError::CountryRead {
+                    tag_db_id: root.tag_db_id,
+                    object_ptr: root.object_ptr,
+                    source: Box::new(CarrierError::Memory(error)),
+                }
+            })?;
         countries.push(CountryNukeRow {
             tag_db_id: root.tag_db_id,
             container_capacity: snapshot.container_capacity,
@@ -202,9 +214,7 @@ pub fn collect_and_encode<S: ExactNukeStockpileSource>(
             "source did not authenticate the exact a729 country-owned CNuke array".into(),
         ));
     }
-    let snapshot = source
-        .read_nuke_stockpile()
-        .map_err(CarrierError::Source)?;
+    let snapshot = source.read_nuke_stockpile()?;
     encode_payload(&NukeStockpileFrame {
         elapsed_wall_ms,
         status_flags: 0,
@@ -451,6 +461,43 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    struct MissingMemory;
+
+    impl NukeMemory for MissingMemory {
+        fn read_u32(&self, address: u64) -> Result<u32, ReadError> {
+            Err(ReadError::Memory(address))
+        }
+
+        fn read_u64(&self, address: u64) -> Result<u64, ReadError> {
+            Err(ReadError::Memory(address))
+        }
+    }
+
+    #[test]
+    fn country_walk_failure_retains_country_and_exact_address() {
+        let error = read_snapshot_from_country_roots(
+            &MissingMemory,
+            0x1400_0000_0,
+            1,
+            &[CountryRoot {
+                tag_db_id: 23,
+                object_ptr: 0x2000_0000,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CarrierError::CountryRead {
+                tag_db_id: 23,
+                object_ptr: 0x2000_0000,
+                source,
+            } if matches!(
+                *source,
+                CarrierError::Memory(ReadError::Memory(0x2000_1310))
+            )
+        ));
+    }
+
     fn receipted_frame() -> NukeStockpileFrame {
         NukeStockpileFrame {
             elapsed_wall_ms: 7,
@@ -526,9 +573,9 @@ mod tests {
             self.0.set(true);
             true
         }
-        fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, String> {
+        fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, CarrierError> {
             self.0.set(true);
-            Err("must not be reached".into())
+            Err(CarrierError::Source("must not be reached".into()))
         }
     }
 
@@ -547,7 +594,7 @@ mod tests {
         fn is_exact_a729_country_nuke_source(&self) -> bool {
             false
         }
-        fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, String> {
+        fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, CarrierError> {
             panic!("unauthenticated source must not be read")
         }
     }

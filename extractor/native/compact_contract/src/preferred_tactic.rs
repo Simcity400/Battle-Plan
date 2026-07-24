@@ -2,7 +2,8 @@
 //!
 //! The exact a729 producer reads `CCountry+0x15D0`.  The pointee is either the
 //! exact no-tactic sentinel class or an authenticated combat-tactic definition;
-//! process addresses never enter this payload.
+//! process addresses never enter this payload. A null field is not an
+//! authenticated no-selection witness and must remain source-unavailable.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -654,19 +654,29 @@ mod tests {
     }
 
     #[test]
-    fn cta2_accepts_zero_callback_prepublication_drain_only() {
-        let observed = ConvoyTransportAttackWitness {
+    fn cta2_accepts_counter_anchored_empty_before_and_after_resolver_publication() {
+        let prepublication = ConvoyTransportAttackWitness {
             hook_installed: true,
             queue_drain_complete: true,
             producer_sequence_next: 1,
             ..ConvoyTransportAttackWitness::default()
         };
-        let encoded = encode_convoy_transport_attack_batch(&[], observed).unwrap();
+        let encoded = encode_convoy_transport_attack_batch(&[], prepublication).unwrap();
         assert!(decode_convoy_transport_attack_batch(&encoded)
             .unwrap()
             .exact_events_complete);
 
-        let mut dropped = observed;
+        let postpublication = ConvoyTransportAttackWitness {
+            resolver_publication_sequence: 7,
+            resolver_game_hour_raw: 61_000_000,
+            ..prepublication
+        };
+        let encoded = encode_convoy_transport_attack_batch(&[], postpublication).unwrap();
+        assert!(decode_convoy_transport_attack_batch(&encoded)
+            .unwrap()
+            .exact_events_complete);
+
+        let mut dropped = prepublication;
         dropped.telemetry.callbacks_seen = 1;
         dropped.telemetry.original_calls = 1;
         dropped.telemetry.dropped_resolver = 1;

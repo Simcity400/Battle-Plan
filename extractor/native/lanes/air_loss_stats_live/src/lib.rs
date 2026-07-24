@@ -365,13 +365,70 @@ pub trait Mem {
     fn i64(&self, addr: u64) -> Option<i64>;
 }
 
+/// Stable machine-readable reason for a D61 per-country read failure.
+///
+/// These values are emitted in compact perf diagnostics. Keep discriminants
+/// stable so a retained H4CR can be diagnosed without the collector log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum AirLossRowFailureReason {
+    CGameStateUnreadable = 1,
+    CGameStateInvalid = 2,
+    CountryTableUnreadable = 3,
+    CountryCountUnreadable = 4,
+    CountryTableInvalid = 5,
+    CountryIndexOutOfBounds = 6,
+    CountrySlotUnreadable = 7,
+    CountryPointerInvalid = 8,
+    CountryVtableUnreadable = 9,
+    CountryVtableMismatch = 10,
+    CountryTagUnreadable = 11,
+    CountryTagMismatch = 12,
+    RegistryUnreadable = 13,
+    RegistryInvalid = 14,
+    ManagerArrayUnreadable = 15,
+    ManagerArrayInvalid = 16,
+    CountryManagerUnreadable = 17,
+    CountryManagerInvalid = 18,
+    StatBaseUnreadable = 19,
+    StatBaseInvalid = 20,
+    LoopHistoryUnreadable = 21,
+    LoopHistoryInvalid = 22,
+    LoopHistoryVtableUnreadable = 23,
+    LoopHistoryVtableMismatch = 24,
+    FieldCountUnreadable = 25,
+    FieldCountMismatch = 26,
+    SelfReferenceUnreadable = 27,
+    SelfReferenceMismatch = 28,
+    WindowUnreadable = 29,
+    WindowInvalid = 30,
+    WindowCapacityUnreadable = 31,
+    WindowCapacityMismatch = 32,
+    RecordFieldsUnreadable = 33,
+    RecordFieldsInvalid = 34,
+    FieldArrayUnreadable = 35,
+    FieldArrayInvalid = 36,
+    ChannelUnreadable = 37,
+    ChannelOutOfRange = 38,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AirLossRowFailure {
+    pub country_idx: u32,
+    /// Aggregate-history field index for channel failures; `None` otherwise.
+    pub field_index: Option<u32>,
+    /// Exact address whose read or validation failed.
+    pub address: u64,
+    pub reason: AirLossRowFailureReason,
+}
+
 /// Result of reading one country slot. Clean null optional links are positive
-/// absence; unreadable fields and failed guards are failures, never absence.
+/// absence; unreadable fields and failed guards carry exact diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AirLossRowRead {
     Present(AirLossStatRow),
     Absent,
-    Failed,
+    Failed(AirLossRowFailure),
 }
 
 fn ok_ptr(v: u64) -> bool {
@@ -473,130 +530,289 @@ pub fn derive_country_row_result<M: Mem>(
     module_base: u64,
     country_idx: u32,
 ) -> AirLossRowRead {
-    let Some(cgs) = mem.u64(module_base + CGAMESTATE_RVA) else {
-        return AirLossRowRead::Failed;
+    let failed = |reason, address, field_index| {
+        AirLossRowRead::Failed(AirLossRowFailure {
+            country_idx,
+            field_index,
+            address,
+            reason,
+        })
+    };
+    let cgs_addr = module_base + CGAMESTATE_RVA;
+    let Some(cgs) = mem.u64(cgs_addr) else {
+        return failed(AirLossRowFailureReason::CGameStateUnreadable, cgs_addr, None);
     };
     if !ok_ptr(cgs) {
-        return AirLossRowRead::Failed;
+        return failed(AirLossRowFailureReason::CGameStateInvalid, cgs_addr, None);
     }
-    let Some(country_table) = mem.u64(cgs + COUNTRY_TABLE_OFF) else {
-        return AirLossRowRead::Failed;
+    let country_table_addr = cgs + COUNTRY_TABLE_OFF;
+    let Some(country_table) = mem.u64(country_table_addr) else {
+        return failed(
+            AirLossRowFailureReason::CountryTableUnreadable,
+            country_table_addr,
+            None,
+        );
     };
-    let Some(country_count) = mem.u32(cgs + COUNTRY_COUNT_OFF) else {
-        return AirLossRowRead::Failed;
+    let country_count_addr = cgs + COUNTRY_COUNT_OFF;
+    let Some(country_count) = mem.u32(country_count_addr) else {
+        return failed(
+            AirLossRowFailureReason::CountryCountUnreadable,
+            country_count_addr,
+            None,
+        );
     };
-    if !ok_ptr(country_table) || country_idx >= country_count {
-        return AirLossRowRead::Failed;
+    if !ok_ptr(country_table) {
+        return failed(
+            AirLossRowFailureReason::CountryTableInvalid,
+            country_table_addr,
+            None,
+        );
     }
-    let Some(cc) = mem.u64(country_table + u64::from(country_idx) * 8) else {
-        return AirLossRowRead::Failed;
+    if country_idx >= country_count {
+        return failed(
+            AirLossRowFailureReason::CountryIndexOutOfBounds,
+            country_count_addr,
+            None,
+        );
+    }
+    let country_slot_addr = country_table + u64::from(country_idx) * 8;
+    let Some(cc) = mem.u64(country_slot_addr) else {
+        return failed(
+            AirLossRowFailureReason::CountrySlotUnreadable,
+            country_slot_addr,
+            None,
+        );
     };
     if cc == 0 {
         return AirLossRowRead::Absent;
     }
     if !ok_ptr(cc) {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::CountryPointerInvalid,
+            country_slot_addr,
+            None,
+        );
     }
     let Some(country_vtable) = mem.u64(cc) else {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::CountryVtableUnreadable,
+            cc,
+            None,
+        );
     };
     if country_vtable != module_base + COUNTRY_VTABLE_RVA {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::CountryVtableMismatch,
+            cc,
+            None,
+        );
     }
-    let Some(tag_db_id) = mem.u32(cc + COUNTRY_TAG_DB_ID_OFF) else {
-        return AirLossRowRead::Failed;
+    let country_tag_addr = cc + COUNTRY_TAG_DB_ID_OFF;
+    let Some(tag_db_id) = mem.u32(country_tag_addr) else {
+        return failed(
+            AirLossRowFailureReason::CountryTagUnreadable,
+            country_tag_addr,
+            None,
+        );
     };
     if tag_db_id != country_idx {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::CountryTagMismatch,
+            country_tag_addr,
+            None,
+        );
     }
-    let Some(registry) = mem.u64(cgs + REGISTRY_OFF) else {
-        return AirLossRowRead::Failed;
+    let registry_addr = cgs + REGISTRY_OFF;
+    let Some(registry) = mem.u64(registry_addr) else {
+        return failed(
+            AirLossRowFailureReason::RegistryUnreadable,
+            registry_addr,
+            None,
+        );
     };
     if !ok_ptr(registry) {
-        return AirLossRowRead::Failed;
+        return failed(AirLossRowFailureReason::RegistryInvalid, registry_addr, None);
     }
-    let Some(mgr_array) = mem.u64(registry + MGR_ARRAY_OFF) else {
-        return AirLossRowRead::Failed;
+    let mgr_array_addr = registry + MGR_ARRAY_OFF;
+    let Some(mgr_array) = mem.u64(mgr_array_addr) else {
+        return failed(
+            AirLossRowFailureReason::ManagerArrayUnreadable,
+            mgr_array_addr,
+            None,
+        );
     };
     if !ok_ptr(mgr_array) {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::ManagerArrayInvalid,
+            mgr_array_addr,
+            None,
+        );
     }
-    let Some(country_mgr) = mem.u64(mgr_array + u64::from(country_idx) * 8) else {
-        return AirLossRowRead::Failed;
+    let country_mgr_addr = mgr_array + u64::from(country_idx) * 8;
+    let Some(country_mgr) = mem.u64(country_mgr_addr) else {
+        return failed(
+            AirLossRowFailureReason::CountryManagerUnreadable,
+            country_mgr_addr,
+            None,
+        );
     };
     if country_mgr == 0 {
         return AirLossRowRead::Absent;
     }
     if !ok_ptr(country_mgr) {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::CountryManagerInvalid,
+            country_mgr_addr,
+            None,
+        );
     }
-    let Some(stat_base) = mem.u64(country_mgr + STAT_BASE_OFF) else {
-        return AirLossRowRead::Failed;
+    let stat_base_addr = country_mgr + STAT_BASE_OFF;
+    let Some(stat_base) = mem.u64(stat_base_addr) else {
+        return failed(
+            AirLossRowFailureReason::StatBaseUnreadable,
+            stat_base_addr,
+            None,
+        );
     };
     if stat_base == 0 {
         return AirLossRowRead::Absent;
     }
     if !ok_ptr(stat_base) {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::StatBaseInvalid,
+            stat_base_addr,
+            None,
+        );
     }
-    let Some(loophist) = mem.u64(stat_base + AIR_STAT_KEY * 8) else {
-        return AirLossRowRead::Failed;
+    let loophist_addr = stat_base + AIR_STAT_KEY * 8;
+    let Some(loophist) = mem.u64(loophist_addr) else {
+        return failed(
+            AirLossRowFailureReason::LoopHistoryUnreadable,
+            loophist_addr,
+            None,
+        );
     };
     if loophist == 0 {
         return AirLossRowRead::Absent;
     }
     if !ok_ptr(loophist) {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::LoopHistoryInvalid,
+            loophist_addr,
+            None,
+        );
     }
     let Some(loophist_vtable) = mem.u64(loophist) else {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::LoopHistoryVtableUnreadable,
+            loophist,
+            None,
+        );
     };
     if loophist_vtable != module_base + LOOPHIST_VTABLE_RVA {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::LoopHistoryVtableMismatch,
+            loophist,
+            None,
+        );
     }
-    let Some(field_count) = mem.u32(loophist + LOOPHIST_FIELDCOUNT_OFF) else {
-        return AirLossRowRead::Failed;
+    let field_count_addr = loophist + LOOPHIST_FIELDCOUNT_OFF;
+    let Some(field_count) = mem.u32(field_count_addr) else {
+        return failed(
+            AirLossRowFailureReason::FieldCountUnreadable,
+            field_count_addr,
+            None,
+        );
     };
     if field_count != EXPECTED_FIELD_COUNT {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::FieldCountMismatch,
+            field_count_addr,
+            None,
+        );
     }
-    let Some(self_ref) = mem.u64(loophist + LOOPHIST_SELF_REF_OFF) else {
-        return AirLossRowRead::Failed;
+    let self_ref_addr = loophist + LOOPHIST_SELF_REF_OFF;
+    let Some(self_ref) = mem.u64(self_ref_addr) else {
+        return failed(
+            AirLossRowFailureReason::SelfReferenceUnreadable,
+            self_ref_addr,
+            None,
+        );
     };
     if self_ref != loophist {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::SelfReferenceMismatch,
+            self_ref_addr,
+            None,
+        );
     }
-    let Some(window) = mem.u64(loophist + LOOPHIST_WINDOW_OFF) else {
-        return AirLossRowRead::Failed;
+    let window_addr = loophist + LOOPHIST_WINDOW_OFF;
+    let Some(window) = mem.u64(window_addr) else {
+        return failed(
+            AirLossRowFailureReason::WindowUnreadable,
+            window_addr,
+            None,
+        );
     };
     if !ok_ptr(window) {
-        return AirLossRowRead::Failed;
+        return failed(AirLossRowFailureReason::WindowInvalid, window_addr, None);
     }
-    let Some(window_capacity) = mem.u32(window + LOOPHIST_WINDOW_CAPACITY_OFF) else {
-        return AirLossRowRead::Failed;
+    let window_capacity_addr = window + LOOPHIST_WINDOW_CAPACITY_OFF;
+    let Some(window_capacity) = mem.u32(window_capacity_addr) else {
+        return failed(
+            AirLossRowFailureReason::WindowCapacityUnreadable,
+            window_capacity_addr,
+            None,
+        );
     };
     if window_capacity != EXPECTED_YEARLY_CAPACITY {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::WindowCapacityMismatch,
+            window_capacity_addr,
+            None,
+        );
     }
-    let Some(recflds) = mem.u64(window + LOOPHIST_RECFLDS_OFF) else {
-        return AirLossRowRead::Failed;
+    let recflds_addr = window + LOOPHIST_RECFLDS_OFF;
+    let Some(recflds) = mem.u64(recflds_addr) else {
+        return failed(
+            AirLossRowFailureReason::RecordFieldsUnreadable,
+            recflds_addr,
+            None,
+        );
     };
     if !ok_ptr(recflds) {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::RecordFieldsInvalid,
+            recflds_addr,
+            None,
+        );
     }
     let Some(arr) = mem.u64(recflds) else {
-        return AirLossRowRead::Failed;
+        return failed(
+            AirLossRowFailureReason::FieldArrayUnreadable,
+            recflds,
+            None,
+        );
     };
     if !ok_ptr(arr) {
-        return AirLossRowRead::Failed;
+        return failed(AirLossRowFailureReason::FieldArrayInvalid, recflds, None);
     }
     let mut channels = [0i64; CHANNEL_COUNT];
     for (k, (idx, _)) in PINNED_CHANNELS.iter().enumerate() {
-        let Some(raw) = mem.i64(arr + u64::from(*idx) * 8) else {
-            return AirLossRowRead::Failed;
+        let field_addr = arr + u64::from(*idx) * 8;
+        let Some(raw) = mem.i64(field_addr) else {
+            return failed(
+                AirLossRowFailureReason::ChannelUnreadable,
+                field_addr,
+                Some(*idx),
+            );
         };
         if raw < 0 || raw > MAX_CHANNEL_RAW {
-            return AirLossRowRead::Failed;
+            return failed(
+                AirLossRowFailureReason::ChannelOutOfRange,
+                field_addr,
+                Some(*idx),
+            );
         }
         channels[k] = raw;
     }
@@ -788,10 +1004,60 @@ mod tests {
 
         let mut torn = good_image(1);
         torn.u.remove(&(0x2700_0000 + LOOPHIST_WINDOW_OFF));
+        let AirLossRowRead::Failed(failure) = derive_country_row_result(&torn, BASE, 1) else {
+            panic!("torn window read must be a diagnosed failure");
+        };
+        assert_eq!(failure.country_idx, 1);
+        assert_eq!(failure.field_index, None);
+        assert_eq!(failure.address, 0x2700_0000 + LOOPHIST_WINDOW_OFF);
+        assert_eq!(failure.reason, AirLossRowFailureReason::WindowUnreadable);
+    }
+
+    #[test]
+    fn tri_state_preserves_each_proven_null_optional_link_as_absent() {
+        let mut country_absent = good_image(1);
+        country_absent.su(0x2100_0000 + 8, 0);
         assert_eq!(
-            derive_country_row_result(&torn, BASE, 1),
-            AirLossRowRead::Failed
+            derive_country_row_result(&country_absent, BASE, 1),
+            AirLossRowRead::Absent
         );
+
+        let mut manager_absent = good_image(1);
+        manager_absent.su(0x2400_0000 + 8, 0);
+        assert_eq!(
+            derive_country_row_result(&manager_absent, BASE, 1),
+            AirLossRowRead::Absent
+        );
+
+        let mut stat_base_absent = good_image(1);
+        stat_base_absent.su(0x2500_0000 + STAT_BASE_OFF, 0);
+        assert_eq!(
+            derive_country_row_result(&stat_base_absent, BASE, 1),
+            AirLossRowRead::Absent
+        );
+
+        let mut air_stat_absent = good_image(1);
+        air_stat_absent.su(0x2600_0000 + AIR_STAT_KEY * 8, 0);
+        assert_eq!(
+            derive_country_row_result(&air_stat_absent, BASE, 1),
+            AirLossRowRead::Absent
+        );
+    }
+
+    #[test]
+    fn tri_state_reports_exact_channel_failure() {
+        let mut torn = good_image(1);
+        let field_index = PINNED_CHANNELS[3].0;
+        let address = 0x2A00_0000 + u64::from(field_index) * 8;
+        torn.i.remove(&address);
+
+        let AirLossRowRead::Failed(failure) = derive_country_row_result(&torn, BASE, 1) else {
+            panic!("torn channel read must be a diagnosed failure");
+        };
+        assert_eq!(failure.country_idx, 1);
+        assert_eq!(failure.field_index, Some(field_index));
+        assert_eq!(failure.address, address);
+        assert_eq!(failure.reason, AirLossRowFailureReason::ChannelUnreadable);
     }
 
     #[test]

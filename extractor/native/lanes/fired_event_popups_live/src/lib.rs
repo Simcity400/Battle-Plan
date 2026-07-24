@@ -28,6 +28,18 @@ pub const PRODUCER_MANIFEST_SHA256: [u8; 32] = [
     0x24, 0x0d, 0x75, 0x00, 0xbc, 0xc9, 0x15, 0x14, 0xf5, 0x9d, 0x62, 0x73, 0x9d, 0xf0, 0x26, 0xa5,
     0xa7, 0x6c, 0xce, 0x41, 0xf8, 0x24, 0x92, 0x34, 0x22, 0xcb, 0xe2, 0x53, 0xe0, 0x5d, 0x1c, 0xec,
 ];
+/// Exact-a729 read-only Ghidra export manifest that certifies the common fire
+/// producer plus the player, AI, timeout-default, and timeout-no-choice hook
+/// routes shared by all five popup classes. Keeping this as a second pin makes
+/// producer-manifest drift fail closed instead of silently changing the static
+/// route authority.
+pub const CERTIFIED_ROUTE_MANIFEST_SHA256: [u8; 32] = [
+    0x24, 0x0d, 0x75, 0x00, 0xbc, 0xc9, 0x15, 0x14, 0xf5, 0x9d, 0x62, 0x73, 0x9d, 0xf0, 0x26, 0xa5,
+    0xa7, 0x6c, 0xce, 0x41, 0xf8, 0x24, 0x92, 0x34, 0x22, 0xcb, 0xe2, 0x53, 0xe0, 0x5d, 0x1c, 0xec,
+];
+pub const CERTIFIED_ROUTE_RECEIPT: &str = "replay_interface/re_evidence/rendering_laws/XUI21/H_POPUP_FULL_GRAPH_GHIDRA_RECEIPT_20260720.json";
+pub const CERTIFIED_ROUTE_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupSubtype {
@@ -83,7 +95,11 @@ pub struct HookTelemetry {
     pub option_hook_validated: bool,
     pub materialisation_hook_validated: bool,
     pub timeout_hook_validated: bool,
+    /// Wire-compatible name for exact-build popup-class route certification.
+    /// This does not claim every class occurred in the current capture.
     pub all_event_classes_covered: bool,
+    /// Wire-compatible name for exact-build terminal-route certification.
+    /// This does not claim all four paths occurred in the current capture.
     pub player_ai_timeout_no_choice_covered: bool,
     pub capture_start_baseline_complete: bool,
     pub queue_capacity: u32,
@@ -233,9 +249,16 @@ impl A729EventLedger {
         }
     }
 
-    /// Records an independently generated deterministic-fixture attestation.
-    /// Hook installation itself cannot manufacture coverage.
-    pub(crate) fn record_fixture_coverage(&self, all_classes: bool, all_resolution_paths: bool) {
+    /// Records the separately pinned exact-build route certification. These
+    /// bits describe hook-route authority, not branches exercised again in
+    /// this capture. Per-capture completeness remains owned by the baseline,
+    /// bounded queue, correlation counters, definition joins, and fired-ledger
+    /// shadow below.
+    pub(crate) fn record_route_certification(
+        &self,
+        all_classes: bool,
+        all_resolution_paths: bool,
+    ) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.all_event_classes_covered = all_classes;
             state.telemetry.player_ai_timeout_no_choice_covered = all_resolution_paths;
@@ -243,7 +266,7 @@ impl A729EventLedger {
     }
 
     #[cfg(test)]
-    pub fn authenticate_installation_and_fixture_coverage(
+    pub fn authenticate_installation_and_route_certification(
         &self,
         baseline_complete: bool,
         all_classes: bool,
@@ -251,7 +274,7 @@ impl A729EventLedger {
     ) {
         self.record_installation_validation();
         self.record_baseline_complete(baseline_complete);
-        self.record_fixture_coverage(all_classes, all_resolution_paths);
+        self.record_route_certification(all_classes, all_resolution_paths);
     }
 
     pub(crate) fn record_fire(&self, input: FireInput) {
@@ -935,9 +958,48 @@ mod tests {
     }
 
     #[test]
+    fn static_route_certification_never_relaxes_per_capture_integrity() {
+        let mut failures = Vec::new();
+
+        let mut baseline = telemetry();
+        baseline.capture_start_baseline_complete = false;
+        failures.push(baseline);
+
+        let mut no_queue = telemetry();
+        no_queue.queue_capacity = 0;
+        failures.push(no_queue);
+
+        let mut queue_overflow = telemetry();
+        queue_overflow.queue_high_water_mark = queue_overflow.queue_capacity + 1;
+        failures.push(queue_overflow);
+
+        let mut dropped_fire = telemetry();
+        dropped_fire.dropped_fire_rows = 1;
+        failures.push(dropped_fire);
+
+        let mut dropped_resolution = telemetry();
+        dropped_resolution.dropped_resolution_rows = 1;
+        failures.push(dropped_resolution);
+
+        let mut correlation = telemetry();
+        correlation.correlation_failures = 1;
+        failures.push(correlation);
+
+        let mut invalid_join = telemetry();
+        invalid_join.invalid_definition_joins = 1;
+        failures.push(invalid_join);
+
+        let mut shadow = telemetry();
+        shadow.fired_ledger_shadow_mismatches = 1;
+        failures.push(shadow);
+
+        assert!(failures.into_iter().all(|telemetry| !telemetry.zero_gap()));
+    }
+
+    #[test]
     fn ledger_preserves_repeated_same_hour_ids_by_sequence_and_no_choice_timeout() {
         let ledger = A729EventLedger::new(8);
-        ledger.authenticate_installation_and_fixture_coverage(true, true, true);
+        ledger.authenticate_installation_and_route_certification(true, true, true);
         // Hooked live dispatch can arrive before the post-install pending
         // baseline enumeration. Engine sequence, not insertion order, owns the
         // cumulative history order.

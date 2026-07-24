@@ -1038,40 +1038,48 @@ mod tests {
     #[test]
     fn production_ui_runtime_refreshes_the_typed_consumer_before_rendering() {
         let product_source = include_str!("ui_runtime.rs");
-        let refresh = product_source
+        let compact_source = |source: &str| {
+            source
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+        let compact_product_source = compact_source(product_source);
+        let refresh = compact_product_source
             .find("self.selected_pov_runtime.refresh(")
             .expect("selected-POV runtime refresh");
-        let selected_present = product_source
+        let selected_present = compact_product_source
             .find("prepare_selected_present_ui_pass(")
             .expect("selected-Present preparation");
-        let decision_model = product_source
-            .find(".decision_panel\n            .value")
+        let decision_model = compact_product_source
+            .find(".decision_panel.value.as_ref()")
             .expect("A34 model consumption");
         let selected_pov_source = include_str!("selected_pov_runtime.rs");
         let selected_pov_impl = selected_pov_source
             .split_once("#[cfg(test)]")
             .expect("selected-POV production implementation")
             .0;
-        let battleplan_binding = selected_pov_impl
-            .find("let battleplan_panel = admit_battleplan_panel(\n            bind_army_battleplan_panel(")
+        let compact_selected_pov_impl = compact_source(selected_pov_impl);
+        let battleplan_binding = compact_selected_pov_impl
+            .find("letbattleplan_panel=admit_battleplan_panel(bind_army_battleplan_panel(")
             .expect("d54 production battleplan binding");
-        let deployment_binding = selected_pov_impl
-            .find("let deployment_queue = FeatureState::admitted(deployment_queue_state(frame, pov));")
+        let deployment_binding = compact_selected_pov_impl
+            .find("letdeployment_queue=FeatureState::admitted(deployment_queue_state(frame,pov));")
             .expect("X4 production deployment-queue binding");
-        let preferred_tactic_binding = selected_pov_impl
-            .find("let preferred_tactic = admit_preferred_tactic(frame, pov);")
+        let preferred_tactic_binding = compact_selected_pov_impl
+            .find("letpreferred_tactic=admit_preferred_tactic(frame,pov);")
             .expect("D92/D96 production preferred-tactic binding");
-        let cabinet_binding = selected_pov_impl
-            .find("let cabinet = match (")
+        let cabinet_binding = compact_selected_pov_impl
+            .find("letcabinet=match(")
             .expect("D47 production cabinet binding");
-        let air_details_binding = selected_pov_impl
-            .find("let strategic_air_details = match bind_strategic_air_details(frame, pov)")
+        let air_details_binding = compact_selected_pov_impl
+            .find("letstrategic_air_details=matchbind_strategic_air_details(frame,pov)")
             .expect("D61 production strategic-air-details binding");
-        let hub_motorization_binding = selected_pov_impl
-            .find("let supply_hub_motorization = match bind_supply_hub_motorization_rows(frame, pov)")
+        let hub_motorization_binding = compact_selected_pov_impl
+            .find("letsupply_hub_motorization=matchbind_supply_hub_motorization_rows(frame,pov)")
             .expect("D62 production hub-motorization binding");
-        let snapshot_publish = selected_pov_impl
-            .find("self.snapshot = SelectedPovRuntimeSnapshot {")
+        let snapshot_publish = compact_selected_pov_impl
+            .find("self.snapshot=SelectedPovRuntimeSnapshot{")
             .expect("selected-POV typed snapshot publication");
         assert!(refresh < selected_present);
         assert!(battleplan_binding < snapshot_publish);

@@ -239,6 +239,7 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         convoy_terminal: Leaf::Unobtained,
         sunk_ships: Leaf::Measured(vec![SunkShipEventExact {
             event_sequence: 2,
+            combat_join_present: true,
             combat_id: 9,
             combat_generation: 2,
             victim_country_id_raw: 2,
@@ -324,6 +325,31 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
     assert!(matches!(
         admission.war_pair_history,
         Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
+}
+
+#[test]
+fn attach_baseline_sunk_rows_admit_only_with_explicitly_absent_combat_join() {
+    let mut binding = exact_binding();
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[0].combat_join_present = false;
+    rows[0].combat_id = 0;
+    rows[0].combat_generation = 0;
+    rows[0].victim_member_battle_slot_index = 0;
+    assert_eq!(
+        admit_xui20_replay(&binding).naval_terminal,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[0].combat_id = 9;
+    assert!(matches!(
+        admit_xui20_replay(&binding).naval_terminal,
+        Xui20SurfaceState::Rejected { .. }
     ));
 }
 

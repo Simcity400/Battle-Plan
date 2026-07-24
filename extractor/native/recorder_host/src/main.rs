@@ -14966,12 +14966,16 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
     let Some(domain) = summary.per_domain.get(&41) else {
         return "unseen";
     };
-    let blocked = (domain.status_flags_or
-        & (COMPACT_STATUS_SOURCE_UNAVAILABLE
-            | COMPACT_STATUS_PARTIAL_DATA
-            | COMPACT_STATUS_WORKER_PANIC))
+    // Root provenance is independent of semantic row completeness. A resolved
+    // country-owned project cache remains the source when one of D41's
+    // lifecycle/progress/reward carriers fails closed with PARTIAL_DATA; the
+    // compact completeness gate reports that failure separately. Conflating
+    // the two made a real DLL-native root appear "unresolved" and hid the
+    // useful D41 first-failure diagnostics.
+    let root_unavailable = (domain.status_flags_or
+        & (COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_WORKER_PANIC))
         != 0;
-    if blocked || domain.data_rows_total == 0 {
+    if root_unavailable || domain.data_rows_total == 0 {
         return "unresolved";
     }
     let state_rows = domain
@@ -22457,7 +22461,7 @@ mod tests {
             &test_frame_payload(1_000, 1),
         );
 
-        let summary = summarize_compact_stream(&raw);
+        let mut summary = summarize_compact_stream(&raw);
 
         assert!(
             summary.parse_errors.is_empty(),
@@ -22599,6 +22603,16 @@ mod tests {
         let progress_source = compact_projects_root_source(&dll_cfg, &summary);
         assert_eq!(progress_source, "dll_project_cache_progress");
         assert!(compact_projects_root_discovery_debt(progress_source).contains("CProject+0x28"));
+        summary
+            .per_domain
+            .get_mut(&41)
+            .expect("projects summary")
+            .status_flags_or |= COMPACT_STATUS_PARTIAL_DATA;
+        assert_eq!(
+            compact_projects_root_source(&dll_cfg, &summary),
+            "dll_project_cache_progress",
+            "a semantic-carrier partial must not erase authenticated root provenance"
+        );
         let mut cfg = test_config(vec!["projects_live"], None);
         cfg.special_projects_scan = true;
         let source = compact_projects_root_source(&cfg, &summary);

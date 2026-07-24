@@ -2022,7 +2022,11 @@ mod tests {
         let legacy_compose = ["compose_hud", "_frame("].concat();
         assert!(!source.contains(&legacy_type));
         assert!(!source.contains(&legacy_compose));
-        assert!(source.contains(".battleplan_panel\n            .value"));
+        let source_without_whitespace: String =
+            source.chars().filter(|character| !character.is_whitespace()).collect();
+        let typed_battleplan_route =
+            [".snapshot()", ".battleplan_panel", ".value", ".as_ref()"].concat();
+        assert!(source_without_whitespace.contains(&typed_battleplan_route));
     }
 
     #[test]

@@ -347,13 +347,23 @@ fn validate_rows(
         return Ok(());
     }
     if frame_hour == 0
-        || parents.is_empty()
         || parents.len() > MAX_PARENTS
         || children.len() > MAX_CHILDREN
         || observed_parents as usize != parents.len()
         || observed_children as usize != children.len()
     {
         return Err("RID1 coverage/header is incomplete".into());
+    }
+    // A rowless successful frame is an exact measured-empty population, not
+    // source-unavailable. The production reader may emit it only after the
+    // CRaidSystem parent-vector header remains coherent across its complete
+    // double-read. Keep one-sided populations impossible: without a complete
+    // parent census there is no authority for any child row.
+    if parents.is_empty() {
+        if children.is_empty() {
+            return Ok(());
+        }
+        return Err("RID1 measured-empty population carries orphan children".into());
     }
     let mut parent_tags = BTreeSet::new();
     let mut raid_ids = BTreeSet::new();
@@ -548,5 +558,22 @@ mod tests {
         assert_eq!(decoded.status_flags, 1);
         assert!(decoded.parents.is_empty());
         assert!(decoded.children.is_empty());
+    }
+
+    #[test]
+    fn authenticated_measured_empty_roundtrips_but_one_sided_population_rejects() {
+        let payload = encode_payload(900, 7, 0, &[], &[], 0, 0).unwrap();
+        let decoded = decode_payload(&payload).unwrap();
+        assert_eq!(decoded.frame_hour, 900);
+        assert_eq!(decoded.status_flags, 0);
+        assert_eq!(decoded.observed_parents, 0);
+        assert_eq!(decoded.observed_children, 0);
+        assert!(decoded.parents.is_empty());
+        assert!(decoded.children.is_empty());
+
+        let (_, children) = fixture();
+        assert!(encode_payload(900, 7, 0, &[], &children[..1], 0, 1).is_err());
+        assert!(encode_payload(900, 7, 0, &[], &[], 1, 0).is_err());
+        assert!(encode_payload(900, 7, 0, &[], &[], 0, 1).is_err());
     }
 }

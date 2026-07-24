@@ -30,6 +30,7 @@ pub struct CollectorStats {
     pub skipped_construction_non_construction_line_rows: u32,
     pub skipped_construction_invalid_active_factories_rows: u32,
     pub skipped_construction_invalid_progress_rows: u32,
+    pub first_invalid_construction_progress: Option<crate::InvalidConstructionProgress>,
     pub skipped_building_rows: u32,
     pub skipped_resource_rows: u32,
 }
@@ -87,6 +88,10 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
                 stats.skipped_construction_invalid_progress_rows = stats
                     .skipped_construction_invalid_progress_rows
                     .saturating_add(read.construction_skip_stats.invalid_progress_rows);
+                if stats.first_invalid_construction_progress.is_none() {
+                    stats.first_invalid_construction_progress =
+                        read.construction_skip_stats.first_invalid_progress;
+                }
                 construction_rows.append(&mut read.rows);
             }
             None => country_failed = true,

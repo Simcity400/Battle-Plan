@@ -624,7 +624,8 @@ pub const COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN: usize = 48;
 // (air_accidents u32 @68, experience_raw i32 @72).
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_LEN: usize = 76;
 pub const COMPACT_AIR_REGION_STATS_TRAILER_MAGIC: u32 = 0x3152_3441;
-pub const COMPACT_AIR_REGION_STATS_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_AIR_REGION_STATS_TRAILER_VERSION: u16 = 2;
+pub const COMPACT_AIR_REGION_STATS_TRAILER_LEGACY_VERSION: u16 = 1;
 pub const COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_AIR_REGION_STATS_ROW_LEN: usize = 40;
 pub const COMPACT_AIR_REGION_DAMAGE_ROW_LEN: usize = 16;
@@ -7166,11 +7167,12 @@ fn decode_compact_air_combat_losses_live_data_payload(
     let region_row_count = read_u32_le(payload, trailer + 8) as usize;
     let damage_row_count = read_u32_le(payload, trailer + 12) as usize;
     let observed_region_objects = read_u32_le(payload, trailer + 16) as usize;
-    let reserved0 = read_u32_le(payload, trailer + 20);
-    let reserved1 = read_u32_le(payload, trailer + 24);
-    let reserved2 = read_u32_le(payload, trailer + 28);
+    let diagnostic_invalid_wing_rows = read_u32_le(payload, trailer + 20);
+    let diagnostic_scale_mismatch_rows = read_u32_le(payload, trailer + 24);
+    let diagnostic_first_invalid = read_u32_le(payload, trailer + 28);
     if magic != COMPACT_AIR_REGION_STATS_TRAILER_MAGIC
-        || version != COMPACT_AIR_REGION_STATS_TRAILER_VERSION
+        || (version != COMPACT_AIR_REGION_STATS_TRAILER_VERSION
+            && version != COMPACT_AIR_REGION_STATS_TRAILER_LEGACY_VERSION)
         || header_len != COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN
     {
         summary.parse_errors.push(format!(
@@ -7178,10 +7180,39 @@ fn decode_compact_air_combat_losses_live_data_payload(
         ));
         return;
     }
-    if reserved0 != 0 || reserved1 != 0 || reserved2 != 0 {
+    if version == COMPACT_AIR_REGION_STATS_TRAILER_LEGACY_VERSION
+        && (diagnostic_invalid_wing_rows != 0
+            || diagnostic_scale_mismatch_rows != 0
+            || diagnostic_first_invalid != 0)
+    {
         summary.parse_errors.push(format!(
             "offset {offset}: air combat regional stats trailer reserved field is nonzero"
         ));
+    }
+    let first_invalid_reason = diagnostic_first_invalid & 0xFFFF;
+    let first_invalid_ordinal = diagnostic_first_invalid >> 16;
+    if version == COMPACT_AIR_REGION_STATS_TRAILER_VERSION {
+        if (diagnostic_invalid_wing_rows == 0) != (first_invalid_reason == 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat invalid-wing diagnostic count/reason mismatch"
+            ));
+        }
+        if first_invalid_reason != 0
+            && compact_air_strength_invalid_reason_unit(first_invalid_reason).is_none()
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat invalid-wing diagnostic reason {first_invalid_reason} is unknown"
+            ));
+        }
+        if diagnostic_invalid_wing_rows > 0
+            && first_invalid_ordinal > observed_air_wing_rows.saturating_add(
+                diagnostic_invalid_wing_rows as usize,
+            ) as u32
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat invalid-wing diagnostic ordinal {first_invalid_ordinal} exceeds observed source rows"
+            ));
+        }
     }
     let region_bytes = region_row_count.saturating_mul(COMPACT_AIR_REGION_STATS_ROW_LEN);
     let damage_bytes = damage_row_count.saturating_mul(COMPACT_AIR_REGION_DAMAGE_ROW_LEN);
@@ -7265,6 +7296,68 @@ fn decode_compact_air_combat_losses_live_data_payload(
         "air_region_combat_objects",
         observed_region_objects,
     );
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_invalid_wing_rows",
+        diagnostic_invalid_wing_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_scale_mismatch_rows",
+        diagnostic_scale_mismatch_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_first_invalid_ordinal",
+        first_invalid_ordinal as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_first_invalid_reason",
+        first_invalid_reason as usize,
+    );
+    if let Some(reason_unit) = compact_air_strength_invalid_reason_unit(first_invalid_reason) {
+        add_compact_domain_data_unit(summary, 42, reason_unit, 1);
+    }
+}
+
+fn compact_air_strength_invalid_reason_unit(reason: u32) -> Option<&'static str> {
+    Some(match reason {
+        1 => "air_strength_invalid_container_address_or_vtable",
+        2 => "air_strength_invalid_container_owner",
+        3 => "air_strength_invalid_pool_vector",
+        4 => "air_strength_invalid_pool_address_or_vtable",
+        5 => "air_strength_invalid_pool_owner",
+        6 => "air_strength_invalid_object_vector",
+        10 => "air_strength_invalid_object_address",
+        11 => "air_strength_invalid_object_vtable_read",
+        12 => "air_strength_invalid_object_vtable_mismatch",
+        13 => "air_strength_invalid_body_address",
+        14 => "air_strength_invalid_body_vtable_read",
+        15 => "air_strength_invalid_body_vtable_mismatch",
+        16 => "air_strength_invalid_wing_type_read",
+        17 => "air_strength_invalid_wing_type_mismatch",
+        18 => "air_strength_invalid_pool_read",
+        19 => "air_strength_invalid_pool_mismatch",
+        20 => "air_strength_invalid_owner",
+        21 => "air_strength_invalid_wing_id_read",
+        22 => "air_strength_invalid_wing_id_range",
+        23 => "air_strength_invalid_count_read",
+        24 => "air_strength_invalid_count_range",
+        25 => "air_strength_invalid_equipment_bank",
+        26 => "air_strength_invalid_equipment_sum_overflow",
+        27 => "air_strength_invalid_equipment_sum_range",
+        28 => "air_strength_invalid_air_accidents_read",
+        29 => "air_strength_invalid_air_accidents_range",
+        30 => "air_strength_invalid_experience_read",
+        31 => "air_strength_invalid_experience_range",
+        32 => "air_strength_invalid_mission_mask_read",
+        _ => return None,
+    })
 }
 
 fn decode_compact_air_variant_defs_data_payload(
@@ -17610,7 +17703,7 @@ mod tests {
         payload.extend_from_slice(&COMPACT_AIR_REGION_STATS_TRAILER_VERSION.to_le_bytes());
         payload
             .extend_from_slice(&(COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN as u16).to_le_bytes());
-        for value in [1, 1, 1, 0, 0, 0] {
+        for value in [1, 1, 1, 2, 3, (1 << 16) | 31] {
             push_u32(&mut payload, value);
         }
         push_u32(&mut payload, 1); // owner
@@ -17641,6 +17734,11 @@ mod tests {
         let units = &summary.per_domain[&42].data_units_total;
         assert_eq!(units["air_region_combat_stat_rows"], 1);
         assert_eq!(units["air_region_damage_rows"], 1);
+        assert_eq!(units["air_strength_invalid_wing_rows"], 2);
+        assert_eq!(units["air_strength_scale_mismatch_rows"], 3);
+        assert_eq!(units["air_strength_first_invalid_ordinal"], 1);
+        assert_eq!(units["air_strength_first_invalid_reason"], 31);
+        assert_eq!(units["air_strength_invalid_experience_range"], 1);
     }
 
     #[test]

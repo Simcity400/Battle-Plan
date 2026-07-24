@@ -1,9 +1,12 @@
 //! A33 exact sunk-ship writer carrier (compact domain 86).
 //!
-//! The wire accepts only pointer-free observations from the same-thread
-//! `CFEXMember -> CSunkShipInfo` writer bracket joined to the validated d49/d50
-//! combat epoch. Disappearance, serializer polling, or time-window correlation
-//! cannot implement the source trait.
+//! The wire accepts pointer-free rows from two exact sources: a coherently
+//! revalidated attach-time decode of the owning `CGameState+0x590` vector, and
+//! subsequent same-thread `CFEXMember -> CSunkShipInfo` writer observations
+//! joined to the validated d49/d50 combat epoch. Attach-time rows explicitly
+//! mark that their historical combat/member join is unavailable. Disappearance,
+//! serializer polling, or time-window correlation cannot implement the source
+//! trait.
 
 pub mod a729_hook;
 
@@ -12,7 +15,7 @@ use std::collections::BTreeSet;
 pub const DOMAIN_ID: u16 = 86;
 pub const DOMAIN_NAME: &str = "sunk_ship_history_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"SHP1");
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const EXECUTABLE_SHA256: [u8; 32] =
     hex32(b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad");
 pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
@@ -30,9 +33,9 @@ pub const CSUNK_SHIP_VIRTUALS_MANIFEST_SHA256: [u8; 32] =
 pub const ATTACKER_GETTERS_MANIFEST_SHA256: [u8; 32] =
     hex32(b"946eff0fb077863ce2dc1f1607ac2c0b9fcfee8f3377662ff14315101c30cbd6");
 
-/// The exact writer bracket, measured-empty baseline, collector scheduler and
-/// typed unavailable fallback are production-owned. A real sink fixture is
-/// useful evidence but is not an activation prerequisite.
+/// The exact writer bracket, coherently decoded attach-time history baseline,
+/// collector scheduler, and typed unavailable fallback are production-owned.
+/// A real sink fixture is useful evidence but is not an activation prerequisite.
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 pub const MAX_EVENTS: usize = 65_536;
@@ -55,7 +58,15 @@ pub enum AuthorityState { Unavailable, StaticExact20Receipt }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SunkShipEvent {
+    /// Pointer-free carrier order. Attach baselines derive it from exact vector
+    /// order; live rows continue that sequence after the baseline tail.
     pub event_sequence: u64,
+    /// True only for an event observed inside the live d49/d50 member bracket.
+    ///
+    /// Attach-time history rows predate the hook and therefore preserve every
+    /// exact `CSunkShipInfo` field while explicitly omitting the unavailable
+    /// combat/member join. They must never carry fabricated join identifiers.
+    pub combat_join_present: bool,
     pub combat_id: u32,
     pub combat_generation: u64,
     /// Exact victim country id serialized from CSunkShipInfo+0x48.
@@ -138,10 +149,19 @@ pub fn validate_snapshot(snapshot: &SunkShipSnapshot) -> Result<(), CarrierError
     if snapshot.source_sequence == 0 || !snapshot.producer_complete || snapshot.events.len() > MAX_EVENTS { return invalid("SHP1 snapshot sequence/completeness/count invalid"); }
     let mut identities=BTreeSet::new(); let mut prior_sequence=0u64;
     for event in &snapshot.events {
-        if event.event_sequence<=1 || event.combat_id==0 || event.combat_generation==0
+        let combat_join_valid = if event.combat_join_present {
+            event.combat_id != 0
+                && event.combat_generation != 0
+                && event.victim_member_battle_slot_index
+                    <= naval_combat_live_lane::domain49_50_naval_combat_live::MAX_BATTLE_SLOT_INDEX
+        } else {
+            event.combat_id == 0
+                && event.combat_generation == 0
+                && event.victim_member_battle_slot_index == 0
+        };
+        if event.event_sequence<=1 || !combat_join_valid
             || event.victim_country_id_raw==0 || event.attacker_country_id_raw==0
             || event.sink_date_raw<=0
-            || event.victim_member_battle_slot_index > naval_combat_live_lane::domain49_50_naval_combat_live::MAX_BATTLE_SLOT_INDEX
             || event.victim_ship_reference_raw == [0, 0]
             || event.flags & !EVENT_KNOWN_FLAGS != 0
             || (event.flags & EVENT_FLAG_KILLED != 0) == (event.flags & EVENT_FLAG_ASSISTED_KILL != 0)
@@ -189,16 +209,16 @@ pub fn encode_payload(frame:&SunkShipFrame)->Result<Vec<u8>,CarrierError>{
     u64v(&mut out,frame.elapsed_wall_ms);u64v(&mut out,frame.frame_hour);out.extend_from_slice(&EXECUTABLE_SHA256);out.extend_from_slice(&EXACT20_FUNCTION_MANIFEST_SHA256);out.extend_from_slice(&EXACT20_DATA_ARTIFACT_SHA256);out.extend_from_slice(&WRITER_SENTINEL_ARTIFACT_SHA256);out.extend_from_slice(&ALL_WRITER_ROUTES_MANIFEST_SHA256);out.extend_from_slice(&CSUNK_SHIP_VTABLE_ARTIFACT_SHA256);out.extend_from_slice(&CSUNK_SHIP_VIRTUALS_MANIFEST_SHA256);out.extend_from_slice(&ATTACKER_GETTERS_MANIFEST_SHA256);
     out.push(u8::from(frame.snapshot.is_some()));out.extend_from_slice(&[0;3]);
     if let Some(snapshot)=&frame.snapshot { u64v(&mut out,snapshot.source_sequence);out.push(u8::from(snapshot.producer_complete));out.extend_from_slice(&[0;3]);u32v(&mut out,snapshot.events.len() as u32); for e in &snapshot.events {
-        u64v(&mut out,e.event_sequence);u32v(&mut out,e.combat_id);u64v(&mut out,e.combat_generation);u32v(&mut out,e.victim_country_id_raw);u32v(&mut out,e.attacker_country_id_raw);u32v(&mut out,e.ui_source_country_id_raw);i32v(&mut out,e.sink_date_raw);u32v(&mut out,e.victim_member_battle_slot_index);u32v(&mut out,e.flags);u32v(&mut out,e.victim_ship_reference_raw[0]);u32v(&mut out,e.victim_ship_reference_raw[1]);u32v(&mut out,e.damage_source_reference_raw[0]);u32v(&mut out,e.damage_source_reference_raw[1]);u32v(&mut out,e.task_force_id_raw);u32v(&mut out,e.terminal_context_raw[0]);u32v(&mut out,e.terminal_context_raw[1]);out.push(u8::from(e.cause_record_flag));out.extend_from_slice(&[0;3]);textv(&mut out,&e.ship_name);textv(&mut out,&e.ship_class_name);textv(&mut out,&e.attribution_source_name);textv(&mut out,&e.attribution_source_class_name);
+        u64v(&mut out,e.event_sequence);out.push(u8::from(e.combat_join_present));out.extend_from_slice(&[0;7]);u32v(&mut out,e.combat_id);u64v(&mut out,e.combat_generation);u32v(&mut out,e.victim_country_id_raw);u32v(&mut out,e.attacker_country_id_raw);u32v(&mut out,e.ui_source_country_id_raw);i32v(&mut out,e.sink_date_raw);u32v(&mut out,e.victim_member_battle_slot_index);u32v(&mut out,e.flags);u32v(&mut out,e.victim_ship_reference_raw[0]);u32v(&mut out,e.victim_ship_reference_raw[1]);u32v(&mut out,e.damage_source_reference_raw[0]);u32v(&mut out,e.damage_source_reference_raw[1]);u32v(&mut out,e.task_force_id_raw);u32v(&mut out,e.terminal_context_raw[0]);u32v(&mut out,e.terminal_context_raw[1]);out.push(u8::from(e.cause_record_flag));out.extend_from_slice(&[0;3]);textv(&mut out,&e.ship_name);textv(&mut out,&e.ship_class_name);textv(&mut out,&e.attribution_source_name);textv(&mut out,&e.attribution_source_class_name);
     }} Ok(out)
 }
 
 pub fn decode_payload(payload:&[u8])->Result<SunkShipFrame,CarrierError>{
-    let mut r=Reader{payload,at:0}; if r.u32()?!=MAGIC||r.u32()?!=SCHEMA_VERSION{return invalid("SHP1 magic/schema mismatch")};
+    let mut r=Reader{payload,at:0}; if r.u32()?!=MAGIC{return invalid("SHP1 magic/schema mismatch")};let schema_version=r.u32()?;if schema_version!=2&&schema_version!=SCHEMA_VERSION{return invalid("SHP1 magic/schema mismatch")};
     let authority=match r.u32()?{0=>AuthorityState::Unavailable,1=>AuthorityState::StaticExact20Receipt,_=>return invalid("SHP1 authority unknown")};let status_flags=r.u32()?;let elapsed_wall_ms=r.u64()?;let frame_hour=r.u64()?;
     if r.bytes(32)?!=EXECUTABLE_SHA256||r.bytes(32)?!=EXACT20_FUNCTION_MANIFEST_SHA256||r.bytes(32)?!=EXACT20_DATA_ARTIFACT_SHA256||r.bytes(32)?!=WRITER_SENTINEL_ARTIFACT_SHA256||r.bytes(32)?!=ALL_WRITER_ROUTES_MANIFEST_SHA256||r.bytes(32)?!=CSUNK_SHIP_VTABLE_ARTIFACT_SHA256||r.bytes(32)?!=CSUNK_SHIP_VIRTUALS_MANIFEST_SHA256||r.bytes(32)?!=ATTACKER_GETTERS_MANIFEST_SHA256{return invalid("SHP1 receipt identity mismatch")};
     let has=r.u8()?;if has>1||r.bytes(3)?!=[0,0,0]{return invalid("SHP1 availability marker invalid")};
-    let snapshot=if has==1{let source_sequence=r.u64()?;let producer_complete=r.u8()?!=0;if r.bytes(3)?!=[0,0,0]{return invalid("SHP1 completeness reserved bytes invalid")};let count=r.u32()? as usize;if count>MAX_EVENTS{return invalid("SHP1 event count exceeds bound")};let mut events=Vec::with_capacity(count);for _ in 0..count{let event_sequence=r.u64()?;let combat_id=r.u32()?;let combat_generation=r.u64()?;let victim_country_id_raw=r.u32()?;let attacker_country_id_raw=r.u32()?;let ui_source_country_id_raw=r.u32()?;let sink_date_raw=r.i32()?;let victim_member_battle_slot_index=r.u32()?;let flags=r.u32()?;let victim_ship_reference_raw=[r.u32()?,r.u32()?];let damage_source_reference_raw=[r.u32()?,r.u32()?];let task_force_id_raw=r.u32()?;let terminal_context_raw=[r.u32()?,r.u32()?];let cause_record_flag=r.u8()?!=0;if r.bytes(3)?!=[0,0,0]{return invalid("SHP1 event reserved bytes invalid")};events.push(SunkShipEvent{event_sequence,combat_id,combat_generation,victim_country_id_raw,attacker_country_id_raw,ui_source_country_id_raw,sink_date_raw,victim_member_battle_slot_index,flags,victim_ship_reference_raw,damage_source_reference_raw,task_force_id_raw,terminal_context_raw,cause_record_flag,ship_name:r.text()?,ship_class_name:r.text()?,attribution_source_name:r.text()?,attribution_source_class_name:r.text()?});}Some(SunkShipSnapshot{source_sequence,producer_complete,events})}else{None};
+    let snapshot=if has==1{let source_sequence=r.u64()?;let producer_complete=r.u8()?!=0;if r.bytes(3)?!=[0,0,0]{return invalid("SHP1 completeness reserved bytes invalid")};let count=r.u32()? as usize;if count>MAX_EVENTS{return invalid("SHP1 event count exceeds bound")};let mut events=Vec::with_capacity(count);for _ in 0..count{let event_sequence=r.u64()?;let combat_join_present=if schema_version>=3{let present=r.u8()?;if present>1||r.bytes(7)?!=[0,0,0,0,0,0,0]{return invalid("SHP1 combat-join marker invalid")};present!=0}else{true};let combat_id=r.u32()?;let combat_generation=r.u64()?;let victim_country_id_raw=r.u32()?;let attacker_country_id_raw=r.u32()?;let ui_source_country_id_raw=r.u32()?;let sink_date_raw=r.i32()?;let victim_member_battle_slot_index=r.u32()?;let flags=r.u32()?;let victim_ship_reference_raw=[r.u32()?,r.u32()?];let damage_source_reference_raw=[r.u32()?,r.u32()?];let task_force_id_raw=r.u32()?;let terminal_context_raw=[r.u32()?,r.u32()?];let cause_record_flag=r.u8()?!=0;if r.bytes(3)?!=[0,0,0]{return invalid("SHP1 event reserved bytes invalid")};events.push(SunkShipEvent{event_sequence,combat_join_present,combat_id,combat_generation,victim_country_id_raw,attacker_country_id_raw,ui_source_country_id_raw,sink_date_raw,victim_member_battle_slot_index,flags,victim_ship_reference_raw,damage_source_reference_raw,task_force_id_raw,terminal_context_raw,cause_record_flag,ship_name:r.text()?,ship_class_name:r.text()?,attribution_source_name:r.text()?,attribution_source_class_name:r.text()?});}Some(SunkShipSnapshot{source_sequence,producer_complete,events})}else{None};
     if r.at!=payload.len(){return Err(CarrierError::TrailingBytes)};let frame=SunkShipFrame{elapsed_wall_ms,frame_hour,status_flags,authority,snapshot};validate_frame(&frame)?;Ok(frame)
 }
 
@@ -221,6 +241,7 @@ mod tests {
                 producer_complete: true,
                 events: vec![SunkShipEvent {
                     event_sequence: 2,
+                    combat_join_present: true,
                     combat_id: 4,
                     combat_generation: 2,
                     victim_country_id_raw: 3,
@@ -257,6 +278,28 @@ mod tests {
         event.attribution_source_name.clear();
         event.attribution_source_class_name.clear();
         assert_eq!(decode_payload(&encode_payload(&frame).unwrap()).unwrap(), frame);
+    }
+
+    #[test]
+    fn attach_baseline_preserves_an_explicit_absent_combat_join() {
+        let mut baseline = frame();
+        let event = &mut baseline.snapshot.as_mut().unwrap().events[0];
+        event.combat_join_present = false;
+        event.combat_id = 0;
+        event.combat_generation = 0;
+        event.victim_member_battle_slot_index = 0;
+        assert_eq!(
+            decode_payload(&encode_payload(&baseline).unwrap()).unwrap(),
+            baseline
+        );
+
+        let mut fabricated = baseline.clone();
+        fabricated.snapshot.as_mut().unwrap().events[0].combat_id = 4;
+        assert!(encode_payload(&fabricated).is_err());
+
+        let mut missing_live_join = frame();
+        missing_live_join.snapshot.as_mut().unwrap().events[0].combat_id = 0;
+        assert!(encode_payload(&missing_live_join).is_err());
     }
 
     #[test]

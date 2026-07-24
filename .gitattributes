@@ -19,6 +19,7 @@ replay_interface/documents/lane_reports/rendering_laws/UI15.md text eol=lf
 # checkout hashes stable on Windows instead of allowing core.autocrlf drift.
 replay_interface/native/replay_app/headless_performance*_workload.json text eol=lf
 replay_interface/native/replay_app/performance_assets/*.hlsl text eol=lf
+replay_interface/fixtures/manifest.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json text eol=lf
 replay_interface/re_evidence/rendering_laws/M02/production_interleave_closure/contract.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json text eol=lf

@@ -1310,13 +1310,20 @@ fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, Ga
     let mut sequences = BTreeSet::new();
     let mut prior_sequence = 0u64;
     for (index, row) in rows.iter().enumerate() {
+        let combat_join_valid = if row.combat_join_present {
+            row.combat_id != 0
+                && row.combat_generation != 0
+                && row.victim_member_battle_slot_index <= 4_096
+        } else {
+            row.combat_id == 0
+                && row.combat_generation == 0
+                && row.victim_member_battle_slot_index == 0
+        };
         if row.event_sequence <= 1
-            || row.combat_id == 0
-            || row.combat_generation == 0
+            || !combat_join_valid
             || row.victim_country_id_raw == 0
             || row.attacker_country_id_raw == 0
             || row.sink_date_raw <= 0
-            || row.victim_member_battle_slot_index > 4_096
             || row.killed == row.assisted_kill
             || (row.cause_record_flag && row.assisted_kill)
             || row.victim_ship_reference_raw == [0, 0]

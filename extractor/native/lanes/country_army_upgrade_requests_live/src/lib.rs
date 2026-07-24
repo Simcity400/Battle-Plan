@@ -199,12 +199,17 @@ pub trait ArmyUpgradeMemory {
 
 pub trait ExactArmyUpgradeSource {
     fn is_exact_a729_country_army_upgrade_source(&self) -> bool;
-    fn read_country_army_upgrades(&self) -> Result<ArmyUpgradeSnapshot, String>;
+    fn read_country_army_upgrades(&self) -> Result<ArmyUpgradeSnapshot, CarrierError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CarrierError {
     Source(String),
+    CountryRead {
+        tag_db_id: u32,
+        object_ptr: u64,
+        source: Box<CarrierError>,
+    },
     Memory { address: u64, width: usize },
     Invalid(String),
     Truncated,
@@ -244,9 +249,12 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
         {
             return invalid("AUR1 country identity is zero or duplicated");
         }
-        let owner = read_u64(memory, add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?)?;
-        let mut groups = Vec::new();
-        if owner != 0 {
+        let groups_result = (|| -> Result<Vec<ArmyUpgradeGroup>, CarrierError> {
+            let owner = read_u64(memory, add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?)?;
+            let mut groups = Vec::new();
+            if owner == 0 {
+                return Ok(groups);
+            }
             require_vtable(memory, owner, module_base, STATUS_VTABLE_RVA)?;
             require_vtable(
                 memory,
@@ -332,7 +340,13 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
             {
                 return invalid("AUR1 country/status graph changed during snapshot");
             }
-        }
+            Ok(groups)
+        })();
+        let mut groups = groups_result.map_err(|source| CarrierError::CountryRead {
+            tag_db_id: root.tag_db_id,
+            object_ptr: root.object_ptr,
+            source: Box::new(source),
+        })?;
         groups.sort_by_key(|group| group.army);
         countries.push(CountryArmyUpgradeRow {
             tag_db_id: root.tag_db_id,
@@ -548,9 +562,7 @@ pub fn collect_and_encode<S: ExactArmyUpgradeSource>(
             "source did not authenticate exact a729 CCountry+0xF80 army upgrades".into(),
         ));
     }
-    let snapshot = source
-        .read_country_army_upgrades()
-        .map_err(CarrierError::Source)?;
+    let snapshot = source.read_country_army_upgrades()?;
     encode_payload(&ArmyUpgradeFrame {
         elapsed_wall_ms,
         frame_hour,
@@ -936,6 +948,42 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MissingMemory;
+
+    impl ArmyUpgradeMemory for MissingMemory {
+        fn read_exact(&self, _address: u64, _out: &mut [u8]) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    #[test]
+    fn country_walk_failure_retains_country_address_and_width() {
+        let error = read_snapshot_from_country_roots(
+            &MissingMemory,
+            0x1400_0000_0,
+            1,
+            &[CountryRoot {
+                tag_db_id: 41,
+                object_ptr: 0x2000_0000,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CarrierError::CountryRead {
+                tag_db_id: 41,
+                object_ptr: 0x2000_0000,
+                source,
+            } if matches!(
+                *source,
+                CarrierError::Memory {
+                    address: 0x2000_0f80,
+                    width: 8,
+                }
+            )
+        ));
+    }
 
     fn frame() -> ArmyUpgradeFrame {
         ArmyUpgradeFrame {

@@ -30,6 +30,12 @@ pub const MAX_PLANES: u32 = 10_000_000;
 pub const MAX_MISSION_REGION_ID: u32 = 65_535;
 // Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
 pub const MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
+pub const REGION_STATS_TRAILER_MAGIC: u32 = 0x3152_3441;
+pub const REGION_STATS_TRAILER_VERSION: u16 = 2;
+pub const REGION_STATS_TRAILER_LEGACY_VERSION: u16 = 1;
+pub const REGION_STATS_TRAILER_HEADER_LEN: usize = 32;
+pub const REGION_STATS_ROW_LEN: usize = 40;
+pub const REGION_DAMAGE_ROW_LEN: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AirStrengthDeltaHeader {
@@ -169,10 +175,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain42GateSummary {
             "offset {offset}: air combat losses live header reserved field is nonzero"
         ));
     }
-    let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if payload.len() != expected_len {
+    let legacy_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if payload.len() < legacy_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: air combat losses live data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: air combat losses live data payload is {} byte(s), expected at least {legacy_len}",
             payload.len()
         ));
         return summary;
@@ -394,6 +400,90 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain42GateSummary {
         "air_strength_mission_region_rows",
         mission_region_rows,
     );
+    if payload.len() != legacy_len {
+        let trailer = legacy_len;
+        if payload.len() < trailer.saturating_add(REGION_STATS_TRAILER_HEADER_LEN) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat regional stats trailer is truncated"
+            ));
+            return summary;
+        }
+        let magic = read_u32_le(payload, trailer);
+        let version = read_u16_le(payload, trailer + 4);
+        let header_len = read_u16_le(payload, trailer + 6) as usize;
+        let region_rows = read_u32_le(payload, trailer + 8) as usize;
+        let damage_rows = read_u32_le(payload, trailer + 12) as usize;
+        let observed_region_objects = read_u32_le(payload, trailer + 16) as usize;
+        let invalid_wing_rows = read_u32_le(payload, trailer + 20) as usize;
+        let scale_mismatch_rows = read_u32_le(payload, trailer + 24) as usize;
+        let first_invalid = read_u32_le(payload, trailer + 28);
+        if magic != REGION_STATS_TRAILER_MAGIC
+            || (version != REGION_STATS_TRAILER_VERSION
+                && version != REGION_STATS_TRAILER_LEGACY_VERSION)
+            || header_len != REGION_STATS_TRAILER_HEADER_LEN
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: invalid air combat regional stats trailer identity"
+            ));
+            return summary;
+        }
+        if version == REGION_STATS_TRAILER_LEGACY_VERSION
+            && (invalid_wing_rows != 0 || scale_mismatch_rows != 0 || first_invalid != 0)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat regional stats legacy reserved field is nonzero"
+            ));
+        }
+        let first_invalid_reason = (first_invalid & 0xFFFF) as usize;
+        let first_invalid_ordinal = (first_invalid >> 16) as usize;
+        if version == REGION_STATS_TRAILER_VERSION
+            && ((invalid_wing_rows == 0) != (first_invalid_reason == 0)
+                || (7..10).contains(&first_invalid_reason)
+                || first_invalid_reason > 32)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat invalid-wing diagnostic mismatch"
+            ));
+        }
+        let expected_len = trailer
+            .saturating_add(header_len)
+            .saturating_add(region_rows.saturating_mul(REGION_STATS_ROW_LEN))
+            .saturating_add(damage_rows.saturating_mul(REGION_DAMAGE_ROW_LEN));
+        if payload.len() != expected_len {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat regional stats payload is {} byte(s), expected {expected_len}",
+                payload.len()
+            ));
+            return summary;
+        }
+        add_unit(&mut summary, "air_region_combat_stat_rows", region_rows);
+        add_unit(&mut summary, "air_region_damage_rows", damage_rows);
+        add_unit(
+            &mut summary,
+            "air_region_combat_objects",
+            observed_region_objects,
+        );
+        add_unit(
+            &mut summary,
+            "air_strength_invalid_wing_rows",
+            invalid_wing_rows,
+        );
+        add_unit(
+            &mut summary,
+            "air_strength_scale_mismatch_rows",
+            scale_mismatch_rows,
+        );
+        add_unit(
+            &mut summary,
+            "air_strength_first_invalid_ordinal",
+            first_invalid_ordinal,
+        );
+        add_unit(
+            &mut summary,
+            "air_strength_first_invalid_reason",
+            first_invalid_reason,
+        );
+    }
     summary
 }
 
@@ -408,6 +498,10 @@ fn read_u32_le(payload: &[u8], offset: usize) -> u32 {
 
 fn read_i32_le(payload: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(payload[offset..offset + 4].try_into().expect("i32 range"))
+}
+
+fn read_u16_le(payload: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(payload[offset..offset + 2].try_into().expect("u16 range"))
 }
 
 fn read_u64_le(payload: &[u8], offset: usize) -> u64 {
@@ -628,5 +722,60 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("count_delta -2")));
+    }
+
+    #[test]
+    fn decodes_v2_failure_cause_telemetry_separately() {
+        let header = AirStrengthDeltaHeader {
+            elapsed_wall_ms: 100,
+            status_flags: STATUS_DELTA_DATA,
+            changed_rows: 0,
+            observed_air_wing_rows: 10,
+            observed_equipment_rows: 20,
+            loss_rows: 0,
+            reinforcement_rows: 0,
+            deleted_rows: 0,
+        };
+        let mut payload = encode_payload(&header, &[]);
+        payload.extend_from_slice(&REGION_STATS_TRAILER_MAGIC.to_le_bytes());
+        payload.extend_from_slice(&REGION_STATS_TRAILER_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(REGION_STATS_TRAILER_HEADER_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&((1u32 << 16) | 31).to_le_bytes());
+
+        let summary = decode_payload(0, &payload);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_strength_invalid_wing_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_strength_scale_mismatch_rows")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_strength_first_invalid_ordinal")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("air_strength_first_invalid_reason")
+                .copied(),
+            Some(31)
+        );
     }
 }
