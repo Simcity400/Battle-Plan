@@ -3696,7 +3696,12 @@ fn validate_attribution_entry(entry: AttributionEntry) -> Result<(), String> {
     if entry.dealer_tag_db_id == entry.victim_tag_db_id {
         return Err("has identical dealer and victim".to_string());
     }
-    if entry.damage_raw == 0 || entry.damage_raw > MAX_ATTRIBUTION_DAMAGE_RAW {
+    // SDamageDone publishes a validated dealer/victim relationship before its
+    // cumulative damage necessarily becomes nonzero. A stable zero is therefore
+    // measured zero, not an unavailable row. This was observed directly on the
+    // exact-a729 CStatsObserver path (runtime job
+    // 20260724T141552Z-observe-runtime-72087eab).
+    if entry.damage_raw > MAX_ATTRIBUTION_DAMAGE_RAW {
         return Err("has invalid damage_raw".to_string());
     }
     Ok(())
@@ -4942,6 +4947,32 @@ mod tests {
         let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.attribution_rows, 2);
+    }
+
+    #[test]
+    fn zero_damage_attribution_is_a_measured_relationship() {
+        let mut current = vec![snapshot_with_detail(
+            21381,
+            7,
+            &[8001, 8002],
+            &[9001],
+            Some(sample_side_detail(2, 0)),
+            Some(sample_side_detail(1, 0)),
+        )];
+        current[0].attacker_attribution = vec![AttributionEntry {
+            dealer_tag_db_id: 3,
+            victim_tag_db_id: 1,
+            damage_raw: 0,
+        }];
+
+        let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
+        assert_eq!(frame.attribution_rows.len(), 1);
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        let decoded = decode_detail_events_payload(COMPACT_RECORD_HEADER_LEN, payload).unwrap();
+        assert_eq!(decoded.attribution_rows, frame.attribution_rows);
+        let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
+        assert!(gate.ok, "{:?}", gate.errors);
+        assert_eq!(gate.summary.attribution_rows, 1);
     }
 
     #[test]

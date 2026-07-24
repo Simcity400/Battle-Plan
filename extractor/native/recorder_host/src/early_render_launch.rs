@@ -873,6 +873,9 @@ pub struct EarlyRenderLaunchSpec {
     pub collector_path: PathBuf,
     pub manifest: EarlyRenderLaunchManifest,
     pub hook_ready_timeout_ms: u32,
+    /// Preserve the historical minimized capture presentation by default.
+    /// Headless control is PID-bound and does not depend on this choice.
+    pub minimize_after_first_d3d: bool,
     /// Diagnostic-only subset of the authenticated staged hook set. `None`
     /// preserves the immutable production hook set and child environment.
     pub diagnostic_staged_hook_mask: Option<u64>,
@@ -2023,7 +2026,7 @@ mod windows {
         pub receipt: EarlyRenderCaptureReceipt,
         diagnostic_no_commit: bool,
         termination_observed: bool,
-        _presentation_guard: MinimizedPresentationGuard,
+        _presentation_guard: Option<MinimizedPresentationGuard>,
     }
 
     unsafe impl Send for EarlyRenderProcess {}
@@ -2416,7 +2419,10 @@ mod windows {
                 spec.hook_ready_timeout_ms,
             )?;
             first_device.validate_for(&hook, resume_qpc, spec.diagnostic_staged_hook_mask)?;
-            let presentation_guard = MinimizedPresentationGuard::start(self.process_id)?;
+            let presentation_guard = spec
+                .minimize_after_first_d3d
+                .then(|| MinimizedPresentationGuard::start(self.process_id))
+                .transpose()?;
             loader_authority.validate_post_resume(self.process_id)?;
             post_resume_validation()?;
             let runtime_dlc = ready.await_runtime_dlc_roster(
@@ -3939,6 +3945,7 @@ mod tests {
                 collector_path: root.join("collector.dll"),
                 manifest: manifest.clone(),
                 hook_ready_timeout_ms: 30_000,
+                minimize_after_first_d3d: true,
                 diagnostic_staged_hook_mask: None,
                 g2_capture_intent: None,
                 g2_output_directory: None,

@@ -60,6 +60,9 @@ pub const BUILDINGS_BOMBED_DISPLAY_SCALE: i64 = 1_000;
 // ---- binding guard offsets (the EXTRACTOR's own country index) ----
 pub const COUNTRY_TABLE_OFF: u64 = 0x310;
 pub const COUNTRY_COUNT_OFF: u64 = 0x31C;
+/// Exact a729 CGameState tag-equivalence table pointer. Keep the lane
+/// dependency-free; the central build profile pins the same offset.
+pub const COUNTRY_TAG_EQUIVALENCE_OFF: u64 = 0x340;
 pub const COUNTRY_VTABLE_RVA: u64 = 0x27D0E90;
 pub const COUNTRY_TAG_DB_ID_OFF: u64 = 0x08;
 
@@ -616,6 +619,34 @@ pub fn derive_country_row_result<M: Mem>(
         );
     };
     if tag_db_id != country_idx {
+        // The live CGameState table contains a small number of authenticated
+        // alias slots. They point at the same CCountry as their canonical slot
+        // and are mapped by CGameState+0x340's tag-equivalence array. They are
+        // not independent owners and therefore have no independent statistic
+        // manager row. Admit only that exact, pointer-joined alias shape as
+        // measured absence; every unreadable or inconsistent mismatch remains
+        // the same diagnosed failure.
+        let alias_is_exact = mem
+            .u64(cgs + COUNTRY_TAG_EQUIVALENCE_OFF)
+            .filter(|equivalence| ok_ptr(*equivalence))
+            .and_then(|equivalence| {
+                let slot_canonical =
+                    mem.u32(equivalence + u64::from(country_idx) * 4)?;
+                let object_canonical =
+                    mem.u32(equivalence + u64::from(tag_db_id) * 4)?;
+                (slot_canonical != 0
+                    && slot_canonical < country_count
+                    && slot_canonical == object_canonical)
+                    .then_some(slot_canonical)
+            })
+            .and_then(|canonical| {
+                mem.u64(country_table + u64::from(canonical) * 8)
+                    .map(|canonical_country| canonical_country == cc)
+            })
+            .unwrap_or(false);
+        if alias_is_exact {
+            return AirLossRowRead::Absent;
+        }
         return failed(
             AirLossRowFailureReason::CountryTagMismatch,
             country_tag_addr,
@@ -1042,6 +1073,50 @@ mod tests {
             derive_country_row_result(&air_stat_absent, BASE, 1),
             AirLossRowRead::Absent
         );
+    }
+
+    #[test]
+    fn tri_state_treats_exact_equivalence_alias_as_measured_absence() {
+        let mut alias = good_image(365);
+        let cgs = 0x2000_0000_u64;
+        let country_table = 0x2100_0000_u64;
+        let country = 0x2200_0000_u64;
+        let equivalence = 0x2B00_0000_u64;
+        let canonical = 1u32;
+
+        alias.sw(country + COUNTRY_TAG_DB_ID_OFF, canonical);
+        alias.su(cgs + COUNTRY_TAG_EQUIVALENCE_OFF, equivalence);
+        alias.sw(equivalence + 365 * 4, canonical);
+        alias.sw(equivalence + u64::from(canonical) * 4, canonical);
+        alias.su(country_table + u64::from(canonical) * 8, country);
+
+        assert_eq!(
+            derive_country_row_result(&alias, BASE, 365),
+            AirLossRowRead::Absent
+        );
+    }
+
+    #[test]
+    fn tri_state_rejects_unjoined_tag_mismatch_as_failure() {
+        let mut mismatch = good_image(365);
+        let cgs = 0x2000_0000_u64;
+        let country = 0x2200_0000_u64;
+        let equivalence = 0x2B00_0000_u64;
+
+        mismatch.sw(country + COUNTRY_TAG_DB_ID_OFF, 1);
+        mismatch.su(cgs + COUNTRY_TAG_EQUIVALENCE_OFF, equivalence);
+        mismatch.sw(equivalence + 365 * 4, 1);
+        mismatch.sw(equivalence + 4, 1);
+        // The canonical country-table slot is deliberately not the alias
+        // object, so the mismatch cannot be silently classified as absence.
+        mismatch.su(0x2100_0000 + 8, 0x2C00_0000);
+
+        let AirLossRowRead::Failed(failure) =
+            derive_country_row_result(&mismatch, BASE, 365)
+        else {
+            panic!("unjoined mismatch must fail closed");
+        };
+        assert_eq!(failure.reason, AirLossRowFailureReason::CountryTagMismatch);
     }
 
     #[test]

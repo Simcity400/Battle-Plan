@@ -97,6 +97,14 @@ pub struct CharacterPortraitInput {
 pub struct AdapterBuildStats {
     pub character_roots_seen: u32,
     pub character_rows: u32,
+    /// Same-country roots that re-resolved to an already observed logical
+    /// character this frame. They are merged without choosing between
+    /// disagreeing ancillary strings.
+    pub deduplicated_character_rows: u32,
+    /// Roots participating in a cross-country char-id conflict this frame.
+    /// Both logical identities are quarantined, matching the prewarm cache's
+    /// identity policy; neither country is selected as an arbitrary winner.
+    pub ambiguous_character_rows: u32,
     pub unit_leader_roots_seen: u32,
     pub unit_leader_rows: u32,
     pub unit_leader_trait_rows: u32,
@@ -183,19 +191,47 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
 
     let mut known_characters = BTreeSet::new();
     let mut character_identity = BTreeMap::<(u32, u32), (Option<String>, Option<String>)>::new();
+    let mut characters_by_id = BTreeMap::<u32, CharacterRecord>::new();
+    let mut ambiguous_character_ids = BTreeSet::new();
     stats.character_roots_seen = input.characters.len().min(u32::MAX as usize) as u32;
     for root in &input.characters {
         match read_character_raw_fields(mem, roots, root.character_addr) {
             Ok(raw) => {
-                let key = (raw.country_tag_db_id, raw.char_id);
-                known_characters.insert(key);
-                character_identity.insert(key, (root.name.clone(), root.token.clone()));
-                frame.characters.push(CharacterRecord {
+                if ambiguous_character_ids.contains(&raw.char_id) {
+                    stats.ambiguous_character_rows =
+                        stats.ambiguous_character_rows.saturating_add(1);
+                    continue;
+                }
+                let candidate = CharacterRecord {
                     country_tag_db_id: raw.country_tag_db_id,
                     char_id: raw.char_id,
                     name: root.name.clone(),
                     token: root.token.clone(),
-                });
+                };
+                match characters_by_id.entry(raw.char_id) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(candidate);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry)
+                        if entry.get().country_tag_db_id == raw.country_tag_db_id =>
+                    {
+                        let kept = entry.get_mut();
+                        if kept.name != candidate.name {
+                            kept.name = None;
+                        }
+                        if kept.token != candidate.token {
+                            kept.token = None;
+                        }
+                        stats.deduplicated_character_rows =
+                            stats.deduplicated_character_rows.saturating_add(1);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        entry.remove();
+                        ambiguous_character_ids.insert(raw.char_id);
+                        stats.ambiguous_character_rows =
+                            stats.ambiguous_character_rows.saturating_add(2);
+                    }
+                }
             }
             Err(first) => match classify_root_failure(
                 &first,
@@ -205,6 +241,12 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
                 RootFailure::Torn => stats.rejected_roots = stats.rejected_roots.saturating_add(1),
             },
         }
+    }
+    frame.characters.extend(characters_by_id.into_values());
+    for row in &frame.characters {
+        let key = (row.country_tag_db_id, row.char_id);
+        known_characters.insert(key);
+        character_identity.insert(key, (row.name.clone(), row.token.clone()));
     }
     stats.character_rows = frame.characters.len().min(u32::MAX as usize) as u32;
 
@@ -835,6 +877,77 @@ mod tests {
         );
         assert_eq!(summary.character_portrait_rows, 1);
         assert_eq!(summary.appointed_advisor_rows, 1);
+    }
+
+    #[test]
+    fn frame_walk_merges_same_country_duplicate_character_ids() {
+        let mut mem = FakeMemory::default();
+        write_character(&mut mem, 0x1000, 100, 2);
+        write_character(&mut mem, 0x1800, 100, 2);
+        let input = AdapterInput {
+            characters: vec![
+                CharacterRoot {
+                    character_addr: 0x1000,
+                    name: Some("first spelling".to_string()),
+                    token: Some("ENG_character".to_string()),
+                },
+                CharacterRoot {
+                    character_addr: 0x1800,
+                    name: Some("second spelling".to_string()),
+                    token: Some("ENG_character".to_string()),
+                },
+            ],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.character_roots_seen, 2);
+        assert_eq!(result.stats.character_rows, 1);
+        assert_eq!(result.stats.deduplicated_character_rows, 1);
+        assert_eq!(result.stats.ambiguous_character_rows, 0);
+        assert!(!result.stats.has_rejections());
+        assert_eq!(result.frame.characters[0].country_tag_db_id, 2);
+        assert_eq!(result.frame.characters[0].char_id, 100);
+        assert_eq!(result.frame.characters[0].name, None);
+        assert_eq!(
+            result.frame.characters[0].token.as_deref(),
+            Some("ENG_character")
+        );
+        let summary =
+            extractor::decode_frame_payload(0, &extractor::encode_frame_payload(&result.frame));
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+    }
+
+    #[test]
+    fn frame_walk_quarantines_cross_country_character_id_conflicts() {
+        let mut mem = FakeMemory::default();
+        write_character(&mut mem, 0x1000, 100, 2);
+        write_character(&mut mem, 0x1800, 100, 3);
+        let input = AdapterInput {
+            characters: vec![
+                CharacterRoot {
+                    character_addr: 0x1000,
+                    name: None,
+                    token: None,
+                },
+                CharacterRoot {
+                    character_addr: 0x1800,
+                    name: None,
+                    token: None,
+                },
+            ],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.character_rows, 0);
+        assert_eq!(result.stats.deduplicated_character_rows, 0);
+        assert_eq!(result.stats.ambiguous_character_rows, 2);
+        assert!(!result.stats.has_rejections());
+        assert!(result.frame.characters.is_empty());
+        let summary =
+            extractor::decode_frame_payload(0, &extractor::encode_frame_payload(&result.frame));
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
     }
 
     /// Memory that misses ONE address exactly once, then serves the backing

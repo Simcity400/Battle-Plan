@@ -725,21 +725,23 @@ pub fn discover_war_rows_from_relation_roots<M: CapWarMemory>(
         module_base,
         profile::DOMAIN60_WAR_CWARRELATION_VTABLE_RVA,
     )?;
-    let mut target_indices = Vec::with_capacity(roots.countries.len());
-    let mut unique_target_indices = BTreeSet::new();
+    // Multiple authenticated country identities may resolve to the same
+    // canonical CID relation-table slot. That is not ambiguity: the table has
+    // only one addressable slot for that equivalence class, so walking it once
+    // is complete. Preserve the hard bound and every memory-read failure while
+    // collapsing only the exact repeated numeric index.
+    let mut target_indices = BTreeSet::new();
     for target in &roots.countries {
         let target_index = mem.read_u32(add_addr(
             target.country_ptr,
             profile::DOMAIN53_COUNTRY_CID_INDEX,
         )?)?;
-        if target_index >= profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS
-            || !unique_target_indices.insert(target_index)
-        {
+        if target_index >= profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS {
             return Err(ExtractError::InvalidRoot(
                 "capwar_relation_target_index_invalid",
             ));
         }
-        target_indices.push(target_index);
+        target_indices.insert(target_index);
     }
 
     let mut war_row_addrs = BTreeSet::new();
@@ -1275,12 +1277,23 @@ mod tests {
     }
 
     #[test]
-    fn bounded_relation_root_resolves_exact_cwarrelation_row() {
+    fn bounded_relation_root_collapses_duplicate_canonical_cid_indices() {
         let (mem, ger_ptr, fra_ptr) = base_mock();
         let manager = HEAP_BASE + 0x30_0000;
         let table = HEAP_BASE + 0x31_0000;
         let relation = HEAP_BASE + 0x32_0000;
         let war_object = HEAP_BASE + 0x50_0000;
+        // Both identities may share one canonical CID index. The relation
+        // table has only that one addressable slot, so the duplicate is
+        // collapsed rather than failing discovery closed.
+        mem.write_u32(
+            ger_ptr + profile::DOMAIN53_COUNTRY_CID_INDEX as u64,
+            1,
+        );
+        mem.write_u32(
+            fra_ptr + profile::DOMAIN53_COUNTRY_CID_INDEX as u64,
+            1,
+        );
         setup_relation_war_root(&mem, ger_ptr, 1, manager, table, relation, war_object);
         // The second country's clean null manager is measured absence.
         mem.write_u64(fra_ptr + profile::DOMAIN60_DIPLOMACY_SUB_OBJECT as u64, 0);
@@ -1310,6 +1323,21 @@ mod tests {
             .expect("retired object is measured absence")
             .war_row_addrs
             .is_empty());
+    }
+
+    #[test]
+    fn bounded_relation_root_rejects_out_of_range_cid_index() {
+        let (mem, _ger_ptr, fra_ptr) = base_mock();
+        mem.write_u32(
+            fra_ptr + profile::DOMAIN53_COUNTRY_CID_INDEX as u64,
+            profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS,
+        );
+        assert_eq!(
+            discover_war_rows_from_relation_roots(&mem),
+            Err(ExtractError::InvalidRoot(
+                "capwar_relation_target_index_invalid"
+            ))
+        );
     }
 
     #[test]

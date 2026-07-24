@@ -192,8 +192,8 @@ def collect_live_programs(p):
                 )
                 continue
             begin, packed = struct.unpack_from("<QQ", header, 0)
-            count = packed & 0xFFFFFFFF
-            capacity = packed >> 32
+            capacity = packed & 0xFFFFFFFF
+            count = packed >> 32
             if count == 0:
                 continue
             if (

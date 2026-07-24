@@ -11,6 +11,8 @@ pub mod a729_air_mio_controller;
 #[cfg(windows)]
 pub mod a729_air_selection_hook;
 #[cfg(windows)]
+pub mod a729_headless_inactive;
+#[cfg(windows)]
 pub mod a729_mio_history_hook;
 #[cfg(windows)]
 pub mod a729_mio_bonus_hook;

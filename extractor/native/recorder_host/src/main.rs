@@ -488,6 +488,7 @@ struct EarlyLaunchCli {
     executable: PathBuf,
     semantic_arguments: Vec<String>,
     timeout_ms: u32,
+    minimize_after_first_d3d: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1900,6 +1901,7 @@ fn run() -> Result<(), String> {
                     collector_path: cfg.dll.clone(),
                     manifest: manifest.clone(),
                     hook_ready_timeout_ms: early.timeout_ms,
+                    minimize_after_first_d3d: early.minimize_after_first_d3d,
                     diagnostic_staged_hook_mask: cfg.diagnostic_staged_hook_mask,
                     g2_capture_intent: cfg.g2_capture_intent.clone(),
                     g2_output_directory: g2_output_directory.clone(),
@@ -2517,43 +2519,58 @@ fn run() -> Result<(), String> {
             last_game_hour_raw,
         )?;
     }
-    let emitted_token_inventory = match static_bundle_admission.as_mut() {
-        Some(admission) => {
-            if cfg.stream_format != StreamFormat::Compact {
-                return Err("static bundle finalization requires a compact H4CR stream".to_string());
-            }
-            let capture_id = cfg
-                .capture_id
-                .as_deref()
-                .ok_or_else(|| "static bundle finalization requires --capture-id".to_string())?;
-            let inventory = recorder_host::emitted_token_inventory::build_and_write(
-                &raw_path,
-                &cfg.out_dir.join("emitted_token_inventory.json"),
-                capture_id,
-                &cfg.session_id,
-                &capture.sha256,
-                capture_identity_mode,
-            )?;
-            let (finalized_request, finalized_verified) =
-                recorder_host::static_bundle_gate::finalize(
-                    &admission.request,
-                    &cfg.out_dir.join("static_bundle_finalized"),
-                    &inventory.path,
+    let emitted_token_inventory = if cfg.raw_debug_output {
+        // Raw debug deliberately stops at the capture boundary. The admitted
+        // pre-resume content/VFS facts remain available below, but token
+        // inventory construction and static-bundle finalization are
+        // post-capture certification work and therefore stay disabled.
+        None
+    } else {
+        match static_bundle_admission.as_mut() {
+            Some(admission) => {
+                if cfg.stream_format != StreamFormat::Compact {
+                    return Err(
+                        "static bundle finalization requires a compact H4CR stream".to_string()
+                    );
+                }
+                let capture_id = cfg
+                    .capture_id
+                    .as_deref()
+                    .ok_or_else(|| "static bundle finalization requires --capture-id".to_string())?;
+                let inventory = recorder_host::emitted_token_inventory::build_and_write(
+                    &raw_path,
+                    &cfg.out_dir.join("emitted_token_inventory.json"),
                     capture_id,
                     &cfg.session_id,
                     &capture.sha256,
-                )
-                .map_err(|error| {
-                    format!("post-capture static bundle finalization failed: {error}")
-                })?;
-            cfg.static_artifacts = static_artifact_requests_from_bundle(&finalized_verified)?;
-            admission.finalized_request = Some(finalized_request);
-            admission.finalized_verified = Some(finalized_verified);
-            Some(inventory)
+                    capture_identity_mode,
+                )?;
+                let (finalized_request, finalized_verified) =
+                    recorder_host::static_bundle_gate::finalize(
+                        &admission.request,
+                        &cfg.out_dir.join("static_bundle_finalized"),
+                        &inventory.path,
+                        capture_id,
+                        &cfg.session_id,
+                        &capture.sha256,
+                    )
+                    .map_err(|error| {
+                        format!("post-capture static bundle finalization failed: {error}")
+                    })?;
+                cfg.static_artifacts = static_artifact_requests_from_bundle(&finalized_verified)?;
+                admission.finalized_request = Some(finalized_request);
+                admission.finalized_verified = Some(finalized_verified);
+                Some(inventory)
+            }
+            None => None,
         }
-        None => None,
     };
-    let portable_content_manifest = if cfg.production {
+    let portable_content_manifest = if cfg.production && cfg.raw_debug_output {
+        // Preserve the exact content manifest that was authenticated over
+        // H4CT before ResumeThread. Do not reinterpret it as a post-capture
+        // finalized publication manifest.
+        early_full_content_manifest.clone()
+    } else if cfg.production {
         let admission = static_bundle_admission
             .as_ref()
             .ok_or("production content manifest has no finalized static bundle admission")?;
@@ -2825,18 +2842,35 @@ fn run() -> Result<(), String> {
         );
         obj.insert(
             "static_bundle".to_string(),
-            static_bundle_admission
-                .as_ref()
-                .and_then(StaticBundleAdmission::publication_verified)
-                .map(VerifiedStaticBundle::as_json)
-                .unwrap_or(Value::Null),
+            if cfg.raw_debug_output {
+                Value::Null
+            } else {
+                static_bundle_admission
+                    .as_ref()
+                    .and_then(StaticBundleAdmission::publication_verified)
+                    .map(VerifiedStaticBundle::as_json)
+                    .unwrap_or(Value::Null)
+            },
         );
+        if cfg.raw_debug_output {
+            obj.insert(
+                "raw_debug_pre_resume_static_bundle".to_string(),
+                static_bundle_admission
+                    .as_ref()
+                    .map(|admission| admission.verified.as_json())
+                    .unwrap_or(Value::Null),
+            );
+        }
     }
-    verify_product_modset_publication_join(
-        &manifest,
-        static_bundle_admission.as_ref(),
-        cfg.production,
-    )?;
+    if cfg.raw_debug_output && cfg.production {
+        verify_raw_debug_pre_resume_content_join(&manifest, static_bundle_admission.as_ref())?;
+    } else if !cfg.raw_debug_output {
+        verify_product_modset_publication_join(
+            &manifest,
+            static_bundle_admission.as_ref(),
+            cfg.production,
+        )?;
+    }
     normalize_and_write_session_manifest(&manifest_path, &mut manifest)?;
     for line in production_profile_summary_lines(&production_profile_summary) {
         eprintln!("{line}");
@@ -5294,6 +5328,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut early_launch_executable: Option<PathBuf> = None;
     let mut early_launch_arguments: Vec<String> = Vec::new();
     let mut early_hook_timeout_ms = 30_000u32;
+    let mut early_launch_minimize_after_first_d3d = true;
     let mut g2_capture_intent_path: Option<PathBuf> = None;
     let mut diagnostic_staged_hook_mask: Option<u64> = None;
     let mut diagnostic_no_commit = false;
@@ -5412,6 +5447,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     return Err("--early-hook-timeout-ms must be in 1..=120000".into());
                 }
             }
+            "--early-launch-keep-window" => early_launch_minimize_after_first_d3d = false,
             "--g2-capture-intent" => {
                 if g2_capture_intent_path.is_some() {
                     return Err("duplicate --g2-capture-intent is not allowed".into());
@@ -5905,11 +5941,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .to_string(),
             );
         }
+        let authenticated_early_production_debug =
+            profile == Some(compact_contract::CaptureProfile::Production)
+                && early_launch_executable.is_some();
         if !product_auto_attach_runtime
             && profile != Some(compact_contract::CaptureProfile::Debug)
+            && !authenticated_early_production_debug
         {
             return Err(
-                "--raw-debug-output requires --profile debug or the internal ordinary product debug worker"
+                "--raw-debug-output requires --profile debug, an authenticated --profile production early launch, or the internal ordinary product debug worker"
                     .to_string(),
             );
         }
@@ -6130,9 +6170,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 executable,
                 semantic_arguments: early_launch_arguments,
                 timeout_ms: early_hook_timeout_ms,
+                minimize_after_first_d3d: early_launch_minimize_after_first_d3d,
             })
         }
     };
+    if early_launch.is_none() && !early_launch_minimize_after_first_d3d {
+        return Err("--early-launch-keep-window requires --early-launch-exe".into());
+    }
     if early_launch.is_some() && pdx_user_dir.is_none() {
         return Err(
             "early launch requires the exact --pdx-user-dir selected at first launch".into(),
@@ -6544,6 +6588,33 @@ fn verify_product_modset_publication_join(
     }
 }
 
+fn verify_raw_debug_pre_resume_content_join(
+    manifest: &Value,
+    admission: Option<&StaticBundleAdmission>,
+) -> Result<(), String> {
+    let content = recorded_portable_content_manifest(manifest)?
+        .ok_or("raw debug early launch has no authenticated pre-resume content manifest")?;
+    let verified = admission
+        .map(|admission| &admission.verified)
+        .ok_or("raw debug early launch has no admitted pre-resume static bundle")?;
+    if admission
+        .and_then(StaticBundleAdmission::publication_verified)
+        .is_some()
+    {
+        return Err(
+            "raw debug path unexpectedly performed post-capture static-bundle finalization"
+                .to_string(),
+        );
+    }
+    if content.product_modset_sha256 != verified.product_modset_sha256 {
+        return Err(
+            "raw debug pre-resume content product-modset key differs from its admitted static bundle"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn build_production_profile_summary(cfg: &Config) -> ProductionProfileSummary {
     let profile = compact_contract::production_profile_domains();
     let profile_ids: BTreeSet<u16> = profile.iter().map(|descriptor| descriptor.id).collect();
@@ -6652,7 +6723,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--raw-debug-output] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--a34-decision-panel-evidence-supplement json] [--a36-active-ability-evidence] [--a39-character-presentation-evidence] [--a40-design-peace-evidence] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
+    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]... [--early-launch-keep-window]) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--raw-debug-output] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--a34-decision-panel-evidence-supplement json] [--a36-active-ability-evidence] [--a39-character-presentation-evidence] [--a40-design-peace-evidence] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
      Special resident debug entry: collector_record --raw-debug-auto-attach\n\
      \n\
      Static artifacts: non-production probes may omit them. Production requires one\n\
@@ -29659,7 +29730,18 @@ mod tests {
         assert_eq!(early.executable, fs::canonicalize(&exe).unwrap());
         assert_eq!(early.semantic_arguments, vec!["-debug"]);
         assert_eq!(early.timeout_ms, 17_001);
+        assert!(early.minimize_after_first_d3d);
         assert_eq!(cfg.pid, 0, "PID is learned from suspended creation");
+
+        let mut keep_window = args.clone();
+        keep_window.push("--early-launch-keep-window".to_string());
+        assert!(
+            !parse_args(keep_window)
+                .unwrap()
+                .early_launch
+                .unwrap()
+                .minimize_after_first_d3d
+        );
 
         let mut with_pid = args;
         with_pid.extend(["--pid".to_string(), "7".to_string()]);
@@ -29670,6 +29752,75 @@ mod tests {
             .expect_err("authority sidecars must not be accepted");
         assert!(
             error.contains("unknown argument --early-launch-manifest"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_allows_raw_debug_for_authenticated_production_early_launch_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_raw_early_args_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let dll = dir.join("collector.dll");
+        let exe = dir.join("hoi4.exe");
+        let user_dir = dir.join("profile");
+        fs::write(&dll, b"dll").unwrap();
+        fs::write(&exe, b"exe").unwrap();
+        fs::create_dir_all(&user_dir).unwrap();
+
+        let mut args = vec![
+            "--early-launch-exe".to_string(),
+            exe.display().to_string(),
+            "--early-launch-arg".to_string(),
+            "--continuelastsave".to_string(),
+            "--pdx-user-dir".to_string(),
+            user_dir.display().to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+            "--profile".to_string(),
+            "production".to_string(),
+            "--stream-compression".to_string(),
+            "none".to_string(),
+            "--raw-debug-output".to_string(),
+        ];
+        args = add_required_static_bundle_inputs(&dir, args);
+        let cfg = parse_args(args).expect("authenticated production early raw debug must parse");
+        assert!(cfg.production);
+        assert!(cfg.early_launch.is_some());
+        assert!(cfg.raw_debug_output);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::None
+        );
+        assert!(
+            cfg.domain57_without_external_gate_authorized,
+            "the exact-build passive D57 observer must keep the full production roster"
+        );
+
+        let mut late = base_profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--stream-compression",
+                "none",
+                "--raw-debug-output",
+            ],
+        );
+        late = add_required_static_bundle_inputs(&dir, late);
+        let error = parse_args(late)
+            .expect_err("production raw debug without recorder-owned early launch must fail");
+        assert!(
+            error.contains("authenticated --profile production early launch"),
             "{error}"
         );
         let _ = fs::remove_dir_all(&dir);
@@ -30483,6 +30634,7 @@ mod tests {
             executable: game_executable,
             semantic_arguments: Vec::new(),
             timeout_ms: 30_000,
+            minimize_after_first_d3d: true,
         });
         cfg.acceptance_test = Some(AcceptanceTestCli {
             mode: AcceptanceTestMode::SinkWriteFault,

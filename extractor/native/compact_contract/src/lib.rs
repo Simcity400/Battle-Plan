@@ -1077,8 +1077,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // W3 (2026-07-05): per-country OWNER-JOINED special-project program
     // facilities, ROOTED walk of CCountry+0xFA8 -> CProgramStatus (array of up
     // to 3 records, stride 0x160, each record's own vtable == mb+0x295AC88) ->
-    // record+0x20 vector<CProgram*> begin, record+0x28 packed u64 (low32=count,
-    // high32=capacity). Per CProgram (vtable mb+0x295AC30): program_id (+0x0C),
+    // record+0x20 vector<CProgram*> begin, record+0x28 packed u64 (low32=capacity,
+    // high32=count). Per CProgram (vtable mb+0x295AC30): program_id (+0x0C),
     // duplicated serialized owner (+0x18/+0x170), duplicated province
     // (+0x1C/+0x174), and unread_prototype_rewards (+0x178). The row is
     // admitted only when both duplicated pairs agree inside two equal coherent

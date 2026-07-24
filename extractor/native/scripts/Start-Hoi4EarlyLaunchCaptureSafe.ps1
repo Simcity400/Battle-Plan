@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$true)][string]$PdxUserDir,
     [Parameter(Mandatory=$true)][string]$PreparedProductModsetDir,
     [Parameter(Mandatory=$true)][string]$OutDir,
-    [ValidateSet('XN15L','Production')][string]$Purpose = 'XN15L',
+    [ValidateSet('XN15L','Production','RawDebug')][string]$Purpose = 'XN15L',
     [double]$DurationSeconds = 300,
     [int]$MinGameHours = 1,
     [int]$SampleMilliseconds = 100,
@@ -15,6 +15,8 @@ param(
     [string]$SpeedRootGatePath = '',
     [string]$SpeedEvidenceTranscriptFileSha256 = '',
     [string]$CrashDumpTool = 'procdump.exe',
+    [ValidateRange(30,1800)][int]$WorldReadyTimeoutSeconds = 600,
+    [switch]$KeepGameWindow,
     [switch]$OperatorApproved,
     [switch]$DryRun
 )
@@ -31,6 +33,7 @@ $productModsetVerifier = Join-Path $repoRoot 'extractor\game_defs\verify_product
 $staticBundleVerifier = Join-Path $repoRoot 'extractor\game_defs\static_bundle.py'
 $sinkVerifier = Join-Path $scriptDir 'verify_sink_reconciliation.py'
 $xn15lVerifier = Join-Path $repoRoot 'replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py'
+$headlessControl = Join-Path $scriptDir 'Control-Hoi4Game.ps1'
 . (Join-Path $scriptDir 'ProductionArtifact.Attestation.ps1')
 
 function Write-DurableJson {
@@ -59,7 +62,7 @@ if (-not $DryRun -and -not $OperatorApproved) {
 if ($DurationSeconds -lt 30 -or $DurationSeconds -gt 86400) { throw 'DurationSeconds is outside 30..86400.' }
 if ($MinGameHours -lt 1) { throw 'MinGameHours must be positive.' }
 if ($SampleMilliseconds -lt 1 -or $SampleMilliseconds -gt 10000) { throw 'SampleMilliseconds is outside 1..10000.' }
-foreach($path in @($Hoi4Exe,$PdxUserDir,$PreparedProductModsetDir,$productModsetVerifier,$staticBundleVerifier,$sinkVerifier,$xn15lVerifier,$safeLateAttachDriver)) {
+foreach($path in @($Hoi4Exe,$PdxUserDir,$PreparedProductModsetDir,$productModsetVerifier,$staticBundleVerifier,$sinkVerifier,$xn15lVerifier,$safeLateAttachDriver,$headlessControl)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required path is missing: $path" }
 }
 $Hoi4Exe=(Resolve-Path -LiteralPath $Hoi4Exe).Path
@@ -108,6 +111,7 @@ if ([string]$admission.schema -cne 'extractor.product_modset_capture_admission.v
     throw 'Prepared product-modset admission did not emit a passing canonical receipt.'
 }
 
+$effectiveSampleMilliseconds=if ($Purpose -ceq 'RawDebug') { 1 } else { $SampleMilliseconds }
 $arguments=@(
     '--early-launch-exe',$Hoi4Exe,
     '--early-launch-arg','--continuelastsave',
@@ -118,7 +122,7 @@ $arguments=@(
     '--profile','production',
     '--stream-format','compact',
     '--duration-s',([string]::Format([Globalization.CultureInfo]::InvariantCulture,'{0:0.###}',$DurationSeconds)),
-    '--sample-ms',[string]$SampleMilliseconds,
+    '--sample-ms',[string]$effectiveSampleMilliseconds,
     '--min-game-hours',[string]$MinGameHours,
     '--session-id',$SessionId,
     '--capture-id',$CaptureId,
@@ -133,17 +137,32 @@ $arguments=@(
     '--static-bundle-python',$python,
     '--static-bundle-timeout-ms','300000'
 )
+if ($KeepGameWindow) {
+    # Window presentation is independent of the PID-bound pause/play/speed
+    # controller. The default remains compatible with historical minimized
+    # captures; this option leaves the game's normal shown window alone.
+    $arguments += '--early-launch-keep-window'
+}
 if ($Purpose -ceq 'XN15L') {
     # A bounded render-transaction proof deliberately does not claim the full
     # D57 production gate. It still exercises the production H4CT and d77 path.
     $arguments += @('--scheduled-domains-exact','--scheduled-domain','session_header_live')
-} else {
+} elseif ($Purpose -ceq 'Production') {
     if (-not (Test-Path -LiteralPath $SpeedRootGatePath -PathType Leaf) -or $SpeedEvidenceTranscriptFileSha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'Full Production mode requires a same-process D57 gate path and raw transcript file SHA-256.'
     }
     $arguments += @(
         '--domain57-game-speed-gate-v2',(Resolve-Path -LiteralPath $SpeedRootGatePath).Path,
         '--domain57-game-speed-transcript-file-sha256',$SpeedEvidenceTranscriptFileSha256
+    )
+} else {
+    # RawDebug uses the complete production roster and the exact-build passive
+    # D57 observer, but stops at sealed H4CR plus integrity/error telemetry.
+    # Early H4CT/content authority is still required so one-shot render/UI
+    # sources cannot be missed.
+    $arguments += @(
+        '--stream-compression','none',
+        '--raw-debug-output'
     )
 }
 
@@ -166,6 +185,7 @@ $plan=[ordered]@{
     product_modset_sha256=[string]$admission.product_modset_sha256
     continue_game_sha256=$continueGameSha256
     semantic_arguments=@('--continuelastsave','--gdpr-compliant')
+    keep_game_window=[bool]$KeepGameWindow
     protected_existing_hoi4_process_ids=@($existing.Id)
     recorder_arguments=$arguments
     launch_blocker=$(if ($Purpose -ceq 'Production') { 'same_process_d57_gate_must_be_created_after_internal_suspended_process_creation' } else { $null })
@@ -188,6 +208,9 @@ $procdumpStderr=Join-Path $crashDir 'procdump.stderr.log'
 $dumpMonitor=$null
 $process=$null
 $recorderExitCode=$null
+$rawRecorderExitNonzero=$false
+$headlessControlResult=$null
+$headlessControlError=$null
 try {
     $dumpMonitor=Start-Process -FilePath $procdump -ArgumentList @(
         '-accepteula','-ma','-e','-w','hoi4.exe',$crashDir
@@ -204,13 +227,73 @@ try {
     $process=[System.Diagnostics.Process]::new();$process.StartInfo=$start
     if (-not $process.Start()) { throw 'collector_record process start returned false' }
     $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
+    if ($Purpose -ceq 'RawDebug') {
+        $worldDeadline=[DateTime]::UtcNow.AddSeconds($WorldReadyTimeoutSeconds)
+        while (-not $process.HasExited -and [DateTime]::UtcNow -lt $worldDeadline) {
+            $gameCandidates=@(Get-Process -Name the game -ErrorAction SilentlyContinue)
+            if ($gameCandidates.Count -eq 1) {
+                try {
+                    $candidateResult=& $headlessControl -TargetPid $gameCandidates[0].Id -Speed 5 -Play
+                    if (
+                        $null -ne $candidateResult -and
+                        [int]$candidateResult.Pid -eq [int]$gameCandidates[0].Id -and
+                        [int]$candidateResult.Speed -eq 5 -and
+                        [string]$candidateResult.Action -ceq 'Play'
+                    ) {
+                        $headlessControlResult=$candidateResult
+                        break
+                    }
+                } catch {
+                    # The exact process exists before CGameState/CInGameIdler.
+                    # Retry until the authenticated world singletons become
+                    # stable; no window activation or foreground input occurs.
+                    $headlessControlError=$_.Exception.Message
+                }
+            }
+            Start-Sleep -Milliseconds 500
+            $process.Refresh()
+        }
+        if ($null -eq $headlessControlResult) {
+            if ($process.HasExited) {
+                throw "Recorder exited before headless world-ready control completed (exit $($process.ExitCode))."
+            }
+            throw "the game did not expose authenticated world-ready pause/speed roots within $WorldReadyTimeoutSeconds seconds. Last control error: $headlessControlError"
+        }
+        Write-DurableJson -Path (Join-Path $OutDir 'raw_debug_headless_control.json') -Value ([ordered]@{
+            schema='battle-plan.raw_debug_headless_control.v1'
+            process_id=[int]$headlessControlResult.Pid
+            executable_sha256=[string]$headlessControlResult.ExeSha256
+            action=[string]$headlessControlResult.Action
+            speed=[int]$headlessControlResult.Speed
+            paused=[bool]$headlessControlResult.Paused
+            hour_a=[int]$headlessControlResult.HourA
+            hour_b=[int]$headlessControlResult.HourB
+            advancing=[bool]$headlessControlResult.Advancing
+            controlled_utc=[DateTime]::UtcNow.ToString('o')
+        })
+    }
     $process.WaitForExit()
     $recorderExitCode=$process.ExitCode
     [System.IO.File]::WriteAllText($stdoutPath,[string]$stdout.Result,[System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText($stderrPath,[string]$stderr.Result,[System.Text.UTF8Encoding]::new($false))
-    if ($process.ExitCode -ne 0) { throw "collector_record exited with code $($process.ExitCode); retained logs are in $OutDir" }
+    if ($process.ExitCode -ne 0) {
+        if ($Purpose -ceq 'RawDebug') {
+            # Capture-integrity/error telemetry is the raw-debug deliverable
+            # even when a domain gate fails. Continue to hash/rebind the H4CR,
+            # then return a failing result after the evidence is durable.
+            $rawRecorderExitNonzero=$true
+        } else {
+            throw "collector_record exited with code $($process.ExitCode); retained logs are in $OutDir"
+        }
+    }
 } finally {
-    if ($null -ne $process) { $process.Dispose() }
+    if ($null -ne $process) {
+        if (-not $process.HasExited) {
+            try { $process.Kill() } catch {}
+            try { [void]$process.WaitForExit(10000) } catch {}
+        }
+        $process.Dispose()
+    }
     if ($null -ne $dumpMonitor) {
         if (-not $dumpMonitor.HasExited) { Stop-Process -Id $dumpMonitor.Id -Force -ErrorAction SilentlyContinue }
         $dumpMonitor.Dispose()
@@ -253,11 +336,85 @@ Write-DurableJson -Path $resolvedAttemptPath -Value ([ordered]@{
     product_modset_sha256=[string]$sessionManifest.portable_content_manifest.product_modset_sha256
 })
 
-$verificationPath=Join-Path $OutDir $(if ($Purpose -ceq 'XN15L') { 'xn15l_live_verification.json' } else { 'sink_reconciliation_verification.json' })
+$verificationPath=Join-Path $OutDir $(if ($Purpose -ceq 'XN15L') { 'xn15l_live_verification.json' } elseif ($Purpose -ceq 'RawDebug') { 'raw_debug_early_launch_integrity.json' } else { 'sink_reconciliation_verification.json' })
 if ($Purpose -ceq 'XN15L') {
     & $python $xn15lVerifier --run-dir $OutDir --out $verificationPath
-} else {
+} elseif ($Purpose -ceq 'Production') {
     & $python $sinkVerifier --run-dir $OutDir --expect success --out $verificationPath
+} else {
+    $rawReceiptPath=Join-Path $OutDir 'raw_debug_output.json'
+    if (-not (Test-Path -LiteralPath $rawReceiptPath -PathType Leaf)) {
+        throw 'Raw-debug early launch emitted no raw_debug_output.json integrity receipt.'
+    }
+    $rawReceipt=Get-Content -LiteralPath $rawReceiptPath -Raw | ConvertFrom-Json
+    if (
+        [string]$rawReceipt.schema -cne 'battle-plan.raw_debug_output.v2' -or
+        [bool]$rawReceipt.admissible_for_production -or
+        [bool]$rawReceipt.container_emitted -or
+        [bool]$rawReceipt.container_compression_applied -or
+        -not [bool]$rawReceipt.stream.sealed -or
+        [string]$rawReceipt.stream.compression -cne 'none' -or
+        [bool]$rawReceipt.derived_artifacts.host_fold_performed -or
+        [bool]$rawReceipt.derived_artifacts.hour_index_h4ix_built -or
+        [bool]$rawReceipt.derived_artifacts.checkpoint_cache_h4cp_built -or
+        [bool]$rawReceipt.derived_artifacts.reconstruction_parity_run -or
+        [bool]$rawReceipt.derived_artifacts.bounded_seek_certification_run -or
+        [bool]$rawReceipt.derived_artifacts.replay_container_built -or
+        [bool]$rawReceipt.derived_artifacts.compression_run
+    ) {
+        throw 'Raw-debug early launch receipt violates the direct-H4CR-only contract.'
+    }
+    $relativeStream=[string]$rawReceipt.stream.path
+    $rawStreamPath=[System.IO.Path]::GetFullPath((Join-Path $OutDir $relativeStream))
+    $outRootWithSeparator=[System.IO.Path]::GetFullPath($OutDir).TrimEnd('\') + '\'
+    if (-not $rawStreamPath.StartsWith($outRootWithSeparator,[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Raw-debug H4CR receipt escapes the capture directory.'
+    }
+    if (-not (Test-Path -LiteralPath $rawStreamPath -PathType Leaf)) {
+        throw "Raw-debug H4CR is missing: $rawStreamPath"
+    }
+    $rawItem=Get-Item -LiteralPath $rawStreamPath
+    $rawSha256=(Get-FileHash -LiteralPath $rawStreamPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (
+        [int64]$rawReceipt.stream.bytes -ne [int64]$rawItem.Length -or
+        [string]$rawReceipt.stream.sha256 -cne $rawSha256 -or
+        -not [bool]$rawReceipt.capture_integrity.sha256_matches_capture_receipt
+    ) {
+        throw 'Raw-debug H4CR bytes/hash differ from the capture integrity receipt.'
+    }
+    if (
+        -not [bool]$sessionManifest.early_render_capture_receipt.created_suspended -or
+        [uint64]$sessionManifest.early_render_capture_receipt.preexisting_game_d3d_object_count -ne 0 -or
+        [string]$sessionManifest.early_render_launch_manifest.semantic_arguments[0] -cne '--continuelastsave' -or
+        [string]$sessionManifest.early_render_launch_manifest.semantic_arguments[1] -cne '--gdpr-compliant' -or
+        $null -eq $sessionManifest.portable_content_manifest -or
+        $null -eq $sessionManifest.raw_debug_pre_resume_static_bundle
+    ) {
+        throw 'Raw-debug capture lost its authenticated suspended-launch/content authority.'
+    }
+    Write-DurableJson -Path $verificationPath -Value ([ordered]@{
+        schema='battle-plan.raw_debug_early_launch_integrity.v1'
+        admissible_for_production=$false
+        direct_h4cr_only=$true
+        process_id=[int]$sessionManifest.early_render_capture_receipt.process_id
+        created_suspended=$true
+        preexisting_game_d3d_object_count=0
+        semantic_arguments=@('--continuelastsave','--gdpr-compliant')
+        h4cr_file=$relativeStream
+        h4cr_bytes=[int64]$rawItem.Length
+        h4cr_sha256=$rawSha256
+        headless_speed_play_receipt='raw_debug_headless_control.json'
+        derived_artifacts_emitted=$false
+    })
 }
-if ($LASTEXITCODE -ne 0) { throw "Post-capture mechanical regrade failed; inspect $verificationPath" }
-Write-Host "Early-launch capture mechanically admitted: $verificationPath"
+if ($Purpose -cne 'RawDebug' -and $LASTEXITCODE -ne 0) {
+    throw "Post-capture mechanical regrade failed; inspect $verificationPath"
+}
+if ($Purpose -ceq 'RawDebug') {
+    Write-Host "Early-launch raw-debug H4CR sealed and hash-verified without replay certification: $verificationPath"
+    if ($rawRecorderExitNonzero -or -not [bool]$rawReceipt.error_telemetry.capture_gates_met) {
+        throw "Raw-debug capture retained a hash-verified H4CR with capture errors; inspect $rawReceiptPath and $verificationPath"
+    }
+} else {
+    Write-Host "Early-launch capture mechanically admitted: $verificationPath"
+}

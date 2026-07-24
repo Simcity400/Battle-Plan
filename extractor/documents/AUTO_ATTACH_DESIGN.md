@@ -7,6 +7,24 @@ admits a minimized/windowless game there. The product has no tray process or ser
 Closing the window or pressing **Stop and finish recordings** enters coordinator-owned graceful
 shutdown. Duplex activation remains separately governed by P2.
 
+### Render/UI source boundary
+
+Ordinary WMI auto-attach remains a late-attach transport. Discovering a PID before
+its first visible window does not prove that the recorder attached before the
+process's first D3D device, so this route must not claim authenticated render/UI
+absence or fabricate the launch-time sources used by D72/D79/D82/D85/D87/D88/D89/D97.
+
+When those sources are scheduled, use
+`Start-Hoi4EarlyLaunchCaptureSafe.ps1 -Purpose RawDebug`. That path preserves the
+launcher-effective `--continuelastsave --gdpr-compliant` argument order, creates
+the selected `hoi4.exe` suspended, completes the H4CT content/hook-ready
+transaction, resumes exactly once, and then controls play at speed 5 through the
+PID-bound memory controller without foreground input. The normal shown-window
+startup is retained; historical minimization remains the default and
+`-KeepGameWindow` leaves the game window presentation unchanged. RawDebug seals
+and hashes H4CR plus integrity/error telemetry only: it does not run the host
+fold, build H4IX/H4CP, certify reconstruction/seek, package a replay, or compress.
+
 **Owner decision:** 2026-07-12. This implements pillar 1 of
 `PRODUCT_SESSION_SEMANTICS.md`: app-first and game-first must both attach without a
 PID, path, or save setting (`PRODUCT_SESSION_SEMANTICS.md:16-26`). It does not claim
