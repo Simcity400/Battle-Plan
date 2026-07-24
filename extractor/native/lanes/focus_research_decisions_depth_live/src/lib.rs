@@ -2528,8 +2528,11 @@ fn normalize_v4_v5_depth_rows(
         let trailer = payload
             .get(cursor..)
             .ok_or_else(|| "v5 direct trailer offset overflow".to_string())?;
-        let expected_first = if direct_count == 0 {
-            1
+        let sequence_start = if direct_count == 0 {
+            // The hook epoch and sequence cursor survive logical-stream
+            // rollover. An empty first drain therefore establishes the new
+            // stream's process-wide baseline instead of implying sequence 1.
+            32
         } else {
             require_remaining(
                 trailer,
@@ -2537,13 +2540,19 @@ fn normalize_v4_v5_depth_rows(
                 direct_frd_transitions_live::D45_V5_DIRECT_EVENT_ROW_LEN,
                 "v5 direct trailer first row",
             )?;
-            u64::from_le_bytes(
-                trailer[direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN
-                    ..direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN + 8]
-                    .try_into()
-                    .expect("fixed v5 direct sequence"),
-            )
+            direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN
         };
+        require_remaining(
+            trailer,
+            sequence_start,
+            8,
+            "v5 direct trailer sequence baseline",
+        )?;
+        let expected_first = u64::from_le_bytes(
+            trailer[sequence_start..sequence_start + 8]
+                .try_into()
+                .expect("fixed v5 direct sequence"),
+        );
         let rows = direct_frd_transitions_live::decode_trailer(trailer, expected_first)
             .map_err(|error| format!("v5 direct trailer rejected: {error}"))?;
         if rows.len() != direct_count {
@@ -4191,6 +4200,34 @@ mod tests {
             .expect("FRD2 v3 shared authority");
             assert_eq!(authority.status_flags, Some(expected));
         }
+    }
+
+    #[test]
+    fn frd2_v5_normalizer_accepts_empty_process_continuous_sequence_baseline() {
+        let batch = direct_frd_transitions_live::DirectEventBatch {
+            hook_epoch: 7,
+            drain_sequence: 4,
+            installed_root_mask:
+                direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
+            observed_kind_mask: 0,
+            sequence_cursor: 3,
+            producer_complete: true,
+            evidence_fixture: false,
+            rows: Vec::new(),
+        };
+        let trailer =
+            direct_frd_transitions_live::encode_authoritative_trailer(&batch).unwrap();
+        let mut payload = vec![0u8; 64];
+        payload[0..4].copy_from_slice(b"FRD2");
+        payload[4..6].copy_from_slice(&5u16.to_le_bytes());
+        payload[6..8].copy_from_slice(&64u16.to_le_bytes());
+        payload[8..12]
+            .copy_from_slice(&DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED.to_le_bytes());
+        payload.extend_from_slice(&trailer);
+
+        let normalized = normalize_depth_versioned_payload(&payload)
+            .expect("empty process-continuous sequence establishes the lane baseline");
+        assert_eq!(normalized.len(), DEPTH_HEADER_LEN);
     }
 
     #[test]

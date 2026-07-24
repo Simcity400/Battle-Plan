@@ -4222,22 +4222,26 @@ fn decode_compact_frd_depth_data_payload(
     }
     if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 {
         let trailer = &payload[cursor..];
-        let expected_first_sequence = if direct_transition_count == 0 {
-            1
+        // A logical stream may begin after the process-wide hook epoch has
+        // already drained pre-world or prior-campaign rows. For an empty first
+        // drain, the authoritative sequence cursor is therefore the stream's
+        // baseline; it is not required to be the hook-epoch origin (1).
+        let sequence_start = if direct_transition_count == 0 {
+            32
         } else {
-            let sequence_start = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN;
-            let Some(sequence_bytes) = trailer.get(sequence_start..sequence_start + 8) else {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: focus/research/decisions depth v5 direct trailer is too short for its first sequence"
-                ));
-                return;
-            };
-            u64::from_le_bytes(
-                sequence_bytes
-                    .try_into()
-                    .expect("fixed direct-event sequence slice"),
-            )
+            direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN
         };
+        let Some(sequence_bytes) = trailer.get(sequence_start..sequence_start + 8) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth v5 direct trailer is too short for its sequence baseline"
+            ));
+            return;
+        };
+        let expected_first_sequence = u64::from_le_bytes(
+            sequence_bytes
+                .try_into()
+                .expect("fixed direct-event sequence slice"),
+        );
         let rows = match direct_frd_transitions_live::decode_trailer(
             trailer,
             expected_first_sequence,
