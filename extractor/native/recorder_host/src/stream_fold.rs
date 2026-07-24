@@ -16,7 +16,7 @@
 //! by the recorder host during finalization and by the `stream_fold` offline
 //! tool (which also re-folds old recordings and measures peak memory).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -32,6 +32,7 @@ use compact_contract::stream_validator::{
 use compact_contract::campaign_identity::ValidatedCid1;
 use snapshot::sha256::{to_hex, Sha256};
 
+use crate::domain_data_authority::{summarize_domain_data_payload, DomainDataContext};
 use crate::world_fold::{FoldedSnapshotFile, WorldFold};
 
 /// Read granularity for the streaming fold. Bounded and independent of stream size.
@@ -105,6 +106,10 @@ pub struct FoldStreamStats {
     /// validation and were degraded per-domain (owner zero-data-loss ruling) rather
     /// than failing the whole fold. The record is framed-valid; only its payload is bad.
     pub malformed_payload_records: u64,
+    /// Bounded diagnostic breakdown for malformed DATA records. There can be at
+    /// most one entry per registered domain, so retaining the first exact
+    /// decoder reason cannot grow with capture duration.
+    pub malformed_payload_domains: BTreeMap<u16, MalformedPayloadDomainStats>,
     pub frame_end_records: u64,
     pub perf_records: u64,
     /// Ordinary non-DATA/non-PERF/non-FRAME_END records; excludes CID1.
@@ -123,6 +128,14 @@ pub struct FoldStreamStats {
     /// deliberately-collided cheap-hash source versions cannot merge into a
     /// mixed fold. Hex, empty when never computed.
     pub decoded_sha256: String,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MalformedPayloadDomainStats {
+    pub records: u64,
+    pub first_reason: String,
+    pub first_stream_offset: u64,
+    pub first_game_hour_raw: i32,
 }
 
 /// Pointer-free identity telemetry retained by fold/seal walkers. This is
@@ -578,7 +591,14 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
                 continue;
             }
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                validate_domain_data_payload(header.domain_id, payload, header.record_flags)
+                validate_domain_data_payload_at(
+                    header.domain_id,
+                    payload,
+                    header.record_flags,
+                    header.sequence,
+                    header.game_hour_raw,
+                    processed + off as u64,
+                )
                     .map_err(|reason| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -825,17 +845,41 @@ fn sha256_file(path: &Path) -> io::Result<String> {
     Ok(to_hex(&hasher.finalize()))
 }
 
-/// Validate one DOMAIN_DATA payload through the canonical per-domain decoder's
-/// structural-only entrypoint. The record header's declared payload length is
-/// not trusted: exact consumption by the domain grammar is the independent
-/// delimiter. No payload bytes or status bits are modified, and missing fold
-/// baselines are deliberately irrelevant to this boundary verdict.
+/// Validate one DOMAIN_DATA payload through the canonical per-domain decoding
+/// authority used by the manifest and compact verification gate. The record
+/// header's declared payload length is not trusted: exact consumption by the
+/// domain grammar is the independent delimiter. Missing fold baselines and
+/// cross-domain semantic joins are deliberately irrelevant to this structural
+/// boundary verdict.
 pub fn validate_domain_data_payload(
     domain_id: u16,
     payload: &[u8],
     record_flags: u32,
 ) -> Result<(), String> {
-    WorldFold::validate_domain_data_payload_exact(domain_id, payload, record_flags)
+    validate_domain_data_payload_at(domain_id, payload, record_flags, 0, 0, 0)
+}
+
+fn validate_domain_data_payload_at(
+    domain_id: u16,
+    payload: &[u8],
+    record_flags: u32,
+    sequence: u64,
+    header_hour_raw: i32,
+    stream_offset: u64,
+) -> Result<(), String> {
+    summarize_domain_data_payload(
+        domain_id,
+        payload,
+        DomainDataContext {
+            stream_offset: usize::try_from(stream_offset).unwrap_or(usize::MAX),
+            record_flags,
+            sequence,
+            header_hour_raw,
+            session_header_identity: None,
+        },
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 /// Drive the production fold over a record stream with a bounded carry buffer.
@@ -1012,9 +1056,14 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
             }
 
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                if let Err(reason) =
-                    validate_domain_data_payload(header.domain_id, payload, header.record_flags)
-                {
+                if let Err(reason) = validate_domain_data_payload_at(
+                    header.domain_id,
+                    payload,
+                    header.record_flags,
+                    header.sequence,
+                    header.game_hour_raw,
+                    processed + off as u64,
+                ) {
                     // Zero-data-loss ruling (owner 2026-07-14): a structurally-malformed
                     // DOMAIN_DATA payload degrades ONLY its own domain — never the whole
                     // recording. Frame accounting still counts this well-framed record;
@@ -1023,6 +1072,16 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                     stats.records_total += 1;
                     stats.data_records += 1;
                     stats.malformed_payload_records += 1;
+                    let malformed = stats
+                        .malformed_payload_domains
+                        .entry(header.domain_id)
+                        .or_insert_with(|| MalformedPayloadDomainStats {
+                            records: 0,
+                            first_reason: reason.clone(),
+                            first_stream_offset: processed + off as u64,
+                            first_game_hour_raw: header.game_hour_raw,
+                        });
+                    malformed.records = malformed.records.saturating_add(1);
                     tracker.observe(&header, payload, processed + off as u64);
                     fold.record_malformed_domain_payload(
                         header.game_hour_raw,

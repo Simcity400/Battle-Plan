@@ -33,6 +33,8 @@ pub struct Candidate {
     pub state_entered_ms: u64,
     /// How many readiness re-checks have run (drives the backoff ladder).
     pub readiness_attempts: usize,
+    /// Wall-ms of the last expensive identity/window readiness probe.
+    pub last_readiness_probe_ms: Option<u64>,
     /// The current attach attempt id, once one is staged.
     pub attempt_id: Option<String>,
     /// Coordinator-owned session identifier actually passed to the worker.
@@ -60,6 +62,7 @@ impl Candidate {
             last_seen_ms: now_ms,
             state_entered_ms: now_ms,
             readiness_attempts: 0,
+            last_readiness_probe_ms: None,
             attempt_id: None,
             session_id: None,
             payload: None,
@@ -140,6 +143,31 @@ impl CandidateRegistry {
                 ObserveOutcome::NewCandidate
             }
         }
+    }
+
+    /// Replace a recovered terminal generation with a clean candidate after the
+    /// coordinator has independently proved that generation's exact staged DLL
+    /// is absent from the still-live target. The registry does not perform that
+    /// OS proof itself; requiring a terminal predecessor prevents this seam
+    /// from weakening the in-generation single-injection guard.
+    pub fn rearm_after_proven_unload(
+        &mut self,
+        identity: ProcessIdentity,
+        now_ms: u64,
+    ) -> Result<CandidateState, String> {
+        let key = identity.key;
+        let previous = self
+            .by_key
+            .get(&key)
+            .ok_or_else(|| format!("cannot rearm unknown identity {key:?}"))?
+            .state;
+        if !previous.is_terminal() {
+            return Err(format!(
+                "cannot rearm nonterminal identity {key:?} in state {previous}"
+            ));
+        }
+        self.by_key.insert(key, Candidate::new(identity, now_ms));
+        Ok(previous)
     }
 
     /// Record a WMI stop hint for a pid. It is only a hint: liveness is proven
@@ -250,6 +278,10 @@ impl CandidateRegistry {
         let prev = cand.state;
         cand.state = next;
         cand.state_entered_ms = now_ms;
+        if next != prev {
+            cand.readiness_attempts = 0;
+            cand.last_readiness_probe_ms = None;
+        }
         Ok(prev)
     }
 
@@ -288,9 +320,10 @@ impl CandidateRegistry {
     }
 
     /// Record a readiness re-check and return the just-incremented attempt count.
-    pub fn bump_readiness(&mut self, key: &ProcessKey) -> usize {
+    pub fn bump_readiness(&mut self, key: &ProcessKey, now_ms: u64) -> usize {
         if let Some(c) = self.by_key.get_mut(key) {
             c.readiness_attempts += 1;
+            c.last_readiness_probe_ms = Some(now_ms);
             c.readiness_attempts
         } else {
             0
@@ -377,6 +410,28 @@ mod tests {
     fn may_start_injection_fails_closed_on_unknown_key() {
         let reg = CandidateRegistry::new();
         assert!(!reg.may_start_injection(&ProcessKey::new(1, 1)));
+    }
+
+    #[test]
+    fn proven_unload_rearms_only_a_terminal_generation() {
+        let mut reg = CandidateRegistry::new();
+        let identity = ident(201, 8);
+        let key = identity.key;
+        reg.observe_present(identity.clone(), 0);
+        assert!(reg
+            .rearm_after_proven_unload(identity.clone(), 1)
+            .unwrap_err()
+            .contains("nonterminal"));
+        reg.fail(&key);
+        assert_eq!(
+            reg.rearm_after_proven_unload(identity, 2).unwrap(),
+            CandidateState::Failed
+        );
+        let fresh = reg.get(&key).unwrap();
+        assert_eq!(fresh.state, CandidateState::Detected);
+        assert!(fresh.attempt_id.is_none());
+        assert!(fresh.payload.is_none());
+        assert!(reg.may_start_injection(&key));
     }
 
     #[test]

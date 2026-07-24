@@ -14,7 +14,7 @@
 /// degraded/fake source used by tests and fallback compositions.
 pub mod wmi;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::identity::{ProcessIdentity, ProcessKey};
@@ -35,6 +35,22 @@ pub trait ProcessProbe: Send {
     /// (Err) if any authority field (creation time, path, session, SID) cannot
     /// be read — the coordinator then holds the candidate in `WaitingForIdentity`.
     fn identify(&self, pid: u32) -> Result<ProcessIdentity, String>;
+    /// Prove whether the exact staged collector from a completed attempt is
+    /// still mapped in the target. Unsupported or incomplete enumeration is an
+    /// error, never an inferred absence.
+    fn collector_module_residency(
+        &self,
+        _pid: u32,
+        _dll_path: &Path,
+    ) -> Result<CollectorModuleResidency, String> {
+        Err("collector module residency probe is unavailable".to_string())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectorModuleResidency {
+    Loaded,
+    Absent,
 }
 
 /// One Toolhelp enumeration together with the witness needed before absence may
@@ -114,6 +130,16 @@ pub struct ModsetResolution {
 /// Stages a fresh, never-before-used collector DLL directory per attempt
 /// (design §5 unique DLL path — never reuse a path hooked into a live game).
 pub trait PayloadStager: Send {
+    /// Retire the durable one-injection commitment only after the coordinator
+    /// has proved the exact prior staged DLL absent from the same live process
+    /// identity. Implementations must validate that the marker names that DLL
+    /// generation and make the operation idempotent across crashes.
+    fn rearm_after_proven_unload(
+        &self,
+        key: ProcessKey,
+        prior_dll_path: &Path,
+    ) -> Result<(), String>;
+
     fn stage(
         &self,
         key: ProcessKey,
@@ -136,6 +162,10 @@ pub struct StagedPayload {
     pub pipe_token: String,
     /// Hash of that exact raw token. Only this derivative is journalled.
     pub pipe_token_hash: String,
+    /// A prior commitment for this exact PID+FILETIME was retired only after
+    /// the coordinator proved its exact DLL absent. This authorizes reopening
+    /// the kernel-retained named target job for the next generation.
+    pub rearmed_after_proven_unload: bool,
 }
 
 /// Spawns and supervises one `collector_record` worker per game process
@@ -247,6 +277,8 @@ mod ffi {
     pub type Handle = *mut c_void;
     pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     pub const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    pub const TH32CS_SNAPMODULE: u32 = 0x0000_0008;
+    pub const TH32CS_SNAPMODULE32: u32 = 0x0000_0010;
     pub const ERROR_NO_MORE_FILES: u32 = 18;
     pub const TOKEN_QUERY: u32 = 0x0008;
     pub const TOKEN_USER_CLASS: i32 = 1; // TOKEN_INFORMATION_CLASS::TokenUser
@@ -267,6 +299,20 @@ mod ffi {
     }
 
     #[repr(C)]
+    pub struct ModuleEntry32W {
+        pub dw_size: u32,
+        pub th32_module_id: u32,
+        pub th32_process_id: u32,
+        pub glblcnt_usage: u32,
+        pub proccnt_usage: u32,
+        pub mod_base_addr: *mut u8,
+        pub mod_base_size: u32,
+        pub h_module: Handle,
+        pub sz_module: [u16; 256],
+        pub sz_exe_path: [u16; MAX_PATH],
+    }
+
+    #[repr(C)]
     pub struct SidAndAttributes {
         pub sid: *mut c_void,
         pub attributes: u32,
@@ -277,6 +323,7 @@ mod ffi {
         pub user: SidAndAttributes,
     }
 
+    #[allow(clashing_extern_declarations)]
     extern "system" {
         pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
         pub fn CloseHandle(handle: Handle) -> i32;
@@ -296,6 +343,8 @@ mod ffi {
         pub fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
         pub fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
         pub fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
+        pub fn Module32FirstW(snapshot: Handle, entry: *mut ModuleEntry32W) -> i32;
+        pub fn Module32NextW(snapshot: Handle, entry: *mut ModuleEntry32W) -> i32;
         pub fn GetLastError() -> u32;
         pub fn SetLastError(error: u32);
         pub fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> i32;
@@ -503,6 +552,74 @@ impl ProcessProbe for ToolhelpProbe {
             result
         }
     }
+
+    fn collector_module_residency(
+        &self,
+        pid: u32,
+        dll_path: &Path,
+    ) -> Result<CollectorModuleResidency, String> {
+        let expected = normalized_windows_path(dll_path);
+        if expected.is_empty() {
+            return Err("collector module residency path is empty".to_string());
+        }
+        unsafe {
+            let snap = ffi::CreateToolhelp32Snapshot(
+                ffi::TH32CS_SNAPMODULE | ffi::TH32CS_SNAPMODULE32,
+                pid,
+            );
+            if snap == ffi::invalid_handle() || snap.is_null() {
+                return Err(format!(
+                    "CreateToolhelp32Snapshot(modules, {pid}) failed with OS error {}",
+                    ffi::GetLastError()
+                ));
+            }
+            let result = (|| {
+                let mut entry: ffi::ModuleEntry32W = std::mem::zeroed();
+                entry.dw_size = std::mem::size_of::<ffi::ModuleEntry32W>() as u32;
+                ffi::SetLastError(0);
+                if ffi::Module32FirstW(snap, &mut entry) == 0 {
+                    let error = ffi::GetLastError();
+                    if error == ffi::ERROR_NO_MORE_FILES {
+                        return Ok(CollectorModuleResidency::Absent);
+                    }
+                    return Err(format!(
+                        "Module32FirstW({pid}) failed with OS error {error}"
+                    ));
+                }
+                loop {
+                    let mut n = 0usize;
+                    while n < entry.sz_exe_path.len() && entry.sz_exe_path[n] != 0 {
+                        n += 1;
+                    }
+                    let observed_text = String::from_utf16_lossy(&entry.sz_exe_path[..n]);
+                    let observed = normalized_windows_path(Path::new(&observed_text));
+                    if observed == expected {
+                        return Ok(CollectorModuleResidency::Loaded);
+                    }
+                    ffi::SetLastError(0);
+                    if ffi::Module32NextW(snap, &mut entry) == 0 {
+                        let error = ffi::GetLastError();
+                        if error == ffi::ERROR_NO_MORE_FILES {
+                            return Ok(CollectorModuleResidency::Absent);
+                        }
+                        return Err(format!(
+                            "Module32NextW({pid}) stopped with OS error {error}"
+                        ));
+                    }
+                }
+            })();
+            ffi::CloseHandle(snap);
+            result
+        }
+    }
+}
+
+#[cfg(windows)]
+fn normalized_windows_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('/', r"\")
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]

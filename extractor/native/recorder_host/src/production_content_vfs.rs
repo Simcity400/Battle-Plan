@@ -4,13 +4,193 @@
 //! They never enter the portable replay or any neutral schema.
 
 use crate::portable_content_manifest::{
-    descriptor_scalar, latin1_bytes_to_string, normalize_stable_layer_id,
-    semantic_descriptor_sha256, RuntimeContentRoots,
+    descriptor_replace_paths, descriptor_scalar, latin1_bytes_to_string,
+    normalize_stable_layer_id, semantic_descriptor_sha256, PortableLaunchBinding,
+    RuntimeContentRoots,
 };
+use crate::modset::ModsetReport;
 use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
 use portable_content_manifest::{ContentLayerKind, LayerStorageKind, RecordedContentLayer};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const A729_EXE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+const D49_STRATEGIC_REGION_PREFIX: &str = "map/strategicregions";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct D49StrategicRegionFileAuthority {
+    pub logical_path: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct D49BaseOnlyStrategicRegionAuthority {
+    pub schema: &'static str,
+    pub source: &'static str,
+    pub exact_exe_sha256: String,
+    pub install_root: PathBuf,
+    pub inventory_sha256: String,
+    pub files: Vec<D49StrategicRegionFileAuthority>,
+}
+
+/// Admit the base strategic-region directory for an ordinary attach only when
+/// the launch binding proves zero mods and every enabled/integrated DLC is
+/// independently proven not to replace or contribute that namespace. This is
+/// intentionally narrower than the full H4CT effective-VFS path: any non-base
+/// contribution fails closed instead of guessing DLC priority.
+pub fn d49_base_only_authority_from_resolved_zero_mod_launch(
+    report: &ModsetReport,
+) -> Result<D49BaseOnlyStrategicRegionAuthority, String> {
+    if !report.resolved || !report.enabled_mods.is_empty() {
+        return Err("D49 base-only authority requires a resolved zero-mod launch".into());
+    }
+    let exact_exe_sha256 = report
+        .exe_sha256
+        .as_deref()
+        .ok_or("D49 base-only authority omitted executable identity")?;
+    if exact_exe_sha256 != A729_EXE_SHA256 {
+        return Err("D49 base-only authority requires the exact a729 executable".into());
+    }
+    let roots = RuntimeContentRoots::from_modset(report)?;
+    let launch = PortableLaunchBinding::from_modset(report)?;
+    let base = RecordedContentLayer {
+        ordinal: 0,
+        layer_kind: ContentLayerKind::Base,
+        layer_id: "base".into(),
+        display_name: "base".into(),
+        descriptor_sha256: None,
+        source_container_sha256: None,
+        storage_kind: LayerStorageKind::Directory,
+        replace_paths: Vec::new(),
+        required_for_playback: false,
+    };
+
+    for bound in launch.integrated_dlc_layers.values() {
+        prove_layer_does_not_affect_d49(
+            &roots,
+            &base,
+            ContentLayerKind::IntegratedDlc,
+            &bound.layer_id,
+            &bound.descriptor_sha256,
+            bound.source_container_sha256.clone(),
+            bound.storage_kind,
+            exact_exe_sha256,
+        )?;
+    }
+    for bound in launch.enabled_dlc_layers.values() {
+        prove_layer_does_not_affect_d49(
+            &roots,
+            &base,
+            ContentLayerKind::Dlc,
+            &bound.layer_id,
+            &bound.descriptor_sha256,
+            bound.source_container_sha256.clone(),
+            bound.storage_kind,
+            exact_exe_sha256,
+        )?;
+    }
+
+    let base_vfs = effective_vfs_from_launch(&roots, std::slice::from_ref(&base), exact_exe_sha256)?;
+    let mut resolved = base_vfs.list_recursive(D49_STRATEGIC_REGION_PREFIX, Some("txt"))?;
+    resolved.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+    if resolved.is_empty() || resolved.len() > 16_384 {
+        return Err("D49 base strategic-region inventory is empty or unbounded".into());
+    }
+    let files = resolved
+        .into_iter()
+        .map(|file| D49StrategicRegionFileAuthority {
+            logical_path: file.logical_path,
+            bytes: file.bytes.len() as u64,
+            sha256: file.content.payload_sha256,
+        })
+        .collect::<Vec<_>>();
+    let inventory_bytes = serde_json::to_vec(&files)
+        .map_err(|error| format!("serialize D49 base-only inventory failed: {error}"))?;
+    let inventory_sha256 = format!("{:x}", Sha256::digest(&inventory_bytes));
+    Ok(D49BaseOnlyStrategicRegionAuthority {
+        schema: "hoi4.d49-base-only-strategic-regions.v1",
+        source: "resolved_zero_mod_base_only_effective_vfs",
+        exact_exe_sha256: exact_exe_sha256.into(),
+        install_root: roots.install_root,
+        inventory_sha256,
+        files,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_layer_does_not_affect_d49(
+    roots: &RuntimeContentRoots,
+    base: &RecordedContentLayer,
+    layer_kind: ContentLayerKind,
+    layer_id: &str,
+    descriptor_sha256: &str,
+    source_container_sha256: Option<String>,
+    storage_kind: LayerStorageKind,
+    authority_sha256: &str,
+) -> Result<(), String> {
+    let descriptor = stable_relative_join(&roots.install_root, layer_id)?;
+    let provisional = RecordedContentLayer {
+        ordinal: 1,
+        layer_kind,
+        layer_id: layer_id.into(),
+        display_name: layer_id.into(),
+        descriptor_sha256: Some(descriptor_sha256.into()),
+        source_container_sha256,
+        storage_kind,
+        replace_paths: Vec::new(),
+        required_for_playback: false,
+    };
+    let text = verify_descriptor(&provisional, &descriptor)?;
+    let replace_paths = descriptor_replace_paths(&text);
+    if replace_paths
+        .iter()
+        .any(|path| path.eq_ignore_ascii_case(D49_STRATEGIC_REGION_PREFIX))
+    {
+        return Err(format!(
+            "D49 base-only authority rejected {} because it replaces {}",
+            layer_id, D49_STRATEGIC_REGION_PREFIX
+        ));
+    }
+    let local_source = match layer_kind {
+        ContentLayerKind::IntegratedDlc => descriptor
+            .parent()
+            .ok_or("integrated DLC descriptor has no containing directory")?
+            .to_path_buf(),
+        ContentLayerKind::Dlc => descriptor_content_source(
+            &roots.install_root,
+            &descriptor,
+            &text,
+            storage_kind,
+            "DLC",
+        )?,
+        _ => return Err("D49 non-base proof received an unsupported layer kind".into()),
+    };
+    let layer = RecordedContentLayer {
+        replace_paths,
+        ..provisional
+    };
+    let mounts = [base.clone(), layer.clone()];
+    let vfs = effective_vfs_from_launch(roots, &mounts, authority_sha256)?;
+    let rows = vfs.list_recursive(D49_STRATEGIC_REGION_PREFIX, Some("txt"))?;
+    if rows
+        .iter()
+        .any(|row| row.content.winning_layer_ordinal == layer.ordinal)
+    {
+        return Err(format!(
+            "D49 base-only authority rejected {} because it contributes {}",
+            layer_id, D49_STRATEGIC_REGION_PREFIX
+        ));
+    }
+    // `effective_vfs_from_launch` derives the same path, but retaining this
+    // value here ensures the layer's authored source was resolved and checked
+    // even when the target namespace is empty.
+    let _ = local_source;
+    Ok(())
+}
 
 pub fn effective_vfs_from_launch(
     roots: &RuntimeContentRoots,

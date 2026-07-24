@@ -398,6 +398,11 @@ struct Config {
     speed_root_gate_path: Option<PathBuf>,
     domain57_game_speed_transcript_file_sha256: Option<String>,
     domain57_game_speed_gate: Option<Value>,
+    /// Parse-time authorization for the collector's exact-a729 native X12
+    /// speed/pause observer when no external transcript gate is supplied.
+    /// Carry this decision into `run_capture` so the later admission check
+    /// cannot accidentally reject a product runtime that parse_args admitted.
+    domain57_without_external_gate_authorized: bool,
     /// Feature-local omission authority. Domain 57 is removed from the effective
     /// schedule when its exact transcript-bound v2 gate pair was not supplied;
     /// unrelated FRAMEs remain admissible and no speed/pause value is invented.
@@ -1095,6 +1100,7 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
         journal_path,
         worker_exe,
         worker_extra_args,
+        require_visible_window: true,
         poll_ms,
     };
     run_supervisor(opts, || graceful_stop.is_requested())
@@ -1105,6 +1111,55 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
 /// needs no launcher, tray process, service, installer, or administrator access.
 /// Closing the window transfers stop ownership to the coordinator and waits for
 /// worker finalization before returning.
+#[cfg(windows)]
+fn product_auto_attach_runtime_domain_names() -> Vec<&'static str> {
+    let mut domains = compact_contract::production_profile_scheduled_names();
+    let speed_pause_domain =
+        compact_contract::wire_name_for_id(session_multiplayer_metadata_live::DOMAIN_ID)
+            .expect("assigned domain 57 must have a canonical wire name");
+    if !domains.contains(&speed_pause_domain) {
+        domains.push(speed_pause_domain);
+    }
+    domains
+}
+
+#[cfg(windows)]
+fn product_auto_attach_worker_args() -> Vec<String> {
+    // The desktop product must never inherit the collector's empty-schedule
+    // compatibility fallback (domains 10..=17).  That fallback is useful for
+    // narrow probes, but it made an apparently verified auto-attach recording
+    // exercise only eight domains.
+    //
+    // Do not pass `--profile production` here.  That profile additionally
+    // requires a process-bound, pre-injection static bundle.  The ordinary
+    // late-attach product cannot fabricate or rebind that evidence.  Instead,
+    // select the exact shared production runtime roster and the lean runtime
+    // settings explicitly.  Static-content publication remains a separate
+    // fail-closed gate; runtime data capture no longer silently shrinks.
+    let mut args = Vec::new();
+    for domain in product_auto_attach_runtime_domain_names() {
+        args.push("--scheduled-domain".to_string());
+        args.push(domain.to_string());
+    }
+    args.extend(
+        [
+            "--product-auto-attach-runtime",
+            "--hour-latch",
+            "--compact-country-frame",
+            "--extraction-perf-gate",
+            "--sample-ms",
+            "1",
+            "--min-game-hours",
+            "48",
+            "--reader-concurrency",
+            "12",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    args
+}
+
 #[cfg(windows)]
 fn run_product_auto_attach() -> Result<(), String> {
     use recorder_host::auto_attach::{run_supervisor_with_events, SupervisorOptions};
@@ -1122,8 +1177,16 @@ fn run_product_auto_attach() -> Result<(), String> {
         journal_path: out_root.join("auto_attach_journal.jsonl"),
         out_root,
         worker_exe,
-        worker_extra_args: Vec::new(),
-        poll_ms: 2_000,
+        worker_extra_args: product_auto_attach_worker_args(),
+        // Headless capture cannot wait for a window: several production lanes
+        // install one-shot setup observers that must be resident before the
+        // first PID-owned window is created. Exact exe/SHA/session/SID identity
+        // is re-probed immediately before the durable single-injection commit.
+        require_visible_window: false,
+        // The coordinator advances one fail-closed state transition per tick.
+        // Keep the ordinary resident path responsive enough to attach while
+        // launch-time setup is still in progress.
+        poll_ms: 50,
     };
     recorder_host::auto_attach::product_runtime::run_product_window(
         recordings_root,
@@ -1217,10 +1280,22 @@ fn run() -> Result<(), String> {
     // the game process as it was recorded (the exe could be replaced on disk
     // mid-run by an update). Best-effort by construction — failures are
     // recorded in the report and never abort a capture.
-    let modset_report = match early_pending.as_ref() {
+    let mut modset_report = match early_pending.as_ref() {
         Some(pending) => pending.resolve_modset(),
         None => recorder_host::modset::resolve_modset(cfg.pid, cfg.pdx_user_dir.as_deref()),
     };
+    if let Some(authority_path) = std::env::var_os("BATTLE_PLAN_AUTO_ATTACH_MODSET_AUTHORITY").or_else(|| std::env::var_os("HOI4_AUTO_ATTACH_MODSET_AUTHORITY")) {
+        let creation_filetime = std::env::var("BATTLE_PLAN_AUTO_ATTACH_EXPECTED_FILETIME").or_else(|_| std::env::var("HOI4_AUTO_ATTACH_EXPECTED_FILETIME"))
+            .map_err(|_| "auto-attach modset authority lacks expected process FILETIME")?
+            .parse::<u64>()
+            .map_err(|error| format!("invalid auto-attach expected process FILETIME: {error}"))?;
+        recorder_host::modset::apply_same_process_settings_authority(
+            &mut modset_report,
+            Path::new(&authority_path),
+            cfg.pid,
+            creation_filetime,
+        )?;
+    }
     eprintln!(
         "modset: resolved={} mods={} dlc_enabled={}/{}{}",
         modset_report.resolved,
@@ -1253,13 +1328,7 @@ fn run() -> Result<(), String> {
     }
     if scheduled_roster_includes_domain57(&cfg.scheduled_domains)
         && cfg.domain57_game_speed_gate.is_none()
-        && !allow_native_production_d57_without_speed_gate(cfg.production, cfg.profile)
-        && !allow_x12_debug_d57_without_speed_gate(
-            cfg.production,
-            cfg.profile,
-            cfg.early_launch.is_some(),
-            env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
-        )
+        && !cfg.domain57_without_external_gate_authorized
     {
         return Err("domain 57 is scheduled but its speed-root gate was not validated".to_string());
     }
@@ -1474,8 +1543,25 @@ fn run() -> Result<(), String> {
             == compact_contract::stream_validator::StreamIdentityMode::IdentityV1)
             .then_some(context.expectation.challenge)
     });
+    let d49_base_only_authority = if cfg.early_launch.is_none()
+        && compact_expected_domain_ids(&cfg.scheduled_domains).contains(&49)
+        && modset_report.resolved
+        && modset_report.enabled_mods.is_empty()
+    {
+        Some(
+            recorder_host::production_content_vfs::
+                d49_base_only_authority_from_resolved_zero_mod_launch(&modset_report)?,
+        )
+    } else {
+        None
+    };
     write_sink_failure_acceptance_plan(&cfg, &pipe_token)?;
-    write_control_file(&cfg, &pipe_token, ordinary_duplex_challenge)?;
+    write_control_file_with_d49_authority(
+        &cfg,
+        &pipe_token,
+        ordinary_duplex_challenge,
+        d49_base_only_authority.as_ref(),
+    )?;
 
     let hook_hold_ms = u64::from(cfg.duration_ms)
         .saturating_add(cfg.dwell_ms)
@@ -1523,6 +1609,7 @@ fn run() -> Result<(), String> {
     let (
         mut capture,
         rollover_set,
+        first_recording_logical_stream_id,
         scientist_capture_authority,
         early_render_process,
         design_catalog_timeline_capture,
@@ -1653,9 +1740,18 @@ fn run() -> Result<(), String> {
                 RetainedTargetLease::establish(
                     process_authority.as_ref(),
                     Some(&recorder_owned_job),
+                    false,
                 )?
             }
-            None => RetainedTargetLease::establish(process_authority.as_ref(), None)?,
+            None => RetainedTargetLease::establish(
+                process_authority.as_ref(),
+                None,
+                activated_spec
+                    .as_ref()
+                    .is_some_and(|spec| spec.payload.rearmed_after_proven_unload)
+                    && std::env::var("BATTLE_PLAN_AUTO_ATTACH_REARMED_TARGET_LEASE").or_else(|_| std::env::var("HOI4_AUTO_ATTACH_REARMED_TARGET_LEASE")).as_deref()
+                        == Ok("1"),
+            )?,
         };
         let target_dll_proof = if proof_emitter.is_some() || scientist_requested {
             Some(dll_authority.target_proof(process_authority.clone())?)
@@ -1716,6 +1812,7 @@ fn run() -> Result<(), String> {
             (
                 outcome.capture,
                 outcome.rollover_set,
+                outcome.first_recording_logical_stream_id,
                 scientist_authority,
                 None,
                 design_catalog_timeline_capture,
@@ -1964,6 +2061,7 @@ fn run() -> Result<(), String> {
         (
             outcome.capture,
             outcome.rollover_set,
+            outcome.first_recording_logical_stream_id,
             scientist_authority,
             early_render_process,
             design_catalog_timeline_capture,
@@ -1989,10 +2087,37 @@ fn run() -> Result<(), String> {
         if first.logical_stream_id != 0 {
             return Err("ordered CID1 logical-stream descriptor does not start at zero".into());
         }
-        raw_path = cfg.out_dir.join("logical-streams").join(&first.relative_path);
-        capture.byte_count = first.file_bytes;
-        capture.stored_byte_count = first.file_bytes;
-        capture.sha256 = first.file_sha256_hex.clone();
+        let first_recording_id = first_recording_logical_stream_id.ok_or(
+            "rollover capture completed without the logical stream id that admitted FirstWorld",
+        )?;
+        if first_recording_id >= descriptor.ordered_streams.len() as u64 {
+            return Err(format!(
+                "FirstWorld logical stream {first_recording_id} is outside the {}-member rollover set",
+                descriptor.ordered_streams.len()
+            ));
+        }
+        let recording_stream = descriptor
+            .ordered_streams
+            .get(
+                usize::try_from(first_recording_id)
+                    .map_err(|_| "FirstWorld logical stream id exceeds usize".to_string())?,
+            )
+            .ok_or("FirstWorld logical stream disappeared from the rollover descriptor")?;
+        if recording_stream.logical_stream_id != first_recording_id {
+            return Err("FirstWorld logical stream id is not descriptor-index canonical".into());
+        }
+        // Continue can replace the launch-time CGameState before any world
+        // frame is admitted. In that case logical stream zero is a durable
+        // CID1-only pre-world transient and stream one is the first recordable
+        // campaign. Root finalization must select the stream that actually
+        // admitted FirstWorld, not mechanically select stream zero.
+        raw_path = cfg
+            .out_dir
+            .join("logical-streams")
+            .join(&recording_stream.relative_path);
+        capture.byte_count = recording_stream.file_bytes;
+        capture.stored_byte_count = recording_stream.file_bytes;
+        capture.sha256 = recording_stream.file_sha256_hex.clone();
     }
     let g2_capture_artifact_seal = if let Some(intent) = cfg.g2_capture_intent.as_ref() {
         let content_digest = early_full_content_manifest
@@ -2182,7 +2307,11 @@ fn run() -> Result<(), String> {
                     "dll": cfg.dll.display().to_string(),
                     "raw_stream": rollover_set
                         .as_ref()
-                        .and_then(|set| set.ordered_streams.first())
+                        .and_then(|set| {
+                            first_recording_logical_stream_id
+                                .and_then(|id| usize::try_from(id).ok())
+                                .and_then(|index| set.ordered_streams.get(index))
+                        })
                         .map(|stream| format!("logical-streams/{}", stream.relative_path))
                         .unwrap_or_else(|| raw_path.file_name().and_then(|v| v.to_str()).unwrap_or("collector_stream.bin").to_string()),
                     "session_id": cfg.session_id,
@@ -2582,7 +2711,10 @@ fn run() -> Result<(), String> {
                 .out_dir
                 .join("logical-streams")
                 .join(recorder_host::duplex_session::rollover_fs::SET_DESCRIPTOR_FILE);
-            obj.insert("logical_stream_id".to_string(), json!(0));
+            obj.insert(
+                "logical_stream_id".to_string(),
+                json!(first_recording_logical_stream_id),
+            );
             obj.insert(
                 "acceptance_telemetry_scope".to_string(),
                 json!("logical_stream"),
@@ -2597,6 +2729,7 @@ fn run() -> Result<(), String> {
                     ),
                     "descriptor_sha256": to_hex(&hash_file_sha256_bytes(&descriptor_path)?),
                     "member_count": descriptor.ordered_streams.len(),
+                    "first_recording_logical_stream_id": first_recording_logical_stream_id,
                 }),
             );
             obj.insert(
@@ -2895,6 +3028,9 @@ fn run() -> Result<(), String> {
             &capture,
             capture_identity_mode,
             static_bundle_admission.as_ref(),
+            first_recording_logical_stream_id.ok_or(
+                "rollover finalizer lost the logical stream id that admitted FirstWorld",
+            )?,
         )?;
         if cfg.production {
             let product_root = cfg
@@ -2935,7 +3071,11 @@ fn run() -> Result<(), String> {
         let _ = fs::remove_dir(&owned_dir);
     }
 
-    if !hourly_met && !acceptance_test_met {
+    // The ordinary root finalizer necessarily owns logical stream zero. During
+    // Continue that segment can be a loading-world transient which never
+    // admitted FirstWorld; the rollover package-set finalizer above is the
+    // recording authority and has already failed if any admitted member failed.
+    if !hourly_met && !acceptance_test_met && rollover_set.is_none() {
         let quarantine_detail = normal_quarantine
             .as_ref()
             .filter(|report| report.attempted && !report.ok)
@@ -3894,6 +4034,7 @@ fn repack_writer_config(
         speed_root_gate_path: None,
         domain57_game_speed_transcript_file_sha256: None,
         domain57_game_speed_gate: None,
+        domain57_without_external_gate_authorized: false,
         domain57_omission_reason: None,
         acceptance_test: None,
     })
@@ -4960,6 +5101,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     // empty capture can never be requested by accident.
     let mut scheduled_domains_exact = false;
     let mut production = false;
+    // Internal product-child selector. It enables the exact-build passive D57
+    // observer for the ordinary auto-attach runtime roster without claiming
+    // that a process-bound static publication bundle exists.
+    let mut product_auto_attach_runtime = false;
     let mut profile: Option<compact_contract::CaptureProfile> = None;
     let mut lightweight_root_frame: Option<bool> = None;
     let mut special_projects_scan = false;
@@ -5107,6 +5252,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--scheduled-domains-exact" => scheduled_domains_exact = true,
             "--production" => production = true,
+            "--product-auto-attach-runtime" => product_auto_attach_runtime = true,
             "--acceptance-test-mode" => {
                 i += 1;
                 let value = required(args.get(i), "--acceptance-test-mode")?;
@@ -5527,6 +5673,14 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         || preset
             .map(|preset| preset.use_production_domains)
             .unwrap_or(false);
+    if product_auto_attach_runtime
+        && (production || profile.is_some() || early_launch_executable.is_some())
+    {
+        return Err(
+            "--product-auto-attach-runtime is reserved for ordinary late-attach product workers"
+                .to_string(),
+        );
+    }
     if production && portable_content_use_trace.is_some() {
         return Err(
             "production/profile capture cannot use --portable-content-use-trace: production content provenance is generated in-process from the finalized effective-VFS catalog join"
@@ -5661,7 +5815,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
     );
     let native_production_d57_without_speed_gate =
-        allow_native_production_d57_without_speed_gate(production, profile);
+        allow_native_production_d57_without_speed_gate(production, profile)
+            || product_auto_attach_runtime;
+    let domain57_without_external_gate_authorized =
+        x12_debug_evidence_without_speed_gate || native_production_d57_without_speed_gate;
     let domain57_omission_reason = if scheduled_roster_includes_domain57(&scheduled_domains) {
         match (
                 speed_root_gate_path.is_some(),
@@ -5669,8 +5826,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             ) {
                 (true, true) => None,
                 (false, false)
-                    if x12_debug_evidence_without_speed_gate
-                        || native_production_d57_without_speed_gate =>
+                    if domain57_without_external_gate_authorized =>
                 {
                     None
                 }
@@ -5947,6 +6103,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         speed_root_gate_path,
         domain57_game_speed_transcript_file_sha256,
         domain57_game_speed_gate: None,
+        domain57_without_external_gate_authorized,
         domain57_omission_reason,
         acceptance_test,
     })
@@ -7957,11 +8114,14 @@ fn validate_fold_campaign_identity_join(
     Ok(())
 }
 
-/// Finalize every sealed member of a CID1 rollover set independently. Member
-/// zero has already passed the ordinary inline finalizer; later members are
-/// sent through the same summary, logical-boundary, fold, container-write, and
-/// from-disk verification gates. Only after every immutable manifest/package
-/// pair exists is the ordered package-set descriptor atomically published.
+/// Finalize every recording-admitted member of a CID1 rollover set
+/// independently. The member that admitted FirstWorld has already passed the
+/// ordinary inline finalizer; later admitted members are sent through the same
+/// summary, logical-boundary, fold, container-write, and from-disk verification
+/// gates. Earlier CID1-only pre-world members remain authenticated raw metadata
+/// and deliberately do not mint empty replay packages. Only after every
+/// admitted member's immutable manifest/package pair exists is the ordered
+/// package-set descriptor atomically published.
 fn publish_rollover_package_set(
     cfg: &Config,
     descriptor: &recorder_host::duplex_session::rollover_fs::DurableRolloverSetDescriptor,
@@ -7970,6 +8130,7 @@ fn publish_rollover_package_set(
     root_capture: &PipeCapture,
     identity_mode: compact_contract::stream_validator::StreamIdentityMode,
     static_bundle_admission: Option<&StaticBundleAdmission>,
+    first_recording_logical_stream_id: u64,
 ) -> Result<(), String> {
     use recorder_host::duplex_session::rollover_fs::{
         publish_immutable_descriptor, PACKAGE_SET_DESCRIPTOR_FILE, SET_DESCRIPTOR_FILE,
@@ -7977,6 +8138,13 @@ fn publish_rollover_package_set(
 
     if descriptor.schema != "cid1-rollover-set-v1" || descriptor.ordered_streams.is_empty() {
         return Err("rollover package selector received a malformed/empty ordered set".into());
+    }
+    if first_recording_logical_stream_id >= descriptor.ordered_streams.len() as u64 {
+        return Err(format!(
+            "rollover package selector FirstWorld stream {} is outside its {} members",
+            first_recording_logical_stream_id,
+            descriptor.ordered_streams.len()
+        ));
     }
     let raw_root = cfg.out_dir.join("logical-streams");
     let recovered = recorder_host::duplex_session::rollover_fs::FilesystemRolloverStore::recover_publication_descriptor(&raw_root)?;
@@ -8027,15 +8195,38 @@ fn publish_rollover_package_set(
         let member_dir = package_root.join(format!("{:020}", stream.logical_stream_id));
         fs::create_dir_all(&member_dir)
             .map_err(|error| format!("create logical-stream package directory failed: {error}"))?;
+        let pre_world_transient = rollover_member_is_pre_world_transient(
+            stream.logical_stream_id,
+            first_recording_logical_stream_id,
+        );
 
-        if stream.logical_stream_id == 0 {
+        if pre_world_transient {
+            published_members.push(json!({
+                "logical_stream_id": stream.logical_stream_id,
+                "campaign_id_hex": stream.campaign_id_hex,
+                "cid1_payload_sha256_hex": stream.cid1_payload_sha256_hex,
+                "raw_relative_path": format!("logical-streams/{}", stream.relative_path),
+                "raw_bytes": stream.file_bytes,
+                "raw_sha256": stream.file_sha256_hex,
+                "manifest_relative_path": Value::Null,
+                "manifest_sha256": Value::Null,
+                "package_relative_path": Value::Null,
+                "package_sha256": Value::Null,
+                "recovery": false,
+                "pre_world_transient": true,
+                "recording_admitted": false,
+            }));
+            continue;
+        }
+
+        if stream.logical_stream_id == first_recording_logical_stream_id {
             let replay_name = root_manifest
                 .get("replay_file")
                 .and_then(Value::as_str)
-                .ok_or("root rollover manifest has no replay_file")?;
+                .ok_or("FirstWorld rollover manifest has no replay_file")?;
             let replay_path = cfg.out_dir.join(replay_name);
             if !replay_path.is_file() || !root_manifest_path.is_file() {
-                return Err("root rollover member was not fully finalized".into());
+                return Err("FirstWorld rollover member was not fully finalized".into());
             }
             let (portable_manifest_sha256, package_sha256) =
                 publish_rollover_embedded_manifest(
@@ -8064,6 +8255,8 @@ fn publish_rollover_package_set(
                 "package_relative_path": replay_name,
                 "package_sha256": package_sha256,
                 "recovery": root_manifest.get("replay_artifact").and_then(|v| v.get("recovery")).and_then(Value::as_bool).unwrap_or(true),
+                "pre_world_transient": pre_world_transient,
+                "recording_admitted": true,
             }));
             continue;
         }
@@ -8110,7 +8303,7 @@ fn publish_rollover_package_set(
             ));
         }
         let hourly_met = hourly_problems.is_empty();
-        if !hourly_met {
+        if !hourly_met && !pre_world_transient {
             recovery_members.push(stream.logical_stream_id);
         }
         let member_gate_problems = hourly_problems.clone();
@@ -8231,6 +8424,11 @@ fn publish_rollover_package_set(
             json!("logical_stream"),
         );
         object.remove("host_finalize");
+        // This value contains per-domain floating telemetry synthesized in
+        // memory. Normalize it through the same strict JSON representation
+        // that the anti-swap pack-time read uses, so equivalent numeric
+        // representations cannot look like a concurrent manifest rewrite.
+        member_manifest = normalize_session_manifest_value(&member_manifest)?;
         write_synced_json(&member_manifest_path, &member_manifest)?;
 
         let (fold_stats, verify_report) = if cfg.skip_host_fold {
@@ -8332,6 +8530,8 @@ fn publish_rollover_package_set(
             "package_relative_path": format!("logical-streams/packages/{:020}/{replay_name}", stream.logical_stream_id),
             "package_sha256": package_sha256,
             "recovery": !hourly_met,
+            "pre_world_transient": pre_world_transient,
+            "recording_admitted": !pre_world_transient,
         }));
     }
 
@@ -8339,6 +8539,7 @@ fn publish_rollover_package_set(
         "schema": "cid1-rollover-package-set-v1",
         "source_descriptor": format!("logical-streams/{SET_DESCRIPTOR_FILE}"),
         "source_descriptor_sha256": source_descriptor_sha256,
+        "first_recording_logical_stream_id": first_recording_logical_stream_id,
         "ordered_streams": published_members,
         "transitions": descriptor.transitions,
     });
@@ -8352,6 +8553,13 @@ fn publish_rollover_package_set(
             "rollover package set is recovery-only because logical streams {recovery_members:?} failed production gates"
         ))
     }
+}
+
+fn rollover_member_is_pre_world_transient(
+    logical_stream_id: u64,
+    first_recording_logical_stream_id: u64,
+) -> bool {
+    logical_stream_id < first_recording_logical_stream_id
 }
 
 /// Retain the exact recorder-manifest bytes embedded in a finalized rollover
@@ -8458,6 +8666,13 @@ fn verify_published_rollover_package_set(
     if members.len() != raw_descriptor.ordered_streams.len() {
         return Err("published rollover package member count differs from raw set".into());
     }
+    let first_recording_logical_stream_id = value
+        .get("first_recording_logical_stream_id")
+        .and_then(Value::as_u64)
+        .ok_or("published rollover package set has no FirstWorld stream id")?;
+    if first_recording_logical_stream_id >= members.len() as u64 {
+        return Err("published rollover package FirstWorld stream id is outside its members".into());
+    }
     let mut recovery_members = Vec::new();
     for (index, (member, raw)) in members
         .iter()
@@ -8482,8 +8697,67 @@ fn verify_published_rollover_package_set(
                 "published rollover package member {expected_id} differs from raw authority"
             ));
         }
+        let pre_world_transient = expected_id < first_recording_logical_stream_id;
+        if member
+            .get("pre_world_transient")
+            .and_then(Value::as_bool)
+            != Some(pre_world_transient)
+            || member
+                .get("recording_admitted")
+                .and_then(Value::as_bool)
+                != Some(!pre_world_transient)
+        {
+            return Err(format!(
+                "published rollover package member {expected_id} has inconsistent FirstWorld admission flags"
+            ));
+        }
+        for (path_field, digest_field) in [("raw_relative_path", "raw_sha256")] {
+            let relative = member
+                .get(path_field)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("published member {expected_id} lacks {path_field}"))?;
+            let relative_path = Path::new(relative);
+            if relative_path.is_absolute()
+                || relative_path.components().any(|component| {
+                    !matches!(component, std::path::Component::Normal(_))
+                })
+            {
+                return Err(format!(
+                    "published member {expected_id} has unsafe {path_field}"
+                ));
+            }
+            let expected_digest = member
+                .get(digest_field)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("published member {expected_id} lacks {digest_field}"))?;
+            let actual = to_hex(&hash_file_sha256_bytes(&root.join(relative_path))?);
+            if actual != expected_digest {
+                return Err(format!(
+                    "published member {expected_id} {path_field} hash changed"
+                ));
+            }
+        }
+        if pre_world_transient {
+            for field in [
+                "manifest_relative_path",
+                "manifest_sha256",
+                "package_relative_path",
+                "package_sha256",
+            ] {
+                if !member.get(field).is_some_and(Value::is_null) {
+                    return Err(format!(
+                        "published pre-world member {expected_id} unexpectedly carries {field}"
+                    ));
+                }
+            }
+            if member.get("recovery").and_then(Value::as_bool) != Some(false) {
+                return Err(format!(
+                    "published pre-world member {expected_id} cannot be a recovery replay"
+                ));
+            }
+            continue;
+        }
         for (path_field, digest_field) in [
-            ("raw_relative_path", "raw_sha256"),
             ("manifest_relative_path", "manifest_sha256"),
             ("package_relative_path", "package_sha256"),
         ] {
@@ -8539,6 +8813,13 @@ fn write_synced_json(path: &Path, value: &Value) -> Result<(), String> {
     file.flush()
         .and_then(|_| file.sync_all())
         .map_err(|error| format!("sync {}: {error}", path.display()))
+}
+
+fn normalize_session_manifest_value(value: &Value) -> Result<Value, String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("serialize session manifest for normalization: {error}"))?;
+    snapshot::parse_json_strict(&bytes)
+        .map_err(|error| format!("strict-normalize session manifest failed: {error}"))
 }
 
 /// Streaming production container writer. The raw compact stream is appended
@@ -8948,6 +9229,20 @@ fn build_host_finalize_telemetry(
                 "hours_emitted": fs.hours_emitted,
                 "records_total": fs.records_total,
                 "data_records": fs.data_records,
+                "malformed_payload_records": fs.malformed_payload_records,
+                "malformed_payload_domains": fs.malformed_payload_domains.iter()
+                    .map(|(domain_id, malformed)| {
+                        (
+                            domain_id.to_string(),
+                            json!({
+                                "records": malformed.records,
+                                "first_reason": malformed.first_reason,
+                                "first_stream_offset": malformed.first_stream_offset,
+                                "first_game_hour_raw": malformed.first_game_hour_raw,
+                            }),
+                        )
+                    })
+                    .collect::<serde_json::Map<String, Value>>(),
                 "frame_end_records": fs.frame_end_records,
                 "perf_records_ignored": fs.perf_records,
                 "bytes_folded": fs.bytes_folded,
@@ -9938,6 +10233,17 @@ fn write_control_file(
     pipe_token: &str,
     ordinary_duplex_challenge: Option<[u8; 16]>,
 ) -> Result<(), String> {
+    write_control_file_with_d49_authority(cfg, pipe_token, ordinary_duplex_challenge, None)
+}
+
+fn write_control_file_with_d49_authority(
+    cfg: &Config,
+    pipe_token: &str,
+    ordinary_duplex_challenge: Option<[u8; 16]>,
+    d49_base_only_authority: Option<
+        &recorder_host::production_content_vfs::D49BaseOnlyStrategicRegionAuthority,
+    >,
+) -> Result<(), String> {
     let control_path = cfg
         .dll
         .parent()
@@ -9952,11 +10258,18 @@ fn write_control_file(
     } else {
         cfg.scheduled_domains.clone()
     };
-    let control_profile = cfg.profile.unwrap_or(if cfg.production {
-        compact_contract::CaptureProfile::Production
-    } else {
-        compact_contract::CaptureProfile::Debug
-    });
+    let control_profile = cfg.profile.unwrap_or(
+        if cfg.production || cfg.domain57_without_external_gate_authorized {
+            // The ordinary product is deliberately not `cfg.production`
+            // because late attach has no process-bound static bundle. Its
+            // runtime control is still the lean production profile, and the
+            // collector uses this value to admit its exact-build passive D57
+            // observer. Lab/debug attaches retain the debug fallback.
+            compact_contract::CaptureProfile::Production
+        } else {
+            compact_contract::CaptureProfile::Debug
+        },
+    );
     let decision_panel_requested = resolved_scheduled_domains
         .iter()
         .any(|domain| domain == "decision_panel_live");
@@ -10017,6 +10330,7 @@ fn write_control_file(
         "a34_evidence_supplement": cfg.a34_evidence_supplement,
         "a34_decision_catalog_path": decision_catalog_path,
         "a34_decision_catalog_sha256": decision_catalog_sha256,
+        "d49_base_only_strategic_regions_v1": d49_base_only_authority,
         "session_id": cfg.session_id,
         "scheduled_domains": resolved_scheduled_domains.join(";"),
         "division_body_bridge": cfg.division_body_bridge.as_deref(),
@@ -10244,11 +10558,11 @@ impl Drop for RetainedProcessAuthority {
 /// A per-process-identity commitment retained by the kernel as an unbreakable
 /// process-to-job association.
 ///
-/// Windows does not destroy a job after its last user handle closes while an
-/// associated process is still alive, and a process cannot remove itself from
-/// a job. The PID+creation-FILETIME name therefore survives supervisor/worker
-/// crashes, collector unload, target handle-table corruption, and coherent
-/// deletion of every filesystem journal file.
+/// Windows retains membership in a closed job while the associated process is
+/// alive, although the job's namespace name no longer remains reopenable after
+/// its last handle closes. A proven-unloaded same-process generation therefore
+/// adds a new nested named lease; without that explicit durable rearm authority,
+/// any preexisting job remains ambiguous and blocked.
 #[derive(Debug)]
 struct RetainedTargetLease {
     backing: RetainedTargetLeaseBacking,
@@ -10266,6 +10580,7 @@ impl RetainedTargetLease {
         recorder_owned_job: Option<
             &recorder_host::early_render_launch::RecorderOwnedCreationJob<'_>,
         >,
+        allow_rearmed_named_lease: bool,
     ) -> Result<Self, String> {
         process.revalidate_live()?;
         let mut already_in_job = 0;
@@ -10280,8 +10595,52 @@ impl RetainedTargetLease {
             let authority = match recorder_owned_job {
                 Some(value) => value,
                 None => {
-                    require_target_not_in_job(process.pid, true)?;
-                    unreachable!("job-membership guard returned success for an in-job target")
+                    if !allow_rearmed_named_lease {
+                        require_target_not_in_job(process.pid, true)?;
+                        unreachable!("job-membership guard returned success for an in-job target")
+                    }
+                    let name = format!(
+                        r"Global\Hoi4Replay.AutoAttach.TargetLease.{}.{}",
+                        process.pid, process.expected_creation_filetime
+                    );
+                    let wide_name = wide(OsStr::new(&name));
+                    let handle = unsafe { CreateJobObjectW(ptr::null_mut(), wide_name.as_ptr()) };
+                    if handle.is_null() {
+                        return Err(format!(
+                            "reopen target auto-attach lease {name} failed: {}",
+                            last_error()
+                        ));
+                    }
+                    if last_error() == ERROR_ALREADY_EXISTS {
+                        let mut in_exact_job = 0;
+                        if unsafe { IsProcessInJob(process.handle, handle, &mut in_exact_job) } == 0
+                        {
+                            let error = last_error();
+                            unsafe { CloseHandle(handle) };
+                            return Err(format!(
+                                "IsProcessInJob({}) against rearmed target lease failed: {error}",
+                                process.pid
+                            ));
+                        }
+                        if in_exact_job == 0 {
+                            unsafe { CloseHandle(handle) };
+                            return Err(format!(
+                                "target {} belongs to a foreign job, not exact rearmed lease {name}",
+                                process.pid
+                            ));
+                        }
+                    } else if unsafe { AssignProcessToJobObject(handle, process.handle) } == 0 {
+                        let error = last_error();
+                        unsafe { CloseHandle(handle) };
+                        return Err(format!(
+                            "assign proven-unloaded target {} to nested rearmed lease {name} failed: {error}",
+                            process.pid
+                        ));
+                    }
+                    process.revalidate_live()?;
+                    return Ok(Self {
+                        backing: RetainedTargetLeaseBacking::Named(handle),
+                    });
                 }
             };
             let lease = authority.retain_exact_job(
@@ -10718,7 +11077,24 @@ fn install_hook(
 ) -> Result<InstalledHookLease, String> {
     process.revalidate_live()?;
     let pid = process.pid;
-    let hwnd = find_main_window(pid).ok_or_else(|| format!("no visible window for pid {pid}"))?;
+    // Product discovery intentionally starts before the game creates its first
+    // visible window. WH_GETMESSAGE still needs a real target GUI thread, so
+    // wait for that thread without activating, restoring, or focusing its
+    // window. The retained process authority is revalidated throughout; a
+    // process exit or identity change fails this one-shot attempt closed.
+    let window_deadline = Instant::now() + Duration::from_secs(30);
+    let hwnd = loop {
+        if let Some(hwnd) = find_main_window(pid) {
+            break hwnd;
+        }
+        process.revalidate_live()?;
+        if Instant::now() >= window_deadline {
+            return Err(format!(
+                "no visible window for pid {pid} within headless injection wait"
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
     let mut owner = 0u32;
     let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
     if thread_id == 0 || owner != pid {
@@ -11746,13 +12122,12 @@ impl AutoAttachWorkerContext {
             .ok_or_else(|| "partial auto-attach worker context: missing FILETIME".to_string())?
             .parse::<u64>()
             .map_err(|e| format!("invalid auto-attach FILETIME: {e}"))?;
-        let control_session = recorder_host::auto_attach::proof::decode_hex_16(&pipe_token)
-            .map_err(|e| format!("invalid auto-attach pipe token: {e}"))?;
         let challenge =
             recorder_host::auto_attach::proof::decode_hex_16(&challenge.ok_or_else(|| {
                 "partial auto-attach worker context: missing control challenge".to_string()
             })?)
             .map_err(|e| format!("invalid auto-attach control challenge: {e}"))?;
+        let control_session = challenge;
         let expected_dll_sha256 =
             recorder_host::auto_attach::proof::decode_hex_32(&expected_dll.ok_or_else(|| {
                 "partial auto-attach worker context: missing expected DLL hash".to_string()
@@ -11838,6 +12213,9 @@ impl AutoAttachWorkerContext {
                 source_sha256,
                 pipe_token: self.pipe_token.clone(),
                 pipe_token_hash: Sha256::hex(self.pipe_token.as_bytes()),
+                rearmed_after_proven_unload:
+                    std::env::var("BATTLE_PLAN_AUTO_ATTACH_REARMED_TARGET_LEASE").or_else(|_| std::env::var("HOI4_AUTO_ATTACH_REARMED_TARGET_LEASE")).as_deref()
+                        == Ok("1"),
             },
             out_dir: cfg.out_dir.clone(),
             session_id: cfg.session_id.clone(),
@@ -12137,6 +12515,10 @@ struct PipeCapture {
 struct PipeCaptureOutcome {
     capture: PipeCapture,
     loaded_dll_sha256: Option<[u8; 32]>,
+    /// First logical stream whose semantic world proof was admitted by the
+    /// auto-attach control worker. Earlier rollover members belong to Continue
+    /// loading and are retained for forensics, but are not recording members.
+    first_recording_logical_stream_id: Option<u64>,
     rollover_set: Option<
         recorder_host::duplex_session::rollover_fs::DurableRolloverSetDescriptor,
     >,
@@ -12227,8 +12609,15 @@ fn authenticate_connected_pipe_client(
 }
 
 enum CombinedControlNotice {
-    FirstWorld(recorder_host::auto_attach::proof::ValidatedCompactRecordProof),
+    FirstWorld {
+        logical_stream_id: u64,
+        proof: recorder_host::auto_attach::proof::ValidatedCompactRecordProof,
+    },
     DataFinished,
+}
+
+fn should_observe_first_world_record(sequence: u64) -> bool {
+    sequence != 0
 }
 
 fn read_combined_record_until(
@@ -12440,7 +12829,10 @@ fn capture_combined_pipe_to_file(
                     return Ok(());
                 }
                 match notice_rx.recv_timeout(Duration::from_millis(25)) {
-                    Ok(CombinedControlNotice::FirstWorld(first_world)) => {
+                    Ok(CombinedControlNotice::FirstWorld {
+                        logical_stream_id,
+                        proof: first_world,
+                    }) => {
                         if recording {
                             return Err("duplicate first-world proof from H4CR data worker".into());
                         }
@@ -12452,6 +12844,13 @@ fn capture_combined_pipe_to_file(
                             first_world,
                         )
                         .map_err(|error| format!("recording admission failed: {error}"))?;
+                        if admission.logical_stream_id() != logical_stream_id {
+                            return Err(format!(
+                                "H4CR data router logical stream {} differs from acknowledged FirstWorld stream {}",
+                                logical_stream_id,
+                                admission.logical_stream_id()
+                            ));
+                        }
                         control
                             .control_session_mut()
                             .ok_or("combined control session disappeared before Recording")?
@@ -12477,6 +12876,11 @@ fn capture_combined_pipe_to_file(
                         return Err("H4CR data worker disconnected without terminal notice".into())
                     }
                 }
+                // Continue may replace the campaign identity after CID1 but
+                // before FirstWorld. The rollover-aware router therefore owns
+                // both WaitingForWorld and Recording; its PausedForControl
+                // proof still gates the same durable CRP1/CRA1/new-CID1/CFA1
+                // transaction before any new-world bytes are admitted.
                 if rollover_enabled {
                     let cycle = control.drive_due_heartbeat_with_rollover(
                         &mut identity,
@@ -12695,7 +13099,9 @@ fn capture_combined_pipe_to_file(
         return Err(error);
     }
 
+    let mut first_recording_logical_stream_id = None;
     let data_result = (|| -> Result<(), String> {
+        let mut current_logical_stream_id = 0u64;
         let mut first_world_sent = false;
         loop {
             let mut header = [0u8; COMPACT_RECORD_HEADER_LEN];
@@ -12720,6 +13126,9 @@ fn capture_combined_pipe_to_file(
                 if !rollover_enabled {
                     return Err("ordinary combined H4CR stream received a second sequence-zero record".into());
                 }
+                current_logical_stream_id = current_logical_stream_id
+                    .checked_add(1)
+                    .ok_or("logical stream id overflow in H4CR data router")?;
                 first_world_gate = recorder_host::auto_attach::proof::FirstCompactRecordGate::new(
                     proof_expected_domain_ids.clone(),
                 );
@@ -12732,13 +13141,18 @@ fn capture_combined_pipe_to_file(
                 &mut write_latency,
                 &mut total,
             )?;
-            if !first_world_sent {
+            if !first_world_sent && should_observe_first_world_record(parsed.sequence) {
                 if let Some(proof) = first_world_gate
                     .observe(&record)
                     .map_err(|error| format!("first-world H4CR gate failed: {error}"))?
                 {
+                    first_recording_logical_stream_id
+                        .get_or_insert(current_logical_stream_id);
                     notice_tx
-                        .send(CombinedControlNotice::FirstWorld(proof))
+                        .send(CombinedControlNotice::FirstWorld {
+                            logical_stream_id: current_logical_stream_id,
+                            proof,
+                        })
                         .map_err(|_| "product control worker dropped first-world proof".to_string())?;
                     first_world_sent = true;
                 }
@@ -12755,8 +13169,16 @@ fn capture_combined_pipe_to_file(
     let control_result = control_thread
         .join()
         .map_err(|_| "product control worker panicked".to_string())?;
-    data_result?;
-    control_result?;
+    match (data_result, control_result) {
+        (Ok(()), Ok(())) => {}
+        (Err(data_error), Ok(())) => return Err(data_error),
+        (Ok(()), Err(control_error)) => return Err(control_error),
+        (Err(data_error), Err(control_error)) => {
+            return Err(format!(
+                "{control_error}; concurrent H4CR drain also failed after control cancellation: {data_error}"
+            ))
+        }
+    }
     let rollover_set = if rollover_enabled {
         let mut store = rollover_store_rx
             .recv()
@@ -12795,6 +13217,7 @@ fn capture_combined_pipe_to_file(
             clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
         },
         loaded_dll_sha256: Some(loaded_dll_sha256),
+        first_recording_logical_stream_id,
         rollover_set,
     })
 }
@@ -13003,6 +13426,7 @@ fn capture_pipe_to_file(
                 clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
             },
             loaded_dll_sha256,
+            first_recording_logical_stream_id: None,
             rollover_set: None,
         })
     }
@@ -13562,7 +13986,7 @@ fn compact_domain_names_from_ids(domains: &[u16]) -> Vec<String> {
 }
 
 fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
-    let mut ids = if scheduled_domains.is_empty() {
+    let ids = if scheduled_domains.is_empty() {
         vec![10, 11, 12, 13, 14, 15, 16, 17]
     } else {
         scheduled_domains
@@ -13585,9 +14009,7 @@ fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
             })
             .collect::<Vec<_>>()
     };
-    ids.sort_unstable();
-    ids.dedup();
-    ids
+    compact_contract::emitted_domain_ids_for_scheduled_ids(&ids)
 }
 
 fn compact_expected_domain_ids_for_config(cfg: &Config) -> Vec<u16> {
@@ -15684,6 +16106,20 @@ fn decode_compact_frd_depth_data_payload(
 mod tests {
     use super::*;
 
+    #[test]
+    fn rollover_cid1_is_not_routed_as_a_first_world_record() {
+        assert!(!should_observe_first_world_record(0));
+        assert!(should_observe_first_world_record(1));
+    }
+
+    #[test]
+    fn continue_loading_streams_before_first_world_are_not_recording_members() {
+        assert!(rollover_member_is_pre_world_transient(0, 1));
+        assert!(!rollover_member_is_pre_world_transient(1, 1));
+        assert!(!rollover_member_is_pre_world_transient(2, 1));
+        assert!(!rollover_member_is_pre_world_transient(0, 0));
+    }
+
     #[cfg(windows)]
     #[test]
     fn consoleless_explicit_routes_get_dialogs_but_supervised_workers_do_not() {
@@ -15838,7 +16274,8 @@ mod tests {
         )
         .unwrap();
         let owned_job = pending.recorder_owned_creation_job().unwrap();
-        let lease = RetainedTargetLease::establish(&authority, Some(&owned_job)).unwrap();
+        let lease =
+            RetainedTargetLease::establish(&authority, Some(&owned_job), false).unwrap();
         drop(owned_job);
         authority.revalidate_live().unwrap();
         drop(lease);
@@ -15860,11 +16297,12 @@ mod tests {
             Some(pending_b.process_start_nonce()),
         )
         .unwrap();
-        let generic_error = RetainedTargetLease::establish(&authority_a, None)
+        let generic_error = RetainedTargetLease::establish(&authority_a, None, false)
             .expect_err("generic attach must reject even a recorder-created in-job target");
         assert!(generic_error.contains("prior injection state"));
         let owned_a = pending_a.recorder_owned_creation_job().unwrap();
-        let foreign_error = RetainedTargetLease::establish(&authority_b, Some(&owned_a))
+        let foreign_error =
+            RetainedTargetLease::establish(&authority_b, Some(&owned_a), false)
             .expect_err("job-A creation authority must not authorize job-B target");
         assert!(
             foreign_error.contains("PID/creation nonce mismatch")
@@ -15909,9 +16347,9 @@ mod tests {
         assert!(ready.exists(), "helper child did not become live");
 
         let authority = RetainedProcessAuthority::open(child.id(), None).unwrap();
-        let lease = RetainedTargetLease::establish(&authority, None).unwrap();
+        let lease = RetainedTargetLease::establish(&authority, None, false).unwrap();
         drop(lease);
-        let error = RetainedTargetLease::establish(&authority, None)
+        let error = RetainedTargetLease::establish(&authority, None, false)
             .expect_err("target job membership must outlive the worker's local handle");
         assert!(error.contains("prior injection state"), "{error}");
 
@@ -15930,9 +16368,9 @@ mod tests {
         assert!(pid != 0, "BATTLE_PLAN_TEST_EXTERNAL_PID must be nonzero");
 
         let authority = RetainedProcessAuthority::open(pid, None).unwrap();
-        let lease = RetainedTargetLease::establish(&authority, None).unwrap();
+        let lease = RetainedTargetLease::establish(&authority, None, false).unwrap();
         drop(lease);
-        let error = RetainedTargetLease::establish(&authority, None)
+        let error = RetainedTargetLease::establish(&authority, None, false)
             .expect_err("target job membership must outlive the worker's local handle");
         assert!(error.contains("prior injection state"), "{error}");
     }
@@ -16557,6 +16995,7 @@ mod tests {
             records_total: 7,
             data_records: 3,
             malformed_payload_records: 0,
+            malformed_payload_domains: Default::default(),
             frame_end_records: 2,
             perf_records: 2,
             other_records: 0,
@@ -16589,6 +17028,30 @@ mod tests {
         assert!(host_finalize.get("finalize_seconds").is_none());
         assert!(host_finalize.get("peak_private_bytes").is_none());
         assert!(host_finalize.get("peak_working_set_bytes").is_none());
+    }
+
+    #[test]
+    fn rollover_manifest_numeric_telemetry_normalizes_before_disk_binding() {
+        let value = json!({
+            "schema": "native_collector_session_v1",
+            "modset": {
+                "resolved": false,
+                "errors": ["test fixture"],
+                "partial_evidence": {},
+            },
+            "compact_stream": {
+                "timing": {
+                    "avg": 7872.761714855434_f64,
+                    "zero": 0.0_f64,
+                    "ratio": 0.006979062811565304_f64,
+                },
+            },
+        });
+
+        let normalized = normalize_session_manifest_value(&value).unwrap();
+        let encoded = serde_json::to_vec_pretty(&normalized).unwrap();
+        let reparsed = snapshot::parse_json_strict(&encoded).unwrap();
+        assert_eq!(normalized, reparsed);
     }
 
     #[test]
@@ -16697,6 +17160,33 @@ mod tests {
         }
     }
 
+    fn append_plic_v2_trailer(
+        payload: &mut Vec<u8>,
+        countries: &[(u32, Vec<(u32, u32, u32)>)],
+    ) {
+        let id_rows: usize = countries.iter().map(|(_, ids)| ids.len()).sum();
+        payload.extend_from_slice(b"PLIC");
+        payload.extend_from_slice(&2u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(id_rows as u32).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (tag, ids) in countries {
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        }
+        for (_, ids) in countries {
+            for (visible_order, (variant_id, creator_tag_db_id, origin_tag_db_id)) in
+                ids.iter().enumerate()
+            {
+                payload.extend_from_slice(&variant_id.to_le_bytes());
+                payload.extend_from_slice(&(visible_order as u32).to_le_bytes());
+                payload.extend_from_slice(&creator_tag_db_id.to_le_bytes());
+                payload.extend_from_slice(&origin_tag_db_id.to_le_bytes());
+            }
+        }
+    }
+
     fn append_pvj1_trailer(payload: &mut Vec<u8>, rows: &[(u32, u32, i32, u32)]) {
         payload.extend_from_slice(b"PVJ1");
         payload.extend_from_slice(&1u16.to_le_bytes());
@@ -16749,6 +17239,50 @@ mod tests {
         assert_eq!(
             units.get("production_license_empty_country_rows").copied(),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn production_decode_accepts_current_v2_license_trailer() {
+        let mut payload = test_production_data_payload();
+        append_plic_v2_trailer(
+            &mut payload,
+            &[
+                (100, vec![(5081, 100, 0), (5132, 101, 100)]),
+                (101, vec![]),
+            ],
+        );
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(11).or_default();
+        decode_compact_production_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&11).unwrap().data_units_total;
+        assert_eq!(units.get("production_license_country_rows"), Some(&2));
+        assert_eq!(units.get("production_license_id_rows"), Some(&2));
+    }
+
+    #[test]
+    fn focus_decode_accepts_pause_presence_and_value_flags() {
+        let mut payload = test_focus_data_payload();
+        payload[32..36].copy_from_slice(&0xffu32.to_le_bytes());
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            12,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
         );
     }
 
@@ -27122,6 +27656,7 @@ mod tests {
             speed_root_gate_path: None,
             domain57_game_speed_transcript_file_sha256: None,
             domain57_game_speed_gate: None,
+            domain57_without_external_gate_authorized: false,
             domain57_omission_reason: None,
             acceptance_test: None,
         };
@@ -27240,6 +27775,7 @@ mod tests {
             records_total: 1,
             data_records: 1,
             malformed_payload_records: 1,
+            malformed_payload_domains: Default::default(),
             frame_end_records: 1,
             perf_records: 0,
             other_records: 0,
@@ -27340,6 +27876,7 @@ mod tests {
             records_total: 0,
             data_records: 0,
             malformed_payload_records: 0,
+            malformed_payload_domains: Default::default(),
             frame_end_records: 0,
             perf_records: 0,
             other_records: 0,
@@ -28451,6 +28988,14 @@ mod tests {
             compact_expected_domain_ids(&[]),
             vec![10, 11, 12, 13, 14, 15, 16, 17]
         );
+        assert_eq!(
+            compact_expected_domain_ids(&["character_presentation_live".to_string()]),
+            vec![
+                runtime_text_inputs_live_lane::DOMAIN_ID,
+                character_presentation_live_lane::DOMAIN_ID,
+            ],
+            "D82 must account for its owned D76 wire dependency"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -29042,6 +29587,81 @@ mod tests {
         ];
         args.extend(extra.iter().map(|value| value.to_string()));
         args
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn product_auto_attach_selects_the_complete_runtime_roster() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_product_auto_attach_roster_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let product_args = product_auto_attach_worker_args();
+        assert!(!product_args.iter().any(|arg| arg == "--profile"));
+        assert!(!product_args.iter().any(|arg| arg == "--production"));
+        assert_eq!(
+            product_args
+                .iter()
+                .filter(|arg| arg.as_str() == "--product-auto-attach-runtime")
+                .count(),
+            1
+        );
+
+        let mut args = base_profile_test_args(&dir, &[]);
+        args.push("--stream-format".to_string());
+        args.push("compact".to_string());
+        args.extend(product_args);
+        let cfg = parse_args(args).expect("product auto-attach runtime args must parse");
+        let expected = product_auto_attach_runtime_domain_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(cfg.scheduled_domains, expected);
+        assert!(
+            cfg.scheduled_domains
+                .iter()
+                .any(|domain| compact_domain_id(domain)
+                    == Some(COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE)),
+            "the passive speed/pause domain must not be silently omitted"
+        );
+        assert!(!cfg.production, "static publication authority is separate");
+        assert_eq!(cfg.profile, None);
+        assert!(
+            cfg.domain57_without_external_gate_authorized,
+            "run_capture must retain product authorization for the passive X12 observer"
+        );
+        assert!(cfg.hour_latch_enabled);
+        assert!(cfg.compact_country_frame);
+        assert!(cfg.extraction_perf_gate);
+        assert_eq!(cfg.sample_ms, 1);
+        assert_eq!(cfg.min_game_hours, 48);
+        assert_eq!(cfg.reader_concurrency, 12);
+        assert_eq!(
+            cfg.stream_compression,
+            compact_stream::StreamCompression::None,
+            "CID1 rollover streams stay raw until independently compressed during packaging"
+        );
+        write_control_file(&cfg, "00112233445566778899aabbccddeeff", None).unwrap();
+        let control = fs::read_to_string(
+            cfg.dll
+                .parent()
+                .unwrap()
+                .join("collector_control.json"),
+        )
+        .unwrap();
+        assert!(
+            control.contains("\"profile\":\"production\""),
+            "ordinary product runtime must authorize the collector's exact-build D57 path: {control}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -29661,6 +30281,7 @@ mod tests {
             speed_root_gate_path: None,
             domain57_game_speed_transcript_file_sha256: None,
             domain57_game_speed_gate: None,
+            domain57_without_external_gate_authorized: false,
             domain57_omission_reason: None,
             acceptance_test: None,
         }

@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs::OpenOptions, io::Write};
 
 use snapshot::sha256::{to_hex, Sha256};
+use serde::Deserialize;
 
 use super::identity::ProcessKey;
 use super::sources::{PayloadStager, StagedPayload};
@@ -144,6 +145,104 @@ fn persist_identity_commitment(
     Ok(path)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityCommitment {
+    schema: String,
+    pid: u32,
+    process_creation_filetime: u64,
+    attempt_id: String,
+    dll_sha256: String,
+    pipe_token_hash: String,
+}
+
+fn validate_identity_commitment(
+    path: &std::path::Path,
+    key: ProcessKey,
+    expected_attempt_id: &str,
+    expected_dll_sha256: &str,
+) -> Result<(), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("read identity commitment {}: {error}", path.display()))?;
+    let commitment: IdentityCommitment = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse identity commitment {}: {error}", path.display()))?;
+    if commitment.schema != "auto_attach_identity_commitment.v1"
+        || commitment.pid != key.pid
+        || commitment.process_creation_filetime != key.creation_filetime.0
+        || commitment.attempt_id != expected_attempt_id
+        || commitment.dll_sha256 != expected_dll_sha256
+        || commitment.pipe_token_hash.len() != 64
+        || !commitment
+            .pipe_token_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "identity commitment {} does not bind the proven-unloaded generation",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn has_retired_identity_commitment(
+    root: &std::path::Path,
+    key: ProcessKey,
+) -> Result<bool, String> {
+    if !root.is_dir() {
+        return Ok(false);
+    }
+    let prefix = format!(
+        "pid_{}_filetime_{}.retired_",
+        key.pid, key.creation_filetime.0
+    );
+    let mut found = false;
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| format!("enumerate identity commitments {}: {error}", root.display()))?
+    {
+        let entry = entry.map_err(|error| {
+            format!("enumerate identity commitment entry {}: {error}", root.display())
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(attempt_id) = name
+            .strip_prefix(&prefix)
+            .and_then(|value| value.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if attempt_id.is_empty() {
+            return Err("retired identity commitment has an empty attempt id".into());
+        }
+        let bytes = std::fs::read(entry.path()).map_err(|error| {
+            format!(
+                "read retired identity commitment {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        let commitment: IdentityCommitment = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "parse retired identity commitment {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if commitment.schema != "auto_attach_identity_commitment.v1"
+            || commitment.pid != key.pid
+            || commitment.process_creation_filetime != key.creation_filetime.0
+            || commitment.attempt_id != attempt_id
+            || commitment.dll_sha256.len() != 64
+        {
+            return Err(format!(
+                "retired identity commitment {} is malformed or misbound",
+                entry.path().display()
+            ));
+        }
+        found = true;
+    }
+    Ok(found)
+}
+
 /// Filesystem-backed stager. Copies `source_dll` into a fresh directory under
 /// `staging_root` per attempt.
 pub struct FsPayloadStager {
@@ -161,6 +260,54 @@ impl FsPayloadStager {
 }
 
 impl PayloadStager for FsPayloadStager {
+    fn rearm_after_proven_unload(
+        &self,
+        key: ProcessKey,
+        prior_dll_path: &std::path::Path,
+    ) -> Result<(), String> {
+        let attempt_dir = prior_dll_path
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .ok_or("prior staged DLL has no UTF-8 attempt directory")?;
+        let attempt_id = attempt_dir
+            .strip_prefix("attempt_")
+            .filter(|value| !value.is_empty())
+            .ok_or("prior staged DLL directory is not an attempt directory")?;
+        let expected_dll_sha256 = hash_file(prior_dll_path)?;
+        let root = self.staging_root.join("identity_commitments");
+        let active = root.join(format!(
+            "pid_{}_filetime_{}.json",
+            key.pid, key.creation_filetime.0
+        ));
+        let retired = root.join(format!(
+            "pid_{}_filetime_{}.retired_{}.json",
+            key.pid, key.creation_filetime.0, attempt_id
+        ));
+        if !active.exists() {
+            validate_identity_commitment(
+                &retired,
+                key,
+                attempt_id,
+                &expected_dll_sha256,
+            )?;
+            return Ok(());
+        }
+        validate_identity_commitment(
+            &active,
+            key,
+            attempt_id,
+            &expected_dll_sha256,
+        )?;
+        std::fs::rename(&active, &retired).map_err(|error| {
+            format!(
+                "retire proven-unloaded identity commitment {} -> {}: {error}",
+                active.display(),
+                retired.display()
+            )
+        })
+    }
+
     fn stage(
         &self,
         key: ProcessKey,
@@ -192,6 +339,9 @@ impl PayloadStager for FsPayloadStager {
                 "staged dll hash {dll_sha256} != source {source_sha256}"
             ));
         }
+        let identity_commitment_root = self.staging_root.join("identity_commitments");
+        let rearmed_after_proven_unload =
+            has_retired_identity_commitment(&identity_commitment_root, key)?;
         // This durable create-new marker is independent of both journal files.
         // Once staged bytes could be authorized for a process identity, no
         // rewritten/rolled-back journal can authorize another attempt for that
@@ -216,6 +366,7 @@ impl PayloadStager for FsPayloadStager {
             source_sha256,
             pipe_token: pipe_token.to_string(),
             pipe_token_hash: pipe_token_hash.to_string(),
+            rearmed_after_proven_unload,
         })
     }
 }
@@ -283,6 +434,37 @@ mod tests {
         assert!(payload.dll_path.exists());
         assert_eq!(payload.dll_sha256, payload.source_sha256);
         assert!(payload.staging_dir.ends_with("attempt_attempt-abc"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proven_unload_retires_exact_commitment_and_allows_one_new_generation() {
+        let root = tmp_dir("rearm");
+        let src = root.join("src_collector.dll");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&src, b"fake collector payload bytes").unwrap();
+        let stager = FsPayloadStager::new(src, root.join("stage"), 1);
+        let key = ProcessKey::new(10, 11);
+        let first = stager
+            .stage(key, "first", "token-a", &"ab".repeat(32))
+            .unwrap();
+        stager
+            .rearm_after_proven_unload(key, &first.dll_path)
+            .unwrap();
+        // Crash-idempotent: the active marker is already retired, but the exact
+        // retired generation still validates.
+        stager
+            .rearm_after_proven_unload(key, &first.dll_path)
+            .unwrap();
+        let second = stager
+            .stage(key, "second", "token-b", &"cd".repeat(32))
+            .unwrap();
+        assert_ne!(first.staging_dir, second.staging_dir);
+        assert!(root
+            .join("stage")
+            .join("identity_commitments")
+            .join("pid_10_filetime_11.retired_first.json")
+            .is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
 

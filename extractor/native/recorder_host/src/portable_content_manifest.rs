@@ -1103,6 +1103,31 @@ struct RuntimeContentSnapshots {
     m02_used_content: Vec<UsedContentKey>,
 }
 
+pub(crate) fn descriptor_replace_paths(text: &str) -> Vec<String> {
+    let mut replace_paths = Vec::new();
+    for raw_line in text.lines() {
+        let line = raw_line
+            .split_once('#')
+            .map(|(head, _)| head)
+            .unwrap_or(raw_line)
+            .trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("replace_path") {
+            continue;
+        }
+        let Some(value) = parse_descriptor_scalar(value.trim()) else {
+            continue;
+        };
+        let normalized = normalize_descriptor_rel_path(&value).to_ascii_lowercase();
+        if !normalized.is_empty() {
+            replace_paths.push(normalized);
+        }
+    }
+    replace_paths
+}
+
 fn merge_hud_role_snapshots(snapshots: Vec<HudRoleSnapshot>) -> Result<HudRoleSnapshot, String> {
     let mut snapshots = snapshots.into_iter();
     let first = snapshots

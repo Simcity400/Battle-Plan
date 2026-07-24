@@ -69,7 +69,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -298,7 +298,7 @@ pub struct DlcDescriptorEvidence {
     pub descriptor_file_sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayVariantSettings {
     pub physical_width: u32,
     pub physical_height: u32,
@@ -311,6 +311,187 @@ pub struct DisplayVariantSettings {
     pub borderless: bool,
     pub display_mode: String,
     pub settings_file_sha256: String,
+}
+
+/// Exact launch-bound settings evidence retained across recorder generations
+/// for one still-live process identity. the game rewrites `settings.txt` during
+/// startup on some machines, so a recorder restart cannot re-prove the
+/// pre-process mtime even though the first generation already did. This cache
+/// is usable only for the identical PID+creation-FILETIME, executable hash,
+/// canonical user directory, and byte-identical current settings file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SameProcessSettingsAuthority {
+    schema: String,
+    pid: u32,
+    process_creation_filetime: u64,
+    exe_sha256: String,
+    user_dir: String,
+    localisation_language: String,
+    display_variant: DisplayVariantSettings,
+}
+
+const SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA: &str =
+    "hoi4_same_process_settings_authority_v1";
+
+pub fn same_process_settings_authority_path(
+    product_root: &Path,
+    pid: u32,
+    process_creation_filetime: u64,
+) -> PathBuf {
+    product_root
+        .join("staging")
+        .join("identity_commitments")
+        .join(format!(
+            "pid_{pid}_filetime_{process_creation_filetime}.settings.json"
+        ))
+}
+
+/// Persist a newly proven launch-bound settings snapshot, or recover it after
+/// a recorder-only restart when the ordinary resolver's sole failure is the
+/// expected post-start `settings.txt` rewrite. Any mismatch leaves the report
+/// unresolved.
+pub fn apply_same_process_settings_authority(
+    report: &mut ModsetReport,
+    authority_path: &Path,
+    pid: u32,
+    process_creation_filetime: u64,
+) -> Result<(), String> {
+    if report.resolved {
+        let Some(exe_sha256) = report.exe_sha256.as_ref() else {
+            return Err("resolved modset lacks executable hash".into());
+        };
+        let Some(user_dir) = report.user_dir.as_ref() else {
+            return Err("resolved modset lacks canonical user directory".into());
+        };
+        let Some(localisation_language) = report.localisation_language.as_ref() else {
+            return Err("resolved modset lacks localisation language".into());
+        };
+        let Some(display_variant) = report.display_variant.as_ref() else {
+            return Err("resolved modset lacks display variant".into());
+        };
+        let authority = SameProcessSettingsAuthority {
+            schema: SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA.to_string(),
+            pid,
+            process_creation_filetime,
+            exe_sha256: exe_sha256.clone(),
+            user_dir: user_dir.display().to_string(),
+            localisation_language: localisation_language.clone(),
+            display_variant: display_variant.clone(),
+        };
+        return create_or_validate_same_process_settings_authority(authority_path, &authority);
+    }
+
+    let settings_errors: Vec<_> = report
+        .errors
+        .iter()
+        .filter(|error| error.starts_with("settings.txt launch settings unresolved:"))
+        .cloned()
+        .collect();
+    if settings_errors.len() != 1 || report.errors.len() != 1 {
+        return Ok(());
+    }
+    let bytes = fs::read(authority_path).map_err(|error| {
+        format!(
+            "read same-process settings authority {}: {error}",
+            authority_path.display()
+        )
+    })?;
+    let authority: SameProcessSettingsAuthority =
+        serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "parse same-process settings authority {}: {error}",
+                authority_path.display()
+            )
+        })?;
+    if authority.schema != SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA
+        || authority.pid != pid
+        || authority.process_creation_filetime != process_creation_filetime
+    {
+        return Err("same-process settings authority identity mismatch".into());
+    }
+    let exe_sha256 = report
+        .exe_sha256
+        .as_deref()
+        .ok_or("same-process settings recovery lacks executable hash")?;
+    if authority.exe_sha256 != exe_sha256 {
+        return Err("same-process settings authority executable hash mismatch".into());
+    }
+    let user_dir = report
+        .user_dir
+        .as_ref()
+        .ok_or("same-process settings recovery lacks user directory")?;
+    if authority.user_dir != user_dir.display().to_string() {
+        return Err("same-process settings authority user directory mismatch".into());
+    }
+    let settings_path = user_dir.join("settings.txt");
+    let (_, current_sha256) = hash_file_streaming_stable(&settings_path)
+        .map_err(|error| format!("rehash same-process settings authority: {error}"))?;
+    if current_sha256 != authority.display_variant.settings_file_sha256 {
+        return Err("same-process settings authority current file hash mismatch".into());
+    }
+    report.localisation_language = Some(authority.localisation_language);
+    report.display_variant = Some(authority.display_variant);
+    report
+        .errors
+        .retain(|error| !error.starts_with("settings.txt launch settings unresolved:"));
+    report.resolved = report.errors.is_empty();
+    Ok(())
+}
+
+fn create_or_validate_same_process_settings_authority(
+    authority_path: &Path,
+    authority: &SameProcessSettingsAuthority,
+) -> Result<(), String> {
+    if authority_path.exists() {
+        let bytes = fs::read(authority_path).map_err(|error| {
+            format!(
+                "read existing same-process settings authority {}: {error}",
+                authority_path.display()
+            )
+        })?;
+        let existing: SameProcessSettingsAuthority =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                format!(
+                    "parse existing same-process settings authority {}: {error}",
+                    authority_path.display()
+                )
+            })?;
+        if existing != *authority {
+            return Err("existing same-process settings authority differs".into());
+        }
+        return Ok(());
+    }
+    let parent = authority_path
+        .parent()
+        .ok_or("same-process settings authority path has no parent")?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "create same-process settings authority directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = match options.open(authority_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return create_or_validate_same_process_settings_authority(authority_path, authority)
+        }
+        Err(error) => {
+            return Err(format!(
+                "create same-process settings authority {}: {error}",
+                authority_path.display()
+            ))
+        }
+    };
+    serde_json::to_writer(&mut file, authority)
+        .map_err(|error| format!("serialize same-process settings authority: {error}"))?;
+    use std::io::Write as _;
+    file.flush()
+        .map_err(|error| format!("flush same-process settings authority: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("sync same-process settings authority: {error}"))
 }
 
 impl ModsetReport {
@@ -1937,6 +2118,87 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn authority_report(user_dir: &Path, settings_sha256: String) -> ModsetReport {
+        ModsetReport {
+            resolved: true,
+            errors: Vec::new(),
+            exe_path: Some(PathBuf::from(r"F:\game\hoi4.exe")),
+            exe_size_bytes: Some(7),
+            exe_sha256: Some("ab".repeat(32)),
+            user_dir: Some(user_dir.to_path_buf()),
+            user_dir_source: Some("probed"),
+            dlc_load_mtime_unix: Some(1),
+            dlc_load_sha256: Some("cd".repeat(32)),
+            process_start_unix: Some(2),
+            enabled_mods: Vec::new(),
+            installed_dlcs: vec!["dlc/a/a.dlc".into()],
+            disabled_dlcs: Vec::new(),
+            enabled_dlcs: vec!["dlc/a/a.dlc".into()],
+            dlc_display_names: BTreeMap::new(),
+            dlc_descriptor_evidence: BTreeMap::new(),
+            localisation_language: Some("english".into()),
+            display_variant: Some(DisplayVariantSettings {
+                physical_width: 1920,
+                physical_height: 1080,
+                min_gui_width: 1280,
+                min_gui_height: 720,
+                gui_scale_f32_bits: 1.0f32.to_bits(),
+                refresh_rate_hz: 60,
+                max_refresh_rate_hz: Some(75),
+                fullscreen: false,
+                borderless: true,
+                display_mode: "borderless_fullscreen".into(),
+                settings_file_sha256: settings_sha256,
+            }),
+        }
+    }
+
+    #[test]
+    fn same_process_settings_authority_recovers_only_matching_identity_and_bytes() {
+        let dir = temp_dir("same_process_settings_authority");
+        fs::write(dir.join("settings.txt"), b"exact settings bytes").unwrap();
+        let settings_sha256 = Sha256::hex(b"exact settings bytes");
+        let authority_path = dir.join("authority.json");
+        let mut proven = authority_report(&dir, settings_sha256);
+        apply_same_process_settings_authority(&mut proven, &authority_path, 77, 88).unwrap();
+
+        let mut rewritten = proven.clone();
+        rewritten.resolved = false;
+        rewritten.errors =
+            vec!["settings.txt launch settings unresolved: mtime is at/after start; recorded null"
+                .into()];
+        rewritten.localisation_language = None;
+        rewritten.display_variant = None;
+        apply_same_process_settings_authority(&mut rewritten, &authority_path, 77, 88).unwrap();
+        assert!(rewritten.resolved);
+        assert_eq!(rewritten.localisation_language.as_deref(), Some("english"));
+        assert_eq!(
+            rewritten
+                .display_variant
+                .as_ref()
+                .unwrap()
+                .settings_file_sha256,
+            Sha256::hex(b"exact settings bytes")
+        );
+
+        fs::write(dir.join("settings.txt"), b"different settings bytes").unwrap();
+        let mut changed = proven.clone();
+        changed.resolved = false;
+        changed.errors =
+            vec!["settings.txt launch settings unresolved: changed; recorded null".into()];
+        changed.localisation_language = None;
+        changed.display_variant = None;
+        assert!(apply_same_process_settings_authority(
+            &mut changed,
+            &authority_path,
+            77,
+            88
+        )
+        .unwrap_err()
+        .contains("current file hash mismatch"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

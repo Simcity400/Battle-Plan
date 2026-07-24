@@ -168,6 +168,20 @@ fn run() -> Result<(), String> {
             "truncated_tail_bytes": stats.truncated_tail_bytes,
             "records_total": stats.records_total,
             "data_records": stats.data_records,
+            "malformed_payload_records": stats.malformed_payload_records,
+            "malformed_payload_domains": stats.malformed_payload_domains.iter()
+                .map(|(domain_id, malformed)| {
+                    (
+                        domain_id.to_string(),
+                        json!({
+                            "records": malformed.records,
+                            "first_reason": malformed.first_reason,
+                            "first_stream_offset": malformed.first_stream_offset,
+                            "first_game_hour_raw": malformed.first_game_hour_raw,
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<String, Value>>(),
             "frame_end_records": stats.frame_end_records,
             "perf_records_ignored": stats.perf_records,
             "other_records_ignored": stats.other_records,

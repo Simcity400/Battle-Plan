@@ -32,6 +32,7 @@ use naval_missions_status_live_lane as naval56;
 use nuke_stockpile_live_lane as nuke83;
 use occupation_resistance_compliance_live_lane as occupation52;
 use resolved_tooltip_instances_live_lane as tooltip72;
+use runtime_text_inputs_live_lane as runtime76;
 use session_multiplayer_metadata_live as session57;
 use scripted_state_flags_variables_live_lane::scripted_gui_runtime_compact as scripted84;
 use sunk_ship_history_live_lane as sunk86;
@@ -653,6 +654,7 @@ pub const COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS: u32 = 2;
 pub const COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1: u32 = 3;
 pub const COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2: u32 = 4;
 pub const COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1: u32 = 5;
+pub const COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1: u32 = 6;
 pub const COMPACT_PROJECT_ROOT_COUNTERS_LEN: usize = 24;
 pub const COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN: usize = 48;
 pub const COMPACT_PROJECT_PROGRESS_COUNTERS_LEN: usize = 16;
@@ -679,11 +681,16 @@ pub const COMPACT_PROJECT_STATE_ROW_FLAG_DELETED: u32 = 1 << 31;
 pub const COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_PRESENT: u32 = 1;
 pub const COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_SHIFT: u32 = 1;
 pub const COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_MASK: u32 = 0x7 << 1;
+pub const COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT: u32 = 4;
+pub const COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK: u32 = 0x3 << 4;
 pub const COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED: u32 = 1 << 31;
-pub const COMPACT_PROJECT_BREAKTHROUGH_KNOWN_FLAGS: u32 =
+pub const COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_KNOWN_FLAGS: u32 =
     COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_PRESENT
         | COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_MASK
         | COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED;
+pub const COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_KNOWN_FLAGS: u32 =
+    COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_KNOWN_FLAGS
+        | COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK;
 pub const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
 pub const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
@@ -2139,15 +2146,16 @@ fn decode_compact_production_license_trailer(
     let country_rows = read_u32_le(trailer, 8) as usize;
     let id_rows = read_u32_le(trailer, 12) as usize;
     let reserved = read_u32_le(trailer, 16);
-    if version != 1 || header_len != HEADER_LEN || reserved != 0 {
+    if (version != 1 && version != 2) || header_len != HEADER_LEN || reserved != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: production license trailer header shape invalid (version {version}, header_len {header_len}, reserved {reserved})"
         ));
         return None;
     }
+    let item_len = if version == 1 { 4 } else { 16 };
     let expected = HEADER_LEN
         .saturating_add(country_rows.saturating_mul(8))
-        .saturating_add(id_rows.saturating_mul(4));
+        .saturating_add(id_rows.saturating_mul(item_len));
     if trailer.len() < expected {
         summary.parse_errors.push(format!(
             "offset {offset}: production license trailer len {} < {expected}",
@@ -2188,9 +2196,18 @@ fn decode_compact_production_license_trailer(
     }
     for (tag_db_id, count) in &counts {
         let mut seen_ids = BTreeSet::new();
-        for _ in 0..*count {
+        for expected_order in 0..*count {
             let variant_id = read_u32_le(trailer, cursor);
-            cursor += 4;
+            let (visible_order, creator_tag_db_id, origin_tag_db_id) = if version == 2 {
+                (
+                    read_u32_le(trailer, cursor + 4),
+                    read_u32_le(trailer, cursor + 8),
+                    read_u32_le(trailer, cursor + 12),
+                )
+            } else {
+                (expected_order as u32, 0, 0)
+            };
+            cursor += item_len;
             if variant_id == 0 || variant_id >= (1 << 24) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: production license id {variant_id} for tag {tag_db_id} out of range"
@@ -2199,6 +2216,16 @@ fn decode_compact_production_license_trailer(
             if !seen_ids.insert(variant_id) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: production license tag {tag_db_id} duplicates variant_id {variant_id}"
+                ));
+            }
+            if version == 2
+                && (visible_order != expected_order as u32
+                    || creator_tag_db_id == 0
+                    || creator_tag_db_id > i32::MAX as u32
+                    || origin_tag_db_id > i32::MAX as u32)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production license v2 tag {tag_db_id} row {expected_order} has invalid order/creator/origin ({visible_order}, {creator_tag_db_id}, {origin_tag_db_id})"
                 ));
             }
         }
@@ -2663,7 +2690,10 @@ fn decode_compact_focus_data_payload(
                 "offset {offset}: focus country row {row_index} duplicates tag_db_id {tag_db_id}"
             ));
         }
-        if flags & !0b11_1111 != 0 {
+        // Bits 6/7 carry the authenticated pause-field presence/value added to
+        // the current D12 producer. WorldFold already consumes the same full
+        // byte; the summary gate must not reject valid current-schema rows.
+        if flags & !0xff != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus country row {row_index} has unknown flags {flags}"
             ));
@@ -9283,7 +9313,8 @@ fn decode_compact_projects_data_payload(
         | COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS
         | COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1
         | COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2
-        | COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1 => {
+        | COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1
+        | COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1 => {
             project_header_len = COMPACT_PROJECT_HEADER_LEN + COMPACT_PROJECT_ROOT_COUNTERS_LEN;
             if payload.len() < project_header_len {
                 summary.parse_errors.push(format!(
@@ -9302,6 +9333,7 @@ fn decode_compact_projects_data_payload(
                 || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1
                 || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2
                 || header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1
+                || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
             {
                 project_header_len += COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN;
                 if payload.len() < project_header_len {
@@ -9327,6 +9359,7 @@ fn decode_compact_projects_data_payload(
             if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1
                 || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2
                 || header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1
+                || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
             {
                 project_header_len += COMPACT_PROJECT_PROGRESS_COUNTERS_LEN;
                 if payload.len() < project_header_len {
@@ -9951,6 +9984,7 @@ fn decode_compact_projects_data_payload(
         }
         if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2
             || header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1
+            || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
         {
             if state_flags_or_reserved
                 & !(COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED
@@ -9986,6 +10020,19 @@ fn decode_compact_projects_data_payload(
         let points_raw = read_u32_le(payload, cursor + 8);
         let flags = read_u32_le(payload, cursor + 12);
         cursor += COMPACT_PROJECT_BREAKTHROUGH_ROW_LEN;
+        let program_status_index = if header_extension
+            == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
+        {
+            (flags & COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK)
+                >> COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT
+        } else {
+            0
+        };
+        if program_status_index >= 3 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} has invalid program_status_index {program_status_index}"
+            ));
+        }
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects breakthrough row {row_index} has invalid tag_db_id {tag_db_id}"
@@ -9995,15 +10042,21 @@ fn decode_compact_projects_data_payload(
             summary.parse_errors.push(format!(
                 "offset {offset}: projects breakthrough row {row_index} has invalid specialization_handle {specialization_handle}"
             ));
-        } else if !seen_breakthrough.insert((tag_db_id, specialization_handle)) {
+        } else if !seen_breakthrough.insert((
+            tag_db_id,
+            program_status_index,
+            specialization_handle,
+        )) {
             summary.parse_errors.push(format!(
-                "offset {offset}: projects breakthrough row {row_index} duplicates tag/specialization {tag_db_id}/{specialization_handle}"
+                "offset {offset}: projects breakthrough row {row_index} duplicates tag/program-status/specialization {tag_db_id}/{program_status_index}/{specialization_handle}"
             ));
         }
         let known_flags = if header_extension
-            == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1
+            == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
         {
-            COMPACT_PROJECT_BREAKTHROUGH_KNOWN_FLAGS
+            COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_KNOWN_FLAGS
+        } else if header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1 {
+            COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_KNOWN_FLAGS
         } else {
             COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED
         };
@@ -10015,14 +10068,19 @@ fn decode_compact_projects_data_payload(
         let deleted = flags & COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED != 0;
         if deleted {
             deleted_breakthrough_rows = deleted_breakthrough_rows.saturating_add(1);
-            if flags != COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED || points_raw != 0 {
+            let expected_deleted_flags = COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED
+                | (program_status_index
+                    << COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT);
+            if flags != expected_deleted_flags || points_raw != 0 {
                 summary.parse_errors.push(format!(
                     "offset {offset}: projects breakthrough deleted row {row_index} has live fields"
                 ));
             }
             continue;
         }
-        if header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1 {
+        if header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1
+            || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
+        {
             let specialization_present =
                 flags & COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_PRESENT != 0;
             let specialization_code = (flags & COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_MASK)
@@ -15286,7 +15344,10 @@ fn decode_compact_air_base_status_data_payload(
         let building_level = read_u32_le(payload, cursor + 16);
         let based_wing_count = read_u32_le(payload, cursor + 20);
         let based_plane_count = read_u32_le(payload, cursor + 24);
-        let row_reserved = read_u32_le(payload, cursor + 28);
+        // A7 exact-a729 placement closure promoted the former reserved word to
+        // the pointer-free CAirBase -> CProvince id. Keep zero compatible with
+        // older/unresolved rows, but validate every present province id.
+        let province_id = read_u32_le(payload, cursor + 28);
         cursor += COMPACT_AIR_BASE_STATUS_ROW_LEN;
         let deleted = (flags & COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED) != 0;
         if air_base_id == 0 || air_base_id > COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID {
@@ -15308,9 +15369,9 @@ fn decode_compact_air_base_status_data_payload(
                 "offset {offset}: air base status row {row_index} has unknown flags {flags}"
             ));
         }
-        if row_reserved != 0 {
+        if province_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
             summary.parse_errors.push(format!(
-                "offset {offset}: air base status row {row_index} reserved field is nonzero"
+                "offset {offset}: air base status row {row_index} has invalid province_id {province_id}"
             ));
         }
         if deleted {
@@ -15366,6 +15427,43 @@ fn decode_compact_air_base_status_data_payload(
         34,
         "air_base_status_based_plane_count_sum",
         based_plane_sum,
+    );
+}
+
+fn decode_compact_runtime_text_inputs_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let frame = match runtime76::decode_payload(payload) {
+        Ok(frame) => frame,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: runtime text inputs decode failed: {error:?}"
+            ));
+            return;
+        }
+    };
+    add_decoder_status(summary, frame.status_flags);
+    let row_count = frame.rows.len();
+    if let Some(domain) = summary.per_domain.get_mut(&runtime76::DOMAIN_ID) {
+        domain.status_flags_or |= frame.status_flags;
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(row_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        runtime76::DOMAIN_ID,
+        "runtime_text_input_rows",
+        row_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        runtime76::DOMAIN_ID,
+        "runtime_text_expected_context_rows",
+        frame.expected_context_count as usize,
     );
 }
 
@@ -16029,6 +16127,9 @@ fn decode_compact_weather_data_payload(
     let reserved1 = read_u32_le(payload, 44);
     add_decoder_status(summary, status_flags);
     let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+    let failed = compact_contract::compact_status_is_failure(
+        compact_contract::compact_status_for_global_interpretation(24, status_flags),
+    );
     let emitted_rows = region_count.saturating_add(province_count);
 
     let expected_len = 48usize
@@ -16041,7 +16142,7 @@ fn decode_compact_weather_data_payload(
         ));
         return;
     }
-    if observed_region_rows != COMPACT_WEATHER_REGION_ROWS {
+    if !failed && observed_region_rows != COMPACT_WEATHER_REGION_ROWS {
         summary.parse_errors.push(format!(
             "offset {offset}: weather observed_region_rows {observed_region_rows} != {COMPACT_WEATHER_REGION_ROWS}"
         ));
@@ -16054,7 +16155,7 @@ fn decode_compact_weather_data_payload(
             "offset {offset}: weather observed_province_rows {observed_province_rows} outside {COMPACT_WEATHER_MIN_PROVINCE_ROWS}..={COMPACT_WEATHER_MAX_PROVINCE_ROWS}"
         ));
     }
-    if !delta_data && region_count != COMPACT_WEATHER_REGION_ROWS {
+    if !failed && !delta_data && region_count != COMPACT_WEATHER_REGION_ROWS {
         summary.parse_errors.push(format!(
             "offset {offset}: weather full snapshot region_count {region_count} != {COMPACT_WEATHER_REGION_ROWS}"
         ));
@@ -16792,6 +16893,9 @@ pub fn summarize_domain_data_payload(
             &mut summary,
         ),
         75 => decode_compact_fired_event_popups_data_payload(offset, payload, &mut summary),
+        runtime76::DOMAIN_ID => {
+            decode_compact_runtime_text_inputs_data_payload(offset, payload, &mut summary)
+        }
         78 => decode_compact_design_catalog_context_data_payload(offset, payload, &mut summary),
         hud79::DOMAIN_ID => {
             decode_compact_hud_surface_activation_live_data_payload(offset, payload, &mut summary)
@@ -17165,6 +17269,80 @@ mod tests {
     fn push_string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u16).to_le_bytes());
         out.extend_from_slice(value.as_bytes());
+    }
+
+    #[test]
+    fn air_base_status_accepts_promoted_province_id() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        for value in [1u32, 1, 0, 1, 1, 0, 0] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [154u32, 2, 0, 1_600, 8, 3, 278, 321] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let authority = summarize_domain_data_payload(
+            34,
+            &payload,
+            DomainDataContext::default(),
+        )
+        .expect("A7-promoted province id is canonical domain-34 data");
+        assert_eq!(authority.emitted_rows, 1);
+        assert_eq!(authority.status_flags, Some(0));
+    }
+
+    #[test]
+    fn weather_source_unavailable_empty_frame_is_structurally_decodable() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        for value in [
+            0u32,
+            0,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            0,
+            0,
+            0,
+            COMPACT_FIXED_SCALE_RAW,
+            0,
+            0,
+            0,
+        ] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let authority = summarize_domain_data_payload(
+            24,
+            &payload,
+            DomainDataContext::default(),
+        )
+        .expect("typed source-unavailable weather frame remains decodable");
+        assert_eq!(
+            authority.status_flags,
+            Some(COMPACT_STATUS_SOURCE_UNAVAILABLE)
+        );
+        assert_eq!(authority.emitted_rows, 0);
+    }
+
+    #[test]
+    fn runtime_text_dependency_has_canonical_data_authority() {
+        let payload = runtime76::encode_source_unavailable(
+            1,
+            2,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        )
+        .expect("bounded RTI1 failure payload");
+        let authority = summarize_domain_data_payload(
+            runtime76::DOMAIN_ID,
+            &payload,
+            DomainDataContext::default(),
+        )
+        .expect("RTI1 is a supported implicit production dependency");
+        assert_eq!(
+            authority.status_flags,
+            Some(COMPACT_STATUS_SOURCE_UNAVAILABLE)
+        );
+        assert_eq!(authority.emitted_rows, 0);
     }
 
     #[test]

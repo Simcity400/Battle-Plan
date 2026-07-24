@@ -94,9 +94,11 @@ impl CandidateState {
         use CandidateState::*;
         match self {
             Detected => &[WaitingForIdentity, WaitingForWindow],
-            // identity can resolve straight to window-wait, or bounce back while
-            // evidence is still ambiguous (self-loop is allowed via retry).
-            WaitingForIdentity => &[WaitingForIdentity, WaitingForWindow],
+            // Identity can resolve to the interactive window gate, or product
+            // headless mode can proceed directly to preparation after the
+            // same exact process/modset admission. Ambiguous evidence may
+            // still retry through the self-loop.
+            WaitingForIdentity => &[WaitingForIdentity, WaitingForWindow, Preparing],
             WaitingForWindow => &[WaitingForWindow, Preparing],
             Preparing => &[Injecting],
             Injecting => &[Handshaking],
@@ -161,6 +163,9 @@ pub enum ReasonCode {
     FinalizeVerifyFailed,
     ReplayComplete,
     RecoveredNonterminalReinjectionBlocked,
+    /// A prior terminal attempt's worker is gone and Toolhelp proved that
+    /// attempt's exact staged collector module is no longer mapped.
+    CollectorUnloadedRearmed,
     ExplicitStop,
 }
 
@@ -191,6 +196,7 @@ impl ReasonCode {
             ReasonCode::RecoveredNonterminalReinjectionBlocked => {
                 "recovered_nonterminal_reinjection_blocked"
             }
+            ReasonCode::CollectorUnloadedRearmed => "collector_unloaded_rearmed",
             ReasonCode::ExplicitStop => "explicit_stop",
         }
     }
@@ -222,6 +228,11 @@ mod tests {
         assert!(!CandidateState::Preparing.can_advance_to(CandidateState::WaitingForWorld));
         assert!(!CandidateState::Handshaking.can_advance_to(CandidateState::Recording));
         assert!(CandidateState::WaitingForWorld.can_advance_to(CandidateState::Recording));
+    }
+
+    #[test]
+    fn headless_identity_may_advance_directly_to_preparing() {
+        assert!(CandidateState::WaitingForIdentity.can_advance_to(CandidateState::Preparing));
     }
 
     #[test]

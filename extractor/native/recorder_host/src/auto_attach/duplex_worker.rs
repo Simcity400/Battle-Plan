@@ -99,6 +99,13 @@ pub enum DuplexWorkerState {
     Failed,
 }
 
+fn rollover_heartbeat_state_allowed(state: DuplexWorkerState) -> bool {
+    matches!(
+        state,
+        DuplexWorkerState::WaitingForWorld | DuplexWorkerState::Recording
+    )
+}
+
 #[derive(Debug)]
 pub enum DuplexWorkerError {
     AttemptAuthority(String),
@@ -1514,7 +1521,12 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         RS: RecorderRolloverStore,
     {
         self.sync_external_stop(Instant::now());
-        self.require_state(DuplexWorkerState::Recording, "run rollover-aware heartbeat")?;
+        if !rollover_heartbeat_state_allowed(self.state) {
+            return Err(DuplexWorkerError::IllegalTransition {
+                from: self.state,
+                action: "run rollover-aware heartbeat",
+            });
+        }
         if self.required_capabilities != ControlCapabilities::auto_attach_duplex_rollover_v1() {
             return Err(DuplexWorkerError::ActivationDisabled);
         }
@@ -1869,6 +1881,19 @@ impl<I: DeadlineControlIo + Send> WorkerHandle for DuplexWorkerSession<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rollover_heartbeat_allows_cid1_only_preworld_transition() {
+        assert!(rollover_heartbeat_state_allowed(
+            DuplexWorkerState::WaitingForWorld
+        ));
+        assert!(rollover_heartbeat_state_allowed(
+            DuplexWorkerState::Recording
+        ));
+        assert!(!rollover_heartbeat_state_allowed(
+            DuplexWorkerState::Handshaking
+        ));
+    }
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::io;
@@ -2096,6 +2121,7 @@ mod tests {
                 source_sha256: "03".repeat(32),
                 pipe_token: encode_hex(&session_id),
                 pipe_token_hash: "not-authority".to_string(),
+                rearmed_after_proven_unload: false,
             },
             out_dir: PathBuf::from("out"),
             session_id: "replay-session".to_string(),

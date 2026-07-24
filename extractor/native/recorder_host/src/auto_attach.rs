@@ -58,6 +58,10 @@ pub struct SupervisorOptions {
     /// Extra worker args (e.g. static-catalog paths, profile). The `--pid`,
     /// `--dll`, and `--out-dir` are supplied per attempt.
     pub worker_extra_args: Vec<String>,
+    /// Retain the legacy visible-window readiness proof. The packaged headless
+    /// product disables this and relies on the exact same-user process identity
+    /// re-probe so injection precedes one-shot UI setup.
+    pub require_visible_window: bool,
     /// Poll cadence for the supervisor loop.
     pub poll_ms: u64,
 }
@@ -100,12 +104,13 @@ pub fn run_supervisor_with_events(
         out_root: opts.out_root.clone(),
         own_session_id: own_session,
         own_sid_hash,
+        require_visible_window: opts.require_visible_window,
     };
     let deps = CoordinatorDeps {
         clock: Box::new(SystemClock::new()),
         probe: Box::new(ToolhelpProbe::new()),
         events: Box::new(WmiProcessEventSource::new()),
-        env: Box::new(live::LiveAttachEnvironment::new()),
+        env: Box::new(live::LiveAttachEnvironment::new(opts.out_root.clone())),
         stager: Box::new(FsPayloadStager::new(
             opts.source_dll,
             opts.staging_root,
@@ -177,12 +182,13 @@ mod live {
 
     // -- Visible-window + modset environment -----------------------------
 
-    #[derive(Default)]
-    pub struct LiveAttachEnvironment;
+    pub struct LiveAttachEnvironment {
+        product_root: PathBuf,
+    }
 
     impl LiveAttachEnvironment {
-        pub fn new() -> Self {
-            Self
+        pub fn new(product_root: PathBuf) -> Self {
+            Self { product_root }
         }
     }
 
@@ -218,7 +224,23 @@ mod live {
                     }
                 }
             };
-            let report = crate::modset::resolve_modset(before.key.pid, None);
+            let mut report = crate::modset::resolve_modset(before.key.pid, None);
+            let settings_authority = crate::modset::same_process_settings_authority_path(
+                &self.product_root,
+                before.key.pid,
+                before.key.creation_filetime.0,
+            );
+            if let Err(error) = crate::modset::apply_same_process_settings_authority(
+                &mut report,
+                &settings_authority,
+                before.key.pid,
+                before.key.creation_filetime.0,
+            ) {
+                report.resolved = false;
+                report.errors.push(format!(
+                    "same-process settings authority unavailable: {error}"
+                ));
+            }
             match probe.identify(before.key.pid) {
                 Ok(after) if after == before => {}
                 Ok(_) => {
@@ -349,6 +371,13 @@ mod live {
             name: *const u16,
         ) -> Handle;
         fn SetEvent(event: Handle) -> Bool;
+        fn GetProcessTimes(
+            process: Handle,
+            creation_time: *mut u64,
+            exit_time: *mut u64,
+            kernel_time: *mut u64,
+            user_time: *mut u64,
+        ) -> Bool;
         fn GetLastError() -> Dword;
         fn CloseHandle(handle: Handle) -> Bool;
     }
@@ -501,8 +530,15 @@ mod live {
                     "auto-attach worker arg {arg:?} would override coordinator authority"
                 ));
             }
-            let control_session = super::proof::decode_hex_16(&spec.payload.pipe_token)
-                .map_err(|e| format!("invalid coordinator pipe token: {e}"))?;
+            // The durable parent/child proof channel and live H4CT transport
+            // coexist inside the worker process. Session capabilities are
+            // process-global and single-claim, so the proof channel uses the
+            // independent control challenge while H4CT exclusively owns the
+            // pipe token.
+            let control_session = spec.control_challenge;
+            let proof_session_id =
+                crate::control_transport::SessionId::from_bytes(control_session)
+                    .map_err(|error| format!("invalid proof session id: {error}"))?;
             let expectation = super::proof::ProofExpectation {
                 pid: spec.key.pid,
                 creation_filetime: spec.key.creation_filetime.0,
@@ -521,6 +557,13 @@ mod live {
                 .out_dir
                 .join(super::proof::WORKER_PROOF_FILE_NAME);
             let proof_file = super::proof::create_durable_proof_file(proof_path.clone())?;
+            let proof_transcript_path = proof_path.clone();
+            let stderr_path = spec.out_dir.join("worker_stderr.log");
+            let worker_stderr = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&stderr_path)
+                .map_err(|error| format!("create worker stderr trace: {error}"))?;
             let mut cmd = Command::new(&self.exe);
             cmd.args(&self.extra_args)
                 .arg("--pid")
@@ -541,6 +584,24 @@ mod live {
                     spec.key.creation_filetime.0.to_string(),
                 )
                 .env(
+                    "BATTLE_PLAN_AUTO_ATTACH_MODSET_AUTHORITY",
+                    crate::modset::same_process_settings_authority_path(
+                        spec.out_dir
+                            .parent()
+                            .ok_or("auto-attach run directory has no product root")?,
+                        spec.key.pid,
+                        spec.key.creation_filetime.0,
+                    ),
+                )
+                .env(
+                    "BATTLE_PLAN_AUTO_ATTACH_REARMED_TARGET_LEASE",
+                    if spec.payload.rearmed_after_proven_unload {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                )
+                .env(
                     "BATTLE_PLAN_AUTO_ATTACH_EXPECTED_DLL_SHA256",
                     &spec.payload.dll_sha256,
                 )
@@ -559,7 +620,8 @@ mod live {
             }
             cmd
                 .stdin(Stdio::null())
-                .stdout(Stdio::null());
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(worker_stderr));
             let crash_job = WorkerCrashJob::create()?;
             let mut child = cmd.spawn().map_err(|e| format!("spawn worker: {e}"))?;
             if let Err(error) = crash_job.assign(&child) {
@@ -576,7 +638,7 @@ mod live {
                     let result = (|| -> Result<(), String> {
                         let tail = super::proof::DurableProofTail::new(
                             proof_file,
-                            proof_thread_stop,
+                            proof_thread_stop.clone(),
                         );
                         let mut channel = super::proof::recorder_channel(tail, control_session)?;
                         let hello = channel.recv().map_err(|e| e.to_string())?;
@@ -591,9 +653,17 @@ mod live {
                         loop {
                             let proof = match channel.recv() {
                                 Ok(proof) => proof,
-                                Err(crate::control_transport::ControlError::Io(
-                                    std::io::ErrorKind::UnexpectedEof,
-                                )) if last_sequence.is_some() => break,
+                                Err(crate::control_transport::ControlError::Truncated)
+                                    if last_sequence.is_some()
+                                        && proof_thread_stop.load(Ordering::Acquire)
+                                        && validate_complete_proof_transcript(
+                                            &proof_transcript_path,
+                                            proof_session_id,
+                                        )
+                                        .is_ok() =>
+                                {
+                                    break
+                                }
                                 Err(error) => return Err(error.to_string()),
                             };
                             if proof.kind != crate::control_transport::MessageKind::HeartbeatProof {
@@ -633,11 +703,14 @@ mod live {
             Ok(Box::new(ChildWorkerHandle {
                 child,
                 out_dir: spec.out_dir.clone(),
+                stderr_path,
                 stop_requested: false,
                 hard_kill_sent: false,
                 crash_job: Some(crash_job),
                 cooperative_stop_event,
                 cooperative_stop_started: None,
+                finalization_progress: None,
+                finalization_last_progress_at: None,
                 status_rx,
                 proof_stop,
                 proof_join: Some(proof_join),
@@ -657,6 +730,7 @@ mod live {
     struct ChildWorkerHandle {
         child: Child,
         out_dir: PathBuf,
+        stderr_path: PathBuf,
         stop_requested: bool,
         /// True only when the legacy adapter successfully issued
         /// `TerminateProcess` through `Child::kill`. A subsequently observed
@@ -669,6 +743,8 @@ mod live {
         crash_job: Option<WorkerCrashJob>,
         cooperative_stop_event: Option<SupervisorStopEvent>,
         cooperative_stop_started: Option<std::time::Instant>,
+        finalization_progress: Option<FinalizationProgress>,
+        finalization_last_progress_at: Option<std::time::Instant>,
         status_rx: Receiver<WorkerStatus>,
         proof_stop: Arc<AtomicBool>,
         proof_join: Option<std::thread::JoinHandle<()>>,
@@ -680,16 +756,9 @@ mod live {
 
     impl WorkerHandle for ChildWorkerHandle {
         fn poll(&mut self) -> WorkerStatus {
-            if self
-                .cooperative_stop_started
-                .is_some_and(|started| {
-                    started.elapsed()
-                        >= std::time::Duration::from_millis(
-                            super::policy::GRACEFUL_STOP_DEADLINE_MS,
-                        )
-                })
-                && !self.hard_kill_sent
-            {
+            let now = std::time::Instant::now();
+            self.refresh_finalization_progress(now);
+            if self.finalization_deadman_expired(now) && !self.hard_kill_sent {
                 if self.child.kill().is_ok() {
                     self.hard_kill_sent = true;
                 }
@@ -709,6 +778,14 @@ mod live {
                     self.saw_recording = true;
                     return status;
                 }
+                Ok(WorkerStatus::Failed { reason }) => {
+                    if let Ok(Some(status)) = self.child.try_wait() {
+                        if !status.success() {
+                            return self.worker_exit_failure(status);
+                        }
+                    }
+                    return WorkerStatus::Failed { reason };
+                }
                 Ok(status) => return status,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
             }
@@ -720,17 +797,20 @@ mod live {
                 Ok(None) => WorkerStatus::Handshaking,
                 Ok(Some(status)) => {
                     self.finish_proof_reader();
+                    let mut proof_failure = None;
                     while let Ok(proof_status) = self.status_rx.try_recv() {
                         match proof_status {
                             WorkerStatus::Attached => self.saw_attached = true,
                             WorkerStatus::Recording { .. } => self.saw_recording = true,
-                            WorkerStatus::Failed { reason } => {
-                                return WorkerStatus::Failed { reason }
-                            }
+                            WorkerStatus::Failed { reason } => proof_failure = Some(reason),
                             _ => {}
                         }
                     }
-                    if status.success() {
+                    if !status.success() {
+                        self.worker_exit_failure(status)
+                    } else if let Some(reason) = proof_failure {
+                        WorkerStatus::Failed { reason }
+                    } else {
                         if !self.saw_attached || !self.saw_recording {
                             WorkerStatus::Failed {
                                 reason: "worker exited without matched hello and complete first-frame proof"
@@ -742,10 +822,6 @@ mod live {
                             WorkerStatus::Failed {
                                 reason: "worker exited 0 but produced no replay artifact".into(),
                             }
-                        }
-                    } else {
-                        WorkerStatus::Failed {
-                            reason: format!("worker exited with {status}"),
                         }
                     }
                 }
@@ -763,7 +839,11 @@ mod live {
             if let Some(stop_event) = self.cooperative_stop_event.as_ref() {
                 match stop_event.signal() {
                     Ok(()) => {
-                        self.cooperative_stop_started = Some(std::time::Instant::now());
+                        let now = std::time::Instant::now();
+                        self.cooperative_stop_started = Some(now);
+                        self.finalization_progress =
+                            Some(observe_finalization_progress(&self.child, &self.out_dir));
+                        self.finalization_last_progress_at = Some(now);
                         return;
                     }
                     Err(_) => { /* fall through to explicit failed hard-kill */ }
@@ -782,24 +862,24 @@ mod live {
             if !self.stop_requested {
                 self.request_stop();
             }
-            // Rust's `Child::drop` neither terminates nor waits. Give an
-            // authenticated cooperative request its contract deadline, then
-            // use hard termination only as crash/fault containment.
-            let deadline = self.cooperative_stop_started.map(|started| {
-                started
-                    + std::time::Duration::from_millis(
-                        super::policy::GRACEFUL_STOP_DEADLINE_MS,
-                    )
-            });
+            // Rust's `Child::drop` neither terminates nor waits. Preserve a
+            // healthy large finalizer while CPU/filesystem progress continues;
+            // use hard termination only after the stall or absolute deadman.
             let _waited = loop {
                 match self.child.try_wait() {
                     Ok(Some(_)) => break true,
-                    Ok(None) if deadline.is_some_and(|value| std::time::Instant::now() < value) => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
                     Ok(None) => {
-                        let _ = self.child.kill();
-                        break self.child.wait().is_ok();
+                        if self.hard_kill_sent || self.cooperative_stop_started.is_none() {
+                            let _ = self.child.kill();
+                            break self.child.wait().is_ok();
+                        }
+                        let now = std::time::Instant::now();
+                        self.refresh_finalization_progress(now);
+                        if self.finalization_deadman_expired(now) {
+                            let _ = self.child.kill();
+                            break self.child.wait().is_ok();
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(250));
                     }
                     Err(_) => break false,
                 }
@@ -815,6 +895,43 @@ mod live {
     }
 
     impl ChildWorkerHandle {
+        fn refresh_finalization_progress(&mut self, now: std::time::Instant) {
+            if self.cooperative_stop_started.is_none() {
+                return;
+            }
+            let observed = observe_finalization_progress(&self.child, &self.out_dir);
+            if self.finalization_progress != Some(observed) {
+                self.finalization_progress = Some(observed);
+                self.finalization_last_progress_at = Some(now);
+            }
+        }
+
+        fn finalization_deadman_expired(&self, now: std::time::Instant) -> bool {
+            let Some(started) = self.cooperative_stop_started else {
+                return false;
+            };
+            let last_progress = self.finalization_last_progress_at.unwrap_or(started);
+            finalization_deadman_expired(started, last_progress, now)
+        }
+
+        fn worker_exit_failure(&self, status: std::process::ExitStatus) -> WorkerStatus {
+            const MAX_STDERR_TAIL_BYTES: usize = 8 * 1024;
+            let detail = std::fs::read(&self.stderr_path).ok().and_then(|bytes| {
+                let start = bytes.len().saturating_sub(MAX_STDERR_TAIL_BYTES);
+                String::from_utf8_lossy(&bytes[start..])
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .map(|line| line.trim().to_string())
+            });
+            WorkerStatus::Failed {
+                reason: detail.map_or_else(
+                    || format!("worker exited with {status}"),
+                    |detail| format!("worker exited with {status}: {detail}"),
+                ),
+            }
+        }
+
         fn finish_proof_reader(&mut self) {
             self.proof_stop.store(true, Ordering::Release);
             if let Some(join) = self.proof_join.take() {
@@ -823,7 +940,148 @@ mod live {
         }
     }
 
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct FinalizationProgress {
+        cpu_time_100ns: u64,
+        file_count: u64,
+        total_file_bytes: u64,
+    }
+
+    fn observe_finalization_progress(
+        child: &Child,
+        out_dir: &std::path::Path,
+    ) -> FinalizationProgress {
+        let mut creation = 0u64;
+        let mut exit = 0u64;
+        let mut kernel = 0u64;
+        let mut user = 0u64;
+        let cpu_time_100ns = if unsafe {
+            GetProcessTimes(
+                child.as_raw_handle() as Handle,
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        } != 0
+        {
+            kernel.saturating_add(user)
+        } else {
+            0
+        };
+
+        let mut progress = FinalizationProgress {
+            cpu_time_100ns,
+            ..FinalizationProgress::default()
+        };
+        let mut pending = vec![out_dir.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if file_type.is_dir() {
+                    pending.push(entry.path());
+                } else if file_type.is_file() {
+                    progress.file_count = progress.file_count.saturating_add(1);
+                    if let Ok(metadata) = entry.metadata() {
+                        progress.total_file_bytes =
+                            progress.total_file_bytes.saturating_add(metadata.len());
+                    }
+                }
+            }
+        }
+        progress
+    }
+
+    fn finalization_deadman_expired(
+        started: std::time::Instant,
+        last_progress: std::time::Instant,
+        now: std::time::Instant,
+    ) -> bool {
+        now.saturating_duration_since(started)
+            >= std::time::Duration::from_millis(
+                super::policy::GRACEFUL_STOP_DEADLINE_MS,
+            )
+            || now.saturating_duration_since(last_progress)
+                >= std::time::Duration::from_millis(
+                    super::policy::GRACEFUL_STOP_STALL_DEADLINE_MS,
+                )
+    }
+
+    /// A regular-file tail reports `UnexpectedEof` both at a clean frame
+    /// boundary and after a torn append. The control codec deliberately maps
+    /// both to `Truncated`, so child-exit handling must authenticate the exact
+    /// durable transcript before treating the former as normal completion.
+    fn validate_complete_proof_transcript(
+        path: &std::path::Path,
+        session_id: crate::control_transport::SessionId,
+    ) -> Result<(), String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("read durable proof transcript failed: {error}"))?;
+        if bytes.is_empty() {
+            return Err("durable proof transcript is empty".to_string());
+        }
+        let mut cursor = 0usize;
+        let mut sequence = 0u64;
+        while cursor < bytes.len() {
+            let remaining = bytes.len() - cursor;
+            if remaining < crate::control_transport::CONTROL_HEADER_LEN {
+                return Err(format!(
+                    "durable proof transcript has {remaining} trailing header byte(s)"
+                ));
+            }
+            let payload_len = u32::from_le_bytes(
+                bytes[cursor + 12..cursor + 16]
+                    .try_into()
+                    .expect("fixed four-byte payload length"),
+            ) as usize;
+            let frame_len = crate::control_transport::CONTROL_HEADER_LEN
+                .checked_add(payload_len)
+                .ok_or("durable proof frame length overflow")?;
+            let end = cursor
+                .checked_add(frame_len)
+                .ok_or("durable proof transcript cursor overflow")?;
+            if end > bytes.len() {
+                return Err(format!(
+                    "durable proof transcript frame {sequence} is partial: needs {frame_len} byte(s), has {remaining}"
+                ));
+            }
+            crate::control_transport::decode_frame(
+                &bytes[cursor..end],
+                session_id,
+                sequence,
+            )
+            .map_err(|error| {
+                format!("durable proof transcript frame {sequence} is invalid: {error}")
+            })?;
+            cursor = end;
+            sequence = sequence
+                .checked_add(1)
+                .ok_or("durable proof sequence overflow")?;
+        }
+        Ok(())
+    }
+
     fn find_verified_replay(out_dir: &std::path::Path) -> Option<String> {
+        let package_set =
+            out_dir.join(crate::duplex_session::rollover_fs::PACKAGE_SET_DESCRIPTOR_FILE);
+        if std::fs::symlink_metadata(&package_set)
+            .ok()
+            .is_some_and(|metadata| {
+                metadata.file_type().is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.len() > 0
+            })
+        {
+            return Some(package_set.display().to_string());
+        }
         let rd = std::fs::read_dir(out_dir).ok()?;
         for entry in rd {
             let entry = entry.ok()?;
@@ -863,7 +1121,84 @@ mod live {
                 find_verified_replay(&dir).as_deref(),
                 Some(replay.to_string_lossy().as_ref())
             );
+            let package_set =
+                dir.join(crate::duplex_session::rollover_fs::PACKAGE_SET_DESCRIPTOR_FILE);
+            std::fs::write(&package_set, b"{\"schema\":\"test\"}").unwrap();
+            assert_eq!(
+                find_verified_replay(&dir).as_deref(),
+                Some(package_set.to_string_lossy().as_ref())
+            );
             std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn finalization_progress_resets_stall_deadman_but_not_absolute_bound() {
+            let started = std::time::Instant::now();
+            let almost_stalled = started
+                + std::time::Duration::from_millis(
+                    super::super::policy::GRACEFUL_STOP_STALL_DEADLINE_MS - 1,
+                );
+            assert!(!finalization_deadman_expired(
+                started,
+                started,
+                almost_stalled
+            ));
+
+            let progress = almost_stalled;
+            let after_original_stall = started
+                + std::time::Duration::from_millis(
+                    super::super::policy::GRACEFUL_STOP_STALL_DEADLINE_MS + 1,
+                );
+            assert!(!finalization_deadman_expired(
+                started,
+                progress,
+                after_original_stall
+            ));
+
+            let absolute = started
+                + std::time::Duration::from_millis(
+                    super::super::policy::GRACEFUL_STOP_DEADLINE_MS,
+                );
+            assert!(finalization_deadman_expired(
+                started,
+                absolute,
+                absolute
+            ));
+        }
+
+        #[test]
+        fn proof_transcript_clean_eof_is_distinct_from_a_torn_frame() {
+            let session =
+                crate::control_transport::SessionId::from_bytes([0xA5; 16]).unwrap();
+            let mut bytes = crate::control_transport::encode_frame(
+                session,
+                0,
+                crate::control_transport::MessageKind::CollectorHello,
+                b"hello",
+            )
+            .unwrap();
+            bytes.extend_from_slice(
+                &crate::control_transport::encode_frame(
+                    session,
+                    1,
+                    crate::control_transport::MessageKind::HeartbeatProof,
+                    b"proof",
+                )
+                .unwrap(),
+            );
+            let path = std::env::temp_dir().join(format!(
+                "auto_attach_proof_transcript_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(validate_complete_proof_transcript(&path, session).is_ok());
+            std::fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
+            assert!(validate_complete_proof_transcript(&path, session).is_err());
+            std::fs::remove_file(path).unwrap();
         }
 
         #[test]
@@ -911,11 +1246,14 @@ mod live {
             let handle = ChildWorkerHandle {
                 child,
                 out_dir: std::env::temp_dir(),
+                stderr_path: std::env::temp_dir().join("unused-worker-stderr.log"),
                 stop_requested: false,
                 hard_kill_sent: false,
                 crash_job: None,
                 cooperative_stop_event: None,
                 cooperative_stop_started: None,
+                finalization_progress: None,
+                finalization_last_progress_at: None,
                 status_rx,
                 proof_stop: Arc::new(AtomicBool::new(true)),
                 proof_join: None,

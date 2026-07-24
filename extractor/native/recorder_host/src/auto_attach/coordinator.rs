@@ -10,6 +10,8 @@
 //! design §10 deterministic gates).
 
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use super::identity::{name_is_hoi4, ProcessIdentity, ProcessKey};
@@ -19,8 +21,8 @@ use super::journal::{recover, Journal, JournalRecord};
 use super::policy;
 use super::reducer::{CandidateRegistry, ObserveOutcome};
 use super::sources::{
-    AttachEnvironment, Clock, PayloadStager, ProcessEventSource, ProcessProbe, RawProcessEvent,
-    WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
+    AttachEnvironment, Clock, CollectorModuleResidency, PayloadStager, ProcessEventSource,
+    ProcessProbe, RawProcessEvent, WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
 };
 use super::staging::{generate_attempt_id, generate_pipe_token, generate_secret_128};
 use super::state::{CandidateState, ReasonCode};
@@ -36,6 +38,10 @@ pub struct CoordinatorConfig {
     /// does not match is never admitted.
     pub own_session_id: u32,
     pub own_sid_hash: String,
+    /// The explicit/dev supervisor retains the legacy PID-owned visible-window
+    /// gate. The packaged headless recorder disables it so exact process
+    /// identity can admit injection before one-shot world/HUD setup callbacks.
+    pub require_visible_window: bool,
 }
 
 /// The dependency bundle. Boxed trait objects so production wires real adapters
@@ -69,10 +75,14 @@ pub struct Coordinator {
     registry: CandidateRegistry,
     journal: Journal,
     workers: BTreeMap<ProcessKey, Box<dyn WorkerHandle>>,
+    /// Recovered terminal generations that may be rearmed after an exact
+    /// Toolhelp absence proof for their staged collector DLL.
+    recovered_rearm: BTreeMap<ProcessKey, PathBuf>,
     last_reconcile_ms: Option<u64>,
     force_reconcile: bool,
     started: bool,
     supervisor_events: Vec<SupervisorEvent>,
+    readiness_diagnostics: BTreeMap<ProcessKey, String>,
 }
 
 impl Drop for Coordinator {
@@ -99,10 +109,12 @@ impl Coordinator {
             registry: CandidateRegistry::new(),
             journal,
             workers: BTreeMap::new(),
+            recovered_rearm: BTreeMap::new(),
             last_reconcile_ms: None,
             force_reconcile: false,
             started: false,
             supervisor_events: Vec::new(),
+            readiness_diagnostics: BTreeMap::new(),
         })
     }
 
@@ -203,6 +215,12 @@ impl Coordinator {
                 };
                 self.registry
                     .seed_recovered(r.key, recovered_state, image, now);
+                if r.last_state.is_terminal() {
+                    if let Some(staging_dir) = r.staging_dir {
+                        self.recovered_rearm
+                            .insert(r.key, staging_dir.join("collector.dll"));
+                    }
+                }
                 if !r.last_state.is_terminal() {
                     self.journal_transition(
                         r.key,
@@ -285,6 +303,9 @@ impl Coordinator {
             }
             let key = id.key;
             live.insert(key);
+            if self.try_rearm_recovered(id.clone(), now)? {
+                continue;
+            }
             if self.registry.observe_present(id, now) == ObserveOutcome::NewCandidate {
                 new_keys.push(key);
             }
@@ -382,22 +403,71 @@ impl Coordinator {
                 )?;
             }
             CandidateState::WaitingForIdentity => {
+                let readiness = self.registry.get(&key).unwrap();
+                if let Some(last) = readiness.last_readiness_probe_ms {
+                    let delay =
+                        policy::readiness_delay_ms(readiness.readiness_attempts.saturating_sub(1));
+                    if now.saturating_sub(last) < delay {
+                        return Ok(());
+                    }
+                }
                 let id = self.registry.get(&key).unwrap().identity.clone();
                 let modset = self.deps.env.resolve_modset(&id);
                 if modset.resolved {
-                    self.transition(
-                        key,
-                        CandidateState::WaitingForWindow,
-                        ReasonCode::NoVisibleWindow,
-                        now,
-                        None,
-                    )?;
+                    self.readiness_diagnostics.remove(&key);
+                    if self.config.require_visible_window {
+                        self.transition(
+                            key,
+                            CandidateState::WaitingForWindow,
+                            ReasonCode::NoVisibleWindow,
+                            now,
+                            None,
+                        )?;
+                    } else {
+                        self.transition(
+                            key,
+                            CandidateState::Preparing,
+                            ReasonCode::Preparing,
+                            now,
+                            Some(
+                                "headless product admission: exact same-user process identity; visible-window gate disabled"
+                                    .into(),
+                            ),
+                        )?;
+                    }
                 } else {
-                    // Hold, fail-closed, backing off. Not journalled every tick.
-                    self.registry.bump_readiness(&key);
+                    // Hold, fail-closed, backing off. Journal the first/new
+                    // bounded reason so a product restart never spins silently.
+                    let mut detail = modset.reasons.join("; ");
+                    if detail.len() > 2048 {
+                        let mut boundary = 2048;
+                        while !detail.is_char_boundary(boundary) {
+                            boundary -= 1;
+                        }
+                        detail.truncate(boundary);
+                    }
+                    if self.readiness_diagnostics.get(&key) != Some(&detail) {
+                        self.journal_transition(
+                            key,
+                            Some(CandidateState::WaitingForIdentity),
+                            CandidateState::WaitingForIdentity,
+                            ReasonCode::IdentityUnresolved,
+                            Some(detail.clone()),
+                        )?;
+                        self.readiness_diagnostics.insert(key, detail);
+                    }
+                    self.registry.bump_readiness(&key, now);
                 }
             }
             CandidateState::WaitingForWindow => {
+                let readiness = self.registry.get(&key).unwrap();
+                if let Some(last) = readiness.last_readiness_probe_ms {
+                    let delay =
+                        policy::readiness_delay_ms(readiness.readiness_attempts.saturating_sub(1));
+                    if now.saturating_sub(last) < delay {
+                        return Ok(());
+                    }
+                }
                 if self.deps.env.has_visible_window(key) {
                     self.transition(
                         key,
@@ -407,7 +477,7 @@ impl Coordinator {
                         None,
                     )?;
                 } else {
-                    self.registry.bump_readiness(&key);
+                    self.registry.bump_readiness(&key, now);
                 }
             }
             CandidateState::Preparing => {
@@ -480,9 +550,12 @@ impl Coordinator {
             )?;
             return Ok(());
         }
-        // Re-probe every authority field and the PID-owned visible window at the
-        // last possible point. Cached registry identity is never sufficient for
-        // a live PID because the PID may have been reused while staging.
+        // Re-probe every authority field at the last possible point. The
+        // explicit/dev supervisor additionally re-proves a PID-owned visible
+        // window; the headless product intentionally injects before one exists
+        // so it can observe one-shot world/HUD setup callbacks. Cached registry
+        // identity is never sufficient because the PID may have been reused
+        // while staging.
         let expected_identity = self
             .registry
             .get(&key)
@@ -503,13 +576,17 @@ impl Coordinator {
         if reprobed != expected_identity
             || !reprobed.is_hoi4()
             || !self.same_user(&reprobed)
-            || !self.deps.env.has_visible_window(key)
+            || (self.config.require_visible_window && !self.deps.env.has_visible_window(key))
         {
             self.fail(
                 key,
                 ReasonCode::IdentityMismatchAtInject,
                 now,
-                Some("pre-injection identity/window-owner comparison failed".into()),
+                Some(if self.config.require_visible_window {
+                    "pre-injection identity/window-owner comparison failed".into()
+                } else {
+                    "pre-injection exact process identity comparison failed".into()
+                }),
             )?;
             return Ok(());
         }
@@ -635,12 +712,31 @@ impl Coordinator {
         };
 
         match (state, status) {
-            (CandidateState::Injecting, WorkerStatus::Handshaking)
-            | (CandidateState::Injecting, WorkerStatus::Attached) => {
+            (CandidateState::Injecting, WorkerStatus::Handshaking) => {
                 self.transition(
                     key,
                     CandidateState::Handshaking,
                     ReasonCode::Injected,
+                    now,
+                    None,
+                )?;
+            }
+            (CandidateState::Injecting, WorkerStatus::Attached) => {
+                // The live collector can complete its hello between supervisor
+                // polls. Preserve that proof instead of consuming it merely to
+                // enter Handshaking and then waiting forever for a duplicate
+                // Attached status that the proof reader correctly emits once.
+                self.transition(
+                    key,
+                    CandidateState::Handshaking,
+                    ReasonCode::Injected,
+                    now,
+                    None,
+                )?;
+                self.transition(
+                    key,
+                    CandidateState::WaitingForWorld,
+                    ReasonCode::CollectorAttached,
                     now,
                     None,
                 )?;
@@ -766,6 +862,55 @@ impl Coordinator {
             }
         }
         Ok(())
+    }
+
+    /// Rearm only across a supervisor generation boundary and only when the
+    /// exact DLL path retained by the terminal journal generation is proven
+    /// absent from the same live process identity. Loaded, unsupported, or
+    /// ambiguous module enumeration leaves the identity terminal and blocked.
+    fn try_rearm_recovered(
+        &mut self,
+        identity: ProcessIdentity,
+        now: u64,
+    ) -> Result<bool, String> {
+        let key = identity.key;
+        let Some(dll_path) = self.recovered_rearm.get(&key).cloned() else {
+            return Ok(false);
+        };
+        let terminal = self
+            .registry
+            .get(&key)
+            .is_some_and(|candidate| candidate.state.is_terminal());
+        if !terminal || self.workers.contains_key(&key) {
+            return Ok(false);
+        }
+        match self
+            .deps
+            .probe
+            .collector_module_residency(key.pid, &dll_path)
+        {
+            Ok(CollectorModuleResidency::Loaded) | Err(_) => Ok(false),
+            Ok(CollectorModuleResidency::Absent) => {
+                self.deps
+                    .stager
+                    .rearm_after_proven_unload(key, &dll_path)?;
+                let previous = self
+                    .registry
+                    .rearm_after_proven_unload(identity, now)?;
+                self.recovered_rearm.remove(&key);
+                self.journal_transition(
+                    key,
+                    Some(previous),
+                    CandidateState::Detected,
+                    ReasonCode::CollectorUnloadedRearmed,
+                    Some(format!(
+                        "prior collector module is absent; rearming same process identity from {}",
+                        dll_path.display()
+                    )),
+                )?;
+                Ok(true)
+            }
+        }
     }
 
     fn complete(&mut self, key: ProcessKey, now: u64, replay_path: String) -> Result<(), String> {
@@ -931,6 +1076,9 @@ mod tests {
         snapshot_error: Rc<RefCell<Option<String>>>,
         snapshot_complete: Rc<RefCell<bool>>,
         identify_script: Rc<RefCell<BTreeMap<u32, VecDeque<ProcessIdentity>>>>,
+        module_residency:
+            Rc<RefCell<BTreeMap<(u32, String), CollectorModuleResidency>>>,
+        module_probe_error: Rc<RefCell<Option<String>>>,
     }
     impl Default for FakeProbe {
         fn default() -> Self {
@@ -941,6 +1089,8 @@ mod tests {
                 snapshot_error: Rc::new(RefCell::new(None)),
                 snapshot_complete: Rc::new(RefCell::new(true)),
                 identify_script: Rc::new(RefCell::new(BTreeMap::new())),
+                module_residency: Rc::new(RefCell::new(BTreeMap::new())),
+                module_probe_error: Rc::new(RefCell::new(None)),
             }
         }
     }
@@ -959,6 +1109,17 @@ mod tests {
         }
         fn fail_next_snapshot(&self, reason: &str) {
             *self.snapshot_error.borrow_mut() = Some(reason.to_string());
+        }
+        fn set_module_loaded(&self, pid: u32, path: &Path, loaded: bool) {
+            let key = (pid, path.to_string_lossy().to_ascii_lowercase());
+            self.module_residency.borrow_mut().insert(
+                key,
+                if loaded {
+                    CollectorModuleResidency::Loaded
+                } else {
+                    CollectorModuleResidency::Absent
+                },
+            );
         }
     }
     impl ProcessProbe for FakeProbe {
@@ -1001,6 +1162,21 @@ mod tests {
                 .get(&pid)
                 .cloned()
                 .ok_or_else(|| format!("no identity for {pid}"))
+        }
+        fn collector_module_residency(
+            &self,
+            pid: u32,
+            dll_path: &Path,
+        ) -> Result<CollectorModuleResidency, String> {
+            if let Some(error) = self.module_probe_error.borrow_mut().take() {
+                return Err(error);
+            }
+            let key = (pid, dll_path.to_string_lossy().to_ascii_lowercase());
+            self.module_residency
+                .borrow()
+                .get(&key)
+                .copied()
+                .ok_or_else(|| "forced ambiguous module residency".to_string())
         }
     }
     unsafe impl Send for FakeProbe {}
@@ -1067,6 +1243,14 @@ mod tests {
         staged: Rc<RefCell<Vec<String>>>,
     }
     impl PayloadStager for FakeStager {
+        fn rearm_after_proven_unload(
+            &self,
+            _key: ProcessKey,
+            _prior_dll_path: &Path,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
         fn stage(
             &self,
             _key: ProcessKey,
@@ -1091,6 +1275,7 @@ mod tests {
                 source_sha256: src,
                 pipe_token: pipe_token.to_string(),
                 pipe_token_hash: pipe_token_hash.to_string(),
+                rearmed_after_proven_unload: false,
             })
         }
     }
@@ -1225,13 +1410,14 @@ mod tests {
         p
     }
 
-    fn build(h: &Harness) -> Coordinator {
+    fn build_with_window_requirement(h: &Harness, require_visible_window: bool) -> Coordinator {
         *h.spawner.journal_path.borrow_mut() = Some(h.journal_path.clone());
         let config = CoordinatorConfig {
             coordinator_instance_id: "coord-test".into(),
             out_root: PathBuf::from("out"),
             own_session_id: OWN_SESSION,
             own_sid_hash: OWN_SID.to_string(),
+            require_visible_window,
         };
         let deps = CoordinatorDeps {
             clock: Box::new(h.clock.clone()),
@@ -1242,6 +1428,10 @@ mod tests {
             spawner: Box::new(h.spawner.clone()),
         };
         Coordinator::new(config, deps, h.journal_path.clone()).unwrap()
+    }
+
+    fn build(h: &Harness) -> Coordinator {
+        build_with_window_requirement(h, true)
     }
 
     fn harness(tag: &str, worker_script: Vec<WorkerStatus>) -> Harness {
@@ -1271,8 +1461,9 @@ mod tests {
     }
 
     fn run_steps(coord: &mut Coordinator, clock: &FakeClock, n: usize) {
+        let start = clock.now_ms();
         for i in 0..n {
-            clock.set((i as u64 + 1) * 10);
+            clock.set(start + (i as u64 + 1) * 10);
             coord.step().unwrap();
         }
     }
@@ -1492,10 +1683,33 @@ mod tests {
         assert_eq!(*h.spawner.spawn_count.borrow(), 0);
         // Once the window appears, it proceeds.
         *h.env.window_ready.borrow_mut() = true;
+        h.clock.set(h.clock.now_ms() + policy::readiness_delay_ms(0));
         run_steps(&mut coord, &h.clock, 12);
         assert_eq!(
             state_of(&coord, ProcessKey::new(5300, 58)),
             Some(CandidateState::Complete)
+        );
+        let _ = std::fs::remove_file(&h.journal_path);
+    }
+
+    #[test]
+    fn headless_product_injects_before_any_visible_window() {
+        let h = harness("headless_pre_window", full_success_script());
+        *h.env.window_ready.borrow_mut() = false;
+        h.probe.add(hoi4_identity(5350, 585));
+        let mut coord = build_with_window_requirement(&h, false);
+        run_steps(&mut coord, &h.clock, 12);
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(5350, 585)),
+            Some(CandidateState::Complete)
+        );
+        assert_eq!(*h.spawner.spawn_count.borrow(), 1);
+        let records = read_all(&h.journal_path).unwrap();
+        assert!(
+            records
+                .iter()
+                .all(|record| record.state_to != CandidateState::WaitingForWindow),
+            "headless product must not wait for a window: {records:?}"
         );
         let _ = std::fs::remove_file(&h.journal_path);
     }
@@ -1548,6 +1762,20 @@ mod tests {
             1,
             "timeout does NOT trigger a second DLL"
         );
+        let _ = std::fs::remove_file(&h.journal_path);
+    }
+
+    #[test]
+    fn gate6_attached_before_first_poll_preserves_the_waiting_for_world_proof() {
+        let h = harness("g6_fast_attached", vec![WorkerStatus::Attached]);
+        h.probe.add(hoi4_identity(6001, 67));
+        let mut coord = build(&h);
+        run_steps(&mut coord, &h.clock, 8);
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(6001, 67)),
+            Some(CandidateState::WaitingForWorld)
+        );
+        assert_eq!(*h.spawner.spawn_count.borrow(), 1);
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
@@ -1752,6 +1980,71 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn recovered_terminal_identity_rearms_only_after_exact_module_unload() {
+        let path = journal_path("rearm_after_unload");
+        let key = ProcessKey::new(11_100, 210);
+        let old_staging = PathBuf::from(r"C:\stage\old-attempt");
+        let old_dll = old_staging.join("collector.dll");
+        {
+            let mut journal = Journal::open(&path).unwrap();
+            let mut injecting = JournalRecord::transition(
+                0,
+                1,
+                "old",
+                key,
+                None,
+                CandidateState::Injecting,
+                ReasonCode::Injected,
+            );
+            injecting.exe_path =
+                Some(r"D:\Steam\common\the game\hoi4.exe".to_string());
+            injecting.staging_dir = Some(old_staging.display().to_string());
+            journal.append(injecting).unwrap();
+            journal
+                .append(JournalRecord::transition(
+                    0,
+                    2,
+                    "old",
+                    key,
+                    Some(CandidateState::Finalizing),
+                    CandidateState::Failed,
+                    ReasonCode::FinalizeVerifyFailed,
+                ))
+                .unwrap();
+        }
+        let h = Harness {
+            clock: FakeClock::default(),
+            probe: FakeProbe::default(),
+            events: FakeEvents::healthy(),
+            env: FakeEnv::default(),
+            stager: FakeStager::default(),
+            spawner: FakeSpawner::new(full_success_script()),
+            journal_path: path.clone(),
+        };
+        h.probe.add(hoi4_identity(key.pid, key.creation_filetime.0));
+        h.probe.set_module_loaded(key.pid, &old_dll, true);
+        let mut coord = build(&h);
+        coord.recover_from_journal().unwrap();
+
+        h.clock.set(1);
+        coord.step().unwrap();
+        assert_eq!(state_of(&coord, key), Some(CandidateState::Failed));
+        assert_eq!(*h.spawner.spawn_count.borrow(), 0);
+
+        h.probe.set_module_loaded(key.pid, &old_dll, false);
+        coord.force_reconcile = true;
+        run_steps(&mut coord, &h.clock, 12);
+        assert_eq!(*h.spawner.spawn_count.borrow(), 1);
+        let records = read_all(&path).unwrap();
+        assert!(records.iter().any(|record| {
+            record.key() == key
+                && record.reason_code == ReasonCode::CollectorUnloadedRearmed
+                && record.state_to == CandidateState::Detected
+        }));
+        let _ = std::fs::remove_file(&path);
+    }
+
     // ---- Gate 11 (offline slice): process exit finalization ----------
 
     #[test]
@@ -1853,6 +2146,7 @@ mod tests {
             out_root: PathBuf::from("out"),
             own_session_id: OWN_SESSION,
             own_sid_hash: OWN_SID.to_string(),
+            require_visible_window: true,
         };
         let deps = CoordinatorDeps {
             clock: Box::new(restarted.clock.clone()),
