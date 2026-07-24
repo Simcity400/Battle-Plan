@@ -759,11 +759,15 @@ pub(super) fn bind_effective_vfs_winner_index(
     }
     binding.validate()?;
     let mut gui_definitions = BTreeMap::new();
+    // `binding.validate()` above authenticates every canonically ordered row
+    // and the complete-row digest once. These are direct immutable references
+    // into that validated vector, so calling `authorize_content` per row would
+    // re-hash the full index for every GUI winner (quadratic on the production
+    // roster) without adding any authority.
     for raw in binding.ordered_rows.iter().filter(|row| {
         row.content.logical_path.starts_with("interface/")
             && row.content.logical_path.ends_with(".gui")
     }) {
-        binding.authorize_content(&raw.content)?;
         let definition = used_content_key(binding, &raw.content)?;
         if gui_definitions
             .insert(raw.content.logical_path.clone(), definition)
@@ -812,7 +816,6 @@ fn authenticated_inline_icon_content(
             || path.ends_with(".tga")
             || path.ends_with(".png")
     }) {
-        binding.authorize_content(&row.content)?;
         rows.push((
             row.content.logical_path.clone(),
             row.content.payload_sha256.clone(),
