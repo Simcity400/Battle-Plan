@@ -311,6 +311,11 @@ try {
         $earlyLaunchText.Contains('protected_existing_hoi4_process_ids=@($existing | ForEach-Object { $_.Id })') -and
         -not $earlyLaunchText.Contains('protected_existing_hoi4_process_ids=@($existing.Id)')
     )
+    Assert-Case 'raw-debug world readiness retains an independent post-static budget' (
+        $earlyLaunchText.Contains('$headlessStartupBudgetSeconds=$StaticBundleTimeoutSeconds + $WorldReadyTimeoutSeconds') -and
+        $earlyLaunchText.Contains('$worldDeadline=[DateTime]::UtcNow.AddSeconds($headlessStartupBudgetSeconds)') -and
+        -not $earlyLaunchText.Contains('$worldDeadline=[DateTime]::UtcNow.AddSeconds($WorldReadyTimeoutSeconds)')
+    )
     Assert-Case 'safe launcher requires current hash-attested prebuilt artifacts' (
         $driverText.Contains('Test-ProductionArtifactAttestation') -and
         $driverText.Contains('prebuilt_artifact_attestation_sha256') -and

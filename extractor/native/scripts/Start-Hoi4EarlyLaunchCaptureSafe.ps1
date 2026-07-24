@@ -188,6 +188,8 @@ $plan=[ordered]@{
     continue_game_sha256=$continueGameSha256
     semantic_arguments=@('--continuelastsave','--gdpr-compliant')
     keep_game_window=[bool]$KeepGameWindow
+    static_bundle_timeout_seconds=$StaticBundleTimeoutSeconds
+    post_static_world_ready_timeout_seconds=$WorldReadyTimeoutSeconds
     protected_existing_hoi4_process_ids=@($existing | ForEach-Object { $_.Id })
     recorder_arguments=$arguments
     launch_blocker=$(if ($Purpose -ceq 'Production') { 'same_process_d57_gate_must_be_created_after_internal_suspended_process_creation' } else { $null })
@@ -230,7 +232,11 @@ try {
     if (-not $process.Start()) { throw 'collector_record process start returned false' }
     $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
     if ($Purpose -ceq 'RawDebug') {
-        $worldDeadline=[DateTime]::UtcNow.AddSeconds($WorldReadyTimeoutSeconds)
+        # The recorder verifies the complete static bundle while the game remains
+        # suspended. That independent bounded phase must not consume the
+        # subsequent world-readiness budget used by the headless controller.
+        $headlessStartupBudgetSeconds=$StaticBundleTimeoutSeconds + $WorldReadyTimeoutSeconds
+        $worldDeadline=[DateTime]::UtcNow.AddSeconds($headlessStartupBudgetSeconds)
         while (-not $process.HasExited -and [DateTime]::UtcNow -lt $worldDeadline) {
             $gameCandidates=@(Get-Process -Name the game -ErrorAction SilentlyContinue)
             if ($gameCandidates.Count -eq 1) {
@@ -259,7 +265,7 @@ try {
             if ($process.HasExited) {
                 throw "Recorder exited before headless world-ready control completed (exit $($process.ExitCode))."
             }
-            throw "the game did not expose authenticated world-ready pause/speed roots within $WorldReadyTimeoutSeconds seconds. Last control error: $headlessControlError"
+            throw "the game did not expose authenticated world-ready pause/speed roots within the $headlessStartupBudgetSeconds-second startup budget (static verification up to $StaticBundleTimeoutSeconds seconds plus $WorldReadyTimeoutSeconds seconds for world readiness). Last control error: $headlessControlError"
         }
         Write-DurableJson -Path (Join-Path $OutDir 'raw_debug_headless_control.json') -Value ([ordered]@{
             schema='battle-plan.raw_debug_headless_control.v1'
