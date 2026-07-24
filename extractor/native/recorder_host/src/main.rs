@@ -18139,9 +18139,10 @@ mod tests {
     #[test]
     fn hour_latch_legacy_confirmed_is_marked_legacy_not_status_complete() {
         let mut summary = CompactSummary::default();
+        let attempts = 4;
         for (name, value) in [
             ("observed", 4),
-            ("attempts", 4),
+            ("attempts", attempts),
             ("confirmed", 3),
             ("coalesced", 0),
             ("last_observe_failed", 0),
@@ -18238,6 +18239,12 @@ mod tests {
             ("in_flight", 0),
             ("last_observe_failed", 0),
             ("latch_requested_but_inactive", 0),
+            ("capture_barrier_acquisitions", attempts),
+            ("capture_barrier_failures", 0),
+            ("capture_barrier_releases", attempts),
+            ("capture_barrier_restore_failures", 0),
+            ("capture_barrier_supported", 1),
+            ("capture_barrier_active", 0),
             ("sink_write_failures", 0),
             ("sink_open_attempts", 1),
             ("sink_open_finishes", 1),
