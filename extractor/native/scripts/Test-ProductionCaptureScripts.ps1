@@ -316,6 +316,11 @@ try {
         $earlyLaunchText.Contains('$worldDeadline=[DateTime]::UtcNow.AddSeconds($headlessStartupBudgetSeconds)') -and
         -not $earlyLaunchText.Contains('$worldDeadline=[DateTime]::UtcNow.AddSeconds($WorldReadyTimeoutSeconds)')
     )
+    Assert-Case 'early H4CT phase honors the launcher thirty-minute readiness range' (
+        $earlyLaunchText.Contains('[ValidateRange(30,1800)][int]$WorldReadyTimeoutSeconds = 600') -and
+        $earlyLaunchText.Contains('[Math]::Min($WorldReadyTimeoutSeconds,1800) * 1000') -and
+        -not $earlyLaunchText.Contains('[Math]::Min($WorldReadyTimeoutSeconds,600) * 1000')
+    )
     Assert-Case 'safe launcher requires current hash-attested prebuilt artifacts' (
         $driverText.Contains('Test-ProductionArtifactAttestation') -and
         $driverText.Contains('prebuilt_artifact_attestation_sha256') -and

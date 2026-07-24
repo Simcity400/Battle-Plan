@@ -21,7 +21,7 @@ pub const EARLY_STAGED_HOOK_COUNT: u32 = 23 + 2 + 3 + 8 + 8 + 7 + 2 + 3 + 7 + 3;
 pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
-pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 600_000;
+pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 1_800_000;
 
 pub fn staged_hook_count_for_group_mask(group_mask: u64) -> Option<u32> {
     if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0 || group_mask & 1 == 0 {
