@@ -227,6 +227,9 @@ if ($null -ne $diagnosticStagedHookMaskCanonical) {
     # diagnostic authority. The recorder constructs the suspended child's
     # environment block; callers must not inject an unbound environment-only mask.
     $arguments += @(
+        '--production',
+        '--scheduled-domains-exact',
+        '--scheduled-domain','session_header_live',
         '--diagnostic-staged-hook-mask',$diagnosticStagedHookMaskCanonical,
         '--diagnostic-no-commit'
     )
@@ -276,6 +279,8 @@ $procdumpStdout=Join-Path $crashDir 'procdump.stdout.log'
 $procdumpStderr=Join-Path $crashDir 'procdump.stderr.log'
 $dumpMonitor=$null
 $process=$null
+$stdout=$null
+$stderr=$null
 $recorderExitCode=$null
 $rawRecorderExitNonzero=$false
 $headlessControlResult=$null
@@ -367,6 +372,14 @@ try {
         if (-not $process.HasExited) {
             try { $process.Kill() } catch {}
             try { [void]$process.WaitForExit(10000) } catch {}
+        }
+        if ($process.HasExited) {
+            if ($null -ne $stdout) {
+                try { [System.IO.File]::WriteAllText($stdoutPath,[string]$stdout.Result,[System.Text.UTF8Encoding]::new($false)) } catch {}
+            }
+            if ($null -ne $stderr) {
+                try { [System.IO.File]::WriteAllText($stderrPath,[string]$stderr.Result,[System.Text.UTF8Encoding]::new($false)) } catch {}
+            }
         }
         $process.Dispose()
     }
