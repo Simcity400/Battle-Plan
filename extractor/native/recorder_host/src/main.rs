@@ -2635,6 +2635,11 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    // All finalization decisions must consume the same strict JSON value that
+    // can be read back from disk. In particular, live timing telemetry carries
+    // f64 values whose serde_json Number representation can normalize across a
+    // serialize/strict-parse boundary.
+    manifest = normalize_session_manifest_value(&manifest)?;
     let gate_problems = manifest_hourly_problems(&manifest);
     let replay_path = replay_path_for_gate(&cfg.out_dir, hourly_met);
     let normal_quarantine = (!hourly_met).then(|| quarantine_normal_replay(&normal_replay_path));
@@ -2790,9 +2795,7 @@ fn run() -> Result<(), String> {
         static_bundle_admission.as_ref(),
         cfg.production,
     )?;
-    let pretty = serde_json::to_vec_pretty(&manifest)
-        .map_err(|e| format!("serialize manifest failed: {e}"))?;
-    fs::write(&manifest_path, pretty).map_err(|e| format!("write manifest failed: {e}"))?;
+    normalize_and_write_session_manifest(&manifest_path, &mut manifest)?;
     for line in production_profile_summary_lines(&production_profile_summary) {
         eprintln!("{line}");
     }
@@ -8820,6 +8823,18 @@ fn normalize_session_manifest_value(value: &Value) -> Result<Value, String> {
         .map_err(|error| format!("serialize session manifest for normalization: {error}"))?;
     snapshot::parse_json_strict(&bytes)
         .map_err(|error| format!("strict-normalize session manifest failed: {error}"))
+}
+
+fn normalize_and_write_session_manifest(
+    manifest_path: &Path,
+    manifest: &mut Value,
+) -> Result<(), String> {
+    let normalized = normalize_session_manifest_value(manifest)?;
+    let pretty = serde_json::to_vec_pretty(&normalized)
+        .map_err(|error| format!("serialize manifest failed: {error}"))?;
+    fs::write(manifest_path, pretty).map_err(|error| format!("write manifest failed: {error}"))?;
+    *manifest = normalized;
+    Ok(())
 }
 
 /// Streaming production container writer. The raw compact stream is appended
@@ -17032,6 +17047,8 @@ mod tests {
 
     #[test]
     fn rollover_manifest_numeric_telemetry_normalizes_before_disk_binding() {
+        let dir = TmpDir::new("manifest_numeric_normalization");
+        let manifest_path = dir.join("native_session_manifest.json");
         let value = json!({
             "schema": "native_collector_session_v1",
             "modset": {
@@ -17052,6 +17069,12 @@ mod tests {
         let encoded = serde_json::to_vec_pretty(&normalized).unwrap();
         let reparsed = snapshot::parse_json_strict(&encoded).unwrap();
         assert_eq!(normalized, reparsed);
+
+        let mut finalization_value = value;
+        normalize_and_write_session_manifest(&manifest_path, &mut finalization_value).unwrap();
+        let validated =
+            read_session_manifest_bytes_validated(&manifest_path, &finalization_value).unwrap();
+        assert_eq!(validated.value, finalization_value);
     }
 
     #[test]
