@@ -167,10 +167,19 @@ pub fn drain_latest() -> Result<Option<SpottedUnitsSnapshot>, String> {
     if !INSTALLED.load(Ordering::Acquire) {
         return Err("spotted-unit hooks are not installed".into());
     }
-    let mut latest = LATEST.get().ok_or("spotted-unit hook state unavailable")?
+    let latest = LATEST.get().ok_or("spotted-unit hook state unavailable")?
         .lock().map_err(|_| "spotted-unit latest frames poisoned")?;
-    let mut land = latest.land.take();
-    let mut taskforces = latest.taskforces.take();
+    snapshot_from_latest(&latest)
+}
+
+fn snapshot_from_latest(latest: &LatestFrames) -> Result<Option<SpottedUnitsSnapshot>, String> {
+    // These are complete current map-visibility frames, not one-shot events.
+    // A speed-5 game can advance several hourly collector boundaries between
+    // renderer producer calls, so retain and reuse the last authenticated
+    // frame until its producer replaces it. Consuming the slots here created
+    // false source-unavailable/coverage holes on every intervening hour.
+    let mut land = latest.land.clone();
+    let mut taskforces = latest.taskforces.clone();
     if let (Some(a), Some(b)) = (&land, &taskforces) {
         if a.pov_country_id != b.pov_country_id {
             if a.sequence > b.sequence { taskforces = None; } else { land = None; }
@@ -371,4 +380,43 @@ fn read_exact(address: usize, out: &mut [u8]) -> Result<(), String> {
     let mut read = 0usize;
     let ok = unsafe { ReadProcessMemory(GetCurrentProcess(), address as *const c_void, out.as_mut_ptr().cast(), out.len(), &mut read) };
     if ok == 0 || read != out.len() { Err(format!("spotted-unit read failed at {address:#x}")) } else { Ok(()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_spotted_frames_are_reusable_across_speed_five_hourly_drains() {
+        let latest = LatestFrames {
+            land: Some(CompleteFrame {
+                sequence: 11,
+                pov_country_id: 3,
+                rows: vec![SpottedUnitHandle {
+                    type_id: 7,
+                    stable_id: 9,
+                    raw_intel: 250,
+                }],
+            }),
+            taskforces: Some(CompleteFrame {
+                sequence: 12,
+                pov_country_id: 3,
+                rows: vec![SpottedUnitHandle {
+                    type_id: 8,
+                    stable_id: 10,
+                    raw_intel: 150,
+                }],
+            }),
+        };
+
+        let first = snapshot_from_latest(&latest).unwrap().unwrap();
+        let second = snapshot_from_latest(&latest).unwrap().unwrap();
+        assert_eq!(first.land_frame_sequence, Some(11));
+        assert_eq!(first.taskforce_frame_sequence, Some(12));
+        assert_eq!(second.land_frame_sequence, Some(11));
+        assert_eq!(second.taskforce_frame_sequence, Some(12));
+        assert_eq!(first.land, second.land);
+        assert_eq!(first.taskforces, second.taskforces);
+        assert_ne!(first.capture_sequence, second.capture_sequence);
+    }
 }

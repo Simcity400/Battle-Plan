@@ -63,6 +63,8 @@ const COUNTRY_TAG_DB_ID_OFFSET: usize = 0x08;
 const DECISION_STATUS_COUNTRY_OFFSET: usize = 0x08;
 const FOCUS_TOKEN_OFFSET: usize = 0x18;
 const DECISION_TOKEN_OFFSET: usize = 0x120;
+// The MSVC string beginning at +0x20 is only valid for active entries.
+const ON_ACTION_ACTIVE_OFFSET: usize = 0x18;
 const ON_ACTION_TOKEN_OFFSET: usize = 0x20;
 const MAX_PORTABLE_TOKEN_LEN: usize = 192;
 const MAX_POINTER_IDENTITIES: usize = 65_536;
@@ -623,19 +625,23 @@ unsafe extern "system" fn hook_on_action(
     ignore_running_check: u8,
 ) {
     let _callback_lease = CallbackLease::enter();
-    let prepared = prepare_pointer_row(
-        DirectEventKind::OnActionInvoked,
-        scope,
-        on_action,
-        Some(manager),
-    )
-    .and_then(|mut row| {
-        row.subject_token_hash = read_token_hash(on_action, ON_ACTION_TOKEN_OFFSET)
-            .ok_or("D45 on-action hook could not decode authored token")?;
-        row.input_bits = u64::from(ignore_running_check);
-        Ok(row)
+    let prepared = read_on_action_token_hash(on_action).and_then(|token_hash| {
+        let Some(token_hash) = token_hash else {
+            return Ok(None);
+        };
+        prepare_pointer_row(
+            DirectEventKind::OnActionInvoked,
+            scope,
+            on_action,
+            Some(manager),
+        )
+        .map(|mut row| {
+            row.subject_token_hash = token_hash;
+            row.input_bits = u64::from(ignore_running_check);
+            Some(row)
+        })
     });
-    publish_entry(prepared);
+    publish_optional_entry(prepared);
     unsafe { call_original_on_action(manager, on_action, scope, ignore_running_check) };
 }
 
@@ -933,8 +939,18 @@ fn publish(prepared: Result<Option<PreparedRow>, String>) {
 }
 
 fn publish_entry(prepared: Result<PreparedRow, String>) {
+    publish_optional_entry(prepared.map(Some));
+}
+
+fn publish_optional_entry(prepared: Result<Option<PreparedRow>, String>) {
     let prepared = match prepared {
-        Ok(prepared) => prepared,
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => {
+            if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
+                state.callback_count = state.callback_count.saturating_add(1);
+            }
+            return;
+        }
         Err(error) => {
             if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
                 state.callback_count = state.callback_count.saturating_add(1);
@@ -1276,6 +1292,17 @@ fn checked_read_usize(base: usize, offset: usize) -> Option<usize> {
         .flatten()
 }
 
+fn read_on_action_token_hash(on_action: usize) -> Result<Option<u64>, String> {
+    let active = checked_read_u8(on_action, ON_ACTION_ACTIVE_OFFSET)
+        .ok_or("D45 on-action hook could not read the authenticated active gate")?;
+    if active == 0 {
+        return Ok(None);
+    }
+    read_token_hash(on_action, ON_ACTION_TOKEN_OFFSET)
+        .map(Some)
+        .ok_or_else(|| "D45 on-action hook could not decode active authored token".into())
+}
+
 fn read_token_hash(object: usize, offset: usize) -> Option<u64> {
     let address = object.checked_add(offset)?;
     let mut header = [0u8; 32];
@@ -1296,11 +1323,9 @@ fn read_token_hash(object: usize, offset: usize) -> Option<u64> {
             return None;
         }
     }
-    if !bytes.iter().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'.' | b':' | b'-' | b'@')
-    }) {
-        return None;
-    }
+    // Hash the exact engine-owned token bytes. The MSVC string length/capacity
+    // checks and guarded read authenticate the storage; an ASCII punctuation
+    // allow-list is not part of the engine ABI and rejected valid mod tokens.
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
         hash ^= u64::from(byte);
@@ -1329,6 +1354,17 @@ fn read_process(address: usize, output: &mut [u8]) -> bool {
 fn read_u32(address: usize) -> Option<u32> {
     let mut bytes = [0u8; 4];
     read_process(address, &mut bytes).then_some(u32::from_le_bytes(bytes))
+}
+
+fn read_u8(address: usize) -> Option<u8> {
+    let mut bytes = [0u8; 1];
+    read_process(address, &mut bytes).then_some(bytes[0])
+}
+
+fn checked_read_u8(base: usize, offset: usize) -> Option<u8> {
+    (base != 0)
+        .then(|| base.checked_add(offset).and_then(read_u8))
+        .flatten()
 }
 
 fn read_i32(address: usize) -> Option<i32> {
@@ -1440,5 +1476,35 @@ mod tests {
         assert!(!research_threshold_crossed(100, 101, 100));
         assert!(!research_threshold_crossed(99, 99, 100));
         assert!(!research_threshold_crossed(101, 99, 100));
+    }
+
+    #[test]
+    fn inactive_on_action_does_not_require_an_authored_token() {
+        let object = [0u8; 64];
+        assert_eq!(
+            read_on_action_token_hash(object.as_ptr() as usize).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn active_on_action_hashes_exact_engine_token_bytes_without_an_ascii_allowlist() {
+        let mut object = [0u8; 64];
+        object[ON_ACTION_ACTIVE_OFFSET] = 1;
+        let token = b"on_mod/path+\xC2\xA7";
+        object[ON_ACTION_TOKEN_OFFSET..ON_ACTION_TOKEN_OFFSET + token.len()]
+            .copy_from_slice(token);
+        object[ON_ACTION_TOKEN_OFFSET + 16..ON_ACTION_TOKEN_OFFSET + 24]
+            .copy_from_slice(&(token.len() as u64).to_le_bytes());
+        object[ON_ACTION_TOKEN_OFFSET + 24..ON_ACTION_TOKEN_OFFSET + 32]
+            .copy_from_slice(&15u64.to_le_bytes());
+
+        let actual = read_on_action_token_hash(object.as_ptr() as usize)
+            .unwrap()
+            .unwrap();
+        let expected = token.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        assert_eq!(actual, expected.max(1));
     }
 }
