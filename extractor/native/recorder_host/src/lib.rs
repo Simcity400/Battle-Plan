@@ -24,3 +24,9 @@ mod tactic_weight_fold;
 pub mod transport_status;
 pub mod windows_control_pipe;
 pub mod world_fold;
+
+/// Upper bound for each authenticated early-launch handshake phase. A cold
+/// continue-save can spend several minutes between first D3D creation and a
+/// coherent world census, so this shares the safe launcher's world-ready
+/// budget instead of imposing a separate 30-second startup assumption.
+pub const MAX_EARLY_HOOK_TIMEOUT_MS: u32 = 600_000;

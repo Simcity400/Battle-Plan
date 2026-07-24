@@ -889,8 +889,13 @@ pub struct EarlyRenderLaunchSpec {
 impl EarlyRenderLaunchSpec {
     pub fn validate_local_files(&self) -> Result<(), String> {
         self.manifest.validate()?;
-        if self.hook_ready_timeout_ms == 0 || self.hook_ready_timeout_ms > 120_000 {
-            return Err("early hook-ready timeout is outside 1..=120000 ms".into());
+        if self.hook_ready_timeout_ms == 0
+            || self.hook_ready_timeout_ms > crate::MAX_EARLY_HOOK_TIMEOUT_MS
+        {
+            return Err(format!(
+                "early hook-ready timeout is outside 1..={} ms",
+                crate::MAX_EARLY_HOOK_TIMEOUT_MS
+            ));
         }
         if let Some(mask) = self.diagnostic_staged_hook_mask {
             staged_hook_count_for_group_mask(mask)?;

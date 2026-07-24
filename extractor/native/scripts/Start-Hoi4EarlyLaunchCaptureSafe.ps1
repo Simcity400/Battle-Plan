@@ -117,6 +117,7 @@ $arguments=@(
     '--early-launch-exe',$Hoi4Exe,
     '--early-launch-arg','--continuelastsave',
     '--early-launch-arg','--gdpr-compliant',
+    '--early-hook-timeout-ms',([string]([Math]::Min($WorldReadyTimeoutSeconds,600) * 1000)),
     '--pdx-user-dir',$PdxUserDir,
     '--dll',$collector,
     '--out-dir',$OutDir,

@@ -5445,8 +5445,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--early-hook-timeout-ms" => {
                 i += 1;
                 early_hook_timeout_ms = parse_u32(args.get(i), "--early-hook-timeout-ms")?;
-                if early_hook_timeout_ms == 0 || early_hook_timeout_ms > 120_000 {
-                    return Err("--early-hook-timeout-ms must be in 1..=120000".into());
+                if early_hook_timeout_ms == 0
+                    || early_hook_timeout_ms > recorder_host::MAX_EARLY_HOOK_TIMEOUT_MS
+                {
+                    return Err(format!(
+                        "--early-hook-timeout-ms must be in 1..={}",
+                        recorder_host::MAX_EARLY_HOOK_TIMEOUT_MS
+                    ));
                 }
             }
             "--early-launch-keep-window" => early_launch_minimize_after_first_d3d = false,

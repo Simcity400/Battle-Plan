@@ -246,8 +246,11 @@ impl PreparedEarlyRenderHostChannel {
         g2_capture_expected: bool,
         timeout_ms: u32,
     ) -> Result<Self, String> {
-        if timeout_ms == 0 || timeout_ms > 120_000 {
-            return Err("early H4CT timeout is outside 1..=120000 ms".into());
+        if timeout_ms == 0 || timeout_ms > crate::MAX_EARLY_HOOK_TIMEOUT_MS {
+            return Err(format!(
+                "early H4CT timeout is outside 1..={} ms",
+                crate::MAX_EARLY_HOOK_TIMEOUT_MS
+            ));
         }
         manifest.validate()?;
         content_manifest.validate()?;
