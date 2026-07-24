@@ -245,7 +245,7 @@ try {
     Assert-Case 'recorder receives admitted static bundle and live source bindings' ($driverText.Contains('"--static-bundle-manifest", $bundleManifestPath') -and $driverText.Contains('"--static-bundle-source-inventory", $SourceInventoryPath') -and $driverText.Contains('"--static-bundle-live-resolution-report", $LiveResolutionReportPath') -and -not $driverText.Contains('"--static-templates-equipment-catalog"'))
     Assert-Case 'every static input form requires exact supported product modset' ($driverText.Contains("Invoke-IndependentCaptureGate -Name 'static_product_modset_policy'") -and $driverText.Contains('static_product_modset_policy_admission.json'))
     Assert-Case 'prepared product modset gets independent full-corpus regrade' ($driverText.Contains("Invoke-IndependentCaptureGate -Name 'product_modset_policy'") -and $driverText.Contains('prepared_product_modset_admission_sha256'))
-    Assert-Case 'product modset policy is frozen and hash-bound before capture' ($driverText.Contains('retainedProductModsetRegistrySha256') -and $driverText.Contains("'--policy',$retainedProductModsetRegistry") -and $driverText.Contains("'--admission-policy',$retainedProductModsetRegistry"))
+    Assert-Case 'product modset policy is frozen and hash-bound before capture' ($driverText.Contains('retainedProductModsetRegistrySha256') -and $driverText.Contains("'--policy',`$retainedProductModsetRegistry") -and $driverText.Contains("'--admission-policy',`$retainedProductModsetRegistry"))
     Assert-Case 'capture plan hashes both live static bindings' ($driverText.Contains('static_bundle_source_inventory_sha256') -and $driverText.Contains('static_bundle_live_resolution_report_sha256'))
     Assert-Case 'static admission cross-binds exact target process identity' ($driverText.Contains('liveResolution.process.pid') -and $driverText.Contains('liveResolution.process.creation_filetime_utc') -and $driverText.Contains('process_creation_filetime_utc'))
     Assert-Case 'pre-injection static gate explicitly admits only deferred bundles' ($driverText.Contains('"--allow-deferred-token-gate"') -and $driverText.Contains('static_bundle_phase = "pre_injection_deferred"'))
@@ -256,7 +256,13 @@ try {
     Assert-Case 'static validation reproduces current live source join' ($validationText.Contains('"--source-inventory",$SourceInventoryPath') -and $validationText.Contains('"--live-resolution-report",$LiveResolutionReportPath'))
     Assert-Case 'post-capture static validation requires exact finalized provenance' ($validationText.Contains('"--expected-capture-id",$expectedCaptureId') -and $validationText.Contains('"--expected-session-id",$expectedSessionId') -and $validationText.Contains('"--expected-stream-sha256",$expectedStreamSha256'))
     Assert-Case 'post-capture validation rechecks static process identity' ($validationText.Contains('live_resolution_process_identity_mismatch') -and $validationText.Contains('creation_filetime_utc'))
-    Assert-Case 'active-integration domains are excluded from production roster' ($script:ProductionDomainStatuses -notcontains 'active_integration' -and @($domains | Where-Object { [string]$_.name -eq 'country_identity' }).Count -eq 0)
+    Assert-Case 'production roster excludes active-integration statuses and includes country identity' (
+        $script:ProductionDomainStatuses -notcontains 'active_integration' -and
+        @($domains | Where-Object {
+            [string]$_.name -eq 'country_identity' -and
+            [string]$_.status -eq 'production_complete'
+        }).Count -eq 1
+    )
     Assert-Case 'compact gate receives manifest-bound minimum duration' ($validationText.Contains('"--min-game-hours",([string]$requestedGameHours)'))
     Assert-Case 'fold check receives production roster authority' ($validationText.Contains('"--expected-profile","production"'))
     Assert-Case 'technology sharing is a required static role' ($script:RequiredStaticArtifactNames -contains 'technology_sharing_static')

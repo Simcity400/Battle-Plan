@@ -90,7 +90,7 @@ if ([string]::IsNullOrWhiteSpace($CaptureId)) { $CaptureId=[guid]::NewGuid().ToS
 foreach($id in @($SessionId,$CaptureId)) {
     if ($id -cnotmatch '^[a-z0-9][a-z0-9_.-]{7,159}$') { throw "Session/capture id is noncanonical: $id" }
 }
-$python=(Get-Command $PythonExe -CommandType Application -ErrorAction Stop).Source
+$python=@(Get-Command $PythonExe -CommandType Application -ErrorAction Stop)[0].Source
 $procdump=(Get-Command $CrashDumpTool -CommandType Application -ErrorAction Stop).Source
 
 if ([string]::IsNullOrWhiteSpace($PrebuiltArtifactAttestationPath)) {
