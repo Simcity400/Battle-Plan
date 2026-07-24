@@ -19,6 +19,7 @@ pub mod dynamic_modifiers;
 pub mod early_render_content_manifest;
 pub mod early_render_control;
 pub mod early_render_runtime_dlc;
+pub mod early_render_startup_failure;
 pub mod early_render_vfs;
 pub mod early_render_vfs_payload;
 pub mod first_compact_ack;

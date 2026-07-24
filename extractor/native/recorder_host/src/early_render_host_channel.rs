@@ -39,6 +39,9 @@ use compact_contract::early_render_control::{
     EARLY_HOOK_COMPLETENESS_MASK,
 };
 use compact_contract::early_render_runtime_dlc::decode_early_render_runtime_dlc_roster;
+use compact_contract::early_render_startup_failure::{
+    decode_early_render_startup_failure, EarlyRenderStartupFailureV1, EarlyRenderStartupPhase,
+};
 use compact_contract::early_render_vfs::{
     canonical_early_render_vfs_index_bytes, encode_early_render_vfs_index_chunk,
     encode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsIndexChunkV1,
@@ -63,6 +66,17 @@ type Prepared = PreparedControlListener<WindowsPipeBackend>;
 pub enum EarlyRenderServiceOutcome {
     CaptureTeardown,
     SinkFailure(SinkFailureReport),
+    StartupFailure(AuthenticatedEarlyRenderStartupFailure),
+}
+
+/// Collector-authored terminal startup evidence received inside the admitted
+/// H4CT session. The host observation point is retained separately from the
+/// collector's own typed phase so telemetry can distinguish a failure report
+/// from the EOF/BrokenPipe that follows it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedEarlyRenderStartupFailure {
+    pub report: EarlyRenderStartupFailureV1,
+    pub observed_while: &'static str,
 }
 
 pub fn early_render_content_manifest_metadata_envelope(
@@ -226,6 +240,7 @@ pub struct PreparedEarlyRenderHostChannel {
     runtime_dlc_descriptors: Vec<AuthenticatedDlcDescriptor>,
     g2_capture_expected: bool,
     launch_bind_sha256: Option<[u8; 32]>,
+    startup_failure: Option<AuthenticatedEarlyRenderStartupFailure>,
     timeout_ms: u32,
 }
 
@@ -321,6 +336,7 @@ impl PreparedEarlyRenderHostChannel {
             runtime_dlc_descriptors,
             g2_capture_expected,
             launch_bind_sha256: None,
+            startup_failure: None,
             timeout_ms,
         })
     }
@@ -548,6 +564,11 @@ impl PreparedEarlyRenderHostChannel {
                     .map_err(|error| format!("decode authenticated sink failure: {error}"))?;
                 return Ok(EarlyRenderServiceOutcome::SinkFailure(report));
             }
+            if frame.kind == MessageKind::EarlyRenderStartupFailure {
+                let failure =
+                    self.decode_startup_failure(&frame.payload, "vfs_payload_service")?;
+                return Ok(EarlyRenderServiceOutcome::StartupFailure(failure));
+            }
             if frame.kind != MessageKind::EarlyRenderVfsPayloadRequest {
                 return Err(format!(
                     "early H4CT expected VFS payload request or terminal sink status, received {:?}",
@@ -732,6 +753,18 @@ impl PreparedEarlyRenderHostChannel {
             .ok_or("early H4CT channel is not connected")?
             .recv_until(deadline(timeout_ms)?, &self.cancellation)
             .map_err(|error| format!("receive early H4CT {expected:?}: {error}"))?;
+        if frame.kind == MessageKind::EarlyRenderStartupFailure {
+            let observed_while = match expected {
+                MessageKind::EarlyRenderReady => "await_ready",
+                MessageKind::EarlyRenderFirstGameD3d => "await_first_game_d3d",
+                MessageKind::EarlyRenderRuntimeDlcRoster => "await_runtime_dlc_roster",
+                _ => "await_other_early_render_frame",
+            };
+            let failure = self.decode_startup_failure(&frame.payload, observed_while)?;
+            let description = startup_failure_description(&failure);
+            self.startup_failure = Some(failure);
+            return Err(description);
+        }
         if frame.kind != expected {
             return Err(format!(
                 "early H4CT expected {expected:?}, received {:?}",
@@ -740,6 +773,92 @@ impl PreparedEarlyRenderHostChannel {
         }
         Ok(frame.payload)
     }
+
+    fn decode_startup_failure(
+        &self,
+        payload: &[u8],
+        observed_while: &'static str,
+    ) -> Result<AuthenticatedEarlyRenderStartupFailure, String> {
+        let report = decode_early_render_startup_failure(payload)
+            .map_err(|error| format!("decode early H4CT startup failure: {error}"))?;
+        validate_startup_failure_authority(
+            &report,
+            &self.expectation,
+            self.session_id,
+            self.launch_bind_sha256,
+        )?;
+        validate_startup_failure_observation(report.phase, observed_while)?;
+        Ok(AuthenticatedEarlyRenderStartupFailure {
+            report,
+            observed_while,
+        })
+    }
+
+    pub fn take_startup_failure(&mut self) -> Option<AuthenticatedEarlyRenderStartupFailure> {
+        self.startup_failure.take()
+    }
+}
+
+fn validate_startup_failure_authority(
+    report: &EarlyRenderStartupFailureV1,
+    expectation: &ProofExpectation,
+    session_id: [u8; 16],
+    launch_bind_sha256: Option<[u8; 32]>,
+) -> Result<(), String> {
+    if report.process_id != expectation.pid
+        || report.process_start_nonce != expectation.creation_filetime
+        || report.session_id != session_id
+    {
+        return Err(
+            "early H4CT startup failure names a foreign process epoch or session".into(),
+        );
+    }
+    if let Some(reported_bind) = report.launch_bind_sha256 {
+        if Some(reported_bind) != launch_bind_sha256 {
+            return Err("early H4CT startup failure names a foreign launch BIND".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_startup_failure_observation(
+    phase: EarlyRenderStartupPhase,
+    observed_while: &'static str,
+) -> Result<(), String> {
+    let allowed = match observed_while {
+        "await_ready" => matches!(
+            phase,
+            EarlyRenderStartupPhase::PostHelloPreBind
+                | EarlyRenderStartupPhase::PostBindPreFirst
+        ),
+        "await_first_game_d3d" => {
+            phase == EarlyRenderStartupPhase::PostBindPreFirst
+        }
+        "await_runtime_dlc_roster" => {
+            phase == EarlyRenderStartupPhase::PostFirstPreCommit
+        }
+        "vfs_payload_service" => {
+            phase == EarlyRenderStartupPhase::PostCommitBootstrap
+        }
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!(
+            "early H4CT startup failure phase {} is impossible while {observed_while}",
+            phase.as_str()
+        ));
+    }
+    Ok(())
+}
+
+fn startup_failure_description(failure: &AuthenticatedEarlyRenderStartupFailure) -> String {
+    format!(
+        "collector reported authenticated early-render startup failure while {}: phase={:?} detail_sha256={} detail={}",
+        failure.observed_while,
+        failure.report.phase,
+        hex(&failure.report.detail_sha256),
+        failure.report.detail
+    )
 }
 
 impl Drop for PreparedEarlyRenderHostChannel {
@@ -1163,6 +1282,7 @@ mod tests {
         EARLY_DIAGNOSTIC_MIN_HOLD_MS,
         EARLY_STAGED_HOOK_GENERATION,
     };
+    use compact_contract::early_render_startup_failure::EarlyRenderStartupPhase;
     use portable_content_manifest::effective_vfs::EffectiveVfsLayerMount;
     use portable_content_manifest::{ContentLayerKind, LayerStorageKind};
     use production_render_submit_live_lane::{RawEffectiveVfsWinnerRow, RawVfsContentIdentity};
@@ -1322,6 +1442,70 @@ mod tests {
         let end_payload = encode_early_diagnostic_end(&end).unwrap();
         assert_eq!(end_payload.len(), 92);
         assert_eq!(decode_early_diagnostic_end(&end_payload).unwrap(), end);
+    }
+
+    #[test]
+    fn startup_failure_authority_preserves_typed_detail_and_rejects_foreign_bindings() {
+        let session_id = [0x31; 16];
+        let launch_bind_sha256 = [0x42; 32];
+        let expectation = ProofExpectation {
+            pid: 77,
+            creation_filetime: 88,
+            h4cr_version: compact_contract::COMPACT_RECORD_VERSION,
+            dll_sha256: [0x53; 32],
+            challenge: session_id,
+        };
+        let report = EarlyRenderStartupFailureV1::new(
+            expectation.pid,
+            expectation.creation_filetime,
+            session_id,
+            EarlyRenderStartupPhase::PostBindPreFirst,
+            Some(launch_bind_sha256),
+            "bind A25 GUI index: exact failure",
+        )
+        .unwrap();
+        validate_startup_failure_authority(
+            &report,
+            &expectation,
+            session_id,
+            Some(launch_bind_sha256),
+        )
+        .unwrap();
+        let failure = AuthenticatedEarlyRenderStartupFailure {
+            report: report.clone(),
+            observed_while: "await_ready",
+        };
+        let description = startup_failure_description(&failure);
+        assert!(description.contains("PostBindPreFirst"));
+        assert!(description.ends_with(&report.detail));
+
+        let mut foreign_epoch = report.clone();
+        foreign_epoch.process_start_nonce += 1;
+        assert!(validate_startup_failure_authority(
+            &foreign_epoch,
+            &expectation,
+            session_id,
+            Some(launch_bind_sha256),
+        )
+        .is_err());
+        let mut foreign_session = report.clone();
+        foreign_session.session_id[0] ^= 1;
+        assert!(validate_startup_failure_authority(
+            &foreign_session,
+            &expectation,
+            session_id,
+            Some(launch_bind_sha256),
+        )
+        .is_err());
+        let mut foreign_bind = report;
+        foreign_bind.launch_bind_sha256.as_mut().unwrap()[0] ^= 1;
+        assert!(validate_startup_failure_authority(
+            &foreign_bind,
+            &expectation,
+            session_id,
+            Some(launch_bind_sha256),
+        )
+        .is_err());
     }
 
     #[test]
@@ -1589,6 +1773,7 @@ mod tests {
             runtime_dlc_descriptors: Vec::new(),
             g2_capture_expected: false,
             launch_bind_sha256: Some(launch_bind_sha256),
+            startup_failure: None,
             timeout_ms: 1000,
         };
         for (request_index, (winner_index, offset, count, expected)) in [

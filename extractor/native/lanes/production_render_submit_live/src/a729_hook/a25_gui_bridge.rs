@@ -838,6 +838,29 @@ fn authenticated_font_asset_receipts(
         .iter()
         .map(|row| (row.content.logical_path.as_str(), &row.content))
         .collect::<BTreeMap<_, _>>();
+    // Index numbered bitmap-font atlases once. The former implementation
+    // rescanned the complete production VFS for every .fnt winner (415 full
+    // scans over the current 57,951-row effective roster). Iterating `rows`
+    // preserves the same canonical path ordering that the per-font sort
+    // previously supplied.
+    let mut numbered_atlases = BTreeMap::<
+        &str,
+        Vec<(&str, &crate::RawVfsContentIdentity)>,
+    >::new();
+    for (&path, &content) in &rows {
+        let Some(without_extension) = path.strip_suffix(".dds") else {
+            continue;
+        };
+        let Some((stem, ordinal)) = without_extension.rsplit_once('_') else {
+            continue;
+        };
+        if !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
+            numbered_atlases
+                .entry(stem)
+                .or_default()
+                .push((path, content));
+        }
+    }
     let mut receipts = Vec::new();
     for (definition_path, definition) in rows
         .iter()
@@ -846,40 +869,27 @@ fn authenticated_font_asset_receipts(
         let stem = definition_path
             .strip_suffix(".fnt")
             .ok_or("font definition suffix disappeared")?;
-        let mut numbered = rows
-            .iter()
-            .filter(|(path, _)| {
-                path.strip_prefix(stem).is_some_and(|suffix| {
-                    suffix
-                        .strip_prefix('_')
-                        .and_then(|suffix| suffix.strip_suffix(".dds"))
-                        .is_some_and(|ordinal| {
-                            !ordinal.is_empty()
-                                && ordinal.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                })
-            })
-            .map(|(path, content)| ((*path).to_string(), *content))
-            .collect::<Vec<_>>();
-        numbered.sort_by(|left, right| left.0.cmp(&right.0));
-        let atlas = if !numbered.is_empty() {
+        let atlas_sha256 = if let Some(numbered) = numbered_atlases.get(stem) {
             numbered
+                .iter()
+                .map(|(_, content)| content.payload_sha256.clone())
+                .collect::<Vec<_>>()
         } else {
             [format!("{stem}.dds"), format!("{stem}.tga")]
                 .into_iter()
-                .find_map(|path| rows.get(path.as_str()).map(|content| vec![(path, *content)]))
+                .find_map(|path| {
+                    rows.get(path.as_str())
+                        .map(|content| vec![content.payload_sha256.clone()])
+                })
                 .unwrap_or_default()
         };
-        if atlas.is_empty() {
+        if atlas_sha256.is_empty() {
             continue;
         }
         receipts.push(runtime_text_inputs_live_lane::owner_glyph_capture::FontAssetReceipt {
             identity: (*definition_path).to_string(),
             descriptor_sha256: definition.payload_sha256.clone(),
-            atlas_sha256: atlas
-                .into_iter()
-                .map(|(_, content)| content.payload_sha256.clone())
-                .collect(),
+            atlas_sha256,
         });
     }
     if receipts.is_empty() {
@@ -3334,4 +3344,67 @@ fn poison_active_owner_run() {
             run.capture_failure_count = run.capture_failure_count.saturating_add(1);
         }
     });
+}
+
+#[cfg(test)]
+mod font_asset_tests {
+    use super::*;
+
+    fn winner(path: &str, digest_nibble: char) -> crate::RawEffectiveVfsWinnerRow {
+        let digest = digest_nibble.to_string().repeat(64);
+        crate::RawEffectiveVfsWinnerRow {
+            content: crate::RawVfsContentIdentity {
+                logical_path: path.into(),
+                winning_layer_ordinal: 0,
+                layer_kind: "base".into(),
+                layer_id: "vanilla".into(),
+                source_sha256: digest.clone(),
+                payload_sha256: digest.clone(),
+                payload_bytes: 1,
+            },
+            source_container_sha256: None,
+            source_byte_offset: 0,
+            source_byte_count: 1,
+            source_range_sha256: digest,
+        }
+    }
+
+    #[test]
+    fn font_asset_index_preserves_numbered_and_fallback_atlas_order() {
+        let mut ordered_rows = vec![
+            winner("gfx/fonts/fallback.dds", '1'),
+            winner("gfx/fonts/fallback.fnt", '2'),
+            winner("gfx/fonts/numbered.fnt", '3'),
+            winner("gfx/fonts/numbered_1.dds", '4'),
+            winner("gfx/fonts/numbered_10.dds", '5'),
+            winner("gfx/fonts/numbered_2.dds", '6'),
+            winner("gfx/fonts/orphan.fnt", '7'),
+        ];
+        ordered_rows.sort_by(|left, right| {
+            left.content
+                .logical_path
+                .cmp(&right.content.logical_path)
+        });
+        let binding = crate::RawEffectiveVfsWinnerIndexBinding {
+            process_start_nonce: 1,
+            authority_manifest_sha256: "a".repeat(64),
+            declared_row_count: ordered_rows.len() as u64,
+            ordered_rows_sha256:
+                crate::RawEffectiveVfsWinnerIndexBinding::canonical_rows_sha256(&ordered_rows)
+                    .unwrap(),
+            ordered_rows,
+        };
+
+        let receipts = authenticated_font_asset_receipts(&binding).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0].identity, "gfx/fonts/fallback.fnt");
+        assert_eq!(receipts[0].descriptor_sha256, "2".repeat(64));
+        assert_eq!(receipts[0].atlas_sha256, vec!["1".repeat(64)]);
+        assert_eq!(receipts[1].identity, "gfx/fonts/numbered.fnt");
+        assert_eq!(receipts[1].descriptor_sha256, "3".repeat(64));
+        assert_eq!(
+            receipts[1].atlas_sha256,
+            vec!["4".repeat(64), "5".repeat(64), "6".repeat(64)]
+        );
+    }
 }

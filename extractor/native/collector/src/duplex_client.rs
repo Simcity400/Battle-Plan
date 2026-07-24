@@ -86,6 +86,10 @@ use compact_contract::early_render_runtime_dlc::{
     encode_early_render_runtime_dlc_roster, EarlyRenderRuntimeDlcCodecError,
     EarlyRenderRuntimeDlcRosterV1,
 };
+use compact_contract::early_render_startup_failure::{
+    encode_early_render_startup_failure, EarlyRenderStartupFailureCodecError,
+    EarlyRenderStartupFailureV1, EarlyRenderStartupPhase,
+};
 use compact_contract::early_render_vfs::{
     canonical_early_render_vfs_index_bytes, decode_early_render_vfs_index_chunk,
     decode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsWinnerRowV1,
@@ -603,6 +607,7 @@ pub enum ClientError {
     EarlyRenderVfsCodec(EarlyRenderVfsCodecError),
     EarlyRenderVfsPayloadCodec(EarlyRenderVfsPayloadCodecError),
     EarlyRenderRuntimeDlcCodec(EarlyRenderRuntimeDlcCodecError),
+    EarlyRenderStartupFailureCodec(EarlyRenderStartupFailureCodecError),
     EarlyRenderBinding,
     EarlyRenderDiagnosticHoldTooShort {
         observed_ms: u64,
@@ -691,6 +696,12 @@ impl From<EarlyRenderVfsPayloadCodecError> for ClientError {
 impl From<EarlyRenderRuntimeDlcCodecError> for ClientError {
     fn from(err: EarlyRenderRuntimeDlcCodecError) -> Self {
         ClientError::EarlyRenderRuntimeDlcCodec(err)
+    }
+}
+
+impl From<EarlyRenderStartupFailureCodecError> for ClientError {
+    fn from(err: EarlyRenderStartupFailureCodecError) -> Self {
+        ClientError::EarlyRenderStartupFailureCodec(err)
     }
 }
 
@@ -1007,6 +1018,55 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         };
         self.early_render_binding = Some(binding.clone());
         Ok(binding)
+    }
+
+    /// Best-effort terminal reporting for an exact startup error after the
+    /// collector HELLO has been sent. The phase and launch-BIND digest are
+    /// derived from this client's authenticated transcript rather than supplied
+    /// by the caller. This remains callable after a local client-state failure:
+    /// the H4CT framing channel may still be healthy even though no subsequent
+    /// capture operation is legal. There is deliberately no acknowledgement;
+    /// the caller returns its original error immediately after this send.
+    pub fn report_early_render_startup_failure(
+        &mut self,
+        _permit: &EarlyRenderDuplexProductPermit,
+        detail: &str,
+        deadline: MonotonicDeadline,
+    ) -> Result<(), ClientError> {
+        if matches!(self.phase, ClientPhase::Handshaking | ClientPhase::Stopped) {
+            return Err(ClientError::NotUsable);
+        }
+        let (phase, launch_bind_sha256) = match self.early_render_binding.as_ref() {
+            None => (EarlyRenderStartupPhase::PostHelloPreBind, None),
+            Some(binding) if self.early_render_capture_committed => (
+                EarlyRenderStartupPhase::PostCommitBootstrap,
+                Some(binding.launch_bind_sha256),
+            ),
+            Some(binding) if self.early_render_first_game_d3d_sent => (
+                EarlyRenderStartupPhase::PostFirstPreCommit,
+                Some(binding.launch_bind_sha256),
+            ),
+            Some(binding) => (
+                EarlyRenderStartupPhase::PostBindPreFirst,
+                Some(binding.launch_bind_sha256),
+            ),
+        };
+        let report = EarlyRenderStartupFailureV1::new(
+            self.identity.pid,
+            self.identity.creation_filetime,
+            self.identity.challenge,
+            phase,
+            launch_bind_sha256,
+            detail,
+        )?;
+        let payload = encode_early_render_startup_failure(&report)?;
+        let result = self.send_frame(
+            MessageKind::EarlyRenderStartupFailure,
+            &payload,
+            deadline,
+        );
+        self.phase = ClientPhase::Failed;
+        result
     }
 
     /// Receives and validates the canonical path-redacted ContentManifest

@@ -363,6 +363,7 @@ pub enum MessageKind {
     EarlyRenderDiagnosticLivenessResponse = 31,
     EarlyRenderDiagnosticEnd = 32,
     EarlyRenderG2CaptureArm = 33,
+    EarlyRenderStartupFailure = 34,
 }
 
 impl MessageKind {
@@ -400,7 +401,8 @@ impl MessageKind {
             | Self::EarlyRenderFirstGameD3d
             | Self::EarlyRenderRuntimeDlcRoster
             | Self::EarlyRenderDiagnosticLivenessResponse
-            | Self::EarlyRenderVfsPayloadRequest => EndpointRole::Collector,
+            | Self::EarlyRenderVfsPayloadRequest
+            | Self::EarlyRenderStartupFailure => EndpointRole::Collector,
         }
     }
 
@@ -440,7 +442,8 @@ impl MessageKind {
             | Self::EarlyRenderDiagnosticLivenessRequest
             | Self::EarlyRenderDiagnosticLivenessResponse
             | Self::EarlyRenderDiagnosticEnd
-            | Self::EarlyRenderG2CaptureArm => ControlCapabilities::EARLY_RENDER,
+            | Self::EarlyRenderG2CaptureArm
+            | Self::EarlyRenderStartupFailure => ControlCapabilities::EARLY_RENDER,
         }
     }
 
@@ -479,6 +482,7 @@ impl MessageKind {
             31 => Ok(Self::EarlyRenderDiagnosticLivenessResponse),
             32 => Ok(Self::EarlyRenderDiagnosticEnd),
             33 => Ok(Self::EarlyRenderG2CaptureArm),
+            34 => Ok(Self::EarlyRenderStartupFailure),
             other => Err(ControlError::UnknownMessageKind(other)),
         }
     }
@@ -1761,7 +1765,7 @@ mod tests {
         assert!(channel.is_poisoned());
     }
 
-    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 31] {
+    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 32] {
         [
             (
                 MessageKind::HeartbeatChallenge,
@@ -1918,6 +1922,11 @@ mod tests {
                 EndpointRole::Recorder,
                 ControlCapabilities::EARLY_RENDER,
             ),
+            (
+                MessageKind::EarlyRenderStartupFailure,
+                EndpointRole::Collector,
+                ControlCapabilities::EARLY_RENDER,
+            ),
         ]
     }
 
@@ -1957,8 +1966,9 @@ mod tests {
             MessageKind::EarlyRenderDiagnosticLivenessResponse,
             MessageKind::EarlyRenderDiagnosticEnd,
             MessageKind::EarlyRenderG2CaptureArm,
+            MessageKind::EarlyRenderStartupFailure,
         ];
-        for (wire, kind) in (1u16..=33).zip(registry) {
+        for (wire, kind) in (1u16..=34).zip(registry) {
             assert_eq!(kind as u16, wire);
             assert_eq!(MessageKind::from_wire(wire).unwrap(), kind);
         }
@@ -1985,6 +1995,7 @@ mod tests {
         );
         assert_eq!(MessageKind::EarlyRenderDiagnosticEnd as u16, 32);
         assert_eq!(MessageKind::EarlyRenderG2CaptureArm as u16, 33);
+        assert_eq!(MessageKind::EarlyRenderStartupFailure as u16, 34);
     }
 
     fn wrong_capability(required: u32) -> u32 {

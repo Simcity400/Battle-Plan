@@ -40,6 +40,9 @@ use compact_contract::early_render_runtime_dlc::{
     encode_early_render_runtime_dlc_roster, EarlyRenderRuntimeDlcRosterV1,
     A729_ACTIVE_DLC_ENUMERATOR_RVA, A729_DLC_MANAGER_GETTER_RVA, A729_STRING_VECTOR_TEARDOWN_RVA,
 };
+use compact_contract::early_render_startup_failure::{
+    decode_early_render_startup_failure, EarlyRenderStartupPhase,
+};
 use compact_contract::early_render_vfs::{
     canonical_early_render_vfs_index_bytes, encode_early_render_vfs_index_chunk,
     encode_early_render_vfs_index_commit, EarlyRenderVfsIndexChunkV1, EarlyRenderVfsIndexCommitV1,
@@ -338,6 +341,81 @@ fn early_launch_bind_rejects_foreign_process_nonce_before_ready() {
         client.receive_early_render_launch_bind(far_deadline(&clock)),
         Err(ClientError::EarlyRenderBinding)
     ));
+    assert_eq!(client.phase(), ClientPhase::Failed);
+}
+
+#[test]
+fn startup_failure_reports_exact_post_bind_error_after_local_client_failure() {
+    let clock = FakeClock::at(0);
+    let (session, session_id) = fresh_session();
+    let test_identity = CollectorIdentity::from_attach(
+        TEST_PID,
+        0x0102_0304_0506_0708,
+        7,
+        [0xab; 32],
+        *session_id.as_bytes(),
+    );
+    let bind = EarlyRenderLaunchBindV2 {
+        process_id: TEST_PID,
+        process_start_nonce: test_identity.creation_filetime,
+        timeout_ms: 30_000,
+        launch_manifest_sha256: [1; 32],
+        effective_vfs_manifest_sha256: [2; 32],
+        effective_vfs_index_sha256: [5; 32],
+        effective_vfs_index_row_count: 1,
+        effective_vfs_index_chunk_count: 1,
+        content_manifest_bytes_sha256: [6; 32],
+        content_manifest_byte_count: 2,
+        content_manifest_chunk_count: 1,
+        executable_sha256: [3; 32],
+        collector_sha256: [0xab; 32],
+        g2_capture_expected: false,
+    };
+    let bind_payload = encode_early_render_launch_bind_v2(&bind).unwrap();
+    let expected_bind_sha256: [u8; 32] = Sha256::digest(&bind_payload).into();
+    let inbound = recorder_frame(
+        session_id,
+        0,
+        MessageKind::EarlyRenderLaunchBind,
+        &bind_payload,
+    );
+    let permit = early_render_duplex_product_permit();
+    let transport = FakeTransport::new(clock.clone(), inbound);
+    let mut client = CollectorControlClient::new_early_render(
+        &permit,
+        transport,
+        clock.clone(),
+        session,
+        test_identity,
+        DuplexClientPolicy::DEFAULT,
+    );
+    let deadline = far_deadline(&clock);
+    client
+        .perform_early_render_handshake(&permit, deadline)
+        .unwrap();
+    client.receive_early_render_launch_bind(deadline).unwrap();
+    let _: Result<(), ClientError> = client.fail(ClientError::EarlyRenderBinding);
+
+    let exact_error = "bind A25 common-GUI effective-VFS definition failed: exact test failure";
+    client
+        .report_early_render_startup_failure(&permit, exact_error, deadline)
+        .unwrap();
+
+    let outbound = &client.backend().outbound;
+    let frame = decode_frame(&outbound[HELLO_WIRE_LEN..], session_id, 1).unwrap();
+    assert_eq!(frame.kind, MessageKind::EarlyRenderStartupFailure);
+    let report = decode_early_render_startup_failure(&frame.payload).unwrap();
+    assert_eq!(report.process_id, TEST_PID);
+    assert_eq!(
+        report.process_start_nonce,
+        test_identity.creation_filetime
+    );
+    assert_eq!(report.session_id, *session_id.as_bytes());
+    assert_eq!(report.phase, EarlyRenderStartupPhase::PostBindPreFirst);
+    assert_eq!(report.launch_bind_sha256, Some(expected_bind_sha256));
+    assert_eq!(report.detail, exact_error);
+    let expected_detail_sha256: [u8; 32] = Sha256::digest(exact_error.as_bytes()).into();
+    assert_eq!(report.detail_sha256, expected_detail_sha256);
     assert_eq!(client.phase(), ClientPhase::Failed);
 }
 
