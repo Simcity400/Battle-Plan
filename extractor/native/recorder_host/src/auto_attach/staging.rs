@@ -160,7 +160,7 @@ fn validate_identity_commitment(
     path: &std::path::Path,
     key: ProcessKey,
     expected_attempt_id: &str,
-    expected_dll_sha256: &str,
+    expected_dll_sha256: Option<&str>,
 ) -> Result<(), String> {
     let bytes = std::fs::read(path)
         .map_err(|error| format!("read identity commitment {}: {error}", path.display()))?;
@@ -170,7 +170,13 @@ fn validate_identity_commitment(
         || commitment.pid != key.pid
         || commitment.process_creation_filetime != key.creation_filetime.0
         || commitment.attempt_id != expected_attempt_id
-        || commitment.dll_sha256 != expected_dll_sha256
+        || commitment.dll_sha256.len() != 64
+        || !commitment
+            .dll_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || expected_dll_sha256
+            .is_some_and(|expected| commitment.dll_sha256 != expected)
         || commitment.pipe_token_hash.len() != 64
         || !commitment
             .pipe_token_hash
@@ -274,7 +280,15 @@ impl PayloadStager for FsPayloadStager {
             .strip_prefix("attempt_")
             .filter(|value| !value.is_empty())
             .ok_or("prior staged DLL directory is not an attempt directory")?;
-        let expected_dll_sha256 = hash_file(prior_dll_path)?;
+        // Capture cleanup may remove the completed attempt directory after the
+        // collector has been proven absent from the retained process. The
+        // durable identity commitment, not disposable staged payload bytes, is
+        // the generation authority in that case. If the old DLL still exists,
+        // retain the stronger byte-for-byte hash cross-check.
+        let expected_dll_sha256 = prior_dll_path
+            .is_file()
+            .then(|| hash_file(prior_dll_path))
+            .transpose()?;
         let root = self.staging_root.join("identity_commitments");
         let active = root.join(format!(
             "pid_{}_filetime_{}.json",
@@ -289,7 +303,7 @@ impl PayloadStager for FsPayloadStager {
                 &retired,
                 key,
                 attempt_id,
-                &expected_dll_sha256,
+                expected_dll_sha256.as_deref(),
             )?;
             return Ok(());
         }
@@ -297,7 +311,7 @@ impl PayloadStager for FsPayloadStager {
             &active,
             key,
             attempt_id,
-            &expected_dll_sha256,
+            expected_dll_sha256.as_deref(),
         )?;
         std::fs::rename(&active, &retired).map_err(|error| {
             format!(
@@ -464,6 +478,40 @@ mod tests {
             .join("stage")
             .join("identity_commitments")
             .join("pid_10_filetime_11.retired_first.json")
+            .is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proven_unload_rearms_after_disposable_attempt_directory_was_removed() {
+        let root = tmp_dir("rearm_removed_attempt");
+        let src = root.join("src_collector.dll");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&src, b"fake collector payload bytes").unwrap();
+        let stager = FsPayloadStager::new(src, root.join("stage"), 1);
+        let key = ProcessKey::new(12, 13);
+        let first = stager
+            .stage(key, "first", "token-a", &"ab".repeat(32))
+            .unwrap();
+
+        // Completed capture data and its staged DLL are disposable. The
+        // process-identity commitment remains durable so a recorder-only
+        // restart can retire the proven-unloaded generation without depending
+        // on deleted payload bytes.
+        std::fs::remove_dir_all(&first.staging_dir).unwrap();
+        assert!(!first.dll_path.exists());
+        stager
+            .rearm_after_proven_unload(key, &first.dll_path)
+            .unwrap();
+        let second = stager
+            .stage(key, "second", "token-b", &"cd".repeat(32))
+            .unwrap();
+
+        assert_ne!(first.staging_dir, second.staging_dir);
+        assert!(root
+            .join("stage")
+            .join("identity_commitments")
+            .join("pid_12_filetime_13.retired_first.json")
             .is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
