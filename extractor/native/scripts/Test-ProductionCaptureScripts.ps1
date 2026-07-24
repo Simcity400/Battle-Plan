@@ -144,6 +144,7 @@ try {
     & $python (Join-Path $scriptDir 'collect_speed_root_evidence_v2.py') self-test
     Assert-Case 'speed root v2 durable nonce outcomes' ($LASTEXITCODE -eq 0)
     $driverText=Get-Content -LiteralPath (Join-Path $scriptDir 'Start-Hoi4ProductionCaptureSafe.ps1') -Raw
+    $earlyLaunchText=Get-Content -LiteralPath (Join-Path $scriptDir 'Start-Hoi4EarlyLaunchCaptureSafe.ps1') -Raw
     $verifierSha=(Get-FileHash -LiteralPath (Join-Path $scriptDir 'verify_speed_root_evidence_v2.py') -Algorithm SHA256).Hash.ToLowerInvariant()
     $probeSha=(Get-FileHash -LiteralPath (Join-Path $scriptDir 'collect_speed_root_evidence_v2.py') -Algorithm SHA256).Hash.ToLowerInvariant()
     $schemaSha=(Get-FileHash -LiteralPath (Join-Path $scriptDir 'speed_root_evidence_v2.schema.json') -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -305,6 +306,11 @@ try {
     )
     Assert-Case 'scientists remains in centralized extractor workspace' ((Get-Content -LiteralPath (Join-Path $nativeRoot 'Cargo.toml') -Raw).Contains('"scientists_live_lane"'))
     Assert-Case 'safe launcher has no direct Cargo execution' (-not $driverText.Contains('& cargo') -and -not $driverText.Contains('cargo build'))
+    Assert-Case 'early launcher resolves one Python application and tolerates no existing game process' (
+        $earlyLaunchText.Contains('@(Get-Command $PythonExe -CommandType Application -ErrorAction Stop)[0].Source') -and
+        $earlyLaunchText.Contains('protected_existing_hoi4_process_ids=@($existing | ForEach-Object { $_.Id })') -and
+        -not $earlyLaunchText.Contains('protected_existing_hoi4_process_ids=@($existing.Id)')
+    )
     Assert-Case 'safe launcher requires current hash-attested prebuilt artifacts' (
         $driverText.Contains('Test-ProductionArtifactAttestation') -and
         $driverText.Contains('prebuilt_artifact_attestation_sha256') -and

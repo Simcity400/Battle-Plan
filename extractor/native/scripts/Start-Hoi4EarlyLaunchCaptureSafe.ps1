@@ -186,7 +186,7 @@ $plan=[ordered]@{
     continue_game_sha256=$continueGameSha256
     semantic_arguments=@('--continuelastsave','--gdpr-compliant')
     keep_game_window=[bool]$KeepGameWindow
-    protected_existing_hoi4_process_ids=@($existing.Id)
+    protected_existing_hoi4_process_ids=@($existing | ForEach-Object { $_.Id })
     recorder_arguments=$arguments
     launch_blocker=$(if ($Purpose -ceq 'Production') { 'same_process_d57_gate_must_be_created_after_internal_suspended_process_creation' } else { $null })
 }
