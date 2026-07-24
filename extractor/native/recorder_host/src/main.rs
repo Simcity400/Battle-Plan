@@ -81,17 +81,6 @@ type Lparam = isize;
 type Wparam = usize;
 
 #[repr(C)]
-struct ThreadEntry32 {
-    dw_size: Dword,
-    cnt_usage: Dword,
-    th32_thread_id: Dword,
-    th32_owner_process_id: Dword,
-    tp_base_pri: i32,
-    tp_delta_pri: i32,
-    dw_flags: Dword,
-}
-
-#[repr(C)]
 struct ModuleEntry32W {
     dw_size: Dword,
     th32_module_id: Dword,
@@ -161,7 +150,6 @@ const FILE_SHARE_DELETE_ACCESS: Dword = 0x00000004;
 const FILE_RENAME_INFO_CLASS: i32 = 3;
 const GENERIC_READ_BUFFER: usize = 65_536;
 const INVALID_HANDLE_VALUE: isize = -1;
-const TH32CS_SNAPTHREAD: Dword = 0x00000004;
 const TH32CS_SNAPMODULE: Dword = 0x00000008;
 const TH32CS_SNAPMODULE32: Dword = 0x00000010;
 const PROCESS_TERMINATE: Dword = 0x0001;
@@ -254,8 +242,6 @@ extern "system" {
         file_information: *const c_void,
         buffer_size: Dword,
     ) -> Bool;
-    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
 }
 
 #[link(name = "user32")]
@@ -11177,13 +11163,15 @@ fn install_hook(
         }
         return Err(format!("GetProcAddress failed: {}", last_error()));
     }
-    let thread_ids = match target_thread_ids(pid, thread_id) {
-        Ok(thread_ids) => thread_ids,
-        Err(error) => {
-            unsafe { FreeLibrary(module) };
-            return Err(error);
-        }
-    };
+    // The main-window thread is the one exact GUI message-queue authority
+    // established above. Hooking every process thread allowed unrelated
+    // transient queues to map the DLL late, after the capture worker had
+    // already released its own module reference. Those secondary mappings
+    // made unload timing nondeterministic and could strand a reference across
+    // same-game recorder reuse. One retained main-window thread is sufficient
+    // to deliver WH_GETMESSAGE and gives the hook lease a single auditable
+    // mapping owner.
+    let thread_ids = [thread_id];
     let mut hooks = Vec::new();
     let mut thread_authorities = Vec::new();
     for target_thread_id in thread_ids {
@@ -12004,55 +11992,6 @@ fn hash_open_file_sha256(file: &mut fs::File, path: &Path) -> Result<[u8; 32], S
         hasher.update(&buffer[..count]);
     }
     Ok(hasher.finalize())
-}
-
-fn target_thread_ids(pid: Dword, primary_thread_id: Dword) -> Result<Vec<Dword>, String> {
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot as isize == INVALID_HANDLE_VALUE {
-        return Err(format!(
-            "target thread snapshot for pid {pid} failed: {}",
-            last_error()
-        ));
-    }
-    let result = (|| {
-        let mut out = vec![primary_thread_id];
-        let mut entry = ThreadEntry32 {
-            dw_size: core::mem::size_of::<ThreadEntry32>() as Dword,
-            cnt_usage: 0,
-            th32_thread_id: 0,
-            th32_owner_process_id: 0,
-            tp_base_pri: 0,
-            tp_delta_pri: 0,
-            dw_flags: 0,
-        };
-        if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
-            return Err(format!(
-                "target thread enumeration for pid {pid} failed: {}",
-                last_error()
-            ));
-        }
-        loop {
-            if entry.th32_owner_process_id == pid
-                && entry.th32_thread_id != 0
-                && !out.contains(&entry.th32_thread_id)
-            {
-                out.push(entry.th32_thread_id);
-            }
-            entry.dw_size = core::mem::size_of::<ThreadEntry32>() as Dword;
-            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
-                let error = last_error();
-                if error != ERROR_NO_MORE_FILES {
-                    return Err(format!(
-                        "target thread enumeration for pid {pid} stopped with error {error}"
-                    ));
-                }
-                break;
-            }
-        }
-        Ok(out)
-    })();
-    unsafe { CloseHandle(snapshot) };
-    result
 }
 
 struct AutoAttachWorkerContext {
