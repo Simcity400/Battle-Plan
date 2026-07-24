@@ -162,6 +162,7 @@ const THREAD_QUERY_LIMITED_INFORMATION: Dword = 0x0800;
 const SYNCHRONIZE: Dword = 0x0010_0000;
 const WAIT_OBJECT_0: Dword = 0;
 const WAIT_TIMEOUT: Dword = 258;
+const MAX_STATIC_BUNDLE_TIMEOUT_MS: u64 = 900_000;
 const WAIT_FAILED: Dword = 0xffff_ffff;
 const STILL_ACTIVE: Dword = 259;
 const MEM_COMMIT: Dword = 0x0000_1000;
@@ -3616,10 +3617,8 @@ fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
             }
             "--static-bundle-timeout-ms" => {
                 i += 1;
-                static_bundle_timeout_ms = u64::from(parse_u32(args.get(i), &args[i - 1])?);
-                if static_bundle_timeout_ms == 0 || static_bundle_timeout_ms > 300_000 {
-                    return Err("--static-bundle-timeout-ms must be in 1..=300000".to_string());
-                }
+                static_bundle_timeout_ms =
+                    parse_static_bundle_timeout_ms(args.get(i), &args[i - 1])?;
             }
             other => return Err(format!("unknown fold-and-repack flag {other}")),
         }
@@ -5716,10 +5715,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--static-bundle-timeout-ms" => {
                 i += 1;
                 static_bundle_timeout_ms =
-                    u64::from(parse_u32(args.get(i), "--static-bundle-timeout-ms")?);
-                if static_bundle_timeout_ms == 0 || static_bundle_timeout_ms > 300_000 {
-                    return Err("--static-bundle-timeout-ms must be in 1..=300000".to_string());
-                }
+                    parse_static_bundle_timeout_ms(args.get(i), "--static-bundle-timeout-ms")?;
             }
             "--domain57-game-speed-gate-v2" => {
                 if speed_root_gate_path.is_some() {
@@ -6630,6 +6626,16 @@ fn parse_u32(value: Option<&String>, flag: &str) -> Result<u32, String> {
     required(value, flag)?
         .parse::<u32>()
         .map_err(|e| format!("invalid {flag}: {e}"))
+}
+
+fn parse_static_bundle_timeout_ms(value: Option<&String>, flag: &str) -> Result<u64, String> {
+    let timeout_ms = u64::from(parse_u32(value, flag)?);
+    if timeout_ms == 0 || timeout_ms > MAX_STATIC_BUNDLE_TIMEOUT_MS {
+        return Err(format!(
+            "{flag} must be in 1..={MAX_STATIC_BUNDLE_TIMEOUT_MS}"
+        ));
+    }
+    Ok(timeout_ms)
 }
 
 fn parse_diagnostic_stage_mask(value: Option<&String>, flag: &str) -> Result<u64, String> {
@@ -29458,6 +29464,25 @@ mod tests {
         .expect_err("window above reader max is rejected");
         assert!(err.contains("invalid replay compression profile"), "{err}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_bundle_timeout_allows_slow_full_inventory_verification() {
+        let max = MAX_STATIC_BUNDLE_TIMEOUT_MS.to_string();
+        assert_eq!(
+            parse_static_bundle_timeout_ms(Some(&max), "--static-bundle-timeout-ms").unwrap(),
+            MAX_STATIC_BUNDLE_TIMEOUT_MS
+        );
+
+        for rejected in ["0".to_string(), (MAX_STATIC_BUNDLE_TIMEOUT_MS + 1).to_string()] {
+            let error =
+                parse_static_bundle_timeout_ms(Some(&rejected), "--static-bundle-timeout-ms")
+                    .expect_err("timeout outside the fail-closed range must be rejected");
+            assert!(
+                error.contains("must be in 1..=900000"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
