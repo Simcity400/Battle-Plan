@@ -15,6 +15,7 @@
 
 
 
+
 D59 owns the recording's static templates/equipment catalog; live equipment-
 designer state and display order belong to d78. A d78 view may join the catalog
 only at the identical `frame_hour`, and every numeric variant id must resolve

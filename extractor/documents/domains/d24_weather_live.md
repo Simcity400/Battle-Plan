@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The claim that weather is not saved and therefore has no oracle is **wrong for
 realized weather**, and it survived long enough to shape earlier design. The
 melted save persists province weather scalars (temperature, water, snow, offsets)

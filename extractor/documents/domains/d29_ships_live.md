@@ -15,6 +15,7 @@
 
 
 
+
 An active save task force owns `id={ id=<N> type=61 }` and at least one direct
 child ship with its own type-51 id. Read `definition` only at direct ship
 depth; exclude empty references and history, refit, sunk, or pending blocks.

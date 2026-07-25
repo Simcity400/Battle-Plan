@@ -15,6 +15,7 @@
 
 
 
+
 The producer graph is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -67,7 +68,7 @@ edges. Screenshots and saved candidates cannot satisfy that gate.
 
 ## Files about this domain
 
-41 tracked files name this domain.
+40 tracked files name this domain.
 
 ### Prose evidence (9) — mergeable
 
@@ -81,7 +82,7 @@ edges. Screenshots and saved candidates cannot satisfy that gate.
 - `extractor/documents/domains/d75_fired_event_popups_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (15) — mergeable
+### Data evidence (14) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/XUI21_RE_EVIDENCE.json`
@@ -97,7 +98,6 @@ edges. Screenshots and saved candidates cannot satisfy that gate.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 - `replay_interface/re_evidence/rendering_laws/XUI21/H_POPUP_FULL_GRAPH_GHIDRA_RECEIPT_20260720.json`
-- `replay_interface/re_evidence/rendering_laws/XUI21/owner_classifier_contract.json`
 
 ### Code (17)
 

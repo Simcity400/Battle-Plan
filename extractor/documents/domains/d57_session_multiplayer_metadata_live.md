@@ -15,6 +15,7 @@
 
 
 
+
 All exact offsets below are for `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
 ### Current speed and pause
@@ -57,7 +58,7 @@ The listed activation sources contradict one another: `H_X12_SPEED_PREREQUISITE_
 
 ## Files about this domain
 
-58 tracked files name this domain.
+56 tracked files name this domain.
 
 ### Pinned evidence (2) — byte-exact, do not merge
 
@@ -83,12 +84,10 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/session_multiplayer_metadata_live/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 
-### Data evidence (14) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/archive/native_lanes/session_multiplayer_metadata_live/proof_artifacts/session_multiplayer_metadata_live_proof/session_multiplayer_metadata_live_proof.json`
-- `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`

@@ -15,6 +15,7 @@
 
 
 
+
 Exact-a729 reusable anchors are:
 
 | Root/field | Value |
@@ -38,7 +39,7 @@ Until an exact isolated before/after offmap delta proves a root, expose only `de
 
 ## Files about this domain
 
-73 tracked files name this domain.
+74 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -46,7 +47,7 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/derived_recompute_catalog.csv` — `03b6260a5083dfa9`
 
-### Prose evidence (50) — mergeable
+### Prose evidence (51) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -60,6 +61,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d20_divisions_live.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d23_map_detail_live.md`
+- `extractor/documents/domains/d24_weather_live.md`
 - `extractor/documents/domains/d26_division_equipment_live.md`
 - `extractor/documents/domains/d29_ships_live.md`
 - `extractor/documents/domains/d31_air_region_activity_live.md`

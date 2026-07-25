@@ -15,6 +15,7 @@
 
 
 
+
 D10 carries the exact `fuel` and `max_fuel` constituents. A replay fuel ratio
 may be derived only when both are proven in the same admitted state and
 `max_fuel` is positive; otherwise the ratio is absent. The batch source provides

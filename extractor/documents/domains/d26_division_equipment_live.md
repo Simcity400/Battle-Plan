@@ -15,6 +15,7 @@
 
 
 
+
 D26 tolerates only `COMPACT_STATUS_PARTIAL_DATA`; source/state unavailable,
 profile mismatch, no clock/scalar source, worker panic, bridge unavailable,
 control invalid, and every other failure-mask bit make the domain unknown for
@@ -33,7 +34,7 @@ See also d27, d28, d45, d48, d49, d50, d53, d54, and d65.
 
 ## Files about this domain
 
-34 tracked files name this domain.
+33 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -41,12 +42,11 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/documents/dossiers/A40/designer_static_inventory.json` — `f272fcd01ebbe562`
 
-### Prose evidence (12) — mergeable
+### Prose evidence (11) — mergeable
 
 - `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d26_division_equipment_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`

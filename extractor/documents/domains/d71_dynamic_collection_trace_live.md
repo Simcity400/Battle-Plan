@@ -15,6 +15,7 @@
 
 
 
+
 All production observations are passive, pointer-free, exact-a729 hook
 observations. A missing current-hour callback is source-unavailable, not a
 measured-empty collection.

@@ -15,6 +15,7 @@
 
 
 
+
 The layout is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -91,7 +92,7 @@ row fail closed.
 
 ## Files about this domain
 
-68 tracked files name this domain.
+66 tracked files name this domain.
 
 ### Prose evidence (20) — mergeable
 
@@ -116,12 +117,10 @@ row fail closed.
 - `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 
-### Data evidence (17) — mergeable
+### Data evidence (15) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
-- `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_EVIDENCE.json`

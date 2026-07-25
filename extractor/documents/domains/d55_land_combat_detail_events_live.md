@@ -15,6 +15,7 @@
 
 
 
+
 The listed source contains no durable d55 payload layout, combat-detail semantics, offsets, identities, or failure law.
 
 See also d52 and d54.
@@ -22,7 +23,7 @@ See also d52 and d54.
 
 ## Files about this domain
 
-42 tracked files name this domain.
+41 tracked files name this domain.
 
 ### Pinned evidence (2) — byte-exact, do not merge
 
@@ -42,7 +43,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d86_sunk_ship_history_live.md`
 - `extractor/native/lanes/land_combat_detail_events_live/README.md`
 
-### Data evidence (16) — mergeable
+### Data evidence (15) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
@@ -56,7 +57,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
-- `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json`
 - `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`

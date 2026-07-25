@@ -15,6 +15,7 @@
 
 
 
+
 Exact-a729 authority is bound to executable SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`. The exact owner is `CAbilityListWindow*` at battle-plan controller `+0x1C8`; `0x1416CD1E0` calls refresh `0x141D072F0`. Definition source order is vector `+0x718/+0x724`, and row-widget order is `+0x70/+0x7C`; counts, headers, bodies, definitions, and nested leader capacities must double-read consistently.
 
 Ordinary rows use `0x1406F3370` for active/cooldown/activation elapsed and `0x1406D0DE0` for final availability; special context is `definition+0x2E9`. Field-marshal rows use `0x68` aggregate records from `0x141D04000`; nested `0x28` leader rows carry the exact five-state enum, remaining time, costs, allocation, and ordered elapsed values. Row active state is direct-group-active or nonzero equality of active and candidate leaders. Cooldown exists only when no leader is available and at least one cools down.

@@ -15,6 +15,7 @@
 
 
 
+
 Division rows are the live authority used to bind on-map counter state. The current append-only row is 120 bytes; retained 104-byte rows decode deterministically as legacy with the added fields unavailable. Mixed or malformed lengths fail closed. The extension carries exact maximum organisation, the dedicated counter-supply scalar, and dig-in current/cap, in addition to current/max supply, their same-row ratio, experience, and order state. Movement is not an orders proxy.
 
 Relevant exact-a729 fields and producers:

@@ -15,6 +15,7 @@
 
 
 
+
 D80 is an ordered opaque render program, not a fixed catalog of vanilla pass
 roles. `StaticMapPassProgram.payload_sha256` is the portable whole-program
 identity. `pass_token` is authenticated provenance only and must never select

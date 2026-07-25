@@ -15,6 +15,7 @@
 
 
 
+
 The static decisions catalog is keyed by decision id and carries category, localization key/name, icons, political-power cost, target metadata, cooldown/removal fields, visibility/availability metadata, `fire_only_once`, and exact source-file bytes/SHA-256. Missing/corrupt static data fails only the definition join; it is not evidence that live decision state failed.
 
 The validated live target slice is `CDecisionStatus+0xE8` active targeted-timed records. Exact-a729 country-target records require vtable RVA `0x27D5038`, definition pointer `record+0x10`, and nonzero bounded country `tag_db_id` at `record+0x20`. The retained sample contains 3,384 targeted-timed rows, of which 1,061 country-target rows across 180 tokens matched save/live exactly. Numeric state/province target ids, cooldowns, days/body fields, and unmatched transitions remain out of scope and must not be recast as country targets.
@@ -26,7 +27,7 @@ The coordinated compact header migration uses twelve `u32` words (48 bytes): tar
 
 ## Files about this domain
 
-68 tracked files name this domain.
+65 tracked files name this domain.
 
 ### Pinned evidence (4) — byte-exact, do not merge
 
@@ -37,7 +38,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 
-### Prose evidence (18) — mergeable
+### Prose evidence (17) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -47,7 +48,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d13_tech_live.md`
 - `extractor/documents/domains/d16_decisions_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
-- `extractor/documents/domains/d18_country_identity.md`
 - `extractor/documents/domains/d26_division_equipment_live.md`
 - `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
 - `extractor/documents/domains/d60_capitulation_war_state_live.md`
@@ -58,15 +58,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (18) — mergeable
+### Data evidence (16) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/WAVE2_10_SHARD_REEXPORT_RECONCILIATION_20260720.json`
 - `extractor/documents/WAVE2_EXACT10_JOB_BINDINGS_20260720.json`
 - `extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json`
 - `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
-- `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`

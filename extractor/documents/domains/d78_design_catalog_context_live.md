@@ -15,6 +15,7 @@
 
 
 
+
 d78 is the same-hour admission context for the live design catalogue. A sealed census contained `5,281` variants, `1,126` templates, and `440` countries, but one hour is not temporal evidence.
 
 The producer repeats a whole-sweep census and double-reads the game date, tag/country registries, every country A/B/template vector, every definition/lifecycle field, and both heap censuses.

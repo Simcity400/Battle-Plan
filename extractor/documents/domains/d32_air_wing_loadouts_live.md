@@ -15,6 +15,7 @@
 
 
 
+
 d32 supplies the exact observable loadout side of reinforcement analysis: air-wing owner/id/generation, equipment variant id/type, old/new equipment amount, and delta. It is joined with d30 location/mission state and d42 count/loss deltas over the same snapshot window. These endpoint facts can prove that equipment in a wing changed; they cannot identify the engine transaction that caused the change.
 
 Replay may correlate d32 deltas with d11 production/stockpile, d43 delivery progress, variant creator/origin, d42 losses, and identity/base changes. The result is heuristic context only:

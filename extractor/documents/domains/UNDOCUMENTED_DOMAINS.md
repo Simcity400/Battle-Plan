@@ -7,11 +7,11 @@ to record beyond identity. They get a row here rather than a file each.
 | id | name | status | files naming it |
 |---:|---|---|---:|
 | 1 | `clock` | infrastructure | 21 |
-| 14 | `politics_live` | existing | 29 |
+| 14 | `politics_live` | existing | 27 |
 | 15 | `politics_residuals` | existing | 25 |
 | 22 | `map_control_live` | existing | 14 |
 | 27 | `army_orders_live` | existing | 23 |
-| 28 | `oob_command_live` | existing | 32 |
+| 28 | `oob_command_live` | existing | 31 |
 | 30 | `air_wings_live` | existing | 20 |
 | 33 | `air_variant_defs` | existing | 21 |
 | 35 | `air_variant_stats` | existing | 20 |
@@ -23,7 +23,7 @@ to record beyond identity. They get a row here rather than a file each.
 | 47 | `characters_leaders_cabinet_live` | production_complete | 62 |
 | 50 | `naval_combat_members_live` | production_complete | 53 |
 | 81 | `rail_replay_state_live` | production_complete | 27 |
-| 91 | `raid_instances_live` | production_complete | 65 |
+| 91 | `raid_instances_live` | production_complete | 66 |
 | 92 | `country_preferred_tactic_live` | production_complete | 13 |
 | 93 | `country_army_upgrade_requests_live` | production_complete | 17 |
 | 94 | `pov_province_visibility_live` | production_complete | 14 |

@@ -15,12 +15,13 @@
 
 
 
+
 D18’s durable role in the listed cross-domain sources is the unique numeric `tag_db_id` to country-label join. A mismatched or non-unique label is unobtained and cannot override numeric identity. The d48 source accepts `CountryIdentityCache.rows` after zero/duplicate-tag, vtable, and minimum-count checks; the d53 source proves only the unique tag/id label join, not stronger pointer or tag-echo guards. Neither source proves that a filtered or minimum-size cache is a complete country roster. See also d48 and d53.
 
 
 ## Files about this domain
 
-49 tracked files name this domain.
+48 tracked files name this domain.
 
 ### Prose evidence (17) — mergeable
 
@@ -42,7 +43,7 @@ D18’s durable role in the listed cross-domain sources is the unique numeric `t
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 - `replay_interface/documents/UNIT_COUNTER_LAW.md`
 
-### Data evidence (14) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
@@ -53,7 +54,6 @@ D18’s durable role in the listed cross-domain sources is the unique numeric `t
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
-- `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json`
 - `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/native/game_ui/tests/fixtures/diplomacy_binding_production_fold/provenance.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`

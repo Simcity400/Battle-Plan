@@ -15,6 +15,7 @@
 
 
 
+
 The accepted base slice is per-wing strength/equipment change: wing identity, owner, mission mask/region, old/new plane count, count delta, old/new equipment-bank sum, equipment delta, reinforcements, losses, deletes, and generation. It does not by itself provide sortie start/end, tactical wing-versus-wing pairing, a killer wing, ace participation, or an exact reinforcement-source reason.
 
 Several plausible roots were mechanically rejected on exact-a729:
@@ -37,7 +38,7 @@ See also d11.
 
 ## Files about this domain
 
-34 tracked files name this domain.
+32 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -61,11 +62,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/native/lanes/air_combat_losses_live/README.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`

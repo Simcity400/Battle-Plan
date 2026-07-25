@@ -66,3 +66,32 @@ construction.
    mismatch (with a precise error naming both modsets).
 4. Job specs for anything touching installed content MUST cite this doc and the
    one rule. The orchestrator rejects diffs that add bare vanilla joins.
+
+## Archive mods: the collision matrix that has never been captured
+
+Mods can ship content inside archives rather than as loose files, and nothing
+in this repo has ever exercised that path — **the installed playset has zero
+archive mods**, so no row below can be captured without a human changing
+launcher state. Treat archive resolution as unproven, not as working.
+
+Six launches settle it. Use one virtual path with archive bytes and loose bytes
+that differ, so the winner is unambiguous:
+
+| Row | Layers, low to high | Required result |
+|---|---|---|
+| A | archive only | normalized member, archive bytes returned |
+| B | loose only | loose bytes returned |
+| C | archive, loose | winner bytes |
+| D | loose, archive | order-reversal winner bytes |
+| E | archive, loose with exact-directory `replace_path` | replacement result |
+| F | missing archive descriptor | exact warning/skip, fatal, or silent-empty |
+
+Add one mixed-case and one backslash-named archive member to exercise key
+normalization. Retain descriptor bytes and hash, resolved archive path,
+central-directory ordinal, normalized key, layer ordinal, collision winner,
+returned bytes and hash, and the exact warning or failure text.
+
+Do not let this block a launch that has no archive mods: per-launch admission
+needs authenticated layer/order and collision-winner rows joined to the exact
+member and consumed-file bytes for *that* capture, not a general law. Missing or
+contradictory joins still reject the playset.

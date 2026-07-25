@@ -15,6 +15,7 @@
 
 
 
+
 D77 is an authenticated supplemental carrier, not an ordinary scheduled
 domain. It is admitted only with H4CT early-launch authority, must provide one
 JSON frame per completed hour, and must not manufacture a perf row. The frame

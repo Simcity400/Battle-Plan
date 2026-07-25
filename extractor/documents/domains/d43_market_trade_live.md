@@ -15,6 +15,7 @@
 
 
 
+
 D43 is authoritative for each equipment-purchase/MTLL contract's id, seller,
 buyer, and global contract-vector order. A portable agreement exists only when
 that contract uniquely joins a current-hour d53

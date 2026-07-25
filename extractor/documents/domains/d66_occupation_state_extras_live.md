@@ -15,6 +15,7 @@
 
 
 
+
 D66’s listed source records only an occupation-extra sidecar with no current typed replay leaf. The combined d52/d66 fold exposes resistance, resistance speed, compliance, compliance speed, occupied-country tag, and occupier tag; `occupation_law` is only an irreversible FNV-1a-32 token and `operational_status` is absent, so neither law text nor operational status may be fabricated. See also d11, d12, d13, d14, d15, d26, d28, d33, d42, d43, d44, d45, d47, d49, d50, d51, d52, d53, d56, d59, d63, d64, and d65.
 
 

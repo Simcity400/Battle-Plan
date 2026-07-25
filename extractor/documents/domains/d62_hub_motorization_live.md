@@ -15,6 +15,7 @@
 
 
 
+
 Exact-a729 law:
 
 ```text
@@ -43,7 +44,7 @@ A same-hour oracle matched `223/223` keys and `1338/1338` fields.
 
 ## Files about this domain
 
-33 tracked files name this domain.
+31 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -58,11 +59,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d62_hub_motorization_live.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`

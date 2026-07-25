@@ -15,6 +15,7 @@
 
 
 
+
 d12 captures persistent focus state: current focus, continuous focus, and completed/progress fields as encoded. Ordered hourly-or-better snapshots make the following derivable without a direct callback domain:
 
 - start when current/continuous focus appears or changes;
@@ -32,15 +33,14 @@ See also d13, d16, d45, and d51.
 
 ## Files about this domain
 
-35 tracked files name this domain.
+34 tracked files name this domain.
 
-### Prose evidence (12) — mergeable
+### Prose evidence (11) — mergeable
 
 - `documents/REMAINING_WORK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d12_focus_live.md`
-- `extractor/documents/domains/d13_tech_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`

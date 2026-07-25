@@ -15,6 +15,7 @@
 
 
 
+
 D61 is the per-country cumulative air-combat statistic: save `history{}`
 statistic id 23, an 89-field i64 fixed-point aggregate with a five-slot yearly
 ring, distinct from per-wing equipment deltas in d42.
@@ -56,7 +57,7 @@ See also d42.
 
 ## Files about this domain
 
-31 tracked files name this domain.
+29 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -71,11 +72,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d61_air_loss_stats_live.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`

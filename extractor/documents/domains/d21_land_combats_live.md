@@ -15,6 +15,7 @@
 
 
 
+
 The current-build authority is `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -114,7 +115,7 @@ See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
 
 ## Files about this domain
 
-30 tracked files name this domain.
+29 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
@@ -125,7 +126,7 @@ See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
 - `extractor/native/lanes/land_combat_detail_events_live/README.md`
 - `extractor/native/recorder_host/README.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
@@ -136,7 +137,6 @@ See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
-- `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json`
 - `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`

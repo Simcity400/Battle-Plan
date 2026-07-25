@@ -15,6 +15,7 @@
 
 
 
+
 D46 authenticates ace identity, owner, name, life/death fields, roster index,
 and wing assignment. The autonomous acceptance path reads the complete raw
 `CAceEntry+0x158..+0x16c` roster, joins it to the same-hour d18 country identity
