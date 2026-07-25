@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 D80 is an ordered opaque render program, not a fixed catalog of vanilla pass
 roles. `StaticMapPassProgram.payload_sha256` is the portable whole-program
 identity. `pass_token` is authenticated provenance only and must never select
@@ -49,53 +50,33 @@ row.
 
 See also d48.
 
+
 ## Files about this domain
 
-67 tracked files name this domain.
+49 tracked files name this domain.
 
-### Pinned evidence (1) — byte-exact, do not merge
+### Prose evidence (11) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `replay_interface/re_evidence/rendering_laws/PRODUCTION_NON_UI_PROMOTION/promotion_contract.json` — `cc122b379ae96336`
-
-### Prose evidence (12) — mergeable
-
-- `documents/REMAINING_WORK.md`
-- `documents/STATUS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/PORTABLE_CONTENT_MANIFEST.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/D48_D80_BUILDING_PRIORITY_CLOSEOUT_20260719.md`
-- `extractor/re_evidence/D80_OPAQUE_STATIC_PROGRAM/FINDINGS.md`
+- `extractor/documents/domains/d74_power_balance_presentation_live.md`
+- `extractor/documents/domains/d77_production_render_submits_live.md`
+- `extractor/documents/domains/d79_hud_surface_activation_live.md`
+- `extractor/documents/domains/d80_production_map_content_snapshot_live.md`
 - `replay_interface/documents/MAP_LABEL_LAW.md`
 - `replay_interface/documents/MAP_REPLICA_PLAN.md`
 - `replay_interface/documents/POLITICAL_COLOR_LAW.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (18) — mergeable
+### Data evidence (4) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/D81_WAVE6_D80_PRODUCTION_JOIN_20260721.json`
-- `extractor/documents/dossiers/D81_WAVE6_RAIL_SUPPLY_MAP_SELECTOR_20260721.json`
-- `extractor/documents/dossiers/RETAINED_EVIDENCE_IMMEDIATE_HUMAN_INPUT_CENSUS_20260720.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `replay_interface/re_evidence/rendering_laws/B10/retained_d80_census.json`
-- `replay_interface/re_evidence/rendering_laws/C07/S1_HUMAN_INPUT_REQUIREMENTS.json`
-- `replay_interface/re_evidence/rendering_laws/C07/S1_LIVE_PRODUCER_RETAINED_CENSUS_20260720.json`
-- `replay_interface/re_evidence/rendering_laws/C07/WAVE6_S1_SELECTED_SUBMIT_PRODUCER_RE_20260721.json`
-- `replay_interface/re_evidence/rendering_laws/C07/WAVE6_S1_TYPED_TREE_CASTER_RE_20260721.json`
-- `replay_interface/re_evidence/rendering_laws/G3_OCCUPATION_PRODUCER_RE_20260720/OWNER_CAPTURE_CARD.json`
-- `replay_interface/re_evidence/rendering_laws/G3_OCCUPATION_PRODUCER_RE_20260720/WAVE6_LIVE_TRACE_RECEIPT.json`
-- `replay_interface/re_evidence/rendering_laws/G3_OCCUPATION_PRODUCER_RE_20260720/ghidra_receipt.json`
-- `replay_interface/re_evidence/rendering_laws/G3_OCCUPATION_PRODUCER_RE_20260720/occupation_observation_contract.schema.json`
-- `replay_interface/re_evidence/rendering_laws/RESTORE_GATE_RETAINED/capture_engineering_contract.json`
-- `replay_interface/re_evidence/rendering_laws/RESTORE_GATE_RETAINED/human_input_requirements.json`
 
-### Code (36)
+### Code (34)
 
 - `extractor/native/collector/src/duplex_client.rs`
 - `extractor/native/compact_contract/src/early_render_content_manifest.rs`
@@ -130,6 +111,4 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_app/src/render.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/C07/mine_s1_live_producer_observations.py`
-- `replay_interface/re_evidence/rendering_laws/G3_OCCUPATION_PRODUCER_RE_20260720/capture_and_admit_occupation.py`
 - `replay_interface/renderdoc/pair_restore_gate_acquisitions.py`

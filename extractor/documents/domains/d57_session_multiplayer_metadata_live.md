@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 All exact offsets below are for `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
 ### Current speed and pause
@@ -51,109 +52,57 @@ F6 paused-short proof is a separate nonce-bound acceptance contract and cannot r
 
 The listed activation sources contradict one another: `H_X12_SPEED_PREREQUISITE_REAUDIT_20260720.md` states `PRODUCTION_ACTIVATION=true`, while both later X12/F6 engineering sources say the production latch remains false until a retained authentic machine-passing replay receipt exists. Current code and receipt state must resolve that disagreement; the static roots and offline verifier alone do not prove live activation.
 
+
 ## Files about this domain
 
-138 tracked files name this domain.
+70 tracked files name this domain.
 
-### Pinned evidence (13) — byte-exact, do not merge
+### Pinned evidence (7) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
 - `extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md` — `1e43fee802fa7786`
 - `extractor/native/scripts/collect_speed_root_evidence_v2.py` — `7302d6981b74b5eb`
 - `extractor/native/scripts/verify_speed_root_evidence_v2.py` — `1a8057e0084e8507`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (24) — mergeable
+### Prose evidence (15) — mergeable
 
-- `documents/REMAINING_WORK.md`
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/CAMPAIGN_IDENTITY_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/archive/CODEX_DISPATCH_QUEUE.md`
-- `extractor/documents/dossiers/A3_P3_X12_EXHAUSTION_20260719.md`
-- `extractor/documents/dossiers/F6_PAUSED_SHORT_PROOF_PRODUCTION_ENGINEERING_20260720.md`
-- `extractor/documents/dossiers/H_X12_SPEED_PREREQUISITE_REAUDIT_20260720.md`
+- `extractor/documents/domains/d57_session_multiplayer_metadata_live.md`
+- `extractor/documents/domains/d70_sunk_convoy_history_live.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d74_power_balance_presentation_live.md`
+- `extractor/documents/domains/d77_production_render_submits_live.md`
 - `extractor/documents/dossiers/I1_D57_SPEED_EVIDENCE.md`
-- `extractor/documents/dossiers/WAVE5_EARLY_LAUNCH_MODSET_SINK_CLOSEOUT_20260720.md`
-- `extractor/documents/dossiers/X12_F6_WAVE4_LIVE_ACTIVATION_ENGINEERING_20260720.md`
-- `extractor/documents/dossiers/X12_F6_WAVE5_AUTONOMOUS_CLOSEOUT_20260720.md`
-- `extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md`
-- `extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md`
-- `extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET_HOOKS.md`
-- `extractor/native/lanes/session_multiplayer_metadata_live/PROBE_RUNSHEET.md`
 - `extractor/native/lanes/session_multiplayer_metadata_live/README.md`
-- `extractor/native/lanes/session_multiplayer_metadata_live/SESSION_EVENT_DISPOSITION.md`
-- `extractor/native/scripts/SPEED_ROOT_EVIDENCE_V2.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (50) — mergeable
+### Data evidence (12) — mergeable
 
-- `extractor/coverage_audit/atlas_registry_snapshot.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/archive/native_lanes/session_multiplayer_metadata_live/proof_artifacts/session_multiplayer_metadata_live_proof/native_session_manifest.json`
 - `extractor/documents/archive/native_lanes/session_multiplayer_metadata_live/proof_artifacts/session_multiplayer_metadata_live_proof/session_multiplayer_metadata_live_proof.json`
-- `extractor/documents/dossiers/F6_PAUSED_SHORT_PROOF_PRODUCTION_ENGINEERING_20260720.json`
-- `extractor/documents/dossiers/F6_PAUSE_STATIC_CLOSEOUT_20260720.json`
-- `extractor/documents/dossiers/H_X12_SPEED_PREREQUISITE_REAUDIT_20260720.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
-- `extractor/documents/dossiers/WAVE5_EARLY_LAUNCH_MODSET_SINK_CLOSEOUT_20260720.json`
-- `extractor/documents/dossiers/X12_F6_WAVE4_LIVE_ACTIVATION_ENGINEERING_20260720.json`
-- `extractor/documents/dossiers/X12_F6_WAVE5_AUTONOMOUS_CLOSEOUT_20260720.json`
 - `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/manifest.json`
 - `extractor/documents/production_promotion/verification.json`
-- `extractor/documents/production_replay_handoff/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
-- `extractor/native/lanes/session_multiplayer_metadata_live/live_probe_session_strict.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_PAUSED_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_v2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_layer2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_prevalidate_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_speed5_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_sweep10_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pa_baseline_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pb_before_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/prew0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/rfd_war_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_deep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n4_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n6_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w11_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w12_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w2_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_off_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_on_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_tight_off_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_s2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_war_manifest.json`
-- `extractor/native/runs/v1_acceptance_20260706/smoke_paused/native_session_manifest.json`
-- `extractor/re_evidence/A3_D57_SPEED/EXACT20_REAUDIT_20260720.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
-- `replay_interface/re_evidence/rendering_laws/R02/findings_ledger.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (51)
+### Code (36)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -163,10 +112,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/session_multiplayer_metadata_live/Cargo.toml`
 - `extractor/native/lanes/session_multiplayer_metadata_live/live_probe_session.py`
-- `extractor/native/lanes/session_multiplayer_metadata_live/probe_870ebf_alert_reachability.py`
-- `extractor/native/lanes/session_multiplayer_metadata_live/probe_870ebf_session_event_roots.py`
-- `extractor/native/lanes/session_multiplayer_metadata_live/probe_870ebf_session_rtti.py`
-- `extractor/native/lanes/session_multiplayer_metadata_live/session_probe_common.py`
 - `extractor/native/lanes/session_multiplayer_metadata_live/src/bin/proof.rs`
 - `extractor/native/lanes/session_multiplayer_metadata_live/src/lib.rs`
 - `extractor/native/lanes/session_multiplayer_metadata_live/src/x12_a729_hook.rs`
@@ -189,17 +134,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/verify_f6_pause_proof.py`
 - `extractor/native/scripts/verify_speed5_stream.py`
 - `extractor/native/scripts/verify_x12_speed_pause_activation.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/validation_759f/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_atomic_backup_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_base_8791cf82.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_old_canonical_712060_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/game_ui/src/binding.rs`
 - `replay_interface/native/game_ui/src/world_tension.rs`
 - `replay_interface/native/replay_app/src/observer.rs`

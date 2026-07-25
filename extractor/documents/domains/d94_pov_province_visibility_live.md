@@ -14,18 +14,19 @@
 
 14 tracked files name this domain.
 
-### Prose evidence (2) — mergeable
+### Prose evidence (3) — mergeable
 
-- `documents/SEAM_CONTRACTS.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d94_pov_province_visibility_live.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 
 ### Data evidence (3) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `replay_interface/re_evidence/rendering_laws/CAP6/CAP6_H1_H5_AUTONOMOUS_PROFILE.json`
 
-### Code (9)
+### Code (8)
 
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/pov_visibility.rs`
@@ -35,4 +36,3 @@
 - `replay_interface/native/replay_app/src/observer.rs`
 - `replay_interface/native/replay_app/src/recorded_ui_owner.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/CAP6/verify_cap6_h1_h5_profile.py`

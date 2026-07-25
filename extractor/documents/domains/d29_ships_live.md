@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 An active save task force owns `id={ id=<N> type=61 }` and at least one direct
 child ship with its own type-51 id. Read `definition` only at direct ship
 depth; exclude empty references and history, refit, sunk, or pending blocks.
@@ -27,46 +28,42 @@ same-hour d29 fold and are otherwise null.
 
 See also d56.
 
+
 ## Files about this domain
 
-26 tracked files name this domain.
+21 tracked files name this domain.
 
-### Pinned evidence (9) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
 ### Prose evidence (7) — mergeable
 
 - `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
-- `extractor/documents/dossiers/W12B_FOLD_WAVE1.md`
-- `extractor/native/fold_packets/chunk2/FOLD_PACKET.md`
+- `extractor/documents/domains/d10_fuel_live.md`
+- `extractor/documents/domains/d29_ships_live.md`
+- `extractor/documents/domains/d34_air_base_status_live.md`
 - `extractor/native/lanes/naval_combat_live/A8_A9_B6_CLOSEOUT.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
-- `extractor/native/lanes/naval_oob_fleets_ships_live/E12_ACTIVE_OOB_D04_VALIDATION.md`
 
-### Data evidence (6) — mergeable
+### Data evidence (9) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (4)
+### Code (2)
 
 - `extractor/native/compact_contract/src/lib.rs`
-- `extractor/native/lanes/naval_combat_live/retained_lifecycle_proof.py`
-- `extractor/native/lanes/naval_missions_status_live/naval_missions_status_probe.py`
 - `extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs`

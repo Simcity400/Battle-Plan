@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 Frame-level domain census uses compiler truth, not Rust-source parsing. The
 oracle derives paths from `__file__` and performs exactly one
 production-selection build from the native crate root:
@@ -76,10 +77,15 @@ SHA-256.
 
 See also d10, d11, d18, d42, d48, d65, and d69.
 
+
 ## Files about this domain
 
-1 tracked files name this domain.
+2 tracked files name this domain.
 
 ### Prose evidence (1) — mergeable
 
-- `extractor/documents/dossiers/W12C_CENSUS_ORACLE.md`
+- `extractor/documents/domains/d1000_frame.md`
+
+### Code (1)
+
+- `extractor/native/scripts/map_files_to_domains.py`

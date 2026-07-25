@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 Exact-a729 root and row law:
 
 ```text
@@ -48,57 +49,45 @@ Rejected substitutes include save-only or time-window correlation, task-force mi
 
 See also d42, d49, d50, d57, and d90.
 
+
 ## Files about this domain
 
-58 tracked files name this domain.
+37 tracked files name this domain.
 
-### Pinned evidence (9) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (10) — mergeable
+### Prose evidence (9) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md`
+- `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_MINIMAL_LIVE_CAPTURE.md`
 - `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/STATIC_CLOSEOUT.md`
 - `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (14) — mergeable
+### Data evidence (9) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
-- `extractor/native/project_progress_live_lane/A23_A7_WAVE5_PRODUCTION_CLOSEOUT_20260720.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/D90_PRODUCTION_PROMOTION_20260722.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_AUTONOMOUS_ACQUISITION_OWNER_20260722.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_RETAINED_CORPUS_INVENTORY.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_ROUTE_SOURCE_CLOSEOUT_20260720.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/PRECOLLAPSE_HOOK_CARRIER_CONTRACT.json`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/H_B4_B5_B7_PRODUCTION_LAUNCH_OWNER_20260722.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (25)
+### Code (16)
 
-- `extractor/documents/production_promotion/verify_promotion.py`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/naval_history.rs`
@@ -112,14 +101,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Invoke-B4B5B7ProductionAcquisition.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/verify_h_convoy_fixture.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/validation_759f/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/game_ui/src/combat_detail_losses.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`

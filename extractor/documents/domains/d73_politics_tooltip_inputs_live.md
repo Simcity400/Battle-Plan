@@ -12,51 +12,51 @@
 
 ## Condensed knowledge
 
+
 PTI1/d73 is reserved for backwards-compatible forensic decoding only. It is not the production source for politics tooltips: d14/d15 carry exact politics state, d72 carries the visible final tooltip text and geometry, and the authenticated selected-Present UI pass owns the pixels. Absence of a d73 live matrix must not block those surfaces or be filled by inferred tooltip inputs.
 
 See also d14, d15, d57, d71, d72, d74, d75, d76, d77, d79, d81, d82, d84, d85, d88, d89, d94, and d95.
 
+
 ## Files about this domain
 
-54 tracked files name this domain.
+44 tracked files name this domain.
 
-### Pinned evidence (9) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (5) — mergeable
+### Prose evidence (8) — mergeable
 
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
+- `extractor/documents/domains/d14_politics_live.md`
+- `extractor/documents/domains/d15_politics_residuals.md`
+- `extractor/documents/domains/d72_resolved_tooltip_instances_live.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/native/lanes/politics_tooltip_inputs_live/A24_RE_REPORT.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (12) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/dossiers/A24_POLITICS_TOOLTIP_INPUTS.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/politics_tooltip_inputs_live/A24_AUTONOMOUS_SCENES_1920X1080.json`
 - `extractor/native/lanes/politics_tooltip_inputs_live/H_A24_CAPTURE_AUTOMATION_20260720.json`
-- `extractor/native/lanes/politics_tooltip_inputs_live/manifest.json`
-- `extractor/native/lanes/politics_tooltip_inputs_live/verification.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (29)
+### Code (21)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -75,15 +75,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Hoi4ClientDriving.OptIn.ps1`
 - `extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/game_ui/src/politics_tooltips.rs`
 - `replay_interface/native/replay_app/src/tooltip_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI27/verify_xui27.py`

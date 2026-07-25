@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 `CNationalFocusView` vtable `0x14299D680` owns the final item pointer vector at `+0x2058/+0x2060/+0x2064/+0x2068`. Each item is a `0x550`-byte `CNationalFocusTreeItem` with vtables `0x14299DD40/0x14299DDE0`, definition pointer `+0x20`, final state code `+0x540`, and capability bytes `+0x54C/+0x54D`.
 
 State materialization follows `0x14137A780 -> 0x141379A50 -> 0x1413778F0`. Exact-a729 frame callers invoke `0x14137A780` before `0x14137A600`, so a complete observation is sealed only after the same-view dynamic/detail pair. Highlight (`0x141377430`) and display percent (`0x141BB5DF0`, final widget argument at `0x141BB636E`) are transient leaves joined by item/definition identity.
@@ -22,43 +23,31 @@ Activation evidence must include one stable complete frame and a changed-state/t
 
 See also d51.
 
+
 ## Files about this domain
 
-43 tracked files name this domain.
+34 tracked files name this domain.
 
-### Pinned evidence (1) — byte-exact, do not merge
+### Prose evidence (8) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json` — `718230760b4ab81b`
-
-### Prose evidence (7) — mergeable
-
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A29_A31_A37_A38_EXHAUSTION_20260719.md`
+- `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d89_national_focus_presentation_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (5) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/A31_NATIONAL_FOCUS_PRESENTATION_INPUTS.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
+- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/A31_ACQUISITION_OWNER_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_D89_PRODUCTION_WIRING_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_EXACT10_REEXPORT_REQUEST_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_EXACT20_CONSOLIDATED_AUTHORITY_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_FOCUS_ITEM_OWNER_PRODUCER_RE_20260720.json`
-- `replay_interface/re_evidence/rendering_laws/XUI10/production_contract.json`
-- `replay_interface/re_evidence/rendering_laws/XUI10/verification_static.json`
-- `replay_interface/re_evidence/rendering_laws/XUI10/verification_static_pass1.json`
 
-### Code (22)
+### Code (21)
 
 - `extractor/native/collector/src/a31_focus_canvas_join.rs`
 - `extractor/native/collector/src/domain_registry.rs`
@@ -81,4 +70,3 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_app/src/recorded_ui_owner.rs`
 - `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI10/verify_xui10.py`

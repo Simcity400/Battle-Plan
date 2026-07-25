@@ -12,10 +12,15 @@
 
 ## Files about this domain
 
-9 tracked files name this domain.
+11 tracked files name this domain.
 
-### Data evidence (2) — mergeable
+### Prose evidence (1) — mergeable
 
+- `extractor/documents/domains/d96_country_preferred_tactic_weight_live.md`
+
+### Data evidence (3) — mergeable
+
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 

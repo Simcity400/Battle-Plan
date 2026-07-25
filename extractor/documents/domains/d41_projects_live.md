@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 `specialization_handle` is process-local and may be used only inside the d41
 delta tracker for raw additions and tombstones before the authenticated
 four-token census. Portable fold/replay publishes only the closed
@@ -22,89 +23,51 @@ d18 `_r2_tag_db_id` witness; replay requires every pair to match it.
 
 See also d18.
 
+
 ## Files about this domain
 
-114 tracked files name this domain.
+64 tracked files name this domain.
 
-### Pinned evidence (10) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/native/runs/crack_fanout/W3_scripted_programs/WIRING_REPORT.md` — `0e8e64c95bb729c5`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (13) — mergeable
+### Prose evidence (14) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/dossiers/A17_A18_A20_A23_X9_CLOSEOUT_20260719.md`
-- `extractor/documents/dossiers/W13_RESIDUAL_COMBAT_PROJECT_RE.md`
-- `extractor/documents/dossiers/WAVE4_X9_A31_A29_POINTER_PORTABILITY_20260720.md`
+- `extractor/documents/domains/d21_land_combats_live.md`
+- `extractor/documents/domains/d41_projects_live.md`
+- `extractor/documents/domains/d67_country_dynamic_modifiers_live.md`
+- `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/live_capture/README.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/project_progress_live_lane/README.md`
 - `extractor/native/recorder_host/README.md`
+- `extractor/native/runs/crack_fanout/W3_scripted_programs/WIRING_REPORT.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (44) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/memory_manifest.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/A17_A18_A23_X9_SNOWMUD_HUMAN_INPUT.json`
-- `extractor/documents/dossiers/A25_RUNTIME_TEXT_INPUTS.json`
-- `extractor/documents/dossiers/RETAINED_EVIDENCE_IMMEDIATE_HUMAN_INPUT_CENSUS_20260720.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/memory_reader/defnames_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/native/lanes/compact_replay_verification_gates/contracts/compact_replay_gate_contract.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
-- `extractor/native/project_progress_live_lane/A20_OWNER_JOINED_PROGRESS_PRODUCTION_CLOSEOUT_20260720.json`
-- `extractor/native/project_progress_live_lane/A23_X9_RETAINED_SOURCE_EXHAUSTION_20260720.json`
-- `extractor/native/project_progress_live_lane/H_X9_SPECIALIZATIONS_PREREQUISITE_REAUDIT_20260720.json`
-- `extractor/native/project_progress_live_lane/X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_PAUSED_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_v2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_layer2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_prevalidate_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_speed5_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_sweep10_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pa_baseline_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pb_before_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/prew0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/rfd_war_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_deep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n4_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n6_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w11_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w12_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w2_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_off_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_on_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_tight_off_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_s2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_war_manifest.json`
-- `extractor/native/runs/v1_acceptance_20260706/smoke_paused/native_session_manifest.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (47)
+### Code (36)
 
 - `extractor/live_capture/assembler.py`
 - `extractor/live_capture/collector_frames.py`
@@ -136,17 +99,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Invoke-LiveValidationSession.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/validation_759f/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_atomic_backup_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_base_8791cf82.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_old_canonical_712060_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/game_ui/src/special_projects.rs`
 - `replay_interface/native/replay_app/src/special_projects_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`

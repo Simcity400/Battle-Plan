@@ -48,6 +48,24 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     written = 0
     mergeable_total = 0
+    carried = 0
+
+    def existing_condensed(path: Path) -> str:
+        """Preserve hand-written knowledge across a regeneration.
+
+        The Identity and Files sections are derived and must be rebuilt -- that
+        is how stale references to deleted files get corrected. The Condensed
+        knowledge section is not derivable from anything: it is the distilled
+        content of ~1.9 MB of investigation write-ups that no longer exist.
+        Regenerating without carrying it forward would destroy it silently.
+        """
+        if not path.exists():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "## Condensed knowledge" not in text:
+            return ""
+        body = text.split("## Condensed knowledge", 1)[1]
+        return body.split("## Files about this domain", 1)[0].rstrip()
 
     for row in csv.DictReader((LEDGER / "domain_file_map.csv").open(encoding="utf-8")):
         did = int(row["domain_id"])
@@ -85,6 +103,15 @@ def main() -> int:
             f"- status: `{meta.get('status', 'unknown')}`",
             f"- schedulable: `{meta.get('schedulable', 'unknown')}`",
             "",
+        ]
+
+        path = OUT / f"d{did:02d}_{name}.md"
+        keep = existing_condensed(path)
+        if keep:
+            lines += ["## Condensed knowledge", keep, "", ""]
+            carried += 1
+
+        lines += [
             "## Files about this domain",
             "",
             f"{len(files)} tracked files name this domain.",
@@ -111,11 +138,11 @@ def main() -> int:
             lines += [f"- `{f}`" for f in sorted(buckets[key])]
             lines.append("")
 
-        path = OUT / f"d{did:02d}_{name}.md"
         path.write_text("\n".join(lines), encoding="utf-8")
         written += 1
 
     print(f"wrote {written} domain files to {OUT}")
+    print(f"carried existing Condensed knowledge forward in {carried}")
     print(f"mergeable prose/data entries across all domains: {mergeable_total}")
     return 0
 

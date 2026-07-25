@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 The correct exact-a729 owner is `CCountryDecisionView`, constructed at
 `0x1417128E0` with vftable `0x1429DECE8`. Its update is `0x141716270`;
 `decision_grid_container` is view `+0x580` and `decision_grid` is view `+0x588`.
@@ -42,29 +43,28 @@ equality.
 
 See also d45.
 
+
 ## Files about this domain
 
-39 tracked files name this domain.
+37 tracked files name this domain.
 
-### Prose evidence (9) — mergeable
+### Prose evidence (10) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A33_A34_WAVE3_WRITER_DEVIRTUALIZATION_20260720.md`
-- `extractor/documents/dossiers/A34_WAVE4_HOOK_ENGINEERING_20260720.md`
-- `extractor/documents/dossiers/A34_WAVE5_COUNTRY_DECISION_MATERIALIZATION_CORRECTION_20260720.md`
-- `extractor/documents/dossiers/A38_WAVE6_TOPBAR_ALERT_COUNTS_FEED_20260721.md`
+- `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
+- `extractor/documents/domains/d74_power_balance_presentation_live.md`
+- `extractor/documents/domains/d76_runtime_text_inputs_live.md`
+- `extractor/documents/domains/d79_hud_surface_activation_live.md`
+- `extractor/documents/domains/d86_sunk_ship_history_live.md`
+- `extractor/documents/domains/d87_decision_panel_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (5) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/A33_A34_WAVE3_PROMOTION_SEEDS_20260720.json`
-- `extractor/documents/dossiers/A34_WAVE5_COUNTRY_DECISION_MATERIALIZATION_CORRECTION_20260720.json`
-- `extractor/documents/dossiers/A34_XUI19_DECISION_PANEL_INPUTS.json`
-- `extractor/documents/dossiers/A38_WAVE6_TOPBAR_ALERT_COUNTS_FEED_20260721.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/direct_frd_transitions_live/X10_DIRECT_TRANSITION_OWNER_FIXTURE_20260720.json`

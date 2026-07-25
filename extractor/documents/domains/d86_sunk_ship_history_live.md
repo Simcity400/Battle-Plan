@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 All layout evidence is exact-a729 (`hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`). The completed-history vector is at `CGameState+0x590`, laid out as data pointer `+0x00`, capacity `u32 +0x08`, count `u32 +0x0C`, with eight-byte entries. Each `CSunkShipInfo` has vtable `0x142941608` and size `0xA8`.
 
 | Offset | Exact field |
@@ -36,26 +37,23 @@ Only `0x141961DD0` supplies nonzero-capable naval sink context; the other three 
 
 SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, names/classes, and exact date. Empty attacker text or zero optional damage-source handle are exact absence, not rejection. The empirical fixture requires a structurally valid empty ledger before and after hook installation, at least one globally appended sink, strict sequencing, current D49/D50 receipts, exact loaded DLL/executable identity, and zero unbound/reentrant/unreadable/overflow/lock/completeness losses. Listed sources still describe live scheduling as fixture-latched false, while the domain identity says production-complete/schedulable; that activation-state contradiction requires current-code resolution. See also d49, d50, d55, and d87.
 
+
 ## Files about this domain
 
-28 tracked files name this domain.
+24 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A33_A34_RE_EXHAUSTION_20260719.md`
-- `extractor/documents/dossiers/A33_A34_WAVE3_WRITER_DEVIRTUALIZATION_20260720.md`
-- `extractor/documents/dossiers/A33_SUNK_SHIP_ACTIVATION_AUTOMATION_20260720.md`
+- `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
+- `extractor/documents/domains/d50_naval_combat_members_live.md`
+- `extractor/documents/domains/d86_sunk_ship_history_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (7) — mergeable
+### Data evidence (3) — mergeable
 
-- `extractor/documents/dossiers/A33_A34_PRODUCTION_FIXTURE_CARDS.json`
-- `extractor/documents/dossiers/A33_A34_WAVE3_PROMOTION_SEEDS_20260720.json`
-- `extractor/documents/dossiers/A33_SUNK_SHIP_ACTIVATION_AUTOMATION_20260720.json`
-- `extractor/documents/dossiers/A33_XUI20_COMBAT_DETAIL_LOSSES.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 

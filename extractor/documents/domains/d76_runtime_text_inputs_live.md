@@ -12,25 +12,23 @@
 
 ## Files about this domain
 
-32 tracked files name this domain.
+30 tracked files name this domain.
 
-### Prose evidence (4) — mergeable
+### Prose evidence (6) — mergeable
 
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d75_fired_event_popups_live.md`
+- `extractor/documents/domains/d76_runtime_text_inputs_live.md`
 - `extractor/documents/dossiers/A39/H_A39_PREREQUISITE_ENGINEERING_20260720.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (4) — mergeable
 
-- `extractor/documents/dossiers/A25_RUNTIME_TEXT_INPUTS.json`
-- `extractor/documents/dossiers/A39/CAPTURE_CARDS.json`
-- `extractor/documents/dossiers/A39/GHIDRA_FINDINGS.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/dossiers/A39_XUI17_CHARACTER_PRESENTATION_INPUTS.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `replay_interface/re_evidence/rendering_laws/XUI21/H_POPUP_AUTONOMOUS_CLOSEOUT_20260720.json`
 
 ### Code (20)
 

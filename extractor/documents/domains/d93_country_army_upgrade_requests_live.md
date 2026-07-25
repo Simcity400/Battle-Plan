@@ -12,16 +12,20 @@
 
 ## Files about this domain
 
-15 tracked files name this domain.
+19 tracked files name this domain.
 
-### Prose evidence (3) — mergeable
+### Prose evidence (6) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
+- `extractor/documents/domains/d39_air_variant_upgrades.md`
+- `extractor/documents/domains/d40_stockpile_variant_upgrades.md`
+- `extractor/documents/domains/d93_country_army_upgrade_requests_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (2) — mergeable
+### Data evidence (3) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 

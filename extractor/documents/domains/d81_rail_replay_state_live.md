@@ -12,7 +12,7 @@
 
 ## Files about this domain
 
-33 tracked files name this domain.
+28 tracked files name this domain.
 
 ### Pinned evidence (3) — byte-exact, do not merge
 
@@ -22,34 +22,29 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 
-### Prose evidence (8) — mergeable
+### Prose evidence (9) — mergeable
 
-- `documents/REMAINING_WORK.md`
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_REPORT_20260720.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d74_power_balance_presentation_live.md`
+- `extractor/documents/domains/d81_rail_replay_state_live.md`
 - `extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (6) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json`
 - `extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.json`
-- `extractor/documents/dossiers/D81_RETAINED_F4_GPU_CLOSEOUT_20260721.json`
-- `extractor/documents/dossiers/D81_SUPPLY_HUB_VISUAL_LAW_STATIC_DISASSEMBLY_20260720.json`
-- `extractor/documents/dossiers/D81_WAVE6_D80_PRODUCTION_JOIN_20260721.json`
-- `extractor/documents/dossiers/D81_WAVE6_RAIL_SUPPLY_MAP_SELECTOR_20260721.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `replay_interface/re_evidence/rendering_laws/C07/C07_G1_TREE_BUILDING_RAIL_CLOSEOUT_20260720.json`
 
-### Code (12)
+### Code (10)
 
-- `extractor/documents/rebuild_wave2_exact10_reconciliation.py`
-- `extractor/documents/verify_wave2_exact10_reexport_receipt.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/rail_replay.rs`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`

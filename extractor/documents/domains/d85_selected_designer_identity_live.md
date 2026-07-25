@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 UI owner `0x140B52390` stores division at `+0x250` and equipment modes 0/1/2 at `+0x258/+0x260/+0x268`. Mode 0 covers both equipment and ship; invented modes 0/3 are forbidden. Classifiers `0x140C88440` (mask `0x80004003C1`) and `0x140C884B0` (category bit 19) distinguish them.
 
 Division rows from `0x141756C40` carry owner `+0x520` and `CReferencedDivisionTemplate* +0x528`. The chain `0x141490EA0 -> 0x1417506D0 -> 0x1417506F0 -> 0x14167AEE0` commits the clicked template to handler `+0x8D0` and template `+0x18` to `+0x8D8`; getter `0x1416796F0` returns `+0x8D0`. Admission requires that committed pointer to equal the clicked argument.
@@ -33,33 +34,27 @@ Authority manifests: `6dff47e4fae1f9d3aeabb63ac7e9a9cc13a27c429d5e217d686311d5a3
 
 See also d78.
 
+
 ## Files about this domain
 
-27 tracked files name this domain.
+25 tracked files name this domain.
 
-### Pinned evidence (1) — byte-exact, do not merge
+### Prose evidence (9) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json` — `718230760b4ab81b`
-
-### Prose evidence (8) — mergeable
-
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A40/A40_WAVE5_STATIC_CAPTURE_REGRADER_CLOSEOUT_20260720.md`
-- `extractor/documents/dossiers/A40/H_A40_DESIGNERS_PREREQUISITE_CLOSEOUT_20260720.md`
+- `extractor/documents/domains/d59_templates_equipment_catalog_live.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d78_design_catalog_context_live.md`
+- `extractor/documents/domains/d85_selected_designer_identity_live.md`
 - `extractor/documents/dossiers/A40/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (6) — mergeable
+### Data evidence (4) — mergeable
 
-- `extractor/documents/dossiers/A40/H_A40_DESIGNERS_EXACT20_REEXPORT_REQUEST_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_DESIGNERS_PREREQUISITE_RE_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_SELECTED_DESIGNER_LIVE_FIXTURE_REQUIREMENTS_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_SELECTED_DESIGNER_LIVE_SOURCE_ENGINEERING_20260720.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
+- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 

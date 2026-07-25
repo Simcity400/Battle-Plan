@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 The static decisions catalog is keyed by decision id and carries category, localization key/name, icons, political-power cost, target metadata, cooldown/removal fields, visibility/availability metadata, `fire_only_once`, and exact source-file bytes/SHA-256. Missing/corrupt static data fails only the definition join; it is not evidence that live decision state failed.
 
 The validated live target slice is `CDecisionStatus+0xE8` active targeted-timed records. Exact-a729 country-target records require vtable RVA `0x27D5038`, definition pointer `record+0x10`, and nonzero bounded country `tag_db_id` at `record+0x20`. The retained sample contains 3,384 targeted-timed rows, of which 1,061 country-target rows across 180 tokens matched save/live exactly. Numeric state/province target ids, cooldowns, days/body fields, and unmatched transitions remain out of scope and must not be recast as country targets.
@@ -20,11 +21,12 @@ Each compact target row has the fixed fields `owner_tag_db_id, target_id, flags,
 
 The coordinated compact header migration uses twelve `u32` words (48 bytes): target count at byte 0, reserved-zero flags at 4, depth status at 8, then focus/research/status/event and observed counts, with badge count at 44. Mixed old/new collector and recorder binaries will misread the first eight bytes and are invalid.
 
+
 ## Files about this domain
 
-159 tracked files name this domain.
+85 tracked files name this domain.
 
-### Pinned evidence (15) — byte-exact, do not merge
+### Pinned evidence (8) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
@@ -33,18 +35,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
-- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json` — `718230760b4ab81b`
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (23) — mergeable
+### Prose evidence (25) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -53,92 +48,50 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/archive/CODEX_DISPATCH_QUEUE.md`
 - `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/archive/FINAL_SWEEP_RESULTS_2026-07-04.md`
-- `extractor/documents/dossiers/A34_WAVE4_HOOK_ENGINEERING_20260720.md`
-- `extractor/documents/dossiers/W12B_EVENTS_DECISIONS_SCOPE.md`
-- `extractor/documents/dossiers/W12B_FOLD_WAVE1.md`
-- `extractor/documents/dossiers/W12C_FOLD_WAVE2.md`
-- `extractor/documents/dossiers/W12C_RE_WAR_DECISIONS.md`
-- `extractor/documents/dossiers/W12_LIBRS_PAIRS.md`
-- `extractor/documents/dossiers/W12_PASS2_RESULTS.md`
-- `extractor/documents/dossiers/W12_X11_EXPECTED_PARTIAL_FOLD_AUDIT.md`
-- `extractor/game_defs/static_packets/decisions_static/STATIC_PACKET.md`
+- `extractor/documents/domains/d10_fuel_live.md`
+- `extractor/documents/domains/d12_focus_live.md`
+- `extractor/documents/domains/d13_tech_live.md`
+- `extractor/documents/domains/d16_decisions_live.md`
+- `extractor/documents/domains/d17_diplomacy_live.md`
+- `extractor/documents/domains/d18_country_identity.md`
+- `extractor/documents/domains/d26_division_equipment_live.md`
+- `extractor/documents/domains/d44_supply_logistics_attrition_live.md`
+- `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
+- `extractor/documents/domains/d60_capitulation_war_state_live.md`
+- `extractor/documents/domains/d66_occupation_state_extras_live.md`
+- `extractor/documents/domains/d87_decision_panel_live.md`
+- `extractor/documents/domains/d89_national_focus_presentation_live.md`
 - `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
-- `extractor/native/lanes/event_timeline_change_log_live/EVENT_STATE_DERIVABILITY.md`
 - `extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md`
 - `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
-- `extractor/native/lanes/focus_research_decisions_depth_live/SLICE_PACKET.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (55) — mergeable
+### Data evidence (15) — mergeable
 
-- `extractor/coverage_audit/atlas_registry_snapshot.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE2_EXACT10_JOB_BINDINGS_20260720.json`
 - `extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json`
-- `extractor/documents/dossiers/A31_NATIONAL_FOCUS_PRESENTATION_INPUTS.json`
-- `extractor/documents/dossiers/A34_XUI19_DECISION_PANEL_INPUTS.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
+- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/documents/production_promotion/contract.json`
-- `extractor/documents/production_promotion/manifest.json`
 - `extractor/documents/production_promotion/verification.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/native/lanes/characters_leaders_cabinet_live/integration_packet.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_EVIDENCE.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/A31_ACQUISITION_OWNER_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/A31_FRAME_ORDER_AND_FIXTURE_MATRIX_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/DIRECT_EVENT_HOOK_RE_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_D89_PRODUCTION_WIRING_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_EXACT10_REEXPORT_REQUEST_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_EXACT20_CONSOLIDATED_AUTHORITY_20260720.json`
-- `extractor/native/lanes/focus_research_decisions_depth_live/H_A31_FOCUS_ITEM_OWNER_PRODUCER_RE_20260720.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_PAUSED_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_v2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_layer2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_prevalidate_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_speed5_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_sweep10_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pa_baseline_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pb_before_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/prew0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/rfd_war_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_deep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n4_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n6_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w11_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w12_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w2_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_off_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_on_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_tight_off_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_s2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_war_manifest.json`
-- `extractor/native/runs/v1_acceptance_20260706/smoke_paused/native_session_manifest.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
-- `replay_interface/re_evidence/rendering_laws/XUI10/production_contract.json`
-- `replay_interface/re_evidence/rendering_laws/XUI19/promotion_contract.json`
-- `replay_interface/re_evidence/rendering_laws/XUI19/retained_evidence.json`
-- `replay_interface/re_evidence/rendering_laws/XUI19/verification.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (66)
+### Code (37)
 
-- `extractor/documents/build_wave2_consumer_rewrite_ledger.py`
-- `extractor/documents/production_promotion/verify_promotion.py`
 - `extractor/memory_reader/combat/naval_combat_slot_ready_packet.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/a31_focus_canvas_join.rs`
 - `extractor/native/compact_contract/src/lib.rs`
-- `extractor/native/lanes/air_wings_variants_lifecycle_live/slot_integration_anchor_gate.py`
-- `extractor/native/lanes/air_wings_variants_lifecycle_live/test_slot_integration_anchor_gate.py`
 - `extractor/native/lanes/decision_panel_live/src/a729_hook.rs`
 - `extractor/native/lanes/diplomacy_intel_operatives_live/domain44_compact.rs`
 - `extractor/native/lanes/direct_frd_transitions_live/src/a729_hook.rs`
@@ -153,22 +106,10 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/focus_research_decisions_depth_live/src/bin/proof_from_stream.rs`
 - `extractor/native/lanes/focus_research_decisions_depth_live/src/lib.rs`
 - `extractor/native/lanes/focus_research_decisions_depth_live/src/national_focus_presentation.rs`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/analyze_decision_body_candidates.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/analyze_decision_variant_candidates.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/analyze_residual_blockers.py`
 - `extractor/native/lanes/focus_research_decisions_depth_live/tools/capture_a31_fixture_pair.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_current_roots.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_decision_numeric_target_save_oracle.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_decision_target_save_oracle.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_event_hook_candidates.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_event_hook_static_contracts.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_focus_pause_candidates.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_focus_pause_static_gap_candidates.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/probe_focus_pause_wide_candidates.py`
 - `extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_acquisition_receipt.py`
 - `extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_autonomous_admission.py`
 - `extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_fixture_matrix.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/watch_focus_pause_fixture.py`
 - `extractor/native/lanes/scripted_state_flags_variables_live/slot_ready_integration_packet.rs`
 - `extractor/native/recorder_host/src/auto_attach/proof.rs`
 - `extractor/native/recorder_host/src/main.rs`
@@ -179,20 +120,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Invoke-X10DirectTransitionOwnerFixture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/native/scripts/c0_pass2_spans.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/validation_759f/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_atomic_backup_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_base_8791cf82.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_old_canonical_712060_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/game_ui/src/national_focus.rs`
 - `replay_interface/native/game_ui/tests/xui18_power_balance.rs`
 - `replay_interface/native/replay_core/src/frd_depth.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI19/build_xui19.py`
-- `replay_interface/re_evidence/rendering_laws/XUI19/verify_xui19.py`

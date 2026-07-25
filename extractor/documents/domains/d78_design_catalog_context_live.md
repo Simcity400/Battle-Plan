@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 d78 is the same-hour admission context for the live design catalogue. A sealed census contained `5,281` variants, `1,126` templates, and `440` countries, but one hour is not temporal evidence.
 
 The producer repeats a whole-sweep census and double-reads the game date, tag/country registries, every country A/B/template vector, every definition/lifecycle field, and both heap censuses.
@@ -19,46 +20,33 @@ The producer repeats a whole-sweep census and double-reads the game date, tag/co
 Portable v3 keeps complete pointer-free native rows, then emits upserts and absence-derived tombstones with exact hourly order. Replay requires `D78.frame_hour == replay frame`; missing/cross-hour joins reject.
 
 
+
 ## Files about this domain
 
-46 tracked files name this domain.
-
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json` — `718230760b4ab81b`
-- `replay_interface/native/game_ui/src/design_catalog.rs` — `27f0c6a1fd5c9e6d`
-- `replay_interface/re_evidence/rendering_laws/XUI13/promotion_contract.json` — `889a57ad5f9cf1cb`
+36 tracked files name this domain.
 
 ### Prose evidence (10) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A27_DESIGNER_VIEW_CONTEXT.md`
-- `extractor/documents/dossiers/A27_LIVE_CATALOG_REAUDIT_20260720.md`
-- `extractor/documents/dossiers/A40/A40_WAVE5_STATIC_CAPTURE_REGRADER_CLOSEOUT_20260720.md`
-- `extractor/documents/dossiers/A40/H_A40_DESIGNERS_PREREQUISITE_CLOSEOUT_20260720.md`
+- `extractor/documents/domains/d59_templates_equipment_catalog_live.md`
+- `extractor/documents/domains/d78_design_catalog_context_live.md`
+- `extractor/documents/domains/d85_selected_designer_identity_live.md`
+- `extractor/documents/domains/d97_peace_conference_live.md`
 - `extractor/native/lanes/design_catalog_context_live/README.md`
 - `extractor/native/lanes/design_catalog_live/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (5) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/A27_DESIGN_CATALOG_INPUTS.json`
-- `extractor/documents/dossiers/A40/A40_WAVE5_STATIC_CAPTURE_REGRADER_CLOSEOUT_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_DESIGNERS_EXACT20_REEXPORT_REQUEST_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_DESIGNERS_PREREQUISITE_RE_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_SELECTED_DESIGNER_LIVE_FIXTURE_REQUIREMENTS_20260720.json`
-- `extractor/documents/dossiers/A40/H_A40_SELECTED_DESIGNER_LIVE_SOURCE_ENGINEERING_20260720.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
+- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/native/lanes/design_catalog_live/H_A27_TEMPORAL_CENSUS_20260720.json`
 
-### Code (22)
+### Code (21)
 
 - `extractor/documents/dossiers/A40/verify_a40_design_peace_live_fixture.py`
 - `extractor/native/Cargo.toml`
@@ -77,8 +65,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
+- `replay_interface/native/game_ui/src/design_catalog.rs`
 - `replay_interface/native/game_ui/src/production_renderer.rs`
 - `replay_interface/native/game_ui/tests/xui13_design_catalog.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI13/build_xui13.py`
-- `replay_interface/re_evidence/rendering_laws/XUI27/verify_xui27.py`

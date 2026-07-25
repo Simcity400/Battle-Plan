@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 The build gate is `hoi4.exe` SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
 the probe fails nonzero when the process is absent or the hash differs.
@@ -53,11 +54,12 @@ therefore differ even when decoded rows do not.
 
 See also d47, d48, d51, and d53.
 
+
 ## Files about this domain
 
-114 tracked files name this domain.
+63 tracked files name this domain.
 
-### Pinned evidence (14) — byte-exact, do not merge
+### Pinned evidence (7) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
@@ -65,81 +67,44 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI16/evidence_manifest.json` — `79d3d386edc4ed44`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (17) — mergeable
+### Prose evidence (16) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
-- `extractor/documents/dossiers/W12C_FOLD_WAVE2.md`
-- `extractor/native/fold_packets/chunk1/FOLD_PACKET.md`
-- `extractor/native/lanes/army_battleplans_depth_live/INTEGRATION_PACKET.md`
+- `extractor/documents/domains/d23_map_detail_live.md`
+- `extractor/documents/domains/d44_supply_logistics_attrition_live.md`
+- `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`
+- `extractor/documents/domains/d55_land_combat_detail_events_live.md`
+- `extractor/documents/domains/d56_naval_missions_status_live.md`
+- `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/GARRISON_RESIDUAL_ANALYSIS.md`
-- `extractor/native/lanes/occupation_resistance_compliance_live/PROBE_RUNSHEET.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/README.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/replay_verify/README.md`
-- `extractor/native/runs/perf_rearch_20260706/CODEX_PREFETCH_KNOB_VERDICT.txt`
-- `extractor/native/runs/perf_rearch_20260706/CODEX_SUB50_PLAN_VERDICT.txt`
-- `extractor/native/runs/perf_rearch_20260706/CODEX_W0_T1_VERDICT.txt`
 - `extractor/native/runs/perf_rearch_20260706/W0_AB_RESULTS.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (37) — mergeable
+### Data evidence (10) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/A35_OCCUPATION_GARRISON_UI_INPUTS.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/occupation_resistance_compliance_live/GARRISON_SCALAR_STATIC_COMPLETION_20260719.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_PAUSED_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_d53fix_v2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_layer2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_prevalidate_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_speed5_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/p2b_live_sweep10_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pa_baseline_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/pb_before_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/prew0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/rfd_war_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_deep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n0_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n4_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/sweep_n6_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_deep_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w0_live_b_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w11_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w12_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w2_deep_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_off_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_on_a_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w30_tight_off_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_s2_manifest.json`
-- `extractor/native/runs/perf_rearch_20260706/w3a0_war_manifest.json`
-- `extractor/native/runs/v1_acceptance_20260706/smoke_paused/native_session_manifest.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
-- `replay_interface/re_evidence/rendering_laws/XUI16/promotion_contract.json`
-- `replay_interface/re_evidence/rendering_laws/XUI16/verification.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (46)
+### Code (30)
 
-- `extractor/documents/bind_wave2_unowned_consumer_metadata.py`
-- `extractor/documents/build_wave2_consumer_rewrite_ledger.py`
 - `extractor/memory_reader/occupation/probe_garrison_candidates_870ebf.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -160,7 +125,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/occupation_resistance_compliance_live/replay_verify/src/main.rs`
 - `extractor/native/lanes/occupation_resistance_compliance_live/src/a729_garrison_alert.rs`
 - `extractor/native/lanes/occupation_resistance_compliance_live/src/lib.rs`
-- `extractor/native/lanes/occupation_resistance_compliance_live/test_live_probe_stream.py`
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
@@ -168,19 +132,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Invoke-CentralRustValidation.ps1`
 - `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/validation_759f/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_atomic_backup_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_base_8791cf82.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_old_canonical_712060_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI16/build_xui16_evidence.py`
 - `replay_interface/re_evidence/rendering_laws/XUI16/verify_a35_live_fixture.py`
-- `replay_interface/re_evidence/rendering_laws/XUI16/verify_xui16.py`

@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 D74/PBP2 is an optional typed semantic companion. Exact visible power-balance
 pixels belong to the authenticated selected-Present UI carrier; absence of d74
 must remain explicit and must not be replaced by a semantic reconstruction.
@@ -21,68 +22,55 @@ acquisition law.
 See also d11, d12, d24, d41, d50, d55, d56, d57, d65, d71, d72, d75, d80,
 d81, and d87.
 
+
 ## Files about this domain
 
-72 tracked files name this domain.
+51 tracked files name this domain.
 
-### Pinned evidence (11) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json` — `718230760b4ab81b`
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI18/manifest.json` — `1008e426cc0dc1b4`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (8) — mergeable
+### Prose evidence (10) — mergeable
 
-- `documents/REMAINING_WORK.md`
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
+- `extractor/documents/domains/d67_country_dynamic_modifiers_live.md`
+- `extractor/documents/domains/d71_dynamic_collection_trace_live.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/dossiers/A37/A28_DECISION_GRID_MATERIALIZATION_JOIN_20260720.md`
 - `extractor/documents/dossiers/A37/NON_GHIDRA_CLOSURE.md`
 - `extractor/documents/dossiers/A37/SELECTED_PRESENT_ORDERING_EXHAUSTION_20260720.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (27) — mergeable
+### Data evidence (19) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
+- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/documents/dossiers/A37/A28_DECISION_GRID_MATERIALIZATION_JOIN_20260720.json`
 - `extractor/documents/dossiers/A37/GHIDRA_LEDGER.json`
 - `extractor/documents/dossiers/A37/H_A37_PORTABLE_ASSET_ROLE_MAPPING_20260720.json`
 - `extractor/documents/dossiers/A37/SOURCE_CENSUS.json`
 - `extractor/documents/dossiers/A37/manifest.json`
-- `extractor/documents/dossiers/A37/verification.json`
 - `extractor/documents/dossiers/A37_XUI18_POWER_BALANCE_INPUTS.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_AUTONOMOUS_MATRIX_EVIDENCE_RECEIPT_20260722.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_AUTONOMOUS_MATRIX_RUNNER_20260722.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_CONTROLLER_PRODUCER_RE_20260720.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_CURRENT_COUNTRY_LIFECYCLE_RE_20260721.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_D04_SAVE_ORACLE_20260721.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_EXACT10_REEXPORT_REQUEST_20260720.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_EXACT20_AUTHORITY_RECEIPT_20260720.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_LIVE_CURRENT_COUNTRY_LIFECYCLE_20260721.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/power_balance_presentation_live/H_A37_LIVE_FIXTURE_OWNER_20260721.json`
-- `extractor/native/lanes/power_balance_presentation_live/H_A37_PANEL_OPEN_VISIBILITY_RE_20260720.json`
 - `extractor/native/lanes/power_balance_presentation_live/H_A37_PROMOTION_ACQUISITION_RUNNER_20260722.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
-- `replay_interface/re_evidence/rendering_laws/XUI18/promotion_contract.json`
-- `replay_interface/re_evidence/rendering_laws/XUI18/verification.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
+- `replay_interface/re_evidence/rendering_laws/XUI18/manifest.json`
 
-### Code (26)
+### Code (19)
 
 - `extractor/documents/dossiers/A37/verify_a37.py`
 - `extractor/native/Cargo.toml`
@@ -99,14 +87,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Invoke-A37PromotionAcquisition.ps1`
 - `extractor/native/scripts/Verify-HumanInputRegister.py`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
 - `replay_interface/native/game_ui/tests/xui18_power_balance.rs`
 - `replay_interface/native/replay_app/src/power_balance_runtime.rs`
 - `replay_interface/native/replay_app/src/recorded_ui_owner.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI18/build_manifest.py`
-- `replay_interface/re_evidence/rendering_laws/XUI18/build_xui18.py`
-- `replay_interface/re_evidence/rendering_laws/XUI18/verify_xui18.py`
-- `replay_interface/re_evidence/rendering_laws/XUI27/verify_xui27.py`

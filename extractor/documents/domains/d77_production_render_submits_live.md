@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 D77 is an authenticated supplemental carrier, not an ordinary scheduled
 domain. It is admitted only with H4CT early-launch authority, must provide one
 JSON frame per completed hour, and must not manufacture a perf row. The frame
@@ -52,11 +53,12 @@ unavailable.
 
 See also d57 and d80.
 
+
 ## Files about this domain
 
-56 tracked files name this domain.
+41 tracked files name this domain.
 
-### Pinned evidence (5) — byte-exact, do not merge
+### Pinned evidence (4) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
@@ -64,38 +66,25 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 - `replay_interface/re_evidence/rendering_laws/C02/INTEGRATION_STATUS.md` — `b9b23f2405964d16`
-- `replay_interface/re_evidence/rendering_laws/PRODUCTION_NON_UI_PROMOTION/promotion_contract.json` — `cc122b379ae96336`
 
-### Prose evidence (8) — mergeable
+### Prose evidence (6) — mergeable
 
-- `documents/SEAM_CONTRACTS.md`
-- `documents/STATUS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_REPORT_20260720.md`
-- `extractor/documents/dossiers/A32_AUTONOMOUS_POINTER_ACQUISITION.md`
-- `extractor/documents/dossiers/WAVE5_EARLY_LAUNCH_MODSET_SINK_CLOSEOUT_20260720.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d77_production_render_submits_live.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (15) — mergeable
+### Data evidence (5) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json`
-- `extractor/documents/dossiers/A32_DISPLAY_LANGUAGE_INPUT_VARIANTS.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/native/lanes/production_render_catalog_live/RECORDED_INPUT_VARIANT_AUTHORITY_V1.json`
-- `replay_interface/re_evidence/rendering_laws/C03/C03_RAW_EVENT_PRODUCER_CENSUS_20260719.json`
-- `replay_interface/re_evidence/rendering_laws/C03/camera_event_law.json`
-- `replay_interface/re_evidence/rendering_laws/C07/WAVE6_S1_SELECTED_SUBMIT_PRODUCER_RE_20260721.json`
-- `replay_interface/re_evidence/rendering_laws/XN15L/human_input_requirements.json`
-- `replay_interface/re_evidence/rendering_laws/XN15L/manifest.json`
-- `replay_interface/re_evidence/rendering_laws/XUI25/corpus_disposition.json`
-- `replay_interface/re_evidence/rendering_laws/XUI25/manifest.json`
-- `replay_interface/re_evidence/rendering_laws/XUI27/human_input_requirements.json`
-- `replay_interface/re_evidence/rendering_laws/capture_harness/specs/XUI27.json`
 
-### Code (28)
+### Code (26)
 
 - `extractor/native/collector/src/duplex_client.rs`
 - `extractor/native/compact_contract/src/early_render_content_manifest.rs`
@@ -122,6 +111,4 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XN14Q/verify_xn14q_same_session.py`
 - `replay_interface/re_evidence/rendering_laws/XN15L/verify_xn15l_composed.py`
 - `replay_interface/re_evidence/rendering_laws/XN15L/verify_xn15l_live.py`
-- `replay_interface/re_evidence/rendering_laws/XUI25/verify_xui25.py`
-- `replay_interface/re_evidence/rendering_laws/XUI27/verify_xui27.py`
 - `replay_interface/re_evidence/rendering_laws/XUI27/verify_xui27_same_present_acquisition.py`

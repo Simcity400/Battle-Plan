@@ -12,21 +12,21 @@
 
 ## Files about this domain
 
-15 tracked files name this domain.
+13 tracked files name this domain.
 
-### Prose evidence (2) — mergeable
+### Prose evidence (3) — mergeable
 
 - `extractor/documents/RE_REMAINING.md`
+- `extractor/documents/domains/d92_country_preferred_tactic_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (4) — mergeable
+### Data evidence (3) — mergeable
 
-- `extractor/documents/dossiers/A35_OCCUPATION_GARRISON_UI_INPUTS.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `replay_interface/re_evidence/rendering_laws/XUI16/verification.json`
 
-### Code (9)
+### Code (7)
 
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
@@ -35,5 +35,3 @@
 - `replay_interface/native/game_ui/src/preferred_tactic.rs`
 - `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI16/build_xui16_evidence.py`
-- `replay_interface/re_evidence/rendering_laws/XUI16/verify_xui16.py`

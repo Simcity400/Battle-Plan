@@ -12,51 +12,48 @@
 
 ## Files about this domain
 
-59 tracked files name this domain.
+44 tracked files name this domain.
 
-### Pinned evidence (9) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json` — `ee5d2b708e376e42`
-- `extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json` — `300d00442f9cad5f`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `extractor/re_evidence/X4_P5/oracle_a729/production.json` — `1da2675526554e18`
 - `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json` — `dc15b16cd0e4d96d`
-- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json` — `523b3b86b33b7bbb`
-- `replay_interface/re_evidence/rendering_laws/XUI19/save_persistence_fixture.json` — `fb83be864caf3661`
 
-### Prose evidence (13) — mergeable
+### Prose evidence (15) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
 - `extractor/documents/archive/native_lanes/army_oob_orders_battleplans_live/ARMY_BATTLEPLANS_DEPTH_REGISTRATION_PLAN.md`
-- `extractor/documents/dossiers/W12B_FOLD_WAVE1.md`
-- `extractor/documents/dossiers/W12C_FOLD_WAVE2.md`
-- `extractor/documents/dossiers/W12_LIBRS_PAIRS.md`
-- `extractor/documents/dossiers/W12_X11_EXPECTED_PARTIAL_FOLD_AUDIT.md`
-- `extractor/documents/dossiers/W13_RESIDUAL_COMBAT_PROJECT_RE.md`
+- `extractor/documents/domains/d10_fuel_live.md`
+- `extractor/documents/domains/d17_diplomacy_live.md`
+- `extractor/documents/domains/d20_divisions_live.md`
+- `extractor/documents/domains/d21_land_combats_live.md`
+- `extractor/documents/domains/d26_division_equipment_live.md`
+- `extractor/documents/domains/d28_oob_command_live.md`
+- `extractor/documents/domains/d34_air_base_status_live.md`
+- `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/fold_packets/chunk2/FOLD_PACKET.md`
 - `extractor/native/lanes/army_oob_orders_battleplans_live/README.md`
 
-### Data evidence (9) — mergeable
+### Data evidence (10) — mergeable
 
-- `extractor/documents/dossiers/A39/CAPTURE_CARDS.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/dossiers/A39_XUI17_CHARACTER_PRESENTATION_INPUTS.json`
 - `extractor/memory_reader/oob_command_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
-- `extractor/re_evidence/X4_DEPLOYMENT_QUEUES/cross_version/deployment_por1936_b49d.json`
-- `replay_interface/re_evidence/rendering_laws/XUI17/production_contract.json`
+- `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
+- `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (28)
+### Code (16)
 
 - `extractor/live_capture/collector_oob_command_bridge.py`
 - `extractor/live_capture/registry.py`
@@ -69,20 +66,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/validation_759f/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_formatted_4aa84f2b.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_all_43_unformatted_c0338b76.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_atomic_backup_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_base_8791cf82.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_9f9ea065.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_caf86732.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_concurrent_post_recovery_ddbcc3ee.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_old_canonical_712060_05b011d1.rs`
-- `extractor/re_evidence/RECOVERY_20260717/world_fold_20260717_a14/world_fold_recovered_compiled_6b923ad5.rs`
 - `replay_interface/native/game_ui/src/character_ui.rs`
 - `replay_interface/native/replay_core/src/world.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
 - `replay_interface/replay/schema.py`
 - `replay_interface/replay/tests/test_schema.py`
-- `replay_interface/replay/wave4_schema.py`

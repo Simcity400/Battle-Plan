@@ -12,37 +12,39 @@
 
 ## Condensed knowledge
 
+
 The listed source contributes only one d90-specific durable fact: the positive
 and control branches and `CTA2` regrade are mechanically executable optional
 regression evidence. They require no human semantic attribution and cannot
 promote an inferred value or descriptive screenshot.
 
+
 ## Files about this domain
 
-27 tracked files name this domain.
+26 tracked files name this domain.
 
-### Prose evidence (9) — mergeable
+### Prose evidence (11) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/HUMAN_DEPENDENCY_RECLASSIFICATION_20260721.md`
+- `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
+- `extractor/documents/domains/d50_naval_combat_members_live.md`
+- `extractor/documents/domains/d70_sunk_convoy_history_live.md`
+- `extractor/documents/domains/d90_convoy_transport_attack_live.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
 - `extractor/native/lanes/naval_missions_status_live/README.md`
 - `extractor/native/lanes/supply_logistics_attrition_live/README.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_MINIMAL_LIVE_CAPTURE.md`
 - `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (6) — mergeable
+### Data evidence (4) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/D90_PRODUCTION_PROMOTION_20260722.json`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_ROUTE_SOURCE_CLOSEOUT_20260720.json`
 
-### Code (12)
+### Code (11)
 
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
@@ -50,7 +52,6 @@ promote an inferred value or descriptive screenshot.
 - `extractor/native/lanes/naval_combat_live/src/convoy_terminal_runtime.rs`
 - `extractor/native/lanes/naval_combat_live/src/convoy_transport_attack.rs`
 - `extractor/native/lanes/naval_combat_live/src/lib.rs`
-- `extractor/native/lanes/naval_missions_status_live/naval_missions_status_probe.py`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/scripts/c0_domain_census.py`

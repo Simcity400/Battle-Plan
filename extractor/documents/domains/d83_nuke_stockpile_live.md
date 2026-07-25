@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 The exact-a729 source is bound to executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 Collection starts from the authenticated, double-stable complete country
@@ -32,27 +33,24 @@ total and typed d83 rows.
 
 See also d18.
 
+
 ## Files about this domain
 
-27 tracked files name this domain.
+23 tracked files name this domain.
 
 ### Prose evidence (5) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/dossiers/A17_A18_A20_A23_X9_CLOSEOUT_20260719.md`
-- `extractor/documents/dossiers/A17_D83_PRODUCTION_INTEGRATION_20260720.md`
-- `extractor/documents/dossiers/A17_NUKE_STOCKPILE_REAUDIT_20260720.md`
+- `extractor/documents/domains/d63_country_core_scalars_live.md`
+- `extractor/documents/domains/d67_country_dynamic_modifiers_live.md`
+- `extractor/documents/domains/d83_nuke_stockpile_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (7) — mergeable
+### Data evidence (3) — mergeable
 
-- `extractor/documents/dossiers/A17_A18_A23_X9_SNOWMUD_HUMAN_INPUT.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `extractor/re_evidence/A17_NUKE_STOCKPILE/D83_LIVE_SOURCE_ACTIVATION_20260720.json`
-- `extractor/re_evidence/A17_NUKE_STOCKPILE/EXACT10_PROMOTION_REQUEST_20260720.json`
-- `extractor/re_evidence/A17_NUKE_STOCKPILE/RETAINED_REAUDIT_20260720.json`
-- `extractor/re_evidence/A17_NUKE_STOCKPILE/WAVE5_CONTAINER_COUNT_CLOSEOUT_20260720.json`
 
 ### Code (15)
 

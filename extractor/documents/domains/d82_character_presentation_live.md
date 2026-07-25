@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 Authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 CPR1 schema 3 carries exact trait/ace presentation only with the materializing
@@ -54,27 +55,28 @@ CPU identity/context join.
 
 See also d46 and d47.
 
+
 ## Files about this domain
 
 30 tracked files name this domain.
 
-### Prose evidence (9) — mergeable
+### Prose evidence (10) — mergeable
 
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A39/AUTONOMOUS_ACQUISITION.md`
+- `extractor/documents/domains/d46_air_variant_archetypes_live.md`
+- `extractor/documents/domains/d47_characters_leaders_cabinet_live.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d76_runtime_text_inputs_live.md`
+- `extractor/documents/domains/d82_character_presentation_live.md`
 - `extractor/documents/dossiers/A39/H_A39_PREREQUISITE_ENGINEERING_20260720.md`
-- `extractor/documents/dossiers/A39/WAVE5_PRODUCTION_REREAD_AND_ADMISSION_HARDENING_20260720.md`
-- `extractor/documents/dossiers/A39/WAVE5_SELECTED_CONTEXT_AND_HOUR_CLOSEOUT_20260720.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (5) — mergeable
+### Data evidence (4) — mergeable
 
-- `extractor/documents/dossiers/A39/GHIDRA_FINDINGS.json`
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/dossiers/A39_XUI17_CHARACTER_PRESENTATION_INPUTS.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 

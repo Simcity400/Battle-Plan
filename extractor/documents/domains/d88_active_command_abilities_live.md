@@ -12,6 +12,7 @@
 
 ## Condensed knowledge
 
+
 Exact-a729 authority is bound to executable SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`. The exact owner is `CAbilityListWindow*` at battle-plan controller `+0x1C8`; `0x1416CD1E0` calls refresh `0x141D072F0`. Definition source order is vector `+0x718/+0x724`, and row-widget order is `+0x70/+0x7C`; counts, headers, bodies, definitions, and nested leader capacities must double-read consistently.
 
 Ordinary rows use `0x1406F3370` for active/cooldown/activation elapsed and `0x1406D0DE0` for final availability; special context is `definition+0x2E9`. Field-marshal rows use `0x68` aggregate records from `0x141D04000`; nested `0x28` leader rows carry the exact five-state enum, remaining time, costs, allocation, and ordered elapsed values. Row active state is direct-group-active or nonzero equality of active and candidate leaders. Cooldown exists only when no leader is available and at least one cools down.
@@ -22,44 +23,29 @@ Measured empty requires the `0x140B58CA0` early-return decision to be false, sta
 
 ABA2 wraps pointer-free ABL1 and requires exact executable/function authority, identical inner/outer hour and elapsed-wall identity, zero status for exact data, and complete row/timer/target/text/order joins. Unknown flags, malformed or pointer-like identities, missing receipt, or trailing bytes reject the whole payload. Although the registry now labels d88 production-complete, the listed source explicitly says its four activation gates were not all true and the transition fixture matrix was absent; this status/source contradiction must be resolved from current code before assuming live scheduling. See also d47.
 
+
 ## Files about this domain
 
-41 tracked files name this domain.
+31 tracked files name this domain.
 
-### Pinned evidence (1) — byte-exact, do not merge
+### Prose evidence (6) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json` — `718230760b4ab81b`
-
-### Prose evidence (8) — mergeable
-
-- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/dossiers/A36/ABILITY_LIST_HOOK_ENGINEERING_20260720.md`
-- `extractor/documents/dossiers/A36/DISABLED_REASON_OBSERVER_CLOSEOUT_20260720.md`
-- `extractor/documents/dossiers/A36/PRODUCTION_WIRING_CLOSEOUT_20260720.md`
+- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
+- `extractor/documents/domains/d88_active_command_abilities_live.md`
 - `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (5) — mergeable
 
+- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/documents/dossiers/A36/ABILITY_LIST_HOOK_ENGINEERING_20260720.json`
-- `extractor/documents/dossiers/A36/CAPTURE_CARDS.json`
-- `extractor/documents/dossiers/A36/DISABLED_REASON_OBSERVER_CLOSEOUT_20260720.json`
-- `extractor/documents/dossiers/A36/GHIDRA_FINDINGS.json`
-- `extractor/documents/dossiers/A36/H_A36_EXACT20_AUTHORITY_RECEIPT_20260720.json`
-- `extractor/documents/dossiers/A36/PRODUCTION_WIRING_CLOSEOUT_20260720.json`
-- `extractor/documents/dossiers/A36/WAVE6_SIGNED_COST_AND_D04_LIVE_RE_20260721.json`
-- `extractor/documents/dossiers/A36_ACTIVE_ABILITY_INPUTS.json`
-- `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`
+- `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
-- `replay_interface/re_evidence/rendering_laws/XUI23/production_contract.json`
 
-### Code (19)
+### Code (20)
 
 - `extractor/documents/dossiers/A36/verify_a36_active_ability_live_fixture.py`
 - `extractor/native/Cargo.toml`
@@ -77,6 +63,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
+- `extractor/native/scripts/map_files_to_domains.py`
 - `replay_interface/native/game_ui/src/active_abilities.rs`
 - `replay_interface/native/replay_core/src/world.rs`
 - `replay_interface/re_evidence/rendering_laws/XUI23/verify_xui23.py`
