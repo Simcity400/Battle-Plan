@@ -15,6 +15,12 @@
 
 
 
+
+
+
+
+
+
 All build-specific laws below are for exact-a729.
 
 D65 is deliberately separate from d41. D41's committed payload ends in an
@@ -79,11 +85,10 @@ evidence outside this source packet.
 
 ## Files about this domain
 
-42 tracked files name this domain.
+43 tracked files name this domain.
 
-### Prose evidence (16) — mergeable
+### Prose evidence (15) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -115,8 +120,10 @@ evidence outside this source packet.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (14)
+### Code (16)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`

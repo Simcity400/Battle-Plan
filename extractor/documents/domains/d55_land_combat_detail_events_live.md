@@ -16,14 +16,49 @@
 
 
 
-The listed source contains no durable d55 payload layout, combat-detail semantics, offsets, identities, or failure law.
+
+
+
+
+
+
+Domain 55 shares the admitted d21 `CLandCombat` snapshot and logical generation
+tracker. Its stable lifecycle identity is `(combat_id,generation)`. Phase rows
+may report started, updated, and ended; participant deltas may report joined or
+left-unclassified. A disappearance from a side vector does not distinguish
+retreat, overrun, destruction, casualty removal, or combat resolution, so
+`left` must never be upgraded to one of those outcomes without terminal
+authority.
+
+The proved pointer-free subset contains per-side counts, damage accumulators,
+progress, tactic identity, reserve-member identities in engine order, exact
+country-to-country `SDamageDone` attribution, and terminal records joined to
+the same lifecycle identity. `SDamageDone` is not manpower casualties or
+equipment loss and must not be relabelled. Current-epoch manpower loss,
+equipment loss, retreat/overrun classification, exact width, and combat
+modifiers remain unavailable unless their separately authenticated observation
+family is present. D55 does not independently carry terrain; replay may join
+the authenticated same-frame d21 terrain route. Width remains formula-grade
+unless an exact d55 observation is admitted.
+
+Terminal-writer installation is all-or-nothing across the normal writer,
+overrun writer, and allocator sentinels. Raw terminal bytes stay process-local;
+only proved pointer-free fields serialize. Dormant width/loss carriers with
+pinned code identities do not become evidence merely because their signatures
+match; their runtime transition controls must also be satisfied.
+
+Participant joins and leaves form a complete delta set whose side/division
+identities and old/new counts reconcile. Status, elapsed-time identity, and
+family row counts must agree within the admitted frame. Any mismatch leaves
+the detail family unavailable; it cannot be repaired from d21 participant
+disappearance.
 
 See also d52 and d54.
 
 
 ## Files about this domain
 
-41 tracked files name this domain.
+40 tracked files name this domain.
 
 ### Pinned evidence (2) — byte-exact, do not merge
 
@@ -32,16 +67,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 
-### Prose evidence (8) — mergeable
+### Prose evidence (6) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d55_land_combat_detail_events_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d86_sunk_ship_history_live.md`
-- `extractor/native/lanes/land_combat_detail_events_live/README.md`
 
 ### Data evidence (15) — mergeable
 
@@ -61,10 +94,11 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (16)
+### Code (17)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/land_combat_detail_events_live/Cargo.toml`

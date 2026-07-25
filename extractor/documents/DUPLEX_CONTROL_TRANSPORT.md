@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: a second H4CT named pipe controlling the injected DLL while H4CR remains the canonical data wire is not the target transport.
+
 # Duplex recorder/collector control transport
 
 **Lane:** `w12d-duplex-transport`

@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: build-870ebf reader offsets plus a two-modset live matrix and the current patch-day profile process do not satisfy the target's any-player, any-mod-set, any-DLC requirement.
+
 # Mod & game-update robustness plan (2026-07-10, user directive)
 
 **Purpose:** Define fail-closed modset binding, cross-mod validation, and a repeatable

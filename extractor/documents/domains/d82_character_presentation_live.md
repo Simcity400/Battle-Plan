@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 CPR1 schema 3 carries exact trait/ace presentation only with the materializing
@@ -61,7 +67,7 @@ See also d46 and d47.
 
 ## Files about this domain
 
-27 tracked files name this domain.
+29 tracked files name this domain.
 
 ### Prose evidence (8) — mergeable
 
@@ -81,11 +87,13 @@ See also d46 and d47.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (15)
+### Code (17)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/character_presentation_live/Cargo.toml`
 - `extractor/native/lanes/character_presentation_live/src/a729_hook.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Exact-a729 reusable anchors are:
 
 | Root/field | Value |
@@ -47,7 +53,7 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/derived_recompute_catalog.csv` — `03b6260a5083dfa9`
 
-### Prose evidence (51) — mergeable
+### Prose evidence (50) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -99,7 +105,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d72_resolved_tooltip_instances_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d75_fired_event_popups_live.md`
-- `extractor/native/lanes/country_economy_counters_live/README.md`
 
 ### Data evidence (12) — mergeable
 
@@ -116,9 +121,10 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (10)
+### Code (11)
 
 - `extractor/native/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/country_economy_counters_live/Cargo.toml`
 - `extractor/native/lanes/country_economy_counters_live/src/bin/counter_gate.rs`

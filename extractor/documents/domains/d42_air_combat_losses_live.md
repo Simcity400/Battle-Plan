@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The accepted base slice is per-wing strength/equipment change: wing identity, owner, mission mask/region, old/new plane count, count delta, old/new equipment-bank sum, equipment delta, reinforcements, losses, deletes, and generation. It does not by itself provide sortie start/end, tactical wing-versus-wing pairing, a killer wing, ace participation, or an exact reinforcement-source reason.
 
 Several plausible roots were mechanically rejected on exact-a729:
@@ -38,7 +44,7 @@ See also d11.
 
 ## Files about this domain
 
-32 tracked files name this domain.
+31 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -46,10 +52,9 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 
-### Prose evidence (13) — mergeable
+### Prose evidence (11) — mergeable
 
 - `extractor/coverage_audit/COVERAGE_REPORT.md`
-- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -60,7 +65,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d61_air_loss_stats_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
-- `extractor/native/lanes/air_combat_losses_live/README.md`
 
 ### Data evidence (11) — mergeable
 
@@ -76,8 +80,9 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (8)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/air_combat_losses_live/domain42_compact.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`

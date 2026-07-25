@@ -14,6 +14,12 @@
 
 
 
+
+
+
+
+
+
 The claim that weather is not saved and therefore has no oracle is **wrong for
 realized weather**, and it survived long enough to shape earlier design. The
 melted save persists province weather scalars (temperature, water, snow, offsets)
@@ -117,7 +123,7 @@ See also d23.
 
 ## Files about this domain
 
-43 tracked files name this domain.
+44 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -125,9 +131,8 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 
-### Prose evidence (15) — mergeable
+### Prose evidence (14) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -158,9 +163,11 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (15)
+### Code (17)
 
 - `extractor/native/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

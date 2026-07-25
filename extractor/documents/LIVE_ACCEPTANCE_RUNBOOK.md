@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the one-injected-capture-per-launch ladder, its paused proof rung, and owner-machine launch sequences are not shipped-product acceptance.
+
 # Live acceptance runbook — the remaining owner-run product gap
 
 **Purpose.** Every offline/code acceptance gate the extractor owes is merged. What is left can only
@@ -103,9 +108,9 @@ producer lands, the gate slots into the sequence named in the last column.
 | A15 MP chat/hotjoin/tag-switch (d57) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** the recorder fold now projects the four promoted A15 kinds (`Hotjoin`/`TagSwitch`/`Chat`/`SystemMessage`) under `_r2_session_multiplayer_metadata_live` (replay-boundary patch COMPLETED / PRODUCTION ADMITTED), and the `--expect-text` chat-oracle probe exists (`probe_870ebf_session_event_roots.py`, `PROBE_RUNSHEET.md`); the reject/ignore and "neither built" citations are stale. The live MP oracle run itself remains Seq 5's job | `RE_REMAINING.md` A15; `production_promotion/contract.json` A15 packet; `domains/d57_session_multiplayer_metadata_live.md` | Seq 5 (live grading only) |
 | CID1 all arms (L0, S1–S4, D1–D2, M1–M3) | **STATIC PRODUCT ROUTE DONE; LIVE EVIDENCE OWED.** The owner-runnable read-only identity probe is merged. The collector sequence-0/CFA1 barrier, CRP1/CRA1/new-CID1/second-CFA1 rollover, recorder durable logical-stream store, ordered package-set publication, and replay selection are composed. The four independent duplex/rollover activation latches remain false, so an owner-authorized evidence build/run is still required for S/D/M and rollover lifecycle receipts; L0 needs only the probe + melt values. | `CAMPAIGN_IDENTITY_DESIGN.md` §Validation plan; `CAMPAIGN_ROLLOVER_TRANSACTION_CORRECTIONS_20260720.md`; probe at `extractor/native/scripts/*campaign_identity*` | Seq 1 (L0), 3 (S/D), 5 (M) |
 | D57 criterion 4 (emission comparison) | A harness comparing the collector's **explicit opt-in** d57 emission against the raw words on the same transitions ("no coercion and no accepted out-of-range value") — no such comparison tool is named in-tree | `I1_D57_SPEED_EVIDENCE.md:322-334` (criterion 4) | Seq 1, launch 1.1 |
-| P4 stitching live driver | Production recorder has **no call site** for pre-fold segmentation / per-segment folds / durable append tickets / atomic stitched publication | `PRODUCT_SESSION_SEMANTICS.md` §4 | Seq 3 |
+| P4 stitching live driver | Production recorder has **no call site** for pre-fold segmentation / per-segment folds / durable append tickets / atomic stitched publication | `documents/DECISIONS.md` | Seq 3 |
 | P1 packaging/graceful-quit | `collector_record --auto-attach` and the resident supervisor **exist** (see Seq 4); what is missing is the packaging/tray UI with graceful quit — the supervisor currently "runs until the process is terminated" (design §9, outside that lane) | `extractor/native/recorder_host/src/main.rs:832-922`; `AUTO_ATTACH_DESIGN.md` §9 | Seq 4 |
-| P2 duplex activation | Recorder and collector H4CT/CID1 clients are composed, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`, `DUPLEX_CONTROL_CLIENT_ENABLED`, and both rollover live-evidence latches remain false; permit construction/capability negotiation therefore fail closed | `extractor/native/recorder_host/src/auto_attach/duplex_worker.rs`; `extractor/native/collector/src/duplex_client.rs`; `PRODUCT_SESSION_SEMANTICS.md` §5 | Seq 4 |
+| P2 duplex activation | Recorder and collector H4CT/CID1 clients are composed, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`, `DUPLEX_CONTROL_CLIENT_ENABLED`, and both rollover live-evidence latches remain false; permit construction/capability negotiation therefore fail closed | `extractor/native/recorder_host/src/auto_attach/duplex_worker.rs`; `extractor/native/collector/src/duplex_client.rs`; `documents/DECISIONS.md` | Seq 4 |
 | Idle-cost measurement harness | A self-timing harness that runs each 30-minute no-game window and records snapshot count / CPU / wakeups / private bytes / WMI reconnects itself — so the owner starts it and walks away instead of hand-timing the windows (six of them: three per machine) | `AUTO_ATTACH_DESIGN.md` §10 Idle-cost gate (bounds defined; harness unnamed) | Seq 4, 5 |
 
 ---
@@ -440,7 +445,7 @@ closed (`MASTER_EXTRACTION_CONTRACT.md` P3).
 
 **Stitching (P4).** S1 (reload) and S3 (relaunch) are exactly the seams the stitching planner must
 segment: rollback creates a **new segment**, superseded spans are retained as rollback segments
-(zero-data-loss), the later-played branch is the main timeline (`PRODUCT_SESSION_SEMANTICS.md` §4).
+(zero-data-loss), the later-played branch is the main timeline (`documents/DECISIONS.md`).
 **OWED:** the production stitch call site (register) — until it lands, P4 gets seam *evidence* from
 these launches, not a produced stitched container.
 
@@ -465,7 +470,7 @@ half; Sequence 5 repeats the whole thing on the weaker machine.
 
 `collector_record --auto-attach` and the resident dual-order supervisor **already exist**
 (`extractor/native/recorder_host/src/main.rs:832-922`: CLI seam wiring the real Windows adapters over the
-unit-tested `recorder_host::auto_attach` module; `PRODUCT_SESSION_SEMANTICS.md` §1 "foundation
+unit-tested `recorder_host::auto_attach` module; `documents/DECISIONS.md` "foundation
 built"). The true blockers are **narrower** (register): the packaging/tray UI with graceful quit —
 today the supervisor "runs until the process is terminated" (design §9, outside that lane) — and
 duplex activation, which is hard-disabled (`AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED = false`,
@@ -514,7 +519,7 @@ place this runbook still contains clock-bound operator work — flagged, not hid
 |---|---|---|
 | Live-Windows matrix (main-PC arms) | Every arm: zero missing candidate closures, zero duplicate attachments, zero shared DLL/control paths, zero discarded bytes; verified replay or explicit failed artifact per attempt; timestamps retained for observation/injection/heartbeat/first-baseline/terminal | Journal + artifacts satisfy all five invariants per arm |
 | Idle-cost | Bounds above | Counts within bound; CPU/memory deltas recorded (acceptance also needs the weaker-PC numbers — Sequence 5) |
-| P2 duplex liveness | `PRODUCT_SESSION_SEMANTICS.md` §5 | **Blocked only on owner-authorized live evidence/promotion:** the paired client/server and CID1 lifecycle are composed, while all activation latches remain false. |
+| P2 duplex liveness | `documents/DECISIONS.md` | **Blocked only on owner-authorized live evidence/promotion:** the paired client/server and CID1 lifecycle are composed, while all activation latches remain false. |
 
 ### Activation implications
 
@@ -640,7 +645,7 @@ speculatively):**
 
 **Explicitly NOT gated here (out of scope, no session):** host-local presentation state — camera,
 selections, hover, open screens, map-mode/layer toggles, outliner, tooltips, drag state — is
-RATIFIED out of production capture scope (`documents/DESIGN.md` §Production Capture Scope;
+RATIFIED out of production capture scope (`documents/DECISIONS.md`;
 `MASTER_EXTRACTION_CONTRACT.md` §Host-local presentation exclusion, X13).
 
 **Adjacent save-oracle fixtures (NOT live-capture gates):** an **active peace-conference** save and

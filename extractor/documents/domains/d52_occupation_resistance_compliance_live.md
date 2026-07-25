@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The build gate is `hoi4.exe` SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
 the probe fails nonzero when the process is absent or the hash differs.
@@ -60,7 +66,7 @@ See also d47, d48, d51, and d53.
 
 ## Files about this domain
 
-50 tracked files name this domain.
+51 tracked files name this domain.
 
 ### Pinned evidence (3) — byte-exact, do not merge
 
@@ -70,7 +76,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 
-### Prose evidence (10) — mergeable
+### Prose evidence (9) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -79,7 +85,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d55_land_combat_detail_events_live.md`
 - `extractor/documents/domains/d56_naval_missions_status_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
-- `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/README.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/replay_verify/README.md`
 
@@ -99,10 +104,12 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (24)
+### Code (26)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`

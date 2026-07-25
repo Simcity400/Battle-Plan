@@ -16,10 +16,22 @@
 
 
 
+
+
+
+
+
+
 D10 carries the exact `fuel` and `max_fuel` constituents. A replay fuel ratio
 may be derived only when both are proven in the same admitted state and
 `max_fuel` is positive; otherwise the ratio is absent. The batch source provides
 no additional D10 memory offset or acquisition law.
+
+On exact-a729 the live source is `CCountry+0x1580 ->
+CCountryFuelStatus`. Current fuel, maximum fuel, gain base, and fuel cost are
+signed i64 values at `+0x08`, `+0x10`, `+0x18`, and `+0x38`, respectively,
+with scale `32768`. These fields belong to one validated status object; mixing
+constituents from different reads cannot establish a ratio.
 
 See also d14, d15, d18, d28, d29, d43, d44, d45, d49, d50, d53, d54, d56,
 and d65.
@@ -35,7 +47,7 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/memory_only_ui_ephemeral_census.csv` — `64a0816eec27d9df`
 
-### Prose evidence (10) — mergeable
+### Prose evidence (8) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -43,8 +55,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/country_economy_counters_live/README.md`
-- `extractor/native/lanes/country_economy_production_stockpile_live/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
@@ -64,8 +74,10 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (15)
+### Code (17)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`

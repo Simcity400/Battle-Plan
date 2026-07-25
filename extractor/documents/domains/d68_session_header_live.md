@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The legacy d68 payload contains `player_tag_db_id`, DLCs, `start_date_raw`, `save_version`, `session`, ideology, cosmetic tag, and version. It does not contain `game_unique_id` or `game_unique_seed`. `W12C_CAMPAIGN_ID_IMPL.md` therefore correctly emitted campaign identity as unavailable/unbound at that revision; its broader claim that no live offsets were known is superseded by the later static RE below.
 
 For exact-a729 (`SHA-256 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`):
@@ -42,7 +48,7 @@ Static offsets and the offline CID1/rollover/replay route are closed, but the li
 
 ## Files about this domain
 
-33 tracked files name this domain.
+34 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
@@ -67,8 +73,9 @@ Static offsets and the offline CID1/rollover/replay route are closed, but the li
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (16)
+### Code (17)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`

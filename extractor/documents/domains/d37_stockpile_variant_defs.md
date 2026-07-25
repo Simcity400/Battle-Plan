@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 For `hoi4.exe 1.19.2.0.a729`, the ordered production-manager line vector is
 `manager+0x58/+0x60/+0x64`, stride 8. Admitted military type-56 and naval
 type-57 lines identify their exact equipment variant through
@@ -51,12 +57,11 @@ See also d11.
 
 23 tracked files name this domain.
 
-### Prose evidence (5) — mergeable
+### Prose evidence (4) — mergeable
 
 - `extractor/documents/domains/d34_air_base_status_live.md`
 - `extractor/documents/domains/d37_stockpile_variant_defs.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/country_economy_production_stockpile_live/README.md`
 - `extractor/native/recorder_host/README.md`
 
 ### Data evidence (11) — mergeable
@@ -73,8 +78,9 @@ See also d11.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (8)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/country_economy_production_stockpile_live/src/bin/lane_proof.rs`

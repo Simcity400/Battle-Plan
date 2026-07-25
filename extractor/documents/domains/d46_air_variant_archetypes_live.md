@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D46 authenticates ace identity, owner, name, life/death fields, roster index,
 and wing assignment. The autonomous acceptance path reads the complete raw
 `CAceEntry+0x158..+0x16c` roster, joins it to the same-hour d18 country identity
@@ -35,7 +41,7 @@ See also d18.
 
 ## Files about this domain
 
-34 tracked files name this domain.
+35 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -68,8 +74,9 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (14)
+### Code (15)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_ace_roster_live.rs`

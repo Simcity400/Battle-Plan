@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 For exact-a729 (`hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`), `CGameState+0x3A0` owns the technology-sharing manager. Each technology-sharing object is `0x50` bytes with vtable RVA `0x270B720`:
 
 | Offset | Field |
@@ -39,7 +45,7 @@ See also d47, d53, and d60.
 
 ## Files about this domain
 
-42 tracked files name this domain.
+43 tracked files name this domain.
 
 ### Prose evidence (10) — mergeable
 
@@ -70,8 +76,9 @@ See also d47, d53, and d60.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (19)
+### Code (20)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/bound_trips.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`

@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the production ZIP does not ship `collector.dll` as the recorder's sibling injection payload; that collector remains an unshipped comparison oracle.
+
 # Portable product package
 
 The production distribution is one offline ZIP containing exactly two executables:

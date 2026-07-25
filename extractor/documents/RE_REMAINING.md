@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the exact-a729 A/B/X producer-promotion ledger is not the target acquisition plan or implementation backlog.
+
 # Extractor reverse-engineering promotion ledger
 
 This is the extractor-only master list. It is intentionally separate from the

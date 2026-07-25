@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Division rows are the live authority used to bind on-map counter state. The current append-only row is 120 bytes; retained 104-byte rows decode deterministically as legacy with the added fields unavailable. Mixed or malformed lengths fail closed. The extension carries exact maximum organisation, the dedicated counter-supply scalar, and dig-in current/cap, in addition to current/max supply, their same-row ratio, experience, and order state. Movement is not an orders proxy.
 
 Relevant exact-a729 fields and producers:
@@ -34,18 +40,46 @@ Counter binding retains the d20 primary-order trichotomy. It joins an order to d
 
 The renderer-side geometry evidence does not broaden d20 state. Natural-pixel counter sizing is proved only for the captured 1920x1080 interval and two close-zoom anchor bands; stack identity beyond a singleton and unsampled camera heights remain fail-closed.
 
+The exact-a729 anchored enumeration starts at `CGameState+0x310`, validates
+each `CCountry` with vtable `module+0x27D0E90`, and walks the division-wrapper
+vector at country `+0x290/+0x298/+0x29C`. Wrapper vtable
+`module+0x2943AD0` leads to the body at `wrapper+0x10`; `CDivision` vtable is
+`module+0x2943CB0`, and both identity types 4713 and 51 are valid. Country count
+is bounded at 2,048. A direct-root proof found 3,051 division bodies with zero
+rejected vtable hits. The division's orders-group parent is `CDivision+0xB0`;
+d20 may expose the stable `army_id` join but does not own order geometry.
+
+The first admitted d20 record is a baseline live set. A later non-delete row
+for a known identity is an update; one for an unseen identity is a replay
+creation. A delete for a live identity is deletion, while deleting an unknown
+identity is a gate failure. Baseline rows are initial state and are not claimed
+to have spawned during capture.
+
+Owner/controller divergence is deliberately unresolved in the old compact row.
+`CDivision+0x1C8` is the owner candidate used by the fixture contract and
+`+0x1D0` is the controller candidate, but equality-only samples prove neither.
+Acceptance requires at least one time-aligned division whose oracle owner and
+controller differ, with both candidates matching their respective values.
+Until then controller stays absent.
+
+Current per-division manpower is also unproved. Template manpower, country
+manpower pools, and equipment banks are aggregates and cannot substitute for a
+division field. The retained compact rows keep byte `+84` zero/reserved for
+every row and expose no manpower flag. A future proof must join a current
+per-division value reachable from `CDivision` to a time-aligned oracle.
+
 See also d18 and d54.
 
 
 ## Files about this domain
 
-26 tracked files name this domain.
+29 tracked files name this domain.
 
 ### Prose evidence (7) — mergeable
 
-- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/domains/d20_divisions_live.md`
+- `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d31_air_region_activity_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
@@ -65,9 +99,12 @@ See also d18 and d54.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (8)
+### Code (11)
 
 - `extractor/native/collector/src/a15_counter_ui_hook.rs`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`

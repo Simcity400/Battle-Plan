@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The producer graph is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -68,11 +74,10 @@ edges. Screenshots and saved candidates cannot satisfy that gate.
 
 ## Files about this domain
 
-40 tracked files name this domain.
+41 tracked files name this domain.
 
-### Prose evidence (9) — mergeable
+### Prose evidence (8) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -99,10 +104,12 @@ edges. Screenshots and saved candidates cannot satisfy that gate.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 - `replay_interface/re_evidence/rendering_laws/XUI21/H_POPUP_FULL_GRAPH_GHIDRA_RECEIPT_20260720.json`
 
-### Code (17)
+### Code (19)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/fired_event_popups_live/Cargo.toml`

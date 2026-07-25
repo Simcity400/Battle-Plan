@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Exact-a729 law:
 
 ```text
@@ -44,7 +50,7 @@ A same-hour oracle matched `223/223` keys and `1338/1338` fields.
 
 ## Files about this domain
 
-31 tracked files name this domain.
+32 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -73,10 +79,11 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (15)
+### Code (16)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/hub_motorization_live/Cargo.toml`

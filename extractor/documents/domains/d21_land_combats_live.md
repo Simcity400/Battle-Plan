@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The current-build authority is `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -104,6 +110,51 @@ asserted, reads driven by `size` and clamped to the VirtualQuery region end,
 `size <= capacity` sanity, and a **double read revalidation** to catch a
 reallocation racing the walk.
 
+For exact-a729, the active manager is `CGameState+0x260`, with data at `+0x08`
+and count at `+0x14`; entries point to a body at `entry+0x10`. The body vtable
+RVA is `0x29915B8`, type is 62 at `+0x08`, combat id is at `+0x0C`, attacker
+side is at `+0x18` with vtable RVA `0x29913C0`, and the sibling defender is
+`u64[u64[body+0x18]+0x18]+0x30`.
+
+Terrain has two proved routes. `u32[u64[body+0x28]+0xA4]` is the front province,
+whose `definition.csv` terrain matched the melt 70/70. The live pointer
+`u64[body+0x38]` reaches `CTerrainType` vtable RVA `0x29AA2B0`, with key at the
+MSVC string `+0x18`; its mapping was bijective 20/20. Current tactic is
+`u64[side+0x110]`, with key at `+0x10` and database index at `+0x98`; 40/40
+side rows matched 11 tactic identities. Side progress is signed i32
+fixed-100000 at `+0x418` and matched 40/40. Combat duration at body `+0x30`,
+age at `+0x34`, and each side's `num_org_losses` at `+0x1AC` agreed 70/70;
+the unit is hours and display day is `floor(hours/24)+1`. The committed
+division count is u32 at side `+0xD4`.
+
+Combat width is formula-grade rather than measured. The static terrain base and
+support widths are combined as
+`base + support*(direction_count-1)` and scaled by tactic
+`combat_width` modifiers. The often-used `1.33` join threshold is only an
+inference from the over-width penalty cap, and effective division width still
+depends on country/unit modifiers. It must not be presented as an oracle
+result. Likewise a non-default tactics phase is emitted only when both sides'
+tactics agree; day/night remains unproved.
+
+The vanilla terrain width/support pairs are plains, hills, and desert `70/35`;
+forest and jungle `60/30`; mountain and marsh `50/25`; and urban `80/40`.
+They are fallback examples only: the recording modset's terrain definitions
+are authoritative.
+
+Planning and dig-in remain d20-owned division scalars, but their combat
+validation is retained here. Exact-a729 planning at `CDivision+0x460` matched
+609/609 non-zero save rows plus 1,280 absent-zero controls. Dig-in at `+0x448`
+matched 1,494/1,494 plus 395 absent-zero controls, and its cap at `+0x450`
+matched 1,876/1,876 plus 13 absent-zero controls.
+
+Attack directions come from distinct current provinces of attacker participants
+joined to the front through modset-resolved bitmap four-adjacency and
+`adjacencies.csv`. The live checks found 35/35 defenders at the front and
+34/34 attacker sources pixel-adjacent, with one to four directions. Naval
+invasion, paradrop, retreat, or overrun need order/source fallback when a
+participant is not adjacent. Game-file terrain, tactic, define, and map data
+must always resolve through the recording modset.
+
 Unresolved from that work: naval and air combats were never mapped because none
 were active at the captured snapshot, and the exact runtime semantics of
 day/duration need sub-day sampling. Two things are unobservable by sampling at
@@ -115,15 +166,15 @@ See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
 
 ## Files about this domain
 
-29 tracked files name this domain.
+32 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
+- `extractor/documents/domains/d55_land_combat_detail_events_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/land_combat_detail_events_live/README.md`
 - `extractor/native/recorder_host/README.md`
 
 ### Data evidence (12) — mergeable
@@ -141,8 +192,11 @@ See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (11)
+### Code (14)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the new compact-stream records and container-v2 segment layout are not target wire/container edges; the pre-fold stitching and supersede logic remain reusable.
+
 # Reload and relaunch stitching design
 
 **Status:** corrective implementation present for ticket authority, transition
@@ -8,9 +13,9 @@ container-v2 validation. Live segment formation/wire emission remains open.
 **Owner policy:** later-played history supersedes earlier history from the later
 branch's cutover hour onward. Superseded history remains in the replay as rollback
 data, but is not part of the default playback timeline. This is pillar 4 of
-[`PRODUCT_SESSION_SEMANTICS.md`](PRODUCT_SESSION_SEMANTICS.md), including the
+[`documents/DECISIONS.md`](../../documents/DECISIONS.md), including the
 owner-confirmed crash/reload example and retention rule
-(`PRODUCT_SESSION_SEMANTICS.md:41-60`).
+(`documents/DECISIONS.md`).
 
 ## 1. Scope and non-negotiable outcomes
 

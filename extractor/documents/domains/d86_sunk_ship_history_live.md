@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 All layout evidence is exact-a729 (`hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`). The completed-history vector is at `CGameState+0x590`, laid out as data pointer `+0x00`, capacity `u32 +0x08`, count `u32 +0x0C`, with eight-byte entries. Each `CSunkShipInfo` has vtable `0x142941608` and size `0xA8`.
 
 | Offset | Exact field |
@@ -43,7 +49,7 @@ SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, name
 
 ## Files about this domain
 
-20 tracked files name this domain.
+21 tracked files name this domain.
 
 ### Prose evidence (5) — mergeable
 
@@ -59,10 +65,11 @@ SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, name
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (12)
+### Code (13)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/sunk_ship_history_live/Cargo.toml`

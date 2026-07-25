@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: this “single two-directional list” and its canonical A24–A40 dossier namespace are current waiting-list bookkeeping, not target requirements.
+
 # Extraction ↔ Replay seam contracts
 
 The single two-directional list of what each half of the product is waiting on

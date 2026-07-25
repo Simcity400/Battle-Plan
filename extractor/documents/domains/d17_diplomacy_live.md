@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The compact stream carries d17 as typed `COMPACT_RECORD_TYPE_DOMAIN_DATA` under the single H4CR sequence authority. Records are decoded fail-closed: unknown record types, invalid lengths, duplicate identities, or omitted numeric fields are not accepted; measured zero remains distinct from a missing row. `FRAME_END` is the final record for an hour, and internally parallel reads must still emit deterministically.
 
 Status bit 13 (`0x2000`) is d17-only informational war-segment accounting and is outside the shared failure mask. It must not bleed into dependent domains. A recorded case where d45 inherited `0x2000` came from OR-ing every country bundle's whole status word; d45's focus/tech/decision dependencies were clean, so this was semantic contamination rather than a d45 condition. Consumers must mask dependency status to the relevant domain families and `COMPACT_STATUS_FAILURE_MASK`.
@@ -25,7 +31,7 @@ See also d10, d11, d12, d13, d14, d15, d16, d18, d21, d24, d27, d28, d43, d45, d
 
 ## Files about this domain
 
-37 tracked files name this domain.
+39 tracked files name this domain.
 
 ### Prose evidence (7) — mergeable
 
@@ -55,8 +61,10 @@ See also d10, d11, d12, d13, d14, d15, d16, d18, d21, d24, d27, d28, d43, d45, d
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (15)
+### Code (17)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The static decisions catalog is keyed by decision id and carries category, localization key/name, icons, political-power cost, target metadata, cooldown/removal fields, visibility/availability metadata, `fire_only_once`, and exact source-file bytes/SHA-256. Missing/corrupt static data fails only the definition join; it is not evidence that live decision state failed.
 
 The validated live target slice is `CDecisionStatus+0xE8` active targeted-timed records. Exact-a729 country-target records require vtable RVA `0x27D5038`, definition pointer `record+0x10`, and nonzero bounded country `tag_db_id` at `record+0x20`. The retained sample contains 3,384 targeted-timed rows, of which 1,061 country-target rows across 180 tokens matched save/live exactly. Numeric state/province target ids, cooldowns, days/body fields, and unmatched transitions remain out of scope and must not be recast as country targets.
@@ -24,10 +30,43 @@ Each compact target row has the fixed fields `owner_tag_db_id, target_id, flags,
 
 The coordinated compact header migration uses twelve `u32` words (48 bytes): target count at byte 0, reserved-zero flags at 4, depth status at 8, then focus/research/status/event and observed counts, with badge count at 44. Mixed old/new collector and recorder binaries will misread the first eight bytes and are invalid.
 
+The exact focus-pause path is `CCountry+0x1380 ->
+CNationalFocusProgress+0xB0`. The earlier search for a paused byte in
+`CFocusStatus+0x00..+0x7F` is disproved: 24 candidates in `+0x20..+0x37`, 100
+other byte candidates, and the final four-byte `+0x3C..+0x3F` gap were rejected;
+the latter is covered by vtable-method qword access at `+0x38`.
+
+Decision re-enable records are at `CCountry+0xFA0 ->
+CDecisionStatus+0x58`, and removal records use the same
+`CDecisionCooldown {definition:+0x08, days:+0x10}` shape at status `+0x70`.
+In targeted records the union is country/string at `record+0x20` or numeric id
+at `record+0x24`; `record+0x28` is lifecycle state, not a target-kind
+discriminator. Ignore is at `+0x2C` and days at `+0x30`. Target kind comes
+from the static definition: a present non-false `state_target` makes the
+numeric value a state id. The pinned corpus contains 278 such declarations and
+no province-target producer.
+
+The numeric-target proof matched 2,285 live/save `target=<number>` rows and
+left four live-only and three save-only transitions. The country-target proof
+left 33 live-only transitions. Across the full 3,384 targeted-timed records and
+262 tokens, 49 definition-local country-tag slices were rejected. These counts
+separate matched storage from lifecycle transitions; unmatched rows and a
+numeric id with no static target declaration must not be assigned a semantic
+scope.
+
+The direct event-hook string search also closes a dead end. The named decision
+and focus-completion string routes are not runtime callbacks. Five remaining
+text-xref anchors all load a registration string in `r8`, a key in `edx`, and
+a global registry in `rcx` before calling `0x24AFC10`; they lie in functions
+with 10,697 string references and expose no live focus, research, or decision
+object argument. Static seeds for completion and decision lifecycle remain
+inactive until an authenticated entry/argument/same-hour transition join
+exists.
+
 
 ## Files about this domain
 
-65 tracked files name this domain.
+68 tracked files name this domain.
 
 ### Pinned evidence (4) — byte-exact, do not merge
 
@@ -38,7 +77,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 
-### Prose evidence (17) — mergeable
+### Prose evidence (15) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -54,8 +93,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d87_decision_panel_live.md`
 - `extractor/documents/domains/d89_national_focus_presentation_live.md`
-- `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
-- `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
 ### Data evidence (16) — mergeable
@@ -77,11 +114,16 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (28)
+### Code (33)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/a31_focus_canvas_join.rs`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/early_render_lifecycle_tests.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/decision_panel_live/src/a729_hook.rs`
 - `extractor/native/lanes/diplomacy_intel_operatives_live/domain44_compact.rs`

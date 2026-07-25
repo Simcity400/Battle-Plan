@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The layout is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -92,9 +98,9 @@ row fail closed.
 
 ## Files about this domain
 
-66 tracked files name this domain.
+68 tracked files name this domain.
 
-### Prose evidence (20) — mergeable
+### Prose evidence (19) — mergeable
 
 - `extractor/documents/CONFIRMED_COMPLETE_DESIGN.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
@@ -114,7 +120,6 @@ row fail closed.
 - `extractor/documents/domains/d80_production_map_content_snapshot_live.md`
 - `extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.md`
 - `extractor/native/lanes/construction_buildings_state_damage_live/README.md`
-- `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 
 ### Data evidence (15) — mergeable
@@ -135,10 +140,13 @@ row fail closed.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (31)
+### Code (34)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/domain48_partial_emit_tests.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/status_origins.rs`

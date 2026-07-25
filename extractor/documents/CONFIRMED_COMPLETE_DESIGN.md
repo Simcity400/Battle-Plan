@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: scheduled-segment `Captured`/`MeasuredEmpty`/`ExpectedAbsent`/`Failed` dispositions and the `Full`/`WithExpectedAbsence`/`Failed` hour latch do not define target completion.
+
 # Confirmed-complete semantics — design of record (2026-07-10)
 
 **Purpose:** Define proof-carrying per-segment completion semantics, expected-absence constraints,

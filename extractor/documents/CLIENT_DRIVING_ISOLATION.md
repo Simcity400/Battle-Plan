@@ -5,18 +5,28 @@ user started and controls, but it must not launch or stop the game, synthesize
 keyboard or mouse input, change focus or window geometry, write the game clock,
 open the console, or rewrite launcher state.
 
-Historical evidence helpers that can perform any of those actions are legacy,
-nonproduction tools. They are inert by default. PowerShell helpers either use a
-dedicated positive switch or call `Assert-Hoi4ClientDrivingOptIn`; direct Python
-helpers require the same process-local environment acknowledgement:
+The policy above is binding, and `documents/DECISIONS.md` hardens it further: the
+shipped recorder never writes game state and specifically never writes the engine
+pause byte.
+
+**The enforcement described here does not currently exist.** The gate is
+`Assert-Hoi4ClientDrivingOptIn` in
+`extractor/native/scripts/Hoi4ClientDriving.OptIn.ps1`, which throws unless the
+invoking process sets
 
 `BATTLE_PLAN_CLIENT_DRIVING_OPT_IN=I_ACKNOWLEDGE_THIS_TOOL_WILL_CONTROL_HOI4`
 
-The acknowledgement is never set by production capture, centralized
-validation, release packaging, or passive observers. A user-authorized legacy
-experiment must set it only in that isolated invoking process and must also pass
-any helper-specific switch. Child processes inherit the acknowledgement only
-from that deliberately scoped parent.
+— and a repository-wide search finds no caller. Nothing invokes it.
+
+Meanwhile `extractor/native/scripts/Control-Hoi4Game.ps1` writes game speed and
+the engine pause byte through `WriteProcessMemory`, and
+`Invoke-HeadlessRawCapture.ps1` calls it without any acknowledgement. The only
+isolation these helpers actually have is `Test-Hoi4ClientDrivingInputPath` in the
+same file, which merely excludes them from the production attestation digest.
+
+Treat this file as the intended contract and an open defect, not a description of
+current behaviour. Either wire the assertion into every game-controlling helper,
+or delete the helpers with the pause barrier when it goes.
 
 `Hoi4ClientDriving.OptIn.ps1` is the canonical production-attestation exclusion
 roster. The release source digest still covers runtime, passive-observer,

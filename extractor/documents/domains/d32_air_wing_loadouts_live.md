@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 d32 supplies the exact observable loadout side of reinforcement analysis: air-wing owner/id/generation, equipment variant id/type, old/new equipment amount, and delta. It is joined with d30 location/mission state and d42 count/loss deltas over the same snapshot window. These endpoint facts can prove that equipment in a wing changed; they cannot identify the engine transaction that caused the change.
 
 Replay may correlate d32 deltas with d11 production/stockpile, d43 delivery progress, variant creator/origin, d42 losses, and identity/base changes. The result is heuristic context only:
@@ -35,9 +41,8 @@ See also d11, d20, d26, d30, d42, and d43.
 
 24 tracked files name this domain.
 
-### Prose evidence (6) — mergeable
+### Prose evidence (5) — mergeable
 
-- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d34_air_base_status_live.md`
 - `extractor/native/collector/README.md`
@@ -58,8 +63,9 @@ See also d11, d20, d26, d30, d42, and d43.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (8)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`

@@ -16,19 +16,61 @@
 
 
 
-d78 is the same-hour admission context for the live design catalogue. A sealed census contained `5,281` variants, `1,126` templates, and `440` countries, but one hour is not temporal evidence.
+
+
+
+
+
+
+d78 is the same-hour admission context for the live design catalogue. Its
+catalogue identities join the authoritative d59 census; one sealed hour is not
+temporal evidence.
 
 The producer repeats a whole-sweep census and double-reads the game date, tag/country registries, every country A/B/template vector, every definition/lifecycle field, and both heap censuses.
 
 Portable v3 keeps complete pointer-free native rows, then emits upserts and absence-derived tombstones with exact hourly order. Replay requires `D78.frame_hour == replay frame`; missing/cross-hour joins reject.
 
 
+Each admitted census must be followed by a byte-identical same-hour recheck.
+A changed same-hour digest is a torn observation and rejects because it cannot
+be bound to a transition. Upserts retain complete pointer-free native rows;
+tombstones are emitted only when a stable identity is absent from the next
+coherent full replacement. A missing hour or cross-hour join is not filled
+from the last census.
+
+The designer-view context is captured after detouring exact-a729 callback
+`0x1417797A0` and calling the original callback first. The observation contains
+mode/family, current-country identity, raw toggle bytes, the selected-country
+tag vector, and the final used row-pool order. Every row and variant is
+revalidated by exact vtable, type, and stable id, and only numeric country and
+design identities cross the boundary. View, handler, row, variant, country,
+vtable, and module addresses are process-local and forbidden in the portable
+carrier.
+
+This callback surface is old-collector evidence only. It depends on an open
+designer view and captures host-local presentation state, so the shipped
+observer cannot use it as acquisition authority or require the player to open
+or select that view.
+
+An installed context hook with no complete transition is source-unavailable,
+not inactive or measured empty. A witnessed hidden transition is positive
+evidence and records `active=false` with an empty final order. Missing,
+malformed, unauthenticated, duplicate, or unknown identities reject the view.
+
+The examined creation and designer-refresh routes are not universal lifecycle
+roots. The one-hour census predates the whole-sweep coherence receipt and
+cannot be admitted without `current_date_raw`, `capture_hour_index`, and the
+double-read seal. A temporal acceptance sequence must prove on one stable
+identity a name change, a non-name/non-lifecycle edit, `obsolete:
+false->true`, and `obsolete: true->false`; action labels, missed clicks,
+reordered templates, or input receipts alone do not supply semantic evidence.
+
 
 ## Files about this domain
 
 34 tracked files name this domain.
 
-### Prose evidence (10) — mergeable
+### Prose evidence (8) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -37,8 +79,6 @@ Portable v3 keeps complete pointer-free native rows, then emits upserts and abse
 - `extractor/documents/domains/d85_selected_designer_identity_live.md`
 - `extractor/documents/domains/d97_peace_conference_live.md`
 - `extractor/documents/dossiers/A40/README.md`
-- `extractor/native/lanes/design_catalog_context_live/README.md`
-- `extractor/native/lanes/design_catalog_live/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
 ### Data evidence (4) — mergeable
@@ -48,11 +88,13 @@ Portable v3 keeps complete pointer-free native rows, then emits upserts and abse
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (20)
+### Code (22)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/a34_a40_evidence.rs`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/design_catalog_context_live/Cargo.toml`
 - `extractor/native/lanes/design_catalog_context_live/src/a40_peace_evidence.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 `specialization_handle` is process-local and may be used only inside the d41
 delta tracker for raw additions and tombstones before the authenticated
 four-token census. Portable fold/replay publishes only the closed
@@ -29,11 +35,10 @@ See also d18.
 
 ## Files about this domain
 
-40 tracked files name this domain.
+42 tracked files name this domain.
 
-### Prose evidence (13) — mergeable
+### Prose evidence (12) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -62,8 +67,11 @@ See also d18.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (15)
+### Code (18)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

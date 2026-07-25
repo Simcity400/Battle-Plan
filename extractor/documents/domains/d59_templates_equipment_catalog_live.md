@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D59 owns the recording's static templates/equipment catalog; live equipment-
 designer state and display order belong to d78. A d78 view may join the catalog
 only at the identical `frame_hour`, and every numeric variant id must resolve
@@ -37,6 +43,35 @@ reported 24 active DLC display names. These are contradictory observations, not
 interchangeable authority; a fresh two-sample stable engine-tree gate decides
 the effective launch.
 
+The exact-a729 native heap census contains 5,281 equipment variants and 1,126
+division templates across 440 countries. A same-tick oracle matched stable ids,
+owners, origins, lifecycle, archetypes, names, module-token and upgrade-level
+multisets, template priority and lock state, and every regiment/support
+position; the independent census gate passed 12/12 checks with no blockers.
+That proves one complete hour, not create/edit/delete history.
+
+Equipment-manager A/B vectors are optional UI occurrence/order lists rather
+than the catalogue root. They contain 5,267 of the variants; the 14 absent
+catalogue identities are `1093:70` through `1101:70`, `1691:70` through
+`1694:70`, and `4540:70`. No retained equipment-designer row pool existed in
+the sampled process, so materialised UI rows cannot establish completeness.
+The native heap census supplies authority and country template vectors supply
+template ownership and order.
+
+Several nearby fields have disproved interpretations. Variant `+0x1C` is the
+creator country tag, not an equipment-type token. Variant `+0x38` is the size
+of the MSVC display-name string beginning at `+0x28`, not an interface type.
+Template outer `+0x1A4` is priority, `+0x1CC` is the raw lock-regime byte,
+`+0x235` is explicit `is_locked`, and `+0x236` is obsolete; equality between
+`+0x1CC` and save `is_army_hq` is incidental. Dynamic tag ids immediately
+after the immutable 440-row table resolve in raw-id order as `D01`, `D02`,
+`D03`, and so on; the packed table header stores capacity in its low u32 and
+logical count in its high u32.
+
+The live strings are UTF-8. The save oracle misdecoded 31 variant names and 59
+template names as Latin-1; repairing those counts is oracle-side normalisation,
+not permission to reinterpret engine bytes.
+
 See also d78.
 
 
@@ -50,7 +85,7 @@ See also d78.
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/domains/d59_templates_equipment_catalog_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
-- `extractor/native/lanes/design_catalog_context_live/README.md`
+- `extractor/documents/domains/d78_design_catalog_context_live.md`
 - `extractor/native/lanes/templates_equipment_catalog_live/README.md`
 
 ### Data evidence (11) — mergeable

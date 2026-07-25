@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D31 carries `effective_planes`; it does not carry the engine’s transient
 `effective_air_superiority` cache. Consequently neither exact superiority nor
 the 0..9 UI strip frame is currently an observed d31 value.
@@ -66,7 +72,7 @@ See also d20, d30, d44, d54, and d56.
 
 ## Files about this domain
 
-22 tracked files name this domain.
+23 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
@@ -91,8 +97,9 @@ See also d20, d30, d44, d54, and d56.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (5)
+### Code (6)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`

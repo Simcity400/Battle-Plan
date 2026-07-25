@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The compact payload has a 36-byte header:
 
 `elapsed_wall_ms:u64, row_count:u32, changed_rows:u32, status_flags:u32, observed_air_base_rows:u32, observed_pool_rows:u32, deleted_rows:u32, reserved:u32`.
@@ -33,7 +39,7 @@ See also d27, d28, d29, d30, d31, d32, d33, d35, d36, d37, d38, d39, d40, d42, a
 
 ## Files about this domain
 
-22 tracked files name this domain.
+23 tracked files name this domain.
 
 ### Prose evidence (4) — mergeable
 
@@ -56,8 +62,9 @@ See also d27, d28, d29, d30, d31, d32, d33, d35, d36, d37, d38, d39, d40, d42, a
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (8)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`

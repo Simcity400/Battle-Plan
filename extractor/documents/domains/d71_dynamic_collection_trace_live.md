@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 All production observations are passive, pointer-free, exact-a729 hook
 observations. A missing current-hour callback is source-unavailable, not a
 measured-empty collection.
@@ -52,7 +58,7 @@ aggregate-bonus findings.
 
 ## Files about this domain
 
-53 tracked files name this domain.
+54 tracked files name this domain.
 
 ### Pinned evidence (4) — byte-exact, do not merge
 
@@ -63,9 +69,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/dossiers/A28/FACILITY_SPECIALIZATION_SMOOTH_LIST_HOOK_CONTRACT_20260719.json` — `8fcb6a4687bc7fed`
 - `extractor/documents/dossiers/A28/SOURCE_EXHAUSTION_CENSUS_20260719.json` — `fa2e2aa63af1de56`
 
-### Prose evidence (6) — mergeable
+### Prose evidence (5) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/domains/d71_dynamic_collection_trace_live.md`
@@ -92,10 +97,12 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (26)
+### Code (28)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/dynamic_collection_trace_live/Cargo.toml`
 - `extractor/native/lanes/dynamic_collection_trace_live/src/a729_air_mio_controller.rs`

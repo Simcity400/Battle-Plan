@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 All exact offsets below are for `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
 ### Current speed and pause
@@ -58,7 +64,7 @@ The listed activation sources contradict one another: `H_X12_SPEED_PREREQUISITE_
 
 ## Files about this domain
 
-56 tracked files name this domain.
+57 tracked files name this domain.
 
 ### Pinned evidence (2) — byte-exact, do not merge
 
@@ -67,9 +73,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 - `extractor/native/scripts/collect_speed_root_evidence_v2.py` — `7302d6981b74b5eb`
 
-### Prose evidence (14) — mergeable
+### Prose evidence (13) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/CAMPAIGN_IDENTITY_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
@@ -99,10 +104,12 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (28)
+### Code (30)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`

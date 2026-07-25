@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: `hoi4.exe` through an injected collector DLL and compact records is not the target recording architecture.
+
 # extractor/native
 
 Native extraction workspace for the Battle Plan recorder.

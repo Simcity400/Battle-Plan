@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The exact-a729 source is bound to executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 Collection starts from the authenticated, double-stable complete country
@@ -39,7 +45,7 @@ See also d18.
 
 ## Files about this domain
 
-23 tracked files name this domain.
+25 tracked files name this domain.
 
 ### Prose evidence (5) — mergeable
 
@@ -55,11 +61,13 @@ See also d18.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (15)
+### Code (17)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/nuke_stockpile_live/Cargo.toml`
 - `extractor/native/lanes/nuke_stockpile_live/nuke_stockpile_exact.rs`

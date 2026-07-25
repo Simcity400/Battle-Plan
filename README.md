@@ -1,15 +1,22 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the recorder is not private tooling for only the owner's games; the target serves any player, mod set, and DLC combination.
+
 # Battle Plan / Replay
 
 Private, read-only tooling for recording and replaying the owner's Hearts of
 Iron IV multiplayer games.
 
-**Current status and remaining work live in exactly two documents:**
+**Three documents carry the whole current-state surface:**
 
-- `documents/STATUS.md` — where each half of the project stands
-- `documents/REMAINING_WORK.md` — the single deduped backlog
+- `documents/DECISIONS.md` — what the product is supposed to be. The authority;
+  it outranks every specification in this repo.
+- `documents/STATUS.md` — where each half stands, as built.
+- `documents/SEAM_CONTRACTS.md` — what each half is waiting on from the other.
 
-Start there. `documents/SEAM_CONTRACTS.md` tracks what each half is waiting on
-from the other.
+Read them in that order. Per-domain knowledge is condensed into
+`extractor/documents/domains/`, one file per domain.
 
 ## Layout
 
@@ -18,7 +25,7 @@ from the other.
 | `extractor/` | Recording half: injected DLL collector, Rust recorder host, compact domains, save-oracle validation, static parsing. Deep ledgers in `extractor/documents/`. |
 | `replay_interface/` | Playback half: replay app, map/UI rendering, container reader, RE evidence. Specs and the rendering-laws program board in `replay_interface/documents/`. |
 | `portable_replay/` | Neutral format crates both halves statically link. |
-| `documents/` | STATUS / REMAINING_WORK / SEAM_CONTRACTS / DESIGN. |
+| `documents/` | DECISIONS / STATUS / SEAM_CONTRACTS. |
 
 Anything in an `archive/` folder is historical evidence, never the current
 plan. The repo carries no process/rules docs (archived 2026-07-19).

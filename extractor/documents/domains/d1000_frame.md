@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Frame-level domain census uses compiler truth, not Rust-source parsing. The
 oracle derives paths from `__file__` and performs exactly one
 production-selection build from the native crate root:
@@ -70,6 +76,102 @@ manifest is read. Once registry truth is valid, artifact failure remains
 blocking but does not suppress independent manifest findings. Missing
 configured manifests and zero usable manifests are also fail-closed
 conditions.
+
+### Transactional frame and gap evidence
+
+The retired C1 Stage-B design predates the current acquisition, wire, and
+container rebuild. Its H4CR/H4CT record layouts and ExpectedAbsent mechanism
+are not target-format authority. The failure analysis remains applicable to
+any replacement. In the rebuilt recorder these observation failures become
+typed gaps within an admitted campaign rather than a refused recording; unknown
+build admission remains the separate fail-closed boundary.
+
+Frame, declaration, reference, detector result, and failure evidence must bind
+to the same full epoch identity. The proposed identity used a CSPRNG session
+nonce, PID plus process-creation FILETIME, a non-wrapping save-epoch
+generation, resolved-modset hash, executable hash, and schema version. PID
+alone is reusable; module base, path, wall clock, local-machine id, and a
+negative memory search do not establish identity. Hash equality is only an
+index/corruption check and never substitutes for field equality. This is
+frame/session lease identity, not campaign or file identity; cross-session
+identity comes from the engine campaign id and seed.
+
+Reload fencing begins when reload may have started, not after confirmation.
+The overlapping frame is failed, the old epoch is sealed and durably
+acknowledged before any new-epoch table or frame, and late old-epoch records
+reject. Send success, pipe history, timeout, or disconnect is not an
+acknowledgement. Sweep death or restart invalidates dependent observations
+until a newly complete generation is published and adopted; partial, stale,
+or prior-generation data cannot be reused as absence evidence.
+
+Absence detectors must be structurally independent of the authoritative reader
+and run every attempt with maximum skew one. A due but unprocessed sentinel
+permits zero accepted absent frames. Presence wins over a prior absence
+declaration: revoke it, run the ordinary reader, preserve any real data, and
+record a typed gap and witness because the declaration premise was false. An
+unreadable, torn, late, or incomplete detector yields a typed failure and
+cached evidence is not continued.
+
+Conditional-absence authority is closed, deny-by-default, and privately
+constructed. Its policy keys must equal the complete scheduled-segment roster;
+there is no wildcard or implicit default. User input, a manual list, negative
+search, timeout, empty cache, incomplete sweep, or zero rows cannot authorise
+absence. A detector moves through `Active`, `Suspended`, and irreversibly
+`Revoked` within an epoch. Read failure suspends it without cached reuse;
+positive presence revokes before the ordinary read.
+
+Disposition meanings are exact. `Captured` means the segment's completion
+contract passed, even when its row count is zero. `MeasuredEmpty` requires a
+complete-enumeration witness whose count is zero. An incomplete full
+replacement is failed and cannot establish or advance a baseline. Every
+non-revoked declaration, including a suspended or unreferenced one, has exactly
+one on-time detector check before any lifecycle transition is booked.
+
+Any scheduled segment needs exactly one disposition and its exact witness.
+Aggregate status ORs cannot excuse a failure, and a combined status requires
+every first-introduction cause rather than one matching bit. Failure evidence
+is per attempt, segment, subsource, and cause; counts greater than one retain a
+non-zero multiplicity. Unknown ids, enums, schema versions, token fields,
+references, roster entries, duplicate checks, arithmetic overflow, and
+unreferenced evidence reject rather than falling into `Unknown` or
+best-effort variants.
+
+The shipped status-origin diagnostic exposed a specific disproved assumption.
+Its low-63-bit count/sample-present word and sample payload are separate
+atomics, so a writer can publish the next sample after a drain swaps the old
+batch and before that drain reads the sample. The old batch can therefore
+report the new sample. `fetch_add`/wrapping counters also do not surface
+overflow terminally. The 33 origin ids and their counts remain useful
+diagnostics, but exact sample-dependent classification requires a
+batch-coherent protocol and checked overflow; manifest-level `so_*` aggregates
+cannot reconstruct it.
+
+All potentially blocking observation, reader, transport, drain, durability,
+and reload-quiescence phases need one checked absolute monotonic deadline
+created before their first operation and never reset by partial progress.
+Expiry uses finite wait, cancellation where applicable, a zero-time completion
+check, and ownership transfer to process-lifetime quarantine when a worker
+cannot be joined. A late result cannot publish. A local pre-emission timeout
+can abandon an attempt or fail only its affected segments without poisoning
+the attachment when worker ownership is isolated; it is accounted in the hour
+ledger without fabricating a frame. An ambiguous partial transport write is
+different: it cannot be resent or transparently reconnected because peer state
+is unknown. `TerminateThread`, indefinite reaping, and reinjection are rejected
+recovery strategies. Unknown, mixed, or truncated format versions reject.
+
+### Cross-domain event linkage
+
+A derived event is admissible only when its domain, sequence, hour, and row
+index point to an earlier compatible source DATA record in the same frame.
+That source record must pass its canonical decoder, have exactly one same-frame
+PERF record with matching status, and the event kind must belong to that source
+family. Bounds use the decoder's emitted-row count, not raw payload length.
+
+For an exact duration, `N` game-hour advancements require exactly `N+1`
+consecutive closed frames. Short and overlong observations both fail that
+evidence contract. A proof-only slot is not production registration. Unknown
+source layouts produce no fabricated events and instead leave an explicit gap;
+the raw source stream remains canonical and event folding stays replay-side.
 
 ### Guarded self-read performance
 

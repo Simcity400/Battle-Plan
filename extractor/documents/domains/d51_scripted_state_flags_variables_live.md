@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Country variables, flags, and delayed-event roots require a complete current-
 frame country roster read directly from the gamestate tag-indexed table. A
 filtered `CountryIdentityCache.rows` set is insufficient. Two complete passes
@@ -52,7 +58,7 @@ See also d18 and d53.
 
 ## Files about this domain
 
-58 tracked files name this domain.
+61 tracked files name this domain.
 
 ### Prose evidence (16) — mergeable
 
@@ -88,10 +94,13 @@ See also d18 and d53.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (30)
+### Code (33)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/status_origins.rs`

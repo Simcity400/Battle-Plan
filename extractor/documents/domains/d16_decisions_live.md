@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The validated current-build root is:
 
 ```text
@@ -57,15 +63,14 @@ See also d45, d60, d64, and d75.
 
 ## Files about this domain
 
-26 tracked files name this domain.
+27 tracked files name this domain.
 
-### Prose evidence (7) — mergeable
+### Prose evidence (6) — mergeable
 
 - `extractor/documents/domains/d12_focus_live.md`
 - `extractor/documents/domains/d16_decisions_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
@@ -84,8 +89,10 @@ See also d45, d60, d64, and d75.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (9)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

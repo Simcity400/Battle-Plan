@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The live walk uses validated `CGameState`, the country table at `CGameState+0x310/+0x31C`, and:
 
 | Object/field | Meaning |
@@ -76,7 +82,7 @@ See also d31, d49, d50, d51, d52, and d53.
 
 ## Files about this domain
 
-51 tracked files name this domain.
+52 tracked files name this domain.
 
 ### Pinned evidence (3) — byte-exact, do not merge
 
@@ -86,9 +92,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 
-### Prose evidence (16) — mergeable
+### Prose evidence (15) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -122,10 +127,12 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (18)
+### Code (20)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/naval_missions_status_live/Cargo.toml`

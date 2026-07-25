@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Exact-a729 root and row law:
 
 ```text
@@ -55,7 +61,7 @@ See also d42, d49, d50, d57, and d90.
 
 ## Files about this domain
 
-31 tracked files name this domain.
+33 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
@@ -80,9 +86,11 @@ See also d42, d49, d50, d57, and d90.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (14)
+### Code (16)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/naval_history.rs`
 - `extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs`

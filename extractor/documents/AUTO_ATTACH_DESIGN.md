@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the late-attach path that stages `collector.dll` and reuses the Windows-hook injector is not target acquisition; automatic process discovery remains required.
+
 # Dual-order automatic attach design
 
 **Status (corrected 2026-07-22):** the auto-attach product code is merged. An ordinary no-argument
@@ -26,10 +31,10 @@ and hashes H4CR plus integrity/error telemetry only: it does not run the host
 fold, build H4IX/H4CP, certify reconstruction/seek, package a replay, or compress.
 
 **Owner decision:** 2026-07-12. This implements pillar 1 of
-`PRODUCT_SESSION_SEMANTICS.md`: app-first and game-first must both attach without a
-PID, path, or save setting (`PRODUCT_SESSION_SEMANTICS.md:16-26`). It does not claim
+`documents/DECISIONS.md`: app-first and game-first must both attach without a
+PID, path, or save setting (`documents/DECISIONS.md`). It does not claim
 campaign identity or cross-session stitching exists; those remain separate
-prerequisites (`PRODUCT_SESSION_SEMANTICS.md:34-52`).
+prerequisites (`documents/DECISIONS.md`).
 
 ## 1. Decision
 
@@ -247,7 +252,7 @@ surface gaps.
 Never merge on modset, date, PID, or wall clock. Without campaign lineage finalize
 `stitching_status = campaign_identity_unresolved`. Later stitching may apply the
 owner's later-played-supersedes rule while retaining old branches
-(`PRODUCT_SESSION_SEMANTICS.md:53-61`); this layer only preserves evidence.
+(`documents/DECISIONS.md`); this layer only preserves evidence.
 
 ### Process-lifetime capture
 

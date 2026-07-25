@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Ahead-of-time presentation must come from the observed engine producer, not reconstruction from authored year, current date, `BASE_YEAR_AHEAD_PENALTY_FACTOR`, and an aggregate reduction field. Those inputs are corroborative only and cannot manufacture the effective quartet.
 
 Exact-a729 producer chain:
@@ -54,16 +60,15 @@ On paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Tech
 
 ## Files about this domain
 
-28 tracked files name this domain.
+29 tracked files name this domain.
 
-### Prose evidence (8) — mergeable
+### Prose evidence (7) — mergeable
 
 - `extractor/documents/domains/d12_focus_live.md`
 - `extractor/documents/domains/d13_tech_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
@@ -83,8 +88,10 @@ On paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Tech
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (9)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

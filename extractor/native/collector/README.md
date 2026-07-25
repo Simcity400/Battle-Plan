@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the shipped recorder does not inject this DLL with the Windows message hook or extend its compact stream into the production hot path; this collector remains an unshipped oracle.
+
 # collector
 
 In-process Battle Plan collector DLL.

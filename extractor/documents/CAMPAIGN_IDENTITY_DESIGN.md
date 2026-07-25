@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: CID1 compact headers, CFA1 barriers, and `RolloverPropose`/`RolloverAck` records are not target wire edges; engine ID/seed identity and rollover logic remain valid.
+
 # Campaign identity design
 
 **Purpose:** Define the campaign-identity source, validation rules, wire contract, rollover
@@ -6,7 +11,7 @@ semantics, and implementation gates without claiming that the design is already 
 the design of record, not a completion ledger.
 **Product requirement:** pillar 3 requires an engine-derived identity read from live memory and
 stamped into every stream before reload/relaunch stitching can be enabled
-(`extractor/documents/PRODUCT_SESSION_SEMANTICS.md:34-39`).
+(`documents/DECISIONS.md`).
 
 ## Verdict
 

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The retained evidence does not contain an active peace-conference graph, and the
 extractor has no active graph producer or carrier. The scanned corpus comprised
 257 saves (6,239,865,008 bytes), 36 melts (1,897,092,407 bytes), 265 replay
@@ -85,7 +91,7 @@ See also d26.
 
 ## Files about this domain
 
-37 tracked files name this domain.
+38 tracked files name this domain.
 
 ### Pinned evidence (10) — byte-exact, do not merge
 
@@ -120,10 +126,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/domain_registry.json`
 - `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
 
-### Code (15)
+### Code (16)
 
 - `extractor/coverage_audit/test_save_oracle_fixtures.py`
 - `extractor/coverage_audit/verify_save_oracle_fixtures.py`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/design_catalog_context_live/src/a40_peace_evidence.rs`
 - `extractor/native/lanes/design_catalog_context_live/src/lib.rs`

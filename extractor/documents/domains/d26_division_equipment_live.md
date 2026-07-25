@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D26 tolerates only `COMPACT_STATUS_PARTIAL_DATA`; source/state unavailable,
 profile mismatch, no clock/scalar source, worker panic, bridge unavailable,
 control invalid, and every other failure-mask bit make the domain unknown for
@@ -29,12 +35,49 @@ current-hour record. An absent following hour is freshness-masked as well.
 This prevents a partial omission from becoming an authenticated deletion or
 clean empty state.
 
+No serialized attrition-reason enum exists; the melt's 64 `attrition={}`
+occurrences are equipment-stat modifiers. The UI reason is a draw-time
+classification over contributions from supply, terrain, weather, training,
+state modifiers, and country technology. Fuel is a separate penalty and is not
+an attrition category. The exact-a729 candidate scalars are supply ratio at
+`CDivision+0x600`, auxiliary fuel at `+0x610`, and disrupted state at `+0xA0`.
+Supply begins below the modset define
+`SUPPLY_THRESHOLD_FOR_ARMY_ATTRITION` (vanilla `0.35`), training contributes
+the configured training attrition, and terrain/weather/state/technology values
+come from the recording's resolved installed content. The proposed dominant-reason
+classifier is an argmax over contributions rather than a fixed priority; it is
+a replay-side derived hypothesis, not an authenticated single-reason UI law.
+
+Vanilla reference magnitudes are supply attrition ramping to `0.20` over 30
+days, training `0.05`, terrain mountain `0.30`, marsh `0.35`, jungle `0.20`,
+and desert `0.15`, and weather mud `0.70`, extreme/very cold `0.40/0.25`, and
+extreme/very hot `0.20/0.10`. Modset values replace all of these.
+
+This classifier remains derived-with-residuals. The scale of `+0x600` is
+unsettled because the melt shows values such as `17.39`; one live known
+out-of-supply division must decide whether the threshold is `0.35` or `35`.
+State and technology contributions still need validated modifier reads, and
+the game may display several simultaneous causes rather than only the dominant
+one.
+
+Reinforcement source is more strictly unobservable. Production, stockpile,
+transfer, attrition replacement, rebase, and reorganisation are write-time
+causes, and distinct cause decompositions can yield the same pair of endpoint
+equipment maps. D26 may therefore emit exact per-unit/per-variant old value,
+new value, delta, owner, location, and time window, then correlate them with
+d11 production/stockpile deltas, d43 deliveries, losses, provenance, and
+identity changes. The result is a set of possible-source badges with confidence
+and an `unexplained_influx` conservation badge, never an authoritative
+`reinforced_from_*` event. Even a single balancing candidate is not proof
+because returns from deleted units, outbound sales, captures, obsolete cleanup,
+and within-window stockpile masking remain possible.
+
 See also d27, d28, d45, d48, d49, d50, d53, d54, and d65.
 
 
 ## Files about this domain
 
-33 tracked files name this domain.
+32 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -42,9 +85,8 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/documents/dossiers/A40/designer_static_inventory.json` — `f272fcd01ebbe562`
 
-### Prose evidence (11) — mergeable
+### Prose evidence (9) — mergeable
 
-- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d26_division_equipment_live.md`
@@ -53,7 +95,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d97_peace_conference_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/division_state_movement_live/README.md`
 - `extractor/native/recorder_host/README.md`
 
 ### Data evidence (12) — mergeable
@@ -71,8 +112,9 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (9)
+### Code (10)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/fold_check/src/tests.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 d12 captures persistent focus state: current focus, continuous focus, and completed/progress fields as encoded. Ordered hourly-or-better snapshots make the following derivable without a direct callback domain:
 
 - start when current/continuous focus appears or changes;
@@ -35,9 +41,8 @@ See also d13, d16, d45, and d51.
 
 34 tracked files name this domain.
 
-### Prose evidence (11) — mergeable
+### Prose evidence (9) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d12_focus_live.md`
@@ -45,7 +50,6 @@ See also d13, d16, d45, and d51.
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
@@ -65,8 +69,10 @@ See also d13, d16, d45, and d51.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (10)
+### Code (12)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The listed source contributes only one d90-specific durable fact: the positive
 and control branches and `CTA2` regrade are mechanically executable optional
 regression evidence. They require no human semantic attribution and cannot
@@ -24,7 +30,7 @@ promote an inferred value or descriptive screenshot.
 
 ## Files about this domain
 
-23 tracked files name this domain.
+25 tracked files name this domain.
 
 ### Prose evidence (9) — mergeable
 
@@ -44,9 +50,11 @@ promote an inferred value or descriptive screenshot.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (11)
+### Code (13)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs`
 - `extractor/native/lanes/naval_combat_live/src/convoy_terminal_runtime.rs`

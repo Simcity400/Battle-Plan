@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D80 is an ordered opaque render program, not a fixed catalog of vanilla pass
 roles. `StaticMapPassProgram.payload_sha256` is the portable whole-program
 identity. `pass_token` is authenticated provenance only and must never select
@@ -58,10 +64,8 @@ See also d48.
 
 48 tracked files name this domain.
 
-### Prose evidence (12) — mergeable
+### Prose evidence (10) — mergeable
 
-- `documents/REMAINING_WORK.md`
-- `documents/STATUS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/PORTABLE_CONTENT_MANIFEST.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -79,9 +83,11 @@ See also d48.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (33)
+### Code (35)
 
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/duplex_client.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/early_render_content_manifest.rs`
 - `extractor/native/compact_contract/src/early_render_control.rs`
 - `extractor/native/compact_contract/src/lib.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 Domain 49 shares several Stage-A failure origins with d50. Those origins must be represented by a closed descriptor whose affected-segment set names both domains; accounting creates one logical evidence unit per affected segment rather than guessing ownership from a domain-wide status OR.
 
 The current `so_*` drain is diagnostic only. Its count and separately stored last-sample value are not batch-coherent, counters can wrap without a terminal signal, and a count greater than one cannot recover earlier sample values. Exact accounting must preserve the full frame epoch/attempt, origin, cause, subsource, introduced status bits, sequence/hour, multiplicity, and optional sample. Until coherence and overflow gates exist, ambiguous evidence fails closed and cannot excuse a missing naval segment.
@@ -38,7 +44,7 @@ See also d50.
 
 ## Files about this domain
 
-53 tracked files name this domain.
+55 tracked files name this domain.
 
 ### Pinned evidence (2) — byte-exact, do not merge
 
@@ -47,9 +53,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 - `extractor/native/lanes/naval_combat_live/evidence/production_speed5_retained_lifecycle.json` — `306b8d917bd9b422`
 
-### Prose evidence (18) — mergeable
+### Prose evidence (17) — mergeable
 
-- `extractor/documents/C1_STAGEB_REGISTRY_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -84,9 +89,12 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (20)
+### Code (23)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/status_origins.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`

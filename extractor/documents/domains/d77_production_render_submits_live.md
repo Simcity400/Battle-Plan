@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D77 is an authenticated supplemental carrier, not an ordinary scheduled
 domain. It is admitted only with H4CT early-launch authority, must provide one
 JSON frame per completed hour, and must not manufacture a perf row. The frame
@@ -59,7 +65,7 @@ See also d57 and d80.
 
 ## Files about this domain
 
-33 tracked files name this domain.
+35 tracked files name this domain.
 
 ### Pinned evidence (2) — byte-exact, do not merge
 
@@ -68,10 +74,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
 
-### Prose evidence (5) — mergeable
+### Prose evidence (4) — mergeable
 
 - `documents/SEAM_CONTRACTS.md`
-- `documents/STATUS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d77_production_render_submits_live.md`
@@ -84,9 +89,12 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (21)
+### Code (24)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/rc_domain_tests.rs`
 - `extractor/native/collector/src/duplex_client.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/early_render_content_manifest.rs`
 - `extractor/native/compact_contract/src/early_render_control.rs`
 - `extractor/native/compact_contract/src/lib.rs`

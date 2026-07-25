@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D74/PBP2 is an optional typed semantic companion. Exact visible power-balance
 pixels belong to the authenticated selected-Present UI carrier; absence of d74
 must remain explicit and must not be replaced by a semantic reconstruction.
@@ -28,11 +34,10 @@ d81, and d87.
 
 ## Files about this domain
 
-44 tracked files name this domain.
+45 tracked files name this domain.
 
-### Prose evidence (9) — mergeable
+### Prose evidence (8) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -65,10 +70,12 @@ d81, and d87.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (15)
+### Code (17)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/power_balance_presentation_live/Cargo.toml`
 - `extractor/native/lanes/power_balance_presentation_live/src/a729_decision_grid.rs`

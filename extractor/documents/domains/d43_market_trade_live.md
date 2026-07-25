@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D43 is authoritative for each equipment-purchase/MTLL contract's id, seller,
 buyer, and global contract-vector order. A portable agreement exists only when
 that contract uniquely joins a current-hour d53
@@ -38,25 +44,24 @@ See also d11 and d53.
 
 ## Files about this domain
 
-49 tracked files name this domain.
+50 tracked files name this domain.
 
-### Prose evidence (17) — mergeable
+### Prose evidence (16) — mergeable
 
 - `extractor/documents/CONFIRMED_COMPLETE_DESIGN.md`
-- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d23_map_detail_live.md`
+- `extractor/documents/domains/d26_division_equipment_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d43_market_trade_live.md`
 - `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`
 - `extractor/documents/domains/d58_country_economy_counters_live.md`
 - `extractor/documents/domains/d60_capitulation_war_state_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
-- `extractor/native/lanes/country_economy_counters_live/README.md`
 - `extractor/native/lanes/market_trade_live/README.md`
 - `extractor/native/lanes/market_trade_live/SLICE_PACKET.md`
 
@@ -74,9 +79,11 @@ See also d11 and d53.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (21)
+### Code (23)
 
 - `extractor/native/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
 - `extractor/native/collector/src/x15_trade_activation_hook.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`

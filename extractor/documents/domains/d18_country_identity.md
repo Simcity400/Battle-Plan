@@ -16,12 +16,18 @@
 
 
 
+
+
+
+
+
+
 D18’s durable role in the listed cross-domain sources is the unique numeric `tag_db_id` to country-label join. A mismatched or non-unique label is unobtained and cannot override numeric identity. The d48 source accepts `CountryIdentityCache.rows` after zero/duplicate-tag, vtable, and minimum-count checks; the d53 source proves only the unique tag/id label join, not stronger pointer or tag-echo guards. Neither source proves that a filtered or minimum-size cache is a complete country roster. See also d48 and d53.
 
 
 ## Files about this domain
 
-48 tracked files name this domain.
+50 tracked files name this domain.
 
 ### Prose evidence (17) — mergeable
 
@@ -59,9 +65,11 @@ D18’s durable role in the listed cross-domain sources is the unique numeric `t
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (18)
+### Code (20)
 
 - `extractor/native/collector/src/a34_a40_evidence.rs`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/fold_check/src/tests.rs`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`

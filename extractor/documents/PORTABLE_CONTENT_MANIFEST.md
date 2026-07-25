@@ -1,3 +1,8 @@
+> **Read `documents/DECISIONS.md` first.** It is the target authority and outranks this file.
+> This file describes the system **as built**.
+>
+> Superseded here: the Domain 79/80 in-process VFS observation and container-v2 sealing flow is not the target content-acquisition architecture; the VFS and portable manifest remain reusable proven work.
+
 # Portable content manifest: extractor production contract
 
 Status: **in-process extractor/VFS interpreter observations and container seal

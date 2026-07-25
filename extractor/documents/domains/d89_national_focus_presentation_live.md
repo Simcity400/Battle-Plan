@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 `CNationalFocusView` vtable `0x14299D680` owns the final item pointer vector at `+0x2058/+0x2060/+0x2064/+0x2068`. Each item is a `0x550`-byte `CNationalFocusTreeItem` with vtables `0x14299DD40/0x14299DDE0`, definition pointer `+0x20`, final state code `+0x540`, and capability bytes `+0x54C/+0x54D`.
 
 State materialization follows `0x14137A780 -> 0x141379A50 -> 0x1413778F0`. Exact-a729 frame callers invoke `0x14137A780` before `0x14137A600`, so a complete observation is sealed only after the same-view dynamic/detail pair. Highlight (`0x141377430`) and display percent (`0x141BB5DF0`, final widget argument at `0x141BB636E`) are transient leaves joined by item/definition identity.
@@ -29,7 +35,7 @@ See also d51.
 
 ## Files about this domain
 
-30 tracked files name this domain.
+32 tracked files name this domain.
 
 ### Prose evidence (7) — mergeable
 
@@ -48,10 +54,12 @@ See also d51.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (19)
+### Code (21)
 
 - `extractor/native/collector/src/a31_focus_canvas_join.rs`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/national_focus_presentation.rs`
 - `extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_hook.rs`

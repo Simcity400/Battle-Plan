@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The layouts are pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -87,20 +93,61 @@ retained 310-line melt, 281 vectors had lengths different from
 `active_factories` and many were capacity-sized (150 or 20 entries), so never
 average the entire vector. The live current helper remains authoritative.
 
+### Stockpiles, production lines, and construction
+
+The exact-a729 production manager is `CCountry+0xF68`. Its stockpile vector is
+at `+0x220/+0x228/+0x22C`; entries have stride `0x10` and contain a type-70
+equipment-variant pointer at `+0x00` and signed i64 amount at `+0x08`. A
+variant has vtable `module+0x293AFB8`, type at `+0x08`, and stable id at
+`+0x0C`.
+
+The production-line pointer vector is at manager
+`+0x58/+0x60/+0x64`, with stride 8. The four proved primary vtables are
+`module+0x2965050` for military lines, `module+0x2965238` for naval lines,
+`module+0x2965398` for railway guns, and `module+0x2965858` for ship refits.
+
+| Field | Production-line offset |
+|---|---:|
+| legacy type and stable id | `+0x08`, `+0x0C` |
+| active factories | `+0x18` |
+| cost, speed, produced | `+0x28`, `+0x30`, `+0x38` |
+| exact engine priority/order | `+0x44` |
+| amount | `+0x48` |
+| equipment-variant pointer | `+0x88` |
+| industrial-organisation CID | `+0x90` |
+| requested factories | `+0xE8` |
+
+The industrial-organisation CID is `{type:u32,id:u32}`. `{0,0}` is proved
+null and `{79,id>0}` is an assigned organisation. Variant, requested-factory,
+priority, subtype, efficiency, organisation, and completeness joins are
+pointer-free and bijective by `(tag_db_id,kind,line_id)`; a missing,
+unreadable, type-invalid, duplicate, or non-bijective input suppresses the
+whole optional segment rather than attaching it to the wrong line.
+
+The civil construction vector is at manager `+0x70/+0x78/+0x7C`, with pointer
+stride 8. Its rows have type 59 at `+0x08`; the template subobject is at
+`+0x70` and its id at subobject `+0x08`. Its pointer-free key is
+`(tag_db_id,line_id,priority)`. The exact deployment template vtable is
+`module+0x2938F70` for type 52. Civil construction is not military deployment
+state. Likewise, scripted consumer-goods variables do not prove a numeric live
+consumer-goods root, save resource flows do not prove the hot-loop shortage
+surface, and market/trade factory effects belong to their own contract. Those
+absences remain source gaps rather than values inferred from neighbouring
+economy fields.
+
 
 ## Files about this domain
 
 49 tracked files name this domain.
 
-### Prose evidence (20) — mergeable
+### Prose evidence (17) — mergeable
 
-- `documents/REMAINING_WORK.md`
-- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d1000_frame.md`
 - `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
+- `extractor/documents/domains/d26_division_equipment_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d37_stockpile_variant_defs.md`
 - `extractor/documents/domains/d42_air_combat_losses_live.md`
@@ -110,8 +157,6 @@ average the entire vector. The live current helper remains authoritative.
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/dossiers/X4_PRODUCTION_LEGACY_RESIDUAL_CLOSEOUT_20260719.md`
 - `extractor/native/collector/README.md`
-- `extractor/native/lanes/country_economy_counters_live/README.md`
-- `extractor/native/lanes/country_economy_production_stockpile_live/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
@@ -131,8 +176,11 @@ average the entire vector. The live current helper remains authoritative.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (16)
+### Code (19)
 
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/offsets.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/country_economy_counters_live/src/lib.rs`

@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 The correct exact-a729 owner is `CCountryDecisionView`, constructed at
 `0x1417128E0` with vftable `0x1429DECE8`. Its update is `0x141716270`;
 `decision_grid_container` is view `+0x580` and `decision_grid` is view `+0x588`.
@@ -49,11 +55,10 @@ See also d45.
 
 ## Files about this domain
 
-35 tracked files name this domain.
+36 tracked files name this domain.
 
-### Prose evidence (10) — mergeable
+### Prose evidence (9) — mergeable
 
-- `documents/REMAINING_WORK.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
@@ -71,12 +76,14 @@ See also d45.
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/direct_frd_transitions_live/X10_DIRECT_TRANSITION_OWNER_FIXTURE_20260720.json`
 
-### Code (21)
+### Code (23)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/a34_a40_evidence.rs`
+- `extractor/native/collector/src/attach_log.rs`
 - `extractor/native/collector/src/domain_registry.rs`
+- `extractor/native/collector/src/lib.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/decision_panel_live/Cargo.toml`
 - `extractor/native/lanes/decision_panel_live/src/a729_hook.rs`

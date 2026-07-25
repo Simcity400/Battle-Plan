@@ -16,6 +16,12 @@
 
 
 
+
+
+
+
+
+
 D60 uses a persistent capitulation map across hours; this is intentionally
 different from current-hour-only d53 state. Status bit 16 is mandatory and
 informational when war rows exist, describing running-accumulator semantics.
@@ -26,12 +32,39 @@ the manifests contain no `compact_stream.status_origins`; incidence therefore
 does not attribute a cause. Missing origin evidence must not be inferred from
 timing.
 
+Surrender progress is not a stored scalar: the melt has zero
+`surrender_progress` fields and the live D-region scan found no usable
+war-state discriminator in `[0,1]`. Capitulation state remains authoritative at
+`u64[CCountry+0xF88]+0x2E0`, with capitulation date at `+0x2F0`; only the
+in-progress display fraction is recomputed.
+
+For country `C`, total victory points sum modset-resolved or save-overridden VP
+over provinces in states owned by `C`. Enemy VP sums the same provinces when
+their province controller, or state controller fallback, is at war with `C`.
+Let `E=enemy_vp/total_vp`, or zero when total VP is zero. The effective
+surrender limit starts at `0.8 + surrender_limit`, is multiplied by `0.7` when
+the country owns no core state, subtracts `0.15*collaboration`, is floored by
+`0.2 + max_surrender_limit_offset`, then adds
+`forced_surrender_limit` outside that floor. The displayed fraction is
+`clamp(E/L_eff,0,1)`, with a non-positive limit yielding one.
+The tooltip identities provide a mechanical cross-check:
+`SURRENDER=E/L_eff`, `CONTROL=1-E`, and `VAL=1-L_eff`.
+
+This recomputation is display/analytics evidence, not a capitulation event.
+Residuals remain over enemy-controlled versus merely non-self-controlled VP,
+subtractive versus multiplicative collaboration at high values, the placement
+of the no-cores multiplier, and the interpretation of
+`max_surrender_limit_offset` as raising the floor. Emitting both enemy-VP and
+not-owned-VP fractions exposes third-party-control divergence instead of
+hiding it. All state history, defines, ideas, modifiers, and VP inputs must use
+the recording modset.
+
 See also d43, d45, d47, d48, d49, d50, d51, d53, d54, and d65.
 
 
 ## Files about this domain
 
-40 tracked files name this domain.
+42 tracked files name this domain.
 
 ### Prose evidence (9) — mergeable
 
@@ -59,10 +92,12 @@ See also d43, d45, d47, d48, d49, d50, d51, d53, d54, and d65.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (20)
+### Code (22)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
+- `extractor/native/collector/src/attach_log.rs`
+- `extractor/native/collector/src/attach_log/tests.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
 - `extractor/native/compact_contract/src/lib.rs`
