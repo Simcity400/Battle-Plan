@@ -17,6 +17,10 @@ domain. It is admitted only with H4CT early-launch authority, must provide one
 JSON frame per completed hour, and must not manufacture a perf row. The frame
 binds process id/creation nonce, launch epoch, VFS/static inputs, selected
 Present, and pointer-free production-render data; d77 without H4CT is rejected.
+Only recorder admission may rebind an immutable prepared corpus from its
+captured source PID to the newly created suspended PID, with both identities
+and the rebind mode recorded. Ordinary attach and repack require exact PID and
+creation-time identity.
 
 The production pointer-family acquisition launches exact a729 suspended with
 the centrally attested collector, authenticates the paused Deep War process,
@@ -34,10 +38,17 @@ an earlier receipt or select the pointer family. The desktop must remain
 unlocked and untouched during the foreground pointer action. Historical
 captures that reached FIRST but crashed before COMMIT/publication remain
 negative evidence. The retained corpus has 177 parseable manifests but no
-acceptance telemetry or sink authority. Remaining live inputs are a
-same-process exact-a729 UI14 capture and modset preparation, one exact-a729
-XN15L suspended launch, and a separate native-D3D replay/pixel receipt.
-Unsupported keyboard/controller traversal remains unavailable.
+acceptance telemetry or sink authority. Modset admission recomputes the
+six-file aggregate plus selected directory/archive hashes and VFS joins; sink
+admission requires the complete 62-hook set plus host/collector timing and
+lifecycle reconciliation. H-SINK-OK is graded on the next ordinary Safe
+launcher rung, not by another authorization or launch.
+
+Same-process exact-a729 UI14 capture/modset preparation, an XN15L suspended
+launch, and native-D3D replay/pixel evidence are feature-local optional
+nonblocking regression evidence. They never activate product code and are not
+product-wide blockers. Unsupported keyboard/controller traversal remains
+unavailable.
 
 See also d57 and d80.
 

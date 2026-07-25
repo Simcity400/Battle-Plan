@@ -28,7 +28,7 @@ border_friction_claim = i32[rel+0x308] / 100000
 
 The D04 oracle matched `cached_sum` for `10,354/10,354` non-missing rows and border friction for `44,382/44,382`, with zero value mismatches; remaining misses were dynamic-tag aliases, not chain failures.
 
-Common relation identity stores first/second country ids at `+0x10/+0x14` and start/end raw dates at `+0x20/+0x38`. Exact kinds used by cross-domain joins include equipment purchase `9` and licence-production access `13`; `CLicenceProductionAccessRelation` vtable RVA is `0x2949858`. First/second direction is engine authority and must not be renamed seller/buyer or owner/partner direction. See also d11 and d43.
+Cross-domain relation layouts and typed-kind joins belong to d11 and d43; they are not independently established by d53’s listed sources. See also d11 and d43.
 
 ### Operation instances (OPIN v3)
 
@@ -71,9 +71,7 @@ Every rejection after an earlier same-hour success, including decode/truncation 
 
 Incremental optimization must still read current emitted fields and revalidate identity every frame. Candidate discovery cannot become periodic unless a complete birth/dirty signal is proven; otherwise new objects are missed. Address-only live sets are unsafe under ABA reuse. String metadata/bytes must be read and rechecked coherently. The correct moving-state comparison is A/B/A: full read A1, incremental B, full read A2, and require byte equality only when A1 equals A2.
 
-Observed performance evidence is build/run-specific, not a semantic law: roughly 130k first-read candidates and 191k reads implied about 6.1k survivors; full candidate scanning dominated. Relation/candidate prefetch defaults `16/32` produced a real timing improvement without extra guarded reads, while global thread counts from 36 down to 4 left roughly `49-50 ns/read`, indicating latency rather than oversubscription. Arbitrary frame-wide 256-byte read caching is unsafe because it can satisfy later liveness checks with stale bytes; exact layout-aware snapshots may not cross allocation boundaries or replace final validation.
-
-In the same-live-game W0 A/B, aggregate wall per counted d53 read fell from `319.5ns` to `182.0ns`; success-normalized aggregate wall fell from `190.313ms` to `108.583ms` (`-42.9%`, about `1.75x`). This is a whole-domain composite, not an isolated read-primitive or strict single-variable measurement. The instrumented relations phase remained about `63.43%/63.51%` of full wall in one comparison and `65.3%` in a later run, so untimed residuals must not automatically be labelled non-relation work. Replacing decode-gate work with snapshot summarization was a performance null: `29.72ms` became `29.45 + 0.93 = 30.38ms`. A `1/32` decode sample is only a regression detector; cheap final invariant checks must remain always-on. The retained evidence does not reach sub-50ms deep capture.
+Arbitrary frame-wide 256-byte read caching is unsafe because it can satisfy later liveness checks with stale bytes; exact layout-aware snapshots may not cross allocation boundaries or replace final validation. A sampled decode gate may be a regression detector, but cheap final invariant checks must remain always-on.
 
 ### Limits and contradictions
 

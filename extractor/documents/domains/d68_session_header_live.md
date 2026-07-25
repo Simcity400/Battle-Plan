@@ -12,7 +12,7 @@
 
 ## Condensed knowledge
 
-The legacy d68 payload contains `player_tag_db_id`, DLCs, `start_date_raw`, `save_version`, `session`, ideology, cosmetic tag, and version. It does not contain `game_unique_id` or `game_unique_seed`. `W12C_CAMPAIGN_ID_IMPL.md` therefore correctly emitted campaign identity as unavailable/unbound at that revision; its broader claim that no live offsets were known is superseded by the later static RE below. The old proposed offsets `CGameState+0xD4/+0x4A8/+0x58/+0x490` are existing DLC/start-date/save-version/session fields, not campaign identity.
+The legacy d68 payload contains `player_tag_db_id`, DLCs, `start_date_raw`, `save_version`, `session`, ideology, cosmetic tag, and version. It does not contain `game_unique_id` or `game_unique_seed`. `W12C_CAMPAIGN_ID_IMPL.md` therefore correctly emitted campaign identity as unavailable/unbound at that revision; its broader claim that no live offsets were known is superseded by the later static RE below.
 
 For exact-a729 (`SHA-256 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`):
 

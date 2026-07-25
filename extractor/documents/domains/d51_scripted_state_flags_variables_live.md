@@ -41,9 +41,7 @@ positive live census showing every timed-effect member class is classified.
 
 Performance shortcuts cannot freeze or periodically sample this domain without
 a proven complete dirty/version signal: the captured values mutate in place and
-therefore require current emitted-field reads every frame. The reviewed budget
-measured d51 at `25.5ms`; even an estimated `~8-12ms` optimized path remains
-incompatible with zero-data-loss sub-50 capture if it skips those reads.
+therefore require current emitted-field reads every frame.
 
 See also d18 and d53.
 

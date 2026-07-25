@@ -60,8 +60,17 @@ The static atlas records five exact peace map-mode colors:
 | `PEACE_CONFERENCE_DIFFERENT_STACKABLE_SECONDARY_COLOR` | `{ 1, 1, 0, 0.25 }` |
 
 It also fixes `PEACE_HOVERED_STATE_COLOR_INDEX=3`,
-`PEACE_CLAIMED_STATE_COLOR_INDEX=2`, and
-`DEFAULT_PRIORITY_PEACE_COST=STATES_PRIORITY_PEACE_COST=SUPPLY_AREAS_PRIORITY_PEACE_COST=STRATEGIC_AIR_PRIORITY_PEACE_COST=3`.
+`PEACE_CLAIMED_STATE_COLOR_INDEX=2`, and the complete peace-conference icon
+priority law: `20` for naval combat, land combat, and peace cost; `19` for
+naval-combat results; `14` for supply; `13` for naval mission, air mission,
+naval mines, naval accidents, and naval dominance; `11` for unit-stack group;
+`10` for unit stack, resource, and strategic location; `5` for victory points
+and capital; and `3` for construction info, air base, rocket site, gun
+emplacement, facility, naval headquarters, naval base, and adjacency rule.
+Peace-conference gradient borders use thickness A/B `3.0`/`6.0`, outline
+cutoff `0.973`, camera-distance override `1.0`, activation `false`, and
+one-color sentinel `{ -1.0, -1.0, -1.0, -1.0 }` (use Negotiator MapColor).
+`PEACE_CONFERENCE_MAP_ICON_DISTANCE_CUTOFF` is `500`.
 The scanned vanilla tree contained 36 files under `common/peace_conference`
 (34 `.txt`, 2 `.md`) and 11 `.dds` files under
 `gfx/interface/peace_conference`; these are static inputs, not evidence of an

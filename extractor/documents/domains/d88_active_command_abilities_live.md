@@ -20,7 +20,7 @@ Intrinsic ability token is `CAbility+0x70`. Display icon is the exact `+0x288/+0
 
 Measured empty requires the `0x140B58CA0` early-return decision to be false, stable selected mode not `7`, non-null selected identity, and zero source, aggregate, and widget counts. Early return, unselected/identity-free mode, torn zero, or unreadable header is unavailable, not empty.
 
-ABA2 wraps pointer-free ABL1 and requires exact executable/function authority, identical inner/outer hour and elapsed-wall identity, zero status for exact data, and complete row/timer/target/text/order joins. Unknown flags, malformed or pointer-like identities, missing receipt, or trailing bytes reject the whole payload. Although the registry now labels d88 production-complete, the listed source explicitly says its four activation gates were not all true and the transition fixture matrix was absent; this status/source contradiction must be resolved from current code before assuming live scheduling.
+ABA2 wraps pointer-free ABL1 and requires exact executable/function authority, identical inner/outer hour and elapsed-wall identity, zero status for exact data, and complete row/timer/target/text/order joins. Unknown flags, malformed or pointer-like identities, missing receipt, or trailing bytes reject the whole payload. Although the registry now labels d88 production-complete, the listed source explicitly says its four activation gates were not all true and the transition fixture matrix was absent; this status/source contradiction must be resolved from current code before assuming live scheduling. See also d47.
 
 ## Files about this domain
 

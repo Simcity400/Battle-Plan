@@ -12,7 +12,7 @@
 
 ## Condensed knowledge
 
-D18’s durable role in the listed cross-domain sources is the unique numeric `tag_db_id` to country-label join. A mismatched or non-unique label is unobtained and cannot override numeric identity. Consumers must revalidate nonzero ids, unique object pointers, the `CCountry` vtable, and the `CCountry+0x08` tag echo; a filtered or minimum-size cache is not proof of a complete country roster. See also d48 and d53.
+D18’s durable role in the listed cross-domain sources is the unique numeric `tag_db_id` to country-label join. A mismatched or non-unique label is unobtained and cannot override numeric identity. The d48 source accepts `CountryIdentityCache.rows` after zero/duplicate-tag, vtable, and minimum-count checks; the d53 source proves only the unique tag/id label join, not stronger pointer or tag-echo guards. Neither source proves that a filtered or minimum-size cache is a complete country roster. See also d48 and d53.
 
 ## Files about this domain
 

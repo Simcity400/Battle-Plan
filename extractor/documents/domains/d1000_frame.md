@@ -67,20 +67,12 @@ blocking but does not suppress independent manifest findings. Missing
 configured manifests and zero usable manifests are also fail-closed
 conditions.
 
-The artifact contract does not itself prove the production launcher. Until the
-launcher consumes the attested Cargo-reported path, a fixed-default-path DLL
-and `-SkipBuild` remain concrete bypasses. A safe launcher must reject
-`-SkipBuild`, invoke build-and-attest, require exactly one machine-readable
-attestation summary, reload the sidecar, and immediately recheck path, size,
-and SHA-256 before passing that DLL to the recorder.
-
 Residual limits are explicit: replacement after the final hash but before
 `LoadLibrary` is an OS-level TOCTOU window; a future lying `registry_dump`
 could print golden constants instead of iterating `ASSIGNED_COMPACT_DOMAINS`;
 no digest is exported from the collector DLL itself; the oracle trusts
 Cargo/rustc/cache, Cargo JSON, process execution, filesystem reads, and
-SHA-256; and adjacent `collector_record.exe` is derived but not independently
-attested.
+SHA-256.
 
 See also d10, d11, d18, d42, d48, d65, and d69.
 

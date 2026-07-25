@@ -17,11 +17,10 @@ different from current-hour-only d53 state. Status bit 16 is mandatory and
 informational when war rows exist, describing running-accumulator semantics.
 It must not be classified as a failure or included in cause reconciliation.
 
-Two retained production streams show d60 `SOURCE_UNAVAILABLE|PARTIAL_DATA` only
-in their early spans (`60807635..60807669` and `60814959..60814980`). Their
-manifests contain no `compact_stream.status_origins`, so they prove incidence
-but cannot attribute a cause. Missing origin evidence must not be inferred from
-the timing.
+Retained production evidence shows d60 `SOURCE_UNAVAILABLE|PARTIAL_DATA`, but
+the manifests contain no `compact_stream.status_origins`; incidence therefore
+does not attribute a cause. Missing origin evidence must not be inferred from
+timing.
 
 See also d43, d45, d47, d48, d49, d50, d51, d53, d54, and d65.
 
