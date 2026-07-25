@@ -10,6 +10,44 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Exact-a729 root and row law:
+
+```text
+CGameState+0x5A8 = vector<CSunkConvoyInfo*>
+count             = CGameState+0x5B4
+CSunkConvoyInfo vtable = module+0x295D008
+extent            = 0x18
++0x08 month
++0x0C convoy count
++0x10 killer country tag handle/id
++0x14 owner country tag handle/id
+serializer        = 0x1401F2A20
+field writes      = 0x1401F490E..0x1401F4951
+```
+
+The SCH1 full snapshot contains exact `{month, convoys, killer_country_tag_db_id, owner_tag_db_id}` rows. Current v3 authority preserves the engine's stored first-seen aggregate order; the historical month/killer/owner sorting path is superseded. This root is global terminal history, distinct from the per-ship cumulative `CShip+0x3C` counter, and carries no convoy route identity.
+
+The reader double-reads the vector header and each row, requires the exact vtable and bounded values, and rejects duplicate identities or torn content. Terminal-mutation capture requires an owner-run paused equality receipt authenticating one mutation; a retained save or after-only vector cannot establish it.
+
+The decisive loss boundary is the call at RVA `0x1962378` to RVA `0x1CAE90`. Evidence capture is admitted only for exact-a729 at image base `0x140000000`, executable SHA-256 `870EBF1F615262FACCA48A3B947775C41F0A5338F3068C40958209F5C41C65AD`, with the complete 25-byte window at RVA `0x1962364`:
+
+```text
+4D 8D 4C 24 20 4D 8B C7 BA 01 00 00 00
+48 8B 0D 18 4B 9B 01 E8 13 8B 86 FE
+```
+
+At the positive callback, the evidence envelope captures the `CFEXMember` through `+0x127`, including convoy handle `+0x10`, owner `+0x20`, client handle `+0xD0`, convoy index `+0xD8`, state `+0xE0`, and slot `+0x120`; it also binds the owning d49/d50 combat id/generation, the full client-handle registry lookup, typed route endpoints, and complete ordered d70 vectors before and after the original call. Acceptance requires exactly one bucket increment or one appended count-one bucket, with no unexplained mutation.
+
+The negative arm must keep the same client/route live for a complete game hour with independent armed heartbeats, zero callbacks for that client, and byte-identical ordered d70 vectors. Every unrelated changed bucket requires its own authenticated call. CTA2 sequences begin at 1, are gap-free, and seal only when callback/original/emitted counts match, all drop counters are zero, the queue is empty, callbacks are quiescent, and the resolver publication receipt is nonzero.
+
+CTA1 authority SHA-256: `42CFB445B2EB539F40B9525392DF129C0D72C2E328219CBF8D8E75F6D6C5614D`.
+
+Rejected substitutes include save-only or time-window correlation, task-force mission/current province/ship name, owner/killer alone, `convoy_index` without full handles, a callback without heartbeat, after-only d70 output, an unrooted route object, and inferred endpoints.
+
+See also d42, d49, d50, d57, and d90.
+
 ## Files about this domain
 
 58 tracked files name this domain.

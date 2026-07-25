@@ -10,6 +10,16 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+D10 carries the exact `fuel` and `max_fuel` constituents. A replay fuel ratio
+may be derived only when both are proven in the same admitted state and
+`max_fuel` is positive; otherwise the ratio is absent. The batch source provides
+no additional D10 memory offset or acquisition law.
+
+See also d14, d15, d18, d28, d29, d43, d44, d45, d49, d50, d53, d54, d56,
+and d65.
+
 ## Files about this domain
 
 100 tracked files name this domain.

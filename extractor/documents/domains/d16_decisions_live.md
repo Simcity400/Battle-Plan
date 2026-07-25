@@ -10,6 +10,46 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The validated current-build root is:
+
+```text
+CCountry+0xFA0 -> CDecisionStatus
+CDecisionStatus vtable = 0x27D50F0
+CDecisionStatus+0x08 = owner back-pointer
+```
+
+Known pointer-array headers use `data@+0x00`, `cap@+0x08`, `size@+0x0C`, with 8-byte elements. The live vectors are:
+
+| Offset | Serialized family | Current interpretation |
+|---:|---|---|
+| `+0x40` | `decisions_taken` or re-enable family | Counted only; label is disputed |
+| `+0x88` | `active_targeted_decision` | Counted only; body unresolved |
+| `+0xA0` | `active_timed_decision` | Decoded and emitted by d16 |
+| `+0xE8` | `active_targeted_timed_decision` | Decoded by d45 |
+| `+0x130` | `decision_to_re_enable` or alternate re-enable family | Counted only; label is disputed |
+| `+0x148` | `random_item` | Old-build label only; not revalidated on `870ebf` |
+| unknown | `decision_to_remove` | No live offset/body assignment |
+
+The d16 timed record has vtable `0x27D4FD0`, definition pointer `+0x10`, raw signed/nonnegative integer at `+0x18`, state at `+0x1C` (`0 = ACTIVE`), and definition name at `definition+0x120`. The reader emits only active records and serializes per-country vector counts plus `{tag_db_id, days, state, decision}`. Current-build evidence proves the integer and its bounds, but not that it is the UI countdown or that its unit is days; treat it as `days_raw` and do not populate `remaining_timer_days`.
+
+The targeted-timed sibling uses vtable `0x27D5038`, definition `+0x10`, and country target `+0x20`. It belongs to d45; numeric targets remain absent. Static definitions may supply `category_id` for a resolved decision ID, but d16 does not carry category, displayed cost, full visibility/availability, cooldown identity, or target.
+
+The full visible decision catalogue is not proved absent from memory, nor proved to be materialized only by the UI. A complete reader needs a bounded object scan or serializer/getter trace and must work with the decision panel closed. Static PP cost must not substitute for computed/custom displayed cost.
+
+Known negative results:
+
+- `active_targeted_decision` entries predominantly use vtable `0x27D4F00`; the timed `record+0x10 -> CDecisionDef` layout is a proven null (`0/5270`) and d45's decoder cannot be reused.
+- Sampled `+0x40` records also use `0x27D4F00`; the timed definition route failed `0/56`.
+- A sampled `+0x130` record uses vtable `0x27D4E60` and rejects the timed definition layout.
+
+There is an explicit naming contradiction: reader strings call `+0x40` `"decisions_taken_bucket"` and `+0x130` `"decision_to_re_enable"`, while the constants name `+0x40 = DECISION_STATUS_RE_ENABLE` and `+0x130 = DECISION_STATUS_RE_ENABLE_ALT`. This is harmless while only counts are emitted, but taken-versus-cooldown decoding must first resolve it against melt semantics.
+
+Fold semantics preserve measured-empty `timed_live=[]` separately from an unmeasured or failed country. A torn vector or evaluation failure must not replace the previous complete baseline with a shorter plausible list. The safe current view is only the active-timed subset; absence of a d16 row means neither invisible nor unavailable.
+
+See also d45, d60, d64, and d75.
+
 ## Files about this domain
 
 81 tracked files name this domain.

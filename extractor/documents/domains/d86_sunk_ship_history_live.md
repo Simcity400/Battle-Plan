@@ -10,6 +10,32 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+All layout evidence is exact-a729 (`hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`). The completed-history vector is at `CGameState+0x590`, laid out as data pointer `+0x00`, capacity `u32 +0x08`, count `u32 +0x0C`, with eight-byte entries. Each `CSunkShipInfo` has vtable `0x142941608` and size `0xA8`.
+
+| Offset | Exact field |
+|---:|---|
+| `+0x08` / `+0x28` | victim / attacker ship name |
+| `+0x48` / `+0x4C` | victim / attacker country id |
+| `+0x58` | raw sink date copied from `CGameState+0x468` |
+| `+0x68` / `+0x70` | victim / attacker class handle |
+| `+0x78` | distinct terminal-history UI country id |
+| `+0x7C` / `+0x84` | victim reference / optional damage-source reference |
+| `+0x90` | optional task-force stable-id path |
+| `+0x98` | exact two-word serialized value |
+| `+0xA0` / `+0xA1` | raw cause flag / killed-versus-assisted discriminator |
+
+The earlier probe’s `+0x60` date interpretation is explicitly wrong: `+0x60` begins the following embedded `CGameDate` vtable; the scalar is `+0x58`. Likewise victim `+0x48`, attacker `+0x4C`, and UI-populator `+0x78` are distinct and must not be conflated.
+
+The complete terminal writer route is:
+
+`0x141961DD0 -> 0x140D637C0 -> exactly one of 0x1401D2C90 / 0x1401D2D10 / 0x1401D2DA0 -> append at CGameState+0x590`.
+
+Only `0x141961DD0` supplies nonzero-capable naval sink context; the other three direct callers of `0x140D637C0` pass zero cause. Constructor-only capture is invalid because it also sees temporary `0x140C23290` records. Admission therefore brackets the outer callback and all three wrappers on one thread, requires exactly one post-return vector growth, joins the `CFEXMember*` to the same D49/D50 `(combat_id,generation)` publication, and validates the complete final object. Active-member disappearance alone is never a sinking event.
+
+SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, names/classes, and exact date. Empty attacker text or zero optional damage-source handle are exact absence, not rejection. The empirical fixture requires a structurally valid empty ledger before and after hook installation, at least one globally appended sink, strict sequencing, current D49/D50 receipts, exact loaded DLL/executable identity, and zero unbound/reentrant/unreadable/overflow/lock/completeness losses. Listed sources still describe live scheduling as fixture-latched false, while the domain identity says production-complete/schedulable; that activation-state contradiction requires current-code resolution. See also d49, d50, and d87.
+
 ## Files about this domain
 
 28 tracked files name this domain.

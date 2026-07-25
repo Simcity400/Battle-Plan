@@ -10,6 +10,81 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The layout is pinned to `hoi4.exe 1.19.2.0.a729`, image base
+`0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+For supported construction lines, the discriminator is `59` and
+`CBuildingProductionLine+0x70 -> CBuilding`.
+
+| Field | Exact law |
+|---|---|
+| `CBuilding+0x1D8` | target-location object; `target-location+0x6C` is exact save `building.location`. State ids join directly; province ids join through validated province-to-state topology. |
+| `CBuildingProductionLine+0x78` | repair-level counter. `0` is ordinary construction; positive is `CBuilding.level-CBuilding.healthy_level`. |
+| `CBuilding+0x48` | signed fixed-5 partial health for the next damaged level, valid range `0..=10_000_000`. At `10_000_000` the engine clears it and increments `healthy_level`. |
+| `CBuilding+0x08` | full non-dense 32-bit runtime building type id; never truncate it. |
+
+Building-mutation reason codes are exact: `0 none`, `1 bombed`,
+`2 sabotaged`, `3 collateral`, `4 repaired`, `5 scorched`. The reason argument
+is transient, so current-state rows expose repair state/progress but do not
+invent a historical “last cause”.
+
+The shared `BUILDING_TYPE_ID_TO_TOKEN` registry contains all 55 vanilla
+definitions. A 7,456-row same-hour live/save join observed 43 ids with 43/43
+unique token matches, zero ambiguity, and zero mismatch; the definition and
+registry token sets were both 55 unique entries. The 12 uninstantiated entries
+were independently classified:
+
+| Runtime id | Token | Id law |
+|---:|---|---|
+| `0x32B4` | `nuclear_reactor` | legacy identity |
+| `0x33F7` | `rocket_site` | legacy identity |
+| `0x760B` | `stronghold_network` | name token `0x760A` + 1 |
+| `0x7734` | `mega_gun_emplacement` | name token `0x7733` + 1 |
+| `0x782E` | `nuclear_reactor_heavy_water` | name token `0x782D` + 1 |
+| `0x7860` | `commercial_nuclear_reactor` | name token `0x785F` + 1 |
+| `0x7A24` | `energy_infrastructure` | name token `0x7A23` + 1 |
+| `0x7A57` | `industrial_infrastructure` | name token `0x7A56` + 1 |
+| `0x7C1A` | `landmark_berlin_volkshalle` | name token `0x7C19` + 1 |
+| `0x7D46` | `landmark_nanjing_presidential_palace_prc` | name token `0x7D45` + 1 |
+| `0x7E0E` | `landmark_national_diet` | name token `0x7E0D` + 1 |
+| `0x7E40` | `landmark_hakko_ichiu` | name token `0x7E3F` + 1 |
+
+The complete census found 42 content-defined `+1` rows and 13 legacy identity
+rows, with no other delta; it is not permission to apply `+1` to an
+unclassified future id. Unknown or mod-added ids remain numeric:
+map detail renders `type_0xXXXXXXXX`, while d48 omits the optional token.
+Proof inputs include folded snapshot SHA-256
+`b07464036dc3dd538227635729ac9a865f49faf7b60882aab1a0c35e03126af3`,
+same-hour save
+`862e96338e64c985a075d50b62a9bae251e5b0ed32d33dbaa33ae6f5f42d2273`,
+`00_buildings.txt`
+`9fa27d266f726de04c71311551698c6466257636dcc34d2573a3568d397bd539`,
+`01_landmark_buildings.txt`
+`9528c42836e08ba01019d62d42607d0d5fb2473b8aa7aa7cb852d95e7a08002c`,
+and resolver executable
+`971d44ee56657f060edfd3745a570f6e0dc01a7f2e59f2cb8322751afc15b269`.
+
+A readable non-59 discriminator is not a proven out-of-domain filter. The
+vector slot may have been removed or reused between vector snapshot and object
+read, so this path increments
+`skipped_construction_non_construction_line_rows`, sets `PARTIAL_DATA`, and
+must not emit a tombstone for the omitted baseline key. Invalid pointers,
+failed roots/fields, invalid factory counts, invalid progress, and malformed
+type-59 rows also stay partial. Valid siblings may sparse-fold, but clean
+replacement is forbidden on an incomplete frame. There is still no
+vector/object-window stability witness: ABA/reuse that yields an entirely
+plausible type-59 object and identity remains indistinguishable from a stable
+row.
+
+Compact `CBSD` version 2 carries queue
+`target_location_id`, `target_scope`, `repair_levels_remaining`, `is_repair`
+and building `partial_health_raw`, `level`, `healthy_level`, `damaged`.
+Unknown flags, invalid scope/location joins, negative/out-of-range repair
+fields, incoherent healthy state, and nonzero partial health on an undamaged
+row fail closed.
+
 ## Files about this domain
 
 139 tracked files name this domain.

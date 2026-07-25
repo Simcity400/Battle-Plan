@@ -10,6 +10,43 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Ahead-of-time presentation must come from the observed engine producer, not reconstruction from authored year, current date, `BASE_YEAR_AHEAD_PENALTY_FACTOR`, and an aggregate reduction field. Those inputs are corroborative only and cannot manufacture the effective quartet.
+
+Exact-a729 producer chain:
+
+```text
+UI producer              RVA 0x01BCEA60 / VA 0x141BCEA60
+active technology        view+0x520 -> status+0x18
+technology template      CTechnology+0x160
+applied reduction        CTechnology+0x1C0 (signed fixed-5)
+helper                    0x140ABEAA0
+effective producer        RVA 0x00ABE4C0 / VA 0x140ABE4C0
+day-count function        RVA 0x00ABEBF0 / VA 0x140ABEBF0
+engine factor             0x14331A4B0
+localization consumer     RVA 0x02230F20 / VA 0x142230F20
+current-date record       CGameState+0x460
+```
+
+The UI action gate materializes key `year` at `0x141BCF2D3`, resolves it through virtual slot `+0x78`, and admits only the equal field-identity edge. The helper detour's first in-image return must be RVA `0x01BCF384`; other calls to the shared producer are ignored.
+
+Producer outcomes are:
+
+| Branch | Exact shape |
+|---:|---|
+| `0` | no display: years `0`, penalty `0`, reduced penalty `0`, observed nonnegative reduction; no substitution list; `NO_RESEARCH_PENALTY` |
+| `1` | unreduced substitutions `VALUE`, `YEARS` |
+| `2` | reduced substitutions `VALUE`, `RED`, `REDUCED_YEARS`, `YEARS` |
+
+Each localization substitution record has stride `0x68`, type `9` at `+0x00`, name pointer `+0x08`, and fixed-5 value `+0x50`. String RVAs are `VALUE=0x02724F3C`, `RED=0x0292DD78`, `REDUCED_YEARS=0x0292DD68`, and `YEARS=0x0292DD5C`. Branch identity comes from the observed ordered name sequence, never inferred from the values.
+
+The portable record carries authority, branch, callback sequence/thread, game hour, QPC/frequency, raw fixed-5 values, source SHA-256, and the active technology/template join. Producer and H4CR hours must match; no pointer is serialized. Consumers recompute the source digest and selected-Present receipt.
+
+Raw callbacks are not authority. `seal_selected_present` accepts only callbacks preceding the authenticated Present at the same game hour/QPC frequency; late or stale observations cannot fabricate that boundary.
+
+On paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Technology is 0.88 years ahead of time.` The late-attach fold correctly contained the active research census but no quartet; authenticating it requires the early-launch selected-Present path.
+
 ## Files about this domain
 
 102 tracked files name this domain.

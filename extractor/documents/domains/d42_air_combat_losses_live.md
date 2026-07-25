@@ -10,6 +10,27 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The accepted base slice is per-wing strength/equipment change: wing identity, owner, mission mask/region, old/new plane count, count delta, old/new equipment-bank sum, equipment delta, reinforcements, losses, deletes, and generation. It does not by itself provide sortie start/end, tactical wing-versus-wing pairing, a killer wing, ace participation, or an exact reinforcement-source reason.
+
+Several plausible roots were mechanically rejected on exact-a729:
+
+- Six stable direct-reference candidates under `StrategicAirManager`, airbase-owner containers, and wing pools were same-owner/same-region pool collections; opposed event roots found: `0`.
+- `115` direct `CAirWing` body attachments produced `0` opposed event-root candidates.
+- `217` `CCombatSide` objects and `77` populated side vectors contained division participants; air-wing side vectors: `0`. Forty-two combat-registry hits also exposed no air-wing route.
+- A broader stable-root matrix scanned `597` roots, `192` one-hop sources, `20` active mission regions, `96` wing bodies, `368` air-base records, `4,553` accepted vector headers, and `1,301` classified candidates. Direct rooted opposed-event candidates: `0`; false routes included `47` air-base basing collections, `453` POD owner/wing-id collisions, and `16` unanchored stride artifacts.
+
+These negatives reject a persistent opposed-event object along those bounded routes, not tick-local air-resolution records, scalar lifecycle counters, or region-side statistics.
+
+The retained probe scripts are candidate discovery tools only. They require exact executable SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`, a live UI/save fixture naming real region/wing/owner ids, advancing game time, and at least one loss-like delta for an attribution run. SHA/root failure discards the run; a stale fixture or zero-loss interval does not disprove candidates. No unknown u32 field is promotable from one polling run.
+
+Reinforcement reason is not recoverable exactly from endpoint polling. Exact output is limited to the wing key, time window, old/new count, equipment/variant delta, mission context, and separately sourced country production/stockpile/delivery context. `possible_from_stockpile_or_production` may be a badged heuristic, but `reinforced_from_production`, `reinforced_from_transfer`, and `attrition_replacement` are forbidden as exact causes without a source-transaction join. A delta after a failed frame may aggregate changes across the gap.
+
+The AIR_RESIDUALS_STATE source explicitly says its old `ROOT_DISCOVERY_OPEN` view was superseded by later persistent `CAirRegionCombatData -> SAirWingCombatData -> SDamageEntry` work. Its durable contribution here is the negative-route ledger and the strict probe/attribution limits, not its historical open-status conclusion.
+
+See also d11.
+
 ## Files about this domain
 
 97 tracked files name this domain.

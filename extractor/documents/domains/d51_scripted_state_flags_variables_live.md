@@ -10,6 +10,43 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Country variables, flags, and delayed-event roots require a complete current-
+frame country roster read directly from the gamestate tag-indexed table. A
+filtered `CountryIdentityCache.rows` set is insufficient. Two complete passes
+must agree on every slot and on both independent counts, including the country
+table count at `CGameState+0x31C`; a database/table disagreement such as
+`440` versus `441` fails the whole country-scoped family closed.
+
+`CCountry+0x1290` is a heterogeneous timed-effects vector, not a
+`vector<CDelayedEvent*>`. The proven fixture contains one `CDelayedEvent` and
+three `CModifier` objects. Each member is stably read and RTTI-classified;
+`CModifier` is skipped, while `CDelayedEvent` must pass its vtable, owner, scope,
+and duplicate-identity checks. Any unknown RTTI, shifted vtable, owner mismatch,
+torn vector, or incomplete roster retains the unresolved badge rather than
+reporting an empty event set.
+
+Domain-local status bits are:
+
+| Bit | Meaning | Disposition |
+| ---: | --- | --- |
+| 11 | `FLAG_NAMES_PARTIAL` | blocking captured-partial |
+| 12 | `DELAYED_EVENTS_ROOT_UNRESOLVED` | blocking failed/unresolved root |
+| 13 | `SCRIPTED_GUI_ROOT_UNRESOLVED` | blocking failed/unresolved root |
+
+These are d51-local overlays, not same-numbered global statuses. Offline tests
+prove the fail-closed transitions, but the listed source still calls for a
+positive live census showing every timed-effect member class is classified.
+
+Performance shortcuts cannot freeze or periodically sample this domain without
+a proven complete dirty/version signal: the captured values mutate in place and
+therefore require current emitted-field reads every frame. The reviewed budget
+measured d51 at `25.5ms`; even an estimated `~8-12ms` optimized path remains
+incompatible with zero-data-loss sub-50 capture if it skips those reads.
+
+See also d18 and d53.
+
 ## Files about this domain
 
 138 tracked files name this domain.

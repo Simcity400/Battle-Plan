@@ -10,6 +10,29 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+UI owner `0x140B52390` stores division at `+0x250` and equipment modes 0/1/2 at `+0x258/+0x260/+0x268`. Mode 0 covers both equipment and ship; invented modes 0/3 are forbidden. Classifiers `0x140C88440` (mask `0x80004003C1`) and `0x140C884B0` (category bit 19) distinguish them.
+
+Division rows from `0x141756C40` carry owner `+0x520` and `CReferencedDivisionTemplate* +0x528`. The chain `0x141490EA0 -> 0x1417506D0 -> 0x1417506F0 -> 0x14167AEE0` commits the clicked template to handler `+0x8D0` and template `+0x18` to `+0x8D8`; getter `0x1416796F0` returns `+0x8D0`. Admission requires that committed pointer to equal the clicked argument.
+
+Equipment uses `0x1417797A0/0x1417715A0`; view `+0x3798` and historical `+0x12204` are not source identity. Nested success producer `0x14147DDD0` must return true.
+
+Variant upgrade preserves incoming `RDX` through `0x141F5CC60/0x141F5CF50` and commits it at nested `+0xA48` and window `+0x1CE0`; both must match. Its equipment definition is at `CEquipmentVariant+0x3F0`.
+
+Portable identities are pointer-free:
+
+| Family | Class | Vtable RVA | Type | Stable id |
+|---|---|---:|---:|---:|
+| division | `CReferencedDivisionTemplate` | `0x02938F70` | `52` at `+0x08` | positive `u32 +0x0C` |
+| equipment/tank/plane/ship/variant-upgrade | `CEquipmentVariant` | `0x0293AFB8` | `70` at `+0x08` | positive `u32 +0x0C` |
+
+Objects and the division pool are double-read. Torn reads, hook loss, overflow, or unsafe teardown fail; replay joins `stable_id:object_type` to d78 without fallback. The six-family live matrix cannot be replaced by screenshots, labels, order, pointers, or synthetic ids.
+
+Authority manifests: `6dff47e4fae1f9d3aeabb63ac7e9a9cc13a27c429d5e217d686311d5a349cb6b`, `76684486678fdb87f4a679c4faa855b61d4551c0a13bebbd6ba0c1553dbf6a41`.
+
+See also d78.
+
 ## Files about this domain
 
 27 tracked files name this domain.

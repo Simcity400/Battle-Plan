@@ -10,6 +10,79 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The layouts are pinned to `hoi4.exe 1.19.2.0.a729`, image base
+`0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+
+### Deployment queues
+
+`CCountry+0xF70` is the military-deployment manager. Its complete ordered
+conveyor vector is at manager `+0x48` (base `+0x00`, signed count `+0x0C`,
+pointer stride 8); manager `+0x118` points back to the owner country and its
+vtable is `module+0x2949128`.
+
+| Object | Exact fields |
+|---|---|
+| conveyor, vtable `module+0x29A9E18` | `(id,type)` at `+0x08` (type 64), template `+0x20`, name object `+0x28`, amount `+0x48`, province `+0x4C`, priority `+0x50`, ordered line vector `+0x78/+0x84`, role token `+0x90`, closed bit `+0x94` |
+| line, size `0x40`, vtable `module+0x29A9DC0` | `(id,type)` at `+0x08` (type 63), division-name object `+0x20`, amount `+0x28`, military-deployment pointer `+0x30`, parent conveyor `+0x38` |
+| military deployment | variant pool `+0x20`, exact equipment rows `+0x40`, training `+0x60`, max training `+0x68`, manpower value/need containers `+0x70/+0x90`, max manpower `+0xB0`, template `+0xB8`; primary/secondary vtables `module+0x29A9D38` and `module+0x29A9D70` at `+0x18` |
+
+Equipment rows at deployment `+0x40` use pointer `+0x00`, signed count
+`+0x0C`, stride `0x10`, type-70 variant pointer `+0x00`, and signed
+fixed-point amount `+0x08 / 100000`. The separate pool vector at object
+`+0x28/+0x34`, stride `0x18`, is a derived type aggregate and not identity.
+Training and max training are signed i64 fixed point `/100000`; raw zero means
+serializer absence. Manpower containers use vtable `module+0x2943900`,
+pointer/count/capacity `+0x08/+0x14/+0x10`, stride 8, with positive signed
+dword at entry `+0x04`; empty containers and `max_manpower<=0` are absent.
+
+Conveyor and line `(id,type)` pairs are lifecycle keys; template/location is
+not. Source order is authoritative and ordinals are contiguous. Conveyor
+`amount==0` means infinite series, not empty. `closed` is the serialized
+collapsed bit, not deployability or cancellation. Role is a dynamic lexer
+token; zero spells exactly `__unknown_0x0`, and an unstable lookup poisons the
+country. A successful read always emits `queue_complete=true`, so `[]` is
+positive empty; missing completeness cannot erase prior state. Any missing,
+mistyped, or duplicate identity invalidates the whole lifecycle vector.
+
+The pointer-free carrier is final D11 trailer `PDQ1` v1 around deployment codec
+v2. It must be country-bijective with admitted D11/PCP1 tags. Complete rows
+replace queues; unknown rows retain prior state and provenance. The native
+authority is source `CCountry+0xF70/CDeploymentManager+0x48`, producer RVA
+`0x01718FE0`, manifest SHA-256
+`627a03c76e73e472f16fe2e2fafde9bdd58d641187fba42d4814f616611b60c4`.
+
+### Production-line efficiency
+
+Do not rebuild efficiency from speed, factories, defines, or saved vectors.
+For each admitted production line, call the exact helper outputs:
+
+| Value | Producer |
+|---|---|
+| current efficiency | `0x141920d20(line,out)` |
+| efficiency cap | `0x141922a00(line,out)` |
+| daily efficiency growth | `0x141921160(line,out,detail)` |
+
+`0x1424d8420` proves the scale: `100,000` raw is one percentage point and
+`10,000,000` raw is 100%. Preserve signed i64 raw values. The cap helper
+includes country, MIO, and naval/refit state; growth includes per-factory
+storage, cap boundaries, country/MIO modifiers, and resource factor.
+
+`PEF1` is a self-sized 20-byte v1 header followed by 36-byte rows:
+`tag_db_id:u32, kind:u32, line_id:i32, efficiency_raw:i64,
+efficiency_cap_raw:i64, efficiency_growth_raw:i64`. Keys must be unique and
+bijective with every military/naval base line; invalid tags/kinds, negative
+results, duplicates, or a missing helper output reject the whole segment.
+An empty base-line set emits no `PEF1` and relies on the separate country
+completeness contract.
+
+Saved `factory_efficiencies` is ordered but is not cap or growth. In the
+retained 310-line melt, 281 vectors had lengths different from
+`active_factories` and many were capacity-sized (150 or 20 entries), so never
+average the entire vector. The live current helper remains authoritative.
+
 ## Files about this domain
 
 116 tracked files name this domain.

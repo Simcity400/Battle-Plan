@@ -10,6 +10,18 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Exact-a729 authority is bound to executable SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`. The exact owner is `CAbilityListWindow*` at battle-plan controller `+0x1C8`; `0x1416CD1E0` calls refresh `0x141D072F0`. Definition source order is vector `+0x718/+0x724`, and row-widget order is `+0x70/+0x7C`; counts, headers, bodies, definitions, and nested leader capacities must double-read consistently.
+
+Ordinary rows use `0x1406F3370` for active/cooldown/activation elapsed and `0x1406D0DE0` for final availability; special context is `definition+0x2E9`. Field-marshal rows use `0x68` aggregate records from `0x141D04000`; nested `0x28` leader rows carry the exact five-state enum, remaining time, costs, allocation, and ordered elapsed values. Row active state is direct-group-active or nonzero equality of active and candidate leaders. Cooldown exists only when no leader is available and at least one cools down.
+
+Intrinsic ability token is `CAbility+0x70`. Display icon is the exact `+0x288/+0x2A8` choice at call `0x141D08BA1`; authored active override becomes `<ordinary_icon>_animated`. Ordinary effective command-power cost is signed scale-100000 output of `0x140FF4C30` at `0x141D04E33`. Tooltip callback `0x141D049C0` appends its evaluated disabled-reason accumulator at `0x141D06052` (return `0x141D06057`) before destruction at `0x141D063A3`: zero length is authenticated available, nonzero bytes are the exact disabled reason. Observers must bind callback owner, row ordinal, definition, widget, refresh sequence, and same-epoch character/OOB identities; pointers are erased before ABL1.
+
+Measured empty requires the `0x140B58CA0` early-return decision to be false, stable selected mode not `7`, non-null selected identity, and zero source, aggregate, and widget counts. Early return, unselected/identity-free mode, torn zero, or unreadable header is unavailable, not empty.
+
+ABA2 wraps pointer-free ABL1 and requires exact executable/function authority, identical inner/outer hour and elapsed-wall identity, zero status for exact data, and complete row/timer/target/text/order joins. Unknown flags, malformed or pointer-like identities, missing receipt, or trailing bytes reject the whole payload. Although the registry now labels d88 production-complete, the listed source explicitly says its four activation gates were not all true and the transition fixture matrix was absent; this status/source contradiction must be resolved from current code before assuming live scheduling.
+
 ## Files about this domain
 
 41 tracked files name this domain.

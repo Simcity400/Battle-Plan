@@ -10,6 +10,38 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The correct exact-a729 owner is `CCountryDecisionView`, constructed at
+`0x1417128E0` with vftable `0x1429DECE8`. Its update is `0x141716270`;
+`decision_grid_container` is view `+0x580` and `decision_grid` is view `+0x588`.
+The hook derives the view as `update_this - 0x30` and records calls to generic
+grid insertion `0x1402DE580` only when its first argument equals that exact
+grid. The insertion ABI is five arguments: grid, child, coordinate pointer, and
+two insertion controls.
+
+The surface is a heterogeneous ordered sequence of category, fixed-header,
+event, and decision children, including exact rectangles, category expansion,
+grid clip/content, and container scroll state. DPN1 schema v2 therefore cannot
+be reduced to a decision-card array. Unknown families or incomplete joins
+reject the whole epoch. Category collapse state comes from the exact resolver
+at `0x1417158B0`.
+
+The owner/tag authority manifest is
+`a31b9fa4d886d509ceceef46819b6048331ef65065c2f07a8cc086e0868dd07a`.
+The carrier also binds materialization QPC/frequency, selected-Present ordinal,
+QPC and receipt hash, plus the byte hash of the effective static decision
+catalog. Replay must mechanically match that receipt to the selected Present
+before exposure.
+
+`0x141C4AA30` and `0x141C48550` were refuted as the country panel: they belong
+to the power-balance `decision_grid`. They must not be reused as d87 authority.
+Live acceptance still requires one authenticated nonempty heterogeneous panel
+and one measured-empty panel, each with selected-Present and cold-replay
+equality.
+
+See also d45.
+
 ## Files about this domain
 
 39 tracked files name this domain.

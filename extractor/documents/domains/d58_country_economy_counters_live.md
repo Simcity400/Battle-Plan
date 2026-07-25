@@ -10,6 +10,28 @@
 - status: `reserved`
 - schedulable: `False`
 
+## Condensed knowledge
+
+Exact-a729 reusable anchors are:
+
+| Root/field | Value |
+|---|---|
+| `CGameState` | `module+0x3316E90` |
+| country table/count | `CGameState+0x310`, `CGameState+0x31C` |
+| `CCountry` vtable/tag | `module+0x27D0E90`, `CCountry+0x08` |
+| production manager | `CCountry+0xF68` |
+| line vector | manager `+0x58/+0x60/+0x64` |
+
+No stable per-country civilian, military, dockyard, consumer-goods, or resource-flow scalar was proven. Rejected factory offsets remain rejected: `CCountry+0x1750`, `+0x17E0`, and `+0x1038`; `+0xF08` is real per-country data but unmapped and delta-only. Resource candidates `+0x5B8/+0x1218`, market stockpile `+0x1230`, and licence vectors `+0x1070/+0x10A0` are also not d58 authority. Static oracle passes found `0/490` and `0/506` validated factory fields; resource validation found zero cross-country matches.
+
+Raw completed factory totals are owner-attributed state building levels plus separately extracted offmap levels:
+
+`civilian|military|dockyard total = sum(owner states’ industrial_complex|arms_factory|dockyard level) + matching country offmap level`.
+
+Independent recomputation matched `439/439` countries for all three state-backed totals. Controller attribution differed for 40 civilian, 41 military, and 19 dockyard country rows because 222 states had `controller != owner`. Construction progress does not count until a level exists; damaged buildings remain in raw level, while healthy/usable capacity requires d48. Offmap, occupation, trade, assignment, consumer-goods, free/used, and resource-flow terms cannot be inferred from state levels.
+
+Until an exact isolated before/after offmap delta proves a root, expose only `derived_state_only` provenance and keep offmap/full totals null or badged. See also d43 and d48.
+
 ## Files about this domain
 
 42 tracked files name this domain.

@@ -10,6 +10,22 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The compact payload has a 36-byte header:
+
+`elapsed_wall_ms:u64, row_count:u32, changed_rows:u32, status_flags:u32, observed_air_base_rows:u32, observed_pool_rows:u32, deleted_rows:u32, reserved:u32`.
+
+Each row is 32 bytes:
+
+`air_base_id:u32, state_id:u32, flags:u32, capacity:u32, building_level:u32, based_wing_count:u32, based_plane_count:u32, reserved:u32`.
+
+The fold keys by stable `air_base_id` and projects the state into `strategic_air.air_bases`. The collector emits a complete first successful sample and then sparse changed/deleted rows, but does not consistently set `COMPACT_STATUS_DELTA_DATA`. The fold therefore uses a seen-once sparse gate for unflagged follow-up frames while still rejecting an explicit delta before baseline. Deletion is flag low bit `1`.
+
+A successful zero-current-air-base frame is measured empty and may carry tombstones. A failure-status hour leaves `strategic_air.air_bases` unknown/null, preserves the prior accumulator for a later good hour, and does not fabricate an empty list. `building_level`, `based_wing_count`, and `based_plane_count` remain explicit live/R2 fields if the canonical save-derived air-base shape has no exact home.
+
+See also d27, d28, d29, d30, d31, d32, d33, d35, d36, d37, d38, d39, d40, d42, and d46.
+
 ## Files about this domain
 
 64 tracked files name this domain.

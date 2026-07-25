@@ -10,6 +10,27 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+D31 carries `effective_planes`; it does not carry the engine’s transient
+`effective_air_superiority` cache. Consequently neither exact superiority nor
+the 0..9 UI strip frame is currently an observed d31 value.
+
+The only available computation is explicitly a model:
+`EAS_wing = effective_planes × variant.air_superiority`, followed by
+`side_pct = own_score / (own_score + enemy_score)`. Variant weights must come
+from the recording modset’s resolved equipment variant/airframe statistics,
+never a hard-coded vanilla class table. If `effective_planes` is absent, the
+model’s raw-count fallback is forbidden for an exact badge.
+
+Keep `air_superiority_state` absent until a same-frame fixture captures mixed
+variant weights including a non-1 control, opposing sides, effective-plane
+counts, exact variant stats, the engine cache or tooltip score, and the rendered
+strip frame. The recovered rule must match score and quantisation at zero,
+one-sided, and contested states; do not fit constants.
+
+See also d20, d30, d44, and d54.
+
 ## Files about this domain
 
 65 tracked files name this domain.

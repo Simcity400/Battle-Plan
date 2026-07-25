@@ -10,6 +10,12 @@
 - status: `reserved`
 - schedulable: `False`
 
+## Condensed knowledge
+
+PTI1/d73 is reserved for backwards-compatible forensic decoding only. It is not the production source for politics tooltips: d14/d15 carry exact politics state, d72 carries the visible final tooltip text and geometry, and the authenticated selected-Present UI pass owns the pixels. Absence of a d73 live matrix must not block those surfaces or be filled by inferred tooltip inputs.
+
+See also d14, d15, d57, d71, d72, d74, d75, d76, d77, d79, d81, d82, d84, d85, d88, d89, d94, and d95.
+
 ## Files about this domain
 
 54 tracked files name this domain.

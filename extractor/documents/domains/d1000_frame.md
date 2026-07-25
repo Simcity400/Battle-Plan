@@ -10,6 +10,80 @@
 - status: `infrastructure`
 - schedulable: `False`
 
+## Condensed knowledge
+
+Frame-level domain census uses compiler truth, not Rust-source parsing. The
+oracle derives paths from `__file__` and performs exactly one
+production-selection build from the native crate root:
+
+```text
+cargo build --release -p collector -p recorder_host --message-format=json
+```
+
+Cargo stdout is strict JSON. Acquisition requires exactly one
+`compiler-artifact` for the collector target whose kind includes `cdylib`, and
+exactly one for the collector package's `registry_dump` binary. Only
+Cargo-reported files are admitted. The reported dump executable is run
+directly, with no second Cargo command, and the collector DLL is taken only
+from its artifact `filenames`. Zero or duplicate artifacts, malformed JSON,
+absent or non-file outputs, output aliases, or output changes during the dump
+block.
+
+The dump emits strict UTF-8 JSONL in registry order, one object per compiled
+descriptor. Every object has exact fields and types for `id`, `wire_name`,
+`internal_name`, debug-enum `status`, raw `schedulable`,
+`requires_data_record`, and ordered `tags`. Empty output, invalid UTF-8/JSON,
+duplicate members, blank or truncated records, wrong keys or types, empty
+names or aliases, and count drift block before manifest evaluation.
+
+The compiled dump must match the checked-in full-value golden field-by-field
+and index-by-index for all 60 descriptors; d1 `clock` is first and d1000
+`frame` last. Independent checks enforce unique ids, unique scheduled wire
+names and aliases, no collision in the internal-name/wire/alias lookup
+namespace, the profile-filtered wire-to-id roster, and
+`requires_data_record` pins. Unknown, missing, duplicate, or profile-drifted
+wires block.
+
+The dump is built in the collector package while `compact_contract` is its
+dependency, and collector plus recorder_host are selected together. This binds
+the dump to Cargo's production dependency-feature unification and exposes
+package-role cfg or recorder-host-only feature divergence to the golden
+comparison.
+
+Build-and-attest captures the native compiler-input digest before the build,
+hashes the exact nonempty Cargo-reported collector DLL, runs the registry
+oracle, rejects source or DLL changes across the sequence, then atomically
+writes a strict timestamp-free schema-v2 sidecar. The sidecar binds absolute
+`collector_path`, collector SHA-256 and size, full compiled-registry SHA-256,
+native build-input SHA-256, schema version, oracle package, and production
+package selection. Verification rejects path, source, registry, size, byte,
+schema, key, or alias drift. Cargo output roots are excluded from the source
+digest by their standard `CACHEDIR.TAG`, not by assuming a directory named
+`target`.
+
+Compiler-truth or registry uncertainty stops the census before any capture
+manifest is read. Once registry truth is valid, artifact failure remains
+blocking but does not suppress independent manifest findings. Missing
+configured manifests and zero usable manifests are also fail-closed
+conditions.
+
+The artifact contract does not itself prove the production launcher. Until the
+launcher consumes the attested Cargo-reported path, a fixed-default-path DLL
+and `-SkipBuild` remain concrete bypasses. A safe launcher must reject
+`-SkipBuild`, invoke build-and-attest, require exactly one machine-readable
+attestation summary, reload the sidecar, and immediately recheck path, size,
+and SHA-256 before passing that DLL to the recorder.
+
+Residual limits are explicit: replacement after the final hash but before
+`LoadLibrary` is an OS-level TOCTOU window; a future lying `registry_dump`
+could print golden constants instead of iterating `ASSIGNED_COMPACT_DOMAINS`;
+no digest is exported from the collector DLL itself; the oracle trusts
+Cargo/rustc/cache, Cargo JSON, process execution, filesystem reads, and
+SHA-256; and adjacent `collector_record.exe` is derived but not independently
+attested.
+
+See also d10, d11, d18, d42, d48, d65, and d69.
+
 ## Files about this domain
 
 1 tracked files name this domain.

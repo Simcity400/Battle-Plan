@@ -10,6 +10,31 @@
 - status: `reserved`
 - schedulable: `False`
 
+## Condensed knowledge
+
+D59 owns the recording's static templates/equipment catalog; live equipment-
+designer state and display order belong to d78. A d78 view may join the catalog
+only at the identical `frame_hour`, and every numeric variant id must resolve
+to the canonical d59 `id:70` identity. Each recording must contain its own d59
+catalog; a vanilla catalog or frozen asset is not a fallback.
+
+The catalog is one of exactly seven roles in the static bundle:
+`templates_equipment_catalog`. Production admission requires a finalized
+static-bundle-v3 source join with `unknown=0`, an exact
+`extractor.product_modset_key.v1`, and the same capture/session/stream identity.
+Retained bundles lacking a finalized token join are evidence only. Effective
+VFS resolution must preserve directory/archive winners, DLC/mod load order,
+`replace_path`, case behavior, and payload/container hashes; duplicate JSON
+members, `NaN`, `Infinity`, symlink escapes, and path-replacement races fail
+closed.
+
+Retained launcher state selected base plus 20 DLC entries, while the runtime log
+reported 24 active DLC display names. These are contradictory observations, not
+interchangeable authority; a fresh two-sample stable engine-tree gate decides
+the effective launch.
+
+See also d78.
+
 ## Files about this domain
 
 72 tracked files name this domain.

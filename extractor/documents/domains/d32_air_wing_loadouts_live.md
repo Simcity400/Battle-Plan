@@ -10,6 +10,22 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+d32 supplies the exact observable loadout side of reinforcement analysis: air-wing owner/id/generation, equipment variant id/type, old/new equipment amount, and delta. It is joined with d30 location/mission state and d42 count/loss deltas over the same snapshot window. These endpoint facts can prove that equipment in a wing changed; they cannot identify the engine transaction that caused the change.
+
+Replay may correlate d32 deltas with d11 production/stockpile, d43 delivery progress, variant creator/origin, d42 losses, and identity/base changes. The result is heuristic context only:
+
+- stockpile decrease can support `possible_from_stockpile`;
+- matching active production can support `possible_from_production`;
+- an independently recorded delivery can support `possible_from_transfer`;
+- a loss followed by restoration can add a separate demand-side attrition-replacement badge;
+- identity/base change can establish rebase/reorganisation only when that transition itself is observed.
+
+Distinct production, stockpile, transfer, captured-equipment, return, and reorganisation histories can produce the same pair of d32 endpoint states. Therefore even a high-confidence conservation match is not an authoritative per-event cause. Exact labels such as `reinforced_from_production`, `reinforced_from_transfer`, and `attrition_replacement` are forbidden without a write-time source join.
+
+See also d11, d20, d26, d30, d42, and d43.
+
 ## Files about this domain
 
 66 tracked files name this domain.

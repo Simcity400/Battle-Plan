@@ -10,6 +10,45 @@
 - status: `reserved`
 - schedulable: `False`
 
+## Condensed knowledge
+
+D80 is an ordered opaque render program, not a fixed catalog of vanilla pass
+roles. `StaticMapPassProgram.payload_sha256` is the portable whole-program
+identity. `pass_token` is authenticated provenance only and must never select
+code, content, assets, ordering, or a building role. The finalizer derives and
+seals operation, draw, resource, output, and ordered-content identities from
+the exact captured graph; caller-supplied hashes and semantic target labels are
+not authority.
+
+Static capture uses an identity-free D3D state core. Particle/entity family,
+submit index, and draw identity attach only through the authenticated runtime
+path. Portable schema v2 carries process/start identity, observer/device QPC
+boundary, first creation sequence, hook epoch nonce, hook-set and committed
+capture receipts, and a recomputed launch-epoch SHA-256; no pointer or machine
+path is portable. Playback loads only the selected frame's declared effective-
+VFS keys, rejecting missing, duplicate, unbound, extra, or unused content.
+
+No authenticated building-role discriminator exists. D48 aggregate levels and
+health cannot identify a placed `building_instance_id`, source-line key,
+model/health variant, transform, FoW/camera decision, insertion order, draw
+reference, or teardown order. Conversely, the current render frame lacks an
+authenticated per-instance building-to-D80-operation join. D48 is therefore a
+typed semantic fallback only; it cannot synthesize D80 operations or pixels.
+
+The remaining live gate is exact and non-visual: join every resource-creation
+pointer to its authenticated engine VFS-open/source-range event, feed exact
+reflection/VFS/render-graph receipts and D3D observations through the production
+sink, then pass a fresh early-launch capture through portable relocation. Late
+RenderDoc captures and pixels cannot reconstruct the missing pre-device,
+creation, snapshot, VFS-winner, or producer-operation receipts.
+
+One retained handoff schema caps aggregate `partial_health_raw` at
+`10_000_000`; that contradicts the exact D48 aggregate bound
+`level * 10_000_000`. The stale single-object cap must not clamp an aggregate
+row.
+
+See also d48.
+
 ## Files about this domain
 
 67 tracked files name this domain.

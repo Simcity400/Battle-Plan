@@ -10,6 +10,31 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The legacy d68 payload contains `player_tag_db_id`, DLCs, `start_date_raw`, `save_version`, `session`, ideology, cosmetic tag, and version. It does not contain `game_unique_id` or `game_unique_seed`. `W12C_CAMPAIGN_ID_IMPL.md` therefore correctly emitted campaign identity as unavailable/unbound at that revision; its broader claim that no live offsets were known is superseded by the later static RE below. The old proposed offsets `CGameState+0xD4/+0x4A8/+0x58/+0x490` are existing DLC/start-date/save-version/session fields, not campaign identity.
+
+For exact-a729 (`SHA-256 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`):
+
+| Field | Exact source/representation |
+|---|---|
+| `CGameState` | `u64[module+0x3316E90]` |
+| `game_unique_seed` | signed `i32` at `CGameState+0x720`; save token `0x35A9`; `%i` semantics |
+| `game_unique_id` | 32-byte MSVC `std::string` at `CGameState+0x728`; save token `0x3B80` |
+| game hour bracket | `CGameState+0x468` |
+
+The string object uses inline bytes/pointer at `+0x00`, `u64 size +0x10`, and `u64 capacity +0x18`; capacity `>0xF` selects heap form. Campaign UUID admission requires one coherent 32-byte object read, `size==36`, `capacity>=36`, readable heap pointer, exactly 36 canonical lowercase ASCII `8-4-4-4-12` bytes plus NUL, then a byte-identical second object/payload read under unchanged root/hour. No inline 16-byte UUID, filename, d68 `session`, start date, roster, PID, or partial component is a fallback.
+
+CID1 identity is the complete canonical pair. Its v1 digest is SHA-256 of:
+
+`"hoi4-campaign-id-v1\0" || lowercase_uuid || 0x00 || canonical_signed_decimal_seed`.
+
+The D04 byte oracle is UUID `a4b17fed-ed12-4361-9064-fb6576638110`, seed `1026046527`, digest `b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f`. Save token bytes independently match both fields, but filename similarity is not lineage evidence.
+
+IdentityV1 requires CID1 as domain 0/type 4/sequence 0 before any world record, exact contiguous sequence thereafter, and a durable CFA1 acknowledgement before streaming. Duplicate/late CID1, data before CID1, sequence gap/reuse/wrap, unknown schema/flags, trailing bytes, or mode sniffing reject. Each capture boundary re-reads the pair. Unreadable/malformed/torn input becomes unavailable; exactly one changed component is terminal `identity_component_conflict`; a stable whole-pair change or same-pair clock rollback requires acknowledged logical-stream rollover before new data. Streams auto-stitch only when both known pairs are identical; witnesses never substitute.
+
+Static offsets and the offline CID1/rollover/replay route are closed, but the listed sources report no retained S1-S4, D1-D2, or M1-M3 lifecycle transcript. In particular, rehost M3 needs a second physical machine. The identity block’s production-complete/schedulable state therefore conflicts with the source claim that exact-build activation latches remain false; current code/latch evidence must decide live authority.
+
 ## Files about this domain
 
 86 tracked files name this domain.

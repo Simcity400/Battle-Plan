@@ -10,6 +10,13 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The listed source contributes only one d90-specific durable fact: the positive
+and control branches and `CTA2` regrade are mechanically executable optional
+regression evidence. They require no human semantic attribution and cannot
+promote an inferred value or descriptive screenshot.
+
 ## Files about this domain
 
 27 tracked files name this domain.

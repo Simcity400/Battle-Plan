@@ -10,6 +10,21 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+`specialization_handle` is process-local and may be used only inside the d41
+delta tracker to match raw additions and tombstones before token resolution.
+After the authenticated census maps it to one of the four exact authored
+tokens, the world fold publishes only the closed enum/token with authority
+`exact_a729_serializer_token_enum_join`. Portable replay rejects any
+`_r2_specialization_handle`.
+
+Typed replay and UI key rows by resolved country plus the closed specialization
+enum. The fold may emit `_r2_tag_db_id` only from the current-hour d18 map, and
+replay requires every d41 country/id pair to match that witness.
+
+See also d18.
+
 ## Files about this domain
 
 114 tracked files name this domain.

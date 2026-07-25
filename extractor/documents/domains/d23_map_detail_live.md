@@ -10,6 +10,25 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Wire layout:
+
+| Record | Size | Fields |
+|---|---:|---|
+| header | 48 bytes | `elapsed_wall_ms:u64`, `state_count`, `changed_rows`, `status_flags`, `province_count`, `observed_state_rows`, `observed_province_rows`, `resource_count`, `state_building_count`, `province_building_count`, `reserved` |
+| state row | 28 bytes | `state_id`, `flags`, `resource_first`, `resource_len`, `building_first`, `building_len`, `reserved` |
+| province row | 20 bytes | `province_id`, `state_id`, `flags`, `building_first`, `building_len` |
+| resource/building entry | 12 bytes | resource `{resource_id, amount_raw, reserved}` or building `{type_id, level, reserved}` |
+
+Unknown collector ids remain explicit as `tid_0x...` / `type_0x...`; they are not dropped or guessed.
+
+d23 folds by stable `state_id` and `province_id` into `states[*].resources`, `states[*].buildings`, and recomputed `states[*].province_buildings`. A renderer-side mirror lives at `map.map_detail_live.{resources_by_state,buildings_by_state,province_buildings_by_province}` because the canonical map-layer schema has no resource/building layer.
+
+The first successful frame is a full baseline and clears d23-owned state/province fields. Later delta rows patch only listed identities after the baseline, then recompute state-level province-building totals from known province rows. A failure hour or delta-before-baseline leaves map detail unknown, retains the prior accumulator, records the problem, and never fabricates empty maps. A successful zero-row baseline is measured empty.
+
+See also d43, d44, and d52.
+
 ## Files about this domain
 
 36 tracked files name this domain.

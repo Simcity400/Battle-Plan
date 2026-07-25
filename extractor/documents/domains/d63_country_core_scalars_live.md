@@ -10,6 +10,12 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The listed source contains no field-level d63 knowledge. Its only durable d63 statement is that `country_core_scalars_live` retains its established fixed 48-byte row unchanged; nuke stockpile data belongs to d83 and must not be folded into or used to reinterpret d63.
+
+See also d83.
+
 ## Files about this domain
 
 65 tracked files name this domain.

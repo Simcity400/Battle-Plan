@@ -10,6 +10,33 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Exact-a729 law:
+
+```text
+CCountrySupplySystem vtables = module+0x298BBF8 / module+0x298BC48
+owner country                = u64[CCSS+0x78]
+node array                   = u64[CCSS+0x188]
+node count                   = u32[CCSS+0x194]
+node stride                  = 0x28
+
+record+0x00  province_id:u32
+record+0x04  state_id:u32
+record+0x10  motorization_entries:u64
+record+0x1C  entry_count:u32
+entry stride = 0x08
+entry+0x00   actor_tag_db_id:u32
+entry+0x04   motorization_level:u8
+```
+
+
+Persisted levels are exact: `1 -> 50000` (50% truck fraction), `2 -> 100000` (100%), and `0` means absent/off and is not stored. Any other nonzero value follows the engine assertion path and is rejected.
+
+Schema v2 emits 32-byte rows: `owner_tag_db_id, actor_tag_db_id, province_id, state_id, record_index, map_entry_index, motorization_level, flags`. It validates both countries and rereads map pointer/count to reject relocation. Bad or torn reads leave the hour unknown and retain prior state. Fold key: `(owner,province,actor)`.
+
+A same-hour oracle matched `223/223` keys and `1338/1338` fields.
+
 ## Files about this domain
 
 80 tracked files name this domain.

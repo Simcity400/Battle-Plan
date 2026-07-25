@@ -10,6 +10,41 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+All production observations are passive, pointer-free, exact-a729 hook
+observations. A missing current-hour callback is source-unavailable, not a
+measured-empty collection.
+
+boundary. The observer joins the full candidate universe, predicate results,
+pair-to-object resolution, the controller's selected/sorted 32-byte bucket,
+row-pool and standard-list traversal order, row/list geometry, and scrollbar
+min/max/current/target. Any unreadable field, vtable or predicate mismatch,
+resolver failure, incomplete traversal, or count disagreement poisons that
+owner. Earlier static work also establishes that the producer walks 0x20-byte
+source records, creates `CPlaneTypeSelectionEntry` rows, stores the source
+record at row `+0x50`, and appends them to the window list at `+0x5C8`.
+
+MIO variant and production histories are committed together by
+`0x140DA1420` and `0x140DA1680`, and `0x141F06360` appends the reusable
+`CHistoryItem` rows. The pair must share transition sequence, QPC tick, and
+organization reference. `controller+0x30` is the organization pointer and the
+absent row-reference sentinel is exactly zero.
+
+The heterogeneous aggregate-bonus list remains unavailable because not every
+row class has a portable object identity. The optional technology canvas also
+remains unavailable: the controller has one 2D root at `+0x578`, but no
+authenticated producer for horizontal/vertical min/max/current/target was
+found. Connector segments are acquired from the pool at `controller+0x5B0` and
+may be reused or shared, so a post-return scan cannot recover unique edge
+identity.
+
+`COLLECTION_ROOT_JOIN_MINING_20260720.md` says d71 remained reserved and
+unscheduled; the later final-static-closure source describes the passive
+air/MIO sources as production admission seams. The later source supersedes the
+earlier activation status while retaining its negative technology-canvas and
+aggregate-bonus findings.
+
 ## Files about this domain
 
 86 tracked files name this domain.

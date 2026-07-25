@@ -10,6 +10,58 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The current-build authority is `hoi4.exe 1.19.2.0.a729`, image base
+`0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+The active d21 identity joined by terminal-combat capture is
+`(combat_id,generation)`; participant disappearance alone does not prove
+retreat, overrun, destruction, sinking, or any other terminal result.
+
+The terminal land-combat UI record is a distinct `0x448`-byte object consumed
+
+| Offset | Meaning |
+|---:|---|
+| `+0x008`, `+0x218` | attacker and defender side roots |
+| `+0x010`, `+0x220` | per-side manpower loss |
+| `+0x020`, `+0x230` | per-side equipment-loss map |
+| `+0x1e0`, `+0x3f0` | ordered 16-byte equipment-class rows |
+| `+0x428` | end date |
+| `+0x440` | location/province id |
+| `+0x444` | winner-side discriminator |
+| `+0x446` | status/result icon selector |
+| `+0x447` | attacker/defender layout selector |
+
+The equipment-class display mapping is exactly `2->0`, `7->1`, `10->2`,
+`13->3`, `27->4`, `8->5`, `17->6`, `16->7`. Dedicated categories use
+localisation ids `0x3637`, `0x3638`, and `0x3639`; the remainder use
+`COMBAT_LOG_BATTLE_LOST_EQUIPMENT`. The visible war-log list at
+`+0xb88/+0xb94` is ordered 16-byte rows
+order and allocates a `0x1058`-byte UI row, whose constructor is
+
+The UI-independent owning-vector chain is
+`0x1416DCDC0 -> 0x140CFD210 -> 0x140CCD650 -> 0x140CCD530 -> 0x140CCD4A0`.
+The only terminal-record allocator callers are normal writer `0x140CCC7F0`
+and alternate/overrun writer `0x140CCC100`; the normal writer runs before the
+active combat is removed. A terminal reader must bracket those writers, join
+the owning pointer to the d21 identity, keep raw bytes process-local, and
+serialize only proved pointer-free fields.
+
+Do not substitute serialized `CCombatHistory`. It has vtable
+`0x142939ff8`, size `0x20`, list root `+0x08`, count `+0x18`, and nodes linked
+by `+0x38`. `CCombatHistoryEntry` has vtable `0x14293a048`, size `0x50`, and a
+nested history at `+0x28`; it contains no terminal `0x448` loss/result payload.
+
+The active-set fold currently replaces d21 before projecting some ended-detail
+events, which can orphan terminal events. Retaining removed rows silently was
+rejected because it mixes active and terminal rows, collides across generation
+reuse, and can turn state carried across an unknown d21 hour into a false
+current retirement. Correct closure requires an explicit terminal event surface
+or versioned combat lifecycle identity.
+
+See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
+
 ## Files about this domain
 
 95 tracked files name this domain.

@@ -10,6 +10,43 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The live walk uses validated `CGameState`, the country table at `CGameState+0x310/+0x31C`, and:
+
+| Object/field | Meaning |
+|---|---|
+| `CCountry+0x278/+0x280/+0x284` | fleet vector |
+| `CFleet+0xD8` | home-base province pointer |
+| `CTaskForce+0x18` | current province |
+| `CTaskForce+0x338/+0x344` | ship vector |
+| `CTaskForce+0x364` | mission enum |
+| `CTaskForce+0x4A8` | detached-activity enum |
+| `CTaskForce+0x4B0` | repair-target province pointer |
+| `CShip+0x3C` | cumulative sunk-convoy counter |
+
+Rows are full replacements keyed by `task_force_id` and carry `fleet_id`, `owner_tag_db_id`, current province, optional derived strategic region, exact mission enum/name, exact detached activity as `mission_state`, nullable home/repair-base province ids, and optional aggregate `sunk_convoys`. Strategic region is absent unless an in-DLL province-to-region map is available; the injected hot path must not read JSON.
+
+Exact-a729 receiver/serializer joining proves body `+0x4A8` is persisted `detached_activity`:
+
+| Value | Meaning |
+|---:|---|
+| `0` | none |
+| `1` | repairing |
+| `2` | moving_to_refit |
+| `3` | refitting |
+| `4` | reinforcing |
+
+Present zero is retained; values above four fail closed. Body `+0x4B8/+0x4C0` are nullable object pointers, not repair-progress or retreat-state scalars. `repair_progress_milli`, `retreat_state`, and `convoy_route_context_id` therefore remain absent. The separately persisted `task_force.retreat=yes` boolean is not aliased to d56. Retained saves contain mission/repair/path fields but no `repair_progress(_milli)`, `convoy_route(_context_id)`, or `route_id` in `20,212` task-force rows; movement path is not convoy-route identity. Census SHA-256: `aee3ececd03321899a01782f78730523daf14ef5d916cdb0d25ace9dca9082a2`.
+
+`sunk_convoys` is only a per-ship cumulative aggregate. The terminal history carrier contains month, count, killer, and owner, also without route identity. Route attribution requires an authenticated active-convoy loss fixture; task-force mission, province, ship name, owner/killer, or time-window correlation are rejected substitutes.
+
+The first integration has no deletion tombstone, so delta emission is forbidden. A non-delta success clears and replaces the map. Failure status or a future delta-before-baseline makes the current hour unknown, retains the prior accumulator, and must not silently clear task forces. The fold lives under `order_of_battle.extra.naval_missions_status_live`.
+
+Skipping d56 based on an unproved wrapper/container fingerprint is unsafe because missions mutate in place. Change-gating is admissible only with a version/dirty signal proved to cover every emitted field; rotating full walks merely bound later correction and can lose one-hour transient state.
+
+See also d49, d50, d51, d52, and d53.
+
 ## Files about this domain
 
 109 tracked files name this domain.

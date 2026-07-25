@@ -10,6 +10,27 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+D43 is authoritative for each equipment-purchase/MTLL contract's id, seller,
+buyer, and global contract-vector order. A portable agreement exists only when
+that contract uniquely joins a current-hour d53
+`CEquipmentPurchaseRelation` of kind `9` whose unordered country pair is
+`{seller,buyer}`. The relation supplies first/second direction and raw lifecycle
+dates (`+0x10/+0x14` country ids and `+0x20/+0x38` start/end); seller/buyer must
+not be substituted for the relation's direction. Stable identity is:
+
+`equipment_purchase:<relation_first>:<relation_second>:<start_date_raw>`
+
+The join requires a non-partial d53 frame, exactly one start, at most one end,
+valid date ordering, no self-pair, and one unique pair match. If it fails, the
+D43 contract remains independently measured, but
+`equipment_purchase_relation_complete=false` and the joined relation is null.
+No per-contract royalty or factory-cost rate is emitted because no exact field
+has been proved.
+
+See also d11 and d53.
+
 ## Files about this domain
 
 113 tracked files name this domain.

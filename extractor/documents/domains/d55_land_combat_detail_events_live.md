@@ -10,6 +10,12 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The listed source contains no durable d55 payload layout, combat-detail semantics, offsets, identities, or failure law.
+
+See also d52 and d54.
+
 ## Files about this domain
 
 104 tracked files name this domain.

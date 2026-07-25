@@ -10,6 +10,24 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+D46 authenticates ace identity, owner, name, life/death fields, roster index,
+and wing assignment. The autonomous acceptance path reads the complete raw
+`CAceEntry+0x158..+0x16c` roster, joins it to the same-hour d18 country identity
+and `ACE1` v2 production carrier, and rejects roster drift, partial lifecycle
+reads, ambiguous snapshots, or stale authority.
+
+The domain does not carry the ace definition token, embedded `CModifier`, final
+modifier text, eligible-plane mask, or presentation order. Those cannot be
+reconstructed from a save token or game-file declaration order: the view
+applies live context modifiers, engine localization/formatting, custom strings,
+and engine-owned ordering. Presentation evidence identifies the modifier at
+`CAceEntry+0x28` with data at `+0x30`, but that remains an A39/XUI17 capture
+surface rather than a d46 field.
+
+See also d18.
+
 ## Files about this domain
 
 96 tracked files name this domain.

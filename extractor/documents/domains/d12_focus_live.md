@@ -10,6 +10,22 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+d12 captures persistent focus state: current focus, continuous focus, and completed/progress fields as encoded. Ordered hourly-or-better snapshots make the following derivable without a direct callback domain:
+
+- start when current/continuous focus appears or changes;
+- finish when the completed-focus token/count increases;
+- switch/stop when the prior current focus disappears or changes.
+
+The observation time is bounded by polling cadence, not an exact intra-hour callback tick. A stop without a same-frame completed-token delta cannot be labelled cancel versus completion; it must remain inferred/badged. Focus pause state was not found in the rejected `CFocusStatus+0x00..+0x7F` range.
+
+Named callback-string routes were rejected. `on_focus_complete`, `on_focus_completed`, and `on_national_focus_complete` had no exact anchors. `complete_national_focus`, `uncomplete_national_focus`, and the research completion strings resolve to registration/catalog arguments in `0x82CB0..0x11896F`, passing a key to `0x24AFC10`; they are not runtime callbacks and provide no object-argument contract.
+
+The polling architecture can capture durable state deltas and pending queues, but not transient effect identity with no persistent memory consequence. Effects that mutate variables/flags belong to d51; decision and research transitions belong to d16/d45 and d13. No callback should be invented merely to give an exact tick when the replay itself is hourly.
+
+See also d13, d16, d45, and d51.
+
 ## Files about this domain
 
 101 tracked files name this domain.

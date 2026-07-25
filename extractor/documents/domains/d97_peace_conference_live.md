@@ -10,6 +10,65 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The retained evidence does not contain an active peace-conference graph, and the
+extractor has no active graph producer or carrier. The scanned corpus comprised
+257 saves (6,239,865,008 bytes), 36 melts (1,897,092,407 bytes), 265 replay
+containers (14,299,126,867 bytes), 1,036 streamed zstd snapshots, and 400
+harness JSON/JSONL files (40,273,467 bytes). It yielded 255 empty
+`peace_conference={}` save blocks, 34 empty melt blocks, and only null/absent
+portable fields. Thirty-eight CPU captures (14,061,622,730 bytes) contained
+static peace-label setter traffic but no authenticated participant, allocation,
+contest, result, or selected-action data. Static installed content therefore supply
+vocabulary and authored declaration order only; they do not supply runtime
+identity, ordering, lifecycle, or results.
+
+The pinned executable for the recovered static candidates is
+`hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+These candidates are discovery seeds, not a usable carrier:
+
+| Candidate | Recovered behavior |
+|---|---|
+| `0x14184EB30` | Window lifecycle/refresh candidate; conference reference at receiver `+0x5108/+0x510C`, followed by window refresh and two bidding-popup consumer rebinds. |
+| `0x141851310` | Post-original graph-materialization candidate; rejects a zero conference reference, resolves the conference, classifies the current action view, and emits available-action rows. |
+| `0x141E387A0` | Iterates the live action source and materializes pooled `CPeaceBiddingItem` rows; stores the source action pointer at row `+0x530` before row refresh `0x141E3C530`. |
+| `0x141E41700` | Constructs the biddings popup and binds `number_of_biddings`, `refunded_score`, bid, forfeit, and selection controls. |
+| conference `+0xD8` / `+0x170` | Candidate turn and completion fields. |
+| participant row `+0x58`, count `+0x64` | Candidate participant score-distribution buffer. |
+
+Before any live graph can be published, the engine route must prove a stable
+conference id/generation, participant identities and roles, action/allocation
+and result identities, source order, and lifecycle writers. Pointer values,
+country tags alone, and display ordinals are not portable identities. The
+post-original hook must snapshot while the owning containers are live, use
+stable double-reads, and emit explicit incomplete/unavailable status on any
+failed invariant. An active fixture must cover at least three participants,
+pre-demand and primary/stackable-demand states, a contested allocation, and a
+completed result; screenshots or human labels cannot substitute for the raw
+producer graph.
+
+The static atlas records five exact peace map-mode colors:
+
+| Define | RGBA |
+|---|---|
+| `PEACE_CONFERENCE_CURRENT_SELECTED_SECONDARY_COLOR` | `{ 0, 0, 1, 0.25 }` |
+| `PEACE_CONFERENCE_SELECTABLE_SECONDARY_COLOR` | `{ 0, 1, 0, 0.25 }` |
+| `PEACE_CONFERENCE_CONTESTED_SECONDARY_COLOR` | `{ 1, 0, 0, 0.25 }` |
+| `PEACE_CONFERENCE_CHANGE_TARGET_TAG_SECONDARY_COLOR` | `{ 0, 0.8, 0.5, 0.25 }` |
+| `PEACE_CONFERENCE_DIFFERENT_STACKABLE_SECONDARY_COLOR` | `{ 1, 1, 0, 0.25 }` |
+
+It also fixes `PEACE_HOVERED_STATE_COLOR_INDEX=3`,
+`PEACE_CLAIMED_STATE_COLOR_INDEX=2`, and
+`DEFAULT_PRIORITY_PEACE_COST=STATES_PRIORITY_PEACE_COST=SUPPLY_AREAS_PRIORITY_PEACE_COST=STRATEGIC_AIR_PRIORITY_PEACE_COST=3`.
+The scanned vanilla tree contained 36 files under `common/peace_conference`
+(34 `.txt`, 2 `.md`) and 11 `.dds` files under
+`gfx/interface/peace_conference`; these are static inputs, not evidence of an
+active conference instance.
+
+See also d26.
+
 ## Files about this domain
 
 58 tracked files name this domain.

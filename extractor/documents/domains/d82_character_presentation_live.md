@@ -10,6 +10,50 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+CPR1 schema 3 carries exact trait/ace presentation only with the materializing
+callback hour and selected ace-list context; visible order, portrait, and final
+modifier text are not context-free country facts.
+
+The hook always reads both selected-leader tree pointers at controller
+`+0x120` and `+0x130`. Zero or one tree, duplicate/unknown roots,
+different owners/leaders, foreign-owner trees/ace rows, or a selected-wing
+owner different from the requested owner reject the result. Two empty root
+containers are measured-empty; an empty tree array is not an exact producer
+state.
+
+`0x14201E420` resolves selected wing at controller `+0x5A8`; otherwise the
+nonzero raw plane-type mask at `+0x5E4` is used. With neither, refresh is
+inapplicable. Comparator `0x14201D470` checks eligibility before assignment
+order: `0x14060B860` tests `CAceEntry+0x18 type_mask & plane_type_mask`,
+while `0x14060B960` compares the ace mask to the selected wing’s equipment/type
+mask; ties then use assignment from `0x14060B510`. The binder also receives
+modifier context at controller `+0x5F0`.
+
+Pointers remain callback-local. Portable context is either
+`selected_wing(owner_tag_db_id, wing_id)` from a bijective d46 body-pointer
+join, or `plane_type_mask(mask_raw)`. Multi-owner selected-wing batches are
+rejected. Every callback reads
+`u64[module+0x3316E90]+0x468`, requires the expected raw game hour, and stamps
+the materialization; stale or mixed-hour components fail before encoding.
+Replay applies row order, portrait, or modifier text only when its requested
+context exactly equals the authenticated d82 context.
+
+The live acquisition requires a complete same-launch A25 seed plus clean
+d47/d46 catalogs, then drains pointer-free CPR1/RTI1 batches and quiesces A39
+before A25. The remaining fixture must retain one paused raw hour, land and
+navy mixed-state trait refreshes, a blocked-reason formatter-to-setter edge,
+literal and fallback portraits, assigned and unassigned living aces with
+nonzero effectiveness context, selected-wing or mask context for every refresh,
+and rejection under a different replay context. Save data, installed content,
+RenderDoc pixels, mouse coordinates, and console actions cannot replace the
+CPU identity/context join.
+
+See also d46 and d47.
+
 ## Files about this domain
 
 30 tracked files name this domain.

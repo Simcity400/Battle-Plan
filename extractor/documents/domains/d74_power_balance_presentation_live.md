@@ -10,6 +10,17 @@
 - status: `reserved`
 - schedulable: `False`
 
+## Condensed knowledge
+
+D74/PBP2 is an optional typed semantic companion. Exact visible power-balance
+pixels belong to the authenticated selected-Present UI carrier; absence of d74
+must remain explicit and must not be replaced by a semantic reconstruction.
+The batch source contains no d74 offset, structure layout, or independent
+acquisition law.
+
+See also d11, d12, d24, d41, d50, d55, d56, d57, d65, d71, d72, d75, d80,
+d81, and d87.
+
 ## Files about this domain
 
 72 tracked files name this domain.

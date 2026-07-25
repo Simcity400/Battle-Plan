@@ -10,6 +10,18 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+`CNationalFocusView` vtable `0x14299D680` owns the final item pointer vector at `+0x2058/+0x2060/+0x2064/+0x2068`. Each item is a `0x550`-byte `CNationalFocusTreeItem` with vtables `0x14299DD40/0x14299DDE0`, definition pointer `+0x20`, final state code `+0x540`, and capability bytes `+0x54C/+0x54D`.
+
+State materialization follows `0x14137A780 -> 0x141379A50 -> 0x1413778F0`. Exact-a729 frame callers invoke `0x14137A780` before `0x14137A600`, so a complete observation is sealed only after the same-view dynamic/detail pair. Highlight (`0x141377430`) and display percent (`0x141BB5DF0`, final widget argument at `0x141BB636E`) are transient leaves joined by item/definition identity.
+
+The portable boundary requires exact snapshot identity, complete contiguous engine order, unique focus ids, final state codes only in `0..3`, exact terminal progress laws, final historical/search-marker dispositions, and validated joint-view country identity. Retained files cover all `22` style families and `93` authored overlays, but they do not replace the live item vector.
+
+Activation evidence must include one stable complete frame and a changed-state/transient frame containing the relevant visible cases. Synthetic rows, game-file inference, or screenshots cannot replace the authenticated live vector.
+
+See also d51.
+
 ## Files about this domain
 
 43 tracked files name this domain.

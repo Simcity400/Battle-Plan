@@ -10,6 +10,28 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Division rows are the live authority used to bind on-map counter state. The current append-only row is 120 bytes; retained 104-byte rows decode deterministically as legacy with the added fields unavailable. Mixed or malformed lengths fail closed. The extension carries exact maximum organisation, the dedicated counter-supply scalar, and dig-in current/cap, in addition to current/max supply, their same-row ratio, experience, and order state. Movement is not an orders proxy.
+
+Relevant exact-a729 fields and producers:
+
+| Value | Source |
+|---|---|
+| low-supply predicate input | dedicated fixed-5 `CDivision+0x30` when `+0x2E8 == 0` |
+| planning bonus | signed fixed-5 `CDivision+0x460` |
+| dig-in current/cap | signed fixed-5 `CDivision+0x448/+0x450` |
+| location | `u64[CDivision+0x1E0] -> CProvince`, id at `+0xA4` |
+| organisation maximum | wrapper vtable `+0x130` target `0x140C725E0`; signed fixed-point at `(*(wrapper+0x138))+0x280`, return floor raw `100` |
+
+
+
+Counter binding retains the d20 primary-order trichotomy. It joins an order to d54 only by exact army, engine-instance, and assigned-division identity; active abilities join by the authenticated `division:<id>` set, and remaining-supply observations require same-frame province plus d18 observer identity. Missing or contradictory authority is `unobtained`, not inferred.
+
+The renderer-side geometry evidence does not broaden d20 state. Natural-pixel counter sizing is proved only for the captured 1920x1080 interval and two close-zoom anchor bands; stack identity beyond a singleton and unsampled camera heights remain fail-closed.
+
+See also d18 and d54.
+
 ## Files about this domain
 
 47 tracked files name this domain.

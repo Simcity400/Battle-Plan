@@ -10,6 +10,57 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The producer graph is pinned to `hoi4.exe 1.19.2.0.a729`, image base
+`0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+Rich event rows come only from authenticated common-fire,
+popup-materialisation, option-command, and timeout producers. Saved
+`fired_event_names` are identity-only; polling, first-observed time, current
+player, option zero, first localisable description, default picture, or a
+global timeout must not be substituted.
+
+At capture start, enumerate pending rows from `CGameState+0x560`, count
+`+0x56c`, capacity `+0x568`, stride `0x38`. Pending row `+0x10` owns the
+`CEventScope*`; scope `+0x08` is the exact recipient tag id. Pending row
+`+0x18` is actor/originator and must not be used as recipient. The common fire
+producer is `0x140a028a0`; same-call fire tick is `CGameState+0x468`.
+`CGameState+0xa39` is its active-state gate and `CEvent+0x421` is the
+`fire_only_once` gate.
+
+Visible option order is exact pointer membership in
+`CEvent+0x368/+0x374`. Instance correlation is exact pre/post pending-vector
+set difference; numeric maximum, first row, and observation order are not
+identities. Player, AI, due-timeout, and no-choice paths are terminal edges.
+Pre-due polling or window disappearance does not retire a binding, and there is
+no authenticated unselected-dismiss producer.
+
+The fired-event ledger is an in-place hash container at
+`CGameState+0x538`: count `u32 +0`, bucket count `u32 +4`, bucket pointer
+`+8`; nodes are 16 bytes with `CEvent* +0` and `next +8`. A live shadow must
+validate cycles/count and equality. A strict game-set superset means a missed
+hook observation, not success.
+
+Description selection has single, first-admitted, RNG-selected, and fallback
+paths; capture the returned materialised text. Picture selection uses ordered
+lookups at `0x141225487`, `0x141225837`, and `0x141225A0B`, reaching
+suffix/equality inference. All five popup classes are classified from runtime
+chrome flags plus the static class.
+
+The static registry uses first-registration one-based namespace ordinals and
+combined id `namespace_ordinal*100000+declared_numeric_id`. It contains 6,937
+events, 434 namespaces, and 128 source files with zero parse failures or id
+collisions; four nonnumeric BBA ids remain explicitly unresolved. Combined id
+`42900001` is `ss_recruitment_event.1`. Registry SHA-256:
+`a807b4d0294a4b29bf8d82ddbe5cd801ca9bf4870ceef3a16b1b2daf03fd83c4`.
+
+Malformed chronology, duplicate context ids, reused `CTextBox` owners across
+roles, or legacy identity rows paired with `fired_events_complete=true` reject
+the frame. Completeness remains false until one authenticated runtime matrix
+covers all five classes, player/AI/timeout/no-choice resolution, and lifecycle
+edges. Screenshots and saved candidates cannot satisfy that gate.
+
 ## Files about this domain
 
 56 tracked files name this domain.

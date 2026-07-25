@@ -10,6 +10,16 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+Domain 49 shares several Stage-A failure origins with d50. Those origins must be represented by a closed descriptor whose affected-segment set names both domains; accounting creates one logical evidence unit per affected segment rather than guessing ownership from a domain-wide status OR.
+
+The current `so_*` drain is diagnostic only. Its count and separately stored last-sample value are not batch-coherent, counters can wrap without a terminal signal, and a count greater than one cannot recover earlier sample values. Exact accounting must preserve the full frame epoch/attempt, origin, cause, subsource, introduced status bits, sequence/hour, multiplicity, and optional sample. Until coherence and overflow gates exist, ambiguous evidence fails closed and cannot excuse a missing naval segment.
+
+A presence or lifecycle declaration may never mask the original status bits. Shared naval evidence must remain explicitly mapped to d49 and d50, and a failure set with missing, duplicate, foreign, or unreferenced evidence is invalid.
+
+See also d50.
+
 ## Files about this domain
 
 130 tracked files name this domain.

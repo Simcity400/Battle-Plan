@@ -10,6 +10,28 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The exact-a729 source is bound to executable SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+Collection starts from the authenticated, double-stable complete country
+roster, then coherently reads each country's `CNuke` container. Admission
+requires a non-null begin pointer, capacity at least two, count exactly two,
+valid `CNuke` vtables and owner echoes, ordered type ordinals, and stable amount
+and ready leaves. The pointer-free row is:
+
+`tag_db_id -> {container_capacity, [{nuke_type_raw, amount_raw, nukes_ready}]}`
+
+both the raw audit view and canonical built totals. Raw progress is not a built
+count: the positive oracle `amount_raw=8000, nukes_ready=0` must project zero
+built nukes. Any executable, root, roster, identity, vtable, or coherent-leaf
+failure produces a current-hour unavailable `NUK1` frame with no snapshot; it
+must not become an empty stockpile or carry a prior-hour value. Replay and UI
+also require the exact d18 country join and agreement between the canonical
+total and typed d83 rows.
+
+See also d18.
+
 ## Files about this domain
 
 27 tracked files name this domain.

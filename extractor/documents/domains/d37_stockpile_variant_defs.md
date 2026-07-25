@@ -10,6 +10,38 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+For `hoi4.exe 1.19.2.0.a729`, the ordered production-manager line vector is
+`manager+0x58/+0x60/+0x64`, stride 8. Admitted military type-56 and naval
+type-57 lines identify their exact equipment variant through
+`line+0x88 -> CEquipmentVariant*`.
+
+The pointee is accepted only when its vtable matches the proved type-70 variant
+vtable, `variant+0x08 == 70`, and nonzero `variant+0x0C <= i32::MAX`.
+Line id, kind, stockpile membership, display name, and save values are not
+identity evidence. A failed pointer/type/id gate suppresses the entire `PVJ1`
+segment for the frame. The legacy `line+0x20` candidate is refuted.
+
+The 32-byte base D11 line row is unchanged. After base rows and any `PLIC`
+segment, `PVJ1` uses
+`version:u16=1, header_len:u16=20, segment_len:u32, row_count:u32,
+reserved:u32=0`; each 16-byte row is
+`{tag_db_id:u32, kind:u32, line_id:i32, equipment_variant_id:u32}`.
+Keys must be unique and bijective with all D11 military/naval lines; tag must
+be nonzero, kind exactly 1 or 2, and variant id `1..=i32::MAX`.
+Duplicate, unknown, truncated, or incomplete trailer coverage fails closed.
+Legacy records without `PVJ1` decode with absent variant identity, never a
+guess.
+
+A retained cross-domain fixture joined 797/824 D11 lines to the nearby save by
+globally unique `(kind,line_id)`; every join was type 70, 549 ids also existed
+in the retained d37 catalog, and all 797 agreed on the exact amount
+discriminator. The production reader still obtains identity only from
+`line+0x88 -> type-70 -> +0x0C`.
+
+See also d11.
+
 ## Files about this domain
 
 71 tracked files name this domain.

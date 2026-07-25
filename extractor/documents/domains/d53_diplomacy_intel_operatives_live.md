@@ -10,6 +10,79 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+All build-specific laws below are for `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+
+### Relations and lifecycle joins
+
+The validated base relation chain is:
+
+```text
+mgr   = u64[CCountry+0xF88]
+table = u64[mgr+0x08]
+rel   = u64[table + target_tag_db_id*8]
+cached_sum            = i32[rel+0x300]
+border_friction_claim = i32[rel+0x308] / 100000
+```
+
+The D04 oracle matched `cached_sum` for `10,354/10,354` non-missing rows and border friction for `44,382/44,382`, with zero value mismatches; remaining misses were dynamic-tag aliases, not chain failures.
+
+Common relation identity stores first/second country ids at `+0x10/+0x14` and start/end raw dates at `+0x20/+0x38`. Exact kinds used by cross-domain joins include equipment purchase `9` and licence-production access `13`; `CLicenceProductionAccessRelation` vtable RVA is `0x2949858`. First/second direction is engine authority and must not be renamed seller/buyer or owner/partner direction. See also d11 and d43.
+
+### Operation instances (OPIN v3)
+
+| Offset | Exact field |
+|---:|---|
+| `+0x08` | handle, required type `4713`, stable instance id |
+| `+0x30/+0x38` | preparation current/required |
+| `+0x42` | terminal flag |
+| `+0x48` | definition |
+| `+0x50` | owner `CCountry*` |
+| `+0x58/+0x60` | target CId / optional province-state target |
+| `+0x70/+0x80` | start hour / duration days |
+| `+0xE0/+0xEC` | assigned-operative vector/count, stride `0x38` |
+| `+0x104` | phase count |
+| `+0x110` | resource-value map |
+| `+0x158/+0x164` | requirement records |
+
+Progress scale is `100000` and game-hour epoch is `43800000`. Portable states are `preparing`, `prepared`, `running`, and `finished`. Preparing/prepared require zero start/duration and phase zero; running/finished require nonzero start, positive whole-day duration, and bounded phase/progress. Finished requires terminal phase and full progress. Removing an assigned operative from an in-progress operation unbinds and removes the live instance; there is no independent persistent aborted row.
+
+The complete family is atomic. Every assigned id must join the same-frame operative lifecycle set, and no operative may be duplicated within or across instances. Broken field reads, orphan ids, duplicate assignment, invalid state/definition/timing, or noncanonical identity makes OPIN unavailable. A witnessed empty scan is measured empty. OPIN replaces atomically even on tolerated-partial d53 frames, so ended/removed instances cannot persist.
+
+Older performance reports classified invalid handle types/ids and duplicate ids as `stale_dropped`, incorrectly allowing operation noise to poison all d53 families. The corrected law separates vtable/handle-read liveness from filtered bad type/id/duplicate candidates; operation incompleteness is family-local and diagnostic, not proof that relations, agencies, cryptology, or other families are corrupt.
+
+The operative controller traverses `(*(controller+0x28)+0x538)`, accepts entries with type `+0x08 == 0x0C`, derives `COperativeLeader` as `entry-0xF58`, and materializes rows in traversal order without sorting. Operative status discriminator at `+0x1080` uses branch `4` for the operation reference at `+0xF80`; branch `3` is the distinct action subobject at `+0x1088` and must not be renamed network assignment without its variant join. These controller laws do not by themselves prove all A30 UI surface filters/order.
+
+### Country intel and network graphs
+
+
+`CStrategicOperative+0x08` is the network owner CId. Owner and target must both join the same-frame country set and may not be equal. The exact graph path preserves state id, `(strategic_operative_index, network_slot, target)`, fixed-100000 per-state strength, independently recomputed national coverage, and reciprocal operative membership. Operative action union at leader `+0x1088` uses discriminator `1=build_network`, `2=quiet_network`; `action+0x10 -> wrapper+0x18` resolves the destination network. Stable graph sparse identity is `(strategic_operative_index, network_slot)`, not a tuple including target; including target leaves a stale row when a slot retargets.
+
+Whenever the matrix or INGR family is successfully witnessed, it is a complete atomic set and must clear/replace even on tolerated-partial records. Sparse merging these families previously retained removed networks or retired country pairs.
+
+The installed product exposes no engine-authored network collection order. Any replay summary order must be explicitly labelled as its own stable content order, never engine order. Selected agency/network widget state is host-local and descoped.
+
+### Partial frames and fail-closed folding
+
+Clean d53 frames are full replacement, not delta. Tolerated `PARTIAL_DATA` frames may keyed-upsert independently present families and retain absent rows only within the same hour. They never carry data across an hour boundary; a later clean frame removes absent rows. Stable keys include opinions `(src,target)`, relation flags `(src,target,kind)`, subjects `(overlord,subject)`, operatives `op_id`, cryptology `(owner,target)`, actions/instances by their stable ids, graphs `(operative_index,slot)`, factions `faction_id`, and wars by tag pair.
+
+Every rejection after an earlier same-hour success, including decode/truncation failure, must set `domain53_known_this_hour=false` while retaining the private accumulator. Projection stays hidden until a later valid frame. Clear/replace occurs only after decode, residual, delta, war-badge, and excluded-row gates pass. Applying the same partial twice must not duplicate rows. A true deletion can remain during a partial frame only until the next clean frame or hour reset; this is the explicit within-hour tradeoff.
+
+Incremental optimization must still read current emitted fields and revalidate identity every frame. Candidate discovery cannot become periodic unless a complete birth/dirty signal is proven; otherwise new objects are missed. Address-only live sets are unsafe under ABA reuse. String metadata/bytes must be read and rechecked coherently. The correct moving-state comparison is A/B/A: full read A1, incremental B, full read A2, and require byte equality only when A1 equals A2.
+
+Observed performance evidence is build/run-specific, not a semantic law: roughly 130k first-read candidates and 191k reads implied about 6.1k survivors; full candidate scanning dominated. Relation/candidate prefetch defaults `16/32` produced a real timing improvement without extra guarded reads, while global thread counts from 36 down to 4 left roughly `49-50 ns/read`, indicating latency rather than oversubscription. Arbitrary frame-wide 256-byte read caching is unsafe because it can satisfy later liveness checks with stale bytes; exact layout-aware snapshots may not cross allocation boundaries or replace final validation.
+
+In the same-live-game W0 A/B, aggregate wall per counted d53 read fell from `319.5ns` to `182.0ns`; success-normalized aggregate wall fell from `190.313ms` to `108.583ms` (`-42.9%`, about `1.75x`). This is a whole-domain composite, not an isolated read-primitive or strict single-variable measurement. The instrumented relations phase remained about `63.43%/63.51%` of full wall in one comparison and `65.3%` in a later run, so untimed residuals must not automatically be labelled non-relation work. Replacing decode-gate work with snapshot summarization was a performance null: `29.72ms` became `29.45 + 0.93 = 30.38ms`. A `1/32` decode sample is only a regression detector; cheap final invariant checks must remain always-on. The retained evidence does not reach sub-50ms deep capture.
+
+### Limits and contradictions
+
+The older `W12_D53_BADGES.md` reports bits 16/17/22 as chronic missing operation detail, intel percentages, and network graphs. That conflicts with and is superseded for those families by the later OPIN-v3 and A11/INGR-v4 production sources in this batch. Its separate war limitation is not superseded here: tag pairs/casualties alone do not prove war identity, grouping, name, or lifecycle start date.
+
+Per-country FoW is not d53 intel. No listed source proves a CPU-side province-visibility or spotted-unit container. `CCountryIntelNetwork` vertices are state-level spy-network coverage; country-pair four-channel intel is aggregate; `CStaticIntelSourceReference` at `CCountry+0x1140` is only an identity reference (pool `3`, id `1`, discriminant `0` in 436/436 sampled countries). None may be relabelled FoW. For 13,414 province slots, a dense one-bit vector is 1,677 bytes per POV and 53,664 bytes for 32 POVs, before levels or unit rows; the older 1.6 KiB aggregate estimate is arithmetically wrong. Update cadence, actual bound POV-varying map resource, and unit-visibility predicate remain unresolved.
+
+Save-oracle snapshots do not replace same-frame memory proof for transient values, and cached empty heap-sweep hits are not a current-frame positive absence witness. No field may be promoted from fitted percentages, guessed role tables, pointer identity, UI text, or visually tuned constants.
+
 ## Files about this domain
 
 220 tracked files name this domain.

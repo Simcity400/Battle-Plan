@@ -10,6 +10,16 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The static decisions catalog is keyed by decision id and carries category, localization key/name, icons, political-power cost, target metadata, cooldown/removal fields, visibility/availability metadata, `fire_only_once`, and exact source-file bytes/SHA-256. Missing/corrupt static data fails only the definition join; it is not evidence that live decision state failed.
+
+The validated live target slice is `CDecisionStatus+0xE8` active targeted-timed records. Exact-a729 country-target records require vtable RVA `0x27D5038`, definition pointer `record+0x10`, and nonzero bounded country `tag_db_id` at `record+0x20`. The retained sample contains 3,384 targeted-timed rows, of which 1,061 country-target rows across 180 tokens matched save/live exactly. Numeric state/province target ids, cooldowns, days/body fields, and unmatched transitions remain out of scope and must not be recast as country targets.
+
+Each compact target row has the fixed fields `owner_tag_db_id, target_id, flags, source_kind` plus a decision token. Country flags are `1 | (1<<1)`, and source kind `1` means active targeted timed. Owner/target ids must be nonzero and within `MAX_COMPACT_OWNER_TAG_DB_ID`; rows must be unique by owner/target/source/decision and may not exceed the owner’s `targeted_timed_count`. Structural read ambiguity sets `PARTIAL_DATA` and emits no target rows; a positively identified non-country target is an intentional omission. The schema-safe fold location is `countries[*].decisions._r2_depth_targets`, with source `CDecisionStatus+0xE8 record+0x20`.
+
+The coordinated compact header migration uses twelve `u32` words (48 bytes): target count at byte 0, reserved-zero flags at 4, depth status at 8, then focus/research/status/event and observed counts, with badge count at 44. Mixed old/new collector and recorder binaries will misread the first eight bytes and are invalid.
+
 ## Files about this domain
 
 159 tracked files name this domain.

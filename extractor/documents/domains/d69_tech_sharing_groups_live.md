@@ -10,6 +10,28 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+For exact-a729 (`hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`), `CGameState+0x3A0` owns the technology-sharing manager. Each technology-sharing object is `0x50` bytes with vtable RVA `0x270B720`:
+
+| Offset | Field |
+|---:|---|
+| `+0x08` | runtime sequential intern-table ordinal |
+| `+0x10` | base |
+| `+0x18/+0x20/+0x24/+0x28` | member vector begin/capacity/count/allocator |
+| `+0x30/+0x38/+0x3C/+0x40` | bonus vector begin/capacity/count/allocator |
+| `+0x48` | static template |
+
+Bonuses are signed fixed-5 `i64` values divided by `100000`, additive, and paired with members by the same raw logical index. Runtime id `+0x08` is not a stable/static join; FNV is lookup-only. The TSG2 reader resolves each member by exact membership in the complete validated country roster and performs a stable `H0/H1-A0-H2-A1-H3` read. Member and bonus counts must match and remain within both capacities and configured ceilings. `0/0` is a valid empty group.
+
+Zero, high-bit, unreadable, or unresolved logical members inside the declared count reject the entire frame; rows are never skipped individually. Failure retains the previous baseline, does not advance trackers, and is represented through four 64-bit authority masks.
+
+Patch-day checks must re-derive vtables for the new executable and then validate the field offsets live. The d69 structural canary requires a sane manager vector header (`begin==manager`, `cap>=size`, `size<=256`) and a present `active_walk_count`. Its manager-level size at `CGameState+0x3AC` is distinct from the per-object member count at `+0x24`; the assigned sources do not state a relationship between them. Plausible counts are insufficient: a same-tick melt comparison must match exact groups and members. The retained D04 oracle was `9` groups / `34` members. Any build-id mismatch, unresolved vtable, header failure, or oracle mismatch leaves the new build unsupported.
+
+Source packet SHA-256: `8B159A8DBF0960B1BDBB36B84D561011C56EB4CE8569E8451E73B4A3F4048F42`.
+
+See also d47, d53, and d60.
+
 ## Files about this domain
 
 91 tracked files name this domain.

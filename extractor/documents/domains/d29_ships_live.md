@@ -10,6 +10,29 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+An active save-side task force must have its own
+`id={ id=<N> type=61 }` and at least one direct child `ship` with its own
+type-51 id. Read `definition` only at direct ship depth. Empty task-force
+references, history/refit/sunk definitions, and pending reference blocks are
+not active OOB.
+
+On the pinned D04 fixture (`u32[CGameState+0x468] == 60830441`, executable
+SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`),
+live and melt each yielded 206 active task forces and 1,690 ships, with zero
+live-only/melt-only ids, definition mismatches, or task-force-id mismatches.
+The parser excluded 103 non-active task-force references.
+
+The former live undercount came from treating direct `CFleet` subobject
+candidates differently from vector candidates and stopping after the first
+valid `CTaskForce` body delta. Both routes must use the same normalization and
+retain every valid body delta. D56 may derive `ship_count` and
+`dominant_hull_class` from d29 only for a clean same-hour d29 fold; otherwise
+both fields are null.
+
+See also d56.
+
 ## Files about this domain
 
 26 tracked files name this domain.

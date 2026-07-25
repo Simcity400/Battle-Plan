@@ -10,6 +10,47 @@
 - status: `validated_partial_slice`
 - schedulable: `True`
 
+## Condensed knowledge
+
+All exact offsets below are for `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+
+### Current speed and pause
+
+| Semantic | Exact source |
+|---|---|
+| `CGameState` | `u64[module+0x3316E90]` |
+| scheduler progress | `f32[CGameState+0x4B8]`, finite in `[0,1]` |
+| raw speed slot | `i32[CGameState+0x4BC]`, canonical `0..=4`; UI label is losslessly `raw+1` |
+| clock singletons | `module+0x33172E0` and `module+0x33172E8` |
+| clock vtable / pause | `module+0x2952510`, byte `CInGameIdler+0x6C1` |
+
+
+The gate is deny-extra and content-bound: canonical and raw transcript hashes, fresh nonce and consumed-success seal, PID/creation FILETIME/module base, executable/probe/static-disassembly hashes, stable roots/vtables, five speed samples and three pause samples must agree. V1 self-asserted booleans are not authority. D57 folds one current-hour speed anchor only when speed and pause are both known; out-of-range, mixed row shapes, missing leaves, or empty lists fail closed.
+
+### Sub-hour transition history
+
+Hourly samples cannot recover speed/pause changes that begin and end between frames, and `+0x4B8` cannot be interpolated into a historical wall-clock instant. Exact mutation hooks are:
+
+| Kind | VA / RVA | First 16 bytes |
+|---|---|---|
+| speed | `0x1401EDAD0` / `0x1EDAD0` | `40 55 48 83 EC 40 4C 89 74 24 30 85 D2 79 04 33` |
+| pause/manual/network | `0x140DC6520` / `0xDC6520` | `48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55` |
+| forced pause | `0x140DBE260` / `0xDBE260` | `83 EA 09 74 15 83 EA 01 74 09 83 FA 03 75 2A 33` |
+
+S57M’s 64-byte rows preserve kind, thread id, raw speed, pause state, global sequence, raw hour, source id, and exact progress bits. Sequence zero is either the hook-owned pre-mutation baseline or a clean hourly-hook-ready baseline; later rows must be consecutive. A speed row changes only speed; pause rows change only pause. No-op, cross-field, nested/cross-thread, queue/sequence overflow, callback-read failure, late final row, regressing hour, or hourly-anchor/history-tail divergence makes history unavailable. Suspended early-launch evidence has one explicit non-production debug exception because hooks must precede initialization; it cannot authorize ordinary capture.
+
+### Player and chat roots
+
+The stable player vector is at `CGameState+0xF8` with count `+0x104`, stride `0xA0`, display-name MSVC string `+0x40`, and country id `+0x98`. Double-stable snapshots emit only deltas: new name is Hotjoin/join `value_i32=1`, removed name leave `2`, and retained name with changed country TagSwitch `4`, with new id in `tag_db_id` and old id in `related_value_i32`. Actor key is FNV-1a over the exact name.
+
+`CChat = u64[module+0x33711B0]`. Its retained metadata vector is data/capacity/count `+0xA8/+0xB0/+0xB4`, stride `0x48`; message and sender MSVC strings are `+0x00/+0x20`. The user table is reached through `core=u64[CChat+0x00]`, rows at `core+0x80`, count `+0x8C`, stride `0x58`, with id `+0x00` and name `+0x08`. Sender equal to a user-table name is Chat; no match is SystemMessage. Baseline/regression resets state and only appended rows emit.
+
+`INTEGRATION_PACKET_HOOKS.md` says hotjoin/chat remained fixture-blocked and nothing new integrated; later `A15_RE_REPORT.md` and `SESSION_EVENT_DISPOSITION.md` explicitly supersede that disposition with the exact roots above. Alerts/notifications remain the negative result: visible wartime alerts yielded 685 RTTI classes/609 vtables and zero heap starts, then 339 classes/301 vtables and zero reachable vector candidates from validated roots. `NInterfaceMessages` indicates transient dispatch rather than pollable stored state, so v1 must derive alert equivalents from underlying facts or use separately authorized hook instrumentation.
+
+F6 paused-short proof is a separate nonce-bound acceptance contract and cannot reuse X12 lifecycle evidence. Old paused runs lack its complete plan/nonce/manifest/replay/proof/receipt/marker set.
+
+The listed activation sources contradict one another: `H_X12_SPEED_PREREQUISITE_REAUDIT_20260720.md` states `PRODUCTION_ACTIVATION=true`, while both later X12/F6 engineering sources say the production latch remains false until a retained authentic machine-passing replay receipt exists. Current code and receipt state must resolve that disagreement; the static roots and offline verifier alone do not prove live activation.
+
 ## Files about this domain
 
 138 tracked files name this domain.

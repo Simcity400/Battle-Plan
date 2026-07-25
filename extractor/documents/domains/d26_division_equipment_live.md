@@ -10,6 +10,23 @@
 - status: `existing`
 - schedulable: `True`
 
+## Condensed knowledge
+
+D26 tolerates only `COMPACT_STATUS_PARTIAL_DATA`; source/state unavailable,
+profile mismatch, no clock/scalar source, worker panic, bridge unavailable,
+control invalid, and every other failure-mask bit make the domain unknown for
+that hour. A tolerated partial records the `partial_data` provenance problem;
+it is not a complete current-hour snapshot.
+
+D26 does not serialize identities for omitted rows. After a clean baseline its
+collector tracker may apply valid sparse rows internally because the tracker
+advances the same patch, but the portable leaf remains null until a clean
+current-hour record. An absent following hour is freshness-masked as well.
+This prevents a partial omission from becoming an authenticated deletion or
+clean empty state.
+
+See also d27, d28, d45, d48, d49, d50, d53, d54, and d65.
+
 ## Files about this domain
 
 81 tracked files name this domain.

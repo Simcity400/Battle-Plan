@@ -10,6 +10,10 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+D66’s listed source records only an occupation-extra sidecar with no current typed replay leaf. The combined d52/d66 fold exposes resistance, resistance speed, compliance, compliance speed, occupied-country tag, and occupier tag; `occupation_law` is only an irreversible FNV-1a-32 token and `operational_status` is absent, so neither law text nor operational status may be fabricated. See also d52.
+
 ## Files about this domain
 
 65 tracked files name this domain.

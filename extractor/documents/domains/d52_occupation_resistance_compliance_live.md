@@ -10,6 +10,49 @@
 - status: `production_complete`
 - schedulable: `True`
 
+## Condensed knowledge
+
+The build gate is `hoi4.exe` SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
+the probe fails nonzero when the process is absent or the hash differs.
+Production `army_manpower_need`, `strength_ratio`, and `garrison_required` are
+already closed. The unresolved acquisition surface is the separate
+manpower-pool, equipment-need, suppression, and reinforcement-request detail;
+candidate probes alone do not authorize new fields.
+
+The validated object graph retains
+`CCountryOccupationStatus+0x78` garrison-template rows and joins occupied-state
+law/garrison pairs through `CStateGarrisonData+0x50/+0x58`.
+`CCountryOccupationStatus+0x80` remains rejected after `99` mismatches.
+`CStateGarrisonData+0x48` remains rejected as country identity after `0`
+controller and `0` occupied-tag matches.
+
+Candidate scalar/detail fields require exactly one matching scope with no law
+mismatch. Zero matches remain unavailable; multiple matching scopes remain
+ambiguous. Direct-child rejection is bounded to
+`CStateGarrisonData+0x0..0x17F` and a sampled `0x300` child window. A
+single-tag manpower-pool match to the controller tag does not prove an
+independent vector; use a multi-tag/non-default fixture or UI-backed
+one-variable movement.
+
+The reference oracle is the melted 1943 IRE state at exact date
+`1943.5.1.1`, with nonzero state garrison rows and positive manpower-pool
+and/or equipment-need coverage. A paused live candidate must preserve the
+same-law joins. A short dynamic probe may unpause for 6–24 game hours but must
+keep occupation law, template, control, and selected country unchanged; before
+and after states must join and the candidate must move with the tested UI/save
+meaning. UI transcription must be per state, never a country total.
+
+The scalar-read optimization is equivalent only for stable-memory return/error
+semantics, little-endian decoding, and fixed widths. It is not literally
+byte-identical operationally: replacing `read_bytes` with stack-based
+`read_scalar` stops incrementing `RC_BULK_BYTES`, removes heap allocation side
+effects, and shortens the live race window between address validation and copy.
+Perf diagnostics, allocator behavior, and concurrent mutation timing can
+therefore differ even when decoded rows do not.
+
+See also d47, d48, d51, and d53.
+
 ## Files about this domain
 
 114 tracked files name this domain.

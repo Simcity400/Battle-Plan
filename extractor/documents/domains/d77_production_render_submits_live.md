@@ -10,6 +10,37 @@
 - status: `reserved`
 - schedulable: `False`
 
+## Condensed knowledge
+
+D77 is an authenticated supplemental carrier, not an ordinary scheduled
+domain. It is admitted only with H4CT early-launch authority, must provide one
+JSON frame per completed hour, and must not manufacture a perf row. The frame
+binds process id/creation nonce, launch epoch, VFS/static inputs, selected
+Present, and pointer-free production-render data; d77 without H4CT is rejected.
+
+The production pointer-family acquisition launches exact a729 suspended with
+the centrally attested collector, authenticates the paused Deep War process,
+establishes two distinct interior client positions, crosses exactly one
+authenticated game-hour boundary, and restores pause. The action log is not
+authority. Admission requires a d77 `hoi4.production-render-submit.v12` frame
+whose authority embeds the complete `RecordedInputObservationReceipt`, with
+recomputed selected-Present canonical JSON SHA-256 and
+`hoi4.a729.recorded-input-variant-observation.v3` binary-preimage SHA-256.
+Process nonce, hook epoch, QPC chronology, equal client extent, and both
+positions must all join exactly.
+
+Outputs are create-new and fsync-backed. A failed/partial run cannot overwrite
+an earlier receipt or select the pointer family. The desktop must remain
+unlocked and untouched during the foreground pointer action. Historical
+captures that reached FIRST but crashed before COMMIT/publication remain
+negative evidence. The retained corpus has 177 parseable manifests but no
+acceptance telemetry or sink authority. Remaining live inputs are a
+same-process exact-a729 UI14 capture and modset preparation, one exact-a729
+XN15L suspended launch, and a separate native-D3D replay/pixel receipt.
+Unsupported keyboard/controller traversal remains unavailable.
+
+See also d57 and d80.
+
 ## Files about this domain
 
 56 tracked files name this domain.
