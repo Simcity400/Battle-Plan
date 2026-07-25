@@ -28,7 +28,5 @@ start here:
 | Entry | Purpose |
 | --- | --- |
 | `lane_reports/rendering_laws/PROGRAM_STATUS.md` | Orchestrator status of the rendering-laws RE program + the machine-local evidence-store index (capture corpora, RenderDoc mined store, Ghidra exports). |
-| `lane_reports/rendering_laws/EVIDENCE_REGISTRY.md` | Per-packet evidence registry (machine-readable: `../re_evidence/rendering_laws/EVIDENCE_REGISTRY/registry.json`). |
 | `lane_reports/rendering_laws/CORPUS_INVENTORY.md` | Capture-corpus inventory (machine-readable: `../re_evidence/rendering_laws/CORPUS_INVENTORY/registry.json`). |
-| `../../documents/archive/GIT_CONSOLIDATION_2026-07-19.md` | Git history consolidation of record: pre-consolidation bundle locations, rescue branches, off-repo orchestration state. |
 | `<local-path>` (machine-local) | THE single physical root for all machine-local evidence/capture/RE stores (consolidated 2026-07-19; junctions remain at old paths). Repo-side index: `lane_reports/rendering_laws/PROGRAM_STATUS.md`. |

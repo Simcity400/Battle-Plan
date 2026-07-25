@@ -50,10 +50,9 @@ as a typed blocker, never a silent approximation.
   reference hardware and frame-time contract are defined as optional
   performance evidence, not a product-wide gate. Optional runtime evidence stays
   fail-closed and is not a product-completion blocker. The 2026-07-19
-  "REPLAY LAYER COMPLETE" finalization receipt
-  (`replay_interface/re_evidence/rendering_laws/replay_promotion/REPLAY_CORE_FINALIZATION_20260719.md`)
-  is **invalid as a freeze authority** — 3 of its 4 SHA256s drifted the same
-  day; it must be reissued after the current fix wave.
+  "REPLAY LAYER COMPLETE" finalization receipt is **invalid as a freeze
+  authority** — 3 of its 4 SHA256s drifted the same day; it must be reissued
+  after the current fix wave.
 - The robustness and container-hardening implementation wave has landed. Its
   current central validation/refreeze remains pending (list + state in
   `REMAINING_WORK.md` §2); historical green counts are not current authority.
@@ -82,9 +81,8 @@ table at the bottom of
 The original 243-file `restore_gate_1` capture has been recovered byte-for-byte;
 RG-H1 through RG-H4 remain optional discriminator/regression captures, not
 production blockers. Pre-consolidation git history: bundle at
-`<local-path>` (see
-`documents/archive/GIT_CONSOLIDATION_2026-07-19.md`; its 3 rescue branches are
-tracked in `REMAINING_WORK.md` §4).
+`<local-path>`; its 3 rescue branches are tracked in
+`REMAINING_WORK.md` §4.
 
 ## Documentation policy
 

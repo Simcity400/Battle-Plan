@@ -248,8 +248,7 @@ nonblocking regression evidence.
 - **Replay-loader TOCTOU:** the product-owned bounded spool/finalizer path is
   implemented. Legacy client-driving or alternate finalizer workflows are
   opt-in nonproduction evidence/debug paths only.
-- **Rescue branches** (local-only, from
-  `archive/GIT_CONSOLIDATION_2026-07-19.md`): `rescue/weather-leaf-soundness`
+- **Rescue branches** (local-only): `rescue/weather-leaf-soundness`
   is **already landed / obsolete** — HEAD retains `_owed_open_vocab_weather_leaf`
   plus the `assert_well_formed`, `_manifest_covering_paths`, exclusion-catalog,
   and `collect_universe` OWED-provenance selectors, with the no-mask regression
