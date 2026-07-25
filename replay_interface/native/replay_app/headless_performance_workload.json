@@ -15,7 +15,7 @@
   "selected_present_ui_operation_count": 1167,
   "map_count_authority": {
     "repository_relative_path": "replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json",
-    "sha256": "d0d4917a7102a88938aa4a805beb0a5d897afcbc3287dc4bd169c537c0685307",
+    "sha256": "74fff1eecb6a37019c1cc95402732dc8d5a3727437e22dd05dff54baec2024b9",
     "json_pointer": "/summary/all/draw_count",
     "expected_count": 1266
   },

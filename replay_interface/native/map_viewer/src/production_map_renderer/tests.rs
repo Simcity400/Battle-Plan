@@ -2001,6 +2001,7 @@ fn o04_duplicate_dangling_and_unadmitted_references_fail_closed() {
 }
 
 #[test]
+#[ignore = "external evidence: retained production-complete-frame capture; point BATTLE_PLAN_RETAINED_PRODUCTION_COMPLETE_FRAME at it to run"]
 fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order() {
     let capture_root = std::env::var_os("BATTLE_PLAN_RETAINED_PRODUCTION_COMPLETE_FRAME").or_else(|| std::env::var_os("HOI4_RETAINED_PRODUCTION_COMPLETE_FRAME"))
         .map(PathBuf::from)
