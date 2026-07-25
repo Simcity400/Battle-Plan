@@ -19,8 +19,14 @@ pub const XUI02_REJECTED_DEFINITIONS: usize = 0;
 pub const XUI02_RUNTIME_ACTIVATIONS: usize = 0;
 pub const XUI02_DEPENDENCY_WINDOWS: usize = 190;
 pub const XUI02_DEPENDENCY_FILES: usize = 77;
-const ACTIVATION_INVENTORY_JSON: &str =
-    include_str!("../../../re_evidence/rendering_laws/XUI02/activation_dependency_inventory.json");
+/// The five fields [`FrozenActivationWindow`] declares, for all 9,155 windows.
+///
+/// Distilled from the XUI02 activation-dependency inventory, which carries
+/// sixteen fields per row. serde discarded the other eleven at parse time, so
+/// embedding the full inventory shipped 6.2 MB to every user in order to read
+/// a third of it. Regenerate with the same field list if the struct gains a
+/// field; a missing one is a parse failure, not a silent omission.
+const ACTIVATION_INVENTORY_JSON: &str = include_str!("xui02_activation_inventory.json");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeWindowManagerState {
