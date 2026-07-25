@@ -71,11 +71,35 @@ the content VFS and portable content manifest; the campaign stitching, append an
 **The current collector is retained, unshipped, as a comparison oracle.** It is the only working
 recorder and the reference the new acquisition path is measured against. It is not dead code.
 
+## What is now known
+
+**Instrumentation volume causes the injection crashes.** Measured 2026-07-26 on build a729, six
+trials per arm, each trial bound to its own crash record by time window and classified by
+exception address:
+
+| Arm | Trials | Crashed | Survived |
+|---|---:|---:|---:|
+| Full — 79 scheduled domains | 6 | **6** | 0 |
+| Minimal — 1 scheduled domain | 6 | 0 | **6** |
+
+Reducing instrumentation is therefore a real fix and not a guess. Two qualifications bound that
+claim, and both matter:
+
+- **The comparison was 79 domains against 1, not against zero.** The floor is two hooks, not zero
+  — `d3d11!D3D11CreateDevice` and `d3dcompiler_47!D3DCompile` must stay installed or the device
+  cannot be discovered. Whether crashes reach zero or merely become rare is still unmeasured.
+- **Two distinct crash modes exist, roughly evenly split.** Three of the six full-instrumentation
+  crashes were a call through a null pointer — the half-written-detour signature the hypothesis
+  explains. The other three were a real code address, recurring across sessions at a different
+  ASLR base. **Fixing the hook-installation mechanism addresses only half the observed crashes.**
+  The second mode has no diagnosis yet.
+
+Never measure this by counting crash-folder entries: that scores both modes identically, and the
+folder also collects ordinary play-session crashes.
+
 ## What is not yet known
 
-- **Whether instrumentation volume causes the injection crashes.** Injecting the collector kills
-  the game in roughly two attempts out of three. The hypothesis is that ~249 instrumented code
-  points cause it. That is untested. Removing them may fix nothing.
+- The second crash mode above.
 - Whether coherent reads are achievable at the target cadence without the pause barrier.
 - The performance cost of sampling on constrained hardware.
 
