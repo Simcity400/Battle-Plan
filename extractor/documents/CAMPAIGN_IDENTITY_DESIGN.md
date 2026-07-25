@@ -16,7 +16,7 @@ from their canonical representation. Current-build serializer/deserializer RE pr
 `game_unique_seed` as signed `i32[CGameState+0x720]` and `game_unique_id` as the MSVC
 `std::string` object at `CGameState+0x728` for executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`; see
-[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). The CID1 codec, shared explicit-mode
+[`d68_session_header_live.md`](domains/d68_session_header_live.md). The CID1 codec, shared explicit-mode
 stateful validator, CFA1 codec, collector producer barrier, durable rollover store, ordered package
 publication, replay selection, and recorder-main manifest gate are now statically composed. Pillar
 3 is enabled for local/single-machine IdentityV1 recording. Each live observation still fails
@@ -57,11 +57,9 @@ The build-profile evidence distinguishes the fields:
 - the version RVA is a process/build banner, not a save-header identity.
 
 Those labels and offsets are explicit at
-`extractor/native/compact_contract/src/build_profile.rs:349-401`. The discovery report says
-only one save/live state was available
-(`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:3-13`) and records `session`
-as provisional and requiring a second-save differential
-(`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:105-114`). Its name and one
+`extractor/native/compact_contract/src/build_profile.rs:349-401`. Only one
+save/live state was available, and `session` remains provisional pending a
+second-save differential. Its name and one
 matching value do not prove campaign stability or distinctness. The fold validates presence
 and retains prior fields last-value-wins; it does not upgrade a field into identity evidence
 (`extractor/native/recorder_host/src/world_fold.rs:4923-4983`,
@@ -111,13 +109,12 @@ It cannot distinguish a new campaign loaded into the same process without a live
 | 3 | `game_unique_seed` alone | Current-build signed-i32 representation is statically proven, but no reload/relaunch pair proves its campaign semantics or collision behavior. | Retain raw; never use alone. |
 | 4 | `multiplayer_random_seed` | Save scalar (`extractor/documents/EXTRACTION_ATLAS.md:168`), but may be mutable determinism state. Save-scumming, continued play, or session creation may change it; no evidence settles this. | Diagnostic witness only. |
 | 5 | start date + scenario/bookmark + selection hash | Start date has a proven offset (`extractor/native/compact_contract/src/build_profile.rs:363-364`, `extractor/native/compact_contract/src/build_profile.rs:383-384`). Scenario/initial-selection immutable roots are not accepted. Many games share a bookmark; roster changes on hotjoin, tag switch, drop, observer, and rehost. | Compatibility witness; never fallback identity. |
-| 6 | d68 `session` at `CGameState+0x490` | One live value matched one save and is explicitly provisional (`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:105-114`). It is categorized as a session snapshot (`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:257-262`), and one weak u32 is not distinctive (`extractor/native/runs/crack_fanout/D3_session_tension/EVIDENCE.md:286-297`). | Segment/session witness only. |
+| 6 | d68 `session` at `CGameState+0x490` | One live value matched one save and is explicitly provisional. It is a session snapshot, and one weak u32 is not distinctive. | Segment/session witness only. |
 | 7 | current player/country roster | Breaks on save-scumming with changed selections, hotjoin, tag switch, drop, observer mode, and rehost; common across unrelated games. | Never identity. |
 | 8 | process/run id, wall clock, filename, or full-save hash | Process/run values split on relaunch; filename changes on rename; save content changes every save. These are not durable engine campaign fields. | Provenance or segment identity only. |
 
-The legacy design correctly requires retaining raw fingerprint components for later collision
-adjudication (`documents/archive/DESIGN_legacy_full_2026-07-02.md:775-780`,
-`documents/archive/DESIGN_legacy_full_2026-07-02.md:886-893`). Scenario, modset, roster, start
+Raw fingerprint components are retained for later collision adjudication.
+Scenario, modset, roster, start
 date, and d68 session remain raw witnesses beside the chosen pair. They stay outside the v1
 digest because including them could split one rehosted/observed/updated campaign. An
 incompatible witness is a loud conflict requiring adjudication, not a silently different ID.
@@ -185,9 +182,8 @@ payload     = CID1, schema_version=1,
               presence/status flags, raw compatibility witnesses
 ```
 
-The CID1 v1 payload byte table is now frozen in
-`dossiers/W15_CID1_STATIC_CONTRACT.md` and implemented by
-`compact_contract::campaign_identity`. Its 96-byte fixed header, bounded suffix
+The CID1 v1 payload byte table is implemented by
+`extractor/native/compact_contract/src/campaign_identity.rs`. Its 96-byte fixed header, bounded suffix
 order, flag assignments, and text limits are protocol policy; the UUID and
 signed-i32 seed representations are the static engine evidence. This contract is
 the active local IdentityV1 wire format; it does not waive any per-observation

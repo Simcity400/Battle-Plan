@@ -6,6 +6,13 @@
 > Produced on one machine while a player records, opened on another. It behaves
 > exactly like a save game to the replay surface: open it, get the full replay.
 >
+> **This describes container_version 1, which is being replaced.** Per
+> `documents/DECISIONS.md`, the container is in scope for rebuild alongside the wire format:
+> existing `.battleplan` files will stop opening, sealing a session must stop rewriting the
+> whole file, and the payload-specific index schema goes. Treat this document as the record
+> of what v1 does and — more usefully — of the integrity, crash-safety and archive-security
+> properties the replacement must not lose.
+>
 > Status: **normative** for container_version `1`. Prior review findings are
 > folded in below and tagged `[Codex …]`.
 >

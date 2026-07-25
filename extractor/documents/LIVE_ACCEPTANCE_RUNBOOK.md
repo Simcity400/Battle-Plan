@@ -24,7 +24,7 @@ rungs' bound artifacts, so **do not delete any run directory between launches or
 
 Every injection entry — including a plain `--pid/--dll` CLI invocation — commits the exact target
 identity and establishes a **cross-entry single-injection lease with kernel-retained history that
-poisons the target after either worker exits** (`recorder_host/src/main.rs:1088-1094`,
+poisons the target after either worker exits** (`extractor/native/recorder_host/src/main.rs:1088-1094`,
 `RetainedTargetLease`). A second injected capture attempt into the same the game process is refused
 **even after the first worker exits**. Each acceptance-ladder rung creates a **fresh capture
 attempt** in a fresh run dir (`Invoke-AcceptanceLadder.ps1:765-776`). Therefore:
@@ -100,12 +100,12 @@ producer lands, the gate slots into the sequence named in the last column.
 | A21 per-entity killer label | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** typed damage causes plus dedicated sunk-convoy history (d70) are wired | `RE_REMAINING.md` A21; `production_promotion/contract.json` A4/A21 packet | future soak (live grading only) |
 | A14 construction repair (d48) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact line `+0x78` repair counter, building `+0x48` partial health, reason enum 0..5, and typed location pass the joint matrix; the health-rows-only citation is stale | `RE_REMAINING.md` A14; `production_promotion/contract.json` A14 packet | future soak (live grading only) |
 | A22 air-loss 24-channel (d61) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** schema v2 carries all 24 field/label/divisor mappings; the six-channel citation is stale | `RE_REMAINING.md` A22; `production_promotion/contract.json` A22 packet | future soak (live grading only) |
-| A15 MP chat/hotjoin/tag-switch (d57) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** the recorder fold now projects the four promoted A15 kinds (`Hotjoin`/`TagSwitch`/`Chat`/`SystemMessage`) under `_r2_session_multiplayer_metadata_live` (replay-boundary patch COMPLETED / PRODUCTION ADMITTED), and the `--expect-text` chat-oracle probe exists (`probe_870ebf_session_event_roots.py`, `PROBE_RUNSHEET.md`); the reject/ignore and "neither built" citations are stale. The live MP oracle run itself remains Seq 5's job | `RE_REMAINING.md` A15; `production_promotion/contract.json` A15 packet; `archive/PRODUCTION_REPLAY_HANDOFF_PATCH_PLAN.md` | Seq 5 (live grading only) |
+| A15 MP chat/hotjoin/tag-switch (d57) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** the recorder fold now projects the four promoted A15 kinds (`Hotjoin`/`TagSwitch`/`Chat`/`SystemMessage`) under `_r2_session_multiplayer_metadata_live` (replay-boundary patch COMPLETED / PRODUCTION ADMITTED), and the `--expect-text` chat-oracle probe exists (`probe_870ebf_session_event_roots.py`, `PROBE_RUNSHEET.md`); the reject/ignore and "neither built" citations are stale. The live MP oracle run itself remains Seq 5's job | `RE_REMAINING.md` A15; `production_promotion/contract.json` A15 packet; `domains/d57_session_multiplayer_metadata_live.md` | Seq 5 (live grading only) |
 | CID1 all arms (L0, S1–S4, D1–D2, M1–M3) | **STATIC PRODUCT ROUTE DONE; LIVE EVIDENCE OWED.** The owner-runnable read-only identity probe is merged. The collector sequence-0/CFA1 barrier, CRP1/CRA1/new-CID1/second-CFA1 rollover, recorder durable logical-stream store, ordered package-set publication, and replay selection are composed. The four independent duplex/rollover activation latches remain false, so an owner-authorized evidence build/run is still required for S/D/M and rollover lifecycle receipts; L0 needs only the probe + melt values. | `CAMPAIGN_IDENTITY_DESIGN.md` §Validation plan; `CAMPAIGN_ROLLOVER_TRANSACTION_CORRECTIONS_20260720.md`; probe at `extractor/native/scripts/*campaign_identity*` | Seq 1 (L0), 3 (S/D), 5 (M) |
 | D57 criterion 4 (emission comparison) | A harness comparing the collector's **explicit opt-in** d57 emission against the raw words on the same transitions ("no coercion and no accepted out-of-range value") — no such comparison tool is named in-tree | `I1_D57_SPEED_EVIDENCE.md:322-334` (criterion 4) | Seq 1, launch 1.1 |
 | P4 stitching live driver | Production recorder has **no call site** for pre-fold segmentation / per-segment folds / durable append tickets / atomic stitched publication | `PRODUCT_SESSION_SEMANTICS.md` §4 | Seq 3 |
-| P1 packaging/graceful-quit | `collector_record --auto-attach` and the resident supervisor **exist** (see Seq 4); what is missing is the packaging/tray UI with graceful quit — the supervisor currently "runs until the process is terminated" (design §9, outside that lane) | `recorder_host/src/main.rs:832-922`; `AUTO_ATTACH_DESIGN.md` §9 | Seq 4 |
-| P2 duplex activation | Recorder and collector H4CT/CID1 clients are composed, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`, `DUPLEX_CONTROL_CLIENT_ENABLED`, and both rollover live-evidence latches remain false; permit construction/capability negotiation therefore fail closed | `recorder_host/src/auto_attach/duplex_worker.rs`; `collector/src/duplex_client.rs`; `PRODUCT_SESSION_SEMANTICS.md` §5 | Seq 4 |
+| P1 packaging/graceful-quit | `collector_record --auto-attach` and the resident supervisor **exist** (see Seq 4); what is missing is the packaging/tray UI with graceful quit — the supervisor currently "runs until the process is terminated" (design §9, outside that lane) | `extractor/native/recorder_host/src/main.rs:832-922`; `AUTO_ATTACH_DESIGN.md` §9 | Seq 4 |
+| P2 duplex activation | Recorder and collector H4CT/CID1 clients are composed, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`, `DUPLEX_CONTROL_CLIENT_ENABLED`, and both rollover live-evidence latches remain false; permit construction/capability negotiation therefore fail closed | `extractor/native/recorder_host/src/auto_attach/duplex_worker.rs`; `extractor/native/collector/src/duplex_client.rs`; `PRODUCT_SESSION_SEMANTICS.md` §5 | Seq 4 |
 | Idle-cost measurement harness | A self-timing harness that runs each 30-minute no-game window and records snapshot count / CPU / wakeups / private bytes / WMI reconnects itself — so the owner starts it and walks away instead of hand-timing the windows (six of them: three per machine) | `AUTO_ATTACH_DESIGN.md` §10 Idle-cost gate (bounds defined; harness unnamed) | Seq 4, 5 |
 
 ---
@@ -464,12 +464,12 @@ half; Sequence 5 repeats the whole thing on the weaker machine.
 ### Capability status (corrected)
 
 `collector_record --auto-attach` and the resident dual-order supervisor **already exist**
-(`recorder_host/src/main.rs:832-922`: CLI seam wiring the real Windows adapters over the
+(`extractor/native/recorder_host/src/main.rs:832-922`: CLI seam wiring the real Windows adapters over the
 unit-tested `recorder_host::auto_attach` module; `PRODUCT_SESSION_SEMANTICS.md` §1 "foundation
 built"). The true blockers are **narrower** (register): the packaging/tray UI with graceful quit —
 today the supervisor "runs until the process is terminated" (design §9, outside that lane) — and
 duplex activation, which is hard-disabled (`AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED = false`,
-`auto_attach/duplex_worker.rs:35-50`). The matrix arms below that only need discovery / attach /
+`extractor/native/recorder_host/src/auto_attach/duplex_worker.rs:35-50`). The matrix arms below that only need discovery / attach /
 journal / finalization semantics are runnable against the existing supervisor; arms needing
 graceful quit or duplex liveness wait on the register items.
 
@@ -493,7 +493,7 @@ definition — no single-launch claim is honest here. Launch count per arm below
 | **Access denied / different session** | 1 | An the game process under a different user/session → fail-closed `WaitingForIdentity`, never injected. |
 | Explicit app quit | (reuses an arm above) | Graceful stop-and-finalize. **OWED: graceful-quit UI (register).** |
 | Game crash | 1 | Kill the game mid-capture → valid verified prefix finalized with abnormal termination. |
-| Supervisor crash/restart while game remains | 2 | Kill and restart the supervisor while the game lives → journal replay reconciles the identity. **Reinjection into the surviving game process is FORBIDDEN and refused by design**: the `RetainedTargetLease` job association is kernel-retained for the **lifetime of the target process** — it survives supervisor/worker crashes and collector unload (`recorder_host/src/main.rs:6505-6512`), and a target already in the lease job is refused (`require_target_not_in_job`, `main.rs:6529`). Recovery therefore means the restarted supervisor closes the surviving process's identity to a terminal state and capture resumes only on a **new the game launch** (the arm's second launch). The older design text ("restart waits until the old unique module is proven unloaded before reinjection", `AUTO_ATTACH_DESIGN.md` §6) is superseded by the shipped lease code — the code is the authority. |
+| Supervisor crash/restart while game remains | 2 | Kill and restart the supervisor while the game lives → journal replay reconciles the identity. **Reinjection into the surviving game process is FORBIDDEN and refused by design**: the `RetainedTargetLease` job association is kernel-retained for the **lifetime of the target process** — it survives supervisor/worker crashes and collector unload (`extractor/native/recorder_host/src/main.rs:6505-6512`), and a target already in the lease job is refused (`require_target_not_in_job`, `main.rs:6529`). Recovery therefore means the restarted supervisor closes the surviving process's identity to a terminal state and capture resumes only on a **new the game launch** (the arm's second launch). The older design text ("restart waits until the old unique module is proven unloaded before reinjection", `AUTO_ATTACH_DESIGN.md` §6) is superseded by the shipped lease code — the code is the authority. |
 
 ### Idle-cost (no game running — hard requirement)
 
@@ -553,7 +553,7 @@ another ~12 short launches; plus 3×30 min no-game windows on the weaker machine
    decode-rejection claim below is stale; the oracle-run procedure itself still applies.)*
    **A15 is OWED (register): recording the current d57 slice does NOT pass it.** Production decode
    rejects/ignores `Chat`, `SystemMessage`, `Hotjoin`, `TagSwitch`
-   (`session_multiplayer_metadata_live/INTEGRATION_PACKET.md:219-225`); acceptance requires the
+   (`extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md:219-225`); acceptance requires the
    unique-chat-line oracle run with `--expect-text` **plus** a stable pollable message/root probe
    showing count/text deltas — text observation alone is insufficient
    (`SESSION_EVENT_DISPOSITION.md:107-117,133-140`). Do this fixture only when those tools exist,
