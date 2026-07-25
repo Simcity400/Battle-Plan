@@ -4,7 +4,8 @@
 //! session, direction, sequence, length, and CRC; these payloads additionally
 //! bind the suspended process epoch and hook epoch.
 
-const VERSION: u16 = 1;
+const VERSION_V1: u16 = 1;
+const VERSION_V2: u16 = 2;
 const READY_MAGIC: &[u8; 4] = b"ERDY";
 const FIRST_MAGIC: &[u8; 4] = b"EFD3";
 const COMMIT_MAGIC: &[u8; 4] = b"ECMT";
@@ -29,46 +30,125 @@ pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
 pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 1_800_000;
 
-/// Splits the packed staged-hook selection carried in the historical
-/// `staged_hook_group_mask` field. The low ten bits remain the immutable
-/// production group mask. Diagnostic-only bits 32..=50 select individual COM
-/// hooks by their exact staged ordinal. A zero selector preserves the legacy
-/// meaning of COM bit 0: all nineteen COM hooks.
+/// Typed staged-hook inventory selected for one early-render run.
 ///
-/// An explicit all-COM selector is rejected because it would provide a second
-/// wire representation for the production/legacy COM inventory.
-pub fn staged_hook_selection_masks(wire_mask: u64) -> Option<(u64, u64)> {
-    let allowed =
-        EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK | EARLY_DIAGNOSTIC_COM_SELECTOR_WIRE_MASK;
-    if wire_mask & !allowed != 0 {
-        return None;
-    }
-    let group_mask = wire_mask & EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK;
-    let com_selector =
-        (wire_mask >> EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT)
+/// `Empty` is represented only by wire mask zero and is admitted only in v2
+/// staged-hook frames. Production retains its sole historical wire mask
+/// (`0x3ff`); an explicit all-COM selector remains noncanonical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EarlyStagedHookSelection {
+    Production,
+    Diagnostic { group_mask: u64, com_selector: u64 },
+    Empty,
+}
+
+impl EarlyStagedHookSelection {
+    pub fn from_wire_mask(wire_mask: u64) -> Option<Self> {
+        if wire_mask == 0 {
+            return Some(Self::Empty);
+        }
+        let allowed =
+            EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK | EARLY_DIAGNOSTIC_COM_SELECTOR_WIRE_MASK;
+        if wire_mask & !allowed != 0 {
+            return None;
+        }
+        let group_mask = wire_mask & EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK;
+        let com_selector = (wire_mask >> EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT)
             & EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK;
-    if group_mask & 1 == 0 || com_selector == EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK {
-        return None;
+        if group_mask & 1 == 0 || com_selector == EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK {
+            return None;
+        }
+        if group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK && com_selector == 0 {
+            Some(Self::Production)
+        } else {
+            Some(Self::Diagnostic {
+                group_mask,
+                com_selector,
+            })
+        }
     }
-    Some((group_mask, com_selector))
+
+    pub fn to_wire_mask(self) -> Option<u64> {
+        match self {
+            Self::Production => Some(EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK),
+            Self::Empty => Some(0),
+            Self::Diagnostic {
+                group_mask,
+                com_selector,
+            } => {
+                if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0
+                    || group_mask & 1 == 0
+                    || com_selector & !EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK != 0
+                    || com_selector == EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK
+                    || (group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
+                        && com_selector == 0)
+                {
+                    return None;
+                }
+                Some(group_mask | (com_selector << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT))
+            }
+        }
+    }
+
+    pub fn group_mask(self) -> u64 {
+        match self {
+            Self::Production => EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK,
+            Self::Diagnostic { group_mask, .. } => group_mask,
+            Self::Empty => 0,
+        }
+    }
+
+    pub fn com_selector(self) -> u64 {
+        match self {
+            Self::Diagnostic { com_selector, .. } => com_selector,
+            Self::Production | Self::Empty => 0,
+        }
+    }
+
+    pub fn staged_hook_count(self) -> u32 {
+        match self {
+            Self::Empty => 0,
+            Self::Production => EARLY_STAGED_HOOK_COUNT,
+            Self::Diagnostic {
+                group_mask,
+                com_selector,
+            } => {
+                let com_count = if com_selector == 0 {
+                    EARLY_DIAGNOSTIC_COM_HOOK_COUNT
+                } else {
+                    com_selector.count_ones()
+                };
+                com_count
+                    + EARLY_STAGED_HOOK_GROUP_COUNTS
+                        .into_iter()
+                        .enumerate()
+                        .skip(1)
+                        .filter_map(|(bit, count)| {
+                            (group_mask & (1u64 << bit) != 0).then_some(count)
+                        })
+                        .sum::<u32>()
+            }
+        }
+    }
+
+    pub fn is_diagnostic(self) -> bool {
+        !matches!(self, Self::Production)
+    }
+
+    pub fn is_empty(self) -> bool {
+        matches!(self, Self::Empty)
+    }
+}
+
+/// Splits the packed staged-hook selection carried in the historical
+/// `staged_hook_group_mask` field. Empty is the unique `(0, 0)` selection.
+pub fn staged_hook_selection_masks(wire_mask: u64) -> Option<(u64, u64)> {
+    let selection = EarlyStagedHookSelection::from_wire_mask(wire_mask)?;
+    Some((selection.group_mask(), selection.com_selector()))
 }
 
 pub fn staged_hook_count_for_group_mask(wire_mask: u64) -> Option<u32> {
-    let (group_mask, com_selector) = staged_hook_selection_masks(wire_mask)?;
-    let com_count = if com_selector == 0 {
-        EARLY_DIAGNOSTIC_COM_HOOK_COUNT
-    } else {
-        com_selector.count_ones()
-    };
-    Some(
-        com_count
-            + EARLY_STAGED_HOOK_GROUP_COUNTS
-            .into_iter()
-            .enumerate()
-            .skip(1)
-            .filter_map(|(bit, count)| (group_mask & (1u64 << bit) != 0).then_some(count))
-            .sum::<u32>(),
-    )
+    Some(EarlyStagedHookSelection::from_wire_mask(wire_mask)?.staged_hook_count())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,8 +329,12 @@ pub enum EarlyRenderCodecError {
 }
 
 fn header(out: &mut Vec<u8>, magic: &[u8; 4]) {
+    header_version(out, magic, VERSION_V1);
+}
+
+fn header_version(out: &mut Vec<u8>, magic: &[u8; 4], version: u16) {
     out.extend_from_slice(magic);
-    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
 }
 fn u16_at(bytes: &[u8], at: &mut usize) -> Result<u16, EarlyRenderCodecError> {
     let value = u16::from_le_bytes(
@@ -315,10 +399,59 @@ fn validate_header(
         return Err(EarlyRenderCodecError::Magic);
     }
     let mut at = 4;
-    if u16_at(bytes, &mut at)? != VERSION {
+    if u16_at(bytes, &mut at)? != VERSION_V1 {
         return Err(EarlyRenderCodecError::Version);
     }
     Ok(at)
+}
+
+fn validate_staged_header(
+    bytes: &[u8],
+    magic: &[u8; 4],
+    expected: usize,
+) -> Result<(usize, u16), EarlyRenderCodecError> {
+    if bytes.len() != expected {
+        return Err(EarlyRenderCodecError::Length);
+    }
+    if bytes.get(..4) != Some(magic) {
+        return Err(EarlyRenderCodecError::Magic);
+    }
+    let mut at = 4;
+    let version = u16_at(bytes, &mut at)?;
+    if !matches!(version, VERSION_V1 | VERSION_V2) {
+        return Err(EarlyRenderCodecError::Version);
+    }
+    Ok((at, version))
+}
+
+fn staged_selection_for_fields(
+    group_mask: u64,
+    count: u32,
+) -> Result<EarlyStagedHookSelection, EarlyRenderCodecError> {
+    let selection = EarlyStagedHookSelection::from_wire_mask(group_mask)
+        .ok_or(EarlyRenderCodecError::InvalidField)?;
+    if selection.staged_hook_count() != count {
+        return Err(EarlyRenderCodecError::InvalidField);
+    }
+    Ok(selection)
+}
+
+fn staged_wire_version(selection: EarlyStagedHookSelection) -> u16 {
+    if selection == EarlyStagedHookSelection::Empty {
+        VERSION_V2
+    } else {
+        VERSION_V1
+    }
+}
+
+fn validate_staged_wire_version(
+    version: u16,
+    selection: EarlyStagedHookSelection,
+) -> Result<(), EarlyRenderCodecError> {
+    if version != staged_wire_version(selection) {
+        return Err(EarlyRenderCodecError::Version);
+    }
+    Ok(())
 }
 fn nonzero_hash(value: &[u8; 32]) -> bool {
     value.iter().any(|byte| *byte != 0)
@@ -452,7 +585,7 @@ pub fn decode_early_g2_capture_arm(
         });
     }
     let mut at = 4;
-    if u16_at(bytes, &mut at)? != VERSION {
+    if u16_at(bytes, &mut at)? != VERSION_V1 {
         return Err(EarlyRenderCodecError::Version);
     }
     let value = EarlyG2CaptureArmV1 {
@@ -573,6 +706,8 @@ pub fn decode_early_hook_ready(bytes: &[u8]) -> Result<EarlyHookReadyV1, EarlyRe
 pub fn encode_early_first_game_d3d(
     value: &EarlyFirstGameD3dV1,
 ) -> Result<Vec<u8>, EarlyRenderCodecError> {
+    let selection =
+        staged_selection_for_fields(value.staged_hook_group_mask, value.staged_hook_count)?;
     if value.process_id == 0
         || value.process_start_nonce == 0
         || value.hook_epoch_nonce == 0
@@ -580,13 +715,11 @@ pub fn encode_early_first_game_d3d(
         || value.first_creation_sequence == 0
         || value.creation_qpc == 0
         || value.staged_hook_generation != EARLY_STAGED_HOOK_GENERATION
-        || staged_hook_count_for_group_mask(value.staged_hook_group_mask)
-            != Some(value.staged_hook_count)
         || (!value.diagnostic_stage_probe
-            && (value.staged_hook_group_mask != EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
+            && (selection != EarlyStagedHookSelection::Production
                 || value.staged_hook_count != EARLY_STAGED_HOOK_COUNT))
         || (value.diagnostic_stage_probe
-            && value.staged_hook_group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK)
+            && selection == EarlyStagedHookSelection::Production)
         || !nonzero_hash(&value.staged_hook_set_sha256)
         || value.game_device_ptr == 0
         || value.immediate_context_ptr == 0
@@ -596,7 +729,7 @@ pub fn encode_early_first_game_d3d(
         return Err(EarlyRenderCodecError::InvalidField);
     }
     let mut out = Vec::with_capacity(152);
-    header(&mut out, FIRST_MAGIC);
+    header_version(&mut out, FIRST_MAGIC, staged_wire_version(selection));
     out.extend_from_slice(&value.launch_manifest_sha256);
     out.extend_from_slice(&value.process_id.to_le_bytes());
     out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
@@ -618,7 +751,7 @@ pub fn encode_early_first_game_d3d(
 pub fn decode_early_first_game_d3d(
     bytes: &[u8],
 ) -> Result<EarlyFirstGameD3dV1, EarlyRenderCodecError> {
-    let mut at = validate_header(bytes, FIRST_MAGIC, 152)?;
+    let (mut at, version) = validate_staged_header(bytes, FIRST_MAGIC, 152)?;
     let value = EarlyFirstGameD3dV1 {
         launch_manifest_sha256: hash_at(bytes, &mut at)?,
         process_id: u32_at(bytes, &mut at)?,
@@ -647,6 +780,9 @@ pub fn decode_early_first_game_d3d(
             _ => return Err(EarlyRenderCodecError::Reserved),
         },
     };
+    let selection =
+        staged_selection_for_fields(value.staged_hook_group_mask, value.staged_hook_count)?;
+    validate_staged_wire_version(version, selection)?;
     encode_early_first_game_d3d(&value)?;
     Ok(value)
 }
@@ -687,6 +823,8 @@ pub fn decode_early_commit_capture_receipt(
 pub fn encode_early_diagnostic_liveness_request(
     value: &EarlyDiagnosticLivenessRequestV1,
 ) -> Result<Vec<u8>, EarlyRenderCodecError> {
+    let selection =
+        staged_selection_for_fields(value.staged_hook_group_mask, value.staged_hook_count)?;
     if value.session_id == [0; 16]
         || value.process_id == 0
         || value.process_start_nonce == 0
@@ -695,9 +833,7 @@ pub fn encode_early_diagnostic_liveness_request(
         || value.first_creation_sequence == 0
         || value.creation_qpc == 0
         || value.staged_hook_generation != EARLY_STAGED_HOOK_GENERATION
-        || staged_hook_count_for_group_mask(value.staged_hook_group_mask)
-            != Some(value.staged_hook_count)
-        || value.staged_hook_group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
+        || selection == EarlyStagedHookSelection::Production
         || !nonzero_hash(&value.staged_hook_set_sha256)
         || value.game_device_ptr == 0
         || value.immediate_context_ptr == 0
@@ -708,7 +844,11 @@ pub fn encode_early_diagnostic_liveness_request(
         return Err(EarlyRenderCodecError::InvalidField);
     }
     let mut out = Vec::with_capacity(190);
-    header(&mut out, DIAGNOSTIC_LIVENESS_REQUEST_MAGIC);
+    header_version(
+        &mut out,
+        DIAGNOSTIC_LIVENESS_REQUEST_MAGIC,
+        staged_wire_version(selection),
+    );
     out.extend_from_slice(&value.session_id);
     out.extend_from_slice(&value.launch_manifest_sha256);
     out.extend_from_slice(&value.process_id.to_le_bytes());
@@ -731,7 +871,8 @@ pub fn encode_early_diagnostic_liveness_request(
 pub fn decode_early_diagnostic_liveness_request(
     bytes: &[u8],
 ) -> Result<EarlyDiagnosticLivenessRequestV1, EarlyRenderCodecError> {
-    let mut at = validate_header(bytes, DIAGNOSTIC_LIVENESS_REQUEST_MAGIC, 190)?;
+    let (mut at, version) =
+        validate_staged_header(bytes, DIAGNOSTIC_LIVENESS_REQUEST_MAGIC, 190)?;
     let value = EarlyDiagnosticLivenessRequestV1 {
         session_id: bytes16_at(bytes, &mut at)?,
         launch_manifest_sha256: hash_at(bytes, &mut at)?,
@@ -750,6 +891,9 @@ pub fn decode_early_diagnostic_liveness_request(
         required_hold_ms: u64_at(bytes, &mut at)?,
         request_nonce: bytes16_at(bytes, &mut at)?,
     };
+    let selection =
+        staged_selection_for_fields(value.staged_hook_group_mask, value.staged_hook_count)?;
+    validate_staged_wire_version(version, selection)?;
     encode_early_diagnostic_liveness_request(&value)?;
     Ok(value)
 }
@@ -762,6 +906,8 @@ pub fn decode_early_diagnostic_liveness_request(
 pub fn canonical_early_diagnostic_liveness_response_binding_bytes(
     value: &EarlyDiagnosticLivenessResponseV1,
 ) -> Result<Vec<u8>, EarlyRenderCodecError> {
+    let selection =
+        staged_selection_for_fields(value.staged_hook_group_mask, value.staged_hook_count)?;
     if value.session_id == [0; 16]
         || value.process_id == 0
         || value.process_start_nonce == 0
@@ -772,9 +918,7 @@ pub fn canonical_early_diagnostic_liveness_response_binding_bytes(
         || value.qpc_frequency_hz == 0
         || value.observed_hold_ms < EARLY_DIAGNOSTIC_MIN_HOLD_MS
         || value.staged_hook_generation != EARLY_STAGED_HOOK_GENERATION
-        || staged_hook_count_for_group_mask(value.staged_hook_group_mask)
-            != Some(value.staged_hook_count)
-        || value.staged_hook_group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
+        || selection == EarlyStagedHookSelection::Production
         || !nonzero_hash(&value.staged_hook_set_sha256)
         || value.game_device_ptr == 0
         || value.immediate_context_ptr == 0
@@ -782,7 +926,11 @@ pub fn canonical_early_diagnostic_liveness_response_binding_bytes(
         return Err(EarlyRenderCodecError::InvalidField);
     }
     let mut out = Vec::with_capacity(182);
-    header(&mut out, DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC);
+    header_version(
+        &mut out,
+        DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC,
+        staged_wire_version(selection),
+    );
     out.extend_from_slice(&value.session_id);
     out.extend_from_slice(&value.process_id.to_le_bytes());
     out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
@@ -818,7 +966,8 @@ pub fn encode_early_diagnostic_liveness_response(
 pub fn decode_early_diagnostic_liveness_response(
     bytes: &[u8],
 ) -> Result<EarlyDiagnosticLivenessResponseV1, EarlyRenderCodecError> {
-    let mut at = validate_header(bytes, DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC, 214)?;
+    let (mut at, version) =
+        validate_staged_header(bytes, DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC, 214)?;
     let value = EarlyDiagnosticLivenessResponseV1 {
         session_id: bytes16_at(bytes, &mut at)?,
         process_id: u32_at(bytes, &mut at)?,
@@ -837,6 +986,9 @@ pub fn decode_early_diagnostic_liveness_response(
         immediate_context_ptr: u64_at(bytes, &mut at)?,
         response_sha256: hash_at(bytes, &mut at)?,
     };
+    let selection =
+        staged_selection_for_fields(value.staged_hook_group_mask, value.staged_hook_count)?;
+    validate_staged_wire_version(version, selection)?;
     encode_early_diagnostic_liveness_response(&value)?;
     Ok(value)
 }
@@ -1093,6 +1245,190 @@ mod tests {
             None,
             "selector bits outside the nineteen-hook inventory are invalid"
         );
+        assert_eq!(staged_hook_selection_masks(0), Some((0, 0)));
+        assert_eq!(staged_hook_count_for_group_mask(0), Some(0));
+        for wire_mask in [
+            0,
+            EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK,
+            0x01,
+            0x1ff,
+            one_com,
+            two_com_plus_vfs,
+        ] {
+            let selection = EarlyStagedHookSelection::from_wire_mask(wire_mask).unwrap();
+            assert_eq!(selection.to_wire_mask(), Some(wire_mask));
+        }
+        assert_eq!(
+            EarlyStagedHookSelection::from_wire_mask(
+                EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
+            ),
+            Some(EarlyStagedHookSelection::Production)
+        );
+        assert_eq!(
+            EarlyStagedHookSelection::Diagnostic {
+                group_mask: EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK,
+                com_selector: 0,
+            }
+            .to_wire_mask(),
+            None,
+            "production must not acquire a diagnostic alias"
+        );
+        assert_eq!(
+            EarlyStagedHookSelection::Diagnostic {
+                group_mask: 0x01,
+                com_selector: EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK,
+            }
+            .to_wire_mask(),
+            None,
+            "the explicit all-COM selector remains noncanonical"
+        );
+    }
+
+    fn head_v1_first_bytes(value: &EarlyFirstGameD3dV1) -> Vec<u8> {
+        let mut out = Vec::with_capacity(152);
+        out.extend_from_slice(FIRST_MAGIC);
+        out.extend_from_slice(&VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&value.launch_manifest_sha256);
+        out.extend_from_slice(&value.process_id.to_le_bytes());
+        out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
+        out.extend_from_slice(&value.hook_epoch_nonce.to_le_bytes());
+        out.extend_from_slice(&value.game_device_ordinal.to_le_bytes());
+        out.extend_from_slice(&value.first_creation_sequence.to_le_bytes());
+        out.extend_from_slice(&value.creation_qpc.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_generation.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_count.to_le_bytes());
+        out.push(u8::from(value.diagnostic_stage_probe));
+        out.extend_from_slice(&value.staged_hook_group_mask.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_set_sha256);
+        out.extend_from_slice(&value.game_device_ptr.to_le_bytes());
+        out.extend_from_slice(&value.immediate_context_ptr.to_le_bytes());
+        out.push(u8::from(value.collector_null_probe_excluded));
+        out
+    }
+
+    fn head_v1_diagnostic_request_bytes(value: &EarlyDiagnosticLivenessRequestV1) -> Vec<u8> {
+        let mut out = Vec::with_capacity(190);
+        out.extend_from_slice(DIAGNOSTIC_LIVENESS_REQUEST_MAGIC);
+        out.extend_from_slice(&VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&value.session_id);
+        out.extend_from_slice(&value.launch_manifest_sha256);
+        out.extend_from_slice(&value.process_id.to_le_bytes());
+        out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
+        out.extend_from_slice(&value.hook_epoch_nonce.to_le_bytes());
+        out.extend_from_slice(&value.game_device_ordinal.to_le_bytes());
+        out.extend_from_slice(&value.first_creation_sequence.to_le_bytes());
+        out.extend_from_slice(&value.creation_qpc.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_generation.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_count.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_group_mask.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_set_sha256);
+        out.extend_from_slice(&value.game_device_ptr.to_le_bytes());
+        out.extend_from_slice(&value.immediate_context_ptr.to_le_bytes());
+        out.extend_from_slice(&value.required_hold_ms.to_le_bytes());
+        out.extend_from_slice(&value.request_nonce);
+        out
+    }
+
+    fn head_v1_diagnostic_response_bytes(value: &EarlyDiagnosticLivenessResponseV1) -> Vec<u8> {
+        let mut out = Vec::with_capacity(214);
+        out.extend_from_slice(DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC);
+        out.extend_from_slice(&VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&value.session_id);
+        out.extend_from_slice(&value.process_id.to_le_bytes());
+        out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
+        out.extend_from_slice(&value.hook_epoch_nonce.to_le_bytes());
+        out.extend_from_slice(&value.request_nonce);
+        out.extend_from_slice(&value.request_sha256);
+        out.extend_from_slice(&value.sampled_qpc.to_le_bytes());
+        out.extend_from_slice(&value.qpc_frequency_hz.to_le_bytes());
+        out.extend_from_slice(&value.observed_hold_ms.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_generation.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_count.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_group_mask.to_le_bytes());
+        out.extend_from_slice(&value.staged_hook_set_sha256);
+        out.extend_from_slice(&value.game_device_ptr.to_le_bytes());
+        out.extend_from_slice(&value.immediate_context_ptr.to_le_bytes());
+        out.extend_from_slice(&value.response_sha256);
+        out
+    }
+
+    fn representative_first() -> EarlyFirstGameD3dV1 {
+        EarlyFirstGameD3dV1 {
+            launch_manifest_sha256: [1; 32],
+            process_id: 7,
+            process_start_nonce: 8,
+            hook_epoch_nonce: 9,
+            game_device_ordinal: 1,
+            first_creation_sequence: 13,
+            creation_qpc: 12,
+            staged_hook_generation: EARLY_STAGED_HOOK_GENERATION,
+            staged_hook_count: EARLY_STAGED_HOOK_COUNT,
+            diagnostic_stage_probe: false,
+            staged_hook_group_mask: EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK,
+            staged_hook_set_sha256: [8; 32],
+            game_device_ptr: 0x1000,
+            immediate_context_ptr: 0x2000,
+            collector_null_probe_excluded: true,
+        }
+    }
+
+    #[test]
+    fn nonempty_first_encodings_are_byte_identical_to_head_v1() {
+        let mut cases = vec![representative_first()];
+        for (mask, count) in [
+            (0x01, 19),
+            (0x1ff, 68),
+            (
+                0x01 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT),
+                2,
+            ),
+        ] {
+            let mut diagnostic = representative_first();
+            diagnostic.diagnostic_stage_probe = true;
+            diagnostic.staged_hook_group_mask = mask;
+            diagnostic.staged_hook_count = count;
+            cases.push(diagnostic);
+        }
+        for value in cases {
+            assert_eq!(
+                encode_early_first_game_d3d(&value).unwrap(),
+                head_v1_first_bytes(&value)
+            );
+        }
+    }
+
+    #[test]
+    fn empty_first_is_v2_only_and_round_trips_with_zero_staged_hooks() {
+        let mut empty = representative_first();
+        empty.diagnostic_stage_probe = true;
+        empty.staged_hook_group_mask = 0;
+        empty.staged_hook_count = 0;
+        let bytes = encode_early_first_game_d3d(&empty).unwrap();
+        assert_eq!(&bytes[..4], FIRST_MAGIC);
+        assert_eq!(u16::from_le_bytes(bytes[4..6].try_into().unwrap()), VERSION_V2);
+        assert_eq!(decode_early_first_game_d3d(&bytes).unwrap(), empty);
+        assert_eq!(staged_hook_count_for_group_mask(0), Some(0));
+        assert_eq!(
+            validate_header(&bytes, FIRST_MAGIC, 152),
+            Err(EarlyRenderCodecError::Version),
+            "the exact v1 decoder header gate must refuse a v2 empty frame"
+        );
+
+        let mut v1_empty = bytes.clone();
+        v1_empty[4..6].copy_from_slice(&VERSION_V1.to_le_bytes());
+        assert_eq!(
+            decode_early_first_game_d3d(&v1_empty),
+            Err(EarlyRenderCodecError::Version),
+            "empty has no legacy v1 representation"
+        );
+
+        let mut v2_production = head_v1_first_bytes(&representative_first());
+        v2_production[4..6].copy_from_slice(&VERSION_V2.to_le_bytes());
+        assert_eq!(
+            decode_early_first_game_d3d(&v2_production),
+            Err(EarlyRenderCodecError::Version),
+            "production has no v2 alias"
+        );
     }
 
     #[test]
@@ -1124,23 +1460,7 @@ mod tests {
         let completeness_offset = tampered.len() - 2;
         tampered[completeness_offset] = 0;
         assert!(decode_early_hook_ready(&tampered).is_err());
-        let first = EarlyFirstGameD3dV1 {
-            launch_manifest_sha256: [1; 32],
-            process_id: 7,
-            process_start_nonce: 8,
-            hook_epoch_nonce: 9,
-            game_device_ordinal: 1,
-            first_creation_sequence: 13,
-            creation_qpc: 12,
-            staged_hook_generation: EARLY_STAGED_HOOK_GENERATION,
-            staged_hook_count: EARLY_STAGED_HOOK_COUNT,
-            diagnostic_stage_probe: false,
-            staged_hook_group_mask: EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK,
-            staged_hook_set_sha256: [8; 32],
-            game_device_ptr: 0x1000,
-            immediate_context_ptr: 0x2000,
-            collector_null_probe_excluded: true,
-        };
+        let first = representative_first();
         assert_eq!(
             decode_early_first_game_d3d(&encode_early_first_game_d3d(&first).unwrap()).unwrap(),
             first
@@ -1187,11 +1507,14 @@ mod tests {
             required_hold_ms: EARLY_DIAGNOSTIC_MIN_HOLD_MS,
             request_nonce: [10; 16],
         };
+        let encoded_request = encode_early_diagnostic_liveness_request(&request).unwrap();
         assert_eq!(
-            decode_early_diagnostic_liveness_request(
-                &encode_early_diagnostic_liveness_request(&request).unwrap()
-            )
-            .unwrap(),
+            encoded_request,
+            head_v1_diagnostic_request_bytes(&request),
+            "nonempty diagnostic request encoding must remain byte-identical to v1"
+        );
+        assert_eq!(
+            decode_early_diagnostic_liveness_request(&encoded_request).unwrap(),
             request
         );
         let mut response = EarlyDiagnosticLivenessResponseV1 {
@@ -1217,11 +1540,46 @@ mod tests {
         assert_eq!(response_binding.len(), 182);
         response.response_sha256 = Sha256::digest(&response_binding).into();
         let encoded_response = encode_early_diagnostic_liveness_response(&response).unwrap();
+        assert_eq!(
+            encoded_response,
+            head_v1_diagnostic_response_bytes(&response),
+            "nonempty diagnostic response encoding must remain byte-identical to v1"
+        );
         assert_eq!(&encoded_response[..182], response_binding.as_slice());
         assert_eq!(&encoded_response[182..], &response.response_sha256);
         assert_eq!(
             decode_early_diagnostic_liveness_response(&encoded_response).unwrap(),
             response
+        );
+        let mut empty_request = request.clone();
+        empty_request.staged_hook_group_mask = 0;
+        empty_request.staged_hook_count = 0;
+        let encoded_empty_request =
+            encode_early_diagnostic_liveness_request(&empty_request).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(encoded_empty_request[4..6].try_into().unwrap()),
+            VERSION_V2
+        );
+        assert_eq!(
+            decode_early_diagnostic_liveness_request(&encoded_empty_request).unwrap(),
+            empty_request
+        );
+        let mut empty_response = response.clone();
+        empty_response.staged_hook_group_mask = 0;
+        empty_response.staged_hook_count = 0;
+        empty_response.response_sha256 = [0; 32];
+        let empty_response_binding =
+            canonical_early_diagnostic_liveness_response_binding_bytes(&empty_response).unwrap();
+        empty_response.response_sha256 = Sha256::digest(&empty_response_binding).into();
+        let encoded_empty_response =
+            encode_early_diagnostic_liveness_response(&empty_response).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(encoded_empty_response[4..6].try_into().unwrap()),
+            VERSION_V2
+        );
+        assert_eq!(
+            decode_early_diagnostic_liveness_response(&encoded_empty_response).unwrap(),
+            empty_response
         );
         let end = EarlyDiagnosticEndV1 {
             session_id: request.session_id,

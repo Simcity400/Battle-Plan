@@ -508,6 +508,7 @@ pub fn validate_diagnostic_com_hook_mask(mask: u64) -> Result<(), String> {
 
 pub fn pack_diagnostic_hook_masks(group_mask: u64, com_hook_mask: u64) -> Result<u64, String> {
     if group_mask == EARLY_DIAGNOSTIC_STAGE_MASK_FULL
+        || group_mask & 0x01 == 0
         || group_mask & !EARLY_DIAGNOSTIC_STAGE_MASK_FULL != 0
         || compact_contract::early_render_control::staged_hook_count_for_group_mask(group_mask)
             .is_none()
@@ -3749,7 +3750,7 @@ mod tests {
         assert_eq!(staged_hook_count_for_group_mask(0x03).unwrap(), 21);
         assert_eq!(staged_hook_count_for_group_mask(0x1ff).unwrap(), 68);
         assert_eq!(staged_hook_count_for_group_mask(0x3ff).unwrap(), 71);
-        assert!(staged_hook_count_for_group_mask(0).is_err());
+        assert_eq!(staged_hook_count_for_group_mask(0).unwrap(), 0);
         assert!(staged_hook_count_for_group_mask(0x02).is_err());
         assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 21);
         assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 22);
@@ -3772,6 +3773,7 @@ mod tests {
         assert!(pack_diagnostic_hook_masks(0x01, 0x7ffff).is_err());
         assert!(pack_diagnostic_hook_masks(0x01, 0x80000).is_err());
         assert!(pack_diagnostic_hook_masks(0x3ff, 0x00001).is_err());
+        assert!(pack_diagnostic_hook_masks(0, 0x00001).is_err());
         assert!(staged_hook_count_for_group_mask((1u64 << 51) | 0x01).is_err());
     }
 

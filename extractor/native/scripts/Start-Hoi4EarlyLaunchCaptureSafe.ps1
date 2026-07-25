@@ -101,6 +101,7 @@ if ($MinGameHours -lt 1) { throw 'MinGameHours must be positive.' }
 if ($SampleMilliseconds -lt 1 -or $SampleMilliseconds -gt 10000) { throw 'SampleMilliseconds is outside 1..10000.' }
 $diagnosticStagedHookMaskCanonical=$null
 $diagnosticComHookMaskCanonical=$null
+$diagnosticMaskValue=$null
 if (-not [string]::IsNullOrWhiteSpace($DiagnosticStagedHookMask)) {
     if ($Purpose -cne 'RawDebug') {
         throw 'DiagnosticStagedHookMask is permitted only for RawDebug isolation.'
@@ -113,10 +114,11 @@ if (-not [string]::IsNullOrWhiteSpace($DiagnosticStagedHookMask)) {
         throw 'DiagnosticStagedHookMask must be a hexadecimal staged-hook mask.'
     }
     $diagnosticMaskValue=[Convert]::ToUInt64($diagnosticDigits,16)
-    if (($diagnosticMaskValue -band 0x3ff) -ne $diagnosticMaskValue -or
-        ($diagnosticMaskValue -band 0x01) -eq 0 -or
-        $diagnosticMaskValue -eq 0x3ff) {
-        throw 'DiagnosticStagedHookMask must be a strict 0x3ff subset containing COM bit 0x01.'
+    if ($diagnosticMaskValue -ne 0 -and
+        (($diagnosticMaskValue -band 0x3ff) -ne $diagnosticMaskValue -or
+         ($diagnosticMaskValue -band 0x01) -eq 0 -or
+         $diagnosticMaskValue -eq 0x3ff)) {
+        throw 'DiagnosticStagedHookMask must be empty (0) or a strict 0x3ff subset containing COM bit 0x01.'
     }
     $diagnosticStagedHookMaskCanonical=('0x{0:x}' -f $diagnosticMaskValue)
 }
@@ -126,6 +128,9 @@ if (-not [string]::IsNullOrWhiteSpace($DiagnosticComHookMask)) {
     }
     if ($null -eq $diagnosticStagedHookMaskCanonical) {
         throw 'DiagnosticComHookMask requires DiagnosticStagedHookMask.'
+    }
+    if ($diagnosticMaskValue -eq 0) {
+        throw 'DiagnosticComHookMask cannot be combined with the empty staged-hook selection.'
     }
     $diagnosticComDigits=$DiagnosticComHookMask.Trim()
     if ($diagnosticComDigits.StartsWith('0x',[StringComparison]::OrdinalIgnoreCase)) {
@@ -459,6 +464,61 @@ try {
         process_dump_count=@($crashFiles | Where-Object { [string]$_.file -like '*.dmp' }).Count
         artifacts=$crashFiles
     })
+}
+
+if ($null -ne $diagnosticStagedHookMaskCanonical) {
+    $diagnosticReceiptPath=Join-Path $OutDir 'DIAGNOSTIC_NO_COMMIT_COMPLETED.json'
+    if (-not (Test-Path -LiteralPath $diagnosticReceiptPath -PathType Leaf)) {
+        throw 'Recorder completed the diagnostic no-COMMIT run without its terminal receipt.'
+    }
+    $diagnosticReceipt=Get-Content -LiteralPath $diagnosticReceiptPath -Raw | ConvertFrom-Json
+    $expectedPackedMask=[uint64]$diagnosticMaskValue
+    if ($null -ne $diagnosticComHookMaskCanonical) {
+        $expectedPackedMask=$expectedPackedMask -bor ([uint64]$diagnosticComMaskValue -shl 32)
+    }
+    if (
+        [string]$diagnosticReceipt.schema -cne 'extractor.diagnostic-no-commit-probe.v1' -or
+        [bool]$diagnosticReceipt.admissible_for_production -or
+        [string]$diagnosticReceipt.phase -cne 'completed_target_terminated_no_commit_no_replay' -or
+        -not [bool]$diagnosticReceipt.diagnostic_stage_probe -or
+        [uint64]$diagnosticReceipt.staged_hook_group_mask -ne [uint64]$diagnosticMaskValue -or
+        [uint64]$diagnosticReceipt.early_capture_receipt.diagnostic_staged_hook_mask -ne $expectedPackedMask -or
+        [uint32]$diagnosticReceipt.staged_hook_count -ne [uint32]$diagnosticReceipt.early_capture_receipt.staged_hook_count -or
+        [string]$diagnosticReceipt.staged_hook_set_sha256 -cnotmatch '^(?!0{64}$)[0-9a-f]{64}$' -or
+        [bool]$diagnosticReceipt.commit_sent -or
+        -not [bool]$diagnosticReceipt.diagnostic_liveness_request_sent -or
+        -not [bool]$diagnosticReceipt.diagnostic_liveness_response_validated -or
+        -not [bool]$diagnosticReceipt.diagnostic_end_sent -or
+        [bool]$diagnosticReceipt.capture_stream_admitted -or
+        [bool]$diagnosticReceipt.replay_created -or
+        [uint64]$diagnosticReceipt.observed_hold_ms -lt [uint64]$diagnosticReceipt.required_hold_ms -or
+        [bool]$diagnosticReceipt.target_alive_at_receipt -or
+        -not [bool]$diagnosticReceipt.target_terminated_by_host
+    ) {
+        throw 'Diagnostic no-COMMIT terminal receipt is incomplete or differs from the requested hook selection.'
+    }
+    if ($diagnosticMaskValue -eq 0 -and [uint32]$diagnosticReceipt.staged_hook_count -ne 0) {
+        throw 'Empty instrumentation experiment reported a nonzero staged-hook count.'
+    }
+    if ($rawRecorderExitNonzero -or $recorderExitCode -ne 0) {
+        throw "Diagnostic no-COMMIT receipt was retained, but collector_record exited with code $recorderExitCode."
+    }
+    $diagnosticVerificationPath=Join-Path $OutDir 'diagnostic_no_commit_verification.json'
+    Write-DurableJson -Path $diagnosticVerificationPath -Value ([ordered]@{
+        schema='battle-plan.diagnostic_no_commit_verification.v1'
+        admissible_for_production=$false
+        authorization_plan_sha256=(Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        diagnostic_receipt_sha256=(Get-FileHash -LiteralPath $diagnosticReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        staged_hook_group_mask=[uint64]$diagnosticMaskValue
+        packed_staged_hook_selection=$expectedPackedMask
+        staged_hook_count=[uint32]$diagnosticReceipt.staged_hook_count
+        staged_hook_set_sha256=[string]$diagnosticReceipt.staged_hook_set_sha256
+        target_terminated_by_host=$true
+        commit_sent=$false
+        replay_created=$false
+    })
+    Write-Host "Early-launch diagnostic no-COMMIT run mechanically admitted: $diagnosticVerificationPath"
+    return
 }
 
 $manifestPath=Join-Path $OutDir 'native_session_manifest.json'

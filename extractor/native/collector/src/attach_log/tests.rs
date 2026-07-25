@@ -2040,6 +2040,7 @@
             CollectorControl {
                 control_valid: true,
                 control_error: None,
+                control_mode: CollectorControlMode::HourlyPoll,
                 duration_ms: 8000,
                 sample_ms: 10,
                 country_object_scan: false,
@@ -3514,6 +3515,50 @@
                     "scheduled_domains"
                 ),
                 JsonStringField::Value("focus_live".to_string())
+            );
+        }
+
+        #[test]
+        fn control_mode_admits_only_canonical_hourly_or_empty_experiment_shape() {
+            let admitted = |text| {
+                serde_json::from_str::<UniqueTopLevelControl>(text)
+                    .ok()
+                    .and_then(|UniqueTopLevelControl(root)| parse_control_mode(&root))
+            };
+            assert_eq!(
+                admitted(r#"{"mode":"hourly_poll"}"#),
+                Some(CollectorControlMode::HourlyPoll)
+            );
+            assert_eq!(
+                admitted(
+                    r#"{"mode":"instrumentation_experiment","early_staged_hook_selection":"empty","early_render_capture_v1":true}"#
+                ),
+                Some(CollectorControlMode::InstrumentationExperiment {
+                    selection:
+                        compact_contract::early_render_control::EarlyStagedHookSelection::Empty
+                })
+            );
+            assert_eq!(
+                admitted(
+                    r#"{"mode":"hourly_poll","early_staged_hook_selection":"empty"}"#
+                ),
+                None
+            );
+            assert_eq!(
+                admitted(r#"{"mode":"instrumentation_experiment"}"#),
+                None
+            );
+            assert_eq!(
+                admitted(
+                    r#"{"mode":"instrumentation_experiment","early_staged_hook_selection":"empty"}"#
+                ),
+                None
+            );
+            assert_eq!(
+                admitted(
+                    r#"{"mode":"instrumentation_experiment","early_staged_hook_selection":"production"}"#
+                ),
+                None
             );
         }
 
@@ -20522,6 +20567,7 @@
             let control = CollectorControl {
                 control_valid: true,
                 control_error: None,
+                control_mode: CollectorControlMode::HourlyPoll,
                 duration_ms: 8000,
                 sample_ms: 10,
                 country_object_scan: false,
