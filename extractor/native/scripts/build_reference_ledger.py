@@ -82,8 +82,35 @@ PROTECTED_BASENAMES = {
     "tox.ini", "makefile", "dockerfile", "rustfmt.toml", "clippy.toml",
     "rust-toolchain", "rust-toolchain.toml", "license", "license.md",
     "license.txt", "notice", "codeowners",
+    # Entry-point documentation is found by a human opening the directory, or by
+    # the forge rendering it. Nothing links to a README for the same reason
+    # nothing links to a front door.
+    "readme.md", "readme", "readme.txt", "agents.md", "claude.md",
 }
 PROTECTED_DIR_PARTS = {".github", ".cargo", ".config"}
+
+# Rust declares modules by NAME, never by filename: `mod hour_latch;` refers to
+# hour_latch.rs, which a filename-token scanner cannot see. Before this was
+# handled, collector/src/hour_latch.rs -- the pause barrier -- read as uncited.
+RUST_MOD_DECL = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;",
+                           re.MULTILINE)
+
+# Targets Cargo and pytest discover by location or filename pattern, with no
+# declaration anywhere: crate roots, auto-discovered bins/tests/benches/examples,
+# and test_*.py / *_test.py. Absence of a citation says nothing about these.
+def discovered_by_convention(path: str) -> bool:
+    parts = path.split("/")
+    name = parts[-1]
+    if name in {"lib.rs", "main.rs", "mod.rs", "build.rs"}:
+        return True
+    if name.endswith(".rs") and any(
+        d in parts for d in ("bin", "tests", "benches", "examples")
+    ):
+        return True
+    if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")
+                                 or name in {"__init__.py", "conftest.py"}):
+        return True
+    return False
 
 
 def tracked_files(repo: Path) -> list[str]:
@@ -233,6 +260,19 @@ def main() -> int:
             if len(citers[target]) < 12:
                 citers[target].add(citer)
 
+        # Resolve `mod NAME;` against the declaring file's own directory, which
+        # is exactly how rustc resolves it: NAME.rs or NAME/mod.rs beside it.
+        if citer.endswith(".rs"):
+            here = normalize(citer).rsplit("/", 1)[0]
+            for match in RUST_MOD_DECL.finditer(text):
+                name = match.group(1)
+                for candidate in (f"{here}/{name}.rs", f"{here}/{name}/mod.rs"):
+                    target = by_fullpath.get(candidate)
+                    if target and target != citer:
+                        cites[target]["code"] += 1
+                        if len(citers[target]) < 12:
+                            citers[target].add(citer)
+
         for match in SHA256_TOKEN.finditer(text):
             pinned = sha_to_path.get(match.group(0).lower())
             if pinned and pinned != citer:
@@ -263,7 +303,9 @@ def main() -> int:
         via_dir, dir_counts = file_dir_citation.get(p, ("", {}))
 
         parts = normalize(p).split("/")
-        if parts[-1] in PROTECTED_BASENAMES or PROTECTED_DIR_PARTS.intersection(parts):
+        if (parts[-1] in PROTECTED_BASENAMES
+                or PROTECTED_DIR_PARTS.intersection(parts)
+                or discovered_by_convention(normalize(p))):
             verdict = "protected_by_convention"
         elif pinned:
             verdict = "pinned_by_sha"
