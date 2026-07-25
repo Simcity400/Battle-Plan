@@ -33,6 +33,13 @@ const PAGE_EXECUTE_READWRITE: Dword = 0x40;
 const ALLOCATION_GRANULARITY: usize = 0x1_0000;
 const MAX_REL32_DISTANCE: usize = 0x7fff_0000;
 const RELAY_CAPACITY: usize = 0x1000;
+const TH32CS_SNAPTHREAD: Dword = 0x0000_0004;
+const THREAD_SUSPEND_RESUME: Dword = 0x0002;
+const THREAD_GET_CONTEXT: Dword = 0x0008;
+const CONTEXT_CONTROL_AMD64: Dword = 0x0010_0001;
+const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+const ERROR_INVALID_HANDLE: Dword = 6;
+const ERROR_INVALID_PARAMETER: Dword = 87;
 
 pub const DISPLAY_PERCENT_CALLSITE_RVA: usize = 0x01bb_636e;
 pub const JOINT_COUNTRY_CALLSITE_RVA: usize = 0x0137_9e5f;
@@ -58,6 +65,154 @@ extern "system" {
     ) -> Bool;
     fn FlushInstructionCache(process: Handle, address: *const c_void, size: usize) -> Bool;
     fn GetCurrentProcess() -> Handle;
+    fn GetCurrentProcessId() -> Dword;
+    fn GetCurrentThreadId() -> Dword;
+    fn GetLastError() -> Dword;
+    fn CloseHandle(handle: Handle) -> Bool;
+    fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
+    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
+    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
+    fn OpenThread(access: Dword, inherit: Bool, thread_id: Dword) -> Handle;
+    fn SuspendThread(thread: Handle) -> Dword;
+    fn ResumeThread(thread: Handle) -> Dword;
+    fn GetThreadContext(thread: Handle, context: *mut ThreadContext64) -> Bool;
+}
+
+#[repr(C)]
+struct ThreadEntry32 {
+    size: Dword,
+    usage: Dword,
+    thread_id: Dword,
+    owner_process_id: Dword,
+    base_priority: i32,
+    delta_priority: i32,
+    flags: Dword,
+}
+
+#[repr(C, align(16))]
+struct ThreadContext64 {
+    homes: [u64; 6],
+    context_flags: Dword,
+    mx_csr: Dword,
+    segments: [u16; 6],
+    eflags: Dword,
+    debug_registers: [u64; 6],
+    registers_through_r15: [u64; 16],
+    rip: u64,
+    extended: [u8; 976],
+}
+
+impl ThreadContext64 {
+    fn control() -> Self {
+        let mut value: Self = unsafe { core::mem::zeroed() };
+        value.context_flags = CONTEXT_CONTROL_AMD64;
+        value
+    }
+}
+const _: [(); 1232] = [(); core::mem::size_of::<ThreadContext64>()];
+
+/// Every other thread in this process, suspended for the duration.
+///
+/// Patching live code while the engine runs is not safe on its own: a thread
+/// executing inside the replaced bytes sees a torn instruction stream, which is
+/// how an in-flight the game thread ends up decoding a call to a garbage address.
+/// The sibling MinHook path gets thread suspension from MinHook itself; these
+/// two mid-function sites are not function entries, so this module has to do it.
+struct SuspendedOtherThreads {
+    handles: Vec<Handle>,
+}
+
+impl SuspendedOtherThreads {
+    unsafe fn capture() -> Result<Self, String> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err("A31 inline patch thread snapshot failed".into());
+        }
+        let process_id = unsafe { GetCurrentProcessId() };
+        let current_thread_id = unsafe { GetCurrentThreadId() };
+        let mut entry = ThreadEntry32 {
+            size: core::mem::size_of::<ThreadEntry32>() as Dword,
+            usage: 0,
+            thread_id: 0,
+            owner_process_id: 0,
+            base_priority: 0,
+            delta_priority: 0,
+            flags: 0,
+        };
+        let mut handles: Vec<Handle> = Vec::new();
+        let mut present = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while present {
+            if entry.owner_process_id == process_id && entry.thread_id != current_thread_id {
+                let handle = unsafe {
+                    OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, 0, entry.thread_id)
+                };
+                if handle.is_null() {
+                    let error = unsafe { GetLastError() };
+                    if error == ERROR_INVALID_PARAMETER {
+                        // The thread exited between the snapshot and this open.
+                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+                        continue;
+                    }
+                    unsafe { CloseHandle(snapshot) };
+                    resume_and_close(&mut handles);
+                    return Err(format!(
+                        "A31 inline patch could not open thread {}",
+                        entry.thread_id
+                    ));
+                }
+                if unsafe { SuspendThread(handle) } == Dword::MAX {
+                    let error = unsafe { GetLastError() };
+                    unsafe { CloseHandle(handle) };
+                    if error == ERROR_INVALID_HANDLE || error == ERROR_INVALID_PARAMETER {
+                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+                        continue;
+                    }
+                    unsafe { CloseHandle(snapshot) };
+                    resume_and_close(&mut handles);
+                    return Err(format!(
+                        "A31 inline patch could not suspend thread {}",
+                        entry.thread_id
+                    ));
+                }
+                handles.push(handle);
+            }
+            present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+        Ok(Self { handles })
+    }
+
+    /// Fail closed if any suspended thread is stopped inside the bytes about to
+    /// be rewritten. Suspending is not sufficient on its own: a thread parked
+    /// mid-sequence would resume into a half-old, half-new instruction stream.
+    fn any_instruction_pointer_in(&self, start: usize, end: usize) -> Result<bool, String> {
+        for handle in &self.handles {
+            let mut context = ThreadContext64::control();
+            if unsafe { GetThreadContext(*handle, &mut context) } == 0 {
+                return Err("A31 inline patch could not read a suspended thread context".into());
+            }
+            let rip = context.rip as usize;
+            if rip >= start && rip < end {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+impl Drop for SuspendedOtherThreads {
+    fn drop(&mut self) {
+        resume_and_close(&mut self.handles);
+    }
+}
+
+fn resume_and_close(handles: &mut Vec<Handle>) {
+    for handle in handles.drain(..).rev() {
+        unsafe {
+            ResumeThread(handle);
+            CloseHandle(handle);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -299,6 +454,19 @@ unsafe fn write_code(address: usize, expected: &[u8], replacement: &[u8]) -> Res
         return Err("A31 inline replacement length differs".into());
     }
     verify_bytes(address, expected, "inline pre-write")?;
+
+    // Stop the world before touching live code, and keep it stopped until the
+    // bytes and the instruction cache are both consistent again. Writing these
+    // five bytes underneath running engine threads is a torn-instruction race:
+    // a thread inside the sequence resumes into a mix of old and new bytes.
+    let suspended = unsafe { SuspendedOtherThreads::capture() }?;
+    if suspended.any_instruction_pointer_in(address, address + replacement.len())? {
+        return Err(format!(
+            "A31 inline patch refused: a thread is executing inside {address:#x}..{:#x}",
+            address + replacement.len()
+        ));
+    }
+
     let mut old = 0;
     if unsafe {
         VirtualProtect(
@@ -382,4 +550,72 @@ fn display_relay_body(callback: usize) -> Vec<u8> {
     // Reproduce the displaced instructions, then return to 0x141bb6373.
     out.extend_from_slice(&[0x8b, 0xd6, 0x48, 0x8b, 0xc8, 0xc3]);
     out
+}
+
+#[cfg(test)]
+mod suspension_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// The whole point of the guard is that live engine threads are stopped
+    /// while code bytes are rewritten, and reliably restarted afterwards.
+    #[test]
+    fn capture_suspends_other_threads_and_resumes_them_on_drop() {
+        let running = Arc::new(AtomicBool::new(true));
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_running = Arc::clone(&running);
+        let worker_ticks = Arc::clone(&ticks);
+        let worker = std::thread::spawn(move || {
+            while worker_running.load(Ordering::Relaxed) {
+                worker_ticks.fetch_add(1, Ordering::Relaxed);
+                std::thread::yield_now();
+            }
+        });
+
+        // Let the worker get going so it is genuinely running when suspended.
+        while ticks.load(Ordering::Relaxed) == 0 {
+            std::thread::yield_now();
+        }
+
+        let suspended = unsafe { SuspendedOtherThreads::capture() }
+            .expect("suspending the process's other threads must succeed");
+        let frozen = ticks.load(Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let still_frozen = ticks.load(Ordering::Relaxed);
+        assert_eq!(
+            frozen, still_frozen,
+            "a suspended thread must not advance while code is being patched"
+        );
+
+        drop(suspended);
+
+        // After the guard drops the worker must make progress again, otherwise
+        // a failed patch would leave the game permanently frozen.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ticks.load(Ordering::Relaxed) == still_frozen {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "threads were never resumed after the patch guard dropped"
+            );
+            std::thread::yield_now();
+        }
+
+        running.store(false, Ordering::Relaxed);
+        worker.join().expect("worker thread must exit cleanly");
+    }
+
+    /// A range no thread is executing in must not be reported as occupied, or
+    /// every patch would refuse to install.
+    #[test]
+    fn an_unoccupied_range_is_reported_clear() {
+        let suspended = unsafe { SuspendedOtherThreads::capture() }
+            .expect("suspending the process's other threads must succeed");
+        // A deliberately unmapped, non-executable address window.
+        let occupied = suspended
+            .any_instruction_pointer_in(0x1000, 0x1000 + 5)
+            .expect("reading suspended thread contexts must succeed");
+        drop(suspended);
+        assert!(!occupied, "no thread can be executing at a reserved-null page");
+    }
 }
