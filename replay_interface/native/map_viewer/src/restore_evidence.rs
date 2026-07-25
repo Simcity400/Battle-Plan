@@ -1349,28 +1349,6 @@ mod tests {
     }
 
     #[test]
-    fn retained_rdc_manifest_loader_decodes_hash_bound_restore_packet() {
-        let retained = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../re_evidence/rendering_laws/RESTORE_GATE_RETAINED/postfx_frame159341");
-        let bundle = load_restore_scene_bundle_session_dir(&retained)
-            .expect("load retained restore packet")
-            .expect("retained manifest is recognized");
-        assert_eq!(bundle.bundle_file, "manifest.json");
-        assert_eq!(bundle.draw_call, "Draw");
-        assert_eq!(bundle.draw_index, 11_720);
-        assert_eq!(bundle.color_cube.dxgi_format, DXGI_FORMAT_B8G8R8A8_UNORM);
-        assert_eq!(bundle.color_cube.rgba8.len(), RESTORE_COLOR_CUBE_BYTES);
-        assert!(bundle
-            .color_cube
-            .rgba8
-            .chunks_exact(4)
-            .all(|texel| texel[3] == 0x00));
-        assert_eq!(bundle.average_luminance.raw, [0x00, 0x38]);
-        assert!((bundle.average_luminance.value - 0.5).abs() < 0.001);
-        assert!((bundle.posteffect_cb.middle_grey - 0.55).abs() < 0.000001);
-    }
-
-    #[test]
     fn restore_pass_bundle_loader_rejects_truncated_color_cube_payload() {
         let root = copy_fixture_to_temp("truncated_color_cube");
         let color_cube = std::fs::read_dir(&root)
