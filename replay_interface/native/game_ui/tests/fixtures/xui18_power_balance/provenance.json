@@ -1,0 +1,20 @@
+{
+  "schema": "xui18-power-balance-fixture-provenance-v1",
+  "fixture_scope": "catalogs.power_balances.ITA_power_balance",
+  "projection": "Complete source record wrapped in the minimal catalogs.power_balances container accepted by PowerBalanceDefinitionCatalog.",
+  "source_catalog": {
+    "repo_relative_path": "extractor/game_defs/out/catalogs.json",
+    "sha256": "e0e94ed0e8248831190d378cdaa53716bde8774879b7336e9cfed521e5bd858e",
+    "tracked": false,
+    "role": "Derivation evidence only; never a runtime or clean-clone input."
+  },
+  "source_record": {
+    "id": "ITA_power_balance",
+    "source_file": "common/bop/ITA.txt",
+    "canonical_json_sha256": "d2cc7e02bacb538bc6fe7358198d3971e7ea2196e5f8a0a32ff1421446812dfa",
+    "balance_count_in_source_catalog": 12,
+    "side_count": 9,
+    "range_count": 37
+  },
+  "integrity_rule": "The fixture record must canonicalize to source_record.canonical_json_sha256; no extractor output is needed after derivation."
+}

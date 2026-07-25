@@ -1,0 +1,15 @@
+{
+  "schema": "battle-plan-frame162662-mapname-answer-key-v1",
+  "comment": "Cross-session NAME2 size regression key (audit F-024, 2026-07-11). Eight country labels byte-decoded by a BLIND re-derivation session from postfx_frame162662 (camera h=1060.041870, chunk 1782) immutable label VBs bound to the 2048x1024 hoi_mapfont4 atlas (texture 315, blob 5fcef22057b9a88c == shipped DDS payload). height = median planar glyph-quad cap height (world units); arc_w = decoded baseline arc length; w_nat_px = natural text advance incl. BMFont space advances (font px). Per-label blob citations in hoi4_lanes/rederive-titlesize2.result. Labels are static across zoom (round-1 hash proof), so heights compare directly against the law regardless of capture height. anchor_x/anchor_y = mean glyph vertex position from the cited blob, mapped (x, 2048-z) — extracted 2026-07-11 for the geographic instance join.",
+  "cap_px": 55.0,
+  "labels": [
+    { "tag": "SWE", "text": "Sweden", "h_cap": 22.916909, "arc_w": 207.725317, "w_nat_px": 306.0, "anchor_x": 3064.619, "anchor_y": 243.884 },
+    { "tag": "IRE", "text": "Ireland", "h_cap": 7.432259, "arc_w": 48.649459, "w_nat_px": 318.0, "anchor_x": 2666.648, "anchor_y": 457.604 },
+    { "tag": "SWI", "text": "Switzerland", "h_cap": 5.14246, "arc_w": 47.485046, "w_nat_px": 518.0, "anchor_x": 2933.16, "anchor_y": 597.264 },
+    { "tag": "POR", "text": "Portugal", "h_cap": 7.934168, "arc_w": 53.328173, "w_nat_px": 380.0, "anchor_x": 2682.139, "anchor_y": 733.347 },
+    { "tag": "SAU", "text": "Saudi Arabia", "h_cap": 26.52157, "arc_w": 255.516311, "w_nat_px": 518.0, "anchor_x": 3509.594, "anchor_y": 1007.958 },
+    { "tag": "YEM", "text": "Yemen", "h_cap": 11.001766, "arc_w": 47.135479, "w_nat_px": 247.0, "anchor_x": 3507.52, "anchor_y": 1146.187 },
+    { "tag": "AFG", "text": "Kingdom of Afghanistan", "h_cap": 7.272435, "arc_w": 131.827375, "w_nat_px": 997.0, "anchor_x": 3839.049, "anchor_y": 838.144 },
+    { "tag": "TUR", "text": "Turkey", "h_cap": 22.614015, "arc_w": 155.837133, "w_nat_px": 280.0, "anchor_x": 3359.896, "anchor_y": 743.943 }
+  ]
+}

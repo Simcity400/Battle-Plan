@@ -1,0 +1,11 @@
+{
+  "game_id": "xui16_owner",
+  "schema_version": "1",
+  "snapshots": [
+    {
+      "hour_index": 42,
+      "date": "1936.1.2.18",
+      "file": "000000000042.snapshot.json"
+    }
+  ]
+}
