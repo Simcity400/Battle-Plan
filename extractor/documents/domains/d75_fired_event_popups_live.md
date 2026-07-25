@@ -14,6 +14,7 @@
 
 
 
+
 The producer graph is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -66,31 +67,23 @@ edges. Screenshots and saved candidates cannot satisfy that gate.
 
 ## Files about this domain
 
-46 tracked files name this domain.
+41 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
+### Prose evidence (9) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (8) — mergeable
-
+- `documents/REMAINING_WORK.md`
+- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d16_decisions_live.md`
 - `extractor/documents/domains/d64_delayed_events_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d75_fired_event_popups_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (15) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/XUI21_RE_EVIDENCE.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
@@ -98,12 +91,15 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/direct_frd_transitions_live/X10_DIRECT_TRANSITION_OWNER_FIXTURE_20260720.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 - `replay_interface/re_evidence/rendering_laws/XUI21/H_POPUP_FULL_GRAPH_GHIDRA_RECEIPT_20260720.json`
 - `replay_interface/re_evidence/rendering_laws/XUI21/owner_classifier_contract.json`
 
-### Code (22)
+### Code (17)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -114,16 +110,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs`
 - `extractor/native/lanes/fired_event_popups_live/src/a729_runtime.rs`
 - `extractor/native/lanes/fired_event_popups_live/src/lib.rs`
-- `extractor/native/lanes/runtime_text_inputs_live/src/a729_hook.rs`
 - `extractor/native/lanes/scripted_state_flags_variables_live/src/a729_delayed_event_lifecycle.rs`
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
-- `extractor/native/scripts/Invoke-Xui21PopupMatrixAcquisition.ps1`
 - `extractor/native/scripts/build_reference_ledger.py`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/models/victory_score.py`
 - `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI21/verify_xui21.py`
-- `replay_interface/replay/tests/test_deep_domains.py`

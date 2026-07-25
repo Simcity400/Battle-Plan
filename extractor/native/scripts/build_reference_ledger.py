@@ -118,7 +118,11 @@ def tracked_files(repo: Path) -> list[str]:
         ["git", "-C", str(repo), "ls-files"],
         check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    return [line for line in out.stdout.splitlines() if line]
+    return [
+        line
+        for line in out.stdout.splitlines()
+        if line and (repo / line).is_file()
+    ]
 
 
 def classify(path: str) -> str:

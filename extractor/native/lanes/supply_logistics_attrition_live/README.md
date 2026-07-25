@@ -108,8 +108,6 @@ against the current `870ebf` process without rediscovery.
   exact level field without a same-frame mixed-level fixture.
 - `Cargo.toml` / `src/bin/replay_pack_proof.rs`: lane-local compact stream and `.battleplan`
   packing proof for the domain 44 payload.
-- `../../../documents/archive/native_lanes/supply_logistics_attrition_live/REGISTRATION_PATCH_PLAN.md`: exact minimal collector/recorder registration patch plan.
-
 ## Historical Evidence Commands
 
 The block below records how the retained artifacts were acquired; it is not the
@@ -147,24 +145,6 @@ badges, invalid division values, CSupply inputs, and pressure-candidate
 validation/rejection. Rust validation is run only through the repository's
 central validation script by the primary agent.
 
-Current lane-local live proof:
-
-- `extractor/native/runs/supply_logistics_attrition_live_870ebf_20260701_v3/PROOF.md`
-- `extractor/native/runs/supply_logistics_attrition_live_870ebf_20260701_v3/proof.json`
-- `extractor/native/runs/supply_logistics_attrition_live_870ebf_20260701_v3/domain44_payload.bin`
-- `extractor/native/runs/supply_logistics_attrition_live_attrition_870ebf_20260701_v1/ATTRITION_RESIDUAL_PROBE.md`
-- `extractor/native/runs/supply_logistics_attrition_live_roots_870ebf_20260701_v5/ROOT_BLOCKER_PROBE.md`
-- `extractor/native/runs/supply_logistics_attrition_live_save_oracle_870ebf_20260701_v1/SUPPLY_ORACLE_SUMMARY.md`
-- `extractor/native/runs/supply_logistics_attrition_live_replay_pack_870ebf_20260701_v1/REPLAY_PACK_PROOF.md`
-- `extractor/native/runs/supply_logistics_attrition_live_replay_pack_870ebf_20260701_v1/native_session.battleplan`
-- `extractor/native/runs/supply_logistics_attrition_live_ccountry_node_records_870ebf_20260701_v1/CCOUNTRY_SUPPLY_NODE_RECORD_PROBE.md`
-- `extractor/native/runs/supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v1/FOREIGN_HOMEBASE_PRESSURE_RECORD_PROBE.md`
-- `extractor/native/runs/supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v2/FOREIGN_HOMEBASE_PRESSURE_RECORD_PROBE.md`
-- `extractor/native/runs/supply_logistics_attrition_live_foreign_pressure_records_870ebf_20260701_v2/domain44_pressure_candidate_payload.bin`
-- `extractor/native/runs/supply_logistics_attrition_live_pressure_replay_pack_870ebf_20260701_v1/REPLAY_PACK_PROOF.md`
-- `extractor/native/runs/supply_logistics_attrition_live_pressure_replay_pack_870ebf_20260701_v1/native_session.battleplan`
-- `extractor/native/runs/supply_logistics_attrition_live_hub_motorization_level_870ebf_20260701_v1/HUB_MOTORIZATION_LEVEL_PROBE.md`
-
 The lane-local replay pack proof wraps `domain44_payload.bin` in a compact `H4CR` stream,
 packs it into `.battleplan`, reopens the container, verifies it, and byte-compares the embedded
 stream. It validates CSupply `+0x10` rows through lane-local compact replay packing, but it is
@@ -174,9 +154,8 @@ advancements. The whole supply concept remains open:
 exact per-province supply, attrition reason, hub motorization, convoy/logistics pressure,
 and CSupplySystem `+0x138` / `+0x150` arrays remain explicitly badged or rejected.
 
-The shared registration proof
-`extractor/native/runs/supply_csupply_shared_20260701T194442/native_session_manifest.json`
-proved DLL-only compact CSupply rows and Rust decode, but it is not accepted as
+A shared registration proof established DLL-only compact CSupply rows and Rust
+decode, but it is not accepted as
 production-complete because `game_hours_advanced=0`. The first domain-44 read took
 about `6.8s` due to in-frame heap-wide CSupply vtable discovery.
 `csupply_root_path_probe.py` removes that specific blocker: on 870ebf,
@@ -284,8 +263,8 @@ with zero parse errors, packed into `.battleplan`, and verified by `pack_replay`
 
 ## Integration Patch Plan
 
-See `../../../documents/archive/native_lanes/supply_logistics_attrition_live/REGISTRATION_PATCH_PLAN.md` and `../../../documents/archive/native_lanes/supply_logistics_attrition_live/CSUPPLY_ROOT_HARDENING_PATCH.md`. The shared registry
-already has domain `44`; the CSupply row kind is registered and decodable, but the shared
+The shared registry already has domain `44`; the CSupply row kind is registered
+and decodable, but the shared
 collector now uses the direct `CGameState+0x3D8` root. Promotion of exact
 `disrupted_supply` is guarded independently from the still-open tooltip,
 attrition-reason, motorization, and richer convoy-pressure surfaces.

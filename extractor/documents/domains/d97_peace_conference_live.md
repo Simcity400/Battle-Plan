@@ -14,6 +14,7 @@
 
 
 
+
 The retained evidence does not contain an active peace-conference graph, and the
 extractor has no active graph producer or carrier. The scanned corpus comprised
 257 saves (6,239,865,008 bytes), 36 melts (1,897,092,407 bytes), 265 replay
@@ -83,9 +84,9 @@ See also d26.
 
 ## Files about this domain
 
-46 tracked files name this domain.
+37 tracked files name this domain.
 
-### Pinned evidence (11) — byte-exact, do not merge
+### Pinned evidence (10) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
@@ -98,15 +99,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/coverage_audit/save_keytree_1946.json` — `3c2529f304b0c1e9`
 - `extractor/coverage_audit/save_keytree_union.json` — `16198e58795d4603`
 - `extractor/documents/dossiers/A40/peace_static_inventory.json` — `c8038930b9b41a67`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
 - `replay_interface/re_evidence/rendering_laws/XUI08_intel_probe/intel.json` — `30f55f090dd47d16`
 
-### Prose evidence (7) — mergeable
+### Prose evidence (6) — mergeable
 
 - `extractor/coverage_audit/COVERAGE_REPORT.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
-- `extractor/documents/archive/FINAL_SWEEP_RESULTS_2026-07-04.md`
 - `extractor/documents/domains/d78_design_catalog_context_live.md`
 - `extractor/documents/domains/d97_peace_conference_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
@@ -116,18 +115,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/coverage_audit/memory_manifest.json`
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
 
-### Code (22)
+### Code (15)
 
-- `extractor/coverage_audit/mine_active_air_peace_retained_corpus.py`
-- `extractor/coverage_audit/mine_save_fixture_census.py`
-- `extractor/coverage_audit/mine_zstd_replay_snapshots.py`
 - `extractor/coverage_audit/test_save_oracle_fixtures.py`
 - `extractor/coverage_audit/verify_save_oracle_fixtures.py`
-- `extractor/documents/dossiers/A40/verify_a40_design_peace_live_fixture.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/design_catalog_context_live/src/a40_peace_evidence.rs`
 - `extractor/native/lanes/design_catalog_context_live/src/lib.rs`
@@ -141,6 +136,3 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/store.py`
-- `replay_interface/replay/tests/test_deep_domains.py`

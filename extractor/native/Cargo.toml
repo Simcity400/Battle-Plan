@@ -37,7 +37,6 @@ members = [
     "lanes/dynamic_collection_trace_live",
     "lanes/active_command_abilities_live",
     "lanes/resolved_tooltip_instances_live",
-    "lanes/politics_tooltip_inputs_live",
     "lanes/power_balance_presentation_live",
     "lanes/fired_event_popups_live",
     "lanes/runtime_text_inputs_live",

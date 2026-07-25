@@ -14,6 +14,7 @@
 
 
 
+
 Exact-a729 reusable anchors are:
 
 | Root/field | Value |
@@ -37,61 +38,41 @@ Until an exact isolated before/after offmap delta proves a root, expose only `de
 
 ## Files about this domain
 
-91 tracked files name this domain.
+73 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/derived_recompute_catalog.csv` — `03b6260a5083dfa9`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (68) — mergeable
+### Prose evidence (50) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/domains/d01_clock.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d12_focus_live.md`
 - `extractor/documents/domains/d13_tech_live.md`
-- `extractor/documents/domains/d14_politics_live.md`
-- `extractor/documents/domains/d15_politics_residuals.md`
 - `extractor/documents/domains/d16_decisions_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d18_country_identity.md`
 - `extractor/documents/domains/d20_divisions_live.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
-- `extractor/documents/domains/d22_map_control_live.md`
 - `extractor/documents/domains/d23_map_detail_live.md`
-- `extractor/documents/domains/d24_weather_live.md`
 - `extractor/documents/domains/d26_division_equipment_live.md`
-- `extractor/documents/domains/d27_army_orders_live.md`
-- `extractor/documents/domains/d28_oob_command_live.md`
 - `extractor/documents/domains/d29_ships_live.md`
-- `extractor/documents/domains/d30_air_wings_live.md`
 - `extractor/documents/domains/d31_air_region_activity_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
-- `extractor/documents/domains/d33_air_variant_defs.md`
 - `extractor/documents/domains/d34_air_base_status_live.md`
-- `extractor/documents/domains/d35_air_variant_stats.md`
-- `extractor/documents/domains/d36_air_variant_reserves.md`
 - `extractor/documents/domains/d37_stockpile_variant_defs.md`
-- `extractor/documents/domains/d38_air_superiority_inputs.md`
-- `extractor/documents/domains/d39_air_variant_upgrades.md`
-- `extractor/documents/domains/d40_stockpile_variant_upgrades.md`
 - `extractor/documents/domains/d41_projects_live.md`
 - `extractor/documents/domains/d42_air_combat_losses_live.md`
 - `extractor/documents/domains/d43_market_trade_live.md`
-- `extractor/documents/domains/d44_supply_logistics_attrition_live.md`
 - `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
 - `extractor/documents/domains/d46_air_variant_archetypes_live.md`
-- `extractor/documents/domains/d47_characters_leaders_cabinet_live.md`
 - `extractor/documents/domains/d48_construction_buildings_state_damage_live.md`
 - `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
-- `extractor/documents/domains/d50_naval_combat_members_live.md`
 - `extractor/documents/domains/d51_scripted_state_flags_variables_live.md`
 - `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`
 - `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`
@@ -114,12 +95,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/documents/domains/d71_dynamic_collection_trace_live.md`
 - `extractor/documents/domains/d72_resolved_tooltip_instances_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d75_fired_event_popups_live.md`
 - `extractor/native/lanes/country_economy_counters_live/README.md`
 
-### Data evidence (9) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -128,6 +108,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/oracle_status.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

@@ -3,9 +3,7 @@
     Shared, fail-closed validation for a production capture run.
 
 .DESCRIPTION
-    Dot-source this file to reuse the gate functions. It carries two layers that
-    the acceptance-ladder orchestrator (Invoke-AcceptanceLadder.ps1) and the
-    offline test harness (Test-ProductionCaptureScripts.ps1) both rely on:
+    Dot-source this file to reuse the gate functions. It carries two layers:
 
       * Test-ProductionCaptureArtifacts - the heavyweight production gate over a
         real run directory: registry roster, per-domain effective-failure

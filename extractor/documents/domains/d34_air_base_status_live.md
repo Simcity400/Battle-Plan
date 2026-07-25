@@ -14,6 +14,7 @@
 
 
 
+
 The compact payload has a 36-byte header:
 
 `elapsed_wall_ms:u64, row_count:u32, changed_rows:u32, status_flags:u32, observed_air_base_rows:u32, observed_pool_rows:u32, deleted_rows:u32, reserved:u32`.
@@ -33,14 +34,6 @@ See also d27, d28, d29, d30, d31, d32, d33, d35, d36, d37, d38, d39, d40, d42, a
 
 22 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
 ### Prose evidence (4) — mergeable
 
 - `extractor/documents/domains/d34_air_base_status_live.md`
@@ -48,7 +41,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -56,6 +49,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

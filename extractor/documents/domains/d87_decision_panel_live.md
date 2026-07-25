@@ -14,6 +14,7 @@
 
 
 
+
 The correct exact-a729 owner is `CCountryDecisionView`, constructed at
 `0x1417128E0` with vftable `0x1429DECE8`. Its update is `0x141716270`;
 `decision_grid_container` is view `+0x580` and `decision_grid` is view `+0x588`.
@@ -47,30 +48,29 @@ See also d45.
 
 ## Files about this domain
 
-37 tracked files name this domain.
+35 tracked files name this domain.
 
 ### Prose evidence (10) — mergeable
 
+- `documents/REMAINING_WORK.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
-- `extractor/documents/domains/d76_runtime_text_inputs_live.md`
 - `extractor/documents/domains/d79_hud_surface_activation_live.md`
 - `extractor/documents/domains/d86_sunk_ship_history_live.md`
 - `extractor/documents/domains/d87_decision_panel_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (5) — mergeable
+### Data evidence (4) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/direct_frd_transitions_live/X10_DIRECT_TRANSITION_OWNER_FIXTURE_20260720.json`
 
-### Code (22)
+### Code (21)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -87,7 +87,6 @@ See also d45.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Verify-HumanInputRegister.py`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/game_ui/src/alerts.rs`
 - `replay_interface/native/game_ui/src/binding.rs`

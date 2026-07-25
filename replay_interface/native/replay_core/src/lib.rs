@@ -247,8 +247,6 @@ pub use world::{
     OccupationRow, OccupationUiExactSources, OperationRow, OperationRuntimeRow,
     OperationRuntimeStatus, OperationRuntimeTarget, OperativeRow, PlayerCountry,
     PoliticsDetailView,
-    PoliticsTooltipCostActionExact, PoliticsTooltipInputExact, PoliticsTooltipLineKindExact,
-    PoliticsTooltipNumericTermExact, PoliticsTooltipReasonExact, PoliticsTooltipValueExact,
     PovVisibilityView,
     PowerBalanceBarStateExact, PowerBalanceChangeCadenceExact, PowerBalanceDecisionAvailabilityExact,
     PowerBalanceDecisionExact, PowerBalancePresentationExact, PowerBalancePresentationExactView,

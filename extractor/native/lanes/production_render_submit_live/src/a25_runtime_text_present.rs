@@ -30,8 +30,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// feeding the already-authenticated materializer has a production callback.
 /// This is an integration gate, not a request for another visual fixture.
 pub const A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED: bool = true;
-/// d76 currently records the selected local UI catalog in one global scope.
-/// Keep the A25 command binding identical instead of accepting caller entropy.
+/// Keep the shared A25 command binding in one global scope instead of
+/// accepting caller entropy.
 pub const A25_RUNTIME_TEXT_POV_SCOPE: &str = "global";
 const A25_CAPTURED_RUNTIME_TEXT_CANONICAL_RGBA: [u8; 4] = [255; 4];
 
@@ -1097,7 +1097,7 @@ fn owner_placement(
 }
 
 /// Pointer-free selected candidate key consumed by the A25 evidence-mode
-/// queue before d76 collection and UI-pass materialization.
+/// queue before UI-pass materialization.
 pub fn selected_a25_owner_glyph_candidate(
     selected: &RawSelectedRenderFrameCapture,
 ) -> Result<OwnerGlyphPresentCandidate, String> {

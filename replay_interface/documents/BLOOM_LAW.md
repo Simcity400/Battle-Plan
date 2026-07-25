@@ -5,7 +5,7 @@ MainScene->RestoreBloom pair. Every runtime stage is derived from shipped
 shader/define/config files; the captured `restore_gate_1` pair is validation
 only (it is never a runtime input). The CPU port is
 `replay_interface/native/map_viewer/src/bloom.rs`; the validator is
-`map_viewer/src/bin/dump_bloom_validation.rs`.
+`replay_interface/native/map_viewer/src/bin/dump_bloom_validation.rs`.
 
 > **ORIGINAL CAPTURE RECOVERED (2026-07-19):** the complete 243-file
 > `restore_gate_1` directory is preserved at
@@ -196,7 +196,8 @@ the intermediate through half-float to mirror that
 `Input.uv * BloomToScreenScale` (`restorescene.shader:211`) and adds it to the
 scene: `color = bloom.rgb + color` (`restorescene.shader:212`). For the captured
 frame `BloomToScreenScale = [1, 1]`. This additive composite lives in the
-color-grade lane (`replay_app/src/post_effect.rs` / `render.rs`) and is out of
+color-grade lane (`replay_interface/native/replay_app/src/post_effect.rs` /
+`replay_interface/native/replay_app/src/render.rs`) and is out of
 scope here; this document/law only produces the RestoreBloom texture that stage
 consumes.
 

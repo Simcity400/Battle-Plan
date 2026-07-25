@@ -3,9 +3,7 @@
 
 
 Lane-local proof package for domain 24 `weather_live` residuals. This lane does
-not claim whole-weather completion. The newest superseding residual report is
-`../../../documents/archive/native_lanes/weather_live/WEATHER_REMAINING_BLOCKERS_CLOSED_20260701.md`; the older closeout files are
-accepted backlog-reduction slices only. The current acceptance boundary keeps
+not claim whole-weather completion. The current acceptance boundary keeps
 shared sandstorm registration/proof orchestrator-owned and keeps the whole
 weather concept/domain 24 marked not complete. The lane narrows the user's audit
 from "weather is only visual drivers" to:
@@ -56,13 +54,7 @@ Key residual evidence:
 
 ## A20 retained temporal gate
 
-The current exact20 semantic and production-wiring closeout is
-`../../../documents/dossiers/A20_WEATHER_TEMPORAL_CLOSEOUT_20260720.json`.
-It supersedes the airborne-priority arrays in the content-addressed historical
-XN14A/XN14C v1 evidence without rewriting those frozen artifacts; the adjacent
-replay authority is
-`../../../../replay_interface/re_evidence/rendering_laws/XN14C/A20_PRIORITY_SUPERSESSION_20260720.json`.
-In particular,
+The exact20 semantic and production-wiring closeout establishes that
 `SWeatherPerRegion+0x78` is a compatibility activity diagnostic, not a
 weather-kind enum; weather kind comes only from the named flags. The exact
 `0x14166ec50` consumer order is rain-light, rain-heavy, snow, blizzard,
@@ -127,14 +119,8 @@ Results: lane tests `4 passed`; payload gate decoded `439056` bytes, `13719`
 rows, `13414` province visual rows, no parse errors; collector weather tests
 `2 passed`.
 
-See `../../../documents/archive/native_lanes/weather_live/WEATHER_FULL_REPLAY_RESIDUALS_CLOSEOUT_20260701.md` for the exact
-accepted candidate-rejection slice, and
-`../../../documents/archive/native_lanes/weather_live/WEATHER_FULL_REPLAY_RESIDUALS_FINAL_20260701.md` for the first residual
-resolution pass, `../../../documents/archive/native_lanes/weather_live/WEATHER_FULL_REPLAY_RESIDUALS_CONTINUED_20260701.md` for
-sandstorm flag blocker removal, and
-`../../../documents/archive/native_lanes/weather_live/WEATHER_SANDSTORM_V3_LANE_LOCAL_PROOF_20260701.md` plus
-`../../../documents/archive/native_lanes/weather_live/SANDSTORM_DOMAIN24_V3_REGISTRATION_PLAN_20260701.md` for the lane-local
-compact/Rust v3 path. See
-`../../../documents/archive/native_lanes/weather_live/WEATHER_REMAINING_BLOCKERS_CLOSED_20260701.md` for the `+0x78` enum-candidate
-rejection, close-zoom particle/entity blocker evidence, and no-unblocked-weather
-residual conclusion for this lane slice.
+The accepted candidate-rejection slice established the first residual
+resolution pass and sandstorm flag blocker removal. The lane-local compact/Rust
+v3 path covers sandstorm registration. `+0x78` is rejected as a weather-kind
+enum candidate; close-zoom particle/entity parity remains blocked, and there is
+no additional unblocked weather residual for this lane slice.

@@ -107,10 +107,8 @@ ROSTER = {
     "sunk_convoy_history_live": (70, False),
     "dynamic_collection_trace_live": (71, True),
     "resolved_tooltip_instances_live": (72, True),
-    "politics_tooltip_inputs_live": (73, False),
     "power_balance_presentation_live": (74, False),
     "fired_event_popups_live": (75, True),
-    "runtime_text_inputs_live": (76, False),
     "production_render_submits_live": (77, False),
     "design_catalog_context_live": (78, True),
     "hud_surface_activation_live": (79, True),
@@ -1441,7 +1439,7 @@ def selftest():
         d for d in descriptors if d["wire_name"] != "fuel_live"]
     missing_findings = registry_drift(dump_descriptors(missing_fuel))
     cases.append(("registry-commented-entry",
-                  caught(missing_findings, "compiled registry has 59")
+                  caught(missing_findings, "compiled registry has 85")
                   + caught(missing_findings, "fuel_live absent"), 2))
     cases.append(("registry-extra-arg",
                   registry_drift("{not-json}\n"), 1))
@@ -1503,7 +1501,7 @@ def selftest():
         dump_descriptors(missing_production))
     cases.append(("registry-nested-comment",
                   caught(missing_production_findings,
-                         "compiled registry has 59")
+                         "compiled registry has 85")
                   + caught(missing_production_findings,
                            "production_live absent"), 2))
 
@@ -1523,7 +1521,7 @@ def selftest():
     cases.append(("registry-nonliteral-additive-const",
                   caught(registry_drift(dump_descriptors(
                       descriptors + [additive])),
-                      "compiled registry has 61"), 1))
+                      "compiled registry has 87"), 1))
     cases.append(("registry-nonliteral-additive-macro",
                   caught(registry_drift(dump_descriptors(duplicate)),
                          "duplicates id"), 1))
@@ -1556,7 +1554,7 @@ def selftest():
                   caught_oracle_error(
                       fake_oracle(dump_text=""), "stdout was empty"), 1))
     cases.append(("oracle-count-mismatch",
-                  caught(missing_findings, "compiled registry has 59")
+                  caught(missing_findings, "compiled registry has 85")
                   + caught(missing_findings, "fuel_live absent"), 2))
     cases.append(("oracle-unparseable-dump",
                   registry_drift("not-json\n"), 1))

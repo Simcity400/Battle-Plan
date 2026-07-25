@@ -14,6 +14,7 @@
 
 
 
+
 The legacy d68 payload contains `player_tag_db_id`, DLCs, `start_date_raw`, `save_version`, `session`, ideology, cosmetic tag, and version. It does not contain `game_unique_id` or `game_unique_seed`. `W12C_CAMPAIGN_ID_IMPL.md` therefore correctly emitted campaign identity as unavailable/unbound at that revision; its broader claim that no live offsets were known is superseded by the later static RE below.
 
 For exact-a729 (`SHA-256 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`):
@@ -40,27 +41,18 @@ Static offsets and the offline CID1/rollover/replay route are closed, but the li
 
 ## Files about this domain
 
-39 tracked files name this domain.
+33 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (7) — mergeable
+### Prose evidence (6) — mergeable
 
 - `extractor/documents/CAMPAIGN_IDENTITY_DESIGN.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/R2_VALIDATION_BOUNDS_AUDIT.md`
-- `extractor/documents/archive/CODEX_DISPATCH_QUEUE.md`
 - `extractor/documents/domains/d64_delayed_events_live.md`
 - `extractor/documents/domains/d68_session_header_live.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -68,10 +60,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (21)
+### Code (16)
 
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
@@ -83,14 +78,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-Cap6FinalD3dEvidence.ps1`
-- `extractor/native/scripts/Invoke-G3SnowMudOccupationAcquisition.ps1`
-- `extractor/native/scripts/Invoke-XN14QWeatherSameSessionAcquisition.ps1`
 - `extractor/native/scripts/Measure-InjectionCrashRate.ps1`
 - `extractor/native/scripts/Start-Hoi4EarlyLaunchCaptureSafe.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/replay_app/src/observer.rs`
 - `replay_interface/native/replay_app/src/timeline.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/CAP6/verify_live_final_d3d_receipt.py`
-- `replay_interface/re_evidence/rendering_laws/XN14Q/verify_xn14q_same_session.py`

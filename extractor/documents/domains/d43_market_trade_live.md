@@ -14,6 +14,7 @@
 
 
 
+
 D43 is authoritative for each equipment-purchase/MTLL contract's id, seller,
 buyer, and global contract-vector order. A portable agreement exists only when
 that contract uniquely joins a current-hour d53
@@ -36,26 +37,17 @@ See also d11 and d53.
 
 ## Files about this domain
 
-62 tracked files name this domain.
+49 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (19) — mergeable
+### Prose evidence (17) — mergeable
 
 - `extractor/documents/CONFIRMED_COMPLETE_DESIGN.md`
+- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/domains/d01_clock.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
-- `extractor/documents/domains/d18_country_identity.md`
 - `extractor/documents/domains/d23_map_detail_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d43_market_trade_live.md`
@@ -66,9 +58,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/README.md`
 - `extractor/native/lanes/market_trade_live/README.md`
 - `extractor/native/lanes/market_trade_live/SLICE_PACKET.md`
-- `extractor/native/runs/perf_rearch_20260706/RELATION_FLAG_GAP_LEDGER.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -76,13 +67,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (32)
+### Code (21)
 
-- `extractor/memory_reader/economy/resource_flow_delta_probe_870ebf.py`
-- `extractor/memory_reader/market_trade_live_probe.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/src/x15_trade_activation_hook.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
@@ -99,17 +91,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/market_trade_live/src/bin/replay_pack_proof.rs`
 - `extractor/native/lanes/market_trade_live/src/bin/residual_report.rs`
 - `extractor/native/lanes/market_trade_live/src/lib.rs`
-- `extractor/native/lanes/market_trade_live/tools/lend_lease_mapping_probe.py`
-- `extractor/native/lanes/market_trade_live/tools/purchase_contract_detail_probe.py`
-- `extractor/native/lanes/market_trade_live/tools/purchase_contract_same_tick_probe.py`
-- `extractor/native/lanes/market_trade_live/tools/resource_flow_broad_probe.py`
-- `extractor/native/lanes/market_trade_live/tools/resource_flow_root_probe.py`
-- `extractor/native/lanes/market_trade_live/tools/resource_flow_state_shape_probe.py`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-X15AutonomousTradeActions.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI15/verify_xui15.py`
-- `replay_interface/replay/schema.py`

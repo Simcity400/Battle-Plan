@@ -32,7 +32,6 @@ use naval_missions_status_live_lane as naval56;
 use nuke_stockpile_live_lane as nuke83;
 use occupation_resistance_compliance_live_lane as occupation52;
 use resolved_tooltip_instances_live_lane as tooltip72;
-use runtime_text_inputs_live_lane as runtime76;
 use session_multiplayer_metadata_live as session57;
 use scripted_state_flags_variables_live_lane::scripted_gui_runtime_compact as scripted84;
 use sunk_ship_history_live_lane as sunk86;
@@ -15658,43 +15657,6 @@ fn decode_compact_air_base_status_data_payload(
     );
 }
 
-fn decode_compact_runtime_text_inputs_data_payload(
-    offset: usize,
-    payload: &[u8],
-    summary: &mut DomainDataDecodeSummary,
-) {
-    let frame = match runtime76::decode_payload(payload) {
-        Ok(frame) => frame,
-        Err(error) => {
-            summary.parse_errors.push(format!(
-                "offset {offset}: runtime text inputs decode failed: {error:?}"
-            ));
-            return;
-        }
-    };
-    add_decoder_status(summary, frame.status_flags);
-    let row_count = frame.rows.len();
-    if let Some(domain) = summary.per_domain.get_mut(&runtime76::DOMAIN_ID) {
-        domain.status_flags_or |= frame.status_flags;
-        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
-        domain.data_changed_rows_total = domain
-            .data_changed_rows_total
-            .saturating_add(row_count as u64);
-    }
-    add_compact_domain_data_unit(
-        summary,
-        runtime76::DOMAIN_ID,
-        "runtime_text_input_rows",
-        row_count,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        runtime76::DOMAIN_ID,
-        "runtime_text_expected_context_rows",
-        frame.expected_context_count as usize,
-    );
-}
-
 fn decode_compact_land_combats_data_payload(
     offset: usize,
     payload: &[u8],
@@ -17121,9 +17083,6 @@ pub fn summarize_domain_data_payload(
             &mut summary,
         ),
         75 => decode_compact_fired_event_popups_data_payload(offset, payload, &mut summary),
-        runtime76::DOMAIN_ID => {
-            decode_compact_runtime_text_inputs_data_payload(offset, payload, &mut summary)
-        }
         78 => decode_compact_design_catalog_context_data_payload(offset, payload, &mut summary),
         hud79::DOMAIN_ID => {
             decode_compact_hud_surface_activation_live_data_payload(offset, payload, &mut summary)
@@ -17545,27 +17504,6 @@ mod tests {
             DomainDataContext::default(),
         )
         .expect("typed source-unavailable weather frame remains decodable");
-        assert_eq!(
-            authority.status_flags,
-            Some(COMPACT_STATUS_SOURCE_UNAVAILABLE)
-        );
-        assert_eq!(authority.emitted_rows, 0);
-    }
-
-    #[test]
-    fn runtime_text_dependency_has_canonical_data_authority() {
-        let payload = runtime76::encode_source_unavailable(
-            1,
-            2,
-            COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        )
-        .expect("bounded RTI1 failure payload");
-        let authority = summarize_domain_data_payload(
-            runtime76::DOMAIN_ID,
-            &payload,
-            DomainDataContext::default(),
-        )
-        .expect("RTI1 is a supported implicit production dependency");
         assert_eq!(
             authority.status_flags,
             Some(COMPACT_STATUS_SOURCE_UNAVAILABLE)

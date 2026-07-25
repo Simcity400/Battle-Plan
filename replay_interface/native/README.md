@@ -43,4 +43,4 @@ cargo run --manifest-path replay_interface\native\Cargo.toml -p map_viewer -- re
 ```
 
 Replay container docs live in `../documents/HOI4REPLAY_CONTAINER_SPEC.md`.
-Extraction-seam requests live in `../../documents/SEAM_CONTRACTS.md`.
+Extraction-seam requests live in `../documents/REPLAY_DATA_REQUIREMENTS.md`.

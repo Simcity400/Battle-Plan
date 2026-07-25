@@ -14,6 +14,7 @@
 
 
 
+
 An active save task force owns `id={ id=<N> type=61 }` and at least one direct
 child ship with its own type-51 id. Read `definition` only at direct ship
 depth; exclude empty references and history, refit, sunk, or pending blocks.
@@ -32,27 +33,16 @@ See also d56.
 
 ## Files about this domain
 
-21 tracked files name this domain.
+18 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
+### Prose evidence (4) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (7) — mergeable
-
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d29_ships_live.md`
 - `extractor/documents/domains/d34_air_base_status_live.md`
-- `extractor/native/lanes/naval_combat_live/A8_A9_B6_CLOSEOUT.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
 
-### Data evidence (9) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -61,6 +51,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

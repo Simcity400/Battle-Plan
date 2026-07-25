@@ -34,8 +34,21 @@ produces `[]`; non-fighting membership retains its epochs but no activity key.
 The other formatter branches remain unavailable because their
 full target/area/accessibility/efficiency inputs are not carried, so the fold
 does not turn `mission_state` into a guessed display label. Fresh exact-20
-authority and the production disposition are summarized in
-`../../../documents/domains/d56_naval_missions_status_live.md`.
+semantics and the production disposition are specified in
+`../../../../replay_interface/documents/REPLAY_SCHEMA.md`. The pinned read-only
+20-shard export ran on `shard-06` as job
+`20260720T050110Z-w4-d56-activity-member-epoch-authority-772412cd`; its job JSON
+SHA-256 is
+`1a2357da51b46cae9a03659d9872793646bf90bab4327cf1ebc9ae4eb2ef713f`
+and evidence-manifest SHA-256 is
+`bd6628f69f397e1f9ba3c40b9629731a5704c41191471da230ba24bd5ed3995e`.
+The `export_functions` receipt is pinned to image base `0x140000000` and
+executable SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
+its external manifest path is
+`<local-path>`.
+The export seeds were `0x140D555A0`, `0x140D55F90`, `0x140D5A690`,
+`0x140D60C40`, and `0x141E18460`.
 
 The existing shared collector/recorder integration is retained; the recorder
 projection adds exact mission/detached-state names and the D49/D50 epoch join.

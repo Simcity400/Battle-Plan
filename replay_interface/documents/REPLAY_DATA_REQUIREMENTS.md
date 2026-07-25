@@ -20,8 +20,8 @@ Priority order: items 1–3 make replays function at all; 4–8 (incl. the
 **Last full review: 2026-07-09**, after the engine-extraction wave (labels /
 borders / terrain / UI-chrome / furniture / code-ports lanes). New consumers
 landed on the replay side; items 7b, 8b and 9b were added for them.
-**Reconciled 2026-07-09 against the extractor's own code + their
-`extractor/documents/REPLAY_REQUESTS_RECONCILIATION_2026-07-04.md`:** several
+**Current extractor authority: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`:**
+several
 items this file still called "needed" are LANDED extractor-side (statuses
 updated per item below, with code citations). Where an item says
 "extractor-side LANDED", the remaining action is replay-side: ingest a fresh
@@ -348,7 +348,7 @@ other consumers (war overlays, diplomacy UI).
 War-overview panel consumer (2026-07-09, U1 lane `waroverview.gui`): the
 war-summary window already renders **belligerent-pair casualties** from the
 live `diplomacy_live.war_relations` feed (item 8b, already extracted) plus the
-belligerent set from `at_war` pairs — `game_ui/src/waroverview_binding.rs`
+belligerent set from `at_war` pairs — `replay_interface/native/game_ui/src/waroverview_binding.rs`
 binds both, fail-closed. TWO gaps remain, both fail-closed today:
 1. **War-object grouping** — the panel groups participants into attacker vs
    defender *sides* of a named war (with a front + wargoal). The recording
@@ -374,8 +374,8 @@ surfaces to hit this: map labels, topbar, country panels.
 
 **STATUS (reconciled 2026-07-09): partial extractor-side** -- their contract
 lists a `localisation_join` static artifact
-(`extractor/documents/MASTER_EXTRACTION_CONTRACT.md:176`,
-`compact_contract/src/lib.rs:204`). Replay-side: confirm the artifact
+(`extractor/documents/MASTER_EXTRACTION_CONTRACT.md:772`,
+`extractor/native/compact_contract/src/lib.rs:188`). Replay-side: confirm the artifact
 actually rides in production recordings and covers the label/topbar keys.
 
 ## 9b. Topbar / panel scalar bindings (UI CHROME — first rendered set)
@@ -448,7 +448,7 @@ are deferred with items 10-12 until those modes are scheduled.
 ## 9c. Decision panel state (UI CHROME — decisions/missions)
 
 Inventory item 11 (one of the 14 NEW streams). The U2 lane landed the
-STATIC decisions-panel chrome files-first (`game_ui/src/decision_chrome.rs`):
+STATIC decisions-panel chrome files-first (`replay_interface/native/game_ui/src/decision_chrome.rs`):
 the `interface/countrydecisionview.gui` layout parses complete, and every
 decision definition in `common/decisions/*.txt` maps to a card with its
 name-loc-key + icon-sprite + category resolved against the shipped
@@ -502,7 +502,8 @@ maps. The product still does not render placed buildings from those aggregates:
 O05/XN13P require recorded per-instance semantic identity, selected variant,
 visibility, transform, order, and exact D80 operation joins. Authenticated D80
 operations take precedence; without them D48 remains queryable state only.
-See `extractor/documents/dossiers/D48_D80_BUILDING_PRIORITY_CLOSEOUT_20260719.md`.
+See `extractor/documents/domains/d48_construction_buildings_state_damage_live.md`
+and `extractor/documents/domains/d80_production_map_content_snapshot_live.md`.
 
 ## 11. Rail/supply dynamic state (when the rail layer lands)
 

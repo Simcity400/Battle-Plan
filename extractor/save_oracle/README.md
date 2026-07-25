@@ -177,13 +177,6 @@ contested states; 1081 state blocks ↔ 1081 parsed (the 9 extra raw `owner=`
 lines are nested fields like `resistance.occupied_country_tag`, correctly
 ignored at the wrong depth).
 
-A synthetic fixture lives at `sample/sample_save.txt` (parses correctly,
-including the escaped-quote and `front={ provinces=... states=8 }` decoys); use
-it to test the parser without a real save:
-```bash
-python parse_save.py sample/sample_save.txt --out-dir /tmp/sample_out
-```
-
 ---
 
 ## Known limitations
@@ -221,8 +214,6 @@ save_oracle/
 ├── parse_units.py           # DIVISIONS (order of battle) oracle      ← added
 ├── parse_control.py         # FULL province + state control oracle    ← added
 ├── README.md                # this file
-├── sample/
-│   └── sample_save.txt      # tiny synthetic plaintext fixture
 └── output/                  # generated JSON (see schemas above + below)
 ```
 
@@ -507,11 +498,14 @@ provinces), `manpower` (`available`/`locked`/`total`), `resistance`
 `operational_status`), `state_category`, `demilitarized`.
 - Key paths: `states.<id>.{owner, controller, buildings.*.level,
   manpower_pool.*, resistance.*, state_category, demilitarized}`,
-  `provinces.<pid>.{victory_points, buildings.*.level}` joined via
-  `map_pipeline/assets/province_to_state.json`.
+  `provinces.<pid>.{victory_points, buildings.*.level}` can be joined via
+  `replay_interface/map_pipeline/assets/province_to_state.json`. The current
+  save-oracle parser still looks for the absent extractor-local copy and
+  therefore emits no province-to-state joins until that wiring is repaired.
 - **Gap:** per-state **supply** is runtime-computed; `supply_node` levels (in
   `province_buildings`) are the in-save proxy. VP and forts/naval bases live on
-  *provinces* and are folded into their state.
+  *provinces*; folding them into states is currently unavailable for the reason
+  above.
 
 ## `combats.json` — active combats (`parse_combats.py`)
 List of active battles: `{combat_id, kind, location, day, duration, terrain,

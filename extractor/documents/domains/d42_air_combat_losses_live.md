@@ -14,6 +14,7 @@
 
 
 
+
 The accepted base slice is per-wing strength/equipment change: wing identity, owner, mission mask/region, old/new plane count, count delta, old/new equipment-bank sum, equipment delta, reinforcements, losses, deletes, and generation. It does not by itself provide sortie start/end, tactical wing-versus-wing pairing, a killer wing, ace participation, or an exact reinforcement-source reason.
 
 Several plausible roots were mechanically rejected on exact-a729:
@@ -36,36 +37,31 @@ See also d11.
 
 ## Files about this domain
 
-37 tracked files name this domain.
+34 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (15) — mergeable
+### Prose evidence (13) — mergeable
 
 - `extractor/coverage_audit/COVERAGE_REPORT.md`
+- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d1000_frame.md`
-- `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d34_air_base_status_live.md`
 - `extractor/documents/domains/d42_air_combat_losses_live.md`
-- `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
-- `extractor/documents/domains/d57_session_multiplayer_metadata_live.md`
 - `extractor/documents/domains/d61_air_loss_stats_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/native/lanes/air_combat_losses_live/README.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/production_promotion/contract.json`
@@ -75,12 +71,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (8)
+### Code (7)
 
-- `extractor/coverage_audit/mine_zstd_replay_snapshots.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/air_combat_losses_live/domain42_compact.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`

@@ -1,6 +1,5 @@
 //! State -> RGBA color table construction.
 //!
-//! This is the only buffer scrubbing rewrites (MAP_REPLICA_PLAN Phase 2
 //! acceptance gate): one `R8G8B8A8_UNORM` element per state id. Grounding
 //! rule: a state with a recorded owner whose color is in
 //! `country_colors.json` gets that color at full opacity. A recorded owner whose

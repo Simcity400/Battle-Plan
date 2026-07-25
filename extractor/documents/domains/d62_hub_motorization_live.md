@@ -14,6 +14,7 @@
 
 
 
+
 Exact-a729 law:
 
 ```text
@@ -44,14 +45,11 @@ A same-hour oracle matched `223/223` keys and `1338/1338` fields.
 
 33 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
 ### Prose evidence (4) — mergeable
 
@@ -60,7 +58,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d62_hub_motorization_live.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/production_promotion/contract.json`
@@ -70,6 +68,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

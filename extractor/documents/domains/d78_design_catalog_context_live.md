@@ -14,6 +14,7 @@
 
 
 
+
 d78 is the same-hour admission context for the live design catalogue. A sealed census contained `5,281` variants, `1,126` templates, and `440` countries, but one hour is not temporal evidence.
 
 The producer repeats a whole-sweep census and double-reads the game date, tag/country registries, every country A/B/template vector, every definition/lifecycle field, and both heap censuses.
@@ -24,7 +25,7 @@ Portable v3 keeps complete pointer-free native rows, then emits upserts and abse
 
 ## Files about this domain
 
-36 tracked files name this domain.
+34 tracked files name this domain.
 
 ### Prose evidence (10) — mergeable
 
@@ -34,22 +35,20 @@ Portable v3 keeps complete pointer-free native rows, then emits upserts and abse
 - `extractor/documents/domains/d78_design_catalog_context_live.md`
 - `extractor/documents/domains/d85_selected_designer_identity_live.md`
 - `extractor/documents/domains/d97_peace_conference_live.md`
+- `extractor/documents/dossiers/A40/README.md`
 - `extractor/native/lanes/design_catalog_context_live/README.md`
 - `extractor/native/lanes/design_catalog_live/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
-- `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (5) — mergeable
+### Data evidence (4) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (21)
+### Code (20)
 
-- `extractor/documents/dossiers/A40/verify_a40_design_peace_live_fixture.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/a34_a40_evidence.rs`

@@ -14,6 +14,7 @@
 
 
 
+
 The layout is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -90,27 +91,15 @@ row fail closed.
 
 ## Files about this domain
 
-78 tracked files name this domain.
+68 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (26) — mergeable
+### Prose evidence (20) — mergeable
 
 - `extractor/documents/CONFIRMED_COMPLETE_DESIGN.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/R2_VALIDATION_BOUNDS_AUDIT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/C0_DOSSIERS.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
-- `extractor/documents/archive/lane_reports/d53-partial-delta.md`
 - `extractor/documents/domains/d1000_frame.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d18_country_identity.md`
@@ -118,18 +107,16 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d46_air_variant_archetypes_live.md`
 - `extractor/documents/domains/d48_construction_buildings_state_damage_live.md`
 - `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`
+- `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`
 - `extractor/documents/domains/d58_country_economy_counters_live.md`
 - `extractor/documents/domains/d60_capitulation_war_state_live.md`
 - `extractor/documents/domains/d80_production_map_content_snapshot_live.md`
 - `extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.md`
 - `extractor/native/lanes/construction_buildings_state_damage_live/README.md`
 - `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
-- `extractor/native/runs/perf_rearch_20260706/D53_LAYER2_SPEC.md`
-- `extractor/native/runs/perf_rearch_20260706/D53_ROOT_CAUSE.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
-- `replay_interface/documents/archive/REPLAY_PRODUCTION_PLAN.md`
 
-### Data evidence (14) — mergeable
+### Data evidence (17) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
@@ -143,10 +130,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (35)
+### Code (31)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -154,7 +144,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/status_origins.rs`
 - `extractor/native/lanes/construction_buildings_state_damage_live/Cargo.toml`
-- `extractor/native/lanes/construction_buildings_state_damage_live/probes/target_candidate_focus_probe.py`
 - `extractor/native/lanes/construction_buildings_state_damage_live/src/bin/fixture_contract_gate.rs`
 - `extractor/native/lanes/construction_buildings_state_damage_live/src/bin/mini_stack_proof.rs`
 - `extractor/native/lanes/construction_buildings_state_damage_live/src/bin/proof_from_fixture.rs`
@@ -171,7 +160,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/replay_decoder/src/lib.rs`
-- `extractor/native/scripts/Invoke-LiveValidationSession.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `portable_replay/native/render_stream/src/lib.rs`
@@ -181,5 +169,3 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_app/src/app.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_schema.py`

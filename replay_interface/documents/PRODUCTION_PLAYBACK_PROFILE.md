@@ -58,6 +58,6 @@ compatibility identities.
 - descriptor identity is stable when only the machine-local root changes
 - a non-UI-only replay binds without constructing or requiring any UI catalog
 
-The authoritative code is `native/replay_app/src/install_paths.rs` and
-`native/replay_app/src/content_compatibility.rs`. Test receipts and source hashes
+The authoritative code is `replay_interface/native/replay_app/src/install_paths.rs` and
+`replay_interface/native/replay_app/src/content_compatibility.rs`. Test receipts and source hashes
 are frozen separately under `re_evidence/production_playback_profile/`.

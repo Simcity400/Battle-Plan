@@ -73,7 +73,8 @@ files-first-equivalent to loading the shipped file.
 the replay-time upload now decodes `map/terrain/reflection.dds` through the
 mod-aware resolver into the captured 128-aligned 54-subresource layout
 (`reflection_cube_law.rs::decode_reflection_cube_payload`, threaded via
-`with_reflection_resolver` from `cli.rs` / `replay_app/render.rs` into
+`with_reflection_resolver` from `cli.rs` /
+`replay_interface/native/replay_app/src/render.rs` into
 `d3d11_device.rs` `prepare_shader_resources`), and byte-verifies the decode
 against the captured payload whenever one is on disk — a mismatch is FATAL,
 never a silent fallback to captured bytes. Proof status (Codex-review-
@@ -128,7 +129,7 @@ synthesis water pass binds a **real seafloor render** as `WaterRefraction`,
 reconstructed files-first from `pdxmap.shader` `Effect underwater`. The old
 flag-OFF calibrated approximation is blocked from product rendering.
 
-**How it is produced** (`map_viewer/src/underwater_pass.rs`): the terrain draws
+**How it is produced** (`replay_interface/native/map_viewer/src/underwater_pass.rs`): the terrain draws
 are re-issued with the pixel shader swapped to `PixelShaderUnderwater` into an
 offscreen `B8G8R8A8_UNORM` target (backbuffer res), cleared to `(0,0,0,0)`, with
 depth. Everything else is identical to the terrain pass (same VS, same VS/PS
@@ -155,7 +156,7 @@ terrain draw's bindings. The VS binds cb0 + cb1 (QuadOffset). So re-rendering th
 terrain draws with the PS swapped reproduces the underwater pass.
 
 **Constant list (all shipped, cited; encoded + unit-tested in
-`map_viewer/src/water_law.rs::underwater_defines`):**
+`replay_interface/native/map_viewer/src/water_law.rs::underwater_defines`):**
 
 | constant | value | source | role |
 |---|---|---|---|
@@ -401,7 +402,7 @@ heights/latitudes are `00_graphics.lua` defines:
 
 All `.y` height, `.w` water-height, and (sun/second) `.z` latitude residuals are
 `< 1e-3` — the packing law reproduces the captured vectors exactly. Encoded and
-unit-tested in `map_viewer/src/water_law.rs`
+unit-tested in `replay_interface/native/map_viewer/src/water_law.rs`
 (`packing_law_reproduces_captured_cb0_vectors`).
 
 **Consequence for glitter:** the water sun source position is

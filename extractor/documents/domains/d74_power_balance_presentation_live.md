@@ -14,6 +14,7 @@
 
 
 
+
 D74/PBP2 is an optional typed semantic companion. Exact visible power-balance
 pixels belong to the authenticated selected-Present UI carrier; absence of d74
 must remain explicit and must not be replaced by a semantic reconstruction.
@@ -26,33 +27,23 @@ d81, and d87.
 
 ## Files about this domain
 
-51 tracked files name this domain.
+45 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
+### Prose evidence (9) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (10) — mergeable
-
+- `documents/REMAINING_WORK.md`
+- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/domains/d67_country_dynamic_modifiers_live.md`
 - `extractor/documents/domains/d71_dynamic_collection_trace_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/dossiers/A37/A28_DECISION_GRID_MATERIALIZATION_JOIN_20260720.md`
 - `extractor/documents/dossiers/A37/NON_GHIDRA_CLOSURE.md`
 - `extractor/documents/dossiers/A37/SELECTED_PRESENT_ORDERING_EXHAUSTION_20260720.md`
-- `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (19) — mergeable
+### Data evidence (21) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/documents/dossiers/A37/A28_DECISION_GRID_MATERIALIZATION_JOIN_20260720.json`
 - `extractor/documents/dossiers/A37/GHIDRA_LEDGER.json`
@@ -67,26 +58,25 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/power_balance_presentation_live/H_A37_LIVE_FIXTURE_OWNER_20260721.json`
 - `extractor/native/lanes/power_balance_presentation_live/H_A37_PROMOTION_ACQUISITION_RUNNER_20260722.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 - `replay_interface/re_evidence/rendering_laws/XUI18/manifest.json`
 
-### Code (19)
+### Code (15)
 
-- `extractor/documents/dossiers/A37/verify_a37.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/power_balance_presentation_live/Cargo.toml`
-- `extractor/native/lanes/power_balance_presentation_live/regrade_a37_live_fixture.py`
 - `extractor/native/lanes/power_balance_presentation_live/src/a729_decision_grid.rs`
 - `extractor/native/lanes/power_balance_presentation_live/src/a729_hook.rs`
 - `extractor/native/lanes/power_balance_presentation_live/src/lib.rs`
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-A37PromotionAcquisition.ps1`
-- `extractor/native/scripts/Verify-HumanInputRegister.py`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/game_ui/tests/xui18_power_balance.rs`
 - `replay_interface/native/replay_app/src/power_balance_runtime.rs`

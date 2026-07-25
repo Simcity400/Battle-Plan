@@ -14,6 +14,7 @@
 
 
 
+
 The live walk uses validated `CGameState`, the country table at `CGameState+0x310/+0x31C`, and:
 
 | Object/field | Meaning |
@@ -47,54 +48,66 @@ The first integration has no deletion tombstone, so delta emission is forbidden.
 
 Skipping d56 based on an unproved wrapper/container fingerprint is unsafe because missions mutate in place. Change-gating is admissible only with a version/dirty signal proved to cover every emitted field; rotating full walks merely bound later correction and can lose one-hour transient state.
 
-See also d49, d50, d51, d52, and d53.
+### Sea-zone dominance is naval supremacy, not air superiority
+
+`region.dominance` is naval supremacy — the Naval map mode. This is confirmed by
+the mod defines that drive it (`NNavy.DOMINANCE_DAILY_GAIN_FACTOR`, ship
+`naval_dominance_factor`, `minimum_seazone_dominance`,
+`GFX_naval_dominance_texticon`) and by every dominance region being
+fleet-operated. Reading it as an air quantity is the trap: air superiority has no
+stored per-region accumulator at all (see d31).
+
+Solved against `hoi4.exe 1.19.1.0.b49d`, so the addresses are stale and the shape
+is what carries: sea-zone control reached the region object at
+`MODULE+0x29468B8`, id at `+0x58`, container at `+0xE8` (`MODULE+0x295DF30`) into
+entries (`MODULE+0x295DEE0`, stride `0x50`) — matched 33/33 against the save.
+Task-force positions came from `MODULE+0x293C8B0` type 61 with
+`current_province_id` at `+0x18`, covering 64 fleets and 131 task forces but
+resolving location for only 81 of the 131.
+
+Reads were arena-scoped (`0x1F600000000..0x1FA00000000`), clamped to VirtualQuery
+region ends, with double-read revalidation of the dominance container header. A
+null or empty container means no data and must return empty, never a hard
+failure.
+
+See also d31, d49, d50, d51, d52, and d53.
 
 
 ## Files about this domain
 
-61 tracked files name this domain.
+51 tracked files name this domain.
 
-### Pinned evidence (6) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (22) — mergeable
+### Prose evidence (16) — mergeable
 
+- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d29_ships_live.md`
+- `extractor/documents/domains/d31_air_region_activity_live.md`
 - `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
-- `extractor/documents/domains/d50_naval_combat_members_live.md`
 - `extractor/documents/domains/d56_naval_missions_status_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d90_convoy_transport_attack_live.md`
-- `extractor/native/lanes/naval_combat_live/A8_A9_B6_CLOSEOUT.md`
 - `extractor/native/lanes/naval_missions_status_live/README.md`
-- `extractor/native/runs/perf_rearch_20260706/W0_AB_RESULTS.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
-- `replay_interface/documents/archive/EXTRACTION_NEEDS.md`
-- `replay_interface/documents/archive/FIDELITY_LEDGER.md`
-- `replay_interface/documents/archive/REPLAY_PRODUCTION_PLAN.md`
 
-### Data evidence (12) — mergeable
+### Data evidence (14) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
@@ -102,10 +115,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`
 - `extractor/native/lanes/naval_combat_live/evidence/A8_A9_B6_ARTIFACT_MANIFEST.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (21)
+### Code (18)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -119,12 +135,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/native/scripts/tests/test_verify_acceptance_fixture_variance.py`
 - `extractor/native/scripts/verify_acceptance_fixture_variance.py`
 - `replay_interface/native/game_ui/src/unitview.rs`
 - `replay_interface/native/map_viewer/src/naval_supremacy_tint.rs`
 - `replay_interface/native/replay_core/src/world.rs`
 - `replay_interface/native/replay_core/tests/roundtrip_gates.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_schema.py`

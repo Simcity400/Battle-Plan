@@ -184,13 +184,13 @@ python extractor\native\lanes\focus_research_decisions_depth_live\tools\analyze_
   --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\residual_blocker_gate_20260701_v10
 ```
 
-See `../../../documents/domains/d45_focus_research_decisions_depth_live.md` for
-the current domain-45 contract.
+Current domain-45 evidence is in `A2_A12_RE_EVIDENCE.json`; production status is
+in `../../../documents/MASTER_EXTRACTION_CONTRACT.md`.
 
 ## 2026-07-17 A2/A12 promotion update
 
-`A2_A12_RE_REPORT.md` and `A2_A12_RE_EVIDENCE.json` supersede the residual
-claims below for focus pause, decision cooldowns, and target storage:
+`A2_A12_RE_EVIDENCE.json` is the current authority for focus pause, decision
+cooldowns, and target storage:
 
 - focus pause is `CCountry+0x1380 -> CNationalFocusProgress+0xB0`;
 - decision re-enable is `CCountry+0xFA0 -> CDecisionStatus+0x58`, with
@@ -209,7 +209,7 @@ claims below for focus pause, decision cooldowns, and target storage:
 The promoted targeted-decision body also includes exact lifecycle
 `record+0x28`, ignore `record+0x2C`, and days `record+0x30`. The serializer and
 deserializer evidence for all three fields is recorded in
-`A2_A12_RE_REPORT.md` and `A2_A12_RE_EVIDENCE.json`. Integrated production D45
+`A2_A12_RE_EVIDENCE.json`. Integrated production D45
 sets the exact pause/targets/cooldowns status bits and emits only the remaining
 direct-hook-unavailable badge. This lane-local proof derivation retains its
 pause/target badges because its older base compact inputs do not carry those

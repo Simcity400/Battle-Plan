@@ -14,6 +14,7 @@
 
 
 
+
 D10 carries the exact `fuel` and `max_fuel` constituents. A replay fuel ratio
 may be derived only when both are proven in the same admitted state and
 `max_fuel` is positive; otherwise the ratio is absent. The batch source provides
@@ -25,59 +26,45 @@ and d65.
 
 ## Files about this domain
 
-57 tracked files name this domain.
+39 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/memory_only_ui_ephemeral_census.csv` — `64a0816eec27d9df`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (12) — mergeable
+### Prose evidence (10) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/archive/CODEX_DISPATCH_QUEUE.md`
 - `extractor/documents/domains/d1000_frame.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
-- `extractor/live_capture/README.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/lanes/country_economy_counters_live/README.md`
 - `extractor/native/lanes/country_economy_production_stockpile_live/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/memory_manifest.json`
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
-- `extractor/memory_reader/fuel_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (30)
+### Code (15)
 
-- `extractor/documents/dossiers/A39/verify_a39_character_presentation_live_fixture.py`
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/collector_session.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
-- `extractor/live_capture/validate_wired_domains.py`
-- `extractor/memory_reader/fuel_live.py`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
@@ -90,10 +77,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-A34CountryDecisionMaterializationEvidence.ps1`
-- `extractor/native/scripts/Invoke-A36ActiveAbilityEvidence.ps1`
-- `extractor/native/scripts/Invoke-A39A40AutonomousEvidenceCore.ps1`
 - `extractor/native/scripts/Measure-InjectionCrashRate.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/schema.py`

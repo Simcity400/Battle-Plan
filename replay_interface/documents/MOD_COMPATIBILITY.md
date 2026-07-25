@@ -7,7 +7,7 @@ manual steps. This doc is the contract every replay-layer change follows.
 ## The one rule
 
 **Every read of a game file goes through the mod-aware resolver
-(`map_viewer/src/mod_resolver.rs` `FileResolver`), configured from the
+(`replay_interface/native/map_viewer/src/mod_resolver.rs` `FileResolver`), configured from the
 RECORDING's mod identity — never a bare vanilla path.**
 
 The resolver already implements Paradox override semantics: ordered mod
@@ -45,7 +45,7 @@ construction.
   `seasons_table_from_game_dir` (raw `map/seasons.txt` join),
   `map_static_data.rs` `*_from_game_dir` (raw joins for buildings/
   unitstacks/railways/supply/weather/common-buildings),
-  `replay_app/src/font.rs` (raw game-root font-page joins; F1 must land
+  `replay_interface/native/replay_app/src/font.rs` (raw game-root font-page joins; F1 must land
   resolver-aware or be fixed in M1). `FileResolver` is `pub(crate)` —
   M1 exposes a public resolution surface for other crates.
 - Constants baked from vanilla shader text (constants.fxh values wired

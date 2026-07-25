@@ -14,6 +14,7 @@
 
 
 
+
 Ahead-of-time presentation must come from the observed engine producer, not reconstruction from authored year, current date, `BASE_YEAR_AHEAD_PENALTY_FACTOR`, and an aggregate reduction field. Those inputs are corroborative only and cannot manufacture the effective quartet.
 
 Exact-a729 producer chain:
@@ -52,24 +53,15 @@ On paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Tech
 
 ## Files about this domain
 
-54 tracked files name this domain.
+29 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (10) — mergeable
+### Prose evidence (9) — mergeable
 
 - `extractor/documents/domains/d12_focus_live.md`
 - `extractor/documents/domains/d13_tech_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d41_projects_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
-- `extractor/live_capture/README.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/lanes/focus_research_decisions_depth_live/README.md`
 - `extractor/native/recorder_host/README.md`
@@ -79,45 +71,24 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/memory_manifest.json`
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
-- `extractor/memory_reader/defnames_offsets.draft.json`
-- `extractor/memory_reader/final_residuals_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (28)
+### Code (7)
 
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/collector_proof_gate.py`
-- `extractor/live_capture/collector_session.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
-- `extractor/live_capture/validate_wired_domains.py`
-- `extractor/memory_reader/defnames_live.py`
-- `extractor/memory_reader/final_residuals_live.py`
-- `extractor/memory_reader/focus_live.py`
-- `extractor/memory_reader/politics_live.py`
-- `extractor/memory_reader/tech_live.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`
 - `extractor/native/lanes/focus_research_decisions_depth_live/src/lib.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
-- `extractor/native/scripts/Invoke-A29ResearchAheadFixture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/native/scripts/verify_a29_research_ahead_fixture.py`
-- `replay_interface/models/research_progress.py`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/diff_engine.py`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_diff_engine.py`

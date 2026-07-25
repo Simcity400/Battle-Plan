@@ -14,6 +14,7 @@
 
 
 
+
 D59 owns the recording's static templates/equipment catalog; live equipment-
 designer state and display order belong to d78. A d78 view may join the catalog
 only at the identical `frame_hour`, and every numeric variant id must resolve
@@ -40,15 +41,7 @@ See also d78.
 
 ## Files about this domain
 
-40 tracked files name this domain.
-
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
+39 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
@@ -59,7 +52,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/design_catalog_context_live/README.md`
 - `extractor/native/lanes/templates_equipment_catalog_live/README.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -67,10 +60,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (23)
+### Code (22)
 
 - `extractor/game_defs/build_runtime_static_bundle.py`
 - `extractor/game_defs/localisation_gate.py`
@@ -86,7 +82,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/Invoke-HeadlessRawCapture.ps1`
 - `extractor/native/scripts/ProductionCapture.Validation.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
-- `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/game_ui/src/design_catalog.rs`
 - `replay_interface/native/game_ui/src/readonly_design_peace.rs`

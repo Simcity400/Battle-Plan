@@ -34,30 +34,15 @@ function Test-Hoi4ClientDrivingInputPath {
         return $false
     }
     $relative = $full.Substring($repo.Length + 1).Replace('\', '/')
+    # The UI-driving acquisition helpers this list used to name are gone. Two
+    # game-controlling inputs remain. Control-Hoi4Game.ps1 is the sharper one:
+    # it writes game speed and the engine pause byte through
+    # WriteProcessMemory, and Invoke-HeadlessRawCapture.ps1 calls it. Note that
+    # Assert-Hoi4ClientDrivingOptIn above is currently invoked by nothing, so
+    # this list is the only isolation these helpers actually get.
     $legacyClientDrivingInputs = @(
-        'extractor/native/lanes/design_catalog_live/Invoke-A27AuthenticatedTransactions.ps1',
-        'extractor/native/lanes/politics_tooltip_inputs_live/capture_a24_autonomous_scenes.py',
-        'extractor/native/lanes/focus_research_decisions_depth_live/tools/capture_a31_fixture_pair.py',
-        'extractor/native/scripts/Invoke-A15CounterUiFixture.ps1',
-        'extractor/native/scripts/Invoke-A29AuthenticatedClockTransition.ps1',
-        'extractor/native/scripts/Invoke-Cid1LifecycleMatrix.ps1',
-        'extractor/native/scripts/Invoke-Cid1SdActionDriver.ps1',
-        'extractor/native/scripts/Invoke-SinkFailureAcceptance.ps1',
         'extractor/native/scripts/Start-Hoi4EarlyLaunchCaptureSafe.ps1',
-        'replay_interface/re_evidence/rendering_laws/CAP6/authenticated_ensure_paused.ps1',
-        'replay_interface/re_evidence/rendering_laws/XN14Q/xn14q_autonomous_camera.py',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_activate_window.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_foreground_send_input.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_one_hour_pulse.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_post_click.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_post_key.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_strong_key_hover.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/authenticated_unpause.ps1',
-        'replay_interface/re_evidence/rendering_laws/capture_harness/scenario_runner.ps1',
-        'replay_interface/renderdoc/Invoke-IntelMapAnnotationBridgeAcquisition.ps1',
-        'replay_interface/renderdoc/Invoke-RestoreGateH1H2Acquisition.ps1',
-        'replay_interface/renderdoc/acquire_restore_gate_h1_h2.py',
-        'replay_interface/renderdoc/capture_vanilla.ps1'
+        'extractor/native/scripts/Control-Hoi4Game.ps1'
     )
     return $legacyClientDrivingInputs -ccontains $relative
 }

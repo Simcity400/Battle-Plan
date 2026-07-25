@@ -14,6 +14,7 @@
 
 
 
+
 D66’s listed source records only an occupation-extra sidecar with no current typed replay leaf. The combined d52/d66 fold exposes resistance, resistance speed, compliance, compliance speed, occupied-country tag, and occupier tag; `occupation_law` is only an irreversible FNV-1a-32 token and `operational_status` is absent, so neither law text nor operational status may be fabricated. See also d11, d12, d13, d14, d15, d26, d28, d33, d42, d43, d44, d45, d47, d49, d50, d51, d52, d53, d56, d59, d63, d64, and d65.
 
 
@@ -21,20 +22,12 @@ D66’s listed source records only an occupation-extra sidecar with no current t
 
 22 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
 ### Prose evidence (2) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -42,6 +35,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

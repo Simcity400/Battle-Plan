@@ -14,6 +14,7 @@
 
 
 
+
 D26 tolerates only `COMPACT_STATUS_PARTIAL_DATA`; source/state unavailable,
 profile mismatch, no clock/scalar source, worker panic, bridge unavailable,
 control invalid, and every other failure-mask bit make the domain unknown for
@@ -32,51 +33,46 @@ See also d27, d28, d45, d48, d49, d50, d53, d54, and d65.
 
 ## Files about this domain
 
-40 tracked files name this domain.
+34 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/documents/dossiers/A40/designer_static_inventory.json` — `f272fcd01ebbe562`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
 ### Prose evidence (12) — mergeable
 
+- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d11_production_live.md`
 - `extractor/documents/domains/d26_division_equipment_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
+- `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d97_peace_conference_live.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/lanes/division_state_movement_live/README.md`
 - `extractor/native/recorder_host/README.md`
-- `extractor/native/runs/perf_rearch_20260706/D53_ROOT_CAUSE.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
-- `extractor/memory_reader/division_equipment_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (14)
+### Code (9)
 
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/validate_wired_domains.py`
-- `extractor/memory_reader/division_equipment_live.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/fold_check/src/tests.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
@@ -86,4 +82,3 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/replay/schema.py`

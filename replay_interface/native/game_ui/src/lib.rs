@@ -38,7 +38,6 @@ pub mod mod_ui_discovery;
 pub mod national_focus;
 pub mod occupation_binding;
 pub mod paradox_text;
-pub mod politics_tooltips;
 pub mod preferred_tactic;
 pub mod png;
 pub mod power_balance;

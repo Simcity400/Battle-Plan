@@ -14,6 +14,7 @@
 
 
 
+
 D61 is the per-country cumulative air-combat statistic: save `history{}`
 statistic id 23, an 89-field i64 fixed-point aggregate with a five-slot yearly
 ring, distinct from per-wing equipment deltas in d42.
@@ -55,26 +56,22 @@ See also d42.
 
 ## Files about this domain
 
-32 tracked files name this domain.
+31 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (5) — mergeable
+### Prose evidence (4) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/domains/d42_air_combat_losses_live.md`
 - `extractor/documents/domains/d61_air_loss_stats_live.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/production_promotion/contract.json`
@@ -84,6 +81,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

@@ -917,7 +917,7 @@ mod tests {
 
     fn balance() -> PowerBalanceInput {
         PowerBalanceInput {
-            source_record_id: "d73:42:ITA:ITA_power_balance".into(),
+            source_record_id: "d74:42:ITA:ITA_power_balance".into(),
             country_tag: "ITA".into(),
             balance_id: "ITA_power_balance".into(),
             display_ordinal: 0,
@@ -1036,7 +1036,7 @@ mod tests {
         let mut bad = frame();
         let mut second = balance();
         second.balance_id = "ITA_second_balance".into();
-        second.source_record_id = "d73:42:ITA:second".into();
+        second.source_record_id = "d74:42:ITA:second".into();
         bad.expected_balance_count = 2;
         bad.balances.push(second);
         assert!(validate_frame(&bad).is_err());

@@ -14,6 +14,7 @@
 
 
 
+
 d32 supplies the exact observable loadout side of reinforcement analysis: air-wing owner/id/generation, equipment variant id/type, old/new equipment amount, and delta. It is joined with d30 location/mission state and d42 count/loss deltas over the same snapshot window. These endpoint facts can prove that equipment in a wing changed; they cannot identify the engine transaction that caused the change.
 
 Replay may correlate d32 deltas with d11 production/stockpile, d43 delivery progress, variant creator/origin, d42 losses, and identity/base changes. The result is heuristic context only:
@@ -33,23 +34,16 @@ See also d11, d20, d26, d30, d42, and d43.
 
 24 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
+### Prose evidence (6) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (5) — mergeable
-
+- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `extractor/documents/domains/d34_air_base_status_live.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -57,13 +51,15 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (8)
+### Code (7)
 
 - `extractor/native/compact_contract/src/lib.rs`
-- `extractor/native/lanes/air_wings_variants_lifecycle_live/proof_live_token_lifecycle_gates.py`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`

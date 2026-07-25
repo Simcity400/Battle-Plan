@@ -14,27 +14,19 @@
 
 
 
+
 D18’s durable role in the listed cross-domain sources is the unique numeric `tag_db_id` to country-label join. A mismatched or non-unique label is unobtained and cannot override numeric identity. The d48 source accepts `CountryIdentityCache.rows` after zero/duplicate-tag, vtable, and minimum-count checks; the d53 source proves only the unique tag/id label join, not stronger pointer or tag-echo guards. Neither source proves that a filtered or minimum-size cache is a complete country roster. See also d48 and d53.
 
 
 ## Files about this domain
 
-82 tracked files name this domain.
+49 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (20) — mergeable
+### Prose evidence (17) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d1000_frame.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
@@ -45,47 +37,33 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d51_scripted_state_flags_variables_live.md`
 - `extractor/documents/domains/d64_delayed_events_live.md`
 - `extractor/documents/domains/d83_nuke_stockpile_live.md`
-- `extractor/live_capture/README.md`
 - `extractor/native/project_progress_live_lane/README.md`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
-- `replay_interface/documents/archive/REPLAY_PRODUCTION_PLAN.md`
+- `replay_interface/documents/UNIT_COUNTER_LAW.md`
 
-### Data evidence (15) — mergeable
+### Data evidence (14) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
-- `extractor/memory_reader/diplo_relations_offsets.draft.json`
-- `extractor/memory_reader/diplomacy_offsets.draft.json`
-- `extractor/memory_reader/leadership_deep_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
 - `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/native/game_ui/tests/fixtures/diplomacy_binding_production_fold/provenance.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (44)
+### Code (18)
 
-- `extractor/live_capture/collector_diplomacy_bridge.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_probe_record.py`
-- `extractor/live_capture/tests/test_collector_profile_check.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
 - `extractor/native/collector/src/a34_a40_evidence.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/fold_check/src/tests.rs`
-- `extractor/native/lanes/diplomacy_intel_operatives_live/live_probe.py`
-- `extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_autonomous_admission.py`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/stream_fold.rs`
@@ -93,17 +71,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/replay_decoder/src/tests.rs`
-- `extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1`
-- `extractor/native/scripts/Invoke-A5AceLifecycleFixture.ps1`
-- `extractor/native/scripts/Invoke-B4B5B7ProductionAcquisition.ps1`
-- `extractor/native/scripts/Invoke-X2LossWidthAcquisition.ps1`
-- `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/native/scripts/verify_d44_arc1_pst1_capture.py`
-- `extractor/re_evidence/A5_ACE_LIFECYCLE/admit_a5_lifecycle_fixture.py`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/capture_and_verify_h_b5.py`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/capture_b4_sunk_convoy_fixture.py`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/verify_b4_sunk_convoy_fixture.py`
 - `replay_interface/native/game_ui/src/binding.rs`
 - `replay_interface/native/game_ui/tests/topbar_binding.rs`
 - `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
@@ -111,8 +79,3 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_core/tests/roundtrip_gates.rs`
 - `replay_interface/native/replay_core/tests/world_timeline.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/re_evidence/rendering_laws/CAP6/verify_live_final_d3d_receipt.py`
-- `replay_interface/re_evidence/rendering_laws/XUI16/verify_a35_live_fixture.py`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_diff_engine.py`
-- `replay_interface/replay/tests/test_schema.py`

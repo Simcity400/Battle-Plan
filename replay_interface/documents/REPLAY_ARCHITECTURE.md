@@ -1,4 +1,7 @@
-# Replay Layer Architecture (decision of record)
+# Replay layer architecture as built
+
+> Not a decision of record. `documents/DECISIONS.md` is the authority on intent; the
+> wire format and container described here are being replaced.
 
 Owner: replay-layer agent. This document is the active architecture for
 everything under `replay_interface/`. Where it conflicts with older documents,
@@ -41,7 +44,7 @@ Supporting toolchains (not in the runtime path):
   not a per-frame runtime dependency.
 - Python (`replay/`, `models/`, `derive/`, `game_assets/`) — development,
   validation, fixture generation, and asset extraction tooling. Never in the
-  runtime playback path. `game_assets/extract.py` output is a local inspection
+  runtime playback path. `replay_interface/game_assets/extract.py` output is a local inspection
   cache, not product runtime truth; replay_app must resolve effective installed content
   directly or fail closed.
 

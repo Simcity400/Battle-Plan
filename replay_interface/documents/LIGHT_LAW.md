@@ -5,8 +5,8 @@ positions, the day-night terminator, the ambient rig, the diffuse/specular
 colors, and the ShadowMap. Derived **files-first** from the shipped installed content
 (via the mod-aware `GameFileResolver`) and validated against captured scene
 constant-buffer 0 (CB0) evidence. This is an analysis/law job — no render-path
-wiring; the module is a pure, unit-tested law (`map_viewer/src/light_law.rs`)
-plus a CB0-mining bin (`map_viewer/src/bin/dump_light_rig.rs`).
+wiring; the module is a pure, unit-tested law
+(`replay_interface/native/map_viewer/src/light_law.rs`).
 
 Sibling of `WATER_LAW.md`, which owns the water sun/moon **packing** (`.xwz`
 swizzle) law. This doc owns the **rig** (positions, day/night, colors, shadow).
@@ -27,7 +27,7 @@ scoping the ShadowMap verdict to the captured binding — are folded in.
 
 ## 0. Evidence base — the mined corpus
 
-`dump_light_rig` walks capture session dirs, finds every
+The mined corpus includes every
 `*_ps_constant_buffer_slot0.bin` that decodes as a 416-byte **scene CB0** (its
 `vVirtualSunPos.y == SUN_HEIGHT == 600` and `.w == SUN_HEIGHT_WATER == 5000`
 fingerprint the scene CB0, excluding post-effect/UI slot-0 CBs), and tabulates
@@ -37,9 +37,9 @@ the rig fields per bundle.
   bundle — e.g. `session_LIVE_A2`/`A4` are shader-only dumps).
 - Bundle kinds covered: terrain (`map_frame_draw*`), water (`water_frame_*`),
   rivers (`rivers_frame_*`), trees (`trees_frame_*`), terrain chunks.
-- The bin is **deterministic** (sorted session/file traversal; output is a pure
-  function of inputs — two runs byte-identical) and writes JSON+markdown to a
-  scratch `--out` dir. **Payloads are never committed.**
+- The mining pass was **deterministic** (sorted session/file traversal; output
+  was a pure function of inputs — two runs byte-identical). **Payloads are never
+  committed.**
 
 ### CB0 lighting-field layout (standardfuncsgfx.fxh:2-33, HLSL packing)
 
@@ -469,11 +469,10 @@ remain.)
 
 ## 9. Deliverables
 
-- `map_viewer/src/light_law.rs` — pure, dependency-free law module
+- `replay_interface/native/map_viewer/src/light_law.rs` — pure, dependency-free law module
   (`SceneLighting` CB0 decoder, `defines`, `offsets`,
   `diffuse_color_rgb_from_hsv_define`, `validate_lighting_law_against_cb0`),
   8 unit tests against the mined CB0 values (all green).
-- `map_viewer/src/bin/dump_light_rig.rs` — the deterministic CB0-mining bin.
-- `map_viewer/src/lib.rs` — one-line module + export wiring only.
+- `replay_interface/native/map_viewer/src/lib.rs` — one-line module + export wiring only.
 
 No render-path wiring (that is a later job). No forbidden files touched.

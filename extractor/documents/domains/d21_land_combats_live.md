@@ -14,6 +14,7 @@
 
 
 
+
 The current-build authority is `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -62,34 +63,69 @@ reuse, and can turn state carried across an unknown d21 hour into a false
 current retirement. Correct closure requires an explicit terminal event surface
 or versioned combat lifecycle identity.
 
+### The active-combat structure, from the earlier build
+
+Solved against `hoi4.exe 1.19.1.0.b49d` (SHA-256 `16022851…`), so the addresses
+below are stale — the shape and the disproved hypotheses are not, and they are
+the starting point for rederiving this on any later build.
+
+A live land battle is a heap `CLandCombat`. The active manager root is
+`u64[MODULE+0x33048C0] + 0x260`, a vector with data at `+0x08` and count at
+`+0x14`; each slot points at `CLandCombat body - 0x10`. On the body: vtable
+`MODULE+0x2980CB8` at `+0x00`, type tag `62` at `+0x08`, `combat_id` at `+0x0C`,
+duration at `+0x30`, combat age in days at `+0x34`, and location via
+`*(body+0x28)` -> front object -> `+0xA4`.
+
+Both participant sets come from memory. `*(body+0x18)` is the attacker
+`CCombatSide` (vtable `MODULE+0x2980AC0`); `attacker_side+0x18` reaches the
+per-combat sides registry (`MODULE+0x2980BD8`) holding `{combat_id,62}` identity
+at `+0x18`, attacker side at `+0x28`, **defender side at `+0x30`**, front at
+`+0x38`. Each side is a small-vector `{data @ +0x20, u32 capacity @ +0x28,
+u32 size @ +0x2C}` — read exactly `size` `CDivision*` from `data`.
+
+Two hypotheses were tested and are wrong: the sides list is not a
+`std::vector<CDivision*>` triple (`+0x28` is capacity, not count), and the
+defender side is not a field of the combat body but a sibling reached through
+the registry. `CDivision+0x1E0` is only a province-level prefilter — it
+over-collects when two combats share a province (10/13) and is not the path.
+
+Validated 13/13 against a time-aligned melted save on combat_id, location, day
+and duration, with attacker and defender sets each 13/13. A later live proof
+compared the active manager against the legacy heap-vtable scan and got 22 rows
+each, the same `(combat_id, body)` set — the save is a backstop, the runtime
+path is memory-only. Participant resolution discriminates on the `CDivision`
+vtable and must accept both type `4713` and type `51`.
+
+Reading this structure safely needs all of the following, and the reader that
+proved it fails closed with per-reason rejection telemetry rather than guessing:
+vtable identity checked on **every** hop, the registry `{combat_id,62}` identity
+asserted, reads driven by `size` and clamped to the VirtualQuery region end,
+`size <= capacity` sanity, and a **double read revalidation** to catch a
+reallocation racing the walk.
+
+Unresolved from that work: naval and air combats were never mapped because none
+were active at the captured snapshot, and the exact runtime semantics of
+day/duration need sub-day sampling. Two things are unobservable by sampling at
+any cadence — micro-engagements that begin and end between samples, and same-id
+reuse without an age or generation discontinuity.
+
 See also d27, d28, d41, d49, d50, d54, d55, d60, d65, and d69.
 
 
 ## Files about this domain
 
-47 tracked files name this domain.
+30 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (9) — mergeable
+### Prose evidence (6) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/archive/CODEX_DISPATCH_QUEUE.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
-- `extractor/live_capture/README.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/lanes/land_combat_detail_events_live/README.md`
 - `extractor/native/recorder_host/README.md`
-- `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
@@ -98,21 +134,15 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
 - `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (25)
+### Code (11)
 
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/collector_proof_gate.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
-- `extractor/live_capture/tests/test_replay_writer.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`
@@ -120,12 +150,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-X2LossWidthAcquisition.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/native/snapshot/tests/container_roundtrip.rs`
 - `replay_interface/native/replay_core/src/world.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/diff_engine.py`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_diff_engine.py`
-- `replay_interface/replay/tests/test_schema.py`

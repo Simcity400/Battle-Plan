@@ -14,6 +14,7 @@
 
 
 
+
 All production observations are passive, pointer-free, exact-a729 hook
 observations. A missing current-hour callback is source-unavailable, not a
 measured-empty collection.
@@ -50,9 +51,9 @@ aggregate-bonus findings.
 
 ## Files about this domain
 
-57 tracked files name this domain.
+53 tracked files name this domain.
 
-### Pinned evidence (7) — byte-exact, do not merge
+### Pinned evidence (4) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
@@ -60,22 +61,19 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/dossiers/A28/FACILITY_SPECIALIZATION_SMOOTH_LIST_HOOK_CONTRACT_20260719.json` — `8fcb6a4687bc7fed`
 - `extractor/documents/dossiers/A28/SOURCE_EXHAUSTION_CENSUS_20260719.json` — `fa2e2aa63af1de56`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (5) — mergeable
+### Prose evidence (6) — mergeable
 
+- `documents/REMAINING_WORK.md`
+- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/domains/d71_dynamic_collection_trace_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/dossiers/A37/A28_DECISION_GRID_MATERIALIZATION_JOIN_20260720.md`
 
-### Data evidence (15) — mergeable
+### Data evidence (17) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/documents/dossiers/A28/REMAINING_CONTROLLER_AUDIT.json`
 - `extractor/documents/dossiers/A28_DYNAMIC_COLLECTION_TRACE.json`
@@ -86,13 +84,15 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/UI09/H_A29_TECHNOLOGY_CANVAS_EXACT20_RECEIPT_20260720.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (30)
+### Code (26)
 
-- `extractor/documents/dossiers/A37/verify_a37.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/compact_contract/src/lib.rs`
@@ -109,14 +109,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/dynamic_collection_trace_live/src/a729_technology_canvas.rs`
 - `extractor/native/lanes/dynamic_collection_trace_live/src/a729_technology_canvas_hook.rs`
 - `extractor/native/lanes/dynamic_collection_trace_live/src/lib.rs`
-- `extractor/native/lanes/dynamic_collection_trace_live/verify_a28_air_mio_acquisition.py`
-- `extractor/native/lanes/dynamic_collection_trace_live/verify_a28_controller_fixture.py`
 - `extractor/native/lanes/power_balance_presentation_live/src/a729_decision_grid.rs`
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-A28AirMioAcquisition.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/game_ui/src/dynamic_collection.rs`
 - `replay_interface/native/game_ui/src/production_renderer.rs`

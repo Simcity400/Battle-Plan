@@ -244,8 +244,9 @@ What it does (all captures reuse `Start-Hoi4ProductionSpeed5Capture.ps1`):
    (the offsets relation reader diverged from the legacy scan) and the session
    stops before the production capture.
 3. **Stage 2 — paired A/B** — a `-Mode ShortSpeed5` capture at head, compared
-   against the recorded 2026-07-09 baseline (`-BaselineManifest`, default
-   `runs/production_speed5_ShortSpeed5_20260709_124210/native_session_manifest.json`).
+   against the manifest supplied with `-BaselineManifest`. The script's built-in
+   baseline is not retained in this repository, so callers must supply an
+   existing manifest.
    Writes `live_validation_report.md` (+ a compact console table): frame
    avg/p95/max, game-hours advanced, skipped hours + %, stream bytes +
    bytes/captured-hour, per-domain `read_time_us` top-10 vs baseline, the five
@@ -372,9 +373,8 @@ child rows from `wing_body+0x1E8`. The host rejects malformed row/child lengths,
 duplicate owner/wing/generation rows, invalid airbase ids, invalid equipment
 variant ids, invalid raw amounts, duplicate variants per wing, non-zero
 deleted-row live fields, non-zero reserved bytes, and child ranges that do not
-match the emitted equipment table. Proof
-`extractor/native/runs/compact_air_loadouts_870ebf_20260701_v2/native_session_manifest.json`
-advanced 113 game hours with 0 skipped and no source/partial/bridge/worker
+match the emitted equipment table. A proof run advanced 113 game hours with
+0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`, and
 `air_wing_loadouts` together.
 
@@ -384,9 +384,8 @@ banks. Rows are keyed by `variant_id`, carry optional display/model strings, and
 own child module rows `{slot_handle, module_token}`. The host rejects malformed
 lengths, duplicate variant ids, unknown flags, impossible slot handles,
 overlong/empty required strings, non-zero reserved bytes, overlapping/missing
-module ranges, and trailing bytes. Proof
-`extractor/native/runs/compact_air_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
-advanced 109 game hours with 0 skipped and no source/partial/bridge/worker
+module ranges, and trailing bytes. A proof run advanced 109 game hours with
+0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`,
 `air_wing_loadouts`, and `air_variant_defs` together.
 
@@ -397,9 +396,8 @@ raw interface classifier, speed cache, range, attack, agility, max speed,
 reliability, air defence, thrust, fuel consumption, and build-cost raw values
 with explicit fixed-point scale metadata. The host rejects malformed lengths,
 duplicate variant ids, zero equipment token/type handles, out-of-range raw
-stat fields, unknown flags, non-zero reserved bytes, and trailing bytes. Proof
-`extractor/native/runs/compact_air_variant_stats_870ebf_20260701_v2/native_session_manifest.json`
-advanced 105 game hours with 0 skipped and no source/partial/bridge/worker
+stat fields, unknown flags, non-zero reserved bytes, and trailing bytes. A proof
+run advanced 105 game hours with 0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`,
 `air_wing_loadouts`, `air_variant_defs`, `air_variant_stats`, and
 `air_base_status` together. The generated `.battleplan` also passed an
@@ -412,9 +410,8 @@ banks. Rows are keyed by `(tag_db_id, variant_id)` and carry raw fixed-point
 stockpile amount plus delete markers. The host rejects malformed lengths,
 duplicate country/variant rows, impossible country or variant ids, out-of-range
 amounts, unknown flags, non-zero reserved bytes, deleted rows with non-zero
-amounts, bad scale metadata, and trailing bytes. Proof
-`extractor/native/runs/compact_air_variant_reserves_870ebf_20260701_v2/native_session_manifest.json`
-advanced 103 game hours with 0 skipped and no source/partial/bridge/worker
+amounts, bad scale metadata, and trailing bytes. A proof run advanced 103 game
+hours with 0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`,
 `air_wing_loadouts`, `air_variant_defs`, `air_variant_stats`,
 `air_variant_reserves`, and `air_base_status` together. The generated
@@ -430,9 +427,8 @@ using the same row/module/string payload layout and validation rules as
 `air_variant_defs`. The stream is pointer-free and keyed by `variant_id`; it is
 intended to cover stockpiled variants, including aircraft variants not currently
 assigned to live air wings, without a heap-wide type-70 scan in the production
-recording loop. Proof
-`extractor/native/runs/compact_stockpile_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
-advanced 103 game hours with 0 skipped and no source/partial/bridge/worker
+recording loop. A proof run advanced 103 game hours with 0 skipped and no
+source/partial/bridge/worker
 failures while scheduling the full current air bundle plus
 `stockpile_variant_defs`; the generated `.battleplan` also passed an independent
 `pack_replay verify`.
@@ -447,9 +443,8 @@ markers. The host rejects malformed lengths, duplicate keys, invalid ids/counts
 or amounts, zero equipment token/type handles, bad scale metadata, unknown
 flags, non-zero reserved bytes, and deleted rows carrying live fields. This is
 input capture for reconstructing/modeling region air power; it does not claim
-the exact cached displayed HOI4 air-superiority percent. Proof
-`extractor/native/runs/compact_air_superiority_inputs_870ebf_20260701_v2/native_session_manifest.json`
-advanced 103 game hours with 0 skipped and no source/partial/bridge/worker
+the exact cached displayed HOI4 air-superiority percent. A proof run advanced
+103 game hours with 0 skipped and no source/partial/bridge/worker
 failures while scheduling the full current air bundle plus
 `air_superiority_inputs`; the generated `.battleplan` also passed an
 independent `pack_replay verify`.
@@ -463,9 +458,8 @@ duplicate variant ids, invalid upgrade indexes or levels, duplicate indexes
 inside one variant row, unknown flags, non-zero reserved bytes, bad row/entry
 ranges, and trailing bytes. The stream intentionally carries raw indexes, not
 upgrade names, because live upgrade-name key resolution is still unproven.
-Proof
-`extractor/native/runs/compact_air_variant_upgrades_870ebf_20260701_v1/native_session_manifest.json`
-advanced 99 game hours with 0 skipped and no source/partial/bridge/worker
+A proof run advanced 99 game hours with 0 skipped and no
+source/partial/bridge/worker
 failures while scheduling the full current air bundle plus both upgrade
 domains. It emitted 446 stockpile upgrade entries; active-air upgrade rows were
 valid but zero-entry in this vanilla sample. The generated `.battleplan` also
@@ -477,9 +471,8 @@ airbase id and carry state id, materialized capacity, state air-base building
 level, based wing count, and based plane count. The host rejects malformed
 lengths, duplicate airbase ids, invalid state/capacity/level/usage bounds,
 unknown flags, non-zero deleted-row live fields, non-zero reserved bytes, and
-trailing bytes. Proof
-`extractor/native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
-advanced 106 game hours with 0 skipped and no source/partial/bridge/worker
+trailing bytes. A proof run advanced 106 game hours with 0 skipped and no
+source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`,
 `air_wing_loadouts`, `air_variant_defs`, and `air_base_status` together.
 

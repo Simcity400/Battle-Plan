@@ -14,6 +14,7 @@
 
 
 
+
 `specialization_handle` is process-local and may be used only inside the d41
 delta tracker for raw additions and tombstones before the authenticated
 four-token census. Portable fold/replay publishes only the closed
@@ -27,65 +28,41 @@ See also d18.
 
 ## Files about this domain
 
-64 tracked files name this domain.
+40 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
+### Prose evidence (13) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (14) — mergeable
-
+- `documents/REMAINING_WORK.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d41_projects_live.md`
+- `extractor/documents/domains/d65_special_project_programs_live.md`
 - `extractor/documents/domains/d67_country_dynamic_modifiers_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
-- `extractor/live_capture/README.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/project_progress_live_lane/README.md`
 - `extractor/native/recorder_host/README.md`
-- `extractor/native/runs/crack_fanout/W3_scripted_programs/WIRING_REPORT.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/memory_manifest.json`
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
-- `extractor/memory_reader/defnames_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (36)
+### Code (15)
 
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/collector_proof_gate.py`
-- `extractor/live_capture/collector_session.py`
-- `extractor/live_capture/collector_special_projects_bridge.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_probe_record.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
-- `extractor/live_capture/validate_wired_domains.py`
-- `extractor/memory_reader/defnames_live.py`
-- `extractor/memory_reader/projects_live.py`
-- `extractor/memory_reader/scientists_roster_probe.py`
-- `extractor/memory_reader/tech_live.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`
@@ -95,14 +72,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/replay_decoder/src/lib.rs`
-- `extractor/native/scientists_live_lane/cgame_roster_ref_probe.py`
 - `extractor/native/scientists_live_lane/src/stream_certification.rs`
-- `extractor/native/scripts/Invoke-LiveValidationSession.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/game_ui/src/special_projects.rs`
 - `replay_interface/native/replay_app/src/special_projects_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/replay/diff_engine.py`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_diff_engine.py`

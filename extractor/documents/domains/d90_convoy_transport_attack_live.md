@@ -14,6 +14,7 @@
 
 
 
+
 The listed source contributes only one d90-specific durable fact: the positive
 and control branches and `CTA2` regrade are mechanically executable optional
 regression evidence. They require no human semantic attribution and cannot
@@ -22,26 +23,23 @@ promote an inferred value or descriptive screenshot.
 
 ## Files about this domain
 
-26 tracked files name this domain.
+23 tracked files name this domain.
 
-### Prose evidence (11) — mergeable
+### Prose evidence (9) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
-- `extractor/documents/domains/d50_naval_combat_members_live.md`
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/documents/domains/d90_convoy_transport_attack_live.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
 - `extractor/native/lanes/naval_missions_status_live/README.md`
 - `extractor/native/lanes/supply_logistics_attrition_live/README.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (4) — mergeable
+### Data evidence (3) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 

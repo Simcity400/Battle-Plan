@@ -1836,7 +1836,7 @@ whether an item is open, blocked, derived, cracked-but-not-wired, or complete.
 | --- | --- | --- | --- |
 | hub motorization level/settings | A1 | same-frame hub toggle fixture with at least two known levels, ideally 1 and 3 | [domain 62](domains/d62_hub_motorization_live.md) |
 | focus-paused state | A2 closed | RESOLVED: exact stable `CNationalFocusProgress+0xB0` boolean is wired and verified | master A2; domain 45 |
-| stored country/node disrupted supply pressure | A6 | RESOLVED: bounded `CSupplySystem+0x108` owner vector plus exact `CCountrySupplySystem+0x88` robin-hood table; retained D04/FRA nonzero anchors | [A6/A7 static closeout](../re_evidence/A6_A7_SUPPLY_CONVOY/STATIC_CLOSEOUT.md); domain 44 |
+| stored country/node disrupted supply pressure | A6 | RESOLVED: bounded `CSupplySystem+0x108` owner vector plus exact `CCountrySupplySystem+0x88` robin-hood table; retained D04/FRA nonzero anchors | domain 44 |
 | MP chat/messages, hotjoin, tag-switch | A15 | same-build 2-player MP session with controlled join/tag switch and unique chat text | [domain 57](domains/d57_session_multiplayer_metadata_live.md) |
 | game-speed root semantics | A3 closed | sealed same-process transcript proves UI speeds 1–5 as raw `0..4` and pause/resume orthogonality; X12 separately owns within-hour transition capture after hook engineering | master A3/X12; `domains/d57_session_multiplayer_metadata_live.md`; domain 57 |
 | air sortie lifecycle / kill attribution / last_killer | A4 | live advancing air-combat fixture with known losses/kills | master A4; domain 42 |

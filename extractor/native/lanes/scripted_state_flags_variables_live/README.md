@@ -31,8 +31,9 @@ sprite-setter observer. It seals a pointer-free current-manager/materialized-
 value receipt only after the owner returns, with a strictly increasing
 same-process producer sequence. The collector regrades that receipt against
 H4CT winners/registry coverage before d84 encoding; arbitrary caller-supplied
-current order is not accepted. Production activation remains compile-time
-false pending the live fixture matrix. Supplemental exact-a729 lifecycle evidence
+current order is not accepted. Production schedules this authenticated hook-owned
+transaction fail-closed; the representative live fixture matrix remains optional
+regression coverage. Supplemental exact-a729 lifecycle evidence
 proves the rebuild temporarily zeroes the manager before repopulation, so a
 header-only zero is unavailable. The diagnostic probe admits raw measured-empty
 only when manager generation `+0x68` is stable and non-sentinel around the
@@ -41,7 +42,7 @@ authorizer. The `+0xA50` rows cache resolved element/property names, not final
 property values; exact text/image/frame/layout values must be observed at
 synchronized widget consumer
 boundaries or remain unavailable. See
-`../../../documents/dossiers/A38_AUTONOMOUS_LIVE_ACQUISITION_20260720.md`.
+`../../../documents/domains/d84_scripted_gui_runtime_live.md`.
 
 ## Production-ready slice
 
@@ -62,9 +63,6 @@ not lose precision.
 
 ## Current 870ebf live validation
 
-Proof artifact:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_current_roots_v1/current_build_probe.json`.
-
 The lane-local live probe gates the exact executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`, resolves
 `CGameState` from `module_base + 0x3316E90`, validates the country table at
@@ -84,14 +82,10 @@ Result on live `hoi4.exe` pid `45880`:
   `.?AVCFlagManager@@` on all 434 validated rows; flag payload/token/date
   mapping remains unresolved and must stay fail-closed for named flags
 - bounded Ghidra text sweep corroborated older `CVariables`/`param_1+0x218`
-  static hints in `ghidra_hoi4_proj/dump_world/_WORLD.txt` and
-  `sv_FUN_140535a40_140535a40.c`, but current-build acceptance is based on the
-  live hash-gated RTTI and table evidence above
+  static hints, but current-build acceptance is based on the live hash-gated
+  RTTI and table evidence above
 
 ## Current 870ebf country flag payload validation
-
-Proof artifact:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_flag_payload_v1/country_flags_payload_probe.json`.
 
 The lane-local payload probe validates the `CFlagManager` row shape on current
 `870ebf`:
@@ -132,12 +126,7 @@ Rejected payload misreads:
 
 ## Current 870ebf global root validation
 
-Proof artifacts:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_global_state_roots_v1/global_state_root_probe.json`
-and
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_global_state_roots_v1/global_state_root_probe_broad_scan_pre_direct_fix.json`.
-
-The direct-root probe validates these current-build roots:
+The direct-root and broad-scan proofs validate these current-build roots:
 
 - `CGameState + 0x980 -> CVariables`: direct qword at `0x22BA5F49450`
   resolves to `0x22BDBBCFA30`, RTTI `.?AVCVariables@@`, vtable
@@ -154,9 +143,6 @@ invalidated by the corrected chunked direct-reference scanner in
 `global_state_root_probe.py`.
 
 ## Current 870ebf state root validation
-
-Proof artifact:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_state_scope_roots_v1/state_scope_root_probe.json`.
 
 The state-scope probe resolves state identity through the current production
 state path without touching shared entrypoints:
@@ -247,17 +233,11 @@ does not grant lane-local expected-partial exceptions.
 The verifier exits nonzero and emits its JSON report to stderr on any failed
 authority check; `"ok": false` is never a successful CLI result.
 
-Proof artifact:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_domain51_ministack_v1/domain51_ministack_proof.json`.
-
 The mini stack uses final registry domain id `51`, encodes validated
 country/global/state variables and flags, emits token-only flag rows when names
 do not resolve, and treats delayed-event/scripted-GUI missing roots as
 fail-closed opaque badge rows rather than `STATUS_PARTIAL_DATA`. Validated
 scope read failures still set `STATUS_PARTIAL_DATA`.
-
-H4CR stream and `.battleplan` proof artifact:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_domain51_h4cr_v1/domain51_replay_pack_proof.json`.
 
 The stream proof emits a lane-local H4CR `collector_stream.bin` with one
 domain-51 perf record, one domain-51 data record, and one frame-end record per
@@ -268,16 +248,12 @@ partial/source failure. The replay proof packs the stream into
 `collector_compact_stream` bytes match the source stream. The shared
 collector/recorder registration slot is wired for live proof.
 
-Shared live proof artifact:
-`extractor/native/runs/domain51_shared_live_20260701T163828/native_session_manifest.json`.
-It scheduled only `scripted_state_flags_variables_live`, emitted `162`
+A shared live proof scheduled only `scripted_state_flags_variables_live`, emitted `162`
 domain-51 compact data records across `162` frame hours, advanced `161` game
 hours with `0` skipped hours, had no partial/source/worker/bridge failures, and
 passed shared `pack_replay verify` for `native_session.battleplan`.
 
-Opaque-roots full closeout artifact:
-`extractor/native/runs/scripted_state_flags_variables_live_20260701_opaque_roots_full_final/FINAL_REPORT.md`.
-The refreshed proof revalidated current-build country/global/state variable and
+The refreshed opaque-roots proof revalidated current-build country/global/state variable and
 flag roots, then ran a shared domain-51-only compact capture for `43` frame
 hours. The lane-owned Rust stream gate decoded `43` domain-51 data records with
 `0` skipped hours and no partial/source/worker/bridge failures; `pack_replay
@@ -290,22 +266,17 @@ chase. The old whole-concept classification bundled unrelated lifecycle and
 UI-materialization work into d51. Current ownership assigns those to d64/A19
 and d84/A38, so they are not A13 completion blockers.
 
-Delayed-event blocker proof:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_delayed_event_blocker_v1/delayed_event_fixture_audit.json`.
-
 The blocker proof rejects `saved_event_target` as a proxy for queued country
 `delayed_event` payloads. The current save-oracle output and save keytrees have
-zero `delayed_event` key/scalar hits, while `coverage_audit/memory_manifest.json`
+zero `delayed_event` key/scalar hits, while `extractor/coverage_audit/memory_manifest.json`
 classifies `countries.*.delayed_event` as `save_parsed = no` and
 `saved_event_target` as a distinct top-level world key already closed by
 `parse_world`. Live delayed-event root work remains blocked until a positive
 non-empty `countries.*.delayed_event` fixture or equivalent engine invariant is
 available.
 
-Opaque-root positive fixture contracts:
-`extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_opaque_fixture_contracts_v1/OPAQUE_ROOT_FIXTURE_CONTRACTS.md`.
-
-The contract proof uses `coverage_audit/recursive_paths_country.txt` to pin the
+The positive fixture contract uses
+`extractor/coverage_audit/recursive_paths_country.txt` to pin the
 raw save shapes needed for future validation:
 
 - `countries.<id>.delayed_event`, including `event`, `days`, `hours`,
@@ -342,9 +313,39 @@ not A13 production blockers. Other scope kinds positively observed in the
 engine scope resolver remain unavailable rather than being aliased to one of
 the three supported scopes.
 
-Current exact-20 static evidence, production wiring, capture contract, and
-human-input disposition are recorded in
-`../../../documents/dossiers/A13_SCRIPTED_STATE_PRODUCTION_CLOSEOUT_20260720.md`.
-The machine-readable capture contract is
-`../../../documents/dossiers/A13_RUNTIME_CAPTURE_CONTRACT_20260720.json`, with
-offline grader `verify_a13_runtime_capture.py`.
+The exact-20 runtime admission contract requires:
+
+- `frame_hour` reads with `before == frame == after` and a nonzero source
+  sequence;
+- the complete canonical global/country/state roster with an exact
+  `portable_owner_key` join;
+- measured or measured-empty variables with duplicate-free printable keys and
+  exact signed `i64` fixed5 values;
+- measured or measured-empty flags with unique nonzero tokens, exact
+  `DateHour i32`, and exact `value u32`;
+- optional names, with unresolved names retained token-only and never guessed;
+  and
+- an exact pairing between the raw fixed5 map, compatibility numeric
+  projection, collector variables, named flags, and token-only flags.
+
+The pinned static receipts are:
+
+- scoped variable write/lifecycle job
+  `20260720T124554Z-w5-a13-scoped-variable-write-lifecycle-13b1fecb`,
+  manifest SHA-256
+  `30def87e38ce6507223de50d2233cd1dbd2253c28078f89041dcabe793415119`;
+- country runtime-container job
+  `20260720T124517Z-w5-a13-country-runtime-container-law-v2-b0587312`,
+  manifest SHA-256
+  `40a6547f654f016f9ae88ce448f42abe8d54daf6aed49528b757d019c1c6a279`;
+- source-assertion xrefs job
+  `20260720T124539Z-w5-a13-source-assertion-xrefs-defc1eb3`, artifact
+  SHA-256
+  `272139e3533710b0e9f722d8c9e99537b93ed741ae22fb6f2852ee6e885b3a2c`;
+  and
+- flag runtime-seeds job
+  `20260720T124728Z-w5-a13-flag-runtime-seeds-950c7df3`, artifact SHA-256
+  `20eff5036625dfc5e2c346c0f9610c91ad842c5264ffa149ec3925952101f1b6`.
+
+Human input is not required to identify or wire this supported A13 runtime law;
+a new live capture is optional regression evidence.

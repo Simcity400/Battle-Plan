@@ -14,6 +14,7 @@
 
 
 
+
 Frame-level domain census uses compiler truth, not Rust-source parsing. The
 oracle derives paths from `__file__` and performs exactly one
 production-selection build from the native crate root:
@@ -68,6 +69,67 @@ manifest is read. Once registry truth is valid, artifact failure remains
 blocking but does not suppress independent manifest findings. Missing
 configured manifests and zero usable manifests are also fail-closed
 conditions.
+
+### Guarded self-read performance
+
+A direct-primitive microbenchmark disproved the premise that read-primitive
+work could not materially close the collector's frame gap. SEH-guarded direct
+reads were bit-identical to `ReadProcessMemory(self)` with `0` mismatches over
+`200k` reads. The rig was a Ryzen `9800X3D`, `8c/8t`, with a `1 GB` working
+set and `200k` reads/thread. The direct-only results were:
+
+| shape | churn | threads | SEH ns | RPM ns | RPM/SEH |
+|---|---:|---:|---:|---:|---:|
+| random | `0` | `8` | `29` | `1166` | `40x` |
+| random | `0` | `16` | `51` | `2218` | `43x` |
+| random | `0` | `30` | `151` | `4311` | `29x` |
+| random | `4` | `16` | `98` | `2372` | `24x` |
+| random | `4` | `30` | `204` | `4200` | `21x` |
+| chain | `4` | `16` | `132` | `2292` | `17x` |
+| chain | `4` | `30` | `186` | `3971` | `21x` |
+
+The random results are durable; the chain generator assigned independent
+random next pointers instead of a Sattolo single-cycle permutation, so a walk
+could collapse into a short cycle and its chain timings are unreliable and
+optimistic. RPM per-thread latency rose from `452 ns` at one thread to
+`4311 ns` at `30` threads (`9.5x`), while aggregate RPM throughput plateaued
+at about `7 Mreads/s` (`2.2/6.9/7.2/7.0` at `1/8/16/30` threads).
+SEH throughput over the same thread counts was `33/276/311/198 Mreads/s`.
+`NtReadVirtualMemory` measured `4046 ns` versus RPM's `4311 ns` at `30`
+threads, so changing the syscall wrapper did not remove the cost. The exact
+kernel-lock mechanism is an inference requiring ETW/WPA; the established law
+is that syscall-per-scalar RPM was toxic under this concurrency.
+
+The direct-only benchmark did not validate the page gate. With pure-random
+reads over `1 GB`, the four-way per-thread page cache missed essentially every
+read and `VirtualQuery` cost about `946,000 ns/read` for both primitives. This
+tested and disproved the assumption that the gate harmlessly cancels outside
+identical traces with no faults, and motivated a region-interval cache. At a
+live RPM cost of `~1.3-1.5 us/read`, SEH remains favorable below estimated
+fault rates of `~27%` at `5us/fault`, `~13%` at `10us/fault`, and `~5%` at
+`25us/fault`; fault-heavy use is both a performance failure and a correctness
+warning.
+
+An advancing alternating-state live A/B on the exact SHA-gated D04 1944
+workload, with adjacent warm game-hours alternating SEH and RPM, supplied the
+missing end-to-end proof:
+
+| Metric | SEH | RPM | RPM/SEH |
+|---|---:|---:|---:|
+| warm frames | `111` | `111` | |
+| average warm frame | `278.5 ms` | `994.5 ms` | `3.57x` |
+| reads/frame | `3,958,224` | `3,812,470` | approximately equal |
+| region hit rate | `0.899` | `0.895` | |
+| VQ/read | `0.102` | `0.105` | |
+| SEH faults | `0 / 439,362,909 reads` | `0` | |
+
+Thus direct SEH reads produced a measured `3.57x` frame-wall improvement at
+speed `3` while the game advanced approximately `1000` game-hours, and the region cache
+achieved about `90%` hits and `~0.1 VQ/read` for both primitives. The synthetic
+per-read-VQ thrash did not occur on the localized live trace. The remaining
+SEH frame was `278 ms` against an approximately `100 ms` budget (`~2.8x`
+remaining); batching/coalescing, bounded pool sizing, and targeted delta work
+remained unresolved rather than being proved by the primitive result.
 
 Residual limits are explicit: replacement after the final hash but before
 `LoadLibrary` is an OS-level TOCTOU window; a future lying `registry_dump`

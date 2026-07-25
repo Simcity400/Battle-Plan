@@ -14,6 +14,7 @@
 
 
 
+
 The build gate is `hoi4.exe` SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
 the probe fails nonzero when the process is absent or the hash differs.
@@ -58,55 +59,47 @@ See also d47, d48, d51, and d53.
 
 ## Files about this domain
 
-63 tracked files name this domain.
+50 tracked files name this domain.
 
-### Pinned evidence (7) — byte-exact, do not merge
+### Pinned evidence (3) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/documents/WAVE2_10_SHARD_REEXPORT_RECONCILIATION_20260720.json` — `f6cc6c85727ac45e`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.md` — `9a36b277f0b02d40`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (16) — mergeable
+### Prose evidence (10) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
 - `extractor/documents/domains/d23_map_detail_live.md`
-- `extractor/documents/domains/d44_supply_logistics_attrition_live.md`
 - `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`
 - `extractor/documents/domains/d55_land_combat_detail_events_live.md`
 - `extractor/documents/domains/d56_naval_missions_status_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/native/lanes/diplomacy_intel_operatives_live/README.md`
-- `extractor/native/lanes/occupation_resistance_compliance_live/GARRISON_RESIDUAL_ANALYSIS.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/README.md`
 - `extractor/native/lanes/occupation_resistance_compliance_live/replay_verify/README.md`
-- `extractor/native/runs/perf_rearch_20260706/W0_AB_RESULTS.md`
-- `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
+- `extractor/documents/WAVE2_10_SHARD_REEXPORT_RECONCILIATION_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/occupation_resistance_compliance_live/GARRISON_SCALAR_STATIC_COMPLETION_20260719.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (30)
+### Code (24)
 
-- `extractor/memory_reader/occupation/probe_garrison_candidates_870ebf.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/domain_registry.rs`
@@ -119,9 +112,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/occupation_resistance_compliance_live/domain44_gate.rs`
 - `extractor/native/lanes/occupation_resistance_compliance_live/domain52_compact.rs`
 - `extractor/native/lanes/occupation_resistance_compliance_live/domain52_gate.rs`
-- `extractor/native/lanes/occupation_resistance_compliance_live/garrison_scalar_probe.py`
 - `extractor/native/lanes/occupation_resistance_compliance_live/live_probe.py`
-- `extractor/native/lanes/occupation_resistance_compliance_live/remaining_fields_probe.py`
 - `extractor/native/lanes/occupation_resistance_compliance_live/replay_verify/Cargo.toml`
 - `extractor/native/lanes/occupation_resistance_compliance_live/replay_verify/src/main.rs`
 - `extractor/native/lanes/occupation_resistance_compliance_live/src/a729_garrison_alert.rs`
@@ -129,10 +120,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-A35AutonomousGarrisonAlertAction.ps1`
 - `extractor/native/scripts/Invoke-CentralRustValidation.ps1`
-- `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/re_evidence/rendering_laws/XUI16/verify_a35_live_fixture.py`

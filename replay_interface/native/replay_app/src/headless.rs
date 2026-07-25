@@ -2,7 +2,6 @@
 //! target and write it as a BMP. No window, no screen interaction.
 //!
 //! This is the screen-free verification path for the map renderer and the
-//! seed of the visual-QA harness (MAP_REPLICA_PLAN Phase 6): fixed-camera
 //! renders that can be diffed across hours, builds, and eventually against
 //! real the game screenshots.
 

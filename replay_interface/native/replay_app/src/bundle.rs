@@ -1,7 +1,6 @@
 //! Map bundle loading for the replay product surface.
 //!
 //! Loads the gitignored Rust map bundle documented in
-//! `replay_interface/documents/MAP_REPLICA_PLAN.md` ("Phase 0: Rust Map
 //! Bundle"): `manifest.json`, `province_ids.r32` (little-endian u32 per
 //! pixel, row-major), plus the political JSON tables. Fails closed with
 //! generation guidance when the bundle is missing or malformed; nothing is
@@ -13,7 +12,6 @@ use std::path::Path;
 
 use crate::Result;
 
-/// Bundle dimensions required by the MAP_REPLICA_PLAN Phase 0 acceptance
 /// gate for real HOI4-generated bundles.
 pub const PRODUCT_MAP_WIDTH: usize = 5632;
 /// See [`PRODUCT_MAP_WIDTH`].
@@ -120,7 +118,6 @@ impl MapBundle {
         })
     }
 
-    /// MAP_REPLICA_PLAN Phase 0 gate: real the game bundles are 5632x2048.
     ///
     /// Country identity (tags/names/colors/cosmetics) is fully data-driven and
     /// works for ANY modset, but the render pipeline still assumes the vanilla

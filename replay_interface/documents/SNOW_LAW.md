@@ -7,8 +7,8 @@ Mechanism-correct law for the game `SnowMudData` runtime texture (the
 synthesis only — no render wiring (a later job threads the synthesized floor
 into the terrain pass).
 
-Code: `replay_interface/native/map_viewer/src/snow_law.rs` (+ validation bin
-`src/bin/dump_snow_validation.rs`, exports in `src/lib.rs`).
+Code: `replay_interface/native/map_viewer/src/snow_law.rs`, exported by
+`replay_interface/native/map_viewer/src/lib.rs`.
 
 Shipped sources of truth (game root
 `<local-path> of Iron IV\`):
@@ -213,8 +213,7 @@ Evidence it is simulation state, not a files-only function of the date:
 
 ## 5. Validation numbers
 
-Tool: `dump_snow_validation --game <dir> --date MM.DD --capture <session>…`.
-Determinism verified: identical output on repeated runs (same date → identical
+Recorded determinism evidence is identical across repeated runs (same date → identical
 floor: `07.01` → 2223 floored texels both runs; `01.15` → 68198 both runs).
 
 Captured `SnowMudData` channel stats (all `1408×512`, `SnowMudFade=0`):
@@ -330,8 +329,8 @@ wording to fold into §6 (orchestrator to apply — this lane does not edit
 - `cargo test -p map_viewer` — 368 passed / 0 failed (20 in `snow_law`,
   incl. weather-period date matching + year-wrap, region→texel + Y-flip
   orientation, channel decode/fade, fail-closed parse & synthesis).
-- `dump_snow_validation` stats on `restore_gate_1`, `live_PAN2`, and the
-  archived harness capture — see §5; determinism verified 2×.
-- Scope: only `map_viewer/src/snow_law.rs`, `src/bin/dump_snow_validation.rs`
-  (new), `src/lib.rs` (one-line exports), and this document. No forbidden files
+- Recorded validation stats on `restore_gate_1`, `live_PAN2`, and the archived
+  harness capture — see §5; determinism verified 2×.
+- Scope: only `replay_interface/native/map_viewer/src/snow_law.rs`,
+  `replay_interface/native/map_viewer/src/lib.rs` (one-line exports), and this document. No forbidden files
   touched.

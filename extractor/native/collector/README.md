@@ -1059,35 +1059,30 @@ Air-wing raw stream status:
   emitted 8640 raw `air_wings` deltas, observed 360 `air_wing_observed` and
   8280 `air_wing_updated` events, and reported zero skipped game hours and zero
   raw air-wing gaps.
-- Current compact proof:
-  `extractor/native/runs/compact_air_wings_870ebf_20260701_v3/native_session_manifest.json`
-  ran the production-shaped compact gate for 60 seconds at 10 ms sampling,
+- Current compact proof ran the production-shaped compact gate for 60 seconds at 10 ms sampling,
   advanced 110 game hours, skipped 0 game hours, emitted 111 ordered/decodable
   frame/data records, wrote 47884 total bytes / 37228 payload bytes, observed
   41474 air-wing rows, emitted 631 changed rows and 296 mission-region rows, and
   reported no source-unavailable, partial-data, bridge-unavailable, or worker
   panic flags. Frame time p95 was 8205 us; air-wing read p95 was 7014 us.
-- Current region-activity compact proof:
-  `extractor/native/runs/compact_air_region_activity_870ebf_20260701_v2/native_session_manifest.json`
-  scheduled `air_wings` plus `air_region_activity` for 60 seconds at 10 ms
+- Current region-activity compact proof scheduled `air_wings` plus
+  `air_region_activity` for 60 seconds at 10 ms
   sampling, advanced 113 game hours, skipped 0 game hours, emitted ordered/
   decodable compact records, wrote 78560 total bytes / 60320 payload bytes,
   observed 44522 air-wing rows, captured 6461 observed region-activity buckets,
   emitted 302 changed region rows with 18 deletes, and reported no source-
   unavailable, partial-data, bridge-unavailable, or worker-panic flags. Frame
   time p95 was 10347 us; region-activity read p95 was 9207 us.
-- Current air-loadout compact proof:
-  `extractor/native/runs/compact_air_loadouts_870ebf_20260701_v2/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, and `air_wing_loadouts` for 60
+- Current air-loadout compact proof scheduled `air_wings`, `air_region_activity`,
+  and `air_wing_loadouts` for 60
   seconds at 10 ms sampling, advanced 113 game hours, skipped 0, emitted
   ordered/decodable compact records, wrote 204760 total bytes / 179224 payload
   bytes, captured 45944 observed air-wing rows, 121261 observed wing-equipment
   rows, 787 changed loadout rows, 2613 emitted equipment rows, and reported no
   source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
   Frame p95 was 13179 us; loadout read p95 was 11592 us.
-- Current air-variant definition compact proof:
-  `extractor/native/runs/compact_air_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`, and
+- Current air-variant definition compact proof scheduled `air_wings`,
+  `air_region_activity`, `air_wing_loadouts`, and
   `air_variant_defs` together for 60 seconds at 10 ms sampling, advanced 109
   game hours, skipped 0, emitted ordered/decodable compact records, wrote
   233782 total bytes / 202102 payload bytes, captured 47350 observed air-wing
@@ -1096,9 +1091,8 @@ Air-wing raw stream status:
   434 emitted module-token rows, and reported no source-unavailable,
   partial-data, bridge-unavailable, or worker-panic flags. Frame p95 was 14546
   us; air-variant-def read p95 was 13768 us.
-- Current air-variant stats compact proof:
-  `extractor/native/runs/compact_air_variant_stats_870ebf_20260701_v2/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+- Current air-variant stats compact proof scheduled `air_wings`,
+  `air_region_activity`, `air_wing_loadouts`,
   `air_variant_defs`, `air_variant_stats`, and `air_base_status` together for
   60 seconds at no-sleep compact sampling, advanced 105 game hours with 0
   skipped, emitted ordered/decodable compact records, wrote 313680 total bytes
@@ -1107,9 +1101,8 @@ Air-wing raw stream status:
   bridge-unavailable, or worker-panic flags. Frame p95 was 19618 us;
   air-variant-stat read p95 was 18066 us, and an independent `pack_replay
   verify` pass accepted the generated `.battleplan`.
-- Current air-base status compact proof:
-  `extractor/native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+- Current air-base status compact proof scheduled `air_wings`,
+  `air_region_activity`, `air_wing_loadouts`,
   `air_variant_defs`, and `air_base_status` together for 60 seconds at 10 ms
   sampling, advanced 106 game hours, skipped 0, emitted ordered/decodable
   compact records, wrote 266867 total bytes / 229203 payload bytes, captured
@@ -1118,9 +1111,8 @@ Air-wing raw stream status:
   based-plane count sum, and reported no source-unavailable, partial-data,
   bridge-unavailable, or worker-panic flags. Frame p95 was 17174 us; air-base
   status read p95 was 10588 us.
-- Current air-variant reserves compact proof:
-  `extractor/native/runs/compact_air_variant_reserves_870ebf_20260701_v2/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+- Current air-variant reserves compact proof scheduled `air_wings`,
+  `air_region_activity`, `air_wing_loadouts`,
   `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`, and
   `air_base_status` together for 60 seconds at no-sleep compact sampling,
   advanced 103 game hours, skipped 0, emitted ordered/decodable compact records,
@@ -1130,9 +1122,8 @@ Air-wing raw stream status:
   bridge-unavailable, or worker-panic flags. Frame cadence stayed hourly clean;
   air-variant-reserve read p95 was 26106 us, and an independent `pack_replay
   verify` pass accepted the generated `.battleplan`.
-- Current stockpile variant-definition compact proof:
-  `extractor/native/runs/compact_stockpile_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+- Current stockpile variant-definition compact proof scheduled `air_wings`,
+  `air_region_activity`, `air_wing_loadouts`,
   `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
   `air_base_status`, and `stockpile_variant_defs` together for 60 seconds at
   no-sleep compact sampling, advanced 103 game hours, skipped 0, emitted
@@ -1142,9 +1133,8 @@ Air-wing raw stream status:
   reported no source-unavailable, partial-data, bridge-unavailable, or
   worker-panic flags. `stockpile_variant_defs` read p95 was 11695 us, and an
   independent `pack_replay verify` pass accepted the generated `.battleplan`.
-- Current air-superiority input compact proof:
-  `extractor/native/runs/compact_air_superiority_inputs_870ebf_20260701_v2/native_session_manifest.json`
-  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+- Current air-superiority input compact proof scheduled `air_wings`,
+  `air_region_activity`, `air_wing_loadouts`,
   `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
   `air_base_status`, `stockpile_variant_defs`, and `air_superiority_inputs`
   together for 60 seconds at no-sleep compact sampling, advanced 103 game hours,
@@ -1156,9 +1146,8 @@ Air-wing raw stream status:
   bridge-unavailable, or worker-panic flags. `air_superiority_inputs` read p95
   was 40651 us, frame p95 was 50067 us, and an independent `pack_replay verify`
   pass accepted the generated `.battleplan`.
-- Current variant-upgrade compact proof:
-  `extractor/native/runs/compact_air_variant_upgrades_870ebf_20260701_v1/native_session_manifest.json`
-  scheduled `air_wings`, `air_wing_loadouts`, `air_variant_defs`,
+- Current variant-upgrade compact proof scheduled `air_wings`,
+  `air_wing_loadouts`, `air_variant_defs`,
   `air_variant_stats`, `stockpile_variant_defs`, `air_variant_reserves`,
   `air_base_status`, `air_superiority_inputs`, `air_variant_upgrades`, and
   `stockpile_variant_upgrades` for 60 seconds at no-sleep compact sampling,

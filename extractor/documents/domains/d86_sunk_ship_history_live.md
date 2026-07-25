@@ -14,6 +14,7 @@
 
 
 
+
 All layout evidence is exact-a729 (`hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`). The completed-history vector is at `CGameState+0x590`, laid out as data pointer `+0x00`, capacity `u32 +0x08`, count `u32 +0x0C`, with eight-byte entries. Each `CSunkShipInfo` has vtable `0x142941608` and size `0xA8`.
 
 | Offset | Exact field |
@@ -41,14 +42,13 @@ SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, name
 
 ## Files about this domain
 
-24 tracked files name this domain.
+20 tracked files name this domain.
 
-### Prose evidence (6) — mergeable
+### Prose evidence (5) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d49_naval_combat_lifecycle_live.md`
-- `extractor/documents/domains/d50_naval_combat_members_live.md`
 - `extractor/documents/domains/d86_sunk_ship_history_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
@@ -58,7 +58,7 @@ SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, name
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (15)
+### Code (12)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -67,11 +67,8 @@ SHP1 v2 preserves pointer-free attribution, handles, context, cause/assist, name
 - `extractor/native/lanes/sunk_ship_history_live/Cargo.toml`
 - `extractor/native/lanes/sunk_ship_history_live/src/a729_hook.rs`
 - `extractor/native/lanes/sunk_ship_history_live/src/lib.rs`
-- `extractor/native/lanes/sunk_ship_history_live/tools/verify_activation_probe.py`
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-A33SunkShipActivationProbe.ps1`
-- `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`

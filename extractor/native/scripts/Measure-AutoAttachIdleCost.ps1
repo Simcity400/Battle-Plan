@@ -9,8 +9,7 @@
     Implements the AUTO_ATTACH_DESIGN.md section 10 "Idle-cost gate"
     (extractor/documents/AUTO_ATTACH_DESIGN.md:416-423) as a fail-closed,
     sealed-report, deny-extra acceptance tool, in the style of the sibling
-    acceptance scripts (ProductionCapture.Validation.ps1,
-    collect_campaign_identity_evidence.py + verify_campaign_identity_evidence.py).
+    acceptance script ProductionCapture.Validation.ps1.
 
     NO GAME is required (idle-cost is explicitly a "30 minutes with no game"
     measurement, AUTO_ATTACH_DESIGN.md:418). The target process PID is derived at

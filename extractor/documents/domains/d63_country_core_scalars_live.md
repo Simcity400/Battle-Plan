@@ -14,6 +14,7 @@
 
 
 
+
 The listed source contains no field-level d63 knowledge. Its only durable d63 statement is that `country_core_scalars_live` retains its established fixed 48-byte row unchanged; nuke stockpile data belongs to d83 and must not be folded into or used to reinterpret d63.
 
 See also d83.
@@ -21,24 +22,15 @@ See also d83.
 
 ## Files about this domain
 
-23 tracked files name this domain.
+22 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (4) — mergeable
+### Prose evidence (3) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d63_country_core_scalars_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -46,6 +38,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

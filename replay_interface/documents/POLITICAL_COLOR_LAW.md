@@ -219,7 +219,7 @@ was ever exercised. Transparent-equals-transparent proves nothing about the
 province-id -> occupation-stripe mapping. `compare_political_colors_to_capture`
 now emits `validation_is_vacuous` and `all_synthesized_texels_transparent_zero`
 so this can never be misread as a strong pass
-(`map_viewer/src/political_color_synthesis.rs`, `PoliticalColorComparisonReport`).
+(`replay_interface/native/map_viewer/src/political_color_synthesis.rs`, `PoliticalColorComparisonReport`).
 
 ### Render-path validation (the capture is genuine, not a dumper artifact)
 

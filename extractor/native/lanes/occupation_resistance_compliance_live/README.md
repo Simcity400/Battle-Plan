@@ -226,8 +226,7 @@ adds the stable autosave residual pass:
   result was first superseded by the v23 detail rejection proof and, for the
   three production scalars, by the wave-3/current closure below.
 
-`extractor/native/lanes/occupation_resistance_compliance_live/proof_current_head_20260701_bc0797784`
-refreshes the lane against current HEAD `bc0797784`:
+A lane-local proof refreshes the lane against current HEAD `bc0797784`:
 
 - `live_probe.py`: current live `hoi4.exe` build
   `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
@@ -235,7 +234,7 @@ refreshes the lane against current HEAD `bc0797784`:
   `0` invalid state rows, and `69404` compact stream bytes for domain `52`.
 - `collector_module.rs` tests: `9 passed`.
 - `domain52_compact.rs` tests: `5 passed`.
-- `domain52_gate.rs --stream live_probe/collector_stream.bin`:
+- `domain52_gate.rs` decoded the live-probe stream with
   `records_seen=3`, `domain_data_records=1`, `rows=1081`,
   `occupation_law_token_rows=1030`, `occupation_garrison_template_rows=279`,
   no parse errors.
@@ -252,9 +251,8 @@ refreshes the lane against current HEAD `bc0797784`:
   fixture has empty country collaboration payloads and all `8/8`
   `government_in_exile_tag` rows are leader-context rows.
 
-`extractor/native/runs/occupation_resistance_compliance_live_870ebf_20260701_v17_replay_verify`
-compiled the lane-owned collector module, domain-52 decoder gate, and native
-replay verifier:
+A later proof compiled the lane-owned collector module, domain-52 decoder gate,
+and native replay verifier:
 
 - `collector_module.rs` tests: `9 passed`.
 - `domain52_compact.rs` tests: `5 passed`.
@@ -265,8 +263,7 @@ replay verifier:
   `records_seen=3`, `domain_data_records=1`, `rows=1081`, no parse errors.
 - `replay_verify --run-dir ... --game-id orc52`: wrote
   `native_session.battleplan`, opened it with `snapshot::Container`, verified
-  all entries, and byte-compared `69404` compact stream bytes unchanged at
-  `payload/orc52/collector_raw/collector_stream.bin`.
+  all entries, and byte-compared `69404` compact stream bytes unchanged.
 
 `extractor/native/runs/occupation_resistance_compliance_live_870ebf_20260701_v19_semantic_gaps`
 adds semantic-gap evidence:

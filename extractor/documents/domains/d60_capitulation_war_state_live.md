@@ -14,6 +14,7 @@
 
 
 
+
 D60 uses a persistent capitulation map across hours; this is intentionally
 different from current-hour-only d53 state. Status bit 16 is mandatory and
 informational when war rows exist, describing running-accumulator semantics.
@@ -29,34 +30,21 @@ See also d43, d45, d47, d48, d49, d50, d51, d53, d54, and d65.
 
 ## Files about this domain
 
-45 tracked files name this domain.
+40 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (14) — mergeable
+### Prose evidence (9) — mergeable
 
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/C0_DOSSIERS.md`
 - `extractor/documents/domains/d16_decisions_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`
 - `extractor/documents/domains/d60_capitulation_war_state_live.md`
 - `extractor/documents/domains/d69_tech_sharing_groups_live.md`
-- `extractor/native/runs/perf_rearch_20260706/D53_LAYER2_SPEC.md`
-- `extractor/native/runs/perf_rearch_20260706/RELATION_FLAG_GAP_LEDGER.md`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
-- `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -64,6 +52,9 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 

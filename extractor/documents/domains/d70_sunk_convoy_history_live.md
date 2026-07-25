@@ -14,6 +14,7 @@
 
 
 
+
 Exact-a729 root and row law:
 
 ```text
@@ -53,41 +54,32 @@ See also d42, d49, d50, d57, and d90.
 
 ## Files about this domain
 
-37 tracked files name this domain.
+31 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (9) — mergeable
+### Prose evidence (6) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/STATIC_CLOSEOUT.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (9) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (16)
+### Code (14)
 
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
@@ -99,9 +91,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-B4B5B7ProductionAcquisition.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/verify_h_convoy_fixture.py`
 - `replay_interface/native/game_ui/src/combat_detail_losses.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`

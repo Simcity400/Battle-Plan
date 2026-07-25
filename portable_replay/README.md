@@ -7,7 +7,7 @@ the other at runtime — the `.battleplan` file is the only runtime interface.**
 | Crate dir | Package | Role |
 | --- | --- | --- |
 | `native/snapshot` | `portable_replay_format` | `.battleplan` container + snapshot format |
-| `native/content_manifest` | `portable_content_manifest` | Portable content manifest (see `extractor/documents/PORTABLE_CONTENT_MANIFEST.md`) |
+| `native/content_manifest` | `portable_content_manifest` | Portable content manifest (playback profile: `../replay_interface/documents/PRODUCTION_PLAYBACK_PROFILE.md`; implementation: `native/content_manifest/src/lib.rs`) |
 | `native/render_stream` | `portable_render_stream` | Render stream format |
 | `native/compact_stream` | `portable_compact_stream` | Compact typed record stream |
 

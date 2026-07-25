@@ -14,6 +14,7 @@
 
 
 
+
 Wire layout:
 
 | Record | Size | Fields |
@@ -34,24 +35,15 @@ See also d43, d44, and d52.
 
 ## Files about this domain
 
-22 tracked files name this domain.
+19 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (4) — mergeable
+### Prose evidence (3) — mergeable
 
 - `extractor/documents/MOD_AND_UPDATE_ROBUSTNESS_PLAN.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
 - `extractor/documents/domains/d23_map_detail_live.md`
+- `extractor/documents/domains/d24_weather_live.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -59,15 +51,16 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (7)
+### Code (5)
 
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/country_economy_counters_live/src/lib.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/runs/d23_speed/d23_locality_probe.py`
-- `extractor/native/runs/d23_speed/d23_profile_live.py`
 - `replay_interface/native/replay_core/src/world.rs`

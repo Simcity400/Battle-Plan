@@ -14,7 +14,7 @@ final on-screen image. `--postfx-validate-capture` remains validation-only: it
 loads a captured restore bundle, reports file-law deltas, then exits.
 
 All game-file reads go through the mod-aware `GameFileResolver`
-(`map_viewer/src/mod_resolver.rs`, see `MOD_COMPATIBILITY.md`), never bare paths.
+(`replay_interface/native/map_viewer/src/mod_resolver.rs`, see `MOD_COMPATIBILITY.md`), never bare paths.
 
 Ground-truth capture: the original vanilla `restore_gate_1` directory from
 2026-07-06 was recovered intact from a local backup on 2026-07-19 and copied
@@ -35,8 +35,8 @@ cube and MiddleGrey. See `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/`.
 They remain independent substitute observations and are not relabelled as the
 recovered original.
 
-Implementation: `replay_app/src/grading_law.rs` (law),
-`replay_app/src/render.rs` (`restore_full_postfx_from_files`,
+Implementation: `replay_interface/native/replay_app/src/grading_law.rs` (law),
+`replay_interface/native/replay_app/src/render.rs` (`restore_full_postfx_from_files`,
 `restore_full_postfx_validate_capture`).
 
 ---
@@ -156,7 +156,7 @@ exposure scale is **0.55 / 0.5 = 1.1**.
 
 Not engine-internal — the shipped luminance pass computes it. The **replay now
 ports this chain and computes AverageLuminance from the rendered scene each frame
-on the `--postfx-restore-full` path** (`map_viewer/src/luminance_law.rs`,
+on the `--postfx-restore-full` path** (`replay_interface/native/map_viewer/src/luminance_law.rs`,
 `render.rs::update_exposure_from_scene_luminance`). The constant `MIN_HDR_ADJUSTMENT`
 floor was retired on that path (FIDELITY_LEDGER debt #2 closed; see below).
 

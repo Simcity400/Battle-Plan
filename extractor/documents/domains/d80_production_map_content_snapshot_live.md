@@ -14,6 +14,7 @@
 
 
 
+
 D80 is an ordered opaque render program, not a fixed catalog of vanilla pass
 roles. `StaticMapPassProgram.payload_sha256` is the portable whole-program
 identity. `pass_token` is authenticated provenance only and must never select
@@ -54,30 +55,30 @@ See also d48.
 
 ## Files about this domain
 
-49 tracked files name this domain.
+48 tracked files name this domain.
 
-### Prose evidence (11) — mergeable
+### Prose evidence (12) — mergeable
 
+- `documents/REMAINING_WORK.md`
+- `documents/STATUS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
+- `extractor/documents/PORTABLE_CONTENT_MANIFEST.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d77_production_render_submits_live.md`
 - `extractor/documents/domains/d79_hud_surface_activation_live.md`
 - `extractor/documents/domains/d80_production_map_content_snapshot_live.md`
 - `replay_interface/documents/MAP_LABEL_LAW.md`
-- `replay_interface/documents/MAP_REPLICA_PLAN.md`
 - `replay_interface/documents/POLITICAL_COLOR_LAW.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
-- `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (4) — mergeable
+### Data evidence (3) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (34)
+### Code (33)
 
 - `extractor/native/collector/src/duplex_client.rs`
 - `extractor/native/compact_contract/src/early_render_content_manifest.rs`
@@ -112,4 +113,3 @@ See also d48.
 - `replay_interface/native/replay_app/src/render.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/renderdoc/pair_restore_gate_acquisitions.py`

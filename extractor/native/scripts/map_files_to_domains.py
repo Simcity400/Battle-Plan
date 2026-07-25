@@ -37,7 +37,11 @@ def tracked(repo: Path) -> list[str]:
     out = subprocess.run(["git", "-C", str(repo), "ls-files"], check=True,
                          capture_output=True, text=True, encoding="utf-8",
                          errors="replace")
-    return [l for l in out.stdout.splitlines() if l]
+    return [
+        line
+        for line in out.stdout.splitlines()
+        if line and (repo / line).is_file()
+    ]
 
 
 def main() -> int:

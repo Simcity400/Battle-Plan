@@ -14,6 +14,7 @@
 
 
 
+
 D31 carries `effective_planes`; it does not carry the engine’s transient
 `effective_air_superiority` cache. Consequently neither exact superiority nor
 the 0..9 UI strip frame is currently an observed d31 value.
@@ -31,31 +32,51 @@ counts, exact variant stats, the engine cache or tooltip score, and the rendered
 strip frame. The recovered rule must match score and quantisation at zero,
 one-sided, and contested states; do not fit constants.
 
-See also d20, d30, d44, and d54.
+### The air side was fully read once, on an earlier build
+
+Against `hoi4.exe 1.19.1.0.b49d` (SHA-256 `16022851…`) every air quantity below
+was solved and save-validated. The addresses are stale — the chains, the match
+counts and the derivation are the durable part, and they are the starting point
+for redoing this on any later build.
+
+| Target | Result | Path |
+|---|---|---|
+| Air-wing enumeration | 265/265 | wing vtable `MODULE+0x29540C0`, type 69, id at `+0x0C` |
+| Wing plane count | 18/18 | `+0x6C` |
+| Wing owner | 265/265 | wing `+0x28` -> pool `MODULE+0x2954118` -> `+0x40` -> country `MODULE+0x2932248` -> `+0x90` tag-db-id |
+| Mission region | 56/56 | wing `+0xB0` -> region object `MODULE+0x29468B8` -> `+0x58`; null means idle |
+| Air superiority | 12/12 buckets | derived, see below |
+
+Air superiority has **no stored per-region accumulator** — it is recomputed per
+tick and is viewer-relative. It was reproduced by summing each present wing's
+`effective_planes` (wing `+0x160`) bucketed by mission strategic region and
+owner, and that sum matched the save oracle exactly across all 12 buckets.
+`effective_planes` is a faithful proxy, not the engine scalar: the exact per-wing
+value is `effective_planes × the variant's air_superiority stat × modifiers`, a
+drifting cache. This is consistent with the current model above — variant weights
+must come from the recording modset's resolved equipment statistics, never a
+hard-coded vanilla class table.
+
+Do not confuse this with sea-zone dominance, which is naval supremacy and *is*
+stored (see d56).
+
+See also d20, d30, d44, d54, and d56.
 
 
 ## Files about this domain
 
-23 tracked files name this domain.
-
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
+22 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
 - `extractor/documents/domains/d31_air_region_activity_live.md`
 - `extractor/documents/domains/d34_air_base_status_live.md`
+- `extractor/documents/domains/d56_naval_missions_status_live.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
-- `replay_interface/documents/archive/REPLAY_PRODUCTION_PLAN.md`
 
-### Data evidence (8) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
@@ -63,13 +84,15 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (6)
+### Code (5)
 
 - `extractor/native/compact_contract/src/lib.rs`
-- `extractor/native/lanes/air_wings_variants_lifecycle_live/proof_live_token_lifecycle_gates.py`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`

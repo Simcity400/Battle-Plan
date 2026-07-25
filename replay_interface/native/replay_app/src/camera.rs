@@ -1,5 +1,4 @@
 //! Map camera. Coordinates live in map pixels per the Phase 2 architecture
-//! of `MAP_REPLICA_PLAN.md`: `center_x`/`center_y` are the map pixel at the
 //! screen center and `zoom` is screen pixels per map pixel. The the game map
 //! wraps east-west, so x wraps. Vertical mutation is currently fail-closed
 //! until the replay carries the exact C02/C03 3D camera state. Pure math, no

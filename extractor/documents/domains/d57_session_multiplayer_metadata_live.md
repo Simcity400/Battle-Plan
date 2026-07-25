@@ -14,6 +14,7 @@
 
 
 
+
 All exact offsets below are for `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
 ### Current speed and pause
@@ -56,42 +57,35 @@ The listed activation sources contradict one another: `H_X12_SPEED_PREREQUISITE_
 
 ## Files about this domain
 
-70 tracked files name this domain.
+58 tracked files name this domain.
 
-### Pinned evidence (7) — byte-exact, do not merge
+### Pinned evidence (2) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
-- `extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md` — `1e43fee802fa7786`
 - `extractor/native/scripts/collect_speed_root_evidence_v2.py` — `7302d6981b74b5eb`
-- `extractor/native/scripts/verify_speed_root_evidence_v2.py` — `1a8057e0084e8507`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (15) — mergeable
+### Prose evidence (14) — mergeable
 
+- `documents/REMAINING_WORK.md`
+- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/CAMPAIGN_IDENTITY_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/CODEX_DISPATCH_QUEUE.md`
 - `extractor/documents/domains/d57_session_multiplayer_metadata_live.md`
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d77_production_render_submits_live.md`
 - `extractor/documents/dossiers/I1_D57_SPEED_EVIDENCE.md`
 - `extractor/native/lanes/session_multiplayer_metadata_live/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
-- `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.md`
 
-### Data evidence (12) — mergeable
+### Data evidence (14) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/archive/native_lanes/session_multiplayer_metadata_live/proof_artifacts/session_multiplayer_metadata_live_proof/session_multiplayer_metadata_live_proof.json`
 - `extractor/documents/production_promotion/contract.json`
 - `extractor/documents/production_promotion/verification.json`
@@ -100,10 +94,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (36)
+### Code (28)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -112,7 +109,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/session_multiplayer_metadata_live/Cargo.toml`
-- `extractor/native/lanes/session_multiplayer_metadata_live/live_probe_session.py`
 - `extractor/native/lanes/session_multiplayer_metadata_live/src/bin/proof.rs`
 - `extractor/native/lanes/session_multiplayer_metadata_live/src/lib.rs`
 - `extractor/native/lanes/session_multiplayer_metadata_live/src/x12_a729_hook.rs`
@@ -122,19 +118,12 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-AcceptanceLadder.ps1`
-- `extractor/native/scripts/Invoke-F6PausedShortProof.ps1`
-- `extractor/native/scripts/Invoke-X12AuthenticatedActionSequence.ps1`
-- `extractor/native/scripts/Invoke-X12SpeedPauseActivationProbe.ps1`
 - `extractor/native/scripts/Start-Hoi4EarlyLaunchCaptureSafe.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionCaptureSafe.ps1`
-- `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/native/scripts/collect_campaign_identity_evidence.py`
-- `extractor/native/scripts/verify_d57_emission_matches_raw.py`
 - `extractor/native/scripts/verify_f6_pause_proof.py`
 - `extractor/native/scripts/verify_speed5_stream.py`
-- `extractor/native/scripts/verify_x12_speed_pause_activation.py`
+- `extractor/native/scripts/verify_speed_root_evidence_v2.py`
 - `replay_interface/native/game_ui/src/binding.rs`
 - `replay_interface/native/game_ui/src/world_tension.rs`
 - `replay_interface/native/replay_app/src/observer.rs`

@@ -14,6 +14,7 @@
 
 
 
+
 UI owner `0x140B52390` stores division at `+0x250` and equipment modes 0/1/2 at `+0x258/+0x260/+0x268`. Mode 0 covers both equipment and ship; invented modes 0/3 are forbidden. Classifiers `0x140C88440` (mask `0x80004003C1`) and `0x140C884B0` (category bit 19) distinguish them.
 
 Division rows from `0x141756C40` carry owner `+0x520` and `CReferencedDivisionTemplate* +0x528`. The chain `0x141490EA0 -> 0x1417506D0 -> 0x1417506F0 -> 0x14167AEE0` commits the clicked template to handler `+0x8D0` and template `+0x18` to `+0x8D8`; getter `0x1416796F0` returns `+0x8D0`. Admission requires that committed pointer to equal the clicked argument.
@@ -38,15 +39,15 @@ See also d78.
 
 ## Files about this domain
 
-25 tracked files name this domain.
+24 tracked files name this domain.
 
 ### Prose evidence (9) — mergeable
 
+- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d59_templates_equipment_catalog_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
 - `extractor/documents/domains/d78_design_catalog_context_live.md`
 - `extractor/documents/domains/d85_selected_designer_identity_live.md`
 - `extractor/documents/dossiers/A40/README.md`
@@ -59,9 +60,8 @@ See also d78.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (12)
+### Code (11)
 
-- `extractor/documents/dossiers/A40/verify_a40_design_peace_live_fixture.py`
 - `extractor/native/collector/src/a34_a40_evidence.rs`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`

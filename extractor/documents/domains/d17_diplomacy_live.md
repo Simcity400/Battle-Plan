@@ -14,6 +14,7 @@
 
 
 
+
 The compact stream carries d17 as typed `COMPACT_RECORD_TYPE_DOMAIN_DATA` under the single H4CR sequence authority. Records are decoded fail-closed: unknown record types, invalid lengths, duplicate identities, or omitted numeric fields are not accepted; measured zero remains distinct from a missing row. `FRAME_END` is the final record for an hour, and internally parallel reads must still emit deterministically.
 
 Status bit 13 (`0x2000`) is d17-only informational war-segment accounting and is outside the shared failure mask. It must not bleed into dependent domains. A recorded case where d45 inherited `0x2000` came from OR-ing every country bundle's whole status word; d45's focus/tech/decision dependencies were clean, so this was semantic contamination rather than a d45 condition. Consumers must mask dependency status to the relevant domain families and `COMPACT_STATUS_FAILURE_MASK`.
@@ -23,28 +24,17 @@ See also d10, d11, d12, d13, d14, d15, d16, d18, d21, d24, d27, d28, d43, d45, d
 
 ## Files about this domain
 
-63 tracked files name this domain.
+37 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/fixtures/manifest.json` — `20d94abdbf0a3127`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (9) — mergeable
+### Prose evidence (7) — mergeable
 
 - `extractor/documents/CONFIRMED_COMPLETE_DESIGN.md`
 - `extractor/documents/R2_VALIDATION_BOUNDS_AUDIT.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
-- `extractor/live_capture/README.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
-- `replay_interface/documents/archive/EXTRACTION_NEEDS.md`
 
 ### Data evidence (15) — mergeable
 
@@ -52,39 +42,22 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
-- `extractor/memory_reader/diplo_relations_offsets.draft.json`
-- `extractor/memory_reader/diplomacy_offsets.draft.json`
-- `extractor/memory_reader/fuel_offsets.draft.json`
-- `extractor/memory_reader/leadership_deep_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/fixtures/manifest.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (35)
+### Code (15)
 
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/collector_diplomacy_bridge.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/collector_proof_gate.py`
-- `extractor/live_capture/collector_session.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_diplomacy_bridge.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
-- `extractor/live_capture/validate_wired_domains.py`
-- `extractor/memory_reader/construction_orders_live.py`
-- `extractor/memory_reader/diplo_relations_live.py`
-- `extractor/memory_reader/diplomacy_live.py`
-- `extractor/memory_reader/leadership_deep_live.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
-- `extractor/native/lanes/diplomacy_intel_operatives_live/live_probe.py`
 - `extractor/native/lanes/event_timeline_change_log_live/src/lib.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
@@ -98,6 +71,3 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_core/tests/roundtrip_gates.rs`
 - `replay_interface/native/replay_core/tests/world_timeline.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/diff_engine.py`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_diff_engine.py`

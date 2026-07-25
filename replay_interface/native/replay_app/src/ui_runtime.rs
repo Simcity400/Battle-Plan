@@ -155,8 +155,7 @@ pub struct SelectedPresentTypedConsumption {
     /// roster, distinct from a missing or rejected carrier.
     pub special_project_program_count: Option<usize>,
     /// Exact per-country politics models folded from production d14/d15.
-    /// XUI11 pixels remain wholly owned by `AuthenticatedUiPass`; the
-    /// retired d73/PTI1 semantic decomposition is not a product dependency.
+    /// XUI11 pixels remain wholly owned by `AuthenticatedUiPass`.
     pub politics_country_count: Option<usize>,
     pub resolved_tooltip_instance_count: Option<usize>,
     /// Exact A6 rows from the bounded CSupplySystem owner census. This is a

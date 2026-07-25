@@ -14,6 +14,7 @@
 
 
 
+
 D46 authenticates ace identity, owner, name, life/death fields, roster index,
 and wing assignment. The autonomous acceptance path reads the complete raw
 `CAceEntry+0x158..+0x16c` roster, joins it to the same-hour d18 country identity
@@ -33,18 +34,15 @@ See also d18.
 
 ## Files about this domain
 
-38 tracked files name this domain.
+34 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Pinned evidence (1) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (8) — mergeable
+### Prose evidence (7) — mergeable
 
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
@@ -53,9 +51,8 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d46_air_variant_archetypes_live.md`
 - `extractor/documents/domains/d82_character_presentation_live.md`
 - `extractor/documents/dossiers/A39/H_A39_PREREQUISITE_ENGINEERING_20260720.md`
-- `extractor/re_evidence/A5_ACE_LIFECYCLE/README.md`
 
-### Data evidence (9) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/documents/dossiers/A39_XUI17_CHARACTER_PRESENTATION_INPUTS.json`
@@ -64,14 +61,16 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (17)
+### Code (14)
 
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
-- `extractor/native/lanes/air_wings_variants_lifecycle_live/proof_live_token_lifecycle_gates.py`
 - `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_ace_roster_live.rs`
 - `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_variant_archetypes_live.rs`
 - `extractor/native/lanes/character_presentation_live/src/a729_hook.rs`
@@ -80,9 +79,7 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/compact_domain_registry.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
-- `extractor/native/scripts/Invoke-A5AceLifecycleFixture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/re_evidence/A5_ACE_LIFECYCLE/admit_a5_lifecycle_fixture.py`
 - `replay_interface/native/game_ui/src/character_ui.rs`
 - `replay_interface/native/replay_app/src/character_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`

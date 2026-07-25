@@ -14,6 +14,7 @@
 
 
 
+
 Division rows are the live authority used to bind on-map counter state. The current append-only row is 120 bytes; retained 104-byte rows decode deterministically as legacy with the added fields unavailable. Mixed or malformed lengths fail closed. The extension carries exact maximum organisation, the dedicated counter-supply scalar, and dig-in current/cap, in addition to current/max supply, their same-row ratio, experience, and order state. Movement is not an orders proxy.
 
 Relevant exact-a729 fields and producers:
@@ -37,47 +38,39 @@ See also d18 and d54.
 
 ## Files about this domain
 
-29 tracked files name this domain.
+26 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
+### Prose evidence (7) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (6) — mergeable
-
+- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d20_divisions_live.md`
 - `extractor/documents/domains/d31_air_region_activity_live.md`
 - `extractor/documents/domains/d32_air_wing_loadouts_live.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
+- `replay_interface/documents/UNIT_COUNTER_LAW.md`
 
-### Data evidence (9) — mergeable
+### Data evidence (11) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (11)
+### Code (8)
 
-- `extractor/memory_reader/oob_command_live.py`
 - `extractor/native/collector/src/a15_counter_ui_hook.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
-- `extractor/native/scripts/Invoke-A15CounterUiFixture.ps1`
 - `extractor/native/scripts/production_domain_roster.py`
-- `extractor/native/scripts/verify_a15_counter_ui_fixture.py`
 - `replay_interface/native/game_ui/src/binding_counters.rs`
 - `replay_interface/native/game_ui/tests/counter_binding.rs`
 - `replay_interface/native/replay_core/src/world.rs`

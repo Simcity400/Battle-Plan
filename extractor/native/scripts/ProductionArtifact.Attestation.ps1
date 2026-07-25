@@ -368,19 +368,8 @@ function Get-ProductionRustInputDigest {
         (Join-Path $repo "extractor\game_defs\materialize_ui14_engine_vfs.py"),
         (Join-Path $repo "extractor\game_defs\verify_product_modset_capture_ready.py"),
         (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py"),
-        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_composed.py"),
         (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\stage_so_census.json"),
-        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\M02\production_interleave_closure\contract.json"),
-        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\capture_harness\authenticated_wait_for_paused_save.ps1"),
-        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\CAP6\verify_live_final_d3d_receipt.py"),
-        # The combined B4/B5/B7 production owner executes these read-only
-        # memory observers and the independent B4 regrader outside the native
-        # source root. A centralized Release receipt must therefore become
-        # stale whenever any of their exact decoding/admission logic changes.
-        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\capture_b4_sunk_convoy_fixture.py"),
-        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\verify_b4_sunk_convoy_fixture.py"),
-        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\capture_and_verify_h_b5.py"),
-        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\capture_and_verify_h_b7.py")
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\M02\production_interleave_closure\contract.json")
     )) {
         if (-not (Test-Path -LiteralPath $extra -PathType Leaf)) { continue }
         $full = [System.IO.Path]::GetFullPath($extra)

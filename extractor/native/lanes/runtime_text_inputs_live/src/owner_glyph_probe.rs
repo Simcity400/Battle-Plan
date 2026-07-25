@@ -22,8 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 
-/// Lane-owned authorization for the raw harness probe. This is deliberately
-/// not the d76 production-promotion latch.
+/// Lane-owned authorization for the raw harness probe.
 pub const OWNER_GLYPH_CAPTURE_ACTIVATION: bool = false;
 pub const A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED: bool = OWNER_GLYPH_CAPTURE_ACTIVATION;
 pub const MAX_COMPLETED_OWNER_GLYPH_CANDIDATES: usize = 16_384;
@@ -90,7 +89,7 @@ pub struct PostEmitOrdinaryGlyphObservation {
 /// `font_instance_token` is the exact `CBitmapFont*` bit pattern and
 /// `buffer_identity` is the exact GPU-buffer handle stored at entry `+0x18`.
 /// They are deliberately confined to this live sidecar and are never emitted
-/// into an RTI1 row or replay artifact.
+/// into a replay artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlyphBufferCacheIdentity {
     pub font_instance_token: u64,

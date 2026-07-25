@@ -401,13 +401,7 @@ pub fn production_profile_scheduled_names() -> Vec<&'static str> {
 
 /// Domains emitted on the wire as owned, same-hour dependencies of an
 /// explicitly scheduled parent domain.
-///
-/// D82 owns D76 because character-presentation reason text must be captured
-/// only after the D82 snapshot has finalized. D76 therefore remains reserved
-/// from independent production scheduling while still being an exact required
-/// record whenever D82 is scheduled.
-pub const OWNED_EMITTED_DOMAIN_DEPENDENCIES: &[(CompactDomainId, CompactDomainId)] =
-    &[(82, 76)];
+pub const OWNED_EMITTED_DOMAIN_DEPENDENCIES: &[(CompactDomainId, CompactDomainId)] = &[];
 
 /// Expand a scheduled domain-id set to the exact domain-id set emitted on the
 /// wire, including transitive owned dependencies. The result is canonicalized
@@ -1246,20 +1240,6 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // Retired A24 semantic decomposition. Production politics state is already
-    // carried by d14/d15, exact visible tooltip text/geometry by scheduled d72,
-    // and all XUI11 pixels by AuthenticatedUiPass. PTI1 is retained only for
-    // backwards-compatible forensic decoding; it is deliberately unscheduled
-    // because it has no production consumer or independently visible pixels.
-    domain(
-        73,
-        "politics_tooltip_inputs_live",
-        "politics_tooltip_inputs_live",
-        CompactDomainStatus::Reserved,
-        false,
-        true,
-        &[],
-    ),
     // A37/XUI18: optional typed power-balance semantic companion. Exact visible
     // product pixels are owned by the mandatory authenticated selected-Present
     // UI pass, not reconstructed from d74. PBP2 deliberately remains reserved:
@@ -1286,20 +1266,6 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         "fired_event_popups_live",
         CompactDomainStatus::ProductionComplete,
         true,
-        true,
-        &[],
-    ),
-    // A25/XUI06 (2026-07-17): exact runtime-localised text. The d76 carrier
-    // binds the authenticated fixed-window/textbox registration hook to the
-    // final a729 text setter, retaining final bytes and exact authored
-    // view/element identity. Scheduling remains explicit until recorder fold
-    // integration is enabled as one atomic promotion.
-    domain(
-        76,
-        "runtime_text_inputs_live",
-        "runtime_text_inputs_live",
-        CompactDomainStatus::Reserved,
-        false,
         true,
         &[],
     ),
@@ -1372,9 +1338,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // A39/XUI17 (2026-07-20): exact pointer-free observations from the
     // CUnitLeaderTraitTree row vectors/state producer and the owner-qualified
     // CAcesView refresh/bind portrait route. The ordinary collector installs
-    // the authenticated hook, emits CPR1 or typed source-unavailable, then
-    // emits its owned d76 dependency in the enforced same-hour order. Carrier,
-    // fold and replay admission are complete; mixed-state observations remain
+    // the authenticated hook and emits CPR1 or typed source-unavailable.
+    // Carrier, fold and replay admission are complete; mixed-state observations remain
     // optional regression coverage and are not an activation prerequisite.
     domain(
         82,
@@ -1786,7 +1751,7 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75,
             77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
             1000,
         ];
@@ -1923,7 +1888,7 @@ mod tests {
                 "optional fail-closed companion domain {optional} must stay out of production"
             );
         }
-        for excluded in [1, 58, 59, 73, 74, 76, 77, 80, 1000] {
+        for excluded in [1, 58, 59, 74, 77, 80, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"
@@ -1942,20 +1907,6 @@ mod tests {
             "production profile has {} domains but collector control accepts at most {}",
             profile.len(),
             MAX_SCHEDULED_DOMAINS
-        );
-    }
-
-    #[test]
-    fn emitted_roster_expands_character_presentation_owned_text_dependency() {
-        assert_eq!(
-            emitted_domain_ids_for_scheduled_ids(&[82, 10, 82]),
-            vec![10, 76, 82]
-        );
-        assert_eq!(emitted_domain_ids_for_scheduled_ids(&[10, 57]), vec![10, 57]);
-        assert_eq!(
-            OWNED_EMITTED_DOMAIN_DEPENDENCIES,
-            &[(82, 76)],
-            "owned wire dependencies require explicit contract review"
         );
     }
 

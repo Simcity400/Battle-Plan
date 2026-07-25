@@ -7,12 +7,11 @@ RENDERING law: given a weather *type* per strategic region, how the engine
 *draws* the overlay. The per-region *current type* is runtime state supplied by
 the extractor feed (`REPLAY_DATA_REQUIREMENTS` item 6), NOT invented here.
 
-Analysis + synthesis + a dump bin only — **no `replay_app` render wiring**
-(`render.rs` is contested across lanes; per the WEATHER1 spec, in doubt deliver
-the law + dump bin). Threading the overlay into the live pass is a later job.
+Analysis + synthesis only — **no `replay_app` render wiring**. Threading the
+overlay into the live pass is a later job.
 
-Code: `replay_interface/native/map_viewer/src/weather_law.rs`
-(+ dump bin `src/bin/dump_weather_law.rs`, exports in `src/lib.rs`).
+Code: `replay_interface/native/map_viewer/src/weather_law.rs`, exported by
+`replay_interface/native/map_viewer/src/lib.rs`.
 
 Shipped sources of truth (game root
 `<local-path> of Iron IV\`):
@@ -237,8 +236,6 @@ For one map frame over a region with **active, known** weather:
 ## Files touched
 
 - `replay_interface/native/map_viewer/src/weather_law.rs` (new) — the law.
-- `replay_interface/native/map_viewer/src/bin/dump_weather_law.rs` (new) — dump
-  bin: resolves the law + renders a top-down overlay PNG per type.
 - `replay_interface/native/map_viewer/src/lib.rs` — module registration +
   public exports only.
 

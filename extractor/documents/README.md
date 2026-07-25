@@ -18,9 +18,8 @@ never completion status): design specs `CAMPAIGN_IDENTITY_DESIGN`, `DUPLEX_CONTR
 `CONFIRMED_COMPLETE_DESIGN`, `DERIVED_RECOMPUTE_SPECS`, `AUTO_ATTACH_DESIGN`, `STITCHING_DESIGN`,
 `C1_STAGEB_REGISTRY_DESIGN`, `PORTABLE_CONTENT_MANIFEST`, `XUI21_RE_REPORT`; evidence/reference
 `dossiers/`; runbooks/audits `R4_PATCH_DAY_RUNBOOK`, `R2_VALIDATION_BOUNDS_AUDIT`,
-`MOD_AND_UPDATE_ROBUSTNESS_PLAN`. Extractor status and backlog:
-`MASTER_EXTRACTION_CONTRACT.md`; replay plans and specifications:
-`../../replay_interface/documents/README.md`.
+`MOD_AND_UPDATE_ROBUSTNESS_PLAN`. Repo-wide status: `../../documents/STATUS.md` and
+`../../documents/REMAINING_WORK.md`.
 
 Design/spec documents in this directory define intended behavior but do not carry completion
 status. Historical plans, proof reports, lane packets, and superseded status files live in

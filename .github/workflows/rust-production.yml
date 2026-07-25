@@ -73,9 +73,7 @@ jobs:
           Write-Host "Pinned Python contract-test interpreter: $observedPython at $pythonPath"
           $tests = @(
             'extractor/game_defs/tests/test_product_modset_admission.py',
-            'extractor/native/scripts/tests/test_campaign_identity_matrix_passive.py',
-            'extractor/save_oracle/test_parse_intel_peace.py',
-            'replay_interface/re_evidence/rendering_laws/final_integration/authority_index/test_finalize_production.py'
+            'extractor/save_oracle/test_parse_intel_peace.py'
           )
           foreach ($test in $tests) {
             & python (Join-Path '${{ github.workspace }}' $test)
@@ -89,8 +87,7 @@ jobs:
         run: |
           $tests = @(
             'ProductionCapture.Validation.ps1',
-            'Get-FullGameSizeProjection.ps1',
-            'Invoke-AcceptanceLadder.ps1'
+            'Get-FullGameSizeProjection.ps1'
           )
           foreach ($test in $tests) {
             $path = Join-Path '${{ github.workspace }}\extractor\native\scripts' $test

@@ -118,8 +118,8 @@ pub struct TraitNodeObservation {
     /// Exact selected-leader trait-XP numerator for definition kinds 2/3.
     /// Sparse-vector absence is `Some(0)`; `None` means not applicable.
     pub progress_raw: Option<i64>,
-    /// Optional pointer-free join to A25's exact runtime-text row for the
-    /// currently materialized hover reason. Text remains owned by d76.
+    /// Optional pointer-free identity for the currently materialized hover
+    /// reason observation. Host-local text is not emitted.
     pub reason_context_id: Option<String>,
 }
 

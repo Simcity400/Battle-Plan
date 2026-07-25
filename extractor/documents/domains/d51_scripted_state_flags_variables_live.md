@@ -14,6 +14,7 @@
 
 
 
+
 Country variables, flags, and delayed-event roots require a complete current-
 frame country roster read directly from the gamestate tag-indexed table. A
 filtered `CountryIdentityCache.rows` set is insufficient. Two complete passes
@@ -50,26 +51,14 @@ See also d18 and d53.
 
 ## Files about this domain
 
-71 tracked files name this domain.
+58 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (23) — mergeable
+### Prose evidence (16) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/C0_DOSSIERS.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/FINAL_SWEEP_RESULTS_2026-07-04.md`
 - `extractor/documents/domains/d12_focus_live.md`
-- `extractor/documents/domains/d44_supply_logistics_attrition_live.md`
 - `extractor/documents/domains/d45_focus_research_decisions_depth_live.md`
 - `extractor/documents/domains/d51_scripted_state_flags_variables_live.md`
 - `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`
@@ -78,28 +67,27 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d64_delayed_events_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d75_fired_event_popups_live.md`
-- `extractor/documents/domains/d76_runtime_text_inputs_live.md`
 - `extractor/documents/domains/d84_scripted_gui_runtime_live.md`
 - `extractor/documents/domains/d89_national_focus_presentation_live.md`
 - `extractor/native/lanes/scripted_state_flags_variables_live/README.md`
-- `extractor/native/runs/crack_fanout/W3_scripted_programs/WIRING_REPORT.md`
-- `extractor/native/runs/perf_rearch_20260706/W0_AB_RESULTS.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (12) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (35)
+### Code (30)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -119,16 +107,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/scripted_state_flags_variables_live/src/lib.rs`
 - `extractor/native/lanes/scripted_state_flags_variables_live/src/scripted_gui_runtime_carrier.rs`
 - `extractor/native/lanes/scripted_state_flags_variables_live/src/scripted_gui_runtime_compact.rs`
-- `extractor/native/lanes/scripted_state_flags_variables_live/verify_a19_delayed_event_lifecycle.py`
-- `extractor/native/lanes/scripted_state_flags_variables_live/verify_a38_production_capture.py`
 - `extractor/native/recorder_host/Cargo.toml`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/stream_fold.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/replay_decoder/src/lib.rs`
-- `extractor/native/scripts/Invoke-A19DelayedEventLifecycleProbe.ps1`
-- `extractor/native/scripts/Invoke-A38ScriptedGuiAcquisition.ps1`
-- `extractor/native/scripts/Invoke-LiveValidationSession.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/native/scripts/c0_pass2_spans.py`

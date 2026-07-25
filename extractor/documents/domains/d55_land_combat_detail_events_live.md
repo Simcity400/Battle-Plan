@@ -14,6 +14,7 @@
 
 
 
+
 The listed source contains no durable d55 payload layout, combat-detail semantics, offsets, identities, or failure law.
 
 See also d52 and d54.
@@ -21,37 +22,31 @@ See also d52 and d54.
 
 ## Files about this domain
 
-51 tracked files name this domain.
+42 tracked files name this domain.
 
-### Pinned evidence (6) — byte-exact, do not merge
+### Pinned evidence (2) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
-- `extractor/documents/WAVE2_10_SHARD_REEXPORT_RECONCILIATION_20260720.json` — `f6cc6c85727ac45e`
 - `extractor/documents/WAVE2_EXACT10_CONSUMER_REWRITE_LEDGER_20260720.json` — `5407efc3147b4893`
 - `extractor/documents/WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json` — `ce8540442db35191`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (10) — mergeable
+### Prose evidence (8) — mergeable
 
+- `documents/REMAINING_WORK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/C0_DOSSIERS.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d55_land_combat_detail_events_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/documents/domains/d86_sunk_ship_history_live.md`
 - `extractor/native/lanes/land_combat_detail_events_live/README.md`
-- `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md`
 
-### Data evidence (13) — mergeable
+### Data evidence (16) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/coverage_audit/schema_field_sources.json`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
+- `extractor/documents/WAVE2_10_SHARD_REEXPORT_RECONCILIATION_20260720.json`
 - `extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json`
 - `extractor/documents/WAVE3_EXACT20_JOB_CONSUMER_BINDINGS_20260720.json`
 - `extractor/native/c0_registry_golden.json`
@@ -59,11 +54,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
 - `extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (22)
+### Code (16)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -78,12 +76,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
-- `extractor/native/scripts/Invoke-X2LossWidthAcquisition.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `extractor/native/scripts/verify_x2_combat_panel_observation.py`
-- `extractor/native/scripts/verify_x2_loss_width_acquisition.py`
 - `replay_interface/native/game_ui/src/combat_binding.rs`
 - `replay_interface/native/replay_core/src/world.rs`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_edge_cases.py`
-- `replay_interface/replay/tests/test_schema.py`

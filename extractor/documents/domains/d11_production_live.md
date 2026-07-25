@@ -14,6 +14,7 @@
 
 
 
+
 The layouts are pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
@@ -88,19 +89,12 @@ average the entire vector. The live current helper remains authoritative.
 
 ## Files about this domain
 
-66 tracked files name this domain.
+49 tracked files name this domain.
 
-### Pinned evidence (4) — byte-exact, do not merge
+### Prose evidence (20) — mergeable
 
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/documents/dossiers/X4_PRODUCTION_LEGACY_RESIDUAL_CLOSEOUT_20260719.md` — `c1c394b412547196`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (19) — mergeable
-
+- `documents/REMAINING_WORK.md`
+- `extractor/documents/DERIVED_RECOMPUTE_SPECS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d1000_frame.md`
@@ -113,43 +107,31 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d53_diplomacy_intel_operatives_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
-- `extractor/live_capture/README.md`
+- `extractor/documents/dossiers/X4_PRODUCTION_LEGACY_RESIDUAL_CLOSEOUT_20260719.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/lanes/country_economy_counters_live/README.md`
 - `extractor/native/lanes/country_economy_production_stockpile_live/README.md`
 - `extractor/native/recorder_host/README.md`
-- `extractor/re_evidence/X4_P6/README.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/memory_manifest.json`
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json`
-- `extractor/memory_reader/production_offsets.draft.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (32)
+### Code (16)
 
-- `extractor/live_capture/assembler.py`
-- `extractor/live_capture/collector_frames.py`
-- `extractor/live_capture/collector_proof_gate.py`
-- `extractor/live_capture/collector_session.py`
-- `extractor/live_capture/registry.py`
-- `extractor/live_capture/tests/test_collector_frames.py`
-- `extractor/live_capture/tests/test_collector_proof_gate.py`
-- `extractor/live_capture/tests/test_collector_session.py`
-- `extractor/live_capture/tests/test_live_capture.py`
-- `extractor/live_capture/validate_wired_domains.py`
-- `extractor/memory_reader/construction_orders_live.py`
-- `extractor/memory_reader/division_equipment_live.py`
-- `extractor/memory_reader/production_live.py`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/lanes/compact_replay_verification_gates/src/lib.rs`
 - `extractor/native/lanes/country_economy_counters_live/src/lib.rs`
@@ -166,6 +148,3 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/map_files_to_domains.py`
 - `replay_interface/native/replay_core/src/world.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/diff_engine.py`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/tests/test_diff_engine.py`

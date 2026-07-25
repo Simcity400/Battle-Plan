@@ -1,0 +1,19523 @@
+use super::*;
+use active_command_abilities_live_lane as abilities88_lane;
+use air_loss_stats_live_lane as airloss61_lane;
+use character_presentation_live_lane as character82_lane;
+use characters_leaders_cabinet_live_lane as domain47_lane;
+use compact_contract::{
+    calendar::DATE_EPOCH_CONST, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2, COMPACT_RECORD_MAGIC,
+    COMPACT_RECORD_VERSION, COMPACT_STATUS_BRIDGE_UNAVAILABLE, COMPACT_STATUS_DELTA_DATA,
+    COMPACT_STATUS_NO_CLOCK, COMPACT_STATUS_NO_SCALAR_SOURCE, COMPACT_STATUS_PARTIAL_DATA,
+    COMPACT_STATUS_PROFILE_MISMATCH, COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    COMPACT_STATUS_STATE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+    COMPACT_STATUS_WAR_SEGMENT_ABSENT, COMPACT_STATUS_WORKER_PANIC,
+};
+use compact_contract::national_focus_presentation as focus89_lane;
+use design_catalog_context_live_lane as design78_lane;
+use design_catalog_context_live_lane::selected_designer_identity as selected85_lane;
+use decision_panel_live_lane as decision87_lane;
+use dynamic_collection_trace_live_lane as dct71_lane;
+use fired_event_popups_live_lane as fired75_lane;
+use hub_motorization_live_lane as hub62_lane;
+use hud_role_observer_live_lane as hud79_lane;
+use nuke_stockpile_live_lane as nuke83_lane;
+use power_balance_presentation_live_lane as power_balance74_lane;
+use resolved_tooltip_instances_live_lane as tooltip72_lane;
+use scripted_state_flags_variables_live_lane as scripted84_lane;
+use session_multiplayer_metadata_live as session57_lane;
+use sunk_ship_history_live_lane as sunk86_lane;
+
+#[test]
+fn snapshot_spill_never_truncates_a_preexisting_destination() {
+    let root = std::env::temp_dir().join(format!(
+        "world_fold_create_new_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let protected = root.join("protected.txt");
+    let snapshot_path = root.join("000000000001.snapshot.json");
+    let original = b"must not be truncated";
+    std::fs::write(&protected, original).unwrap();
+    std::fs::hard_link(&protected, &snapshot_path).unwrap();
+
+    let mut snapshot = serde_json::json!({"x": 1});
+    let error = serialize_write_hash_snapshot(&snapshot_path, &mut snapshot)
+        .expect_err("an existing output name must fail atomically");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&protected).unwrap(), original);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// --- synthetic H4CR stream builders --------------------------------------
+
+fn push_record(
+    out: &mut Vec<u8>,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    payload: &[u8],
+) {
+    push_record_with_flags(
+        out,
+        sequence,
+        game_hour_raw,
+        domain_id,
+        record_type,
+        0,
+        payload,
+    );
+}
+
+fn push_record_with_flags(
+    out: &mut Vec<u8>,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    record_flags: u32,
+    payload: &[u8],
+) {
+    out.extend_from_slice(COMPACT_RECORD_MAGIC);
+    out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+    out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&sequence.to_le_bytes());
+    out.extend_from_slice(&game_hour_raw.to_le_bytes());
+    out.extend_from_slice(&domain_id.to_le_bytes());
+    out.extend_from_slice(&record_type.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&record_flags.to_le_bytes());
+    out.extend_from_slice(payload);
+}
+
+fn push_str(payload: &mut Vec<u8>, value: &str) {
+    payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+    payload.extend_from_slice(value.as_bytes());
+}
+
+fn frame_end_payload() -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p
+}
+
+/// country_identity (domain 18): header + [tag_db_id u32][u16-len TAG] rows.
+fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
+    // Wave-4: default cosmetic marker = null (1) for every row — the ~50
+    // existing call sites don't care about cosmetic tags.
+    let with_cosmetic: Vec<(u32, &str, Option<&str>)> =
+        rows.iter().map(|(id, tag)| (*id, *tag, None)).collect();
+    country_identity_payload_with_cosmetic(&with_cosmetic)
+}
+
+/// Wave-4: country_identity payload with per-row cosmetic tag. The third
+/// tuple element is `Some(tag)` for a cosmetic override (marker 2 + string),
+/// or `None` for validated-null (marker 1). (Marker 0 = absent is exercised
+/// by the dedicated absent test, which builds the payload by hand.)
+fn country_identity_payload_with_cosmetic(rows: &[(u32, &str, Option<&str>)]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    for (tag_db_id, tag, cosmetic) in rows {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, tag);
+        match cosmetic {
+            Some(cosmetic) => {
+                p.push(2); // present
+                push_str(&mut p, cosmetic);
+            }
+            None => p.push(1), // null
+        }
+    }
+    p
+}
+
+fn domain47_payload(status_flags: u32, rows: &[domain47_lane::CharacterLaneRow<'_>]) -> Vec<u8> {
+    domain47_lane::encode_payload(
+        0,
+        status_flags,
+        domain47_lane::SCHEMA_ROOTS_VALIDATED
+            | domain47_lane::SCHEMA_STATIC_NAME_CLOSURE
+            | domain47_lane::SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+        rows,
+    )
+}
+
+fn domain57_payload(
+    root_evidence_mask: u32,
+    player_rows: Vec<session57_lane::PlayerCountryRow>,
+    event_rows: Vec<session57_lane::SessionEventRow>,
+    status_flags: u32,
+) -> Vec<u8> {
+    let source_flags = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | if root_evidence_mask != 0 {
+            session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        } else {
+            0
+        }
+        | if root_evidence_mask & DOMAIN57_ROOT_CHAT_MESSAGES != 0 {
+            session57_lane::SOURCE_FLAG_MESSAGE_HOOK_VALIDATED
+        } else {
+            0
+        }
+        | if root_evidence_mask & DOMAIN57_ROOT_PLAYER_EVENTS != 0 {
+            session57_lane::SOURCE_FLAG_COMMAND_HOOK_VALIDATED
+        } else {
+            0
+        };
+    domain57_payload_with_source_flags(
+        root_evidence_mask,
+        source_flags,
+        player_rows,
+        event_rows,
+        status_flags,
+    )
+}
+
+fn domain57_payload_with_source_flags(
+    root_evidence_mask: u32,
+    source_flags: u32,
+    player_rows: Vec<session57_lane::PlayerCountryRow>,
+    event_rows: Vec<session57_lane::SessionEventRow>,
+    status_flags: u32,
+) -> Vec<u8> {
+    session57_lane::encode_payload(&session57_lane::SessionMetadataFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags,
+        schema_flags: 0,
+        root_evidence_mask,
+        world_tension_fixed5: None,
+        world_tension_details: None,
+        player_country_rows: player_rows,
+        event_rows,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn domain57_a15_event_row(
+    kind: session57_lane::SessionEventKind,
+    actor_key_hash: u64,
+    actor_name: &str,
+    text: &str,
+    tag_db_id: u32,
+    value_i32: i32,
+    related_value_i32: i32,
+    command_sequence: u64,
+    event_source_id: u32,
+    event_state: u32,
+) -> session57_lane::SessionEventRow {
+    session57_lane::SessionEventRow {
+        kind,
+        flags: session57_lane::EVENT_FLAG_DIRECT_CAPTURE
+            | (!text.is_empty())
+                .then_some(session57_lane::EVENT_FLAG_TEXT_PRESENT)
+                .unwrap_or(0),
+        actor_key_hash,
+        actor_name: actor_name.into(),
+        text: text.into(),
+        tag_db_id,
+        value_i32,
+        related_value_i32,
+        command_sequence,
+        event_hour_raw: raw_for(16_959_360),
+        event_source_id,
+        event_state,
+    }
+}
+
+fn domain57_player_row(tag: &str, tag_db_id: u32) -> session57_lane::PlayerCountryRow {
+    session57_lane::PlayerCountryRow {
+        player_key_hash: 42,
+        player_name: "fixture name ignored".into(),
+        country_tag: tag.into(),
+        tag_db_id,
+        session_slot: 7,
+        flags: session57_lane::PLAYER_FLAG_HUMAN
+            | session57_lane::PLAYER_FLAG_HOST
+            | session57_lane::PLAYER_FLAG_CONNECTED,
+        valid_from_hour_raw: raw_for(16_959_360),
+    }
+}
+
+fn domain57_event_row(
+    kind: session57_lane::SessionEventKind,
+    value_i32: i32,
+) -> session57_lane::SessionEventRow {
+    session57_lane::SessionEventRow {
+        kind,
+        flags: session57_lane::EVENT_FLAG_DIRECT_CAPTURE,
+        actor_key_hash: 0,
+        actor_name: String::new(),
+        text: if matches!(
+            kind,
+            session57_lane::SessionEventKind::Chat
+                | session57_lane::SessionEventKind::SystemMessage
+                | session57_lane::SessionEventKind::Alert
+                | session57_lane::SessionEventKind::Notification
+        ) {
+            "fixture text".into()
+        } else {
+            String::new()
+        },
+        tag_db_id: 0,
+        value_i32,
+        related_value_i32: 0,
+        command_sequence: 0,
+        event_hour_raw: raw_for(16_959_360),
+        event_source_id: 0,
+        event_state: 0,
+    }
+}
+
+fn domain57_x12_event_row(
+    kind: session57_lane::SessionEventKind,
+    speed_raw: i32,
+    paused: bool,
+    sequence: u64,
+    source: u32,
+) -> session57_lane::SessionEventRow {
+    let (value_i32, related_value_i32) = match kind {
+        session57_lane::SessionEventKind::GameSpeed => {
+            (speed_raw, if paused { 1 } else { 0 })
+        }
+        session57_lane::SessionEventKind::Pause => {
+            (if paused { 1 } else { 0 }, speed_raw)
+        }
+        _ => panic!("X12 fixture row must be speed or pause"),
+    };
+    session57_lane::SessionEventRow {
+        kind,
+        flags: session57_lane::EVENT_FLAG_DIRECT_CAPTURE
+            | session57_lane::EVENT_FLAG_TRANSITION_HOOK,
+        actor_key_hash: 7,
+        actor_name: String::new(),
+        text: String::new(),
+        tag_db_id: 0,
+        value_i32,
+        related_value_i32,
+        command_sequence: sequence,
+        event_hour_raw: raw_for(16_959_360),
+        event_source_id: source,
+        event_state: 0x3E80_0000,
+    }
+}
+
+fn sunk_convoy_history_payload(status_flags: u32) -> Vec<u8> {
+    compact_contract::naval_history::encode_exact_payload(
+        &[
+            compact_contract::naval_history::SunkConvoyHistoryRow {
+                month: 10,
+                convoys: 2,
+                killer_country_tag_db_id: 4,
+                owner_tag_db_id: 9,
+            },
+            compact_contract::naval_history::SunkConvoyHistoryRow {
+                month: 11,
+                convoys: 3,
+                killer_country_tag_db_id: 9,
+                owner_tag_db_id: 4,
+            },
+        ],
+        0,
+        16_959_360,
+        2,
+        status_flags,
+        2,
+    )
+    .unwrap()
+}
+
+fn convoy_transport_attack_row(
+    sequence: u64,
+    game_hour_raw: i32,
+    mutation: naval4950::ConvoyD70MutationProof,
+) -> naval4950::ConvoyTransportAttackRow {
+    naval4950::ConvoyTransportAttackRow {
+        carrier: naval4950::ConvoyTerminalAttributionCarrier {
+            producer_sequence: sequence,
+            game_hour_raw,
+            combat: naval4950::CombatEpoch {
+                combat_id: 21,
+                generation: 4,
+            },
+            convoy: naval4950::ConvoyTerminalEntityHandle {
+                id: 158_065 + sequence as u32,
+                type_tag: naval4950::GAME_ENTITY_TYPE_TAG,
+            },
+            owner_tag_db_id: 9,
+            killer_tag_db_id: 4,
+            client: naval4950::ConvoyTerminalEntityHandle {
+                id: 106_381,
+                type_tag: naval4950::GAME_ENTITY_TYPE_TAG,
+            },
+            convoy_index: sequence as u32,
+            member_state: naval4950::TERMINAL_SUNK_STATE,
+            battle_slot: sequence as u32,
+            route: naval4950::LiveRouteResolution {
+                route_key: naval4950::ConvoyTerminalEntityHandle {
+                    id: 106_381,
+                    type_tag: naval4950::GAME_ENTITY_TYPE_TAG,
+                },
+                producer_kind: naval4950::RouteProducerKind::LendLease,
+                source: naval4950::RouteEndpoint {
+                    kind: naval4950::RouteEndpointKind::State,
+                    id: 282,
+                },
+                destination: naval4950::RouteEndpoint {
+                    kind: naval4950::RouteEndpointKind::State,
+                    id: 64,
+                },
+            },
+        },
+        d70: mutation,
+    }
+}
+
+fn convoy_transport_attack_payload(
+    rows: &[naval4950::ConvoyTransportAttackRow],
+    emitted_total: u64,
+) -> Vec<u8> {
+    naval4950::encode_convoy_transport_attack_batch(
+        rows,
+        naval4950::ConvoyTransportAttackWitness {
+            hook_installed: true,
+            queue_drain_complete: true,
+            producer_sequence_next: emitted_total + 1,
+            drained_rows: rows.len() as u32,
+            remaining_events: 0,
+            active_callbacks: 0,
+            resolver_publication_sequence: 7,
+            resolver_game_hour_raw: rows
+                .last()
+                .map(|row| row.carrier.game_hour_raw)
+                .unwrap_or(raw_for(16_959_360)),
+            resolver_member_bindings: 3,
+            resolver_route_bindings: 1,
+            telemetry: naval4950::ConvoyTransportAttackTelemetry {
+                callbacks_seen: emitted_total,
+                original_calls: emitted_total,
+                events_emitted: emitted_total,
+                ..naval4950::ConvoyTransportAttackTelemetry::default()
+            },
+        },
+    )
+    .unwrap()
+}
+
+fn convoy_transport_attack_snapshots(payloads: Vec<Vec<u8>>) -> Vec<Value> {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (offset, payload) in payloads.into_iter().enumerate() {
+        let raw = raw_for(16_959_360 + offset as i64);
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            naval4950::DOMAIN_CONVOY_TRANSPORT_ATTACK,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+    let mut fold = WorldFold::new("convoy_transport_attack_test");
+    fold.ingest_stream(&stream);
+    fold.finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect()
+}
+
+fn fuel_payload(rows: &[(u32, i64, i64, i64, i64)]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&32768u32.to_le_bytes()); // scale
+    for (tag, current, max, gain, cost) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // flags
+        p.extend_from_slice(&current.to_le_bytes());
+        p.extend_from_slice(&max.to_le_bytes());
+        p.extend_from_slice(&gain.to_le_bytes());
+        p.extend_from_slice(&cost.to_le_bytes());
+    }
+    p
+}
+
+/// W1 domain 63 country_core_scalars_live payload.
+/// Each row: (tag_db_id, manpower_pool?, convoys_destroyed?, divisions_lost?,
+/// experience? as 7 raw i32). `None` => absent (flag clear, zero-packed).
+#[allow(clippy::type_complexity)]
+fn country_core_scalars_payload(
+    rows: &[(u32, Option<u32>, Option<u32>, Option<u32>, Option<[i32; 7]>)],
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    for (tag, manpower, convoys, divisions, experience) in rows {
+        let mut flags = 0u32;
+        if manpower.is_some() {
+            flags |= 1 << 0;
+        }
+        if convoys.is_some() {
+            flags |= 1 << 1;
+        }
+        if divisions.is_some() {
+            flags |= 1 << 2;
+        }
+        if experience.is_some() {
+            flags |= 1 << 3;
+        }
+        let exp = experience.unwrap_or([0i32; 7]);
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&manpower.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&convoys.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&divisions.unwrap_or(0).to_le_bytes());
+        for channel in exp {
+            p.extend_from_slice(&channel.to_le_bytes());
+        }
+    }
+    p
+}
+
+/// W3 domain 64 delayed_events_live payload.
+/// Each row: (owner_tag_db_id, event_id, originator?, due_remaining_hours?).
+/// `None` => absent (flag clear, zero-packed).
+fn delayed_events_payload(rows: &[(u32, u32, Option<u32>, Option<u32>)]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    for (owner, event_id, originator, due) in rows {
+        let mut flags = 0u32;
+        if due.is_some() {
+            flags |= 1 << 0;
+        }
+        if originator.is_some() {
+            flags |= 1 << 1;
+        }
+        p.extend_from_slice(&owner.to_le_bytes());
+        p.extend_from_slice(&event_id.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&originator.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&due.unwrap_or(0).to_le_bytes());
+    }
+    p
+}
+
+fn delayed_event_lifecycle_payload(
+    current: &[(u32, u32, Option<u32>, Option<u32>)],
+    epoch: u64,
+    rows: &[(u64, i32, u32, u32, u32, u32, u64, u32, Option<u32>)],
+) -> Vec<u8> {
+    let mut p = delayed_events_payload(current);
+    p.extend_from_slice(b"DEL2");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&48u16.to_le_bytes());
+    p.extend_from_slice(&48u16.to_le_bytes());
+    p.extend_from_slice(&0u16.to_le_bytes());
+    p.extend_from_slice(&1u32.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&epoch.to_le_bytes());
+    p.extend_from_slice(&rows.first().map(|row| row.0).unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&rows.last().map(|row| row.0).unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (sequence, hour, reason, owner, event, originator, random, before, after) in rows {
+        p.extend_from_slice(&sequence.to_le_bytes());
+        p.extend_from_slice(&hour.to_le_bytes());
+        p.extend_from_slice(&reason.to_le_bytes());
+        p.extend_from_slice(&owner.to_le_bytes());
+        p.extend_from_slice(&event.to_le_bytes());
+        p.extend_from_slice(&originator.to_le_bytes());
+        p.extend_from_slice(&(if after.is_some() { 1u32 } else { 0 }).to_le_bytes());
+        p.extend_from_slice(&random.to_le_bytes());
+        p.extend_from_slice(&before.to_le_bytes());
+        p.extend_from_slice(&after.unwrap_or(0).to_le_bytes());
+    }
+    p
+}
+
+/// W5 domain 67 country_dynamic_modifiers_live payload. Each row is
+/// (tag_db_id, list of modifier ids). Empty countries must NOT be passed (the
+/// collector emits no row for count==0). Builds the 20-byte header, the 12-byte
+/// row table, then the concatenated id blob (u16 len + utf8 per id).
+fn country_dynamic_modifiers_payload(rows: &[(u32, &[&str])], status_flags: u32) -> Vec<u8> {
+    let total_ids: usize = rows.iter().map(|(_, ids)| ids.len()).sum();
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // country_count
+    p.extend_from_slice(&(total_ids as u32).to_le_bytes()); // total_id_count
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    let mut cursor = 0u32;
+    for (tag, ids) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        p.extend_from_slice(&cursor.to_le_bytes());
+        cursor += ids.len() as u32;
+    }
+    for (_, ids) in rows {
+        for id in *ids {
+            let bytes = id.as_bytes();
+            p.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            p.extend_from_slice(bytes);
+        }
+    }
+    p
+}
+
+fn country_dynamic_modifier_instances_payload(
+    rows: &[(u32, &str, bool, &[i64], Option<u32>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    compact_contract::dynamic_modifiers::encode_payload(
+        &compact_contract::dynamic_modifiers::DynamicModifierFrame {
+            elapsed_wall_ms: 17,
+            status_flags,
+            authority:
+                compact_contract::dynamic_modifiers::DynamicModifierAuthority::exact_a729(),
+            instances: rows
+                .iter()
+                .map(|(owner, modifier, enabled, values, remaining_days)| {
+                    compact_contract::dynamic_modifiers::DynamicModifierInstance {
+                        owner_tag_db_id: *owner,
+                        modifier_id: (*modifier).to_string(),
+                        enabled: *enabled,
+                        values_raw: values.to_vec(),
+                        remaining_days: *remaining_days,
+                    }
+                })
+                .collect(),
+            zero_removals: Vec::new(),
+        },
+    )
+    .unwrap()
+}
+
+fn country_dynamic_modifier_instances_with_zero_removals_payload(
+    rows: &[(u32, &str, bool, &[i64], Option<u32>)],
+    zero_removals: &[(u32, &str, bool, &[i64], i32)],
+    status_flags: u32,
+) -> Vec<u8> {
+    compact_contract::dynamic_modifiers::encode_payload(
+        &compact_contract::dynamic_modifiers::DynamicModifierFrame {
+            elapsed_wall_ms: 17,
+            status_flags,
+            authority:
+                compact_contract::dynamic_modifiers::DynamicModifierAuthority::exact_a729(),
+            instances: rows
+                .iter()
+                .map(|(owner, modifier, enabled, values, remaining_days)| {
+                    compact_contract::dynamic_modifiers::DynamicModifierInstance {
+                        owner_tag_db_id: *owner,
+                        modifier_id: (*modifier).to_string(),
+                        enabled: *enabled,
+                        values_raw: values.to_vec(),
+                        remaining_days: *remaining_days,
+                    }
+                })
+                .collect(),
+            zero_removals: zero_removals
+                .iter()
+                .map(|(owner, modifier, enabled, values, observed_game_hour_raw)| {
+                    compact_contract::dynamic_modifiers::DynamicModifierZeroRemoval {
+                        owner_tag_db_id: *owner,
+                        modifier_id: (*modifier).to_string(),
+                        enabled: *enabled,
+                        values_raw: values.to_vec(),
+                        observed_game_hour_raw: *observed_game_hour_raw,
+                    }
+                })
+                .collect(),
+        },
+    )
+    .unwrap()
+}
+
+/// W3 domain 65 special_project_programs_live payload.
+/// Each row: (owner_tag_db_id, program_id, province, unread_prototype_rewards).
+fn special_project_programs_payload(
+    rows: &[(u32, u32, u32, u32)],
+    dropped_ambiguous: u32,
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    p.extend_from_slice(&dropped_ambiguous.to_le_bytes());
+    for (owner, program_id, province, unread) in rows {
+        p.extend_from_slice(&owner.to_le_bytes());
+        p.extend_from_slice(&program_id.to_le_bytes());
+        p.extend_from_slice(&province.to_le_bytes());
+        p.extend_from_slice(&unread.to_le_bytes());
+    }
+    p
+}
+
+/// W4 domain 66 occupation_state_extras_live payload.
+/// Each row: (controller_tag, occupied_tag, state_id, law_token?, source_tag?).
+/// `None` => absent (flag clear, zero-packed).
+fn occupation_state_extras_payload(
+    rows: &[(u32, u32, u32, Option<u32>, Option<u32>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    for (controller, occupied, state_id, law, source) in rows {
+        let mut flags = 0u32;
+        if law.is_some() {
+            flags |= 1 << 0;
+        }
+        if source.is_some() {
+            flags |= 1 << 1;
+        }
+        p.extend_from_slice(&controller.to_le_bytes());
+        p.extend_from_slice(&occupied.to_le_bytes());
+        p.extend_from_slice(&state_id.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&law.unwrap_or(0).to_le_bytes());
+        p.extend_from_slice(&source.unwrap_or(0).to_le_bytes());
+    }
+    p
+}
+
+/// One country, one stockpile row, one military line, one construction row.
+fn production_payload(tag: u32, stockpile_amount_raw: i64, active_factories: i32) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    p.extend_from_slice(&1u32.to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&1u32.to_le_bytes()); // stockpile_count
+    p.extend_from_slice(&1u32.to_le_bytes()); // military_line_count
+    p.extend_from_slice(&0u32.to_le_bytes()); // naval_line_count
+    p.extend_from_slice(&1u32.to_le_bytes()); // construction_count
+                                              // stockpile row
+    p.extend_from_slice(&tag.to_le_bytes());
+    p.extend_from_slice(&101u32.to_le_bytes()); // variant_id
+    p.extend_from_slice(&stockpile_amount_raw.to_le_bytes());
+    // military line row
+    p.extend_from_slice(&tag.to_le_bytes());
+    p.extend_from_slice(&1u32.to_le_bytes()); // kind = mil
+    p.extend_from_slice(&349i32.to_le_bytes()); // line_id
+    p.extend_from_slice(&active_factories.to_le_bytes());
+    p.extend_from_slice(&10_500_000i32.to_le_bytes()); // cost
+    p.extend_from_slice(&3_105_000i32.to_le_bytes()); // speed
+    p.extend_from_slice(&3_440_000i32.to_le_bytes()); // produced
+    p.extend_from_slice(&(-1i32).to_le_bytes()); // amount
+                                                 // construction row
+    p.extend_from_slice(&tag.to_le_bytes());
+    p.extend_from_slice(&9001u32.to_le_bytes()); // line_id
+    p.extend_from_slice(&20013u32.to_le_bytes()); // template_id
+    p.extend_from_slice(&6i32.to_le_bytes()); // active_factories
+    p.extend_from_slice(&1_080_000_000i32.to_le_bytes()); // cost
+    p.extend_from_slice(&12_550_000i32.to_le_bytes()); // produced
+    p.extend_from_slice(&0u32.to_le_bytes()); // priority
+    p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    p
+}
+
+fn append_deployment_queue_trailer(
+    payload: &mut Vec<u8>,
+    countries: &[production11::DeploymentCountryRow],
+) {
+    let elapsed_wall_ms = read_u64(payload, 0);
+    let carrier = production11::encode_deployment_queue_payload(
+        elapsed_wall_ms,
+        countries.len() as u32,
+        0,
+        countries,
+    )
+    .expect("valid deployment carrier");
+    let segment_len = 20usize + carrier.len();
+    payload.extend_from_slice(b"PDQ1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&20u16.to_le_bytes());
+    payload.extend_from_slice(&(segment_len as u32).to_le_bytes());
+    payload.extend_from_slice(&(carrier.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&carrier);
+}
+
+/// Append a `PLIC` production-license trailer to a base production payload.
+/// `countries` is a list of (tag_db_id, license ids) rows; a country with an
+/// empty id list is a proven-empty set.
+fn append_production_license_trailer(p: &mut Vec<u8>, countries: &[(u32, Vec<u32>)]) {
+    let id_rows: usize = countries.iter().map(|(_, ids)| ids.len()).sum();
+    p.extend_from_slice(b"PLIC");
+    p.extend_from_slice(&1u16.to_le_bytes()); // version
+    p.extend_from_slice(&20u16.to_le_bytes()); // header_len
+    p.extend_from_slice(&(countries.len() as u32).to_le_bytes()); // country_rows
+    p.extend_from_slice(&(id_rows as u32).to_le_bytes()); // id_rows
+    p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    for (tag, ids) in countries {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+    }
+    for (_, ids) in countries {
+        for id in ids {
+            p.extend_from_slice(&id.to_le_bytes());
+        }
+    }
+}
+
+/// Append X3 PLIC v2 rows: (variant_id, creator_tag_db_id,
+/// optional_origin_tag_db_id). Vector order is the visible order.
+fn append_production_license_v2_trailer(
+    p: &mut Vec<u8>,
+    countries: &[(u32, Vec<(u32, u32, u32)>)],
+) {
+    let row_count: usize = countries.iter().map(|(_, rows)| rows.len()).sum();
+    p.extend_from_slice(b"PLIC");
+    p.extend_from_slice(&2u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+    p.extend_from_slice(&(row_count as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, rows) in countries {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    }
+    for (_, rows) in countries {
+        for (visible_order, (variant_id, creator, origin)) in rows.iter().enumerate() {
+            p.extend_from_slice(&variant_id.to_le_bytes());
+            p.extend_from_slice(&(visible_order as u32).to_le_bytes());
+            p.extend_from_slice(&creator.to_le_bytes());
+            p.extend_from_slice(&origin.to_le_bytes());
+        }
+    }
+}
+
+/// Append an X4-P1 `PVJ1` segment. Each row is
+/// (tag_db_id, kind, line_id, equipment_variant_id).
+fn append_production_variant_join_trailer(p: &mut Vec<u8>, rows: &[(u32, u32, i32, u32)]) {
+    let segment_len = 20u32 + rows.len() as u32 * 16;
+    p.extend_from_slice(b"PVJ1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&segment_len.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, kind, line_id, variant_id) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&line_id.to_le_bytes());
+        p.extend_from_slice(&variant_id.to_le_bytes());
+    }
+}
+
+/// Append an X4-P2 `PFR1` segment. Each row is
+/// (tag_db_id, kind, line_id, requested_factories).
+fn append_production_requested_factories_trailer(p: &mut Vec<u8>, rows: &[(u32, u32, i32, i32)]) {
+    let segment_len = 20u32 + rows.len() as u32 * 16;
+    p.extend_from_slice(b"PFR1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&segment_len.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, kind, line_id, requested_factories) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&line_id.to_le_bytes());
+        p.extend_from_slice(&requested_factories.to_le_bytes());
+    }
+}
+
+/// Append an XUI12 `PLS1` segment. Each row is
+/// (tag_db_id, legacy_kind, line_id, exact_subtype).
+fn append_production_line_subtype_trailer(p: &mut Vec<u8>, rows: &[(u32, u32, i32, u32)]) {
+    let segment_len = 20u32 + rows.len() as u32 * 16;
+    p.extend_from_slice(b"PLS1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&segment_len.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, kind, line_id, subtype) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&line_id.to_le_bytes());
+        p.extend_from_slice(&subtype.to_le_bytes());
+    }
+}
+
+/// Append an XUI12 `PEF1` segment. Each row is
+/// (tag_db_id, kind, line_id, efficiency, cap, growth) in raw fixed point.
+fn append_production_efficiency_trailer(p: &mut Vec<u8>, rows: &[(u32, u32, i32, i64, i64, i64)]) {
+    let segment_len = 20u32 + rows.len() as u32 * 36;
+    p.extend_from_slice(b"PEF1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&segment_len.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, kind, line_id, efficiency, cap, growth) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&line_id.to_le_bytes());
+        p.extend_from_slice(&efficiency.to_le_bytes());
+        p.extend_from_slice(&cap.to_le_bytes());
+        p.extend_from_slice(&growth.to_le_bytes());
+    }
+}
+
+/// Append an X4-P5 `PMI1` segment. `mio_id == 0` is proven null.
+fn append_production_mio_join_trailer(p: &mut Vec<u8>, rows: &[(u32, u32, i32, u32)]) {
+    let segment_len = 20u32 + rows.len() as u32 * 16;
+    p.extend_from_slice(b"PMI1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&segment_len.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, kind, line_id, mio_id) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&line_id.to_le_bytes());
+        p.extend_from_slice(&mio_id.to_le_bytes());
+    }
+}
+
+/// Append X4-P6 `PCP1` per-country vector completeness rows.
+fn append_production_completeness_trailer(p: &mut Vec<u8>, rows: &[(u32, u32)]) {
+    let segment_len = 20u32 + rows.len() as u32 * 8;
+    p.extend_from_slice(b"PCP1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&20u16.to_le_bytes());
+    p.extend_from_slice(&segment_len.to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    for (tag, flags) in rows {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+    }
+}
+
+fn append_country_convoy_trailer(
+    p: &mut Vec<u8>,
+    rows: &[(u32, bool, i32, Vec<(u32, i64)>, Option<Vec<(i32, i32)>>)],
+) {
+    let variant_count: usize = rows.iter().map(|row| row.3.len()).sum();
+    let reservation_count: usize = rows
+        .iter()
+        .map(|row| row.4.as_ref().map_or(0, Vec::len))
+        .sum();
+    let segment_len = 28 + rows.len() * 40 + variant_count * 16 + reservation_count * 8;
+    p.extend_from_slice(b"PCV1");
+    p.extend_from_slice(&1u16.to_le_bytes());
+    p.extend_from_slice(&28u16.to_le_bytes());
+    p.extend_from_slice(&(segment_len as u32).to_le_bytes());
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    p.extend_from_slice(&(variant_count as u32).to_le_bytes());
+    p.extend_from_slice(&(reservation_count as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    let mut variant_start = 0u32;
+    let mut reservation_start = 0u32;
+    for (tag, complete, assigned, variants, reservations) in rows {
+        let owned_raw: i64 = variants.iter().map(|row| row.1).sum();
+        let flags: u32 = if *complete {
+            1 | (1 << 4) | if reservations.is_some() { 1 << 1 } else { 0 }
+        } else {
+            0
+        };
+        let reservation_len = reservations.as_ref().map_or(0, Vec::len) as u32;
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&owned_raw.to_le_bytes());
+        p.extend_from_slice(&assigned.to_le_bytes());
+        p.extend_from_slice(&((owned_raw / 100_000) as i32 - assigned).to_le_bytes());
+        p.extend_from_slice(&variant_start.to_le_bytes());
+        p.extend_from_slice(&(variants.len() as u32).to_le_bytes());
+        p.extend_from_slice(&reservation_start.to_le_bytes());
+        p.extend_from_slice(&reservation_len.to_le_bytes());
+        variant_start += variants.len() as u32;
+        reservation_start += reservation_len;
+    }
+    for (_, _, _, variants, _) in rows {
+        for (variant_id, amount_raw) in variants {
+            p.extend_from_slice(&variant_id.to_le_bytes());
+            p.extend_from_slice(&70u32.to_le_bytes());
+            p.extend_from_slice(&amount_raw.to_le_bytes());
+        }
+    }
+    for (_, _, _, _, reservations) in rows {
+        if let Some(reservations) = reservations {
+            for (priority, count) in reservations {
+                p.extend_from_slice(&priority.to_le_bytes());
+                p.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+    }
+}
+
+const DIV_ROW_LEN: usize = 104;
+const DIV_ROW_EXTENDED_LEN: usize = 120;
+const DIV_TYPE: u32 = 4713;
+const DELTA: u32 = 1 << 10;
+const DIV_FLAG_DELETED: u32 = 1 << 12;
+const DIV_FLAG_TEMPLATE: u32 = 1 << 13;
+const DIV_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
+const DIV_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
+const DIV_FLAG_CUMULATIVE_LOSSES: u32 = 1 << 20;
+const DIV_FLAG_MAX_ORGANISATION: u32 = 1 << 21;
+
+#[allow(clippy::too_many_arguments)]
+fn push_div_row(
+    p: &mut Vec<u8>,
+    div_id: u32,
+    flags: u32,
+    location: u32,
+    org_raw: u32,
+    strength_raw: u32,
+    template_id: u32,
+    owner: u32,
+) {
+    let start = p.len();
+    p.extend_from_slice(&div_id.to_le_bytes()); // +0
+    p.extend_from_slice(&DIV_TYPE.to_le_bytes()); // +4
+    p.extend_from_slice(&flags.to_le_bytes()); // +8
+    p.extend_from_slice(&location.to_le_bytes()); // +12
+    p.extend_from_slice(&0u32.to_le_bytes()); // +16 move_target
+    p.extend_from_slice(&0u32.to_le_bytes()); // +20 move_source
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 movement_progress
+    p.extend_from_slice(&0u32.to_le_bytes()); // +28 progress_bucket
+    p.extend_from_slice(&org_raw.to_le_bytes()); // +32
+    p.extend_from_slice(&0u32.to_le_bytes()); // +36 org_bucket
+    p.extend_from_slice(&strength_raw.to_le_bytes()); // +40
+    p.extend_from_slice(&0u32.to_le_bytes()); // +44 strength_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +48 combat_ref_count
+    p.extend_from_slice(&template_id.to_le_bytes()); // +52
+    p.extend_from_slice(&owner.to_le_bytes()); // +56
+    p.extend_from_slice(&0u32.to_le_bytes()); // +60 army_id
+    p.extend_from_slice(&0u32.to_le_bytes()); // +64 experience
+    p.extend_from_slice(&0u32.to_le_bytes()); // +68 max_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +76 supply_gain
+    p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&0u32.to_le_bytes()); // +88 disrupted_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
+    assert_eq!(p.len() - start, DIV_ROW_LEN);
+}
+
+/// Build a division row with explicit supply_gain and disrupted_supply and
+/// their presence flags — for the wave-4 supply-scalar fold tests.
+#[allow(clippy::too_many_arguments)]
+fn push_div_row_with_supply(
+    p: &mut Vec<u8>,
+    div_id: u32,
+    base_flags: u32,
+    location: u32,
+    supply_gain_raw: Option<u32>,
+    disrupted_supply_raw: Option<u32>,
+) {
+    let start = p.len();
+    let mut flags = base_flags;
+    if supply_gain_raw.is_some() {
+        flags |= 1 << 10;
+    }
+    if disrupted_supply_raw.is_some() {
+        flags |= 1 << 17;
+    }
+    p.extend_from_slice(&div_id.to_le_bytes()); // +0
+    p.extend_from_slice(&4713u32.to_le_bytes()); // +4 div_type
+    p.extend_from_slice(&flags.to_le_bytes()); // +8
+    p.extend_from_slice(&location.to_le_bytes()); // +12
+    p.extend_from_slice(&0u32.to_le_bytes()); // +16 move_target
+    p.extend_from_slice(&0u32.to_le_bytes()); // +20 move_source
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 movement_progress
+    p.extend_from_slice(&0u32.to_le_bytes()); // +28 progress_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +32 org
+    p.extend_from_slice(&0u32.to_le_bytes()); // +36 org_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +40 strength
+    p.extend_from_slice(&0u32.to_le_bytes()); // +44 strength_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +48 combat_ref
+    p.extend_from_slice(&0u32.to_le_bytes()); // +52 template
+    p.extend_from_slice(&0u32.to_le_bytes()); // +56 owner
+    p.extend_from_slice(&0u32.to_le_bytes()); // +60 army
+    p.extend_from_slice(&0u32.to_le_bytes()); // +64 experience
+    p.extend_from_slice(&0u32.to_le_bytes()); // +68 max_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
+    p.extend_from_slice(&supply_gain_raw.unwrap_or(0).to_le_bytes()); // +76 supply_gain
+    p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&disrupted_supply_raw.unwrap_or(0).to_le_bytes()); // +88 disrupted_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
+    assert_eq!(p.len() - start, DIV_ROW_LEN);
+}
+
+fn push_div_row_with_e4(
+    p: &mut Vec<u8>,
+    div_id: u32,
+    strategic_redeployment: Option<bool>,
+    current_manpower: Option<u32>,
+    cumulative_losses: Option<u32>,
+) {
+    let start = p.len();
+    let mut flags = 0u32;
+    if strategic_redeployment.is_some() {
+        flags |= DIV_FLAG_STRATEGIC_REDEPLOYMENT;
+    }
+    if current_manpower.is_some() {
+        flags |= DIV_FLAG_CURRENT_MANPOWER;
+    }
+    if cumulative_losses.is_some() {
+        flags |= DIV_FLAG_CUMULATIVE_LOSSES;
+    }
+    p.extend_from_slice(&div_id.to_le_bytes()); // +0
+    p.extend_from_slice(&DIV_TYPE.to_le_bytes()); // +4 div_type
+    p.extend_from_slice(&flags.to_le_bytes()); // +8
+    p.extend_from_slice(&118u32.to_le_bytes()); // +12 location
+    p.extend_from_slice(&0u32.to_le_bytes()); // +16 move_target
+    p.extend_from_slice(&0u32.to_le_bytes()); // +20 move_source
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 movement_progress
+    p.extend_from_slice(&0u32.to_le_bytes()); // +28 progress_bucket
+    p.extend_from_slice(&9_000_000u32.to_le_bytes()); // +32 org
+    p.extend_from_slice(&0u32.to_le_bytes()); // +36 org_bucket
+    p.extend_from_slice(&95_000_000u32.to_le_bytes()); // +40 strength
+    p.extend_from_slice(&0u32.to_le_bytes()); // +44 strength_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +48 combat_ref
+    p.extend_from_slice(&0u32.to_le_bytes()); // +52 template
+    p.extend_from_slice(&0u32.to_le_bytes()); // +56 owner
+    p.extend_from_slice(&0u32.to_le_bytes()); // +60 army
+    p.extend_from_slice(&0u32.to_le_bytes()); // +64 experience
+    p.extend_from_slice(&0u32.to_le_bytes()); // +68 max_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +76 supply_gain
+    p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&0u32.to_le_bytes()); // +88 disrupted_supply
+    let sr_raw = match strategic_redeployment {
+        Some(true) => 1u32,
+        Some(false) | None => 0u32,
+    };
+    p.extend_from_slice(&sr_raw.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&current_manpower.unwrap_or(0).to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&cumulative_losses.unwrap_or(0).to_le_bytes()); // +100 cumulative_losses
+    assert_eq!(p.len() - start, DIV_ROW_LEN);
+}
+
+fn push_div_row_with_max_organisation(
+    p: &mut Vec<u8>,
+    div_id: u32,
+    organisation_raw: u32,
+    max_organisation_raw: Option<u32>,
+) {
+    let start = p.len();
+    let flags = if max_organisation_raw.is_some() {
+        DIV_FLAG_MAX_ORGANISATION
+    } else {
+        0
+    };
+    p.extend_from_slice(&div_id.to_le_bytes()); // +0
+    p.extend_from_slice(&DIV_TYPE.to_le_bytes()); // +4
+    p.extend_from_slice(&flags.to_le_bytes()); // +8
+    p.extend_from_slice(&118u32.to_le_bytes()); // +12 location
+    p.extend_from_slice(&0u32.to_le_bytes()); // +16 move_target
+    p.extend_from_slice(&0u32.to_le_bytes()); // +20 move_source
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 movement_progress
+    p.extend_from_slice(&0u32.to_le_bytes()); // +28 progress_bucket
+    p.extend_from_slice(&organisation_raw.to_le_bytes()); // +32 organisation
+    p.extend_from_slice(&0u32.to_le_bytes()); // +36 organisation_bucket
+    p.extend_from_slice(&95_000_000u32.to_le_bytes()); // +40 strength
+    p.extend_from_slice(&0u32.to_le_bytes()); // +44 strength_bucket
+    p.extend_from_slice(&0u32.to_le_bytes()); // +48 combat_ref_count
+    p.extend_from_slice(&0u32.to_le_bytes()); // +52 template
+    p.extend_from_slice(&0u32.to_le_bytes()); // +56 owner
+    p.extend_from_slice(&0u32.to_le_bytes()); // +60 army
+    p.extend_from_slice(&0u32.to_le_bytes()); // +64 experience
+    p.extend_from_slice(&0u32.to_le_bytes()); // +68 max_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +72 current_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +76 supply_gain
+    p.extend_from_slice(&0u32.to_le_bytes()); // +80 fuel
+    p.extend_from_slice(&0u32.to_le_bytes()); // +84 order_instance_id
+    p.extend_from_slice(&0u32.to_le_bytes()); // +88 disrupted_supply
+    p.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+    p.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+    p.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
+    p.extend_from_slice(&max_organisation_raw.unwrap_or(0).to_le_bytes()); // +104 max org
+    p.extend_from_slice(&0u32.to_le_bytes()); // +108 counter supply status
+    p.extend_from_slice(&0u32.to_le_bytes()); // +112 dig in
+    p.extend_from_slice(&0u32.to_le_bytes()); // +116 dig in cap
+    assert_eq!(p.len() - start, DIV_ROW_EXTENDED_LEN);
+}
+
+fn divisions_header(p: &mut Vec<u8>, row_count: u32, status: u32) {
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&row_count.to_le_bytes()); // row_count
+    p.extend_from_slice(&row_count.to_le_bytes()); // changed
+    p.extend_from_slice(&status.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&row_count.to_le_bytes()); // root_rows
+    p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+}
+
+const STATE_ROW_LEN: usize = 16;
+const PROV_ROW_LEN: usize = 16;
+
+fn map_control_header(p: &mut Vec<u8>, state_count: u32, province_count: u32, status: u32) {
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&state_count.to_le_bytes());
+    p.extend_from_slice(&(state_count + province_count).to_le_bytes()); // changed
+    p.extend_from_slice(&status.to_le_bytes());
+    p.extend_from_slice(&province_count.to_le_bytes());
+    p.extend_from_slice(&state_count.to_le_bytes()); // changed_state_rows
+    p.extend_from_slice(&province_count.to_le_bytes()); // changed_province_rows
+}
+
+fn push_state_row(p: &mut Vec<u8>, state_id: u32, owner: u32, controller: u32) {
+    p.extend_from_slice(&state_id.to_le_bytes());
+    p.extend_from_slice(&owner.to_le_bytes());
+    p.extend_from_slice(&controller.to_le_bytes());
+    let mut flags = 0u32;
+    if owner != 0 {
+        flags |= 1;
+    }
+    if controller != 0 {
+        flags |= 1 << 1;
+    }
+    p.extend_from_slice(&flags.to_le_bytes());
+    assert_eq!(STATE_ROW_LEN, 16);
+}
+
+fn push_prov_row(p: &mut Vec<u8>, province_id: u32, controller: u32, state_id: u32) {
+    p.extend_from_slice(&province_id.to_le_bytes());
+    p.extend_from_slice(&controller.to_le_bytes());
+    p.extend_from_slice(&state_id.to_le_bytes());
+    let mut flags = 0u32;
+    if controller != 0 {
+        flags |= 1;
+    }
+    if state_id != 0 {
+        flags |= 1 << 1;
+    }
+    p.extend_from_slice(&flags.to_le_bytes());
+    assert_eq!(PROV_ROW_LEN, 16);
+}
+
+struct TestLandCombat {
+    combat_id: u32,
+    generation: u64,
+    location: u32,
+    attackers: Vec<u32>,
+    defenders: Vec<u32>,
+}
+
+fn land_combats_payload(rows: &[TestLandCombat]) -> Vec<u8> {
+    land_combats_payload_with_status(rows, 0)
+}
+
+fn land_combats_payload_with_status(rows: &[TestLandCombat], status_flags: u32) -> Vec<u8> {
+    let participant_count = rows
+        .iter()
+        .map(|row| row.attackers.len().saturating_add(row.defenders.len()))
+        .sum::<usize>();
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // combat_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed_rows
+    p.extend_from_slice(&status_flags.to_le_bytes()); // status
+    p.extend_from_slice(&(participant_count as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes()); // ended_count
+    p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    for row in rows {
+        let flags = 1u32 | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
+        p.extend_from_slice(&row.combat_id.to_le_bytes());
+        p.extend_from_slice(&row.generation.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&row.location.to_le_bytes());
+        p.extend_from_slice(&3u32.to_le_bytes()); // day
+        p.extend_from_slice(&4u32.to_le_bytes()); // duration
+        p.extend_from_slice(&(row.attackers.len() as u32).to_le_bytes());
+        p.extend_from_slice(&(row.defenders.len() as u32).to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+    }
+    for row in rows {
+        for division_id in &row.attackers {
+            push_land_combat_participant(&mut p, row.combat_id, row.generation, 1, *division_id);
+        }
+        for division_id in &row.defenders {
+            push_land_combat_participant(&mut p, row.combat_id, row.generation, 2, *division_id);
+        }
+    }
+    p
+}
+
+fn push_land_combat_participant(
+    p: &mut Vec<u8>,
+    combat_id: u32,
+    generation: u64,
+    side: u32,
+    division_id: u32,
+) {
+    p.extend_from_slice(&combat_id.to_le_bytes());
+    p.extend_from_slice(&generation.to_le_bytes());
+    p.extend_from_slice(&side.to_le_bytes());
+    p.extend_from_slice(&division_id.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+}
+
+// --- helpers -------------------------------------------------------------
+
+fn parse(bytes: &[u8]) -> Value {
+    serde_json::from_slice(bytes).expect("snapshot is valid json")
+}
+
+fn raw_for(hour_index: i64) -> i32 {
+    DATE_EPOCH_CONST + hour_index as i32
+}
+
+fn snapshot_for_domain_records(records: Vec<(u16, Vec<u8>)>) -> Value {
+    snapshot_for_domain_records_with_flags(
+        records
+            .into_iter()
+            .map(|(domain_id, payload)| (domain_id, payload, 0))
+            .collect(),
+    )
+}
+
+fn snapshot_for_domain_records_with_flags(records: Vec<(u16, Vec<u8>, u32)>) -> Value {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    for (index, (domain_id, payload, record_flags)) in records.iter().enumerate() {
+        push_record_with_flags(
+            &mut stream,
+            index as u64 + 1,
+            raw,
+            *domain_id,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            *record_flags,
+            payload,
+        );
+    }
+    push_record(
+        &mut stream,
+        records.len() as u64 + 1,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("chunk3_test");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    parse(&snaps[0].2)
+}
+
+#[test]
+fn xui21_domain75_folds_exact_history_and_zero_gap_witness() {
+    let telemetry = fired75_lane::HookTelemetry {
+        fire_hook_validated: true,
+        option_hook_validated: true,
+        materialisation_hook_validated: true,
+        timeout_hook_validated: true,
+        all_event_classes_covered: true,
+        player_ai_timeout_no_choice_covered: true,
+        capture_start_baseline_complete: true,
+        queue_capacity: 1024,
+        queue_high_water_mark: 3,
+        ..Default::default()
+    };
+    let frame = fired75_lane::FiredEventFrame {
+        elapsed_wall_ms: 7,
+        frame_hour: 16_959_360,
+        producer_manifest_sha256: fired75_lane::PRODUCER_MANIFEST_SHA256,
+        telemetry,
+        fired_events_complete: true,
+        rows: vec![fired75_lane::FiredEventRow {
+            event_id: "germany.1".into(),
+            recipient_tag: "GER".into(),
+            fire_date: "1936.1.1.12".into(),
+            fire_hour: 16_959_360,
+            fire_tick: 43_800_000,
+            event_sequence: 1,
+            visible_option_ordinals: vec![0, 2],
+            chosen_option_ordinal: Some(2),
+            selected_desc_key: Some("germany.1.d".into()),
+            shown_picture_gfx: Some("GFX_report_event_german_reich".into()),
+            popup_subtype: fired75_lane::PopupSubtype::Country,
+            effective_timeout_hours: 312,
+            timeout_tick: 43_800_312,
+            resolved_tick: Some(43_800_001),
+            resolution_reason: fired75_lane::ResolutionReason::Selected,
+            runtime_title_text_context_id: Some("EventWindow::Title::4".into()),
+            runtime_description_text_context_id: Some("EventWindow::Description::4".into()),
+            runtime_option_text_contexts: vec![fired75_lane::OptionRuntimeTextContext {
+                definition_ordinal: 2,
+                context_id: "EventWindow::Name::9".into(),
+            }],
+        }],
+    };
+    let payload = fired75_lane::encode_payload(&frame).unwrap();
+    let snap = snapshot_for_domain_records_with_flags(vec![(75, payload, 0)]);
+    assert_eq!(snap["world_events"]["fired_events_complete"], json!(true));
+    assert_eq!(
+        snap["world_events"]["fired_events"][0]["event_id"],
+        json!("germany.1")
+    );
+    assert_eq!(
+        snap["world_events"]["fired_events"][0]["chosen_option_ordinal"],
+        json!(2)
+    );
+    assert_eq!(
+        snap["world_events"]["fired_events"][0]["runtime_title_text_context_id"],
+        json!("EventWindow::Title::4")
+    );
+    assert_eq!(
+        snap["world_events"]["fired_events"][0]["runtime_option_text_contexts"][0]
+            ["definition_ordinal"],
+        json!(2)
+    );
+    assert_eq!(
+        snap["world_events"]["fired_events_hook_telemetry"]["dropped_fire_rows"],
+        json!(0)
+    );
+}
+
+#[test]
+fn xui21_domain75_rejects_false_complete_when_any_gap_exists() {
+    let mut telemetry = fired75_lane::HookTelemetry::default();
+    telemetry.queue_capacity = 8;
+    telemetry.dropped_fire_rows = 1;
+    let frame = fired75_lane::FiredEventFrame {
+        elapsed_wall_ms: 1,
+        frame_hour: 1,
+        producer_manifest_sha256: fired75_lane::PRODUCER_MANIFEST_SHA256,
+        telemetry,
+        fired_events_complete: true,
+        rows: Vec::new(),
+    };
+    assert!(fired75_lane::encode_payload(&frame).is_err());
+}
+
+#[test]
+fn xui21_domain75_incomplete_frame_never_publishes_partial_history() {
+    let mut telemetry = fired75_lane::HookTelemetry::default();
+    telemetry.queue_capacity = 8;
+    telemetry.dropped_fire_rows = 1;
+    let frame = fired75_lane::FiredEventFrame {
+        elapsed_wall_ms: 1,
+        frame_hour: 16_959_360,
+        producer_manifest_sha256: fired75_lane::PRODUCER_MANIFEST_SHA256,
+        telemetry,
+        fired_events_complete: false,
+        // Even if a producer supplied a prefix, it is inadmissible without the
+        // zero-gap witness and must not leak into replay history.
+        rows: Vec::new(),
+    };
+    let payload = fired75_lane::encode_payload(&frame).unwrap();
+    let snap = snapshot_for_domain_records_with_flags(vec![(75, payload, 0)]);
+    assert_eq!(snap["world_events"]["fired_events_complete"], json!(false));
+    assert_eq!(snap["world_events"]["fired_events"], Value::Null);
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(75)));
+}
+
+#[test]
+fn xui21_domain75_never_attaches_to_a_different_snapshot_hour() {
+    let telemetry = fired75_lane::HookTelemetry {
+        fire_hook_validated: true,
+        option_hook_validated: true,
+        materialisation_hook_validated: true,
+        timeout_hook_validated: true,
+        all_event_classes_covered: true,
+        player_ai_timeout_no_choice_covered: true,
+        capture_start_baseline_complete: true,
+        queue_capacity: 8,
+        ..Default::default()
+    };
+    let frame = fired75_lane::FiredEventFrame {
+        elapsed_wall_ms: 1,
+        // snapshot_for_domain_records_with_flags closes hour 16_959_360.
+        frame_hour: 16_959_361,
+        producer_manifest_sha256: fired75_lane::PRODUCER_MANIFEST_SHA256,
+        telemetry,
+        fired_events_complete: true,
+        rows: Vec::new(),
+    };
+    let payload = fired75_lane::encode_payload(&frame).unwrap();
+    let snap = snapshot_for_domain_records_with_flags(vec![(75, payload, 0)]);
+    assert_eq!(snap["world_events"]["fired_events_complete"], json!(false));
+    assert_eq!(snap["world_events"]["fired_events"], Value::Null);
+    assert!(snap["world_events"]
+        .get("fired_events_hook_telemetry")
+        .is_none());
+}
+
+#[test]
+fn a28_domain71_folds_all_controller_fields_without_inference() {
+    let hour = 16_959_360u64;
+    let frame = dct71_lane::TraceFrame {
+        elapsed_wall_ms: 7,
+        status_flags: 0,
+        frame_hour: hour,
+        collections: vec![dct71_lane::CollectionTrace {
+            collection_instance_id: "interface/test.gui#grid@GER".into(),
+            frame_hour: hour,
+            source_items: vec![dct71_lane::SourceItemTrace {
+                stable_item_id: "item:a".into(),
+                source_ordinal: 0,
+                included: true,
+                filter_reason: None,
+            }],
+            ordered_item_ids: vec!["item:a".into()],
+            group_boundaries: vec![dct71_lane::GroupTrace {
+                group_id: "all".into(),
+                start_index: 0,
+                item_count: 1,
+            }],
+            row_template_id: "row".into(),
+            materialized_slots: vec![dct71_lane::MaterializedSlotTrace {
+                slot_id: "slot:0".into(),
+                bound_item_id: "item:a".into(),
+                row_template_id: "targeted_decision_entry".into(),
+                rect: dct71_lane::RectI32 {
+                    x: 1,
+                    y: 2,
+                    width: 30,
+                    height: 10,
+                },
+            }],
+            clip_rect: dct71_lane::RectI32 {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            content_extent_pixels: (100, 10),
+            viewport_extent_pixels: (100, 100),
+            scroll_min_fixed: 0,
+            scroll_max_fixed: 100_000,
+            scroll_current_fixed: 0,
+            scroll_target_fixed: 0,
+        }],
+    };
+    let payload = dct71_lane::encode_payload(&frame).expect("exact d71 payload");
+    let snapshot = snapshot_for_domain_records(vec![(dct71_lane::DOMAIN_ID, payload)]);
+    let trace = &snapshot["_r2_dynamic_collection_trace_live"];
+    assert_eq!(trace["authority"], json!("exact_a729_controller"));
+    assert_eq!(trace["frame_hour"], json!(hour));
+    assert_eq!(
+        trace["collections"][0]["ordered_item_ids"],
+        json!(["item:a"])
+    );
+    assert_eq!(
+        trace["collections"][0]["materialized_slots"][0]["rect"]["width"],
+        json!(30)
+    );
+    assert_eq!(
+        trace["collections"][0]["materialized_slots"][0]["row_template_id"],
+        json!("targeted_decision_entry")
+    );
+}
+
+#[test]
+fn a29_domain71_tcv1_route_stays_fail_closed_until_live_contract_activation() {
+    let payload = dct71_lane::a729_technology_canvas::MAGIC
+        .to_le_bytes()
+        .to_vec();
+    let snapshot = snapshot_for_domain_records(vec![(dct71_lane::DOMAIN_ID, payload)]);
+    assert_eq!(snapshot["_r2_dynamic_collection_trace_live"], Value::Null);
+    assert_eq!(snapshot["_r2_technology_canvas_live"], Value::Null);
+}
+
+#[test]
+fn a29_domain71_malformed_tcv1_does_not_poison_valid_dct1_in_same_hour() {
+    let dct = dct71_lane::encode_payload(&dct71_lane::TraceFrame {
+        elapsed_wall_ms: 3,
+        status_flags: 0,
+        frame_hour: 16_959_360,
+        collections: Vec::new(),
+    })
+    .expect("empty measured DCT1 frame");
+    let truncated_tcv = dct71_lane::a729_technology_canvas::MAGIC
+        .to_le_bytes()
+        .to_vec();
+    let snapshot = snapshot_for_domain_records(vec![
+        (dct71_lane::DOMAIN_ID, dct),
+        (dct71_lane::DOMAIN_ID, truncated_tcv),
+    ]);
+
+    assert_eq!(
+        snapshot["_r2_dynamic_collection_trace_live"]["authority"],
+        json!("exact_a729_controller")
+    );
+    assert_eq!(
+        snapshot["_r2_dynamic_collection_trace_live"]["collections"],
+        json!([])
+    );
+    assert_eq!(snapshot["_r2_technology_canvas_live"], Value::Null);
+}
+
+#[test]
+fn a29_domain71_malformed_dct1_does_not_poison_independent_tcv1_state() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d71_independent_sidecars");
+    fold.technology_canvas_seen_this_hour = true;
+    fold.technology_canvas_this_hour = Some(json!({
+        "source_record_id": "tcv1:authenticated-fixture",
+        "materialized_drawables": [],
+    }));
+
+    fold.record_malformed_domain_payload(
+        raw_for(hour),
+        dct71_lane::DOMAIN_ID,
+        &dct71_lane::MAGIC.to_le_bytes(),
+        "fixture DCT1 is truncated",
+    );
+    let snapshot = fold.build_snapshot(hour, "1936-01-01T00");
+
+    assert_eq!(snapshot["_r2_dynamic_collection_trace_live"], Value::Null);
+    assert_eq!(
+        snapshot["_r2_technology_canvas_live"]["source_record_id"],
+        json!("tcv1:authenticated-fixture")
+    );
+}
+
+#[test]
+fn a29_domain71_snapshot_emits_both_independent_carriers() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d71_dual_sidecars");
+    fold.dynamic_collection_trace_seen_this_hour = true;
+    fold.dynamic_collection_trace_this_hour = Some(json!({
+        "authority": "exact_a729_controller",
+        "collections": [],
+    }));
+    fold.technology_canvas_seen_this_hour = true;
+    fold.technology_canvas_this_hour = Some(json!({
+        "source_record_id": "tcv1:authenticated-fixture",
+        "materialized_drawables": [],
+    }));
+
+    let snapshot = fold.build_snapshot(hour, "1936-01-01T00");
+    assert_eq!(
+        snapshot["_r2_dynamic_collection_trace_live"]["authority"],
+        json!("exact_a729_controller")
+    );
+    assert_eq!(
+        snapshot["_r2_technology_canvas_live"]["source_record_id"],
+        json!("tcv1:authenticated-fixture")
+    );
+}
+
+#[test]
+fn a30_domain53_controller_carriers_fold_atomically_and_do_not_carry_hours() {
+    let first_hour = 16_959_360i64;
+    let second_hour = first_hour + 1;
+    let agency = diplomacy53::agency_upgrade_controller::AgencyUpgradeControllerRefresh {
+        frame_hour: first_hour as u64,
+        owner_tag_db_id: 1,
+        producer_record_identity: [7; 32],
+        branches: vec![
+            diplomacy53::agency_upgrade_controller::AgencyUpgradeControllerBranch {
+                branch_database_index: 1,
+                branch_display_ordinal: 0,
+                branch_id: "branch_crypto".into(),
+                upgrades: vec![
+                    diplomacy53::agency_upgrade_controller::AgencyUpgradeControllerUpgrade {
+                        controller_display_ordinal: 0,
+                        branch_source_ordinal: 2,
+                        upgrade_id: "upgrade_crypto_strength".into(),
+                    },
+                ],
+            },
+        ],
+    }
+    .encode()
+    .unwrap();
+    let cipher = diplomacy53::cipher_controller::CipherControllerRefresh::from_observed_order(
+        first_hour as u64,
+        1,
+        2,
+        [9; 32],
+        vec![2, 3],
+        &BTreeSet::from([1, 2, 3]),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(first_hour),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(first_hour),
+        diplomacy53::DOMAIN_ID,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &agency,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_for(first_hour),
+        diplomacy53::DOMAIN_ID,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &cipher,
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_for(first_hour),
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_for(second_hour),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        6,
+        raw_for(second_hour),
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("a30_domain53_controllers");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let first = parse(&snapshots[0].2);
+    assert_eq!(
+        first["diplomacy_world"]["domain53_extra"]
+            ["agency_upgrade_controller_refresh"]["owner"],
+        json!("GER")
+    );
+    assert_eq!(
+        first["diplomacy_world"]["domain53_extra"]["cipher_controller_refresh"]
+            ["targets"][0]["target"],
+        json!("ENG")
+    );
+    let second = parse(&snapshots[1].2);
+    assert!(second["diplomacy_world"]
+        .get("domain53_extra")
+        .and_then(Value::as_object)
+        .is_none_or(|extra| {
+            !extra.contains_key("agency_upgrade_controller_refresh")
+                && !extra.contains_key("cipher_controller_refresh")
+        }));
+}
+
+#[test]
+fn a29_domain71_valid_then_unknown_magic_poisons_both_carriers() {
+    let dct = dct71_lane::encode_payload(&dct71_lane::TraceFrame {
+        elapsed_wall_ms: 3,
+        status_flags: 0,
+        frame_hour: 16_959_360,
+        collections: Vec::new(),
+    })
+    .expect("empty measured DCT1 frame");
+    let snapshot = snapshot_for_domain_records(vec![
+        (dct71_lane::DOMAIN_ID, dct),
+        (dct71_lane::DOMAIN_ID, b"UNKNOWN-D71".to_vec()),
+    ]);
+
+    assert_eq!(snapshot["_r2_dynamic_collection_trace_live"], Value::Null);
+    assert_eq!(snapshot["_r2_technology_canvas_live"], Value::Null);
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["problem"] == json!("unrecognized_domain71_carrier")));
+}
+
+#[test]
+fn a27_domain78_folds_pointer_free_designer_context_and_exact_order() {
+    let hour = 16_959_360u64;
+    let frame = design78_lane::DesignCatalogContextFrame {
+        elapsed_wall_ms: 9,
+        status_flags: 0,
+        frame_hour: hour,
+        completeness_record_identity: "a27:a729:transition:4".into(),
+        context: Some(design78_lane::DesignerViewContext {
+            transition_sequence: 4,
+            active: true,
+            family: design78_lane::DesignerFamily::Plane,
+            our_filter_enabled: true,
+            foreign_filter_enabled: false,
+            obsolete_filter_enabled: true,
+            current_country_tag_id: 17,
+            selected_country_tag_ids: vec![17, 42],
+            ordered_design_ids: vec![100, 7, 55],
+        }),
+    };
+    let payload = design78_lane::encode_payload(&frame).expect("exact d78 payload");
+    let snapshot = snapshot_for_domain_records(vec![(design78_lane::DOMAIN_ID, payload)]);
+    let context = &snapshot["_r2_design_catalog_context_live"];
+    assert_eq!(context["authority"], json!("exact_a729_designer_view"));
+    assert_eq!(context["family"], json!("plane_designer_view"));
+    assert_eq!(context["selected_country_tag_ids"], json!([17, 42]));
+    assert_eq!(context["ordered_design_ids"], json!([100, 7, 55]));
+    let text = serde_json::to_string(context).unwrap();
+    assert!(!text.contains("0x"));
+    assert!(!text.contains("pointer"));
+}
+
+#[test]
+fn a39_domain82_folds_exact_trait_state_order_and_owner_qualified_ace_presentation() {
+    let hour = 16_959_360u64;
+    let frame = character82_lane::CharacterPresentationFrame {
+        elapsed_wall_ms: 9,
+        status_flags: 0,
+        frame_hour: hour,
+        completeness_record_identity: "xui17:a729:refresh:4".into(),
+        snapshot: Some(character82_lane::CharacterPresentationSnapshot {
+            source_sequence: 4,
+            trait_trees: vec![
+                character82_lane::TraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 77,
+                    root: character82_lane::TraitTreeRoot::ControllerOffset120,
+                    nodes: vec![
+                        character82_lane::TraitNodeObservation {
+                            trait_token: "panzer_leader".into(),
+                            state: character82_lane::TraitNodeState::Picked,
+                            progress_raw: None,
+                            reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
+                        },
+                        character82_lane::TraitNodeObservation {
+                            trait_token: "armor_officer".into(),
+                            state: character82_lane::TraitNodeState::Pickable,
+                            progress_raw: Some(42),
+                            reason_context_id: None,
+                        },
+                    ],
+                },
+                character82_lane::TraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 77,
+                    root: character82_lane::TraitTreeRoot::ControllerOffset130,
+                    nodes: Vec::new(),
+                },
+            ],
+            ace_context: character82_lane::AceListContext::SelectedWing {
+                owner_tag_db_id: 17,
+                wing_id: 290,
+            },
+            ace_portraits: vec![character82_lane::AcePortraitObservation {
+                owner_tag_db_id: 17,
+                ace_id: 99,
+                visible_ordinal: 0,
+                portrait_gfx: "GFX_GER_ace_m_7".into(),
+                modifier_text: "+10% agility".into(),
+            }],
+        }),
+    };
+    let payload = character82_lane::encode_payload(&frame).expect("exact d82 payload");
+    let snapshot = snapshot_for_domain_records(vec![(character82_lane::DOMAIN_ID, payload)]);
+    let view = &snapshot["_r2_character_presentation_live"];
+    assert_eq!(view["authority"], json!("exact_a729_character_presentation"));
+    assert_eq!(
+        view["ace_modifier_setter_artifact_sha256"],
+        json!("3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552")
+    );
+    assert_eq!(
+        view["trait_progress_manifest_sha256"],
+        json!("134d8fc1d5056e05023ebd46e33bda913ba3dde6c1f0945d423297d464dae547")
+    );
+    assert_eq!(
+        view["ace_modifier_formatter_manifest_sha256"],
+        json!("79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b")
+    );
+    assert_eq!(view["trait_trees"][0]["tree_root_offset"], json!(0x120));
+    assert_eq!(view["trait_trees"][0]["nodes"][0]["source_ordinal"], json!(0));
+    assert_eq!(view["trait_trees"][0]["nodes"][0]["state_raw"], json!(2));
+    assert_eq!(view["trait_trees"][0]["nodes"][0]["progress_raw"], Value::Null);
+    assert_eq!(
+        view["trait_trees"][0]["nodes"][0]["reason_context_id"],
+        json!("leader_traits::trait_tooltip::0")
+    );
+    assert_eq!(view["ace_portraits"][0]["owner_tag_db_id"], json!(17));
+    assert_eq!(view["ace_portraits"][0]["portrait_gfx"], json!("GFX_GER_ace_m_7"));
+    assert_eq!(view["ace_portraits"][0]["modifier_text"], json!("+10% agility"));
+    assert_eq!(view["ace_context"]["kind"], json!("selected_wing"));
+    assert_eq!(view["ace_context"]["wing_id"], json!(290));
+    let text = serde_json::to_string(view).unwrap();
+    assert!(!text.contains("pointer"));
+    assert!(!text.contains("0x141"));
+}
+
+#[test]
+fn a39_domain82_measured_empty_wrong_hour_and_unavailable_remain_distinct() {
+    let measured_empty = character82_lane::CharacterPresentationFrame {
+        elapsed_wall_ms: 1,
+        status_flags: 0,
+        frame_hour: 16_959_360,
+        completeness_record_identity: "xui17:a729:refresh:5".into(),
+        snapshot: Some(character82_lane::CharacterPresentationSnapshot {
+            source_sequence: 5,
+            trait_trees: vec![
+                character82_lane::TraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 77,
+                    root: character82_lane::TraitTreeRoot::ControllerOffset120,
+                    nodes: Vec::new(),
+                },
+                character82_lane::TraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 77,
+                    root: character82_lane::TraitTreeRoot::ControllerOffset130,
+                    nodes: Vec::new(),
+                },
+            ],
+            ace_context: character82_lane::AceListContext::PlaneTypeMask { mask_raw: 0x400 },
+            ace_portraits: Vec::new(),
+        }),
+    };
+    let measured = snapshot_for_domain_records(vec![(
+        character82_lane::DOMAIN_ID,
+        character82_lane::encode_payload(&measured_empty).unwrap(),
+    )]);
+    assert_eq!(
+        measured["_r2_character_presentation_live"]["trait_trees"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+
+    let mut wrong_hour = measured_empty.clone();
+    wrong_hour.frame_hour += 1;
+    let wrong = snapshot_for_domain_records(vec![(
+        character82_lane::DOMAIN_ID,
+        character82_lane::encode_payload(&wrong_hour).unwrap(),
+    )]);
+    assert_eq!(wrong["_r2_character_presentation_live"], Value::Null);
+
+    let unavailable = character82_lane::encode_source_unavailable(
+        16_959_360,
+        1,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "hook_not_observed",
+    )
+    .unwrap();
+    let failed = snapshot_for_domain_records(vec![(character82_lane::DOMAIN_ID, unavailable)]);
+    assert_eq!(failed["_r2_character_presentation_live"], Value::Null);
+
+    let clean = character82_lane::encode_payload(&measured_empty).unwrap();
+    let unavailable_after_clean = character82_lane::encode_source_unavailable(
+        16_959_360,
+        2,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "hook_lost_after_clean",
+    )
+    .unwrap();
+    let failed_after_clean = snapshot_for_domain_records(vec![
+        (character82_lane::DOMAIN_ID, clean.clone()),
+        (character82_lane::DOMAIN_ID, unavailable_after_clean),
+    ]);
+    assert_eq!(
+        failed_after_clean["_r2_character_presentation_live"],
+        Value::Null
+    );
+
+    let malformed_after_clean = snapshot_for_domain_records(vec![
+        (character82_lane::DOMAIN_ID, clean),
+        (character82_lane::DOMAIN_ID, b"CPR1-truncated".to_vec()),
+    ]);
+    assert_eq!(
+        malformed_after_clean["_r2_character_presentation_live"],
+        Value::Null
+    );
+}
+
+#[test]
+fn a38_domain84_folds_exact_results_identity_order_and_explicit_unavailability() {
+    let hour = 16_959_360u64;
+    let row = scripted84_lane::ScriptedGuiRuntimeRow {
+        manager_order_index: 0,
+        country_tag: "USA".into(),
+        gui_id: "usa_congress".into(),
+        definition: scripted84_lane::ScriptedGuiDefinitionIdentity {
+            logical_path: "common/scripted_guis/USA_congress.txt".into(),
+            winning_layer_ordinal: 2,
+            layer_kind: "mod".into(),
+            layer_id: "workshop:7".into(),
+            source_sha256: [2; 32],
+            payload_sha256: [3; 32],
+            payload_bytes: 44,
+            context_type: "country".into(),
+            window_name: "congress_window".into(),
+        },
+        visible: scripted84_lane::EngineResult::Value(true),
+        enabled: scripted84_lane::EngineResult::Unavailable("engine-only scope".into()),
+        expected_trigger_names: BTreeSet::from(["senate_visible".into()]),
+        triggers: BTreeMap::from([(
+            "senate_visible".into(),
+            scripted84_lane::EngineResult::Unavailable("engine-only trigger".into()),
+        )]),
+        expected_property_keys: BTreeSet::from([("icon".into(), "image".into())]),
+        properties: BTreeMap::from([(
+            ("icon".into(), "image".into()),
+            scripted84_lane::EngineResult::Value("GFX_senate".into()),
+        )]),
+        expected_effect_names: BTreeSet::from(["invest".into()]),
+        effect_enabled: BTreeMap::from([(
+            "invest".into(),
+            scripted84_lane::EngineResult::Value(false),
+        )]),
+    };
+    let frame = scripted84_lane::ScriptedGuiRuntimeEnvelope {
+        elapsed_wall_ms: 9,
+        status_flags: 0,
+        frame_hour: hour,
+        frame: Some(scripted84_lane::ScriptedGuiRuntimeFrame {
+            hour_index: hour,
+            producer_record_identity: "a38:frame:4".into(),
+            executable_sha256: scripted84_lane::scripted_gui_runtime_carrier::EXACT_A729_EXECUTABLE_SHA256,
+            ui14_engine_vfs_sha256: [4; 32],
+            static_authority_receipt_sha256: scripted84_lane::EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256,
+            producer_manifest_sha256: [6; 32],
+            expected_gui_keys: BTreeSet::from([("USA".into(), "usa_congress".into())]),
+            rows: vec![row],
+            tombstones: BTreeSet::new(),
+        }),
+        unavailable_reason: None,
+    };
+    let payload = scripted84_lane::encode_scripted_gui_runtime_payload(&frame).unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(
+        scripted84_lane::SCRIPTED_GUI_RUNTIME_DOMAIN_ID,
+        payload,
+    )]);
+    let provenance = &snapshot["_r2_scripted_gui_runtime_live"];
+    assert_eq!(provenance["authority"], json!("exact20_a38_engine_materialized"));
+    assert_eq!(provenance["manager_order"][0]["manager_order_index"], json!(0));
+    let runtime = &snapshot["countries"]["USA"]["extra"]["scripted_gui_runtime"]
+        ["usa_congress"];
+    assert_eq!(runtime["definition"]["winning_layer_ordinal"], json!(2));
+    assert_eq!(runtime["visible"]["value"], json!(true));
+    assert_eq!(runtime["enabled"]["value"], Value::Null);
+    assert_eq!(
+        runtime["enabled"]["unavailable_reason"],
+        json!("engine-only scope")
+    );
+}
+
+#[test]
+fn a38_domain84_source_unavailable_is_not_measured_empty() {
+    let payload = scripted84_lane::encode_scripted_gui_runtime_source_unavailable(
+        16_959_360,
+        1,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "authenticated producer frame absent",
+    )
+    .unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(
+        scripted84_lane::SCRIPTED_GUI_RUNTIME_DOMAIN_ID,
+        payload,
+    )]);
+    assert_eq!(snapshot["_r2_scripted_gui_runtime_live"], Value::Null);
+}
+
+#[test]
+fn a38_domain84_committed_empty_preserves_tombstone_and_exact_authority() {
+    // `snapshot_for_domain_records` seals its synthetic frame at this hour.
+    // Keep the carrier's authenticated hour on that same boundary; otherwise
+    // the fold correctly rejects the payload as a stale/future observation.
+    let hour = 16_959_360u64;
+    let frame = scripted84_lane::ScriptedGuiRuntimeEnvelope {
+        elapsed_wall_ms: 2,
+        status_flags: 0,
+        frame_hour: hour,
+        frame: Some(scripted84_lane::ScriptedGuiRuntimeFrame {
+            hour_index: hour,
+            producer_record_identity: "a38:frame:committed-empty".into(),
+            executable_sha256: scripted84_lane::scripted_gui_runtime_carrier::EXACT_A729_EXECUTABLE_SHA256,
+            ui14_engine_vfs_sha256: [4; 32],
+            static_authority_receipt_sha256: scripted84_lane::EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256,
+            producer_manifest_sha256: [6; 32],
+            expected_gui_keys: BTreeSet::new(),
+            rows: Vec::new(),
+            tombstones: BTreeSet::from([("USA".into(), "usa_congress".into())]),
+        }),
+        unavailable_reason: None,
+    };
+    let payload = scripted84_lane::encode_scripted_gui_runtime_payload(&frame).unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(
+        scripted84_lane::SCRIPTED_GUI_RUNTIME_DOMAIN_ID,
+        payload,
+    )]);
+    let authority = &snapshot["_r2_scripted_gui_runtime_live"];
+    assert_eq!(authority["manager_order"], json!([]));
+    assert_eq!(
+        authority["tombstones"],
+        json!([{"country_tag": "USA", "gui_id": "usa_congress"}])
+    );
+    assert_ne!(authority, &Value::Null);
+}
+
+#[test]
+fn a38_portable_fold_diagnostic_redacts_host_paths_and_pointers() {
+    assert_eq!(
+        a38_portable_unavailable_reason("engine-only country scope"),
+        "engine-only country scope"
+    );
+    assert_eq!(
+        a38_portable_unavailable_reason("read C:\\Users\\Example\\dump.bin"),
+        "producer_diagnostic_redacted"
+    );
+    assert_eq!(
+        a38_portable_unavailable_reason("updater at 0x141234567"),
+        "producer_diagnostic_redacted"
+    );
+}
+
+#[test]
+fn a17_domain83_folds_raw_entries_and_exact_canonical_totals() {
+    let hour = 16_959_360u64;
+    let frame = nuke83_lane::NukeStockpileFrame {
+        elapsed_wall_ms: 9,
+        status_flags: 0,
+        frame_hour: hour,
+        authority: nuke83_lane::AuthorityState::ExactA729Receipt,
+        receipt_sha256: nuke83_lane::WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256,
+        snapshot: Some(nuke83_lane::NukeStockpileSnapshot {
+            source_sequence: 17,
+            countries: vec![nuke83_lane::CountryNukeRow {
+                tag_db_id: 23,
+                container_capacity: 2,
+                entries: vec![
+                    nuke83_lane::NukeEntrySnapshot {
+                        nuke_type_raw: 0,
+                        amount_raw: 8_000,
+                        nukes_ready: 0,
+                    },
+                    nuke83_lane::NukeEntrySnapshot {
+                        nuke_type_raw: 1,
+                        amount_raw: 250_000_000,
+                        nukes_ready: 1,
+                    },
+                ],
+            }],
+        }),
+    };
+    let payload = nuke83_lane::encode_payload(&frame).expect("receipted d83 fixture");
+    let snapshot = snapshot_for_domain_records(vec![(nuke83_lane::DOMAIN_ID, payload)]);
+    let exact = &snapshot["_r2_nuke_stockpile_live"];
+    assert_eq!(exact["authority"], json!("exact_a729_nuke_stockpile"));
+    assert_eq!(exact["countries"][0]["nukes"][0]["amount_raw"], json!(8_000));
+    assert_eq!(exact["countries"][0]["container_capacity"], json!(2));
+    assert_eq!(exact["countries"][0]["nukes"][1]["nuke_type_raw"], json!(1));
+    assert_eq!(exact["countries"][0]["nukes"][0]["amount"], json!(0));
+    assert_eq!(exact["countries"][0]["nukes_total"], json!(2));
+    assert_eq!(exact["countries"][0]["nukes_ready_total"], json!(1));
+    let canonical = &snapshot["countries"]["23"]["extra"];
+    assert_eq!(canonical["nuke_stockpile_tag_db_id"], json!(23));
+    assert_eq!(canonical["nukes_total"], json!(2));
+    assert_eq!(canonical["nukes_ready_total"], json!(1));
+    assert_eq!(canonical["nukes"][0], json!({"amount":0,"nukes_ready":0}));
+    assert!(canonical["nukes"][0].get("amount_raw").is_none());
+}
+
+#[test]
+fn a17_domain83_wrong_hour_failure_and_malformed_payload_fail_closed() {
+    let mut frame = nuke83_lane::NukeStockpileFrame {
+        elapsed_wall_ms: 1,
+        status_flags: 0,
+        frame_hour: 16_959_361,
+        authority: nuke83_lane::AuthorityState::ExactA729Receipt,
+        receipt_sha256: nuke83_lane::WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256,
+        snapshot: Some(nuke83_lane::NukeStockpileSnapshot {
+            source_sequence: 1,
+            countries: Vec::new(),
+        }),
+    };
+    let wrong = snapshot_for_domain_records(vec![(
+        nuke83_lane::DOMAIN_ID,
+        nuke83_lane::encode_payload(&frame).unwrap(),
+    )]);
+    assert_eq!(wrong["_r2_nuke_stockpile_live"], Value::Null);
+
+    let unavailable = nuke83_lane::encode_source_unavailable(
+        16_959_360,
+        1,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    )
+    .unwrap();
+    let failed = snapshot_for_domain_records(vec![(nuke83_lane::DOMAIN_ID, unavailable)]);
+    assert_eq!(failed["_r2_nuke_stockpile_live"], Value::Null);
+
+    frame.frame_hour = 16_959_360;
+    let clean = nuke83_lane::encode_payload(&frame).unwrap();
+    let malformed_after_clean = snapshot_for_domain_records(vec![
+        (nuke83_lane::DOMAIN_ID, clean),
+        (nuke83_lane::DOMAIN_ID, b"NUK1-truncated".to_vec()),
+    ]);
+    assert_eq!(
+        malformed_after_clean["_r2_nuke_stockpile_live"],
+        Value::Null
+    );
+}
+
+#[test]
+fn d79_folds_exact_pointer_free_hud_surface_activation() {
+    let hour = 16_959_360u64;
+    let frame = hud79_lane::HudSurfaceActivationFrame {
+        frame_hour: hour,
+        status_flags: 0,
+        observation_sequence: 41,
+        active_surfaces: vec![
+            hud79_lane::HudSurfaceActivation {
+                surface: hud79_lane::HudSurface::Topbar,
+                runtime_root_name: "topbar_root".into(),
+            },
+            hud79_lane::HudSurfaceActivation {
+                surface: hud79_lane::HudSurface::Minimap,
+                runtime_root_name: "minimap_root".into(),
+            },
+            hud79_lane::HudSurfaceActivation {
+                surface: hud79_lane::HudSurface::Mapmodes,
+                runtime_root_name: "mapmodes_root".into(),
+            },
+            hud79_lane::HudSurfaceActivation {
+                surface: hud79_lane::HudSurface::TheatreSelector,
+                runtime_root_name: "theatre_selector_root".into(),
+            },
+            hud79_lane::HudSurfaceActivation {
+                surface: hud79_lane::HudSurface::DesignerTank,
+                runtime_root_name: "tank_designer_root".into(),
+            },
+        ],
+    };
+    let payload = hud79_lane::encode_activation_payload(&frame).expect("exact d79 payload");
+    let snapshot = snapshot_for_domain_records(vec![(hud79_lane::DOMAIN_ID, payload)]);
+    let activation = &snapshot["_r2_hud_surface_activation_live"];
+    assert_eq!(
+        activation["authority"],
+        json!("exact_a729_hud_controller_roots")
+    );
+    assert_eq!(activation["frame_hour"], json!(hour));
+    assert_eq!(activation["observation_sequence"], json!(41));
+    assert_eq!(
+        activation["active_surfaces"][4],
+        json!({
+            "surface": "designer_tank",
+            "runtime_root_name": "tank_designer_root",
+        })
+    );
+    let text = serde_json::to_string(activation).unwrap();
+    assert!(!text.contains("pointer"));
+    assert!(!text.contains("0x"));
+}
+
+#[test]
+fn d79_failed_frame_is_explicitly_unavailable_not_stale() {
+    let frame = hud79_lane::HudSurfaceActivationFrame {
+        frame_hour: 16_959_360,
+        status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        observation_sequence: 1,
+        active_surfaces: Vec::new(),
+    };
+    let payload = hud79_lane::encode_activation_payload(&frame).expect("typed d79 failure");
+    let snapshot = snapshot_for_domain_records(vec![(hud79_lane::DOMAIN_ID, payload)]);
+    assert!(snapshot["_r2_hud_surface_activation_live"].is_null());
+}
+
+#[test]
+fn a26_domain72_folds_final_blob_geometry_and_provenance() {
+    let hour = 16_959_360u64;
+    let frame = tooltip72_lane::TooltipTraceFrame {
+        elapsed_wall_ms: 7,
+        status_flags: 0,
+        frame_hour: hour,
+        selected_present_candidate_id: 9,
+        selected_present_ordinal: 0,
+        selected_present_qpc_ticks: 123_456,
+        selected_present_receipt_sha256: "b7".repeat(32),
+        producer_manifest_sha256: [0xA6; 32],
+        completeness_record_identity: "a729.tooltip.instances[16959360]".into(),
+        expected_instance_count: 1,
+        instances: vec![tooltip72_lane::ResolvedTooltipInstance {
+            frame_hour: hour,
+            pov_country_or_global: "GER".into(),
+            hovered_element_authored_name: "technology_slot".into(),
+            tooltip_owner_authored_name: "ToolTip".into(),
+            repeat_index: 0,
+            screen_rect: tooltip72_lane::RectI32 {
+                x: 1223,
+                y: 671,
+                width: 297,
+                height: 148,
+            },
+            viewport_width_px: 1920,
+            viewport_height_px: 1080,
+            producer_record_identity: "tooltip-owner:1402a4f1c:0".into(),
+            final_resolved_text: "Electronic Mechanical Engineering\n\nResearch time".into(),
+        }],
+    };
+    let payload = tooltip72_lane::encode_payload(&frame).expect("exact d72 payload");
+    let snapshot = snapshot_for_domain_records(vec![(tooltip72_lane::DOMAIN_ID, payload)]);
+    let trace = &snapshot["_r2_resolved_tooltip_instances_live"];
+    assert_eq!(trace["authority"], json!("exact_a729_tooltip_controller"));
+    assert_eq!(trace["expected_instance_count"], json!(1));
+    assert_eq!(trace["instances"][0]["screen_rect"]["width"], json!(297));
+    assert_eq!(trace["selected_present_candidate_id"], json!(9));
+    assert_eq!(trace["selected_present_qpc_ticks"], json!(123_456));
+    assert_eq!(
+        trace["instances"][0]["final_resolved_text"],
+        json!("Electronic Mechanical Engineering\n\nResearch time")
+    );
+    assert_eq!(
+        trace["instances"][0]["producer_record_identity"],
+        json!("tooltip-owner:1402a4f1c:0")
+    );
+    assert_eq!(trace["producer_manifest_sha256"], json!("a6".repeat(32)));
+}
+
+#[test]
+fn a26_domain72_distinguishes_measured_empty_from_wrong_hour() {
+    let hour = 16_959_360u64;
+    let measured_empty = tooltip72_lane::TooltipTraceFrame {
+        elapsed_wall_ms: 8,
+        status_flags: 0,
+        frame_hour: hour,
+        selected_present_candidate_id: 9,
+        selected_present_ordinal: 0,
+        selected_present_qpc_ticks: 123_456,
+        selected_present_receipt_sha256: "b7".repeat(32),
+        producer_manifest_sha256: [0xA6; 32],
+        completeness_record_identity: "a729.tooltip.instances[16959360]".into(),
+        expected_instance_count: 0,
+        instances: Vec::new(),
+    };
+    let payload = tooltip72_lane::encode_payload(&measured_empty).expect("measured empty d72");
+    let snapshot = snapshot_for_domain_records(vec![(tooltip72_lane::DOMAIN_ID, payload)]);
+    let trace = &snapshot["_r2_resolved_tooltip_instances_live"];
+    assert_eq!(trace["expected_instance_count"], json!(0));
+    assert_eq!(trace["instances"], json!([]));
+
+    let wrong_hour = tooltip72_lane::TooltipTraceFrame {
+        frame_hour: hour + 1,
+        completeness_record_identity: "a729.tooltip.instances[16959361]".into(),
+        ..measured_empty
+    };
+    let payload = tooltip72_lane::encode_payload(&wrong_hour).expect("wrong-hour d72");
+    let snapshot = snapshot_for_domain_records(vec![(tooltip72_lane::DOMAIN_ID, payload)]);
+    assert_eq!(snapshot["_r2_resolved_tooltip_instances_live"], Value::Null);
+}
+
+#[test]
+fn a37_domain74_folds_every_typed_presentation_leaf_without_inference() {
+    let hour = 16_959_360u64;
+    let frame = power_balance74_lane::PowerBalancePresentationFrame {
+        elapsed_wall_ms: 7,
+        status_flags: 0,
+        frame_hour: hour,
+        materialization_qpc_ticks: 90,
+        selected_present: power_balance74_lane::SelectedPresentStamp {
+            frame_hour: hour,
+            selected_present_candidate_id: 1,
+            selected_present_ordinal: 0,
+            selected_present_qpc_ticks: 100,
+            selected_present_cutoff_qpc_ticks: 100,
+            qpc_frequency_hz: 10_000_000,
+            selected_present_receipt_sha256: "ab".repeat(32),
+        },
+        producer_manifest_sha256: power_balance74_lane::A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
+        completeness_record_identity: "a729.power_balance.rows[16959360]".into(),
+        expected_balance_count: 1,
+        balances: vec![power_balance74_lane::PowerBalanceInput {
+            source_record_id: "controller:GER:FIN_power_balance".into(),
+            country_tag: "GER".into(),
+            balance_id: "FIN_power_balance".into(),
+            display_ordinal: 0,
+            active_side_id: "FIN_finnish_democracy".into(),
+            trending_side_id: "FIN_fascism".into(),
+            active_range_id: "FIN_balance_range".into(),
+            effective_left_icon: "GFX_FIN_balance_left".into(),
+            effective_right_icon: "GFX_FIN_balance_right".into(),
+            launcher_visible: true,
+            launcher_percentage_text_ref: Some("text:a25:launcher_percentage".into()),
+            launcher_levels_text_ref: Some("text:a25:launcher_levels".into()),
+            launcher_icon_sprite: Some("GFX_FIN_balance_right".into()),
+            launcher_glow_visible: true,
+            panel_open: true,
+            bar_state: power_balance74_lane::BarState::MovingRight,
+            range_indicator_frame: 1,
+            range_indicator_top_left: [211, 87],
+            trend: Some(power_balance74_lane::TrendInput {
+                cadence: power_balance74_lane::ChangeCadence::Weekly,
+                magnitude: 0.025,
+                resolved_text_ref: "text:a25:trend".into(),
+            }),
+            power_balance_modifier_desc_text_ref: "text:a25:modifier_desc".into(),
+            decisions_complete: true,
+            decisions: vec![power_balance74_lane::DecisionInput {
+                decision_id: "FIN_test_decision".into(),
+                source_record_id: "decision:FIN_test_decision".into(),
+                availability: power_balance74_lane::DecisionAvailability::Available,
+                resolved_name_text_ref: "text:a25:decision".into(),
+                cost_text_ref: Some("text:a25:cost".into()),
+                timer_text_ref: None,
+                target_tag_ref: Some("SOV".into()),
+            }],
+            resolved_text_refs: power_balance74_lane::ResolvedTextRefs {
+                balance_name: "text:a25:balance".into(),
+                left_side_name: "text:a25:left".into(),
+                right_side_name: "text:a25:right".into(),
+                active_range_name: "text:a25:range".into(),
+                balance_tooltip: "text:a25:balance_tip".into(),
+                active_range_tooltip: "text:a25:range_tip".into(),
+            },
+        }],
+    };
+    let payload = power_balance74_lane::encode_payload(&frame).expect("exact d74 payload");
+    let snapshot = snapshot_for_domain_records(vec![(power_balance74_lane::DOMAIN_ID, payload)]);
+    let trace = &snapshot["_r2_power_balance_presentation_live"];
+    assert_eq!(
+        trace["authority"],
+        json!("exact_a729_power_balance_controller")
+    );
+    assert_eq!(trace["expected_balance_count"], json!(1));
+    assert_eq!(trace["balances"][0]["bar_state"], json!("moving_right"));
+    assert_eq!(trace["balances"][0]["active_side_id"], json!("FIN_finnish_democracy"));
+    assert_eq!(trace["balances"][0]["trending_side_id"], json!("FIN_fascism"));
+    assert_eq!(trace["balances"][0]["launcher_visible"], json!(true));
+    assert_eq!(
+        trace["balances"][0]["launcher_icon_sprite"],
+        json!("GFX_FIN_balance_right")
+    );
+    assert_eq!(trace["balances"][0]["launcher_glow_visible"], json!(true));
+    assert_eq!(
+        trace["balances"][0]["range_indicator_top_left"],
+        json!([211, 87])
+    );
+    assert_eq!(trace["balances"][0]["trend"]["cadence"], json!("weekly"));
+    assert_eq!(
+        trace["balances"][0]["decisions"][0]["resolved_name_text_ref"],
+        json!("text:a25:decision")
+    );
+    assert_eq!(
+        trace["balances"][0]["power_balance_modifier_desc_text_ref"],
+        json!("text:a25:modifier_desc")
+    );
+}
+
+fn push_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_i32(out: &mut Vec<u8>, value: i32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_i64(out: &mut Vec<u8>, value: i64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u32_at(out: &mut [u8], offset: usize, value: u32) {
+    out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64_at(out: &mut [u8], offset: usize, value: u64) {
+    out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn chunk3_weather_payload(extra_status: u32) -> Vec<u8> {
+    let mut out = vec![0u8; WEATHER_HEADER_LEN];
+    put_u64_at(&mut out, 0, 10);
+    put_u32_at(&mut out, 8, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 12, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 16, extra_status);
+    put_u32_at(&mut out, 20, 0);
+    put_u32_at(&mut out, 24, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 28, 0);
+    put_u32_at(&mut out, 32, 100_000);
+    put_u32_at(&mut out, 36, 1);
+    for region_id in 0..WEATHER_REGION_ROWS as u32 {
+        let flags = if region_id == 12 {
+            WEATHER_REGION_RAIN_LIGHT
+                | WEATHER_REGION_PHENOMENON_ACTIVE
+                | WEATHER_REGION_ACTIVE_SIGNAL
+        } else {
+            0
+        };
+        push_u32(&mut out, region_id);
+        push_u32(&mut out, flags);
+        push_i32(&mut out, if region_id == 12 { 2_150_000 } else { 0 });
+        push_u32(&mut out, if region_id == 12 { 3 } else { 0 });
+        push_u32(&mut out, 77);
+        push_u32(&mut out, if region_id == 12 { 2 } else { 0 });
+        push_u32(&mut out, if region_id == 12 { 4 } else { 0 });
+        push_u32(&mut out, 0);
+    }
+    out
+}
+
+fn chunk3_weather_delta_activating_region(region_id: u32) -> Vec<u8> {
+    let mut out = vec![0u8; WEATHER_HEADER_LEN];
+    put_u64_at(&mut out, 0, 11);
+    put_u32_at(&mut out, 8, 1);
+    put_u32_at(&mut out, 12, 1);
+    put_u32_at(&mut out, 16, DELTA);
+    put_u32_at(&mut out, 20, 0);
+    put_u32_at(&mut out, 24, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 28, 0);
+    put_u32_at(&mut out, 32, 100_000);
+    // Header activity is scoped to this one emitted delta row.
+    put_u32_at(&mut out, 36, 1);
+    push_u32(&mut out, region_id);
+    push_u32(
+        &mut out,
+        WEATHER_REGION_RAIN_HEAVY
+            | WEATHER_REGION_PHENOMENON_ACTIVE
+            | WEATHER_REGION_ACTIVE_SIGNAL,
+    );
+    push_i32(&mut out, 1_250_000);
+    push_u32(&mut out, 2);
+    push_u32(&mut out, 78);
+    push_u32(&mut out, 1);
+    push_u32(&mut out, 3);
+    push_u32(&mut out, 0);
+    out
+}
+
+fn domain53_validated_payload_with_war() -> Vec<u8> {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.relation_flags.extend([
+        diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 1,
+            target_tag_db_id: 2,
+            flag_kind: diplomacy53::compact::REL_KIND_NON_AGGRESSION_PACT,
+            directed: true,
+        },
+        diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 1,
+            target_tag_db_id: 9,
+            flag_kind: diplomacy53::compact::REL_KIND_EMBARGO,
+            directed: true,
+        },
+    ]);
+    rows.wars.push(diplomacy53::compact::WarRelationRow {
+        first_tag_db_id: 1,
+        second_tag_db_id: 3,
+        first_casualties: 100,
+        second_casualties: 200,
+    });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+    report.payload
+}
+
+#[test]
+fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
+    // D53-ONLY regression (guards the E1 `diplomacy_world.wars` {}→null change):
+    // this stream carries NO domain-60 record, so d53's own war rows must still
+    // land under `diplomacy_world.domain53_extra.war_relation_rows` (a SEPARATE
+    // key that E1 never touched), and `diplomacy_world.wars` — which was a dead
+    // unconditional `{}` placeholder at HEAD and is now D60-owned — is null.
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, domain53_validated_payload_with_war()),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert!(ger["diplomacy"]["opinion"].is_null());
+    assert_eq!(
+        ger["diplomacy"][DOMAIN53_EXTRA_KEY]["opinion_rows"][0]["target"],
+        json!("POL")
+    );
+    assert_eq!(
+        ger["diplomacy"][DOMAIN53_EXTRA_KEY]["relation_flags"][0]["flag_name"],
+        json!("guarantee")
+    );
+    assert_eq!(ger["diplomacy"]["guarantees"], json!(["POL"]));
+    assert_eq!(ger["diplomacy"]["non_aggression"], json!(["ENG"]));
+    assert_eq!(ger["diplomacy"]["embargoes"], json!(["CZE"]));
+    assert_eq!(
+        ger["intel"][DOMAIN53_EXTRA_KEY]["agency_scalars"]["upgrade_progress_raw"],
+        json!(2_400_000)
+    );
+    assert_eq!(
+        ger["intel"][DOMAIN53_EXTRA_KEY]["operative_lifecycle_rows"][0]["lifecycle_flag"],
+        Value::Null,
+        "unproven lifecycle semantics must remain absent rather than fabricated"
+    );
+    // E1 schema delta: `wars` is D60-owned and null until a proven
+    // capitulation_war_state frame lands this hour (this stream has none).
+    assert_eq!(snapshot["diplomacy_world"]["wars"], Value::Null);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["war_relation_rows"][0]
+            ["lifecycle_unvalidated"],
+        json!(true)
+    );
+    assert!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["omitted_unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "operation_detail_unavailable")
+    );
+    assert!(
+        !snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["omitted_unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "incoming_action_queues_fixture_blocked")
+    );
+    assert!(
+        !snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["omitted_unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "intel_network_graph_fixture_blocked")
+    );
+    let incoming =
+        &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["incoming_diplomatic_action_queue_rows"];
+    let incoming = incoming.as_array().unwrap();
+    assert_eq!(incoming.len(), 2);
+    let first_action = incoming
+        .iter()
+        .find(|row| row["action_id"] == json!(150_442))
+        .unwrap();
+    assert_eq!(first_action["recipient"], json!("CZE"));
+    assert_eq!(first_action["actor"], json!("GER"));
+    let second_action = incoming
+        .iter()
+        .find(|row| row["action_id"] == json!(150_608))
+        .unwrap();
+    assert_eq!(second_action["recipient"], json!("AUS"));
+    assert_eq!(second_action["actor"], json!("ITA"));
+    let graphs = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["intel_network_graph_rows"];
+    let graphs = graphs.as_array().unwrap();
+    assert_eq!(graphs.len(), 2);
+    let eng_graph = graphs
+        .iter()
+        .find(|row| row["target"] == json!("ENG"))
+        .unwrap();
+    assert_eq!(eng_graph["owner"], json!("GER"));
+    assert_eq!(eng_graph["owner_tag_db_id"], json!(1));
+    assert_eq!(eng_graph["strategic_operative_index"], json!(1));
+    assert_eq!(eng_graph["network_slot"], json!(0));
+    assert_eq!(eng_graph["vertex_count"], json!(14));
+    assert_eq!(
+        eng_graph["state_ids"],
+        json!([121, 122, 123, 125, 126, 127, 128, 129, 130, 131, 132, 133, 338, 931])
+    );
+    // The legacy OPIN fixture lacks the exact owner/definition/target/status/
+    // timing carrier. Production must omit it rather than publish the former
+    // provisional associated-country interpretation.
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["operation_instance_rows"],
+        Value::Null
+    );
+
+    // W2: subject-relation rows carry the validated start_date (raw + decoded).
+    // The proof fixture's subject is overlord=1 (GER) -> subject=22 (BUL) with
+    // start_date_raw 60_795_475 = 1940.2.14.20 (the GER->DEN melt anchor).
+    let subjects = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["subject_autonomy_rows"];
+    let subjects = subjects.as_array().unwrap();
+    assert_eq!(subjects.len(), 1);
+    assert_eq!(subjects[0]["overlord"], json!("GER"));
+    assert_eq!(subjects[0]["subject"], json!("BUL"));
+    assert_eq!(subjects[0]["start_date_raw"], json!(60_795_475));
+    assert_eq!(subjects[0]["start_date"], json!("1940.2.14.20"));
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+            ["subject_autonomy_current_status"],
+        json!("measured_nonempty")
+    );
+    let current = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        ["subject_autonomy_current_rows"]
+        .as_array()
+        .unwrap();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["overlord"], json!("GER"));
+    assert_eq!(current[0]["subject"], json!("BUL"));
+    assert_eq!(current[0]["ratio_raw"], json!(40_000));
+    assert_eq!(current[0]["current_score_raw"], json!(40_000));
+    assert_eq!(current[0]["lower_score_raw"], json!(0));
+    assert_eq!(current[0]["upper_score_raw"], json!(100_000));
+    assert_eq!(current[0]["last_modified_date_raw"], json!(60_795_475));
+    assert_eq!(current[0]["last_modified_date"], json!("1940.2.14.20"));
+    assert_eq!(current[0]["direction"], Value::Null);
+
+    // W2: CFactionSystem roster rows. The proof fixture carries one faction
+    // (id=1, type=88, leader=1=GER, members [1,3,22] = GER/POL/BUL).
+    let factions = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"];
+    let factions = factions.as_array().unwrap();
+    assert_eq!(factions.len(), 1);
+    assert_eq!(factions[0]["faction_id"], json!(1));
+    assert_eq!(factions[0]["faction_type"], json!(88));
+    assert_eq!(factions[0]["leader"], json!("GER"));
+    assert_eq!(factions[0]["member_count"], json!(3));
+    assert_eq!(factions[0]["member_tag_db_ids"], json!([1, 3, 22]));
+    assert_eq!(factions[0]["members"], json!(["GER", "POL", "BUL"]));
+    assert!(snapshot["countries"]["GER"]["politics"]["faction"]
+        .get("name")
+        .is_none());
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["faction"]["is_leader"],
+        json!(true)
+    );
+    assert_eq!(
+        snapshot["countries"]["POL"]["politics"]["faction"]["is_leader"],
+        json!(false)
+    );
+
+    assert!(snapshot["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+}
+
+#[test]
+fn chunk3_partial_d53_relations_fail_closed() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.relation_flags = vec![diplomacy53::compact::RelationFlagRow {
+        src_tag_db_id: 1,
+        target_tag_db_id: 2,
+        flag_kind: diplomacy53::compact::REL_KIND_NON_AGGRESSION_PACT,
+        directed: true,
+    }];
+    let report = diplomacy53::extractor::build_domain53_payload_with_status(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ENG")])),
+        (53, report.payload),
+    ]);
+    assert_eq!(snapshot["countries"]["GER"]["diplomacy"], Value::Null);
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_faction_roster_three_states_are_distinguishable_end_to_end() {
+    let mut available_rows = diplomacy53::extractor::proof_fixture_rows();
+    available_rows.operation_anchors.clear();
+    available_rows.intel_map.clear();
+    available_rows.faction_roster_complete = true;
+    let available = diplomacy53::extractor::build_domain53_payload(
+        available_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(available.ok(), "{:?}", available.errors);
+
+    let mut measured_empty_rows = diplomacy53::extractor::proof_fixture_rows();
+    measured_empty_rows.operation_anchors.clear();
+    measured_empty_rows.intel_map.clear();
+    measured_empty_rows.factions.clear();
+    measured_empty_rows.faction_roster_complete = true;
+    let measured_empty = diplomacy53::extractor::build_domain53_payload(
+        measured_empty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(measured_empty.ok(), "{:?}", measured_empty.errors);
+
+    let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
+    unavailable_rows.operation_anchors.clear();
+    unavailable_rows.intel_map.clear();
+    unavailable_rows.factions.clear();
+    unavailable_rows.faction_roster_complete = false;
+    let unavailable = diplomacy53::extractor::build_domain53_payload(
+        unavailable_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            & !diplomacy53::extractor::SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+    );
+    assert!(unavailable.ok(), "{:?}", unavailable.errors);
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![
+            (
+                18,
+                country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            ),
+            (53, available.payload),
+        ],
+        vec![
+            (
+                18,
+                country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            ),
+            (53, measured_empty.payload),
+        ],
+        vec![
+            (
+                18,
+                country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+            ),
+            (53, unavailable.payload),
+        ],
+    ]);
+
+    assert_eq!(
+        snapshots[0]["countries"]["POL"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+    assert_eq!(
+        snapshots[0]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshots[1]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_empty")
+    );
+    assert_eq!(
+        snapshots[1]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"],
+        json!([])
+    );
+    assert!(snapshots[1]["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+    assert!(!snapshots[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_roster_unavailable")));
+    assert_eq!(
+        snapshots[2]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshots[2]["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .get("faction_rows")
+        .is_none());
+    assert!(snapshots[2]["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+    assert!(snapshots[2]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_roster_unavailable")));
+}
+
+#[test]
+fn chunk3_same_hour_partial_faction_frame_masks_prior_roster() {
+    let mut nonempty_rows = diplomacy53::extractor::proof_fixture_rows();
+    nonempty_rows.operation_anchors.clear();
+    nonempty_rows.intel_map.clear();
+    nonempty_rows.faction_roster_complete = true;
+    let nonempty = diplomacy53::extractor::build_domain53_payload(
+        nonempty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(nonempty.ok(), "{:?}", nonempty.errors);
+
+    let mut empty_rows = diplomacy53::extractor::proof_fixture_rows();
+    empty_rows.operation_anchors.clear();
+    empty_rows.intel_map.clear();
+    empty_rows.factions.clear();
+    empty_rows.faction_roster_complete = true;
+    let empty = diplomacy53::extractor::build_domain53_payload_with_status(
+        empty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(empty.ok(), "{:?}", empty.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+        ),
+        (53, nonempty.payload),
+        (53, empty.payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .get("faction_rows")
+        .is_none());
+    assert!(snapshot["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+}
+
+#[test]
+fn chunk3_partial_witnessed_intel_families_fail_closed_atomically() {
+    let mut baseline_rows = diplomacy53::extractor::proof_fixture_rows();
+    baseline_rows.operation_anchors.clear();
+    baseline_rows.intel_map = vec![
+        diplomacy53::compact::IntelMapRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: 2,
+            civilian_raw: 10_000,
+            army_raw: 20_000,
+            navy_raw: 30_000,
+            air_raw: 40_000,
+            resisted: false,
+        },
+        diplomacy53::compact::IntelMapRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: 3,
+            civilian_raw: 50_000,
+            army_raw: 60_000,
+            navy_raw: 70_000,
+            air_raw: 80_000,
+            resisted: false,
+        },
+    ];
+    let intel_family_proofs = diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+        | diplomacy53::extractor::SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF;
+    let baseline = diplomacy53::extractor::build_domain53_payload(
+        baseline_rows.clone(),
+        intel_family_proofs,
+    );
+    assert!(baseline.ok(), "{:?}", baseline.errors);
+
+    baseline_rows.intel_network_graphs.truncate(1);
+    baseline_rows.intel_map.truncate(1);
+    let replacement = diplomacy53::extractor::build_domain53_payload_with_status(
+        baseline_rows,
+        intel_family_proofs,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(replacement.ok(), "{:?}", replacement.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, baseline.payload),
+        (53, replacement.payload),
+    ]);
+    let extra = &snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY];
+    assert_eq!(extra["intel_network_graph_rows"], Value::Null);
+    assert_eq!(extra["intel_level_rows"], Value::Null);
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_same_hour_partial_roster_removal_fails_closed() {
+    let mut two_factions = diplomacy53::extractor::proof_fixture_rows();
+    two_factions.operation_anchors.clear();
+    two_factions.intel_map.clear();
+    two_factions
+        .factions
+        .push(diplomacy53::compact::FactionRow {
+            faction_id: 2,
+            faction_type: 88,
+            name_hash: 0x1234_5678,
+            leader_tag_db_id: 16,
+            member_tag_db_ids: vec![16],
+        });
+    two_factions.faction_roster_complete = true;
+    let two = diplomacy53::extractor::build_domain53_payload(
+        two_factions,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(two.ok(), "{:?}", two.errors);
+
+    let mut one_faction = diplomacy53::extractor::proof_fixture_rows();
+    one_faction.operation_anchors.clear();
+    one_faction.intel_map.clear();
+    one_faction.faction_roster_complete = true;
+    let one = diplomacy53::extractor::build_domain53_payload_with_status(
+        one_faction,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(one.ok(), "{:?}", one.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (16, "ITA"), (22, "BUL")]),
+        ),
+        (53, two.payload),
+        (53, one.payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .get("faction_rows")
+        .is_none());
+    assert!(snapshot["countries"]["ITA"]["politics"]
+        .get("faction")
+        .is_none());
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+            ["subject_autonomy_current_status"],
+        json!("unavailable")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["subject_autonomy_current_rows"],
+        Value::Null
+    );
+}
+
+#[test]
+fn chunk3_legacy_v1_nonempty_faction_roster_folds_as_measured_nonempty() {
+    let mut legacy = diplomacy53::compact::DiplomacyIntelSnapshot::default();
+    legacy.factions.push(diplomacy53::compact::FactionRow {
+        faction_id: 7,
+        faction_type: 88,
+        name_hash: 0x89ab_cdef,
+        leader_tag_db_id: 1,
+        member_tag_db_ids: vec![1, 3],
+    });
+    assert!(!legacy.faction_roster_complete);
+    let payload = diplomacy53::compact::encode_payload(&legacy);
+    let decoded = diplomacy53::compact::decode_snapshot_payload(0, &payload).unwrap();
+    assert!(
+        decoded.faction_roster_complete,
+        "FACS v1 nonzero is witnessed"
+    );
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (3, "POL")])),
+        (53, payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"][0]["faction_id"],
+        json!(7)
+    );
+}
+
+#[test]
+fn chunk3_witnessed_empty_then_partial_masks_roster_atomically() {
+    let mut empty_rows = diplomacy53::extractor::proof_fixture_rows();
+    empty_rows.operation_anchors.clear();
+    empty_rows.intel_map.clear();
+    empty_rows.factions.clear();
+    empty_rows.faction_roster_complete = true;
+    let empty = diplomacy53::extractor::build_domain53_payload(
+        empty_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(empty.ok(), "{:?}", empty.errors);
+
+    let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
+    unavailable_rows.operation_anchors.clear();
+    unavailable_rows.intel_map.clear();
+    unavailable_rows.factions.clear();
+    unavailable_rows.faction_roster_complete = false;
+    let unavailable = diplomacy53::extractor::build_domain53_payload_with_status(
+        unavailable_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            & !diplomacy53::extractor::SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(unavailable.ok(), "{:?}", unavailable.errors);
+
+    let snapshot =
+        snapshot_for_domain_records(vec![(53, empty.payload), (53, unavailable.payload)]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .get("faction_rows")
+        .is_none());
+}
+
+#[test]
+fn chunk3_witnessed_nonempty_then_unwitnessed_clean_keeps_measured_roster_atomically() {
+    let mut measured_rows = diplomacy53::extractor::proof_fixture_rows();
+    measured_rows.operation_anchors.clear();
+    measured_rows.intel_map.clear();
+    measured_rows.faction_roster_complete = true;
+    let measured = diplomacy53::extractor::build_domain53_payload(
+        measured_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(measured.ok(), "{:?}", measured.errors);
+
+    let mut unavailable_rows = diplomacy53::extractor::proof_fixture_rows();
+    unavailable_rows.operation_anchors.clear();
+    unavailable_rows.intel_map.clear();
+    unavailable_rows.factions.clear();
+    unavailable_rows.faction_roster_complete = false;
+    let unavailable = diplomacy53::extractor::build_domain53_payload(
+        unavailable_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            & !diplomacy53::extractor::SOURCE_PROOF_FACTION_SYSTEM_870EBF,
+    );
+    assert!(unavailable.ok(), "{:?}", unavailable.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (22, "BUL")]),
+        ),
+        (53, measured.payload),
+        (53, unavailable.payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        snapshot["countries"]["POL"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+}
+
+#[test]
+fn chunk3_partial_replacement_then_clean_delta_restores_prior_roster() {
+    let mut two_factions = diplomacy53::extractor::proof_fixture_rows();
+    two_factions.operation_anchors.clear();
+    two_factions.intel_map.clear();
+    two_factions
+        .factions
+        .push(diplomacy53::compact::FactionRow {
+            faction_id: 2,
+            faction_type: 88,
+            name_hash: 0x1234_5678,
+            leader_tag_db_id: 16,
+            member_tag_db_ids: vec![16],
+        });
+    two_factions.faction_roster_complete = true;
+    let baseline = diplomacy53::extractor::build_domain53_payload(
+        two_factions,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(baseline.ok(), "{:?}", baseline.errors);
+
+    let mut one_faction = diplomacy53::extractor::proof_fixture_rows();
+    one_faction.operation_anchors.clear();
+    one_faction.intel_map.clear();
+    one_faction.faction_roster_complete = true;
+    let replacement = diplomacy53::extractor::build_domain53_payload_with_status(
+        one_faction,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
+    assert!(replacement.ok(), "{:?}", replacement.errors);
+
+    let no_witness_delta =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (3, "POL"), (16, "ITA"), (22, "BUL")]),
+        ),
+        (53, baseline.payload),
+        (53, replacement.payload),
+        (53, no_witness_delta),
+    ]);
+    let rows = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_rows"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["faction_id"], json!(1));
+    assert_eq!(
+        snapshot["countries"]["ITA"]["politics"]["faction"]["leader"],
+        json!("ITA")
+    );
+}
+
+#[test]
+fn chunk3_old_format_without_faction_witness_stays_unavailable() {
+    let legacy_payload = diplomacy53::compact::encode_payload(
+        &diplomacy53::compact::DiplomacyIntelSnapshot::default(),
+    );
+    assert!(!legacy_payload.windows(4).any(|window| window == b"FACS"));
+    let decoded = diplomacy53::compact::decode_snapshot_payload(0, &legacy_payload).unwrap();
+    assert!(!decoded.faction_roster_complete);
+
+    let payload_sha256 = format!("{:x}", Sha256::digest(&legacy_payload));
+    let snapshot = snapshot_for_domain_records(vec![(53, legacy_payload)]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["snapshot_payload_sha256"],
+        json!(payload_sha256)
+    );
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_roster_unavailable")));
+}
+
+#[test]
+fn subject_autonomy_delta_rejects_status_keys_outside_reconstructed_subjects() {
+    let mut baseline_rows = diplomacy53::extractor::proof_fixture_rows();
+    baseline_rows.operation_anchors.clear();
+    baseline_rows.intel_map.clear();
+    let baseline = diplomacy53::extractor::build_domain53_payload(
+        baseline_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(baseline.ok(), "{:?}", baseline.errors);
+
+    let malformed_delta = diplomacy53::compact::encode_payload(
+        &diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            subject_autonomy_statuses: vec![
+                diplomacy53::compact::SubjectAutonomyStatusRow {
+                    overlord_tag_db_id: 1,
+                    subject_tag_db_id: 3,
+                    current_state_hash: 0xAA,
+                    previous_state_hash: Some(0xBB),
+                    next_state_hash: Some(0xCC),
+                    ratio_raw: 40_000,
+                    current_score_raw: 40_000,
+                    lower_score_raw: 0,
+                    upper_score_raw: 100_000,
+                    last_modified_date_raw: 60_795_475,
+                },
+            ],
+            subject_autonomy_status_complete: true,
+            ..Default::default()
+        },
+    );
+    let snapshot =
+        snapshot_for_domain_records(vec![(53, baseline.payload), (53, malformed_delta)]);
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| {
+            problem["domain_id"] == json!(53)
+                && problem["problem"] == json!("subject_autonomy_status_key_mismatch")
+        }));
+}
+
+#[test]
+fn subject_autonomy_same_state_direction_uses_score_not_clamped_ratio() {
+    let previous = diplomacy53::compact::SubjectAutonomyStatusRow {
+        overlord_tag_db_id: 1,
+        subject_tag_db_id: 22,
+        current_state_hash: 0xAA,
+        previous_state_hash: Some(0xBB),
+        next_state_hash: Some(0xCC),
+        ratio_raw: 0,
+        current_score_raw: -20,
+        lower_score_raw: 0,
+        upper_score_raw: 100_000,
+        last_modified_date_raw: 60_795_475,
+    };
+    let current = diplomacy53::compact::SubjectAutonomyStatusRow {
+        current_score_raw: -10,
+        ..previous.clone()
+    };
+
+    assert_eq!(
+        domain53_subject_autonomy_direction(&previous, &current),
+        Some(1),
+        "two equal clamped ratios must not hide a positive signed-score delta"
+    );
+}
+
+#[test]
+fn subject_autonomy_no_witness_breaks_direction_continuity() {
+    let mut baseline_rows = diplomacy53::extractor::proof_fixture_rows();
+    baseline_rows.operation_anchors.clear();
+    baseline_rows.intel_map.clear();
+    let baseline = diplomacy53::extractor::build_domain53_payload(
+        baseline_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(baseline.ok(), "{:?}", baseline.errors);
+
+    let mut fold = WorldFold::new("a16_no_witness_continuity");
+    fold.fold_diplomacy_intel_operatives(&baseline.payload)
+        .expect("authenticated AUST baseline");
+    assert_eq!(
+        fold.domain53_subject_autonomy_last_authoritative.len(),
+        1
+    );
+
+    let no_witness = diplomacy53::compact::encode_payload(
+        &diplomacy53::compact::DiplomacyIntelSnapshot::default(),
+    );
+    fold.fold_diplomacy_intel_operatives(&no_witness)
+        .expect("accepted D53 record without AUST");
+    assert!(matches!(
+        &fold.domain53_subject_autonomy_current_this_hour,
+        SubjectAutonomyCurrent::Unavailable
+    ));
+    assert!(
+        fold.domain53_subject_autonomy_last_authoritative.is_empty(),
+        "an unavailable record must force the next AUST observation to establish a new baseline"
+    );
+}
+
+#[test]
+fn subject_autonomy_five_transition_lifecycle_folds_without_ratio_rebase_guessing() {
+    use diplomacy53::compact::SubjectAutonomyStatusRow;
+
+    let integrated = diplomacy53::compact::stable_hash32("autonomy_integrated_puppet");
+    let puppet = diplomacy53::compact::stable_hash32("autonomy_puppet");
+    let colony = diplomacy53::compact::stable_hash32("autonomy_colony");
+    let dominion = diplomacy53::compact::stable_hash32("autonomy_dominion");
+
+    let statuses = [
+        // Establish the authoritative baseline. Its direction is intentionally
+        // unknown because no earlier AUST observation exists.
+        SubjectAutonomyStatusRow {
+            overlord_tag_db_id: 1,
+            subject_tag_db_id: 22,
+            current_state_hash: puppet,
+            previous_state_hash: Some(integrated),
+            next_state_hash: Some(colony),
+            ratio_raw: 40_000,
+            current_score_raw: 40_000,
+            lower_score_raw: 0,
+            upper_score_raw: 100_000,
+            last_modified_date_raw: 60_795_475,
+        },
+        // 1: stable nonzero progress.
+        SubjectAutonomyStatusRow {
+            last_modified_date_raw: 60_795_476,
+            ..SubjectAutonomyStatusRow {
+                overlord_tag_db_id: 1,
+                subject_tag_db_id: 22,
+                current_state_hash: puppet,
+                previous_state_hash: Some(integrated),
+                next_state_hash: Some(colony),
+                ratio_raw: 40_000,
+                current_score_raw: 40_000,
+                lower_score_raw: 0,
+                upper_score_raw: 100_000,
+                last_modified_date_raw: 0,
+            }
+        },
+        // 2: positive score delta without a threshold.
+        SubjectAutonomyStatusRow {
+            ratio_raw: 55_000,
+            current_score_raw: 55_000,
+            last_modified_date_raw: 60_795_477,
+            ..SubjectAutonomyStatusRow {
+                overlord_tag_db_id: 1,
+                subject_tag_db_id: 22,
+                current_state_hash: puppet,
+                previous_state_hash: Some(integrated),
+                next_state_hash: Some(colony),
+                ratio_raw: 0,
+                current_score_raw: 0,
+                lower_score_raw: 0,
+                upper_score_raw: 100_000,
+                last_modified_date_raw: 0,
+            }
+        },
+        // 3: negative score delta without a threshold.
+        SubjectAutonomyStatusRow {
+            ratio_raw: 25_000,
+            current_score_raw: 25_000,
+            last_modified_date_raw: 60_795_478,
+            ..SubjectAutonomyStatusRow {
+                overlord_tag_db_id: 1,
+                subject_tag_db_id: 22,
+                current_state_hash: puppet,
+                previous_state_hash: Some(integrated),
+                next_state_hash: Some(colony),
+                ratio_raw: 0,
+                current_score_raw: 0,
+                lower_score_raw: 0,
+                upper_score_raw: 100_000,
+                last_modified_date_raw: 0,
+            }
+        },
+        // 4: forward threshold. The rebased ratio falls from 25% to 10%, so
+        // ratio comparison alone would report the wrong direction. Adjacency
+        // (old.next == new.current && new.previous == old.current) is decisive.
+        SubjectAutonomyStatusRow {
+            overlord_tag_db_id: 1,
+            subject_tag_db_id: 22,
+            current_state_hash: colony,
+            previous_state_hash: Some(puppet),
+            next_state_hash: Some(dominion),
+            ratio_raw: 10_000,
+            current_score_raw: 110_000,
+            lower_score_raw: 100_000,
+            upper_score_raw: 200_000,
+            last_modified_date_raw: 60_795_479,
+        },
+        // 5: reverse threshold. The rebased ratio rises from 10% to 90%, so
+        // adjacency is again required to avoid reversing the transition.
+        SubjectAutonomyStatusRow {
+            overlord_tag_db_id: 1,
+            subject_tag_db_id: 22,
+            current_state_hash: puppet,
+            previous_state_hash: Some(integrated),
+            next_state_hash: Some(colony),
+            ratio_raw: 90_000,
+            current_score_raw: 90_000,
+            lower_score_raw: 0,
+            upper_score_raw: 100_000,
+            last_modified_date_raw: 60_795_480,
+        },
+    ];
+
+    let raw0 = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (index, status) in statuses.into_iter().enumerate() {
+        let mut rows = diplomacy53::extractor::proof_fixture_rows();
+        rows.operation_anchors.clear();
+        rows.intel_map.clear();
+        rows.subject_autonomy_statuses = vec![status.clone()];
+        rows.subjects[0].autonomy_state_hash = status.current_state_hash;
+        let report = diplomacy53::extractor::build_domain53_payload(
+            rows,
+            diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        );
+        assert!(report.ok(), "matrix row {index}: {:?}", report.errors);
+        let raw = raw0 + index as i32;
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            53,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &report.payload,
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+
+    let mut fold = WorldFold::new("a16_five_transition_lifecycle");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 6);
+    let directions = snapshots
+        .iter()
+        .map(|(_, _, bytes)| {
+            parse(bytes)["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+                ["subject_autonomy_current_rows"][0]["direction"]
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        directions,
+        vec![
+            Value::Null,
+            json!("stable"),
+            json!("toward_next"),
+            json!("toward_previous"),
+            json!("toward_next"),
+            json!("toward_previous"),
+        ]
+    );
+    assert_eq!(
+        parse(&snapshots[4].2)["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+            ["subject_autonomy_current_rows"][0]["ratio_raw"],
+        json!(10_000),
+        "forward threshold fixture must exercise a downward ratio rebase"
+    );
+    assert_eq!(
+        parse(&snapshots[5].2)["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+            ["subject_autonomy_current_rows"][0]["ratio_raw"],
+        json!(90_000),
+        "reverse threshold fixture must exercise an upward ratio rebase"
+    );
+}
+
+#[test]
+fn chunk3_cross_faction_member_conflict_is_omitted_and_badged() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.factions.push(diplomacy53::compact::FactionRow {
+        faction_id: 2,
+        faction_type: 88,
+        name_hash: 0x1234_5678,
+        leader_tag_db_id: 16,
+        member_tag_db_ids: vec![3, 16],
+    });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, report.payload),
+    ]);
+
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["faction"]["leader"],
+        json!("GER")
+    );
+    assert_eq!(
+        snapshot["countries"]["ITA"]["politics"]["faction"]["leader"],
+        json!("ITA")
+    );
+    assert!(snapshot["countries"]["POL"]["politics"]
+        .get("faction")
+        .is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("faction_member_conflict")));
+    let world_extra = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        world_extra["faction_roster_status"],
+        json!("ambiguous_member_exclusivity")
+    );
+    assert_eq!(
+        world_extra["faction_member_conflict_tag_db_ids"],
+        json!([3])
+    );
+    assert!(!world_extra.contains_key("faction_rows"));
+}
+
+#[test]
+fn chunk3_d53_failure_delta_before_baseline_and_delta_after_baseline() {
+    let failure_payload =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let failure = snapshot_for_domain_records(vec![(53, failure_payload)]);
+    assert!(failure["countries"].as_object().unwrap().is_empty());
+    assert_eq!(
+        failure["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(failure["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+    assert!(!failure["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+
+    let delta_before_baseline_payload =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let delta_before_baseline =
+        snapshot_for_domain_records(vec![(53, delta_before_baseline_payload)]);
+    assert!(
+        delta_before_baseline["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(53)
+                && problem["problem"] == json!("delta_before_baseline"))
+    );
+    assert!(!delta_before_baseline["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+
+    let baseline_payload =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            countries: vec![diplomacy53::compact::CountryDiplomacyRow {
+                tag_db_id: 1,
+                faction_group: 10,
+                at_war_count: 0,
+                casualties: 0,
+            }],
+            changed_rows: Some(1),
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let delta_payload =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            countries: vec![diplomacy53::compact::CountryDiplomacyRow {
+                tag_db_id: 1,
+                faction_group: 11,
+                at_war_count: 0,
+                casualties: 0,
+            }],
+            status_flags: COMPACT_STATUS_DELTA_DATA,
+            changed_rows: Some(1),
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let raw0 = raw_for(16_959_360);
+    let raw1 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        53,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &baseline_payload,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        53,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &delta_payload,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("chunk3_d53_delta_after_baseline");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let delta_after_baseline = parse(&snaps[1].2);
+    assert_eq!(
+        delta_after_baseline["countries"]["1"]["diplomacy"][DOMAIN53_EXTRA_KEY]["faction_group"],
+        json!(11)
+    );
+    assert!(delta_after_baseline["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+}
+
+#[test]
+fn domain53_upsert_by_key_preserves_order_and_dedups() {
+    // The sparse-merge primitive: NEW keys append in insertion order (so on a
+    // freshly-cleared vec — a CLEAN frame — it is byte-identical to `push`), and
+    // an EXISTING key updates IN PLACE (so a re-emitted or value-changed row on a
+    // partial frame never accumulates a duplicate). This is the invariant the
+    // whole layer-2 sparse merge rests on.
+    let mut v: Vec<(u32, i32)> = Vec::new();
+    domain53_upsert_by_key(&mut v, (1, 10), |r| r.0);
+    domain53_upsert_by_key(&mut v, (2, 20), |r| r.0);
+    domain53_upsert_by_key(&mut v, (3, 30), |r| r.0);
+    assert_eq!(
+        v,
+        vec![(1, 10), (2, 20), (3, 30)],
+        "new keys append in order"
+    );
+    // Re-emit key 2 with a new value: replaced in place, no duplicate, order kept.
+    domain53_upsert_by_key(&mut v, (2, 99), |r| r.0);
+    assert_eq!(v, vec![(1, 10), (2, 99), (3, 30)]);
+    // A brand-new key still appends at the end.
+    domain53_upsert_by_key(&mut v, (4, 40), |r| r.0);
+    assert_eq!(v, vec![(1, 10), (2, 99), (3, 30), (4, 40)]);
+}
+
+#[test]
+fn chunk3_d53_partial_frame_fails_closed() {
+    // D53 is ProductionComplete, so every admitted product frame must be an
+    // authoritative complete observation. A PARTIAL badge rejects the whole
+    // current-hour projection instead of publishing a selected row prefix.
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    let report = diplomacy53::extractor::build_domain53_payload_with_status(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, report.payload),
+    ]);
+    assert!(!snapshot["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "diplomacy_intel_operatives_live"));
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"][DOMAIN53_EXTRA_KEY],
+        Value::Null
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_d53_partial_frame_masks_prior_same_hour_rows() {
+    // A clean frame followed by a PARTIAL frame in the same hour must not
+    // expose the earlier rows as if they described the latest observation.
+    let mut clean_rows = diplomacy53::extractor::proof_fixture_rows();
+    clean_rows.operation_anchors.clear();
+    clean_rows.intel_map.clear();
+    let clean = diplomacy53::extractor::build_domain53_payload(
+        clean_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(clean.ok(), "{:?}", clean.errors);
+
+    let mut partial_rows = diplomacy53::extractor::proof_fixture_rows();
+    partial_rows.operation_anchors.clear();
+    partial_rows.intel_map.clear();
+    partial_rows.opinions.clear(); // this frame skipped the opinion slot(s)
+    let partial = diplomacy53::extractor::build_domain53_payload_with_status(
+        partial_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(partial.ok(), "{:?}", partial.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, clean.payload),
+        (53, partial.payload),
+    ]);
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"][DOMAIN53_EXTRA_KEY],
+        Value::Null
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_d53_partial_frame_masks_operation_instances() {
+    let operation = diplomacy53::compact::OperationInstanceRow {
+        instance_id: 9,
+        def_ref_ok: true,
+        associated_country_tag_db_id: Some(2),
+        definition_id: Some("operation_capture_cipher".into()),
+        owner_country_tag_db_id: Some(1),
+        target_country_tag_db_id: Some(2),
+        target_state_id: None,
+        status: Some(diplomacy53::compact::OperationInstanceStatus::Running),
+        phase_index: 0,
+        phase_count: 3,
+        progress_fixed: Some(40_000),
+        start_hour: Some(850),
+        duration_hours: Some(720),
+        assigned_operative_ids: vec![7],
+    };
+    let mut clean_rows = diplomacy53::extractor::proof_fixture_rows();
+    clean_rows.operation_anchors.clear();
+    clean_rows.intel_map.clear();
+    clean_rows.operation_instances = vec![operation];
+    let clean = diplomacy53::extractor::build_domain53_payload(
+        clean_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            | diplomacy53::extractor::SOURCE_PROOF_OPERATION_DETAIL_870EBF,
+    );
+    assert!(clean.ok(), "{:?}", clean.errors);
+
+    let mut partial_rows = diplomacy53::extractor::proof_fixture_rows();
+    partial_rows.operation_anchors.clear();
+    partial_rows.intel_map.clear();
+    partial_rows.operation_instances.clear();
+    let partial = diplomacy53::extractor::build_domain53_payload_with_status(
+        partial_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+            | diplomacy53::extractor::SOURCE_PROOF_OPERATION_DETAIL_870EBF,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(partial.ok(), "{:?}", partial.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, clean.payload),
+        (53, partial.payload),
+    ]);
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["operation_instance_rows"],
+        Value::Null
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_d53_failure_after_success_same_hour_hides_all_rows() {
+    // Codex layer-2 fix: a FAILED d53 frame must set known=false so a prior
+    // success this hour is NOT published as stale. Partial-success then a
+    // SOURCE_UNAVAILABLE failure in the same hour -> d53 not projected at all.
+    let mut ok_rows = diplomacy53::extractor::proof_fixture_rows();
+    ok_rows.operation_anchors.clear();
+    ok_rows.intel_map.clear();
+    let ok = diplomacy53::extractor::build_domain53_payload_with_status(
+        ok_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        diplomacy53::compact::STATUS_PARTIAL_DATA,
+    );
+    assert!(ok.ok(), "{:?}", ok.errors);
+    let fail =
+        diplomacy53::compact::encode_payload(&diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            ..diplomacy53::compact::DiplomacyIntelSnapshot::default()
+        });
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, ok.payload), // known=true, rows populated
+        (53, fail),       // failure -> known=false, retained rows NOT projected
+    ]);
+    // The KEY assertion: GER exists (from country identity) but carries NO d53
+    // extras — the retained rows from the earlier success are NOT published,
+    // because the latest frame failed and set known=false.
+    assert!(snapshot["countries"]["GER"]
+        .get("diplomacy")
+        .and_then(|d| d.get(DOMAIN53_EXTRA_KEY))
+        .is_none());
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    // ...and the failure is recorded as a problem. (The earlier partial frame did
+    // fold successfully, so d53 legitimately remains in the success `domains`
+    // list — the fix hides the DATA via known=false, it does not un-record the
+    // earlier success.)
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk3_d53_decode_failure_after_success_same_hour_hides_all_rows() {
+    // Codex layer-2 follow-up: a DECODE failure (malformed/truncated payload) is a
+    // d53 rejection like any other — it must set known=false so a same-hour
+    // success is not published as stale. The `?`-on-decode path used to return
+    // before known=false.
+    let mut ok_rows = diplomacy53::extractor::proof_fixture_rows();
+    ok_rows.operation_anchors.clear();
+    ok_rows.intel_map.clear();
+    let ok = diplomacy53::extractor::build_domain53_payload(
+        ok_rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(ok.ok(), "{:?}", ok.errors);
+    // A truncated payload that cannot decode.
+    let malformed = vec![0x00u8, 0x01, 0x02];
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (3, "POL")]),
+        ),
+        (53, ok.payload), // known=true, rows populated
+        (53, malformed),  // decode fails -> known=false, retained rows NOT projected
+    ]);
+    assert!(snapshot["countries"]["GER"]
+        .get("diplomacy")
+        .and_then(|d| d.get(DOMAIN53_EXTRA_KEY))
+        .is_none());
+    assert_eq!(
+        snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable")
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(53)
+            && problem["problem"] == json!("decode_failed")));
+}
+
+#[test]
+fn chunk3_missing_d53_after_measured_hour_serializes_unavailable_roster_status() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    let measured = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(measured.ok(), "{:?}", measured.errors);
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![(53, measured.payload)],
+        vec![(18, country_identity_payload(&[(1, "GER")]))],
+    ]);
+    assert_eq!(
+        snapshots[0]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("measured_nonempty")
+    );
+    assert_eq!(
+        snapshots[1]["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+        json!("unavailable"),
+        "a missing current-hour d53 record must not serialize as an absent status"
+    );
+
+    let failed_then_absent = chunk1_snapshots(vec![vec![(53, vec![0x00, 0x01, 0x02])], vec![]]);
+    for (index, snapshot) in failed_then_absent.iter().enumerate() {
+        assert_eq!(
+            snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["faction_roster_status"],
+            json!("unavailable"),
+            "first-failed d53 stream hour {index} must keep serializing unavailable"
+        );
+    }
+}
+
+fn chunk3_division_payload(rows: &[(u32, u32, u32)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&100_000u32.to_le_bytes());
+    out.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for (div_id, div_type, owner) in rows {
+        out.extend_from_slice(&div_id.to_le_bytes());
+        out.extend_from_slice(&div_type.to_le_bytes());
+        out.extend_from_slice(&(1u32 << 5).to_le_bytes());
+        out.extend_from_slice(&118u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&3_000_000u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&8_000_000u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&owner.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        // Wave-4: disrupted_supply slot at +88 (absent -> 0).
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // +92 strategic_redeployment
+        out.extend_from_slice(&0u32.to_le_bytes()); // +96 current_manpower
+        out.extend_from_slice(&0u32.to_le_bytes()); // +100 cumulative_losses
+    }
+    out
+}
+
+fn chunk3_division_delete_payload(div_id: u32, div_type: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&DELTA.to_le_bytes());
+    out.extend_from_slice(&100_000u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&div_id.to_le_bytes());
+    out.extend_from_slice(&div_type.to_le_bytes());
+    out.extend_from_slice(&DIV_FLAG_DELETED.to_le_bytes());
+    out.resize(out.len() + DIV_ROW_LEN - 12, 0);
+    out
+}
+
+fn chunk3_division_equipment_payload(
+    status: u32,
+    roots: &[(u32, u32, u32, u32, u32, u32)],
+    entries: &[(u32, i64)],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&(roots.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(roots.len() as u32).to_le_bytes());
+    out.extend_from_slice(&status.to_le_bytes());
+    out.extend_from_slice(&100_000u32.to_le_bytes());
+    out.extend_from_slice(&(roots.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(roots.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (owner, div_id, flags, template_id, first, count) in roots {
+        push_u32(&mut out, *owner);
+        push_u32(&mut out, *div_id);
+        push_u32(&mut out, *flags);
+        push_u32(&mut out, *template_id);
+        push_u32(&mut out, *first);
+        push_u32(&mut out, *count);
+    }
+    for (variant_id, amount_raw) in entries {
+        push_u32(&mut out, *variant_id);
+        push_u32(&mut out, 0);
+        push_i64(&mut out, *amount_raw);
+    }
+    out
+}
+
+fn chunk3_rowless_division_equipment_payload(
+    status: u32,
+    root_rows: u32,
+    observed_division_rows: u32,
+    observed_equipment_rows: u32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u64.to_le_bytes());
+    push_u32(&mut out, 0);
+    push_u32(&mut out, 0);
+    push_u32(&mut out, status);
+    push_u32(&mut out, 100_000);
+    push_u32(&mut out, root_rows);
+    push_u32(&mut out, observed_division_rows);
+    push_u32(&mut out, 0);
+    push_u32(&mut out, observed_equipment_rows);
+    out
+}
+
+/// Append a `PLCF` project-lifecycle trailer. `rows` = (tag_db_id, local_id,
+/// started, completed).
+fn append_project_lifecycle_trailer(
+    out: &mut Vec<u8>,
+    rows: &[(u32, u32, bool, bool)],
+    walked_countries: u32,
+    aborted_countries: u32,
+) {
+    out.extend_from_slice(b"PLCF");
+    out.extend_from_slice(&1u16.to_le_bytes()); // version
+    out.extend_from_slice(&20u16.to_le_bytes()); // header_len
+    out.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    out.extend_from_slice(&walked_countries.to_le_bytes());
+    out.extend_from_slice(&aborted_countries.to_le_bytes());
+    for (tag, lid, started, completed) in rows {
+        let mut flags = 0u32;
+        if *started {
+            flags |= 1;
+        }
+        if *completed {
+            flags |= 1 << 1;
+        }
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&lid.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+    }
+}
+
+fn append_project_reward_history_trailer(out: &mut Vec<u8>) {
+    out.extend_from_slice(b"PRHF");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&47u32.to_le_bytes());
+    out.extend_from_slice(&7u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0x4C17u32.to_le_bytes());
+    out.extend_from_slice(&0x4C17u32.to_le_bytes());
+    out.extend_from_slice(&(-1i32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&99u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&1234u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&456i32.to_le_bytes());
+    out.extend_from_slice(&(1u32 | (1u32 << 2)).to_le_bytes());
+}
+
+fn append_project_owner_progress_trailer(
+    out: &mut Vec<u8>,
+    rows: &[(u32, u32, u32, u32, u32, bool)],
+    walked_countries: u32,
+    aborted_countries: u32,
+) {
+    out.extend_from_slice(b"PPGF");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    out.extend_from_slice(&walked_countries.to_le_bytes());
+    out.extend_from_slice(&aborted_countries.to_le_bytes());
+    for (tag, local_id, static_def, progress, target, completed) in rows {
+        for value in [
+            *tag,
+            *local_id,
+            *static_def,
+            0x18,
+            0,
+            0,
+            1,
+            2,
+            3,
+            7,
+            *progress,
+            *target,
+            u32::from(*completed),
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
+fn chunk3_projects_payload(status: u32) -> Vec<u8> {
+    let header_extension = 4u32;
+    let mut out = vec![
+        0u8;
+        SPECIAL_PROJECTS_HEADER_BASE_LEN
+            + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+            + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN
+            + SPECIAL_PROJECTS_HEADER_PROGRESS_LEN
+    ];
+    put_u64_at(&mut out, 0, 10);
+    put_u32_at(&mut out, 8, 5);
+    put_u32_at(&mut out, 12, 5);
+    put_u32_at(&mut out, 16, status);
+    put_u32_at(&mut out, 20, 1);
+    put_u32_at(&mut out, 24, 1);
+    put_u32_at(&mut out, 28, 1);
+    put_u32_at(&mut out, 32, 1);
+    put_u32_at(&mut out, 36, 1);
+    put_u32_at(&mut out, 40, 1);
+    put_u32_at(&mut out, 44, 1);
+    put_u32_at(&mut out, 48, 1);
+    put_u32_at(&mut out, 52, header_extension);
+    put_u64_at(&mut out, 56, 7);
+    let progress_offset = SPECIAL_PROJECTS_HEADER_BASE_LEN
+        + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+        + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN;
+    put_u32_at(&mut out, progress_offset, 1);
+    put_u32_at(&mut out, progress_offset + 4, 1);
+    put_u32_at(&mut out, progress_offset + 8, 1);
+    put_u32_at(&mut out, progress_offset + 12, 1);
+
+    for value in [
+        9,
+        123,
+        SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT
+            | SPECIAL_PROJECTS_FACILITY_SCIENTIST
+            | SPECIAL_PROJECTS_FACILITY_BUILDING,
+        101,
+        501,
+        2,
+        0,
+        0,
+        101,
+        9001,
+        3,
+        9,
+        SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY,
+        0,
+        501,
+        SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN
+            | SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME
+            | SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT
+            | SPECIAL_PROJECTS_SCIENTIST_SKILLS,
+        2,
+    ] {
+        push_u32(&mut out, value);
+    }
+    for value in [1, 2, 3, 4] {
+        push_i32(&mut out, value);
+    }
+    push_u32(&mut out, 0);
+    for value in [101, 9001, 11, 12, 13, 14, 15, 16, 4, 25_000, 100_000, 1] {
+        push_u32(&mut out, value);
+    }
+    for value in [47, 777, 12_345, 0] {
+        push_u32(&mut out, value);
+    }
+    push_str(&mut out, "facility_building");
+    push_str(&mut out, "scientist_token");
+    push_str(&mut out, "Scientist Name");
+    out
+}
+
+fn chunk3_frd_payload() -> Vec<u8> {
+    chunk3_frd_payload_versioned(true, 0)
+}
+
+fn chunk3_frd_payload_versioned(include_target: bool, omitted_targets: u32) -> Vec<u8> {
+    let mut out = vec![0u8; FRD_HEADER_LEN];
+    out[0..4].copy_from_slice(b"FRD2");
+    out[4..6].copy_from_slice(&FRD_SCHEMA_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(&(FRD_HEADER_LEN as u16).to_le_bytes());
+    // Exact focus-pause, target-union, and cooldown authorities plus the
+    // retained derived-direct-event badge.
+    put_u32_at(&mut out, 8, (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5));
+    put_u32_at(&mut out, 12, 1);
+    put_u32_at(&mut out, 16, 1);
+    put_u32_at(&mut out, 20, 1);
+    put_u32_at(&mut out, 24, 3);
+    put_u32_at(&mut out, 28, u32::from(include_target));
+    for offset in [32usize, 36, 40, 44, 48] {
+        put_u32_at(&mut out, offset, 1);
+    }
+    put_u32_at(&mut out, 44, 3);
+    put_u32_at(&mut out, 52, omitted_targets);
+    put_u32_at(&mut out, 56, 0); // FRD2 v4 raw DATA status
+    for value in [
+        47,
+        FRD_FOCUS_COMPLETED_COUNT_INCREASED,
+        0,
+        FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT,
+        2,
+        3,
+    ] {
+        push_u32(&mut out, value);
+    }
+    push_i32(&mut out, 1000);
+    push_i32(&mut out, 2000);
+    push_u32(&mut out, 1);
+    push_str(&mut out, "focus_old");
+    push_str(&mut out, "focus_new");
+    push_str(&mut out, "focus_done");
+
+    for value in [
+        47,
+        0,
+        FRD_RESEARCH_FLAG_ETA_AVAILABLE | FRD_RESEARCH_FLAG_BASE_PRESENT,
+        1,
+        10,
+        11,
+        20,
+        21,
+    ] {
+        push_u32(&mut out, value);
+    }
+    for value in [100, 150, 50, 5, 200, 12] {
+        push_i64(&mut out, value);
+    }
+
+    for value in [47, 1, 0, 2, 3, 4, 5] {
+        push_u32(&mut out, value);
+    }
+
+    push_u32(&mut out, 47);
+    push_u32(&mut out, 3);
+    push_u32(&mut out, 0);
+    push_i32(&mut out, 30);
+    push_i32(&mut out, 29);
+    push_i32(&mut out, 1);
+    push_i32(&mut out, 1);
+    push_str(&mut out, "decision_x");
+
+    for (kind, days, decision) in [
+        (6u32, 12i32, "decision_re_enable"),
+        (7u32, 5i32, "decision_remove"),
+    ] {
+        push_u32(&mut out, 47);
+        push_u32(&mut out, kind);
+        push_u32(&mut out, 0);
+        push_i32(&mut out, days);
+        push_i32(&mut out, days);
+        push_i32(&mut out, 0);
+        push_i32(&mut out, 0);
+        push_str(&mut out, decision);
+    }
+
+    if include_target {
+        push_u32(&mut out, 47);
+        push_u32(&mut out, 48);
+        push_u32(&mut out, FRD_DECISION_TARGET_COUNTRY_FLAGS);
+        push_u32(&mut out, FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED);
+        push_i32(&mut out, 0); // active
+        push_u32(&mut out, 0); // ignore=false
+        push_i32(&mut out, 44);
+        push_str(&mut out, "decision_target_country");
+    }
+
+    for value in [3, 3, 45, 1, 3] {
+        push_u32(&mut out, value);
+    }
+    push_str(
+        &mut out,
+        "direct_event_hooks_unavailable_transitions_derived_from_compact_frames",
+    );
+    out
+}
+
+fn chunk3_frd_payload_v2() -> Vec<u8> {
+    let mut v3 = chunk3_frd_payload_versioned(true, 0);
+    let token_start = v3
+        .windows("decision_target_country".len())
+        .position(|window| window == b"decision_target_country")
+        .expect("target token");
+    let target_row_start = token_start - 2 - FRD_DECISION_TARGET_ROW_FIXED_LEN;
+    v3.drain(
+        target_row_start + FRD_DECISION_TARGET_ROW_FIXED_LEN_V3
+            ..target_row_start + FRD_DECISION_TARGET_ROW_FIXED_LEN,
+    );
+    let mut out = Vec::with_capacity(v3.len() - 4);
+    out.extend_from_slice(&v3[..FRD_HEADER_LEN_V2]);
+    out[4..6].copy_from_slice(&FRD_SCHEMA_VERSION_V2.to_le_bytes());
+    out[6..8].copy_from_slice(&(FRD_HEADER_LEN_V2 as u16).to_le_bytes());
+    out.extend_from_slice(&v3[FRD_HEADER_LEN..]);
+    out
+}
+
+fn chunk3_frd_payload_old_header() -> Vec<u8> {
+    chunk3_frd_payload_old_header_with_elapsed(1000)
+}
+
+fn chunk3_frd_payload_old_header_with_elapsed(elapsed_wall_ms: u64) -> Vec<u8> {
+    let v2 = chunk3_frd_payload_versioned(false, 0);
+    let mut out = Vec::new();
+    out.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+    out.extend_from_slice(&v2[8..28]);
+    out.extend_from_slice(&v2[32..52]);
+    out.extend_from_slice(&v2[FRD_HEADER_LEN..]);
+    out
+}
+
+fn chunk3_frd_v5_direct_payload() -> Vec<u8> {
+    use direct_frd_transitions_live::{
+        DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let mut carrier = DirectEventCarrier::new();
+    let owner = carrier.allocate_instance_id().unwrap();
+    let subject = carrier.allocate_instance_id().unwrap();
+    carrier
+        .capture(UnsequencedDirectEventRow {
+            kind: DirectEventKind::FocusCompleted,
+            thread_id: 23,
+            game_hour_raw: raw_for(16_959_360),
+            root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+            owner_instance_id: owner,
+            subject_instance_id: subject,
+            argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+            owner_key: 1,
+            subject_token_hash: 1,
+            subject_key: 0,
+            input_bits: 0,
+            return_bits: 1,
+            before: DirectEventStateSummary::default(),
+            after: DirectEventStateSummary {
+                state_bits: 1 << 63,
+                ..DirectEventStateSummary::default()
+            },
+        })
+        .unwrap();
+    let rows = carrier.drain_rows().unwrap();
+    chunk3_frd_v5_direct_batch_payload(&direct_frd_transitions_live::DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 1,
+        installed_root_mask:
+            direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
+        observed_kind_mask:
+            direct_frd_transitions_live::DirectEventKind::FocusCompleted.root_mask_bit(),
+        sequence_cursor: 2,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows,
+    })
+}
+
+fn chunk3_frd_v5_direct_batch_payload(
+    batch: &direct_frd_transitions_live::DirectEventBatch,
+) -> Vec<u8> {
+    let trailer = direct_frd_transitions_live::encode_authoritative_trailer(batch).unwrap();
+    let mut out = vec![0u8; FRD_HEADER_LEN_V5];
+    out[0..4].copy_from_slice(b"FRD2");
+    out[4..6].copy_from_slice(&FRD_SCHEMA_VERSION_V5.to_le_bytes());
+    out[6..8].copy_from_slice(&(FRD_HEADER_LEN_V5 as u16).to_le_bytes());
+    put_u32_at(
+        &mut out,
+        8,
+        FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED
+            | (1 << 2) // direct transition coverage is represented
+            | (1 << 3) // focus pause is exact
+            | (1 << 4) // decision targets are exact
+            | (1 << 5), // decision cooldowns are exact
+    );
+    put_u32_at(&mut out, 60, batch.rows.len() as u32);
+    out.extend_from_slice(&trailer);
+    out
+}
+
+#[derive(Clone)]
+struct Chunk3ScriptedRow {
+    scope_kind: u32,
+    owner_id: u32,
+    value_kind: u32,
+    key: Option<&'static str>,
+    token_id: Option<u32>,
+    value_raw: Option<i64>,
+    date_hour_raw: Option<i32>,
+    deleted: bool,
+}
+
+fn chunk3_scripted_payload(status: u32, rows: &[Chunk3ScriptedRow]) -> Vec<u8> {
+    let mut key_table = Vec::new();
+    let mut encoded_rows = Vec::new();
+    let mut variable_rows = 0u32;
+    let mut flag_rows = 0u32;
+    let mut token_only_rows = 0u32;
+    for row in rows {
+        let mut flags = 0u32;
+        let key_offset = key_table.len() as u32;
+        let mut key_len = 0u32;
+        if let Some(key) = row.key {
+            flags |= SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT;
+            key_len = key.len() as u32;
+            key_table.extend_from_slice(key.as_bytes());
+        }
+        if row.token_id.is_some() {
+            flags |= SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT;
+        }
+        if row.value_raw.is_some() {
+            flags |= SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT;
+        }
+        if row.date_hour_raw.is_some() {
+            flags |= SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT;
+        }
+        if row.deleted {
+            flags |= SCRIPTED_STATE_ROW_FLAG_DELETED;
+        }
+        if row.value_kind == SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 {
+            variable_rows += 1;
+        }
+        if row.value_kind == SCRIPTED_STATE_VALUE_FLAG_NAMED
+            || row.value_kind == SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY
+        {
+            flag_rows += 1;
+        }
+        if row.value_kind == SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY {
+            token_only_rows += 1;
+        }
+        push_u32(&mut encoded_rows, row.scope_kind);
+        push_u32(&mut encoded_rows, row.owner_id);
+        push_u32(&mut encoded_rows, row.value_kind);
+        push_u32(&mut encoded_rows, flags);
+        push_u32(&mut encoded_rows, key_offset);
+        push_u32(&mut encoded_rows, key_len);
+        push_u32(&mut encoded_rows, row.token_id.unwrap_or(0));
+        push_i32(&mut encoded_rows, row.date_hour_raw.unwrap_or(0));
+        push_i64(&mut encoded_rows, row.value_raw.unwrap_or(0));
+        push_u32(&mut encoded_rows, 0);
+        push_u32(&mut encoded_rows, 0);
+    }
+    let mut out = vec![0u8; SCRIPTED_STATE_HEADER_LEN];
+    put_u64_at(&mut out, 0, 10);
+    put_u32_at(&mut out, 8, rows.len() as u32);
+    put_u32_at(&mut out, 12, key_table.len() as u32);
+    put_u32_at(&mut out, 16, rows.len() as u32);
+    put_u32_at(&mut out, 20, status);
+    put_u32_at(&mut out, 24, 3);
+    put_u32_at(&mut out, 28, 3);
+    put_u32_at(&mut out, 36, variable_rows);
+    put_u32_at(&mut out, 40, flag_rows);
+    put_u32_at(&mut out, 44, token_only_rows);
+    put_u32_at(&mut out, 48, 100_000);
+    put_u32_at(&mut out, 52, 2);
+    out.extend_from_slice(&encoded_rows);
+    out.extend_from_slice(&key_table);
+    out
+}
+
+#[test]
+fn chunk3_folds_d24_weather_under_map_r2_sidecar() {
+    let snapshot = snapshot_for_domain_records(vec![(24, chunk3_weather_payload(0))]);
+
+    let weather = &snapshot["map"]["_r2_weather_live"];
+    assert_eq!(weather["active_region_count"], json!(1));
+    assert_eq!(weather["regions"]["12"]["temperature"], json!(21.5));
+    assert_eq!(weather["regions"]["12"]["rain_light"], json!(true));
+    assert_eq!(weather["regions"]["12"]["weather_kind"], json!("rain_light"));
+    assert_eq!(weather["regions"]["12"]["phenomenon_active"], json!(true));
+}
+
+#[test]
+fn chunk3_d24_delta_recomputes_merged_305_region_active_count() {
+    let snapshots = chunk1_snapshots(vec![
+        vec![(24, chunk3_weather_payload(0))],
+        vec![(24, chunk3_weather_delta_activating_region(20))],
+    ]);
+
+    assert_eq!(snapshots[0]["map"]["_r2_weather_live"]["active_region_count"], json!(1));
+    let weather = &snapshots[1]["map"]["_r2_weather_live"];
+    assert_eq!(weather["regions"].as_object().unwrap().len(), WEATHER_REGION_ROWS);
+    assert_eq!(weather["active_region_count"], json!(2));
+    assert_eq!(weather["regions"]["12"]["weather_kind"], json!("rain_light"));
+    assert_eq!(weather["regions"]["20"]["weather_kind"], json!("rain_heavy"));
+}
+
+#[test]
+fn chunk3_folds_d26_equipment_only_on_unique_division_join() {
+    let divisions = chunk3_division_payload(&[(17, 4713, 47)]);
+    let equipment = chunk3_division_equipment_payload(
+        0,
+        &[(47, 17, 0, 0, 0, 2)],
+        &[(11, 250_000), (12, 750_000)],
+    );
+    let snapshot = snapshot_for_domain_records(vec![(20, divisions), (26, equipment)]);
+
+    let divs = snapshot["divisions"].as_array().unwrap();
+    assert_eq!(divs.len(), 1);
+    assert_eq!(divs[0]["equipment"][0]["equip_id"], json!(11));
+    assert_eq!(divs[0]["equipment"][0]["amount"], json!(2.5));
+    assert_eq!(divs[0]["equipment"][1]["amount"], json!(7.5));
+}
+
+#[test]
+fn chunk3_d26_rowless_partial_marks_unknown_without_clearing_equipment() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (20, chunk3_division_payload(&[(17, 4713, 47)])),
+            (
+                26,
+                chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]),
+            ),
+        ],
+        vec![(
+            26,
+            chunk3_rowless_division_equipment_payload(COMPACT_STATUS_PARTIAL_DATA, 2, 1, 1),
+        )],
+        vec![],
+        vec![(
+            26,
+            chunk3_rowless_division_equipment_payload(DELTA, 2, 2, 1),
+        )],
+    ]);
+
+    assert_eq!(
+        snaps[0]["divisions"][0]["equipment"][0]["equip_id"],
+        json!(11)
+    );
+    assert_eq!(snaps[1]["divisions"][0]["equipment"], Value::Null);
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(26)
+            && problem["problem"] == json!("partial_data_rowless")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("division_equipment rowless partial data")));
+    assert_eq!(
+        snaps[2]["divisions"][0]["equipment"],
+        Value::Null,
+        "an absent follow-up record must not advertise carried equipment as current"
+    );
+    assert_eq!(
+        snaps[3]["divisions"][0]["equipment"][0]["equip_id"],
+        json!(11),
+        "a later clean delta makes the retained accumulator current again"
+    );
+}
+
+#[test]
+fn chunk3_d26_expected_partial_before_baseline_is_unknown() {
+    let snap = chunk1_one_snapshot(vec![
+        (20, chunk3_division_payload(&[(17, 1, 47)])),
+        (
+            26,
+            chunk3_division_equipment_payload(
+                COMPACT_STATUS_PARTIAL_DATA,
+                &[(47, 17, 0, 0, 0, 1)],
+                &[(11, 250_000)],
+            ),
+        ),
+    ]);
+
+    assert_eq!(snap["divisions"][0]["equipment"], Value::Null);
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(26)
+            && problem["problem"] == json!("partial_before_baseline")));
+}
+
+#[test]
+fn chunk3_d26_sparse_partial_updates_present_rows_and_retains_skipped_prior() {
+    let mut sparse_partial = chunk3_division_equipment_payload(
+        COMPACT_STATUS_PARTIAL_DATA | DELTA,
+        &[(47, 17, 0, 0, 0, 1)],
+        &[(21, 450_000)],
+    );
+    sparse_partial[24..28].copy_from_slice(&2u32.to_le_bytes());
+
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (20, chunk3_division_payload(&[(17, 1, 47), (18, 1, 47)])),
+            (
+                26,
+                chunk3_division_equipment_payload(
+                    0,
+                    &[(47, 17, 0, 0, 0, 1), (47, 18, 0, 0, 1, 1)],
+                    &[(11, 250_000), (12, 750_000)],
+                ),
+            ),
+        ],
+        vec![(26, sparse_partial)],
+        vec![(
+            26,
+            chunk3_rowless_division_equipment_payload(DELTA, 2, 2, 2),
+        )],
+    ]);
+
+    assert_eq!(snaps[1]["divisions"][0]["equipment"], Value::Null);
+    assert_eq!(snaps[1]["divisions"][1]["equipment"], Value::Null);
+    let divs = snaps[2]["divisions"].as_array().unwrap();
+    let div17 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("17:1"))
+        .unwrap();
+    let div18 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("18:1"))
+        .unwrap();
+    assert_eq!(div17["equipment"][0]["equip_id"], json!(21));
+    assert_eq!(div17["equipment"][0]["amount"], json!(4.5));
+    assert_eq!(div18["equipment"][0]["equip_id"], json!(12));
+    assert_eq!(div18["equipment"][0]["amount"], json!(7.5));
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(26)
+            && problem["problem"] == json!("partial_data")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("collector-baseline alignment")));
+}
+
+#[test]
+fn chunk3_d26_ambiguous_join_is_dropped_and_counted() {
+    let divisions = chunk3_division_payload(&[(17, 1, 47), (17, 2, 47)]);
+    let equipment = chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]);
+    let snapshot = snapshot_for_domain_records(vec![(20, divisions), (26, equipment)]);
+
+    for div in snapshot["divisions"].as_array().unwrap() {
+        assert!(div.get("equipment").is_none());
+    }
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("ambiguous")));
+}
+
+#[test]
+fn chunk3_d26_prunes_equipment_when_d20_deletes_division_before_id_reuse() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (20, chunk3_division_payload(&[(17, 1, 47)])),
+            (
+                26,
+                chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]),
+            ),
+        ],
+        vec![(20, chunk3_division_delete_payload(17, 1))],
+        vec![(20, chunk3_division_payload(&[(17, 2, 47)]))],
+    ]);
+
+    assert_eq!(
+        snaps[0]["divisions"][0]["equipment"][0]["equip_id"],
+        json!(11)
+    );
+    assert_eq!(snaps[1]["divisions"], json!([]));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("division_equipment_live pruned 1 row")));
+    let reused = &snaps[2]["divisions"][0];
+    assert_eq!(reused["div_uid"], json!("17:2"));
+    assert_eq!(
+        reused["equipment"],
+        Value::Null,
+        "D26 is absent in the reuse hour, so equipment is unknown rather than inherited"
+    );
+}
+
+#[test]
+fn chunk3_d26_duplicate_rows_clear_only_ambiguous_key_and_apply_clean_rows() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (20, chunk3_division_payload(&[(17, 1, 47), (18, 1, 47)])),
+            (
+                26,
+                chunk3_division_equipment_payload(
+                    0,
+                    &[(47, 17, 0, 0, 0, 1), (47, 18, 0, 0, 1, 1)],
+                    &[(11, 250_000), (12, 500_000)],
+                ),
+            ),
+        ],
+        vec![(
+            26,
+            chunk3_division_equipment_payload(
+                DELTA,
+                &[
+                    (47, 17, 0, 0, 0, 1),
+                    (47, 17, 0, 0, 1, 1),
+                    (47, 18, 0, 0, 2, 1),
+                ],
+                &[(21, 100_000), (22, 200_000), (23, 300_000)],
+            ),
+        )],
+    ]);
+
+    let divs = snaps[1]["divisions"].as_array().unwrap();
+    let div17 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("17:1"))
+        .unwrap();
+    let div18 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("18:1"))
+        .unwrap();
+    assert!(div17.get("equipment").is_none());
+    assert_eq!(div18["equipment"][0]["equip_id"], json!(23));
+    assert_eq!(div18["equipment"][0]["amount"], json!(3.0));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("dropped 2 duplicate-key row")));
+}
+
+#[test]
+fn chunk3_folds_d41_projects_with_raw_handle_r2_fields() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (41, chunk3_projects_payload(0)),
+    ]);
+
+    let projects = &snapshot["special_projects"];
+    assert_eq!(projects["source"], json!("scan"));
+    assert_eq!(
+        projects["facilities"]["9"]["building"],
+        json!("facility_building")
+    );
+    assert_eq!(
+        projects["facilities"]["9"]["_r2_active_project_handle"],
+        json!(101)
+    );
+    assert_eq!(
+        projects["_r2_project_states"]["101"]["_r2_static_def_handle"],
+        json!(9001)
+    );
+    assert_eq!(projects["_r2_breakthroughs"][0]["country"], json!("GER"));
+    assert_eq!(
+        projects["_r2_breakthroughs"][0]["specialization"],
+        Value::Null
+    );
+    // Wave-5: no PLCF trailer in this base payload -> lifecycle not measured.
+    assert_eq!(projects["project_lifecycle"], Value::Null);
+    assert_eq!(projects["reward_history"], Value::Null);
+}
+
+#[test]
+fn x9_d41_folds_exact_specialization_enum_and_strips_engine_handle() {
+    let mut payload = chunk3_projects_payload(0);
+    put_u32_at(
+        &mut payload,
+        52,
+        SPECIAL_PROJECTS_HEADER_EXT_SPECIALIZATION_V1,
+    );
+    let breakthrough_offset = SPECIAL_PROJECTS_HEADER_BASE_LEN
+        + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+        + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN
+        + SPECIAL_PROJECTS_HEADER_PROGRESS_LEN
+        + SPECIAL_PROJECTS_FACILITY_ROW_LEN
+        + SPECIAL_PROJECTS_PROJECT_ROW_LEN
+        + SPECIAL_PROJECTS_SCIENTIST_ROW_LEN
+        + SPECIAL_PROJECTS_PROJECT_STATE_ROW_LEN;
+    put_u32_at(
+        &mut payload,
+        breakthrough_offset + 12,
+        SPECIAL_PROJECTS_BREAKTHROUGH_SPECIALIZATION_PRESENT | (3 << 1),
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (41, payload),
+    ]);
+    let row = &snapshot["special_projects"]["_r2_breakthroughs"][0];
+    assert_eq!(row["specialization"], json!("specialization_air"));
+    assert_eq!(
+        row["_r2_specialization_authority"],
+        json!("exact_a729_serializer_token_enum_join")
+    );
+    assert_eq!(row["_r2_country_authority"], json!("exact_country_identity"));
+    assert!(row.get("_r2_specialization_handle").is_none());
+    assert_eq!(row["points_raw"], json!(12_345));
+}
+
+#[test]
+fn chunk3_folds_d41_project_lifecycle_trailer() {
+    let mut payload = chunk3_projects_payload(0);
+    // GER(47): local 1 started+completed, local 2 started only.
+    // SOV(48): local 3 neither. 1 country aborted fail-closed elsewhere.
+    append_project_lifecycle_trailer(
+        &mut payload,
+        &[
+            (47, 1, true, true),
+            (47, 2, true, false),
+            (48, 3, false, false),
+        ],
+        2,
+        1,
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SOV")])),
+        (41, payload),
+    ]);
+
+    let lifecycle = &snapshot["special_projects"]["project_lifecycle"];
+    assert_eq!(lifecycle["row_count"], json!(3));
+    assert_eq!(lifecycle["started_count"], json!(2));
+    assert_eq!(lifecycle["completed_count"], json!(1));
+    assert_eq!(lifecycle["walked_countries"], json!(2));
+    assert_eq!(lifecycle["aborted_countries"], json!(1));
+    // GER's two projects, keyed by resolved TAG.
+    let ger = lifecycle["countries"]["GER"].as_array().unwrap();
+    assert_eq!(ger.len(), 2);
+    assert_eq!(ger[0]["local_id"], json!(1));
+    assert_eq!(ger[0]["started"], json!(true));
+    assert_eq!(ger[0]["completed"], json!(true));
+    assert_eq!(ger[1]["local_id"], json!(2));
+    assert_eq!(ger[1]["completed"], json!(false));
+    // SOV's single project, neither flag.
+    let sov = lifecycle["countries"]["SOV"].as_array().unwrap();
+    assert_eq!(sov[0]["local_id"], json!(3));
+    assert_eq!(sov[0]["started"], json!(false));
+}
+
+#[test]
+fn chunk3_d41_lifecycle_trailer_duplicate_key_fails_fold_closed() {
+    let mut payload = chunk3_projects_payload(0);
+    // Duplicate (47, 1): the whole D41 fold must fail closed (no
+    // special_projects this hour).
+    append_project_lifecycle_trailer(
+        &mut payload,
+        &[(47, 1, true, false), (47, 1, false, true)],
+        1,
+        0,
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (41, payload),
+    ]);
+    // Fold rejected the malformed payload -> special_projects unknown/null.
+    assert!(snapshot["special_projects"].is_null());
+}
+
+#[test]
+fn chunk3_folds_d41_owner_joined_project_progress() {
+    let mut payload = chunk3_projects_payload(0);
+    append_project_lifecycle_trailer(
+        &mut payload,
+        &[(47, 7, true, false), (48, 7, true, true)],
+        2,
+        0,
+    );
+    append_project_owner_progress_trailer(
+        &mut payload,
+        &[(47, 7, 6655, 3_000_000, 60, false), (48, 7, 7001, 4_000_000, 80, true)],
+        2,
+        0,
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SOV")])),
+        (41, payload),
+    ]);
+    let progress = &snapshot["special_projects"]["project_progress"];
+    assert_eq!(progress["authority"], json!("exact_a729_owner_joined_project_progress"));
+    assert_eq!(progress["row_count"], json!(2));
+    assert_eq!(progress["countries"]["GER"][0]["local_id"], json!(7));
+    assert_eq!(progress["countries"]["SOV"][0]["local_id"], json!(7));
+    assert_eq!(
+        progress["countries"]["GER"][0]["phase_progress_raw"],
+        json!(3_000_000)
+    );
+}
+
+#[test]
+fn chunk3_folds_d41_lifecycle_then_reward_history_segments() {
+    let mut payload = chunk3_projects_payload(0);
+    append_project_lifecycle_trailer(&mut payload, &[(47, 7, false, true)], 1, 0);
+    append_project_reward_history_trailer(&mut payload);
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (41, payload),
+    ]);
+    let history = &snapshot["special_projects"]["reward_history"];
+    assert_eq!(history["row_count"], json!(1));
+    assert_eq!(history["walked_countries"], json!(1));
+    let row = &history["countries"]["GER"][0];
+    assert_eq!(row["local_id"], json!(7));
+    assert_eq!(row["history_index"], json!(0));
+    assert_eq!(row["prototype_reward_handle"], json!(0x4C17));
+    assert_eq!(row["province"], json!(-1));
+    assert_eq!(row["scientist_ref_raw"], json!(1234));
+    assert_eq!(row["country_ref_raw"], Value::Null);
+}
+
+#[test]
+fn chunk3_folds_d45_depth_annotations_and_country_targets() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (
+            45,
+            chunk3_frd_payload(),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(ger["focus"]["_r2_depth_completed_count"], json!(3));
+    assert_eq!(
+        ger["research"]["_r2_depth_in_progress_live"][0]["eta_hours"],
+        json!(12)
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["decision"],
+        json!("decision_target_country")
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["target"],
+        json!("SPR")
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_events"][1],
+        json!({
+            "kind": 6,
+            "previous_days": 12,
+            "current_days": 12,
+            "previous_state": 0,
+            "current_state": 0,
+            "decision": "decision_re_enable",
+        })
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_events"][2],
+        json!({
+            "kind": 7,
+            "previous_days": 5,
+            "current_days": 5,
+            "previous_state": 0,
+            "current_state": 0,
+            "decision": "decision_remove",
+        })
+    );
+    assert!(ger["decisions"].get("_r2_depth_target_rows").is_none());
+    assert_eq!(
+        snapshot["provenance"]["collector"]["_r2_depth_badges"][0]["source_domain_id"],
+        json!(45)
+    );
+}
+
+#[test]
+fn chunk3_folds_d45_schema_v2_compatibility() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (
+            45,
+            chunk3_frd_payload_v2(),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["target"],
+        json!("SPR")
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn chunk3_folds_d45_old_header_without_treating_elapsed_as_targets() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (45, chunk3_frd_payload_old_header()),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert!(ger["decisions"].get("_r2_depth_targets").is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn chunk3_folds_d45_old_header_frd2_elapsed_collision_as_v1() {
+    let payload = chunk3_frd_payload_old_header_with_elapsed(843_338_310);
+    assert_eq!(&payload[0..4], b"FRD2");
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (45, payload),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert!(ger["decisions"].get("_r2_depth_targets").is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn chunk3_folds_d45_v5_direct_history_as_cumulative_pointer_free_root() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![(
+        45,
+        chunk3_frd_v5_direct_payload(),
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+    )]);
+    let rows = snapshot["_r2_direct_frd_transitions"]["transitions"]
+        .as_array()
+        .expect("validated direct history");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["sequence"], json!(1));
+    assert_eq!(rows[0]["kind"], json!("focus_completion"));
+    assert_eq!(rows[0]["hook_rva"], json!(0x002c_ef60u32));
+    assert_eq!(rows[0]["original_returned"], json!(true));
+    assert_eq!(snapshot["_r2_direct_frd_transitions"]["hook_epoch"], json!(1));
+    assert!(rows[0].get("pointer").is_none());
+}
+
+#[test]
+fn chunk3_folds_d45_v5_empty_logical_stream_baseline_after_prior_drains() {
+    let batch = direct_frd_transitions_live::DirectEventBatch {
+        hook_epoch: 7,
+        drain_sequence: 4,
+        installed_root_mask:
+            direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
+        observed_kind_mask:
+            direct_frd_transitions_live::DirectEventKind::FocusCompleted.root_mask_bit(),
+        sequence_cursor: 3,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: Vec::new(),
+    };
+    let payload = chunk3_frd_v5_direct_batch_payload(&batch);
+    crate::domain_data_authority::summarize_domain_data_payload(
+        45,
+        &payload,
+        crate::domain_data_authority::DomainDataContext {
+            record_flags: COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            ..crate::domain_data_authority::DomainDataContext::default()
+        },
+    )
+    .expect("empty process-continuous D45 baseline is exact");
+
+    let snapshot = snapshot_for_domain_records_with_flags(vec![(
+        45,
+        payload,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+    )]);
+    assert_eq!(
+        snapshot["_r2_direct_frd_transitions"]["hook_epoch"],
+        json!(7)
+    );
+    assert_eq!(
+        snapshot["_r2_direct_frd_transitions"]["last_drain_sequence"],
+        json!(4)
+    );
+    assert_eq!(
+        snapshot["_r2_direct_frd_transitions"]["transitions"],
+        json!([])
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn chunk3_folds_d45_schema_v2_flag_without_frd2_as_malformed_unknown() {
+    let payload = chunk3_frd_payload_old_header();
+    assert_ne!(payload.get(0..4), Some(b"FRD2".as_slice()));
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (45, payload, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2),
+    ]);
+
+    let countries = snapshot["countries"].as_object().unwrap();
+    assert!(countries.values().all(|country| country
+        .get("decisions")
+        .and_then(|decisions| decisions.get("_r2_depth_status"))
+        .is_none()));
+    assert!(countries.values().all(|country| country
+        .get("decisions")
+        .and_then(|decisions| decisions.get("_r2_depth_targets"))
+        .is_none()));
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(45)
+            && problem["problem"] == json!("malformed_payload")));
+    assert!(!snapshot["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|domain| domain == "focus_research_decisions_depth_live"));
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("missing FRD2 sanity marker")));
+}
+
+#[test]
+fn chunk3_folds_d45_omitted_targets_as_partial_provenance_note() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (
+            45,
+            chunk3_frd_payload_versioned(true, 1),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"],
+        Value::Null,
+        "omitted target rows make the country target list incomplete"
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(45)
+            && problem["problem"] == json!("partial_data")));
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("omitted 1 unreadable targeted-timed country target row")));
+}
+
+#[test]
+fn chunk3_folds_d51_scripted_state_and_keeps_opaque_status_nonfatal() {
+    let rows = vec![
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64,
+            key: Some("global_var"),
+            token_id: None,
+            value_raw: Some(250_000),
+            date_hour_raw: None,
+            deleted: false,
+        },
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_COUNTRY,
+            owner_id: 47,
+            value_kind: SCRIPTED_STATE_VALUE_FLAG_NAMED,
+            key: Some("country_flag"),
+            token_id: None,
+            value_raw: Some(1),
+            date_hour_raw: Some(123),
+            deleted: false,
+        },
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_STATE,
+            owner_id: 100,
+            value_kind: SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64,
+            key: Some("state_var"),
+            token_id: None,
+            value_raw: Some(50_000),
+            date_hour_raw: None,
+            deleted: false,
+        },
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE,
+            key: Some("__delayed_events_root_unresolved"),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        },
+    ];
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (
+            51,
+            chunk3_scripted_payload(SCRIPTED_STATE_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED, &rows),
+        ),
+    ]);
+
+    assert_eq!(snapshot["world"]["variables"]["global_var"], json!(2.5));
+    assert_eq!(
+        snapshot["countries"]["GER"]["extra"]["script_flags"]["country_flag"]["date_hour_raw"],
+        json!(123)
+    );
+    assert_eq!(
+        snapshot["states"]["100"]["_r2_scripted_state"]["variables"]["state_var"],
+        json!(0.5)
+    );
+    assert_eq!(
+        snapshot["world"]["_r2_scripted_state_badges"][0]["value_kind"],
+        json!(SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE)
+    );
+    let problems = snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems.is_empty());
+}
+
+#[test]
+fn chunk3_d51_lane_local_bits_preserve_opaque_badges_without_failure() {
+    let rows = vec![
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE,
+            key: Some("__delayed_events_root_unresolved"),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        },
+        Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE,
+            key: Some("__scripted_gui_root_unresolved"),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        },
+    ];
+    let status = SCRIPTED_STATE_STATUS_FLAG_NAMES_PARTIAL
+        | SCRIPTED_STATE_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+        | SCRIPTED_STATE_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
+    let snapshot = snapshot_for_domain_records(vec![(51, chunk3_scripted_payload(status, &rows))]);
+
+    let badges = snapshot["world"]["_r2_scripted_state_badges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(badges.len(), 2);
+    assert_eq!(
+        badges[0]["value_kind"],
+        json!(SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE)
+    );
+    assert_eq!(
+        badges[1]["value_kind"],
+        json!(SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE)
+    );
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let notes = snapshot["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("delayed-event root unresolved")));
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("scripted-GUI root unresolved")));
+}
+
+// --- the main multi-domain, multi-hour, delta + delete test --------------
+
+#[test]
+fn folds_two_hours_full_then_delta_with_delete() {
+    // Two adjacent game hours. Hour A = full baseline for divisions + map,
+    // full frames for fuel + production. Hour B = a divisions delta (move div 17,
+    // delete div 18) and a map_control delta (flip one state controller).
+    let hi_a = 16_959_360i64;
+    let hi_b = 16_959_361i64;
+    let raw_a = raw_for(hi_a);
+    let raw_b = raw_for(hi_b);
+    let tag: u32 = 47;
+
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, raw, dom, rt, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, rt, pl);
+        *seq += 1;
+    };
+
+    // ---- hour A ----
+    // fuel: current 123.5, max 456.25 (raw = value*32768)
+    let fuel_a = fuel_payload(&[(
+        tag,
+        (123.5 * 32768.0) as i64,
+        (456.25 * 32768.0) as i64,
+        (2.0 * 32768.0) as i64,
+        (-1.0 * 32768.0) as i64,
+    )]);
+    push(
+        &mut stream,
+        &mut seq,
+        raw_a,
+        10,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &fuel_a,
+    );
+
+    // production: stockpile 55.0, 3 active factories on the mil line
+    let prod_a = production_payload(tag, (55.0 * 100_000.0) as i64, 3);
+    push(
+        &mut stream,
+        &mut seq,
+        raw_a,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &prod_a,
+    );
+
+    // divisions baseline: div 17 (moving toward 200) and div 18 (static)
+    let mut div_a = Vec::new();
+    divisions_header(&mut div_a, 2, 0);
+    // div 17: moving(bit0) + has_target(bit2) + has_owner(bit5) + template(1<<13)
+    push_div_row(
+        &mut div_a,
+        17,
+        1 | (1 << 5) | DIV_FLAG_TEMPLATE,
+        118,
+        (30.0 * 100_000.0) as u32,
+        (90.0 * 100_000.0) as u32,
+        3101,
+        tag,
+    );
+    // div 18: static, has_owner
+    push_div_row(
+        &mut div_a,
+        18,
+        1 << 5,
+        119,
+        (25.0 * 100_000.0) as u32,
+        (80.0 * 100_000.0) as u32,
+        0,
+        48,
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        raw_a,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_a,
+    );
+
+    // map_control baseline: state 5 owned+controlled by tag 47; province 900 controlled by 47
+    let mut mc_a = Vec::new();
+    map_control_header(&mut mc_a, 1, 1, 0);
+    push_state_row(&mut mc_a, 5, 47, 47);
+    push_prov_row(&mut mc_a, 900, 47, 5);
+    push(
+        &mut stream,
+        &mut seq,
+        raw_a,
+        22,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &mc_a,
+    );
+
+    push(
+        &mut stream,
+        &mut seq,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    // ---- hour B ----
+    // divisions delta: div 17 now at province 200 (moved, no longer moving),
+    // div 18 deleted.
+    let mut div_b = Vec::new();
+    divisions_header(&mut div_b, 2, DELTA);
+    push_div_row(
+        &mut div_b,
+        17,
+        (1 << 5) | DIV_FLAG_TEMPLATE,
+        200,
+        (28.0 * 100_000.0) as u32,
+        (88.0 * 100_000.0) as u32,
+        3101,
+        tag,
+    );
+    // deleted row must be zero-filled except id/type/flags
+    push_div_row(&mut div_b, 18, DIV_FLAG_DELETED, 0, 0, 0, 0, 0);
+    push(
+        &mut stream,
+        &mut seq,
+        raw_b,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_b,
+    );
+
+    // map_control delta: state 5 controller flips to tag 48 (owner stays 47)
+    let mut mc_b = Vec::new();
+    map_control_header(&mut mc_b, 1, 0, DELTA);
+    push_state_row(&mut mc_b, 5, 47, 48);
+    push(
+        &mut stream,
+        &mut seq,
+        raw_b,
+        22,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &mc_b,
+    );
+
+    push(
+        &mut stream,
+        &mut seq,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    // ---- fold ----
+    let mut fold = WorldFold::new("test_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2, "one snapshot per game hour");
+
+    // ---- hour A assertions ----
+    let (a_hi, a_date, a_bytes) = &snaps[0];
+    assert_eq!(*a_hi, hi_a);
+    assert_eq!(a_date, &date_from_raw(raw_a).unwrap());
+    let a = parse(a_bytes);
+    assert_eq!(a["schema_version"], json!("1"));
+    assert_eq!(a["game_id"], json!("test_game"));
+    assert_eq!(a["hour_index"], json!(hi_a));
+    // every top-level container present
+    for key in [
+        "countries",
+        "states",
+        "provinces",
+        "divisions",
+        "combats",
+        "diplomacy_world",
+        "map",
+        "designs",
+        "order_of_battle",
+        "naval_air",
+        "supply",
+        "strategic_air",
+        "strategic_operatives",
+        "raids",
+        "world_events",
+        "world",
+        "events",
+        "provenance",
+    ] {
+        assert!(a.get(key).is_some(), "missing top-level {key}");
+    }
+    // provenance: mod null, collector captured, domains recorded, TAG pending
+    assert_eq!(a["provenance"]["mod"], Value::Null);
+    assert_eq!(a["provenance"]["collector"]["captured"], json!(true));
+    assert_eq!(a["tag_db_id_index"]["resolved"], json!(false));
+    let dom_list = a["provenance"]["collector"]["domains"].as_array().unwrap();
+    for name in ["fuel_live", "production_live", "divisions", "map_control"] {
+        assert!(
+            dom_list.iter().any(|d| d == name),
+            "domain {name} not in provenance"
+        );
+    }
+
+    // fuel folded and scaled
+    let c = &a["countries"]["47"];
+    assert!((c["fuel"]["current"].as_f64().unwrap() - 123.5).abs() < 1e-6);
+    assert!((c["fuel"]["max"].as_f64().unwrap() - 456.25).abs() < 1e-6);
+    assert!((c["fuel"]["cost"].as_f64().unwrap() - (-1.0)).abs() < 1e-6);
+
+    // production folded: stockpile is a schema §3.6 variant-id -> amount MAP
+    // (the shape the replay `ProductionView.stockpile` consumer reads), with the
+    // derived `stockpile_total` sum and per-branch active-factory sums.
+    let prod = &c["production"];
+    assert!((prod["stockpile"]["101"].as_f64().unwrap() - 55.0).abs() < 1e-6);
+    assert!((prod["stockpile_total"].as_f64().unwrap() - 55.0).abs() < 1e-6);
+    assert_eq!(prod["military_lines"][0]["active_factories"], json!(3));
+    assert_eq!(prod["military_factories"], json!(3));
+    assert!(prod.as_object().unwrap().get("naval_lines").is_none());
+    assert!(prod.as_object().unwrap().get("naval_factories").is_none());
+    assert_eq!(prod["construction_queue"][0]["template_id"], json!(20013));
+
+    // divisions: two present, keyed by uid, owner as stringified tag_db_id
+    let divs = a["divisions"].as_array().unwrap();
+    assert_eq!(divs.len(), 2);
+    let d17 = divs.iter().find(|d| d["div_uid"] == "17:4713").unwrap();
+    assert_eq!(d17["owner"], json!("47"));
+    assert_eq!(d17["location_province"], json!(118));
+    assert_eq!(d17["moving"], json!(true));
+    assert_eq!(d17["template_id"], json!(3101));
+    assert!((d17["organisation"].as_f64().unwrap() - 30.0).abs() < 1e-6);
+
+    // map_control baseline
+    assert_eq!(a["states"]["5"]["owner"], json!("47"));
+    assert_eq!(a["states"]["5"]["controller"], json!("47"));
+    assert_eq!(a["provinces"]["900"]["controller"], json!("47"));
+    assert_eq!(a["provinces"]["900"]["state_id"], json!(5));
+    // map layer mirror
+    assert_eq!(a["map"]["owner_by_state"]["5"], json!("47"));
+    assert_eq!(a["map"]["control_by_province"]["900"], json!("47"));
+
+    // ---- hour B assertions (delta applied) ----
+    let (b_hi, _, b_bytes) = &snaps[1];
+    assert_eq!(*b_hi, hi_b);
+    let b = parse(b_bytes);
+
+    // div 17 moved to 200 and is no longer moving; div 18 deleted
+    let divs_b = b["divisions"].as_array().unwrap();
+    assert_eq!(divs_b.len(), 1, "div 18 should be removed by delta delete");
+    let d17b = &divs_b[0];
+    assert_eq!(d17b["div_uid"], json!("17:4713"));
+    assert_eq!(d17b["location_province"], json!(200));
+    assert_eq!(d17b["moving"], json!(false));
+
+    // map delta: state 5 controller flipped to 48, owner carried as 47
+    assert_eq!(b["states"]["5"]["controller"], json!("48"));
+    assert_eq!(b["states"]["5"]["owner"], json!("47"));
+    // province 900 carried over from the baseline (delta emitted no province rows)
+    assert_eq!(b["provinces"]["900"]["controller"], json!("47"));
+
+    // fuel/production carried across the hour (full domains not re-sent stay put)
+    assert!((b["countries"]["47"]["fuel"]["current"].as_f64().unwrap() - 123.5).abs() < 1e-6);
+
+    // hour B provenance only lists the domains that fed rows THIS hour
+    let dom_b = b["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(dom_b.iter().any(|d| d == "divisions"));
+    assert!(dom_b.iter().any(|d| d == "map_control"));
+    assert!(!dom_b.iter().any(|d| d == "fuel_live"));
+}
+
+#[test]
+fn d20_max_organisation_folds_only_from_extended_authenticated_operand() {
+    let mut extended = Vec::new();
+    divisions_header(&mut extended, 1, 0);
+    push_div_row_with_max_organisation(&mut extended, 17, 4_200_000, Some(8_400_000));
+    let measured = snapshot_for_domain_records(vec![(20, extended)]);
+    let row = &measured["divisions"][0];
+    assert_eq!(row["organisation"], json!(42.0));
+    assert_eq!(row["max_organisation"], json!(84.0));
+
+    let mut extended_absent = Vec::new();
+    divisions_header(&mut extended_absent, 1, 0);
+    push_div_row_with_max_organisation(&mut extended_absent, 17, 4_200_000, None);
+    let absent = snapshot_for_domain_records(vec![(20, extended_absent)]);
+    assert_eq!(absent["divisions"][0]["max_organisation"], Value::Null);
+
+    let mut legacy = Vec::new();
+    divisions_header(&mut legacy, 1, 0);
+    push_div_row(
+        &mut legacy,
+        17,
+        0,
+        118,
+        4_200_000,
+        95_000_000,
+        0,
+        0,
+    );
+    let legacy = snapshot_for_domain_records(vec![(20, legacy)]);
+    assert_eq!(
+        legacy["divisions"][0]["max_organisation"],
+        Value::Null,
+        "retained 104-byte rows must not synthesize a denominator"
+    );
+}
+
+#[test]
+fn delta_before_baseline_emits_null_and_domain_problem() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let tag: u32 = 47;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let mut div_delta = Vec::new();
+    divisions_header(&mut div_delta, 1, DELTA);
+    push_div_row(
+        &mut div_delta,
+        17,
+        (1 << 5) | DIV_FLAG_TEMPLATE,
+        118,
+        (30.0 * 100_000.0) as u32,
+        (90.0 * 100_000.0) as u32,
+        3101,
+        tag,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_delta,
+    );
+    seq += 1;
+
+    let mut map_delta = Vec::new();
+    map_control_header(&mut map_delta, 1, 1, DELTA);
+    push_state_row(&mut map_delta, 5, 47, 48);
+    push_prov_row(&mut map_delta, 900, 48, 5);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        22,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &map_delta,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("delta_before_baseline_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+
+    assert_eq!(s["divisions"], Value::Null);
+    assert_eq!(s["states"], json!({}));
+    assert_eq!(s["provinces"], json!({}));
+    assert_eq!(s["map"]["owner_by_state"], Value::Null);
+    assert_eq!(s["map"]["control_by_province"], Value::Null);
+    let problems = s["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems.iter().any(|problem| {
+        problem["domain_id"] == json!(20) && problem["problem"] == json!("delta_before_baseline")
+    }));
+    assert!(problems.iter().any(|problem| {
+        problem["domain_id"] == json!(22) && problem["problem"] == json!("delta_before_baseline")
+    }));
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(notes
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("delta_before_baseline")));
+}
+
+#[test]
+fn failed_delta_capable_hour_is_unknown_but_next_delta_uses_prior_baseline() {
+    let hi_a = 16_959_360i64;
+    let hi_b = 16_959_361i64;
+    let hi_c = 16_959_362i64;
+    let raw_a = raw_for(hi_a);
+    let raw_b = raw_for(hi_b);
+    let raw_c = raw_for(hi_c);
+    let tag: u32 = 47;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let mut div_a = Vec::new();
+    divisions_header(&mut div_a, 1, 0);
+    push_div_row(
+        &mut div_a,
+        17,
+        (1 << 5) | DIV_FLAG_TEMPLATE,
+        118,
+        (30.0 * 100_000.0) as u32,
+        (90.0 * 100_000.0) as u32,
+        3101,
+        tag,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_a,
+    );
+    seq += 1;
+    let mut map_a = Vec::new();
+    map_control_header(&mut map_a, 1, 1, 0);
+    push_state_row(&mut map_a, 5, 47, 47);
+    push_prov_row(&mut map_a, 900, 47, 5);
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        22,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &map_a,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let mut div_failed = Vec::new();
+    divisions_header(&mut div_failed, 0, COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_failed,
+    );
+    seq += 1;
+    let mut map_failed = Vec::new();
+    map_control_header(&mut map_failed, 0, 0, COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        22,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &map_failed,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let mut div_c = Vec::new();
+    divisions_header(&mut div_c, 1, DELTA);
+    push_div_row(
+        &mut div_c,
+        17,
+        (1 << 5) | DIV_FLAG_TEMPLATE,
+        200,
+        (28.0 * 100_000.0) as u32,
+        (88.0 * 100_000.0) as u32,
+        3101,
+        tag,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw_c,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_c,
+    );
+    seq += 1;
+    let mut map_c = Vec::new();
+    map_control_header(&mut map_c, 1, 0, DELTA);
+    push_state_row(&mut map_c, 5, 47, 48);
+    push_record(
+        &mut stream,
+        seq,
+        raw_c,
+        22,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &map_c,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_c,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("failed_delta_capable_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 3);
+
+    let b = parse(&snaps[1].2);
+    assert_eq!(b["divisions"], Value::Null);
+    assert_eq!(b["states"]["5"]["owner"], Value::Null);
+    assert_eq!(b["states"]["5"]["controller"], Value::Null);
+    assert_eq!(b["provinces"]["900"]["controller"], Value::Null);
+    assert_eq!(b["provinces"]["900"]["state_id"], Value::Null);
+    assert_eq!(b["map"]["owner_by_state"], Value::Null);
+    assert_eq!(b["map"]["control_by_province"], Value::Null);
+
+    let c = parse(&snaps[2].2);
+    let divs = c["divisions"].as_array().unwrap();
+    assert_eq!(divs.len(), 1);
+    assert_eq!(divs[0]["location_province"], json!(200));
+    assert_eq!(c["states"]["5"]["owner"], json!("47"));
+    assert_eq!(c["states"]["5"]["controller"], json!("48"));
+    assert_eq!(c["provinces"]["900"]["controller"], json!("47"));
+}
+
+#[test]
+fn unfolded_domain_data_is_listed_in_provenance() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    // Domain 58 (country_economy_counters_live) is assigned but has no world
+    // fold projection, so its data records surface under provenance.unfolded.
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        58,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &[],
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("unfolded_domain_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    let unfolded = s["provenance"]["collector"]["unfolded_domains"]
+        .as_array()
+        .unwrap();
+    assert!(unfolded
+        .iter()
+        .any(|domain| domain["domain_id"] == json!(58)
+            && domain["domain"] == json!("country_economy_counters_live")));
+    let domains = s["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(!domains
+        .iter()
+        .any(|domain| domain == "country_economy_counters_live"));
+}
+
+fn d49_lifecycle_row(
+    location_id: Option<u32>,
+    region_id: Option<u32>,
+    deleted: bool,
+) -> naval_combat_live_lane::LifecycleRow {
+    naval_combat_live_lane::LifecycleRow {
+        combat_id: 240_580,
+        generation: 1,
+        body_ptr: 0,
+        deleted,
+        location_id,
+        region_id,
+        attacker_member_count: Some(1),
+        defender_member_count: Some(0),
+        attacker_positioning_raw: Some(81_200),
+        defender_positioning_raw: Some(76_500),
+        attacker_anti_air_raw: Some(123_000),
+        defender_anti_air_raw: Some(98_000),
+    }
+}
+
+#[test]
+fn d49_shared_authorities_reject_or_repromote_incomplete_location_region() {
+    use naval_combat_live_lane as naval4950;
+
+    let complete_row = d49_lifecycle_row(Some(6434), Some(18), false);
+    let badged = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        std::slice::from_ref(&complete_row),
+    );
+    let badged_error = crate::domain_data_authority::summarize_domain_data_payload(
+        49,
+        &badged,
+        crate::domain_data_authority::DomainDataContext::default(),
+    )
+    .unwrap_err();
+    assert!(badged_error
+        .errors
+        .iter()
+        .any(|error| error.contains("status bit 11 set")));
+    let badged_raw = badged_error.partial_authority.status_flags.unwrap();
+    assert_ne!(
+        badged_raw & naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        0
+    );
+    assert_eq!(
+        compact_contract::compact_status_for_global_interpretation(49, badged_raw),
+        naval4950::STATUS_DELTA_DATA
+    );
+
+    for (location_id, region_id) in [(Some(6434), None), (None, Some(18)), (None, None)] {
+        let incomplete = naval4950::encode_lifecycle_payload(
+            5,
+            naval4950::STATUS_DELTA_DATA,
+            &[d49_lifecycle_row(location_id, region_id, false)],
+        );
+        let error = crate::domain_data_authority::summarize_domain_data_payload(
+            49,
+            &incomplete,
+            crate::domain_data_authority::DomainDataContext::default(),
+        )
+        .unwrap_err();
+        assert!(error
+            .errors
+            .iter()
+            .any(|message| message.contains("status bit 11 re-promoted")));
+        let raw = error.partial_authority.status_flags.unwrap();
+        assert_ne!(raw & naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED, 0);
+        assert_eq!(
+            compact_contract::compact_status_for_global_interpretation(49, raw),
+            naval4950::STATUS_DELTA_DATA
+        );
+        assert_eq!(error.partial_authority.emitted_rows, 1);
+    }
+
+    let tombstone = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(None, None, true)],
+    );
+    let authority = crate::domain_data_authority::summarize_domain_data_payload(
+        49,
+        &tombstone,
+        crate::domain_data_authority::DomainDataContext::default(),
+    )
+    .unwrap();
+    assert_eq!(authority.status_flags, Some(naval4950::STATUS_DELTA_DATA));
+    assert_eq!(authority.emitted_rows, 1);
+
+    assert!(WorldFold::validate_domain_data_payload_exact(49, &badged, 0).is_err());
+    let missing_pair = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(None, None, false)],
+    );
+    assert!(WorldFold::validate_domain_data_payload_exact(49, &missing_pair, 0).is_err());
+    assert!(WorldFold::validate_domain_data_payload_exact(49, &tombstone, 0).is_ok());
+}
+
+#[test]
+fn d49_incomplete_location_region_masks_current_hour_and_retains_accumulator() {
+    use naval_combat_live_lane as naval4950;
+
+    let valid = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(Some(6434), Some(18), false)],
+    );
+    let badged = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        &[d49_lifecycle_row(Some(7000), Some(19), false)],
+    );
+    let missing = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[d49_lifecycle_row(None, Some(20), false)],
+    );
+    let clean_empty = naval4950::encode_lifecycle_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let members_empty = naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let snapshots = chunk1_snapshots(vec![
+        vec![(49, valid), (50, members_empty.clone())],
+        vec![(49, badged), (50, members_empty.clone())],
+        vec![(49, missing), (50, members_empty.clone())],
+        vec![(49, clean_empty), (50, members_empty)],
+    ]);
+
+    assert_eq!(
+        snapshots[0]["naval_combats"]["240580:1"]["location_province"],
+        json!(6434)
+    );
+    for snapshot in &snapshots[1..=2] {
+        assert_eq!(snapshot["naval_combats"], Value::Null);
+        assert!(snapshot["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["domain_id"] == json!(49)
+                && problem["problem"] == json!("location_region_promotion_incomplete")));
+    }
+    assert_eq!(
+        snapshots[3]["naval_combats"]["240580:1"]["location_province"],
+        json!(6434)
+    );
+    assert_eq!(
+        snapshots[3]["naval_combats"]["240580:1"]["region_id"],
+        json!(18)
+    );
+}
+
+#[test]
+fn naval_combat_domains_fold_into_naval_combats_section() {
+    use naval_combat_live_lane as naval4950;
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let lifecycle = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 1,
+            body_ptr: 0,
+            deleted: false,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(1),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
+        }],
+    );
+    let members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 0,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4431),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 3,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(477),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            },
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 2,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4433),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 5,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(12),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            },
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Attacker,
+                group_index: 0,
+                member_index: 1,
+                unit_type_tag: 51,
+                ship_instance_id: Some(4432),
+                cship_join_validated: true,
+                is_convoy: false,
+                owner_tag_db_id: Some(17),
+                designed_max_strength_raw: Some(10_000_000),
+                battle_slot_index_raw: 4,
+                state_bitmask: Some(1),
+                engagement_weight_raw: Some(1_000),
+                task_force_id: Some(477),
+                fleet_id: Some(88),
+                strength_raw: Some(10_000_000),
+                organisation_raw: Some(9_000_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
+            },
+            naval4950::MemberRow {
+                combat_id: 240_580,
+                generation: 1,
+                deleted: false,
+                side: naval4950::CombatSide::Defender,
+                group_index: 0,
+                member_index: 0,
+                unit_type_tag: 0,
+                ship_instance_id: None,
+                cship_join_validated: false,
+                is_convoy: true,
+                owner_tag_db_id: Some(18),
+                designed_max_strength_raw: None,
+                battle_slot_index_raw: 4,
+                state_bitmask: Some(1),
+                engagement_weight_raw: None,
+                task_force_id: None,
+                fleet_id: None,
+                strength_raw: None,
+                organisation_raw: None,
+                experience_raw: None,
+                sunk_convoys: None,
+            },
+        ],
+    );
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        49,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &lifecycle,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        50,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &members,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    // A second hour that deletes the battle proves the section empties on teardown.
+    let raw2 = raw_for(hi + 1);
+    let lifecycle_end = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 1,
+            body_ptr: 0,
+            deleted: true,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(1),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
+        }],
+    );
+    let members_empty = naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    push_record(
+        &mut stream,
+        4,
+        raw2,
+        49,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &lifecycle_end,
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw2,
+        50,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &members_empty,
+    );
+    push_record(
+        &mut stream,
+        6,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("naval_combat_fold_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let s0 = parse(&snaps[0].2);
+    let battle = &s0["naval_combats"]["240580:1"];
+    assert_eq!(battle["naval_combat_id"], json!(240_580));
+    assert_eq!(battle["location_province"], json!(6434));
+    assert_eq!(battle["region_id"], json!(18));
+    assert_eq!(battle["kind"], json!("naval"));
+    let members_json = battle["members"].as_array().unwrap();
+    assert_eq!(members_json.len(), 4);
+    assert!(members_json.iter().any(|m| m["side"] == json!("attacker")
+        && m["ship_instance_id"] == json!(4431)
+        && m["cship_join_validated"] == json!(true)
+        && m["task_force_id"] == json!(477)));
+    assert!(members_json
+        .iter()
+        .any(|m| m["side"] == json!("defender") && m["is_convoy"] == json!(true)));
+    assert_eq!(battle["attacker_task_force_ids"], json!([12, 477]));
+    assert_eq!(battle["defender_task_force_ids"], json!([]));
+    assert!(battle.get("result_type").is_none());
+    assert!(battle.get("progress").is_none());
+
+    // Both domains fold: neither appears in provenance.unfolded_domains.
+    let unfolded = s0["provenance"]["collector"]["unfolded_domains"]
+        .as_array()
+        .unwrap();
+    assert!(!unfolded
+        .iter()
+        .any(|d| d["domain_id"] == json!(49) || d["domain_id"] == json!(50)));
+
+    // Teardown hour: the battle is gone, section is an empty object (not null).
+    let s1 = parse(&snaps[1].2);
+    assert_eq!(s1["naval_combats"], json!({}));
+}
+
+#[test]
+fn naval_combat_current_frame_validity_masks_stale_battles_and_members() {
+    use naval_combat_live_lane as naval4950;
+    let lifecycle = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 1,
+            body_ptr: 0,
+            deleted: false,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(0),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
+        }],
+    );
+    let members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::MemberRow {
+            combat_id: 240_580,
+            generation: 1,
+            deleted: false,
+            side: naval4950::CombatSide::Attacker,
+            group_index: 0,
+            member_index: 0,
+            unit_type_tag: 51,
+            ship_instance_id: Some(4431),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(17),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: 3,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(477),
+            fleet_id: Some(88),
+            strength_raw: Some(10_000_000),
+            organisation_raw: Some(9_000_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }],
+    );
+    let lifecycle_valid_empty =
+        naval4950::encode_lifecycle_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let members_valid_empty =
+        naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let lifecycle_failed = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        &[],
+    );
+    let members_failed = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        &[],
+    );
+    let orphan_members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::MemberRow {
+            combat_id: 999_999,
+            generation: 1,
+            deleted: false,
+            side: naval4950::CombatSide::Attacker,
+            group_index: 0,
+            member_index: 0,
+            unit_type_tag: 51,
+            ship_instance_id: Some(9001),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(17),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: 0,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(999),
+            fleet_id: Some(99),
+            strength_raw: Some(10_000_000),
+            organisation_raw: Some(9_000_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }],
+    );
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![(49, lifecycle), (50, members)],
+        vec![
+            (49, lifecycle_valid_empty.clone()),
+            (50, members_failed.clone()),
+        ],
+        vec![
+            (49, lifecycle_failed.clone()),
+            (50, members_valid_empty.clone()),
+        ],
+        vec![(50, members_valid_empty.clone())],
+        vec![(49, lifecycle_valid_empty.clone())],
+        vec![
+            (49, lifecycle_valid_empty.clone()),
+            (50, members_valid_empty.clone()),
+            (50, members_failed),
+        ],
+        vec![
+            (49, lifecycle_valid_empty),
+            (49, lifecycle_failed),
+            (50, members_valid_empty.clone()),
+        ],
+        vec![
+            (
+                49,
+                naval4950::encode_lifecycle_payload(5, naval4950::STATUS_DELTA_DATA, &[]),
+            ),
+            (50, orphan_members),
+        ],
+    ]);
+
+    assert_eq!(
+        snapshots[0]["naval_combats"]["240580:1"]["attacker_task_force_ids"],
+        json!([477])
+    );
+
+    let d50_failed_battle = &snapshots[1]["naval_combats"]["240580:1"];
+    assert_eq!(d50_failed_battle["naval_combat_id"], json!(240_580));
+    assert!(d50_failed_battle.get("members").is_none());
+    assert!(d50_failed_battle.get("attacker_task_force_ids").is_none());
+    assert!(d50_failed_battle.get("defender_task_force_ids").is_none());
+
+    assert_eq!(snapshots[2]["naval_combats"], Value::Null);
+    assert!(snapshots[2]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(49)
+            && problem["problem"] == json!("compact_status_failure")));
+
+    assert_eq!(snapshots[3]["naval_combats"], Value::Null);
+    assert!(snapshots[3]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(49)
+            && problem["problem"] == json!("domain_missing_current_hour")));
+
+    let d50_missing_battle = &snapshots[4]["naval_combats"]["240580:1"];
+    assert_eq!(d50_missing_battle["naval_combat_id"], json!(240_580));
+    assert!(d50_missing_battle.get("members").is_none());
+    assert!(d50_missing_battle.get("attacker_task_force_ids").is_none());
+    assert!(snapshots[4]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(50)
+            && problem["problem"] == json!("domain_missing_current_hour")));
+
+    let d50_latest_failed = &snapshots[5]["naval_combats"]["240580:1"];
+    assert_eq!(d50_latest_failed["naval_combat_id"], json!(240_580));
+    assert!(d50_latest_failed.get("members").is_none());
+    assert!(d50_latest_failed.get("attacker_task_force_ids").is_none());
+    assert_eq!(snapshots[6]["naval_combats"], Value::Null);
+    let orphan_d50_battle = &snapshots[7]["naval_combats"]["240580:1"];
+    assert_eq!(orphan_d50_battle["naval_combat_id"], json!(240_580));
+    assert!(orphan_d50_battle.get("members").is_none());
+    assert!(snapshots[7]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(50)
+            && problem["problem"] == json!("orphan_member_reference")));
+}
+
+#[test]
+fn domain47_folds_active_ruler_and_r2_sidecar_after_tag_rekey() {
+    let raw = raw_for(16_959_360);
+    let rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 4713,
+            char_id: 1001,
+            leader_kind: domain47_lane::UNIT_LEADER_ARMY,
+            skill: Some(4),
+            experience_raw: Some(123_456),
+            attack: Some(2),
+            defense: Some(3),
+            planning: Some(4),
+            logistics: Some(5),
+            maneuvering: None,
+            coordination: None,
+            token: Some("POR_salazar"),
+            name: Some("Antonio de Oliveira Salazar"),
+            trait_count: 1,
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeaderTrait(domain47_lane::UnitLeaderTraitRow {
+            unit_leader_id: 4713,
+            ordinal: 0,
+            trait_token: "old_guard",
+        }),
+        domain47_lane::CharacterLaneRow::CountryLeaderRole(domain47_lane::CountryLeaderRoleRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::ActiveRuler(domain47_lane::ActiveRulerRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            ruling_party: Some("neutrality"),
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+            leader_vec_size: 1,
+            ambiguous: false,
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+    ];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_valid");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let snap = parse(&snaps[0].2);
+    let country = &snap["countries"]["POR"];
+    assert_eq!(
+        country["commanders"]["leader"],
+        json!({
+            "char_id": 1001,
+            "name": "Antonio de Oliveira Salazar",
+            "token": "POR_salazar",
+            "ideology_group": "neutrality",
+            "source": "C",
+            "ambiguous": false,
+        })
+    );
+    let sidecar = &country["extra"]["_r2_characters_leaders_cabinet_live"];
+    assert_eq!(sidecar["characters"].as_array().unwrap().len(), 1);
+    assert_eq!(sidecar["unit_leaders"][0]["unit_leader_id"], json!(4713));
+    assert_eq!(sidecar["unit_leaders"][0]["leader_kind"], json!("army"));
+    assert_eq!(sidecar["unit_leaders"][0]["skill"], json!(4));
+    assert_eq!(
+        sidecar["country_leader_roles"][0]["token"],
+        json!("POR_salazar")
+    );
+    assert_eq!(sidecar["active_rulers"][0]["leader_vec_size"], json!(1));
+    assert_eq!(
+        sidecar["unit_leader_traits"],
+        json!([{
+            "unit_leader_id": 4713,
+            "ordinal": 0,
+            "trait_token": "old_guard",
+        }])
+    );
+    assert_eq!(
+        sidecar["advisor_roster"],
+        json!([{
+            "char_id": 1001,
+            "slot": "political_advisor",
+            "ledger": "political_advisor",
+            "idea_token": "POR_salazar_advisor",
+        }])
+    );
+    assert_eq!(
+        sidecar["appointed_advisors"],
+        json!([{
+            "char_id": 1001,
+            "slot": "political_advisor",
+            "ledger": "political_advisor",
+            "idea_token": "POR_salazar_advisor",
+            "character": "POR_salazar",
+        }])
+    );
+    assert_eq!(
+        country["politics"]["appointed_advisors"],
+        json!(["POR_salazar_advisor"])
+    );
+    assert_eq!(
+        country["politics"]["appointed_advisor_details"][0]["char_id"],
+        json!(1001)
+    );
+    assert_eq!(
+        country["politics"]["appointed_advisor_details"][0]["character"],
+        json!("POR_salazar")
+    );
+    assert_eq!(country["commanders"]["admirals"], json!([]));
+    assert_eq!(
+        country["commanders"]["counts"],
+        json!({"admirals": 0, "advisors": 1, "roster_size": 1})
+    );
+    assert!(country["commanders"]
+        .as_object()
+        .unwrap()
+        .get("generals")
+        .is_none());
+    assert!(country["commanders"]
+        .as_object()
+        .unwrap()
+        .get("field_marshals")
+        .is_none());
+}
+
+#[test]
+fn domain47_navy_leaders_fold_into_canonical_admirals_without_losing_raw_fields() {
+    // The full character roster contains one non-unit-leader plus one army and
+    // two navy unit-leaders. `roster_size` is the full four-character roster,
+    // not the three unit leaders.
+    let raw = raw_for(16_959_360);
+    let rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2000,
+            name: Some("Civilian Character"),
+            token: Some("POR_civilian"),
+        }),
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2001,
+            name: Some("Army General"),
+            token: Some("POR_army_gen"),
+        }),
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2002,
+            name: Some("Admiral Alpha"),
+            token: Some("POR_adm_a"),
+        }),
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 2003,
+            name: Some("Admiral Bravo"),
+            token: Some("POR_adm_b"),
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 10,
+            char_id: 2001,
+            leader_kind: domain47_lane::UNIT_LEADER_ARMY,
+            skill: Some(6),
+            experience_raw: Some(50),
+            attack: Some(2),
+            defense: Some(3),
+            planning: Some(1),
+            logistics: Some(2),
+            maneuvering: None,
+            coordination: None,
+            token: Some("POR_army_gen"),
+            name: Some("Army General"),
+            trait_count: 0,
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 21,
+            char_id: 2002,
+            leader_kind: domain47_lane::UNIT_LEADER_NAVY,
+            skill: Some(5),
+            experience_raw: Some(777),
+            attack: Some(9),
+            defense: Some(10),
+            planning: None,
+            logistics: None,
+            maneuvering: Some(7),
+            coordination: Some(8),
+            token: Some("POR_adm_a"),
+            name: Some("Admiral Alpha"),
+            trait_count: 2,
+        }),
+        // Traits deliberately out of ordinal order to prove ordinal sort.
+        domain47_lane::CharacterLaneRow::UnitLeaderTrait(domain47_lane::UnitLeaderTraitRow {
+            unit_leader_id: 21,
+            ordinal: 1,
+            trait_token: "spotter",
+        }),
+        domain47_lane::CharacterLaneRow::UnitLeaderTrait(domain47_lane::UnitLeaderTraitRow {
+            unit_leader_id: 21,
+            ordinal: 0,
+            trait_token: "bold",
+        }),
+        domain47_lane::CharacterLaneRow::CharacterPortrait(
+            domain47_lane::CharacterPortraitRow {
+                country_tag_db_id: 47,
+                char_id: 2002,
+                role: "navy",
+                size: "large",
+                gfx: "GFX_portrait_POR_adm_a",
+            },
+        ),
+        domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
+            country_tag_db_id: 47,
+            unit_leader_id: 22,
+            char_id: 2003,
+            leader_kind: domain47_lane::UNIT_LEADER_NAVY,
+            skill: Some(3),
+            experience_raw: Some(0),
+            attack: None,
+            defense: None,
+            planning: None,
+            logistics: None,
+            maneuvering: Some(1),
+            coordination: Some(2),
+            token: Some("POR_adm_b"),
+            name: Some("Admiral Bravo"),
+            trait_count: 0,
+        }),
+    ];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_admirals");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let snap = parse(&snaps[0].2);
+    let country = &snap["countries"]["POR"];
+    let commanders = &snap["countries"]["POR"]["commanders"];
+    assert_eq!(commanders["admirals"].as_array().unwrap().len(), 2);
+    assert_eq!(commanders["admirals"][0]["unit_leader_id"], json!(21));
+    assert_eq!(commanders["admirals"][0]["experience_raw"], json!(777));
+    assert_eq!(commanders["admirals"][0]["experience_scale"], json!(100_000));
+    assert_eq!(commanders["admirals"][0]["attack"], json!(9));
+    assert_eq!(commanders["admirals"][0]["defense"], json!(10));
+    assert_eq!(commanders["admirals"][0]["maneuvering"], json!(7));
+    assert_eq!(commanders["admirals"][0]["coordination"], json!(8));
+    assert_eq!(
+        commanders["admirals"][0]["traits"],
+        json!(["bold", "spotter"])
+    );
+    assert_eq!(
+        commanders["admirals"][0]["portrait_gfx"],
+        json!("GFX_portrait_POR_adm_a")
+    );
+    assert!(commanders["admirals"][0]
+        .as_object()
+        .unwrap()
+        .get("assignment")
+        .is_none());
+    assert_eq!(
+        commanders["counts"],
+        json!({"admirals": 2, "advisors": 0, "roster_size": 4})
+    );
+
+    let sidecar = &country["extra"]["_r2_characters_leaders_cabinet_live"];
+    let alpha = sidecar["unit_leaders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["unit_leader_id"] == json!(21))
+        .unwrap();
+    assert_eq!(alpha["experience_raw"], json!(777));
+    assert_eq!(alpha["attack"], json!(9));
+    assert_eq!(alpha["defense"], json!(10));
+    assert_eq!(alpha["maneuvering"], json!(7));
+    assert_eq!(alpha["coordination"], json!(8));
+    assert_eq!(
+        sidecar["unit_leader_traits"],
+        json!([
+            {"unit_leader_id": 21, "ordinal": 1, "trait_token": "spotter"},
+            {"unit_leader_id": 21, "ordinal": 0, "trait_token": "bold"},
+        ])
+    );
+    assert!(!snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(47)));
+}
+
+#[test]
+fn domain47_portrait_rows_join_character_identity_and_replace_state() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let baseline_rows = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        },
+    )];
+    let portrait_rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1002,
+            name: None,
+            token: None,
+        }),
+        domain47_lane::CharacterLaneRow::CharacterPortrait(domain47_lane::CharacterPortraitRow {
+            country_tag_db_id: 47,
+            char_id: 1002,
+            role: "civilian",
+            size: "large",
+            gfx: "GFX_portrait_por_1002",
+        }),
+    ];
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &baseline_rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &portrait_rows),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_portrait_excluded");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let second = parse(&snaps[1].2);
+    // The portrait-bearing hour is a valid full replacement.
+    let sidecar = &second["countries"]["POR"]["extra"]["_r2_characters_leaders_cabinet_live"];
+    assert_eq!(sidecar["characters"][0]["char_id"], json!(1002));
+    assert_eq!(
+        sidecar["character_portraits"][0],
+        json!({
+            "char_id": 1002,
+            "role": "civilian",
+            "size": "large",
+            "gfx": "GFX_portrait_por_1002",
+        })
+    );
+    assert!(!second["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(47)));
+}
+
+#[test]
+fn domain47_rowless_partial_status_retains_previous_character_state() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::ActiveRuler(domain47_lane::ActiveRulerRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            ruling_party: Some("neutrality"),
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+            leader_vec_size: 1,
+            ambiguous: false,
+        }),
+    ];
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(COMPACT_STATUS_PARTIAL_DATA, &[]),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_failure");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let second = parse(&snaps[1].2);
+    assert_eq!(
+        second["countries"]["POR"]["commanders"]["leader"]["token"],
+        json!("POR_salazar")
+    );
+    assert!(second["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(47)
+            && problem["problem"] == json!("failure_status")));
+}
+
+#[test]
+fn domain47_delta_data_is_unknown_and_masks_prior_state() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let rows = vec![domain47_lane::CharacterLaneRow::ActiveRuler(
+        domain47_lane::ActiveRulerRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            ruling_party: Some("neutrality"),
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+            leader_vec_size: 1,
+            ambiguous: false,
+        },
+    )];
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(COMPACT_STATUS_DELTA_DATA, &rows),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_delta");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let second = parse(&snaps[1].2);
+    assert_eq!(
+        second["countries"]["POR"]["commanders"]["leader"]["token"],
+        Value::Null
+    );
+    assert!(second["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(47)
+            && problem["problem"] == json!("delta_unsupported")));
+}
+
+#[test]
+fn folds_division_primary_order_link_fields() {
+    let raw = raw_for(16_959_360);
+    let mut div = Vec::new();
+    divisions_header(&mut div, 4, 0);
+    // div 17: validated army order, instance id 317 at the order-id slot
+    // (row +84; the final +88 slot is now disrupted_supply).
+    push_div_row(&mut div, 17, (1 << 5) | (1 << 14), 118, 1, 1, 0, 47);
+    let order_iid_off = div.len() - DIV_ROW_LEN + 84;
+    div[order_iid_off..order_iid_off + 4].copy_from_slice(&317u32.to_le_bytes());
+    // div 18: army-group-owned order (badge only, no id).
+    push_div_row(&mut div, 18, (1 << 5) | (1 << 15), 119, 1, 1, 0, 47);
+    // div 19: unresolved order pointer (badge only, no id).
+    push_div_row(&mut div, 19, (1 << 5) | (1 << 16), 120, 1, 1, 0, 47);
+    // div 20: no primary order (both flags absent, tail zero).
+    push_div_row(&mut div, 20, 1 << 5, 121, 1, 1, 0, 47);
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("division_order_link_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let snap = parse(&snaps[0].2);
+    let divisions = snap["divisions"].as_array().unwrap();
+    let by_id = |id: u32| {
+        divisions
+            .iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("division {id} missing"))
+    };
+    assert_eq!(by_id(17)["order_instance_id"], json!(317));
+    assert_eq!(by_id(17)["order_link"], json!("army"));
+    assert_eq!(by_id(18)["order_instance_id"], Value::Null);
+    assert_eq!(by_id(18)["order_link"], json!("army_group"));
+    assert_eq!(by_id(19)["order_link"], json!("unresolved"));
+    assert_eq!(by_id(20)["order_link"], Value::Null);
+    assert_eq!(by_id(20)["order_instance_id"], Value::Null);
+}
+
+#[test]
+fn division_order_instance_id_without_flag_fails_fold_closed() {
+    let raw = raw_for(16_959_360);
+    let mut div = Vec::new();
+    divisions_header(&mut div, 1, 0);
+    push_div_row(&mut div, 17, 1 << 5, 118, 1, 1, 0, 47);
+    // Corrupt: order_instance_id (row +84) present without the army-order
+    // flag. The row is 92 bytes now, so +84 is the second-to-last u32
+    // (disrupted_supply is the final +88 slot).
+    let order_iid_off = div.len() - DIV_ROW_LEN + 84;
+    div[order_iid_off..order_iid_off + 4].copy_from_slice(&99u32.to_le_bytes());
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("division_order_link_corrupt_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let snap = parse(&snaps[0].2);
+    // The malformed domain-20 payload must not fold any division rows.
+    assert!(snap["divisions"]
+        .as_array()
+        .map(|rows| rows.is_empty())
+        .unwrap_or(true));
+}
+
+#[test]
+fn division_delete_row_with_order_flag_fails_fold_closed() {
+    // Establish a baseline division, then send a delete row that is malformed
+    // (carries ORDER_ARMY). The delete must NOT apply: the fold fails closed
+    // and the prior division survives.
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+
+    let mut base = Vec::new();
+    divisions_header(&mut base, 1, 0);
+    push_div_row(&mut base, 17, 1 << 5, 118, 1, 1, 0, 47);
+
+    let mut del = Vec::new();
+    divisions_header(&mut del, 1, DELTA);
+    // Deleted row with an illegal ORDER_ARMY flag set.
+    push_div_row(&mut del, 17, DIV_FLAG_DELETED | (1 << 14), 0, 0, 0, 0, 0);
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &base,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_b,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &del,
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("division_malformed_delete_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    // Hour B's malformed payload failed closed; the baseline division 17 is
+    // retained rather than deleted.
+    let second = parse(&snaps[1].2);
+    assert!(second["divisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["div_id"] == json!(17)));
+}
+
+#[test]
+fn late_records_for_finalized_hour_are_dropped_and_counted() {
+    let hi_a = 16_959_360i64;
+    let hi_b = 16_959_361i64;
+    let raw_a = raw_for(hi_a);
+    let raw_b = raw_for(hi_b);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let mut div_a = Vec::new();
+    divisions_header(&mut div_a, 1, 0);
+    push_div_row(
+        &mut div_a,
+        17,
+        1 << 5,
+        118,
+        (30.0 * 100_000.0) as u32,
+        (90.0 * 100_000.0) as u32,
+        0,
+        47,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &div_a,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let mut late_div_a = Vec::new();
+    divisions_header(&mut late_div_a, 1, 0);
+    push_div_row(
+        &mut late_div_a,
+        17,
+        1 << 5,
+        999,
+        (1.0 * 100_000.0) as u32,
+        (1.0 * 100_000.0) as u32,
+        0,
+        47,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        20,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &late_div_a,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("late_record_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let b = parse(&snaps[1].2);
+    assert_eq!(
+        b["divisions"].as_array().unwrap()[0]["location_province"],
+        json!(118)
+    );
+    let late = b["provenance"]["collector"]["late_records_dropped"]
+        .as_array()
+        .unwrap();
+    assert!(late
+        .iter()
+        .any(|entry| entry["hour_index"] == json!(hi_a) && entry["count"] == json!(1)));
+}
+
+#[test]
+fn combat_snapshot_is_unknown_when_domain21_record_is_absent() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_absent_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    assert_eq!(s["combats"], Value::Null);
+    let domains = s["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(!domains.iter().any(|domain| domain == "land_combats_live"));
+}
+
+#[test]
+fn folds_land_combats_as_active_snapshot_with_disappearance() {
+    let hi_a = 16_959_360i64;
+    let hi_b = 16_959_361i64;
+    let raw_a = raw_for(hi_a);
+    let raw_b = raw_for(hi_b);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat_a = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101, 102],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat_a,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let combat_b = land_combats_payload(&[]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat_b,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let a = parse(&snaps[0].2);
+    let combats_a = a["combats"].as_array().unwrap();
+    assert_eq!(combats_a.len(), 1);
+    let combat = &combats_a[0];
+    assert_eq!(combat["combat_id"], json!(42));
+    assert_eq!(combat["kind"], json!("land"));
+    assert_eq!(combat["location_province"], json!(1000));
+    assert_eq!(combat["attackers"], json!([101, 102]));
+    assert_eq!(combat["defenders"], json!([201]));
+    assert_eq!(combat["combat_width"], Value::Null);
+    assert_eq!(combat["terrain"], Value::Null);
+    assert_eq!(combat["progress"], Value::Null);
+    assert_eq!(combat["modifiers"], Value::Null);
+
+    let b = parse(&snaps[1].2);
+    assert_eq!(b["combats"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn failed_land_combat_hours_are_unknown_for_each_failure_status() {
+    let failure_cases = [
+        ("state_unavailable", COMPACT_STATUS_STATE_UNAVAILABLE),
+        ("profile_mismatch", COMPACT_STATUS_PROFILE_MISMATCH),
+        ("no_clock", COMPACT_STATUS_NO_CLOCK),
+        ("no_scalar_source", COMPACT_STATUS_NO_SCALAR_SOURCE),
+        ("worker_panic", COMPACT_STATUS_WORKER_PANIC),
+        ("bridge_unavailable", COMPACT_STATUS_BRIDGE_UNAVAILABLE),
+        ("source_unavailable", COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        ("partial_data", COMPACT_STATUS_PARTIAL_DATA),
+    ];
+
+    for (label, failure_flag) in failure_cases {
+        let hi_a = 16_959_360i64;
+        let hi_b = 16_959_361i64;
+        let hi_c = 16_959_362i64;
+        let raw_a = raw_for(hi_a);
+        let raw_b = raw_for(hi_b);
+        let raw_c = raw_for(hi_c);
+        let mut stream = Vec::new();
+        let mut seq = 1u64;
+
+        let combat_a = land_combats_payload(&[TestLandCombat {
+            combat_id: 42,
+            generation: 7,
+            location: 1000,
+            attackers: vec![101],
+            defenders: vec![201],
+        }]);
+        push_record(
+            &mut stream,
+            seq,
+            raw_a,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &combat_a,
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw_a,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+
+        let failed = land_combats_payload_with_status(&[], failure_flag);
+        push_record(
+            &mut stream,
+            seq,
+            raw_b,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &failed,
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw_b,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+
+        let combat_c = land_combats_payload(&[TestLandCombat {
+            combat_id: 43,
+            generation: 8,
+            location: 1001,
+            attackers: vec![301],
+            defenders: vec![401],
+        }]);
+        push_record(
+            &mut stream,
+            seq,
+            raw_c,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &combat_c,
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw_c,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+
+        let mut fold = WorldFold::new(format!("combat_failure_{label}"));
+        fold.ingest_stream(&stream);
+        let snaps = fold.finish();
+        assert_eq!(snaps.len(), 3, "{label}");
+
+        let a = parse(&snaps[0].2);
+        assert_eq!(a["combats"].as_array().unwrap()[0]["combat_id"], json!(42));
+
+        let b = parse(&snaps[1].2);
+        assert_eq!(b["combats"], Value::Null, "{label}");
+        let notes = b["provenance"]["notes"].as_array().unwrap();
+        assert!(
+            notes.iter().any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("land_combats_live failure status")),
+            "{label}"
+        );
+
+        let c = parse(&snaps[2].2);
+        let c_combats = c["combats"].as_array().unwrap();
+        assert_eq!(c_combats.len(), 1, "{label}");
+        assert_eq!(c_combats[0]["combat_id"], json!(43), "{label}");
+        assert_eq!(c_combats[0]["attackers"], json!([301]), "{label}");
+    }
+}
+
+#[test]
+fn worker_panic_zero_row_land_combat_payload_is_unknown() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let failed = land_combats_payload_with_status(&[], COMPACT_STATUS_WORKER_PANIC);
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &failed,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_worker_panic_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    assert_eq!(s["combats"], Value::Null);
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("land_combats_live failure status")));
+}
+
+#[test]
+fn source_unavailable_land_combats_do_not_fabricate_disappearance() {
+    let hi_a = 16_959_360i64;
+    let hi_b = 16_959_361i64;
+    let raw_a = raw_for(hi_a);
+    let raw_b = raw_for(hi_b);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat_a = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat_a,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let unavailable = land_combats_payload_with_status(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &unavailable,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_unavailable_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let a = parse(&snaps[0].2);
+    assert_eq!(a["combats"].as_array().unwrap()[0]["combat_id"], json!(42));
+
+    let b = parse(&snaps[1].2);
+    assert_eq!(b["combats"], Value::Null);
+    let notes = b["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| {
+        let note = note.as_str().unwrap();
+        note.contains("land_combats_live failure status")
+            && note.contains("combats unknown this hour")
+    }));
+}
+
+#[test]
+fn folds_land_combat_detail_events_onto_matching_combat_only() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+
+    let detail_rows = vec![land_detail55::DetailEventRow {
+        combat_id: 42,
+        generation: 7,
+        event_kind: land_detail55::EVENT_PHASE_UPDATED,
+        side: None,
+        division_id: None,
+        location: Some(1000),
+        day: Some(3),
+        duration: Some(4),
+        old_side_count: 0,
+        new_side_count: 2,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let detail =
+        land_detail55::encode_detail_events_payload(9, COMPACT_STATUS_DELTA_DATA, &detail_rows);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_detail_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    let combat = &s["combats"].as_array().unwrap()[0];
+    assert_eq!(
+        combat["land_combat_detail_events_live"]["phase_event"],
+        json!("updated")
+    );
+    assert_eq!(
+        combat["land_combat_detail_events_live"]["location_province"],
+        json!(1000)
+    );
+    assert_eq!(
+        combat["land_combat_detail_events_live"]["duration_days"],
+        json!(4)
+    );
+    assert_eq!(combat["combat_width"], Value::Null);
+    assert_eq!(combat["terrain"], Value::Null);
+    assert_eq!(combat["progress"], Value::Null);
+    assert_eq!(combat["modifiers"], Value::Null);
+}
+
+fn capwar_side_detail(committed: u32, reserve: u32) -> land_detail55::SideDetail {
+    land_detail55::SideDetail {
+        units: committed + reserve,
+        committed,
+        reserve,
+        air_kills: 8,
+        org_loss_summary_index: 0,
+        num_org_losses: 192,
+        anti_air_attack_raw: 434_710,
+        air_damage_str_raw: 8_961_046,
+        air_damage_org_raw: 18_464_611,
+        ground_damage_str_raw: 11_248_500,
+        ground_damage_org_raw: 15_443_824,
+        prevented_damage_str_raw: 111_654,
+        prevented_damage_org_raw: 245_433,
+        progress_raw: None,
+        tactic: None,
+        tactic_known: false,
+        counts_incomplete: false,
+    }
+}
+
+#[test]
+fn folds_land_combat_side_detail_onto_combat() {
+    // E2: per-side CCombatSide detail scalars attach under
+    // land_combat_detail_events_live.{attacker,defender}. A side with no detail
+    // (None) gets NO key (fail closed).
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21381,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101, 102, 103, 104],
+        defenders: vec![201, 202],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+
+    let mut att = capwar_side_detail(2, 2);
+    att.progress_raw = Some(53_000);
+    att.tactic = Some(land_detail55::TacticIdentity {
+        id: 7,
+        token: "tactic_basic_attack".into(),
+        name: "TACTIC_BASIC_ATTACK".into(),
+    });
+    att.tactic_known = true;
+    let mut def = capwar_side_detail(2, 0);
+    def.progress_raw = Some(-17_500);
+    def.tactic_known = true;
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            detail: att,
+            reserve_members_known: false,
+        },
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            detail: def,
+            reserve_members_known: false,
+        },
+    ];
+    let detail = land_detail55::encode_detail_events_payload_v4(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+        &[],
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("side_detail_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let combat = &s["combats"].as_array().unwrap()[0];
+    let dl = &combat["land_combat_detail_events_live"];
+    // Both sides present (all-or-nothing) with the validated scalars.
+    assert_eq!(dl["side_detail_completeness"], json!("both"));
+    assert_eq!(dl["attacker"]["units"], json!(4));
+    assert_eq!(dl["attacker"]["committed"], json!(2));
+    assert_eq!(dl["attacker"]["reserve"], json!(2));
+    assert_eq!(dl["attacker"]["air_kills"], json!(8));
+    assert_eq!(dl["attacker"]["num_org_losses"], json!(192));
+    assert_eq!(dl["attacker"]["counts_incomplete"], json!(false));
+    assert!(
+        (dl["attacker"]["ground_damage_str"].as_f64().unwrap() - 112.485).abs() < 1e-6,
+        "ground_damage_str decodes from i64x1e5"
+    );
+    assert_eq!(dl["attacker"]["ground_damage_str_raw"], json!(11_248_500));
+    assert_eq!(dl["attacker"]["progress_raw"], json!(53_000));
+    assert!((dl["attacker"]["progress"].as_f64().unwrap() - 0.53).abs() < 1e-9);
+    assert_eq!(dl["attacker"]["tactic"]["id"], json!(7));
+    assert_eq!(
+        dl["attacker"]["tactic"]["token"],
+        json!("tactic_basic_attack")
+    );
+    assert_eq!(
+        dl["attacker"]["tactic"]["name"],
+        json!("TACTIC_BASIC_ATTACK")
+    );
+    assert_eq!(dl["attacker"]["tactic_status"], json!("exact"));
+    // Defender present too.
+    assert_eq!(dl["defender"]["units"], json!(2));
+    assert_eq!(dl["defender"]["reserve"], json!(0));
+    assert_eq!(dl["defender"]["progress_raw"], json!(-17_500));
+    assert_eq!(dl["defender"]["tactic"], Value::Null);
+    assert_eq!(dl["defender"]["tactic_status"], json!("exact_none"));
+}
+
+#[test]
+fn folds_land_combat_attribution_onto_sides() {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21381,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101, 102],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            detail: capwar_side_detail(2, 0),
+            reserve_members_known: false,
+        },
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            detail: capwar_side_detail(1, 0),
+            reserve_members_known: false,
+        },
+    ];
+    let attribution_rows = vec![
+        land_detail55::AttributionRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            entry: land_detail55::AttributionEntry {
+                dealer_tag_db_id: 3,
+                victim_tag_db_id: 1,
+                damage_raw: 1_421_400,
+            },
+        },
+        land_detail55::AttributionRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            entry: land_detail55::AttributionEntry {
+                dealer_tag_db_id: 1,
+                victim_tag_db_id: 3,
+                damage_raw: 9_571_110,
+            },
+        },
+    ];
+    let detail = land_detail55::encode_detail_events_payload_v3(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+        &attribution_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_attribution");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let dl = &s["combats"].as_array().unwrap()[0]["land_combat_detail_events_live"];
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["dealer_tag_db_id"],
+        json!(3)
+    );
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["victim_tag_db_id"],
+        json!(1)
+    );
+    assert_eq!(
+        dl["attacker"]["damage_attribution"][0]["damage_raw"],
+        json!(1_421_400)
+    );
+    assert!(
+        (dl["attacker"]["damage_attribution"][0]["damage"]
+            .as_f64()
+            .unwrap()
+            - 14.214)
+            .abs()
+            < 1e-6
+    );
+    assert_eq!(
+        dl["defender"]["damage_attribution"][0]["dealer_tag_db_id"],
+        json!(1)
+    );
+    assert_eq!(
+        dl["defender"]["damage_attribution"][0]["victim_tag_db_id"],
+        json!(3)
+    );
+    assert_eq!(dl["side_detail_completeness"], json!("both"));
+}
+
+#[test]
+fn side_detail_is_all_or_nothing_per_combat() {
+    // A combat whose defender detail is absent (None → no row) must emit
+    // NEITHER side (all-or-nothing) with an explicit completeness badge — a
+    // consumer must never see one-sided detail and read the other as zero.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21453,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+    // Only an attacker side-detail row (defender torn/absent upstream).
+    let side_rows = vec![land_detail55::SideDetailRow {
+        combat_id: 21453,
+        generation: 7,
+        side: land_detail55::CombatSide::Attacker,
+        detail: capwar_side_detail(1, 0),
+        reserve_members_known: false,
+    }];
+    let detail = land_detail55::encode_detail_events_payload_v2(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("side_detail_absent");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let dl = &s["combats"].as_array().unwrap()[0]["land_combat_detail_events_live"];
+    // NEITHER side emitted (all-or-nothing); the badge explains why.
+    assert!(dl.get("attacker").is_none());
+    assert!(dl.get("defender").is_none());
+    assert_eq!(
+        dl["side_detail_completeness"],
+        json!("attacker_only_suppressed")
+    );
+}
+
+#[test]
+fn side_detail_counts_incomplete_is_retained_and_badged() {
+    // A stably-read but committed+reserve!=units side (a mid-combat transient)
+    // is RETAINED, badged counts_incomplete, and folded on both sides.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 21381,
+        generation: 7,
+        location: 3236,
+        attackers: vec![101, 102],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+    // Attacker transient: units=3 but committed 2 + reserve 0 = 2 != 3.
+    let mut att = capwar_side_detail(2, 0);
+    att.units = 3;
+    att.counts_incomplete = true;
+    let def = capwar_side_detail(1, 0);
+    let side_rows = vec![
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Attacker,
+            detail: att,
+            reserve_members_known: false,
+        },
+        land_detail55::SideDetailRow {
+            combat_id: 21381,
+            generation: 7,
+            side: land_detail55::CombatSide::Defender,
+            detail: def,
+            reserve_members_known: false,
+        },
+    ];
+    let detail = land_detail55::encode_detail_events_payload_v2(
+        9,
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &side_rows,
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("side_detail_incomplete");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    let dl = &s["combats"].as_array().unwrap()[0]["land_combat_detail_events_live"];
+    assert!(
+        dl["attacker"].is_object(),
+        "transient side is retained, not dropped"
+    );
+    assert_eq!(dl["attacker"]["counts_incomplete"], json!(true));
+    assert_eq!(dl["defender"]["counts_incomplete"], json!(false));
+    assert_eq!(
+        dl["side_detail_completeness"],
+        json!("both_counts_incomplete")
+    );
+    // Damage accumulators are still valid on the transient side.
+    assert_eq!(dl["attacker"]["ground_damage_str_raw"], json!(11_248_500));
+}
+
+#[test]
+fn folds_land_combat_detail_events_that_arrive_before_domain21() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let detail_rows = vec![land_detail55::DetailEventRow {
+        combat_id: 42,
+        generation: 7,
+        event_kind: land_detail55::EVENT_PHASE_STARTED,
+        side: None,
+        division_id: None,
+        location: Some(1000),
+        day: Some(3),
+        duration: Some(4),
+        old_side_count: 0,
+        new_side_count: 2,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let detail =
+        land_detail55::encode_detail_events_payload(9, COMPACT_STATUS_DELTA_DATA, &detail_rows);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_detail_before_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    let combat = &s["combats"].as_array().unwrap()[0];
+    assert_eq!(
+        combat["land_combat_detail_events_live"]["phase_event"],
+        json!("started")
+    );
+    assert_eq!(
+        combat["land_combat_detail_events_live"]["generation"],
+        json!(7)
+    );
+}
+
+#[test]
+fn land_combat_detail_generation_mismatch_is_dropped() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat,
+    );
+    seq += 1;
+
+    let detail_rows = vec![land_detail55::DetailEventRow {
+        combat_id: 42,
+        generation: 8,
+        event_kind: land_detail55::EVENT_PHASE_UPDATED,
+        side: None,
+        division_id: None,
+        location: Some(1000),
+        day: Some(3),
+        duration: Some(4),
+        old_side_count: 0,
+        new_side_count: 2,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let detail =
+        land_detail55::encode_detail_events_payload(9, COMPACT_STATUS_DELTA_DATA, &detail_rows);
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_generation_mismatch_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    let combat = s["combats"].as_array().unwrap()[0].as_object().unwrap();
+    assert!(!combat.contains_key("land_combat_detail_events_live"));
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("unknown active combat key(s): 42:8")));
+}
+
+#[test]
+fn land_combat_detail_baseline_reset_gap_does_not_attach_synthetic_events() {
+    let hi_a = 16_959_360i64;
+    let hi_b = 16_959_361i64;
+    let hi_c = 16_959_362i64;
+    let raw_a = raw_for(hi_a);
+    let raw_b = raw_for(hi_b);
+    let raw_c = raw_for(hi_c);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let combat_a = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101],
+        defenders: vec![201],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat_a,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let unavailable = land_combats_payload_with_status(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &unavailable,
+    );
+    seq += 1;
+    let detail_failed = land_detail55::encode_detail_events_payload(
+        10,
+        COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        &[],
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail_failed,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let combat_c = land_combats_payload(&[TestLandCombat {
+        combat_id: 42,
+        generation: 7,
+        location: 1000,
+        attackers: vec![101, 102],
+        defenders: vec![201, 202],
+    }]);
+    push_record(
+        &mut stream,
+        seq,
+        raw_c,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &combat_c,
+    );
+    seq += 1;
+    let detail_reset = land_detail55::encode_detail_events_payload(
+        11,
+        COMPACT_STATUS_DELTA_DATA
+            | COMPACT_STATUS_PARTIAL_DATA
+            | COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+        &[],
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw_c,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail_reset,
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw_c,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("combat_detail_reset_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 3);
+
+    let b = parse(&snaps[1].2);
+    assert_eq!(b["combats"], Value::Null);
+
+    let c = parse(&snaps[2].2);
+    let combat = c["combats"].as_array().unwrap()[0].as_object().unwrap();
+    assert_eq!(combat["attackers"], json!([101, 102]));
+    assert!(!combat.contains_key("land_combat_detail_events_live"));
+    let notes = c["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("transition baseline reset after an unknown gap")));
+}
+
+#[test]
+fn land_combat_detail_events_for_unknown_combat_do_not_fabricate_combat() {
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let detail_rows = vec![land_detail55::DetailEventRow {
+        combat_id: 999,
+        generation: 1,
+        event_kind: land_detail55::EVENT_PHASE_STARTED,
+        side: None,
+        division_id: None,
+        location: Some(1200),
+        day: Some(1),
+        duration: Some(1),
+        old_side_count: 0,
+        new_side_count: 2,
+        flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+            | land_detail55::FLAG_LOCATION_PRESENT
+            | land_detail55::FLAG_DAY_PRESENT
+            | land_detail55::FLAG_DURATION_PRESENT,
+    }];
+    let detail =
+        land_detail55::encode_detail_events_payload(9, COMPACT_STATUS_DELTA_DATA, &detail_rows);
+
+    let mut stream = Vec::new();
+    let empty_combats = land_combats_payload(&[]);
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        21,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &empty_combats,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        55,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &detail,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("unknown_detail_game");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    assert_eq!(s["combats"].as_array().unwrap().len(), 0);
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .contains("unknown active combat key(s): 999:1")));
+}
+
+#[test]
+fn focus_pause_value_without_presence_rejects() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes()); // wall
+    payload.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    payload.extend_from_slice(&1u32.to_le_bytes()); // changed
+    payload.extend_from_slice(&0u32.to_le_bytes()); // status
+    payload.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    payload.extend_from_slice(&0u32.to_le_bytes()); // completed_token_count
+    payload.extend_from_slice(&47u32.to_le_bytes()); // tag
+    payload.extend_from_slice(&(1u32 << 7).to_le_bytes()); // paused value, no presence
+    payload.extend_from_slice(&u32::MAX.to_le_bytes()); // completed_count unavailable
+    payload.extend_from_slice(&0i32.to_le_bytes()); // progress_raw
+    push_str(&mut payload, "");
+    push_str(&mut payload, "");
+    push_str(&mut payload, "");
+
+    let mut fold = WorldFold::new("invalid_focus_pause");
+    let error = fold
+        .fold_focus(&payload)
+        .expect_err("pause value bit without presence must reject");
+    assert!(error.contains("paused value without paused-present flag"));
+}
+
+#[test]
+fn focus_exact_empty_current_sets_remain_distinct_from_unavailable() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes()); // wall
+    payload.extend_from_slice(&2u32.to_le_bytes()); // country_count
+    payload.extend_from_slice(&2u32.to_le_bytes()); // changed
+    payload.extend_from_slice(&0u32.to_le_bytes()); // status
+    payload.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    payload.extend_from_slice(&0u32.to_le_bytes()); // completed_token_count
+
+    payload.extend_from_slice(&47u32.to_le_bytes());
+    payload.extend_from_slice(&0x6fu32.to_le_bytes()); // tree/count/both set reads/completed/pause
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    push_str(&mut payload, "portugal_focus");
+    push_str(&mut payload, "");
+    push_str(&mut payload, "");
+
+    payload.extend_from_slice(&48u32.to_le_bytes());
+    payload.extend_from_slice(&0x63u32.to_le_bytes()); // tree/count/completed/pause; set reads unavailable
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    push_str(&mut payload, "germany_focus");
+    push_str(&mut payload, "");
+    push_str(&mut payload, "");
+
+    let raw = raw_for(16_994_400);
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        12,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &payload,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("exact_empty_focus");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    let value = parse(&snapshots[0].2);
+    assert_eq!(value["countries"]["47"]["focus"]["current_set"], json!([]));
+    assert_eq!(
+        value["countries"]["47"]["focus"]["current_continuous_set"],
+        json!([])
+    );
+    assert!(value["countries"]["48"]["focus"]
+        .as_object()
+        .unwrap()
+        .get("current_set")
+        .is_none());
+    assert!(value["countries"]["48"]["focus"]
+        .as_object()
+        .unwrap()
+        .get("current_continuous_set")
+        .is_none());
+}
+
+#[test]
+fn focus_completed_count_mismatch_rejects() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&100_000u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // no completed token rows
+    payload.extend_from_slice(&47u32.to_le_bytes());
+    payload.extend_from_slice(&0x23u32.to_le_bytes()); // tree/count/completed list measured
+    payload.extend_from_slice(&1u32.to_le_bytes()); // but count claims one
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    push_str(&mut payload, "portugal_focus");
+    push_str(&mut payload, "");
+    push_str(&mut payload, "");
+
+    let mut fold = WorldFold::new("invalid_focus_completed_count");
+    let error = fold
+        .fold_focus(&payload)
+        .expect_err("completed count/list disagreement must reject");
+    assert!(error.contains("completed count 1 disagrees with list length 0"));
+}
+
+#[test]
+fn folds_country_string_domains() {
+    // focus + politics + diplomacy in a single hour, exercising compact_string.
+    let hi = 16_994_400i64;
+    let raw = raw_for(hi);
+    let tag: u32 = 47;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    // focus: tree, national current, measured-empty continuous set, one completed token
+    let mut focus = Vec::new();
+    focus.extend_from_slice(&0u64.to_le_bytes()); // wall
+    focus.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    focus.extend_from_slice(&1u32.to_le_bytes()); // changed
+    focus.extend_from_slice(&0u32.to_le_bytes()); // status
+    focus.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    focus.extend_from_slice(&1u32.to_le_bytes()); // completed_token_count
+    focus.extend_from_slice(&tag.to_le_bytes());
+    focus.extend_from_slice(&0xffu32.to_le_bytes()); // every D12 field measured; paused=true
+    focus.extend_from_slice(&1u32.to_le_bytes()); // completed_count
+    focus.extend_from_slice(&(3 * 100_000i32).to_le_bytes()); // progress_raw = 3.0
+    push_str(&mut focus, "portugal_focus");
+    push_str(&mut focus, "POR_industrial_focus");
+    push_str(&mut focus, "");
+    focus.extend_from_slice(&tag.to_le_bytes());
+    push_str(&mut focus, "POR_completed_focus");
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        12,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &focus,
+    );
+    seq += 1;
+
+    // politics: one country, one popularity, one law, one advisor, one spirit
+    let mut pol = Vec::new();
+    pol.extend_from_slice(&0u64.to_le_bytes()); // wall
+    pol.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    pol.extend_from_slice(&1u32.to_le_bytes()); // changed
+    pol.extend_from_slice(&0u32.to_le_bytes()); // status
+    pol.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    pol.extend_from_slice(&1u32.to_le_bytes()); // popularity_count
+    pol.extend_from_slice(&1u32.to_le_bytes()); // law_count
+    pol.extend_from_slice(&1u32.to_le_bytes()); // advisor_count
+    pol.extend_from_slice(&1u32.to_le_bytes()); // national_spirit_count
+                                                // country row (28 fixed)
+    pol.extend_from_slice(&tag.to_le_bytes()); // +0 tag
+    pol.extend_from_slice(&0u32.to_le_bytes()); // +4 flags
+    pol.extend_from_slice(&2u32.to_le_bytes()); // +8 idea_count
+    pol.extend_from_slice(&0u32.to_le_bytes()); // +12 election_frequency
+    pol.extend_from_slice(&2u32.to_le_bytes()); // +16 party_count
+    pol.extend_from_slice(&0u32.to_le_bytes()); // +20 low_confidence
+    pol.extend_from_slice(&123u32.to_le_bytes()); // +24 leader_char_id
+    push_str(&mut pol, "neutrality"); // ruling_party
+    push_str(&mut pol, "Antonio"); // leader_name
+    push_str(&mut pol, "POR_antonio"); // leader_token
+    push_str(&mut pol, "neutrality"); // leader_ideology
+                                      // popularity row
+    pol.extend_from_slice(&tag.to_le_bytes());
+    push_str(&mut pol, "neutrality");
+    pol.extend_from_slice(&(65 * 100_000i32 / 100).to_le_bytes()); // 0.65
+                                                                   // law row
+    pol.extend_from_slice(&tag.to_le_bytes());
+    push_str(&mut pol, "economy");
+    push_str(&mut pol, "partial_economic_mobilisation");
+    // advisor row
+    pol.extend_from_slice(&tag.to_le_bytes());
+    push_str(&mut pol, "political_advisor");
+    push_str(&mut pol, "POR_salazar");
+    // spirit row
+    pol.extend_from_slice(&tag.to_le_bytes());
+    push_str(&mut pol, "estado_novo");
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        14,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &pol,
+    );
+    seq += 1;
+
+    // diplomacy: one country at war with GER, ITA
+    let mut dip = Vec::new();
+    dip.extend_from_slice(&0u64.to_le_bytes()); // wall
+    dip.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    dip.extend_from_slice(&1u32.to_le_bytes()); // changed
+    dip.extend_from_slice(&0u32.to_le_bytes()); // status
+    dip.extend_from_slice(&2u32.to_le_bytes()); // relation_count
+    dip.extend_from_slice(&tag.to_le_bytes()); // +0 tag
+    dip.extend_from_slice(&0u32.to_le_bytes()); // +4 flags
+    dip.extend_from_slice(&1i32.to_le_bytes()); // +8 faction_group
+    dip.extend_from_slice(&2u32.to_le_bytes()); // +12 at_war_count
+    dip.extend_from_slice(&1234i64.to_le_bytes()); // +16 casualties
+    for t in [b"GER", b"ITA"] {
+        dip.extend_from_slice(&tag.to_le_bytes());
+        dip.extend_from_slice(&3u32.to_le_bytes()); // token_len
+        let mut fixed = [0u8; 8];
+        fixed[..3].copy_from_slice(t);
+        dip.extend_from_slice(&fixed);
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        17,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &dip,
+    );
+    seq += 1;
+
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("g");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    let c = &s["countries"]["47"];
+
+    // focus
+    assert_eq!(c["focus"]["focus_tree"], json!("portugal_focus"));
+    assert_eq!(c["focus"]["current"], json!("POR_industrial_focus"));
+    assert_eq!(c["focus"]["current_set"], json!(["POR_industrial_focus"]));
+    assert_eq!(c["focus"]["current_continuous"], Value::Null);
+    assert_eq!(c["focus"]["current_continuous_set"], json!([]));
+    assert!((c["focus"]["progress"].as_f64().unwrap() - 3.0).abs() < 1e-6);
+    assert_eq!(c["focus"]["paused"], json!(true));
+    assert_eq!(c["focus"]["completed"][0], json!("POR_completed_focus"));
+
+    // politics
+    assert_eq!(c["politics"]["ruling_party"], json!("neutrality"));
+    assert_eq!(c["politics"]["leader_name"], json!("Antonio"));
+    assert!(
+        (c["politics"]["party_popularities"]["neutrality"]
+            .as_f64()
+            .unwrap()
+            - 0.65)
+            .abs()
+            < 1e-6
+    );
+    assert_eq!(
+        c["politics"]["laws"]["economy"],
+        json!("partial_economic_mobilisation")
+    );
+    assert_eq!(c["politics"]["appointed_advisors"][0], json!("POR_salazar"));
+    assert_eq!(c["politics"]["national_spirits"][0], json!("estado_novo"));
+
+    // diplomacy
+    assert_eq!(c["diplomacy"]["at_war_count"], json!(2));
+    assert_eq!(c["diplomacy"]["casualties"], json!(1234));
+    let enemies = c["diplomacy"]["at_war_with"].as_array().unwrap();
+    assert!(enemies.iter().any(|e| e == "GER"));
+    assert!(enemies.iter().any(|e| e == "ITA"));
+}
+
+#[test]
+fn country_identity_rekeys_country_state_and_map_by_tag() {
+    // domain 18 maps 47->GER; fuel + map_control carry tag 47. The snapshot must
+    // key the country "GER", set tag_db_id_index.resolved=true, and re-key the
+    // state owner/controller, province controller, and map mirrors to "GER".
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let tag: u32 = 47;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+
+    let ident = country_identity_payload(&[(tag, "GER")]);
+    push(&mut stream, &mut seq, 18, &ident);
+
+    let fuel = fuel_payload(&[(tag, (10.0 * 32768.0) as i64, (20.0 * 32768.0) as i64, 0, 0)]);
+    push(&mut stream, &mut seq, 10, &fuel);
+
+    let mut mc = Vec::new();
+    map_control_header(&mut mc, 1, 1, 0);
+    push_state_row(&mut mc, 5, 47, 47);
+    push_prov_row(&mut mc, 900, 47, 5);
+    push(&mut stream, &mut seq, 22, &mc);
+
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("g");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+
+    // country keyed by TAG, not numeric id
+    assert!(
+        s["countries"].get("GER").is_some(),
+        "country should be keyed GER"
+    );
+    assert!(
+        s["countries"].get("47").is_none(),
+        "numeric key must be replaced"
+    );
+    assert!((s["countries"]["GER"]["fuel"]["current"].as_f64().unwrap() - 10.0).abs() < 1e-6);
+
+    // resolution flag set
+    assert_eq!(s["tag_db_id_index"]["resolved"], json!(true));
+    assert_eq!(s["tag_db_id_index"]["key"], json!("tag"));
+
+    // state owner/controller re-keyed to GER
+    assert_eq!(s["states"]["5"]["owner"], json!("GER"));
+    assert_eq!(s["states"]["5"]["controller"], json!("GER"));
+    // province controller re-keyed to GER
+    assert_eq!(s["provinces"]["900"]["controller"], json!("GER"));
+    // map layer mirrors carry GER
+    assert_eq!(s["map"]["owner_by_state"]["5"], json!("GER"));
+    assert_eq!(s["map"]["control_by_province"]["900"], json!("GER"));
+
+    // country_identity listed in provenance domains
+    let dom = s["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(dom.iter().any(|d| d == "country_identity"));
+}
+
+#[test]
+fn country_identity_unmapped_id_stays_numeric_and_unresolved() {
+    // domain 18 maps only 47->GER; a state controlled by unmapped id 48 must keep
+    // the numeric key, resolved must be false, and a note must record the gap.
+    let hi = 16_959_360i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+
+    let ident = country_identity_payload(&[(47, "GER")]);
+    push(&mut stream, &mut seq, 18, &ident);
+
+    // state 5 owned by 47 (mapped) but controlled by 48 (unmapped)
+    let mut mc = Vec::new();
+    map_control_header(&mut mc, 1, 0, 0);
+    push_state_row(&mut mc, 5, 47, 48);
+    push(&mut stream, &mut seq, 22, &mc);
+
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("g");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+
+    assert_eq!(s["states"]["5"]["owner"], json!("GER"));
+    assert_eq!(s["states"]["5"]["controller"], json!("48")); // unmapped -> numeric
+    assert_eq!(s["tag_db_id_index"]["resolved"], json!(false));
+    assert_eq!(s["tag_db_id_index"]["key"], json!("tag"));
+    let gaps = s["tag_db_id_index"]["unresolved_tag_db_ids"]
+        .as_array()
+        .unwrap();
+    assert!(gaps.iter().any(|g| g == "48"));
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|n| n.as_str().unwrap().contains("48")));
+}
+
+// --- E13 measured-country observability -----------------------------------
+
+#[test]
+fn measured_countries_known_lists_the_resolved_set() {
+    // A proven domain-18 frame => measured_countries.known=true with the exact
+    // resolved country set (count + tag_db_ids + tags).
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+    push(
+        &mut stream,
+        &mut seq,
+        18,
+        &country_identity_payload(&[(47, "GER"), (3, "FRA"), (2, "ENG")]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let s = parse(&fold.finish()[0].2);
+    let mc = &s["measured_countries"];
+    assert_eq!(mc["known"], json!(true));
+    assert_eq!(mc["source"], json!("country_identity"));
+    assert_eq!(mc["count"], json!(3));
+    // tag_db_ids are the BTreeMap keys (sorted): 2, 3, 47.
+    assert_eq!(mc["tag_db_ids"], json!([2, 3, 47]));
+    // tags follow the same key order: ENG(2), FRA(3), GER(47).
+    assert_eq!(mc["tags"], json!(["ENG", "FRA", "GER"]));
+}
+
+#[test]
+fn measured_countries_unknown_when_no_domain18_this_hour() {
+    // No domain-18 record this hour => known=false (measured set UNKNOWN, not
+    // reported as empty/complete) with an explanatory reason and NO count/list.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    // Only a fuel row (a country-rooted domain) — no domain 18.
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        10,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &fuel_payload(&[(47, 100, 200, 0, 0)]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let s = parse(&fold.finish()[0].2);
+    let mc = &s["measured_countries"];
+    assert_eq!(mc["known"], json!(false));
+    assert!(mc.get("count").is_none());
+    assert!(mc.get("tag_db_ids").is_none());
+    assert!(mc["reason"].as_str().unwrap().contains("unknown"));
+}
+
+#[test]
+fn measured_countries_distinguishes_no_data_from_not_resolved() {
+    // The core E13 semantic: with the measured set KNOWN, a consumer can tell a
+    // country that was MEASURED but has no data in a domain (present in
+    // measured_countries, absent from that domain's rows) from a country that
+    // was NOT resolved this frame (absent from measured_countries entirely).
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+    // Measured set: GER(47) + FRA(3). D01 (a dynamic observer, id 900) is NOT
+    // measured — the systemic country-roots bound excludes it.
+    push(
+        &mut stream,
+        &mut seq,
+        18,
+        &country_identity_payload(&[(47, "GER"), (3, "FRA")]),
+    );
+    // Fuel domain has a row for GER only; FRA is measured-but-no-fuel-data.
+    push(
+        &mut stream,
+        &mut seq,
+        10,
+        &fuel_payload(&[(47, 100, 200, 0, 0)]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let s = parse(&fold.finish()[0].2);
+    let mc = &s["measured_countries"];
+    assert_eq!(mc["known"], json!(true));
+    let ids: Vec<u64> = mc["tag_db_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    // FRA measured (in the set) but absent from fuel => "no fuel data for FRA".
+    assert!(ids.contains(&3), "FRA is in the measured set");
+    // A dynamic observer (900) is NOT in the measured set => "not resolved".
+    assert!(
+        !ids.contains(&900),
+        "unresolved observer absent from measured set"
+    );
+    // GER has fuel data; FRA does not — both are measured.
+    assert!(s["countries"]["GER"].get("fuel").is_some());
+    assert!(s["countries"].get("FRA").is_none() || s["countries"]["FRA"].get("fuel").is_none());
+}
+
+#[test]
+fn measured_countries_known_resets_per_hour_but_map_persists() {
+    // Hour 1: domain 18 present => known=true. Hour 2: NO domain 18 => the
+    // measured set is UNKNOWN this hour (known=false), yet tag_by_db_id PERSISTS
+    // so TAG re-keying still works (a country-rooted domain's rows still resolve
+    // to TAGs). This is the per-frame-vs-carried distinction E13 requires.
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, seq: &mut u64, raw, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+    // Hour 1.
+    push(
+        &mut stream,
+        &mut seq,
+        raw1,
+        18,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour 2: only a fuel row for GER (no domain 18).
+    push(
+        &mut stream,
+        &mut seq,
+        raw2,
+        10,
+        &fuel_payload(&[(47, 100, 200, 0, 0)]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("mc");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let s1 = parse(&snaps[0].2);
+    assert_eq!(s1["measured_countries"]["known"], json!(true));
+    assert_eq!(s1["measured_countries"]["count"], json!(1));
+
+    let s2 = parse(&snaps[1].2);
+    // Measured set unknown this hour...
+    assert_eq!(s2["measured_countries"]["known"], json!(false));
+    // ...but the carried tag map still re-keys GER's fuel row to the TAG.
+    assert!(s2["countries"]["GER"]["fuel"].is_object());
+}
+
+#[test]
+fn country_identity_cosmetic_tag_present_null_and_absent() {
+    // GER(47): cosmetic override "GES" (present). ENG(2): validated null.
+    // FRA(3): ABSENT (marker 0) — hand-built row. Each country also gets a
+    // fuel row so it materializes as a country object.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {
+        push_record(stream, *seq, raw, dom, COMPACT_RECORD_TYPE_DOMAIN_DATA, pl);
+        *seq += 1;
+    };
+
+    // Build the D18 payload by hand so FRA can carry the absent marker (0).
+    let mut ident = Vec::new();
+    ident.extend_from_slice(&0u64.to_le_bytes()); // wall
+    ident.extend_from_slice(&3u32.to_le_bytes()); // row_count
+    ident.extend_from_slice(&3u32.to_le_bytes()); // changed
+    ident.extend_from_slice(&0u32.to_le_bytes()); // status
+                                                  // GER present -> "GES"
+    ident.extend_from_slice(&47u32.to_le_bytes());
+    push_str(&mut ident, "GER");
+    ident.push(2);
+    push_str(&mut ident, "GES");
+    // ENG null
+    ident.extend_from_slice(&2u32.to_le_bytes());
+    push_str(&mut ident, "ENG");
+    ident.push(1);
+    // FRA absent
+    ident.extend_from_slice(&3u32.to_le_bytes());
+    push_str(&mut ident, "FRA");
+    ident.push(0);
+    push(&mut stream, &mut seq, 18, &ident);
+
+    // fuel rows so each country materializes.
+    for tag in [47u32, 2, 3] {
+        let fuel = fuel_payload(&[(tag, 100, 200, 0, 0)]);
+        push(&mut stream, &mut seq, 10, &fuel);
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("cosmetic");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+
+    // GER: cosmetic override present.
+    assert_eq!(s["countries"]["GER"]["cosmetic_tag"], json!("GES"));
+    // ENG: validated null (key present, value null).
+    assert!(s["countries"]["ENG"].get("cosmetic_tag").is_some());
+    assert_eq!(s["countries"]["ENG"]["cosmetic_tag"], Value::Null);
+    // FRA: absent -> NO cosmetic_tag key at all (absent != null).
+    assert!(s["countries"]["FRA"].get("cosmetic_tag").is_none());
+}
+
+#[test]
+fn out_of_range_hour_emits_no_snapshot() {
+    // A frame end with an out-of-range raw date must fail closed (no snapshot).
+    let mut stream = Vec::new();
+    let fuel = fuel_payload(&[(47, 100, 200, 0, 0)]);
+    push_record(
+        &mut stream,
+        1,
+        0,
+        10,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &fuel,
+    );
+    push_record(
+        &mut stream,
+        2,
+        0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("g");
+    fold.ingest_stream(&stream);
+    assert!(fold.finish().is_empty());
+}
+
+#[test]
+fn malformed_domain_is_skipped_not_fabricated() {
+    // A fuel payload with a bad length is skipped; the snapshot still emits with
+    // a note and no fabricated fuel.
+    let hi = 17_000_000i64;
+    let raw = raw_for(hi);
+    let mut stream = Vec::new();
+    // truncated fuel payload (header claims 1 row but no row bytes)
+    let mut bad = Vec::new();
+    bad.extend_from_slice(&0u64.to_le_bytes());
+    bad.extend_from_slice(&1u32.to_le_bytes()); // row_count = 1
+    bad.extend_from_slice(&1u32.to_le_bytes());
+    bad.extend_from_slice(&0u32.to_le_bytes());
+    bad.extend_from_slice(&32768u32.to_le_bytes());
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        10,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &bad,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("g");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+    assert_eq!(s["countries"].as_object().unwrap().len(), 0);
+    let notes = s["provenance"]["notes"].as_array().unwrap();
+    assert!(notes
+        .iter()
+        .any(|n| n.as_str().unwrap().contains("domain 10")));
+    // fuel_live must NOT be in provenance domains (the fold was skipped)
+    let dom = s["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(!dom.iter().any(|d| d == "fuel_live"));
+}
+
+fn chunk1_snapshots(hours: Vec<Vec<(u16, Vec<u8>)>>) -> Vec<Value> {
+    let base_hi = 16_959_360i64;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for (hour_offset, records) in hours.into_iter().enumerate() {
+        let raw = raw_for(base_hi + hour_offset as i64);
+        for (domain_id, payload) in records {
+            push_record(
+                &mut stream,
+                seq,
+                raw,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            seq += 1;
+        }
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+    let mut fold = WorldFold::new("chunk1_game");
+    fold.ingest_stream(&stream);
+    fold.finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect()
+}
+
+fn chunk1_one_snapshot(records: Vec<(u16, Vec<u8>)>) -> Value {
+    chunk1_snapshots(vec![records]).remove(0)
+}
+
+#[test]
+fn tech_fold_admits_named_effective_ahead_quartet_and_preserves_raw_identity() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&1_000u32.to_le_bytes());
+    payload.extend_from_slice(&100_000u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&47u32.to_le_bytes());
+    payload.extend_from_slice(&0b111u32.to_le_bytes());
+    payload.extend_from_slice(&17u32.to_le_bytes());
+    payload.extend_from_slice(&3u32.to_le_bytes());
+    payload.extend_from_slice(&47u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&717u32.to_le_bytes());
+    payload.extend_from_slice(&717u32.to_le_bytes());
+    payload.extend_from_slice(&250u32.to_le_bytes());
+    payload.extend_from_slice(&0b1_1111u32.to_le_bytes());
+    payload.extend_from_slice(&125_000i64.to_le_bytes());
+    payload.extend_from_slice(&300_000i64.to_le_bytes());
+    push_str(&mut payload, "basic_machine_tools");
+    for raw in [150_000i64, 300_000, 50_000, 200_000] {
+        payload.extend_from_slice(&raw.to_le_bytes());
+    }
+    payload.extend_from_slice(&3u32.to_le_bytes()); // action-gated selected-Present authority
+    payload.extend_from_slice(&2u32.to_le_bytes()); // reduced localization branch
+    payload.extend_from_slice(&1u64.to_le_bytes()); // callback sequence
+    payload.extend_from_slice(&2u32.to_le_bytes()); // callback thread id
+    payload.extend_from_slice(&raw_for(16_959_360).to_le_bytes());
+    payload.extend_from_slice(&3u64.to_le_bytes()); // callback QPC
+    payload.extend_from_slice(&10_000_000u64.to_le_bytes()); // QPC frequency
+    let candidate_set_sha256 = [0xabu8; 32];
+    let selected_present = portable_render_stream::SelectedPresentReceipt::sealed(
+        1,
+        snapshot::sha256::to_hex(&candidate_set_sha256),
+        7,
+        0,
+        raw_for(16_959_360),
+        4,
+        5,
+    );
+    let selected_present_hex = selected_present.computed_sha256().unwrap();
+    let mut selected_present_receipt_sha256 = [0u8; 32];
+    for (index, byte) in selected_present_receipt_sha256.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&selected_present_hex[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    let source_record_sha256 =
+        crate::domain_data_authority::a29_expected_source_record_sha256(
+            1,
+            2,
+            3,
+            10_000_000,
+            raw_for(16_959_360),
+            1,
+            717,
+            2,
+            (150_000, 300_000, 50_000, 200_000),
+            1,
+            7,
+            0,
+            raw_for(16_959_360),
+            4,
+            5,
+            &candidate_set_sha256,
+            &selected_present_receipt_sha256,
+        );
+    payload.extend_from_slice(&source_record_sha256);
+    payload.extend_from_slice(&0x01BC_F384u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&raw_for(16_959_360).to_le_bytes());
+    payload.extend_from_slice(&7u64.to_le_bytes());
+    payload.extend_from_slice(&4u64.to_le_bytes());
+    payload.extend_from_slice(&5u64.to_le_bytes());
+    payload.extend_from_slice(&candidate_set_sha256);
+    payload.extend_from_slice(&selected_present_receipt_sha256);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(47, "POR")])),
+        (13, payload),
+    ]);
+    let row = &snap["countries"]["POR"]["research"]["in_progress_live"][0];
+    assert_eq!(row["slot_index"], json!(1));
+    assert_eq!(row["tech_handle_raw"], json!(717));
+    assert_eq!(row["tech_def_index_raw"], json!(717));
+    assert_eq!(row["tech_name"], json!("basic_machine_tools"));
+    assert_eq!(row["progress_raw"], json!(250));
+    assert_eq!(row["progress_units"], json!(0.25));
+    assert_eq!(row["ahead_of_time_years"], json!(1.5));
+    assert_eq!(row["ahead_of_time_penalty_pct"], json!(3.0));
+    assert_eq!(row["ahead_of_time_reduction_years"], json!(0.5));
+    assert_eq!(row["ahead_of_time_reduced_penalty_pct"], json!(2.0));
+    assert_eq!(
+        row["ahead_of_time_provenance"]["authority"],
+        json!("a729_observed_research_ahead_selected_present_v3")
+    );
+    assert_eq!(
+        row["ahead_of_time_provenance"]["producer_game_hour_raw"],
+        json!(raw_for(16_959_360))
+    );
+    assert_eq!(
+        row["ahead_of_time_provenance"]["source_record_sha256"],
+        json!(snapshot::sha256::to_hex(&source_record_sha256))
+    );
+}
+
+fn push_d52_row(
+    out: &mut Vec<u8>,
+    state_id: u32,
+    owner: u32,
+    controller: u32,
+    occupied: u32,
+    resistance_raw: i32,
+    compliance_raw: i32,
+    flags: u32,
+) {
+    out.extend_from_slice(&state_id.to_le_bytes());
+    out.extend_from_slice(&owner.to_le_bytes());
+    out.extend_from_slice(&controller.to_le_bytes());
+    out.extend_from_slice(&occupied.to_le_bytes());
+    out.extend_from_slice(&resistance_raw.to_le_bytes());
+    out.extend_from_slice(&compliance_raw.to_le_bytes());
+    out.extend_from_slice(&2500i32.to_le_bytes());
+    out.extend_from_slice(&(-1200i32).to_le_bytes());
+    out.extend_from_slice(&0i32.to_le_bytes());
+    out.extend_from_slice(&0i32.to_le_bytes());
+    out.extend_from_slice(&0i32.to_le_bytes());
+    out.extend_from_slice(&0xA11C_E001u32.to_le_bytes());
+    out.extend_from_slice(&4183u32.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_d52_garrison_row(
+    out: &mut Vec<u8>,
+    state_id: u32,
+    owner: u32,
+    controller: u32,
+    occupied: u32,
+    garrison_manpower_need: i32,
+    garrison_strength_ratio_raw: i32,
+    garrison_required_raw: i32,
+    flags: u32,
+) {
+    out.extend_from_slice(&state_id.to_le_bytes());
+    out.extend_from_slice(&owner.to_le_bytes());
+    out.extend_from_slice(&controller.to_le_bytes());
+    out.extend_from_slice(&occupied.to_le_bytes());
+    out.extend_from_slice(&2_230_000i32.to_le_bytes());
+    out.extend_from_slice(&6_500_000i32.to_le_bytes());
+    out.extend_from_slice(&2500i32.to_le_bytes());
+    out.extend_from_slice(&(-1200i32).to_le_bytes());
+    out.extend_from_slice(&garrison_manpower_need.to_le_bytes());
+    out.extend_from_slice(&garrison_strength_ratio_raw.to_le_bytes());
+    out.extend_from_slice(&garrison_required_raw.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+}
+
+fn d52_payload(status_flags: u32, rows: impl FnOnce(&mut Vec<u8>) -> u32) -> Vec<u8> {
+    let mut row_bytes = Vec::new();
+    let row_count = rows(&mut row_bytes);
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&row_bytes);
+    payload
+}
+
+fn push_d52_garrison_alert(
+    payload: &mut Vec<u8>,
+    predicate_returned: bool,
+    missing_manpower: i64,
+    equipment: &[(u32, i64)],
+) {
+    payload.extend_from_slice(b"GAR1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&40u16.to_le_bytes());
+    payload.extend_from_slice(&raw_for(16_959_360).to_le_bytes());
+    payload.extend_from_slice(&47u32.to_le_bytes());
+    let mut flags = 1u32 << 3;
+    if predicate_returned {
+        flags |= 1 << 1;
+    }
+    if missing_manpower > 0 {
+        flags |= 1 << 2;
+    }
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&missing_manpower.to_le_bytes());
+    payload.extend_from_slice(&(equipment.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&100_000u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for &(archetype_id, whole_units) in equipment {
+        payload.extend_from_slice(&archetype_id.to_le_bytes());
+        payload.extend_from_slice(&whole_units.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+}
+
+fn d23_baseline_payload(status_flags: u32, resource_amount: i32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    payload.extend_from_slice(&5u32.to_le_bytes());
+    payload.extend_from_slice(&0b11u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    payload.extend_from_slice(&2068u32.to_le_bytes());
+    payload.extend_from_slice(&5u32.to_le_bytes());
+    payload.extend_from_slice(&0b11u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+
+    payload.extend_from_slice(&0x3E03u32.to_le_bytes());
+    payload.extend_from_slice(&resource_amount.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    payload.extend_from_slice(&0x2FABu32.to_le_bytes());
+    payload.extend_from_slice(&5u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    payload.extend_from_slice(&0x31F6u32.to_le_bytes());
+    payload.extend_from_slice(&10u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload
+}
+
+fn d44_payload(status_flags: u32) -> Vec<u8> {
+    let rows = [
+        (
+            SUPPLY_ROW_KIND_PROVINCE_LOGISTICS,
+            2068u32,
+            64u32,
+            0u32,
+            SUPPLY_ROW_FLAG_RAIL
+                | SUPPLY_ROW_FLAG_SUPPLY_NODE
+                | SUPPLY_ROW_FLAG_INFRASTRUCTURE
+                | SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR,
+            5i32,
+            2i32,
+            0i32,
+            4i32,
+            3i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_DIVISION_SUPPLY,
+            42u32,
+            2068u32,
+            1u32,
+            SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY
+                | SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY
+                | SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN
+                | SUPPLY_ROW_FLAG_DIVISION_OWNER
+                | SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT
+                | SUPPLY_ROW_FLAG_DIVISION_FUEL
+                | SUPPLY_ROW_FLAG_PROXY_VALUE,
+            950_000i32,
+            1_200_000i32,
+            25_000i32,
+            250_000i32,
+            99_000i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT,
+            3544u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY | SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY,
+            72_500i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY,
+            7081u32,
+            3u32,
+            1u32,
+            SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT,
+            4017i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COMPUTED_BADGE,
+            0u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL,
+            1i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COMPUTED_BADGE,
+            0u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+            SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COMPUTED_BADGE,
+            0u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_ATTRITION_WALL,
+            2i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COMPUTED_BADGE,
+            0u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_MOTORIZATION_WALL,
+            3i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COMPUTED_BADGE,
+            0u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL,
+            4i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+        (
+            SUPPLY_ROW_KIND_COMPUTED_BADGE,
+            0u32,
+            0u32,
+            0u32,
+            SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED,
+            5i32,
+            0i32,
+            0i32,
+            0i32,
+            0i32,
+        ),
+    ];
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&6u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    for (kind, entity, join, owner, flags, a, b, c, d, aux) in rows {
+        payload.extend_from_slice(&kind.to_le_bytes());
+        payload.extend_from_slice(&entity.to_le_bytes());
+        payload.extend_from_slice(&join.to_le_bytes());
+        payload.extend_from_slice(&owner.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&a.to_le_bytes());
+        payload.extend_from_slice(&b.to_le_bytes());
+        payload.extend_from_slice(&c.to_le_bytes());
+        payload.extend_from_slice(&d.to_le_bytes());
+        payload.extend_from_slice(&aux.to_le_bytes());
+    }
+    payload
+}
+
+fn d44_empty_payload() -> Vec<u8> {
+    let rows = [
+        (SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL, 1i32),
+        (SUPPLY_ROW_FLAG_ATTRITION_WALL, 2i32),
+        (SUPPLY_ROW_FLAG_MOTORIZATION_WALL, 3i32),
+        (SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL, 4i32),
+        (SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED, 5i32),
+        (
+            SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+            SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+        ),
+    ];
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for (flags, code) in rows {
+        payload.extend_from_slice(&SUPPLY_ROW_KIND_COMPUTED_BADGE.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&code.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+    }
+    payload
+}
+
+fn d44_missing_badge_empty_payload() -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload
+}
+
+fn d44_disrupted_delta_payload(value_raw: Option<i32>) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY.to_le_bytes());
+    payload.extend_from_slice(
+        &(if value_raw.is_some() {
+            7081
+        } else {
+            7081 | SUPPLY_ROW_ID_DELETED
+        })
+        .to_le_bytes(),
+    );
+    payload.extend_from_slice(&3u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(
+        &(if value_raw.is_some() {
+            SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT
+        } else {
+            0
+        })
+        .to_le_bytes(),
+    );
+    payload.extend_from_slice(&value_raw.unwrap_or(0).to_le_bytes());
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    payload
+}
+
+fn d43_payload(status_flags: u32) -> Vec<u8> {
+    let flags = MARKET_TRADE_FLAG_BUYER_PTR_VALID
+        | MARKET_TRADE_FLAG_EQUIPMENT_SUBBUF_VALID
+        | MARKET_TRADE_FLAG_DELIVERY_SUBBUF_VALID
+        | MARKET_TRADE_FLAG_VARIANT_VALID
+        | MARKET_TRADE_FLAG_AMOUNT_VALID;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1000u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&1405u32.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_CONTRACT_TYPE.to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&34u32.to_le_bytes());
+    payload.extend_from_slice(&67u32.to_le_bytes());
+    payload.extend_from_slice(&4756u32.to_le_bytes());
+    payload.extend_from_slice(&21_700_000i64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload
+}
+
+fn append_d43_mtd1_detail(payload: &mut Vec<u8>) {
+    let flags = MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
+        | MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
+        | MARKET_TRADE_DETAIL_FLAG_SPEED_VALID
+        | MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID
+        | MARKET_TRADE_DETAIL_FLAG_DAYS_VALID
+        | MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+        | MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+        | MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
+        | MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+        | MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
+    payload.extend_from_slice(MARKET_TRADE_DETAIL_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_DETAIL_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_DETAIL_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1405u32.to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&7_000_000i64.to_le_bytes());
+    payload.extend_from_slice(&21_700_000i64.to_le_bytes());
+    payload.extend_from_slice(&125_000i32.to_le_bytes());
+    payload.extend_from_slice(&1i32.to_le_bytes());
+    payload.extend_from_slice(&42i32.to_le_bytes());
+    payload.extend_from_slice(&67u32.to_le_bytes());
+    payload.extend_from_slice(&3i32.to_le_bytes());
+    payload.extend_from_slice(&5i32.to_le_bytes());
+    payload.extend_from_slice(&90_000i32.to_le_bytes());
+    payload.extend_from_slice(&45_000i32.to_le_bytes());
+    payload.extend_from_slice(&50_000i32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+}
+
+fn append_d43_mts1_stockpiles(payload: &mut Vec<u8>, countries: &[(u32, &[(u32, i64)])]) {
+    let item_count = countries.iter().map(|(_, rows)| rows.len()).sum::<usize>();
+    let segment_len = MARKET_TRADE_STOCKPILE_HEADER_LEN
+        + countries.len() * MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN
+        + item_count * MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN;
+    payload.extend_from_slice(MARKET_TRADE_STOCKPILE_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_STOCKPILE_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_STOCKPILE_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(segment_len as u32).to_le_bytes());
+    payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(item_count as u32).to_le_bytes());
+    payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    let mut item_first = 0u32;
+    for (tag_db_id, rows) in countries {
+        payload.extend_from_slice(&tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&item_first.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        item_first += rows.len() as u32;
+    }
+    for (_, rows) in countries {
+        for (ordinal, (variant_id, amount_raw)) in rows.iter().enumerate() {
+            payload.extend_from_slice(&variant_id.to_le_bytes());
+            payload.extend_from_slice(&70u32.to_le_bytes());
+            payload.extend_from_slice(&(ordinal as u32).to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&amount_raw.to_le_bytes());
+        }
+    }
+}
+
+fn append_d43_mtrf_resource_flow(payload: &mut Vec<u8>, countries: &[(u32, [[i64; 7]; 6])]) {
+    payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION.to_le_bytes());
+    payload
+        .extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&((countries.len() * 6) as u32).to_le_bytes());
+    payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.to_le_bytes());
+    let kinds = [
+        MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED,
+        MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED,
+        MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
+        MARKET_TRADE_RESOURCE_FLOW_KIND_USED,
+        MARKET_TRADE_RESOURCE_FLOW_KIND_TO_EXPORT,
+        MARKET_TRADE_RESOURCE_FLOW_KIND_BASE_EXPORT,
+    ];
+    for (tag_db_id, pools) in countries {
+        for (flow_kind, values_raw) in kinds.into_iter().zip(pools) {
+            payload.extend_from_slice(&tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&flow_kind.to_le_bytes());
+            payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            for value in values_raw {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+}
+
+fn append_d43_mtrh_factory_headers(payload: &mut Vec<u8>, rows: &[(u32, i32, i32, i32)]) {
+    payload.extend_from_slice(MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION.to_le_bytes());
+    payload
+        .extend_from_slice(&(MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_FACTORY_HEADER_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for (tag_db_id, total, used, available) in rows {
+        payload.extend_from_slice(&tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&total.to_le_bytes());
+        payload.extend_from_slice(&used.to_le_bytes());
+        payload.extend_from_slice(&available.to_le_bytes());
+    }
+}
+
+fn append_d43_mtrr_resource_rows(payload: &mut Vec<u8>, tag_db_ids: &[u32]) {
+    payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&(tag_db_ids.len() as u32 * 7).to_le_bytes());
+    payload.extend_from_slice(&(tag_db_ids.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&7u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for tag_db_id in tag_db_ids {
+        for resource_index in 0..7u32 {
+            let oil = resource_index == 0;
+            let balance = if oil { -4 } else { resource_index as i32 };
+            payload.extend_from_slice(&tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&resource_index.to_le_bytes());
+            payload.extend_from_slice(&resource_index.to_le_bytes());
+            payload.extend_from_slice(
+                &(if oil {
+                    MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX
+                } else {
+                    MARKET_TRADE_RESOURCE_NEEDED_SURPLUS
+                })
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&balance.to_le_bytes());
+            payload.extend_from_slice(&(10 + resource_index as i32).to_le_bytes());
+            payload.extend_from_slice(&(2 + resource_index as i32).to_le_bytes());
+            payload.extend_from_slice(&(1 + resource_index as i32).to_le_bytes());
+            payload.extend_from_slice(&3i32.to_le_bytes());
+            payload.extend_from_slice(&4i32.to_le_bytes());
+            payload.extend_from_slice(&(if oil { -12i32 } else { balance }).to_le_bytes());
+            payload.extend_from_slice(&(if oil { -12i32 } else { 0 }).to_le_bytes());
+            payload.extend_from_slice(&(if oil { -8i32 } else { 0 }).to_le_bytes());
+            payload.extend_from_slice(
+                &(if oil {
+                    MARKET_TRADE_RESOURCE_FLAGS_OIL
+                } else {
+                    0
+                })
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&(resource_index + 1).to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+    }
+}
+
+fn append_d43_mtrd_classic_deal(payload: &mut Vec<u8>, exporter: u32, importer: u32) {
+    payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&exporter.to_le_bytes());
+    payload.extend_from_slice(&importer.to_le_bytes());
+    // Frozen MTRD identity layout (high to low): reserved:u16,
+    // exporter:u16, importer:u16, resource:u8, one-based ordinal:u8.
+    // Build it from the fixture arguments so the reciprocal-row identity
+    // witness cannot silently drift away from the row fields.
+    let deal_id = (u64::from(exporter) << 32)
+        | (u64::from(importer) << 16)
+        | (u64::from(4u32) << 8)
+        | 1;
+    for (owner, counterpart, direction) in [
+        (
+            exporter,
+            importer,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+        ),
+        (
+            importer,
+            exporter,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+        ),
+    ] {
+        payload.extend_from_slice(&owner.to_le_bytes());
+        payload.extend_from_slice(&counterpart.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&direction.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT.to_le_bytes());
+        payload.extend_from_slice(
+            &MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE.to_le_bytes(),
+        );
+        payload.extend_from_slice(&deal_id.to_le_bytes());
+        payload.extend_from_slice(&800_000i64.to_le_bytes());
+        payload.extend_from_slice(&720_000i64.to_le_bytes());
+        payload.extend_from_slice(&1_600_000i64.to_le_bytes());
+        payload.extend_from_slice(&100_000i64.to_le_bytes());
+        payload.extend_from_slice(&90_000i64.to_le_bytes());
+        payload.extend_from_slice(&8i32.to_le_bytes());
+        payload.extend_from_slice(&3i32.to_le_bytes());
+        payload.extend_from_slice(&5i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+    }
+}
+
+fn d43_empty_payload() -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload
+}
+
+fn d22_state5_payload(owner: u32, controller: u32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    map_control_header(&mut payload, 1, 1, 0);
+    push_state_row(&mut payload, 5, owner, controller);
+    push_prov_row(&mut payload, 900, controller, 5);
+    payload
+}
+
+fn d52_state5_payload() -> Vec<u8> {
+    let flags = OCC_ROW_FLAG_RESISTANCE | OCC_ROW_FLAG_COMPLIANCE;
+    d52_payload(0, |rows| {
+        push_d52_row(rows, 5, 0, 0, 0, 100_000, 200_000, flags);
+        1
+    })
+}
+
+fn assert_state5_chunk1_fields_survive(snap: &Value) {
+    assert_eq!(snap["states"]["5"]["owner"], json!("47"));
+    assert_eq!(snap["states"]["5"]["controller"], json!("48"));
+    assert_eq!(snap["provinces"]["900"]["controller"], json!("48"));
+    assert_eq!(snap["provinces"]["900"]["state_id"], json!(5));
+    assert_eq!(snap["states"]["5"]["buildings"]["infrastructure"], json!(5));
+    assert_eq!(
+        snap["states"]["5"]["province_buildings"]["naval_base"],
+        json!(10)
+    );
+    assert!((snap["states"]["5"]["resources"]["steel"].as_f64().unwrap() - 7.0).abs() < 0.0001);
+    assert!(
+        (snap["states"]["5"]["occupation"]["resistance"]
+            .as_f64()
+            .unwrap()
+            - 1.0)
+            .abs()
+            < 0.0001
+    );
+    assert!(
+        (snap["states"]["5"]["occupation"]["compliance"]
+            .as_f64()
+            .unwrap()
+            - 2.0)
+            .abs()
+            < 0.0001
+    );
+    assert_eq!(snap["map"]["owner_by_state"]["5"], json!("47"));
+    assert_eq!(snap["map"]["control_by_province"]["900"], json!("48"));
+}
+
+#[test]
+fn folds_d52_occupation_with_r2_law_token_and_tag_resolution() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_OCCUPIED_STATE
+        | OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED
+        | OCC_ROW_FLAG_OCCUPATION_LAW_TOKEN
+        | OCC_ROW_FLAG_GARRISON_TEMPLATE
+        | OCC_ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE
+        | OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED
+        | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT
+        | OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN;
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "FRA"), (2, "GER")])),
+        (
+            52,
+            d52_payload(0, |rows| {
+                push_d52_row(rows, 5, 1, 2, 1, 2_230_000, 6_500_000, flags);
+                1
+            }),
+        ),
+    ]);
+
+    let occupation = &snap["states"]["5"]["occupation"];
+    assert_eq!(occupation["occupier_tag"], json!("GER"));
+    assert_eq!(occupation["occupied_country_tag"], json!("FRA"));
+    assert!((occupation["resistance"].as_f64().unwrap() - 22.3).abs() < 0.0001);
+    assert_eq!(snap["states"]["5"]["occupation_law"], Value::Null);
+    assert_eq!(
+        occupation["_r2_occupation_resistance_compliance_live"]["occupation_law_token_id"],
+        json!(0xA11C_E001u32)
+    );
+    assert!(snap["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|domain| domain == "occupation_resistance_compliance_live"));
+}
+
+#[test]
+fn folds_d52_garrison_alert_active_and_measured_empty_without_d92() {
+    let mut active = d52_payload(0, |_| 0);
+    push_d52_garrison_alert(&mut active, false, 4_200, &[(12, 125)]);
+    let active = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (52, active),
+    ]);
+    let alert = &active["_r2_occupation_garrison_alert_live"];
+    assert_eq!(alert["controller_tag_db_id"], json!(47));
+    assert_eq!(alert["predicate_returned"], json!(false));
+    assert_eq!(alert["missing_manpower"], json!(4_200));
+    assert_eq!(alert["missing_equipment"][0]["archetype_id"], json!(12));
+    assert_eq!(alert["missing_equipment"][0]["whole_units"], json!(125));
+
+    let mut inactive = d52_payload(0, |_| 0);
+    push_d52_garrison_alert(&mut inactive, true, 0, &[]);
+    let inactive = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (52, inactive),
+    ]);
+    let alert = &inactive["_r2_occupation_garrison_alert_live"];
+    assert_eq!(alert["predicate_returned"], json!(true));
+    assert_eq!(alert["missing_manpower"], json!(0));
+    assert_eq!(alert["missing_equipment"], json!([]));
+}
+
+#[test]
+fn folds_d52_measured_garrison_scalars() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_OCCUPIED_STATE
+        | OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED
+        | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT
+        | OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE
+        | OCC_ROW_FLAG_GARRISON_SCALARS;
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload(0, |rows| {
+            push_d52_garrison_row(rows, 5, 1, 2, 1, 14_000, 87_500, 250_000, flags);
+            1
+        }),
+    )]);
+
+    let extra = &snap["states"]["5"]["occupation"]["_r2_occupation_resistance_compliance_live"];
+    assert_eq!(extra["garrison_army_manpower_need"], json!(14_000));
+    assert!((extra["garrison_strength_ratio"].as_f64().unwrap() - 0.875).abs() < 0.000001);
+    assert!((extra["garrison_required"].as_f64().unwrap() - 2.5).abs() < 0.000001);
+    assert_eq!(extra["garrison_signals_status"], Value::Null);
+}
+
+#[test]
+fn d52_garrison_values_without_measured_flag_fail_fold_closed() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_OCCUPIED_STATE
+        | OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED;
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload(0, |rows| {
+            push_d52_garrison_row(rows, 5, 1, 2, 1, 14_000, 0, 0, flags);
+            1
+        }),
+    )]);
+
+    assert_eq!(snap["states"]["5"]["occupation"], Value::Null);
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("garrison scalar values without measured flag")));
+}
+
+#[test]
+fn d52_unbadged_rows_without_scalars_emit_no_garrison_fields() {
+    let flags = OCC_ROW_FLAG_OWNER
+        | OCC_ROW_FLAG_CONTROLLER
+        | OCC_ROW_FLAG_RESISTANCE
+        | OCC_ROW_FLAG_COMPLIANCE
+        | OCC_ROW_FLAG_RESISTANCE_SPEED
+        | OCC_ROW_FLAG_COMPLIANCE_SPEED
+        | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT;
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload(0, |rows| {
+            push_d52_garrison_row(rows, 5, 1, 1, 0, 0, 0, 0, flags);
+            1
+        }),
+    )]);
+
+    let extra = &snap["states"]["5"]["occupation"]["_r2_occupation_resistance_compliance_live"];
+    // Absent measurement must stay absent: no fabricated zero garrison values.
+    assert_eq!(extra["garrison_army_manpower_need"], Value::Null);
+    assert_eq!(extra["garrison_strength_ratio"], Value::Null);
+    assert_eq!(extra["garrison_required"], Value::Null);
+    assert_eq!(extra["garrison_signals_status"], Value::Null);
+}
+
+#[test]
+fn d52_delta_before_baseline_marks_unknown_without_mutation() {
+    let snap = chunk1_one_snapshot(vec![(52, d52_payload(COMPACT_STATUS_DELTA_DATA, |_| 0))]);
+    assert_eq!(snap["states"], json!({}));
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(52)
+            && problem["problem"] == json!("delta_before_baseline")));
+}
+
+#[test]
+fn d52_failure_masks_prior_occupation_for_unknown_hour() {
+    let flags = OCC_ROW_FLAG_RESISTANCE | OCC_ROW_FLAG_COMPLIANCE;
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            52,
+            d52_payload(0, |rows| {
+                push_d52_row(rows, 9, 0, 0, 0, 100_000, 200_000, flags);
+                1
+            }),
+        )],
+        vec![(52, d52_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, |_| 0))],
+    ]);
+    assert!(snaps[0]["states"]["9"]["occupation"].is_object());
+    assert_eq!(snaps[1]["states"]["9"]["occupation"], Value::Null);
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("failure status")));
+}
+
+#[test]
+fn folds_d23_map_detail_baseline_and_renderer_mirror() {
+    let snap = chunk1_one_snapshot(vec![(23, d23_baseline_payload(0, 700_000))]);
+    assert_eq!(snap["states"]["5"]["buildings"]["infrastructure"], json!(5));
+    assert_eq!(
+        snap["states"]["5"]["province_buildings"]["naval_base"],
+        json!(10)
+    );
+    assert!((snap["states"]["5"]["resources"]["steel"].as_f64().unwrap() - 7.0).abs() < 0.0001);
+    assert_eq!(
+        snap["map"]["map_detail_live"]["province_buildings_by_province"]["2068"]["naval_base"],
+        json!(10)
+    );
+}
+
+#[test]
+fn d23_delta_after_baseline_preserves_carried_province_building_totals() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(23, d23_baseline_payload(0, 700_000))],
+        vec![(23, d23_baseline_payload(COMPACT_STATUS_DELTA_DATA, 800_000))],
+    ]);
+    assert!(
+        (snaps[1]["states"]["5"]["resources"]["steel"]
+            .as_f64()
+            .unwrap()
+            - 8.0)
+            .abs()
+            < 0.0001
+    );
+    assert_eq!(
+        snaps[1]["states"]["5"]["province_buildings"]["naval_base"],
+        json!(10)
+    );
+}
+
+#[test]
+fn d23_delta_before_baseline_and_failure_are_unknown_not_empty() {
+    let delta = chunk1_one_snapshot(vec![(
+        23,
+        d23_baseline_payload(COMPACT_STATUS_DELTA_DATA, 700_000),
+    )]);
+    assert!(delta["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(23)
+            && problem["problem"] == json!("delta_before_baseline")));
+
+    let snaps = chunk1_snapshots(vec![
+        vec![(23, d23_baseline_payload(0, 700_000))],
+        vec![(
+            23,
+            d23_baseline_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, 900_000),
+        )],
+    ]);
+    assert_eq!(snaps[1]["states"]["5"]["resources"], Value::Null);
+    assert_eq!(snaps[1]["map"]["map_detail_live"], Value::Null);
+}
+
+#[test]
+fn d22_full_baseline_same_hour_preserves_d23_d52_fields_in_both_orders() {
+    let d22_last = chunk1_one_snapshot(vec![
+        (23, d23_baseline_payload(0, 700_000)),
+        (52, d52_state5_payload()),
+        (22, d22_state5_payload(47, 48)),
+    ]);
+    assert_state5_chunk1_fields_survive(&d22_last);
+
+    let d22_first = chunk1_one_snapshot(vec![
+        (22, d22_state5_payload(47, 48)),
+        (23, d23_baseline_payload(0, 700_000)),
+        (52, d52_state5_payload()),
+    ]);
+    assert_state5_chunk1_fields_survive(&d22_first);
+}
+
+#[test]
+fn d22_full_baseline_later_hour_preserves_d23_d52_fields_in_both_orders() {
+    let d23_d52_then_d22 = chunk1_snapshots(vec![
+        vec![
+            (23, d23_baseline_payload(0, 700_000)),
+            (52, d52_state5_payload()),
+        ],
+        vec![(22, d22_state5_payload(47, 48))],
+    ]);
+    assert_state5_chunk1_fields_survive(&d23_d52_then_d22[1]);
+
+    let d22_then_d23_d52 = chunk1_snapshots(vec![
+        vec![(22, d22_state5_payload(47, 48))],
+        vec![
+            (23, d23_baseline_payload(0, 700_000)),
+            (52, d52_state5_payload()),
+        ],
+    ]);
+    assert_state5_chunk1_fields_survive(&d22_then_d23_d52[1]);
+}
+
+#[test]
+fn folds_d44_supply_proxy_with_raw_division_ids_and_badges() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (44, d44_payload(0)),
+    ]);
+    let by_province = &snap["supply"]["by_province"];
+    assert_eq!(
+        by_province["2068"]["logistics_buildings"]["rail_way"],
+        json!(5)
+    );
+    let division = &by_province["2068"]["divisions"][0];
+    assert_eq!(division["raw_division_id"], json!(42));
+    assert!(division.get("division_id").is_none());
+    assert_eq!(division["owner"], json!("GER"));
+    assert!((division["current_supply"].as_f64().unwrap() - 9.5).abs() < 0.0001);
+    assert!((by_province["3544"]["csupply_input"].as_f64().unwrap() - 0.725).abs() < 0.0001);
+    assert_eq!(snap["supply"]["source"], json!("M"));
+    assert_eq!(
+        snap["supply"]["confidence"],
+        json!("division_province_proxy")
+    );
+    assert_eq!(
+        snap["supply"]["r2_logistics_attrition"]["badges"][0]["badge"],
+        json!("exact_supply_wall")
+    );
+    let disrupted = &by_province["7081"]["disrupted_supply"][0];
+    assert_eq!(disrupted["owner"], json!("GER"));
+    assert_eq!(disrupted["owner_tag_db_id"], json!(1));
+    assert_eq!(disrupted["node_type"], json!(3));
+    assert_eq!(disrupted["value_raw"], json!(4017));
+    assert_eq!(disrupted["exact"], json!(true));
+    assert_eq!(
+        snap["supply"]["r2_logistics_attrition"]["country_disrupted_supply_rows"],
+        json!(1)
+    );
+    assert_eq!(
+        snap["supply"]["r2_logistics_attrition"]["country_disrupted_supply_ordering"],
+        json!("owner_tag_db_id_then_province_id_then_node_type")
+    );
+}
+
+#[test]
+fn d44_success_zero_replaces_and_failure_masks_unknown_hour() {
+    let d18 = || (18, country_identity_payload(&[(1, "GER")]));
+    let snaps = chunk1_snapshots(vec![
+        vec![d18(), (44, d44_payload(0))],
+        vec![d18(), (44, d44_missing_badge_empty_payload())],
+        vec![d18(), (44, d44_empty_payload())],
+        vec![
+            d18(),
+            (44, d44_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE)),
+        ],
+    ]);
+    assert!(snaps[0]["supply"]["by_province"]["2068"].is_object());
+    assert_eq!(snaps[1]["supply"]["by_province"], Value::Null);
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(44)
+            && problem["problem"] == json!("missing_required_badge_rows")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("missing required computed badge rows")));
+    assert_eq!(snaps[2]["supply"]["by_province"], json!({}));
+    assert_eq!(
+        snaps[2]["supply"]["r2_logistics_attrition"]["badges"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    assert_eq!(
+        snaps[2]["supply"]["r2_logistics_attrition"]
+            ["country_disrupted_supply_available"],
+        json!(true)
+    );
+    assert_eq!(
+        snaps[2]["supply"]["r2_logistics_attrition"]
+            ["country_disrupted_supply_rows"],
+        json!(0)
+    );
+    assert_eq!(snaps[3]["supply"]["by_province"], Value::Null);
+}
+
+#[test]
+fn d44_disrupted_supply_delta_update_and_composite_tombstone_are_exact() {
+    let d18 = || (18, country_identity_payload(&[(1, "GER")]));
+    let snaps = chunk1_snapshots(vec![
+        vec![d18(), (44, d44_payload(0))],
+        vec![d18(), (44, d44_disrupted_delta_payload(Some(25_000)))],
+        vec![d18(), (44, d44_disrupted_delta_payload(None))],
+    ]);
+    let updated = &snaps[1]["supply"]["by_province"]["7081"]["disrupted_supply"][0];
+    assert_eq!(updated["owner"], json!("GER"));
+    assert_eq!(updated["owner_tag_db_id"], json!(1));
+    assert_eq!(updated["node_type"], json!(3));
+    assert_eq!(updated["value_raw"], json!(25_000));
+    assert_eq!(
+        snaps[1]["supply"]["r2_logistics_attrition"]
+            ["country_disrupted_supply_rows"],
+        json!(1)
+    );
+    assert!(snaps[2]["supply"]["by_province"]
+        .as_object()
+        .unwrap()
+        .get("7081")
+        .is_none());
+    assert_eq!(
+        snaps[2]["supply"]["r2_logistics_attrition"]
+            ["country_disrupted_supply_rows"],
+        json!(0)
+    );
+}
+
+#[test]
+fn folds_d43_trade_contracts_world_and_per_country_views() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, d43_payload(0)),
+    ]);
+    let contracts = snap["diplomacy_world"]["trade_contracts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(contracts.len(), 1);
+    assert_eq!(contracts[0]["contract_id"], json!("1405:81"));
+    assert_eq!(contracts[0]["seller"], json!("SAF"));
+    assert_eq!(contracts[0]["buyer"], json!("ENG"));
+    assert_eq!(contracts[0]["equipments"][0]["variant_id"], json!(4756));
+    assert!((contracts[0]["equipments"][0]["amount"].as_f64().unwrap() - 217.0).abs() < 0.0001);
+    assert_eq!(
+        snap["countries"]["SAF"]["diplomacy"]["lend_lease"][0]["direction"],
+        json!("outgoing")
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["diplomacy"]["lend_lease"][0]["direction"],
+        json!("incoming")
+    );
+    assert_eq!(
+        snap["countries"]["SAF"]["economy"]["market_stockpile"],
+        Value::Null
+    );
+}
+
+#[test]
+fn x3_mtll_joins_d43_contract_to_exact_d53_equipment_purchase_lifecycle() {
+    let kind = diplomacy53::compact::REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION;
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.relation_flags = vec![diplomacy53::compact::RelationFlagRow {
+        src_tag_db_id: 67,
+        target_tag_db_id: 34,
+        flag_kind: kind,
+        directed: true,
+    }];
+    rows.state_events.clear();
+    rows.state_events.push(diplomacy53::compact::StateEventRow {
+        owner_tag_db_id: 67,
+        target_tag_db_id: Some(34),
+        event_kind: diplomacy53::compact::STATE_EVENT_KIND_OBSERVED,
+        source_kind: diplomacy53::compact::STATE_EVENT_SOURCE_RELATION_FLAG,
+        object_hash: diplomacy53::compact::stable_hash32(&format!(
+            "relation_flag_start_{kind}"
+        )),
+        value_hash: diplomacy53::compact::stable_hash32("start_date_raw"),
+        value_raw: 60_795_475,
+    });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, d43_payload(0)),
+        (53, report.payload),
+    ]);
+    let contract = &snap["diplomacy_world"]["trade_contracts"][0];
+    assert_eq!(contract["visible_order"], json!(0));
+    assert_eq!(contract["equipment_purchase_relation_complete"], json!(true));
+    let relation = &contract["equipment_purchase_relation"];
+    assert_eq!(
+        relation["agreement_id"],
+        json!("equipment_purchase:67:34:60795475")
+    );
+    assert_eq!(relation["seller"], json!("SAF"));
+    assert_eq!(relation["buyer"], json!("ENG"));
+    assert_eq!(relation["relation_first"], json!("ENG"));
+    assert_eq!(
+        snap["countries"]["SAF"]["diplomacy"]["lend_lease"][0]
+            ["equipment_purchase_relation_complete"],
+        json!(true)
+    );
+}
+
+#[test]
+fn b1_d43_mts1_folds_exact_market_stockpile_and_proven_empty_country() {
+    let mut payload = d43_empty_payload();
+    append_d43_mts1_stockpiles(
+        &mut payload,
+        &[(34, &[(4756, 21_700_000), (7316, 0)]), (67, &[])],
+    );
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, payload),
+    ]);
+
+    let saf = &snap["countries"]["SAF"];
+    assert_eq!(saf["economy"]["market_stockpile_complete"], json!(true));
+    assert_eq!(
+        saf["economy"]["market_stockpile"][0]["equip_id"],
+        json!(4756)
+    );
+    assert_eq!(
+        saf["economy"]["market_stockpile"][0]["equip_type"],
+        json!(70)
+    );
+    assert_eq!(
+        saf["economy"]["market_stockpile"][0]["amount_raw"],
+        json!(21_700_000i64)
+    );
+    assert_eq!(
+        saf["economy"]["market_stockpile"][0]["amount"],
+        json!(217.0)
+    );
+    assert_eq!(saf["economy"]["market_stockpile"][1]["ordinal"], json!(1));
+    assert_eq!(
+        saf["r2_market_trade_live"]["market_stockpile"]["source"],
+        json!("CCountry+0xFB8->CEquipmentMarketStatus+0x00->CMarketStockpile+0x38/CEquipmentVariantPool+0x20")
+    );
+    assert_eq!(
+        saf["r2_market_trade_live"]["market_stockpile"]["confidence"],
+        json!("validated_exact")
+    );
+
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["market_stockpile"],
+        json!([])
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["market_stockpile_complete"],
+        json!(true)
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["r2_market_trade_live"]["market_stockpile"]["entry_count"],
+        json!(0)
+    );
+}
+
+#[test]
+fn b1_d43_complete_mts1_promotes_when_contract_core_is_unavailable() {
+    let mut payload = d43_empty_payload();
+    payload[16..20].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+    append_d43_mts1_stockpiles(&mut payload, &[(67, &[(7316, 36_900_000)])]);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(67, "ENG")])),
+        (43, payload),
+    ]);
+
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["market_stockpile"][0]["equip_id"],
+        json!(7316)
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["market_stockpile"][0]["amount_raw"],
+        json!(36_900_000i64)
+    );
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("trade contracts unknown this hour")));
+}
+
+#[test]
+fn b1_d43_absent_mts1_retains_prior_complete_market_stockpile() {
+    let mut first = d43_empty_payload();
+    append_d43_mts1_stockpiles(&mut first, &[(67, &[(7316, 36_900_000)])]);
+
+    let snaps = chunk1_snapshots(vec![
+        vec![(18, country_identity_payload(&[(67, "ENG")])), (43, first)],
+        vec![(43, d43_empty_payload())],
+    ]);
+
+    assert_eq!(
+        snaps[1]["countries"]["ENG"]["economy"]["market_stockpile"][0]["amount_raw"],
+        json!(36_900_000i64)
+    );
+    assert_eq!(
+        snaps[1]["countries"]["ENG"]["economy"]["market_stockpile_complete"],
+        json!(true)
+    );
+}
+
+#[test]
+fn b1_d43_malformed_mts1_fails_closed_without_mutating_prior_state() {
+    let mut first = d43_empty_payload();
+    append_d43_mts1_stockpiles(&mut first, &[(67, &[(7316, 36_900_000)])]);
+    let mut fold = WorldFold::new("test");
+    fold.fold_market_trade(&first).unwrap();
+
+    let mut malformed = d43_empty_payload();
+    let trailer_offset = malformed.len();
+    append_d43_mts1_stockpiles(&mut malformed, &[(67, &[(7316, 1)])]);
+    malformed[trailer_offset + 28..trailer_offset + 32].copy_from_slice(&99_999u32.to_le_bytes());
+
+    let error = fold.fold_market_trade(&malformed).unwrap_err();
+    assert!(
+        error.contains("MTS1 header/count/length is invalid"),
+        "{error}"
+    );
+    assert_eq!(
+        fold.market_trade_stockpiles[&67][0].amount_raw, 36_900_000,
+        "malformed replacement must not mutate the last complete stockpile"
+    );
+}
+
+#[test]
+fn d43_partial_frames_retain_prior_contracts_never_fold_omissions() {
+    // G1-residue gate finding 1 (2026-07-12): the d43 fold is a FULL
+    // REPLACEMENT, so folding a PARTIAL (admittedly incomplete) contract set
+    // silently deletes every unobserved live contract. A PARTIAL frame must
+    // leave the prior contract state untouched. (This test previously pinned
+    // the refuted fold-with-omissions behavior.)
+    let mut partial_payload = d43_payload(COMPACT_STATUS_PARTIAL_DATA);
+    append_d43_mtd1_detail(&mut partial_payload);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, partial_payload),
+    ]);
+
+    assert!(
+        snap["diplomacy_world"]["trade_contracts"][0].is_null(),
+        "a PARTIAL d43 frame must not fold its (incomplete) contract set"
+    );
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("market_trade_live failure status")));
+
+    // The identical payload with a CLEAN status folds fully — proving the
+    // retain above comes from the status gate, not a parse defect.
+    let mut clean_payload = d43_payload(0);
+    append_d43_mtd1_detail(&mut clean_payload);
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, clean_payload),
+    ]);
+    let contract = &snap["diplomacy_world"]["trade_contracts"][0];
+    assert_eq!(contract["prices"][0]["amount_raw"], json!(7_000_000));
+    assert_eq!(contract["delivery_country"], json!("ENG"));
+    assert_eq!(contract["convoys"]["assigned"], json!(3));
+    assert_eq!(contract["delivery_efficiency"], json!(0.9));
+    assert_eq!(contract["days"], json!(42));
+    assert_eq!(contract["completed"], json!(true));
+    assert_eq!(
+        contract["r2_market_trade_live"]["factory_cic_progress_raw"],
+        json!(45_000)
+    );
+}
+
+#[test]
+fn folds_d43_mtd1_and_complete_mtrf_resource_pools() {
+    let mut payload = d43_payload(0);
+    append_d43_mtd1_detail(&mut payload);
+    append_d43_mtrf_resource_flow(
+        &mut payload,
+        &[(
+            67,
+            [
+                [1_000_000, 0, 0, 0, 20_000_000, 0, 0],
+                [0; 7],
+                [800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000],
+                [0, 0, 0, 0, 5_000_000, 0, 0],
+                [0; 7],
+                [0, 0, 0, 0, 16_000_000, 0, 0],
+            ],
+        )],
+    );
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, payload),
+    ]);
+
+    let contract = &snap["diplomacy_world"]["trade_contracts"][0];
+    assert_eq!(contract["delivery_country"], json!("ENG"));
+    let resource_flow = &snap["countries"]["ENG"]["r2_market_trade_live"]["resource_flow"];
+    assert!((resource_flow["exported"]["steel"].as_f64().unwrap() - 154.99941).abs() < 0.00001);
+    assert_eq!(resource_flow["exported_raw"]["coal"], json!(12_000_000));
+    assert_eq!(resource_flow["confidence"], json!("validated_exact"));
+    assert_eq!(resource_flow["complete"], json!(true));
+    assert_eq!(resource_flow["imported_raw"]["steel"], json!(0));
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["resources"]["produced"]["oil"],
+        json!(10.0)
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["resources"]["base_export"]["steel"],
+        json!(160.0)
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["resources"]["complete"],
+        json!(true)
+    );
+}
+
+#[test]
+fn d43_complete_mtrf_promotes_when_equipment_contract_core_is_unavailable() {
+    let mut payload = d43_empty_payload();
+    payload[16..20].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+    append_d43_mtrf_resource_flow(
+        &mut payload,
+        &[(
+            67,
+            [
+                [1_000_000, 0, 0, 0, 20_000_000, 0, 0],
+                [0; 7],
+                [0, 0, 0, 0, 15_000_000, 0, 0],
+                [0; 7],
+                [0; 7],
+                [0; 7],
+            ],
+        )],
+    );
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(67, "ENG")])),
+        (43, payload),
+    ]);
+
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["resources"]["produced"]["oil"],
+        json!(10.0)
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["resources"]["complete"],
+        json!(true)
+    );
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("trade contracts unknown this hour")));
+}
+
+#[test]
+fn d43_complete_mtrh_promotes_exact_trade_view_factory_header() {
+    let mut payload = d43_empty_payload();
+    payload[16..20].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+    append_d43_mtrh_factory_headers(&mut payload, &[(67, 128, 41, 73)]);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(67, "ENG")])),
+        (43, payload),
+    ]);
+
+    assert_eq!(
+        snap["countries"]["ENG"]["economy"]["resource_trade"]["factories"],
+        json!({"total": 128, "used": 41, "available": 73})
+    );
+    assert_eq!(
+        snap["countries"]["ENG"]["r2_market_trade_live"]["factory_header"]["confidence"],
+        json!("validated_exact")
+    );
+}
+
+#[test]
+fn d43_complete_mtrr_and_mtrd_promote_exact_resource_trade_view() {
+    let mut payload = d43_empty_payload();
+    payload[16..20].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+    append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+    append_d43_mtrd_classic_deal(&mut payload, 34, 67);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, payload),
+    ]);
+
+    let trade = &snap["countries"]["ENG"]["economy"]["resource_trade"];
+    assert_eq!(trade["resource_rows_complete"], json!(true));
+    assert_eq!(trade["resource_rows"][0]["resource"], json!("oil"));
+    assert_eq!(trade["resource_rows"][0]["needed_current"], json!(-12.0));
+    assert_eq!(trade["resource_rows"][0]["needed_max"], json!(-8.0));
+    assert_eq!(trade["deals_complete"], json!(true));
+    assert_eq!(trade["deals"][0]["counterpart"], json!("SAF"));
+    assert_eq!(trade["deals"][0]["direction"], json!("import"));
+    assert_eq!(trade["deals"][0]["resource"], json!("steel"));
+    assert_eq!(trade["deals"][0]["delivered"], json!(7.2));
+    assert_eq!(trade["deals"][0]["convoys"]["required"], json!(5));
+    assert_eq!(trade["deals"][0]["no_trade_influence"], json!(true));
+    assert_eq!(trade["deals"][0]["no_resources"], json!(false));
+}
+
+#[test]
+fn d43_legacy_mtrd_keeps_route_status_unavailable() {
+    let mut payload = d43_empty_payload();
+    let trailer = payload.len();
+    append_d43_mtrd_classic_deal(&mut payload, 34, 67);
+    payload[trailer + 4..trailer + 6]
+        .copy_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION.to_le_bytes());
+    let first_row = trailer + MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN + 2 * 4;
+    for row in [first_row, first_row + MARKET_TRADE_CLASSIC_DEAL_ROW_LEN] {
+        payload[row + 28..row + 32].copy_from_slice(&0u32.to_le_bytes());
+    }
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, payload),
+    ]);
+
+    let deal = snap["countries"]["ENG"]["economy"]["resource_trade"]["deals"][0]
+        .as_object()
+        .expect("legacy MTRD deal");
+    assert!(!deal.contains_key("no_trade_influence"));
+    assert!(!deal.contains_key("no_resources"));
+}
+
+#[test]
+fn d43_bad_mtrf_invalidates_current_hour_resource_flow() {
+    let mut first_payload = d43_empty_payload();
+    append_d43_mtrf_resource_flow(
+        &mut first_payload,
+        &[(
+            67,
+            [
+                [0; 7],
+                [0; 7],
+                [0, 0, 0, 0, 10_000_000, 0, 0],
+                [0; 7],
+                [0; 7],
+                [0; 7],
+            ],
+        )],
+    );
+
+    let mut bad_payload = d43_empty_payload();
+    let trailer_offset = bad_payload.len();
+    append_d43_mtrf_resource_flow(&mut bad_payload, &[(67, [[0; 7]; 6])]);
+    bad_payload[trailer_offset + 28..trailer_offset + 32].copy_from_slice(&0u32.to_le_bytes());
+
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, first_payload),
+        ],
+        vec![(43, bad_payload)],
+    ]);
+
+    assert!(snaps[1]["countries"]["ENG"]["r2_market_trade_live"]["resource_flow"].is_null());
+    assert!(snaps[1]["countries"]["ENG"]["economy"]["resources"].is_null());
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("classic resource-trade state unavailable this hour")));
+}
+
+#[test]
+fn d43_distinguishes_populated_absent_and_unknown_contract_views() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, d43_payload(0)),
+        ],
+        vec![(43, d43_empty_payload())],
+        vec![(43, d43_payload(0))],
+        vec![(43, d43_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE))],
+    ]);
+    assert_eq!(
+        snaps[0]["diplomacy_world"]["trade_contracts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(snaps[1]["diplomacy_world"].get("trade_contracts").is_none());
+    assert!(snaps[1]["countries"]
+        .get("SAF")
+        .and_then(|country| country.get("diplomacy"))
+        .and_then(|diplomacy| diplomacy.get("lend_lease"))
+        .is_none());
+    assert!(snaps[1]["countries"]
+        .get("ENG")
+        .and_then(|country| country.get("diplomacy"))
+        .and_then(|diplomacy| diplomacy.get("lend_lease"))
+        .is_none());
+    assert_eq!(
+        snaps[2]["diplomacy_world"]["trade_contracts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        snaps[2]["countries"]["SAF"]["diplomacy"]["lend_lease"][0]["direction"],
+        json!("outgoing")
+    );
+    assert_eq!(
+        snaps[2]["countries"]["ENG"]["diplomacy"]["lend_lease"][0]["direction"],
+        json!("incoming")
+    );
+    assert_eq!(snaps[3]["diplomacy_world"]["trade_contracts"], Value::Null);
+    assert_eq!(
+        snaps[3]["countries"]["SAF"]["diplomacy"]["lend_lease"],
+        Value::Null
+    );
+    assert_eq!(
+        snaps[3]["countries"]["ENG"]["diplomacy"]["lend_lease"],
+        Value::Null
+    );
+}
+
+fn c2_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn c2_i32(out: &mut Vec<u8>, value: i32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn c2_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn c2_i64(out: &mut Vec<u8>, value: i64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn d27_order_payload(status_flags: u32, army_id: u32, targets: &[u32]) -> Vec<u8> {
+    d27_order_payload_owned(
+        status_flags,
+        battleplans54::ORDER_OWNER_KIND_ARMY,
+        army_id,
+        targets,
+    )
+}
+
+fn d27_order_payload_owned(
+    status_flags: u32,
+    owner_kind: u32,
+    owner_id: u32,
+    targets: &[u32],
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, targets.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, owner_id);
+    c2_u64(&mut p, 77);
+    c2_u32(
+        &mut p,
+        if targets.is_empty() {
+            0
+        } else {
+            ARMY_ORDER_ROW_FLAG_TARGET_STATES
+        },
+    );
+    c2_u32(&mut p, 2);
+    c2_i32(&mut p, 5);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, targets.len() as u32);
+    c2_u32(&mut p, targets.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, owner_kind);
+    c2_u32(&mut p, 0);
+    for state_id in targets {
+        c2_u32(&mut p, *state_id);
+        c2_u32(&mut p, 0);
+    }
+    p
+}
+
+fn d27_empty_payload(status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    p
+}
+
+#[allow(clippy::too_many_arguments)]
+fn d28_push_row(
+    out: &mut Vec<u8>,
+    kind: u32,
+    object_id: u32,
+    flags: u32,
+    parent_id: u32,
+    owner: u32,
+    leader_id: u32,
+    leader_skill: u32,
+    member_first: u32,
+    member_count: u32,
+    logical_member_count: u32,
+    member_count_engine: u32,
+    missing_member_count: u32,
+    leader_trait_count: u32,
+    location: u32,
+) {
+    c2_u32(out, kind);
+    c2_u32(out, object_id);
+    c2_u32(out, flags);
+    c2_u32(out, parent_id);
+    c2_u32(out, owner);
+    c2_u32(out, leader_id);
+    c2_u32(out, leader_skill);
+    c2_u32(out, member_first);
+    c2_u32(out, member_count);
+    c2_u32(out, logical_member_count);
+    c2_u32(out, member_count_engine);
+    c2_u32(out, missing_member_count);
+    c2_u32(out, leader_trait_count);
+    c2_u32(out, 0);
+    c2_u32(out, 0);
+    c2_u32(out, 0);
+    c2_u32(out, 0);
+    c2_u32(out, 0);
+    c2_u32(out, location);
+    c2_u32(out, 0);
+}
+
+fn d28_oob_payload(status_flags: u32) -> Vec<u8> {
+    let members = [10u32, 77u32];
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 4);
+    c2_u32(&mut p, 4);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 2);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, members.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    d28_push_row(
+        &mut p,
+        OOB_KIND_ARMY_GROUP,
+        100,
+        OOB_ROW_FLAG_OWNER | OOB_ROW_FLAG_LEADER | OOB_ROW_FLAG_MEMBER_COUNT_ENGINE,
+        0,
+        1,
+        501,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
+    d28_push_row(
+        &mut p,
+        OOB_KIND_ARMY,
+        10,
+        OOB_ROW_FLAG_PARENT
+            | OOB_ROW_FLAG_OWNER
+            | OOB_ROW_FLAG_LEADER
+            | OOB_ROW_FLAG_LEADER_SKILL
+            | OOB_ROW_FLAG_MEMBER_COUNT_ENGINE,
+        100,
+        1,
+        502,
+        4,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
+    d28_push_row(
+        &mut p,
+        OOB_KIND_FLEET,
+        200,
+        OOB_ROW_FLAG_OWNER | OOB_ROW_FLAG_LEADER,
+        0,
+        1,
+        601,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
+    d28_push_row(
+        &mut p,
+        OOB_KIND_TASK_FORCE,
+        201,
+        OOB_ROW_FLAG_PARENT | OOB_ROW_FLAG_OWNER | OOB_ROW_FLAG_LOCATION,
+        200,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        12345,
+    );
+    for member_id in members {
+        c2_u32(&mut p, member_id);
+        c2_u32(&mut p, 0);
+    }
+    p
+}
+
+fn d29_ships_payload(rows: &[(u32, u32, u32, &str)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    for (instance_id, task_force_id, owner, definition) in rows {
+        c2_u32(&mut p, *instance_id);
+        c2_u32(
+            &mut p,
+            SHIP_ROW_FLAG_TASK_FORCE | SHIP_ROW_FLAG_DEFINITION | SHIP_ROW_FLAG_OWNER,
+        );
+        c2_u32(&mut p, *task_force_id);
+        c2_u32(&mut p, 3);
+        c2_u32(&mut p, 90_000);
+        c2_u32(&mut p, 80_000);
+        c2_u32(&mut p, 10_000);
+        c2_u32(&mut p, 2);
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, 0);
+        push_str(&mut p, definition);
+    }
+    p
+}
+
+fn d56_row(
+    task_force_id: u32,
+    fleet_id: u32,
+    owner_tag_db_id: u32,
+    location_province_id: u32,
+    sunk_convoys: u32,
+) -> naval56::NavalMissionStatusRow {
+    let mut flags = naval56::compact::FLAG_VALIDATED_DIRECT | naval56::compact::FLAG_HAS_LOCATION;
+    if sunk_convoys > 0 {
+        flags |= naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT;
+    }
+    naval56::NavalMissionStatusRow {
+        task_force_id,
+        fleet_id,
+        owner_tag_db_id,
+        flags,
+        location_province_id,
+        sunk_convoys,
+        ..naval56::NavalMissionStatusRow::default()
+    }
+}
+
+fn d56_payload(status_flags: u32, rows: &[naval56::NavalMissionStatusRow]) -> Vec<u8> {
+    naval56::encode_payload(
+        &naval56::NavalMissionStatusHeader {
+            elapsed_wall_ms: 5,
+            changed_rows: rows.len().min(u32::MAX as usize) as u32,
+            status_flags,
+            observed_task_forces: rows.len().min(u32::MAX as usize) as u32,
+            validated_location_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_LOCATION != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+            derived_region_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_REGION != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+            fixture_required_rows: 0,
+            convoy_sunk_count_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+        },
+        rows,
+    )
+}
+
+fn d56_payload_with_supremacy(
+    status_flags: u32,
+    rows: &[naval56::NavalMissionStatusRow],
+    supremacy_rows: &[naval56::NavalSupremacyRow],
+) -> Vec<u8> {
+    naval56::compact::encode_payload_with_naval_supremacy(
+        &naval56::NavalMissionStatusHeader {
+            elapsed_wall_ms: 5,
+            changed_rows: rows.len().min(u32::MAX as usize) as u32,
+            status_flags,
+            observed_task_forces: rows.len().min(u32::MAX as usize) as u32,
+            validated_location_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_LOCATION != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+            derived_region_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_REGION != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+            fixture_required_rows: 0,
+            convoy_sunk_count_rows: rows
+                .iter()
+                .filter(|row| row.flags & naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT != 0)
+                .count()
+                .min(u32::MAX as usize) as u32,
+        },
+        rows,
+        supremacy_rows,
+    )
+}
+
+fn d54_path_row(
+    army_id: u32,
+    slot_index: u32,
+    path_provinces: Vec<u32>,
+) -> battleplans54::BattleplanDepthRow {
+    battleplans54::BattleplanDepthRow {
+        owner_kind: battleplans54::ORDER_OWNER_KIND_ARMY,
+        army_id,
+        generation: 1,
+        engine_order_instance_id: 10_000 + slot_index,
+        deleted: false,
+        slot_index,
+        order_type: 3,
+        target_states: Vec::new(),
+        path_provinces,
+        target_declared_count: None,
+        target_status: battleplans54::STATUS_UNSUPPORTED,
+        geometry_status: battleplans54::STATUS_EXACT,
+        execution_status: battleplans54::STATUS_EXACT,
+        assigned_division_ids: vec![20_000 + slot_index],
+        assigned_units_status: battleplans54::STATUS_EXACT,
+        order_linkage_status: battleplans54::STATUS_EXACT,
+        active: true,
+        active_status: battleplans54::STATUS_EXACT,
+        stance_status: battleplans54::STATUS_UNKNOWN,
+        aggressiveness_status: battleplans54::STATUS_UNKNOWN,
+    }
+}
+
+fn d54_payload(
+    status_flags: u32,
+    rows: &[battleplans54::BattleplanDepthRow],
+    omitted_non_exact_rows: u32,
+    path_geometry_omitted_rows: u32,
+) -> Vec<u8> {
+    battleplans54::encode_depth_payload(
+        rows,
+        5,
+        status_flags,
+        rows.len().min(u32::MAX as usize) as u32,
+        1,
+        rows.len()
+            .saturating_add(omitted_non_exact_rows as usize)
+            .saturating_add(path_geometry_omitted_rows as usize)
+            .min(u32::MAX as usize) as u32,
+        omitted_non_exact_rows,
+        path_geometry_omitted_rows,
+        0,
+    )
+}
+
+fn d54_payload_with_orders_group_manager(
+    status_flags: u32,
+    rows: &[battleplans54::BattleplanDepthRow],
+    carrier: &battleplans54::orders_group_live::CompleteArmyOrdersGroups,
+) -> Vec<u8> {
+    let mut payload = battleplans54::encode_depth_payload(
+        rows,
+        5,
+        status_flags,
+        rows.len().min(u32::MAX as usize) as u32,
+        carrier.armies.len().min(u32::MAX as usize) as u32,
+        rows.len().min(u32::MAX as usize) as u32,
+        0,
+        0,
+        0,
+    );
+    battleplans54::orders_group_live::append_orders_group_extension(&mut payload, carrier)
+        .unwrap();
+    payload
+}
+
+fn d48_payload(status_flags: u32, target_state_id: Option<u32>) -> Vec<u8> {
+    let target_unavailable = target_state_id.is_none();
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | if target_unavailable {
+                domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE
+            } else {
+                0
+            },
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: vec![domain48::ConstructionQueueRow {
+            tag_db_id: 1,
+            line_id: 77,
+            template_id: Some(20_013),
+            active_factories: 15,
+            cost_raw: 10_000_000,
+            produced_raw: 5_000_000,
+            priority: 0,
+            target_state_id,
+            target_location_id: target_state_id,
+            target_scope: target_state_id.map(|_| domain48::SCOPE_STATE),
+            repair_levels_remaining: Some(0),
+            // W4: melt-anchored created_date (GER line 18354 raw 60827043).
+            created_date_raw: Some(60_827_043),
+        }],
+        railway_construction_rows: None,
+        building_rows: vec![
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_STATE,
+                location_id: 42,
+                state_id: 42,
+                type_id: 0x2fab,
+                level: 5,
+                healthy_level: Some(4),
+                partial_health_raw: Some(8_184_501),
+            },
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_PROVINCE,
+                location_id: 2068,
+                state_id: 42,
+                type_id: 0x4cc1,
+                level: 2,
+                healthy_level: Some(2),
+                partial_health_raw: Some(0),
+            },
+        ],
+        resource_rows: vec![domain48::StateResourceRow {
+            state_id: 42,
+            resource_id: 0x3e03,
+            amount_raw: 2_500_000,
+        }],
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d48_no_construction_payload() -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags: 0,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: Vec::new(),
+        railway_construction_rows: None,
+        building_rows: vec![domain48::BuildingRow {
+            scope: domain48::SCOPE_STATE,
+            location_id: 42,
+            state_id: 42,
+            type_id: 0x2fab,
+            level: 5,
+            healthy_level: Some(4),
+            partial_health_raw: Some(8_184_501),
+        }],
+        resource_rows: vec![domain48::StateResourceRow {
+            state_id: 42,
+            resource_id: 0x3e03,
+            amount_raw: 2_500_000,
+        }],
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d48_sparse_partial_payload() -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags: COMPACT_STATUS_PARTIAL_DATA,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: vec![domain48::ConstructionQueueRow {
+            tag_db_id: 1,
+            line_id: 77,
+            template_id: Some(20_013),
+            active_factories: 15,
+            cost_raw: 10_000_000,
+            produced_raw: 6_000_000,
+            priority: 0,
+            target_state_id: None,
+            target_location_id: None,
+            target_scope: None,
+            repair_levels_remaining: None,
+            created_date_raw: None,
+        }],
+        railway_construction_rows: None,
+        building_rows: Vec::new(),
+        resource_rows: Vec::new(),
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d48_construction_row(line_id: u32, produced_raw: i32) -> domain48::ConstructionQueueRow {
+    domain48::ConstructionQueueRow {
+        tag_db_id: 1,
+        line_id,
+        template_id: Some(20_000 + line_id),
+        active_factories: 15,
+        cost_raw: 10_000_000,
+        produced_raw,
+        priority: line_id % 10,
+        target_state_id: None,
+        target_location_id: None,
+        target_scope: None,
+        repair_levels_remaining: None,
+        created_date_raw: None,
+    }
+}
+
+fn d48_state_building(type_id: u32, level: u32) -> domain48::BuildingRow {
+    domain48::BuildingRow {
+        scope: domain48::SCOPE_STATE,
+        location_id: 42,
+        state_id: 42,
+        type_id,
+        level,
+        healthy_level: Some(level),
+        partial_health_raw: Some(0),
+    }
+}
+
+fn d48_province_building(type_id: u32, level: u32) -> domain48::BuildingRow {
+    domain48::BuildingRow {
+        scope: domain48::SCOPE_PROVINCE,
+        location_id: 2068,
+        state_id: 42,
+        type_id,
+        level,
+        healthy_level: Some(level),
+        partial_health_raw: Some(0),
+    }
+}
+
+fn d48_custom_payload(
+    status_flags: u32,
+    construction_rows: Vec<domain48::ConstructionQueueRow>,
+    building_rows: Vec<domain48::BuildingRow>,
+) -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows,
+        railway_construction_rows: None,
+        building_rows,
+        resource_rows: vec![domain48::StateResourceRow {
+            state_id: 42,
+            resource_id: 0x3e03,
+            amount_raw: 2_500_000,
+        }],
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d48_failure_payload(status_flags: u32) -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 0,
+        observed_state_roots: 0,
+        observed_province_roots: 0,
+        construction_rows: Vec::new(),
+        railway_construction_rows: None,
+        building_rows: Vec::new(),
+        resource_rows: Vec::new(),
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d48_railway_row() -> domain48::RailwayConstructionRow {
+    domain48::RailwayConstructionRow {
+        tag_db_id: 1,
+        line_id: 135_764,
+        queue_index: 1,
+        active_factories: 15,
+        cost_raw: 448_000_000,
+        produced_raw: 231_350_000,
+        created_date_raw: 60_827_637,
+        base_level: 2,
+        target_level: 3,
+        completion_flag: false,
+        current_segment_index: 3,
+        remaining_hours_raw: 216_650_000,
+        route_province_ids: vec![
+            9_422, 11_408, 9_564, 3_539, 11_485, 9_436, 3_582, 9_504, 3_529,
+        ],
+    }
+}
+
+fn d48_railway_payload(
+    status_flags: u32,
+    rows: Vec<domain48::RailwayConstructionRow>,
+) -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
+            | domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+        observed_country_roots: 2,
+        observed_state_roots: 1,
+        observed_province_roots: 0,
+        construction_rows: Vec::new(),
+        railway_construction_rows: Some(rows),
+        building_rows: vec![d48_state_building(0x2fab, 5)],
+        resource_rows: vec![domain48::StateResourceRow {
+            state_id: 42,
+            resource_id: 0x3e03,
+            amount_raw: 2_500_000,
+        }],
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+fn d30_air_wings_payload(rows: &[(u32, u32, u64, u32)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    for (owner, wing_id, generation, count) in rows {
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, *wing_id);
+        c2_u64(&mut p, *generation);
+        c2_u32(&mut p, AIR_WING_ROW_FLAG_MISSION_REGION);
+        c2_u32(&mut p, *count);
+        c2_u32(&mut p, 7);
+        c2_u32(&mut p, 88);
+        c2_u32(&mut p, count.saturating_sub(1));
+        c2_u32(&mut p, 0);
+    }
+    p
+}
+
+fn d30_air_wings_delete_payload(owner: u32, wing_id: u32, generation: u64) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, owner);
+    c2_u32(&mut p, wing_id);
+    c2_u64(&mut p, generation);
+    c2_u32(&mut p, ROW_FLAG_DELETED_LOW_BIT);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    p
+}
+
+fn d31_air_region_activity_payload(rows: &[(u32, u32, u32, u32)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    for (region, owner, mission, planes) in rows {
+        c2_u32(&mut p, *region);
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, *mission);
+        c2_u32(&mut p, 0);
+        c2_u32(&mut p, 1);
+        c2_u32(&mut p, *planes);
+        c2_u32(&mut p, planes.saturating_sub(1));
+        c2_u32(&mut p, 0);
+    }
+    p
+}
+
+fn d32_loadouts_payload(
+    rows: &[(u32, u32, u64, u32, Vec<(u32, i64)>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    let equipment_count: usize = rows.iter().map(|(_, _, _, _, entries)| entries.len()).sum();
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, equipment_count as u32);
+    c2_u32(&mut p, equipment_count as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    let mut first = 0u32;
+    for (owner, wing_id, generation, air_base_id, entries) in rows {
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, *wing_id);
+        c2_u64(&mut p, *generation);
+        c2_u32(&mut p, 0);
+        c2_u32(&mut p, *air_base_id);
+        c2_u32(&mut p, first);
+        c2_u32(&mut p, entries.len() as u32);
+        first += entries.len() as u32;
+    }
+    for (_, _, _, _, entries) in rows {
+        for (variant_id, amount_raw) in entries {
+            c2_u32(&mut p, *variant_id);
+            c2_u32(&mut p, 0);
+            c2_i64(&mut p, *amount_raw);
+        }
+    }
+    p
+}
+
+fn d33_variant_defs_payload(variant_id: u32, display: &str, variant: &str) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, variant_id);
+    c2_u32(
+        &mut p,
+        VARIANT_DEF_ROW_FLAG_DISPLAY_NAME
+            | VARIANT_DEF_ROW_FLAG_VARIANT_NAME
+            | VARIANT_DEF_ROW_FLAG_MODULES,
+    );
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    push_str(&mut p, display);
+    push_str(&mut p, variant);
+    c2_u32(&mut p, 111);
+    c2_u32(&mut p, 0);
+    push_str(&mut p, "module_engine_3");
+    p
+}
+
+fn d34_air_base_status_payload(rows: &[(u32, u32, u32, u32)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    for (air_base_id, state_id, province_id, planes) in rows {
+        c2_u32(&mut p, *air_base_id);
+        c2_u32(&mut p, *state_id);
+        c2_u32(&mut p, 0);
+        c2_u32(&mut p, 400);
+        c2_u32(&mut p, 4);
+        c2_u32(&mut p, 2);
+        c2_u32(&mut p, *planes);
+        c2_u32(&mut p, *province_id);
+    }
+    p
+}
+
+fn d35_air_variant_stats_payload(variant_id: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, variant_id);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 201);
+    c2_u32(&mut p, 202);
+    c2_u32(&mut p, 203);
+    for raw in [
+        45_000, 80_000, 12_000, 30_000, 50_000, 95_000, 10_000, 20_000, 11_000, 17_000,
+    ] {
+        c2_i32(&mut p, raw);
+    }
+    c2_u32(&mut p, 0);
+    p
+}
+
+fn d36_reserves_payload(rows: &[(u32, u32, i64)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    for (owner, variant_id, amount_raw) in rows {
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, *variant_id);
+        c2_u32(&mut p, 0);
+        c2_u32(&mut p, 0);
+        c2_i64(&mut p, *amount_raw);
+    }
+    p
+}
+
+fn d38_air_superiority_inputs_payload(
+    rows: &[(u32, u32, u32, u32, i64)],
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, rows.len() as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    for (region, owner, mission, variant_id, amount_raw) in rows {
+        c2_u32(&mut p, *region);
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, *mission);
+        c2_u32(&mut p, *variant_id);
+        c2_u32(&mut p, 0);
+        c2_u32(&mut p, 201);
+        c2_u32(&mut p, 202);
+        c2_u32(&mut p, 203);
+        c2_u32(&mut p, 2);
+        c2_u32(&mut p, 0);
+        c2_i64(&mut p, *amount_raw);
+    }
+    p
+}
+
+fn d39_upgrades_payload(variant_id: u32, upgrade_index: u32, level: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, variant_id);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, upgrade_index);
+    c2_u32(&mut p, level);
+    p
+}
+
+fn d42_air_combat_losses_payload(status_flags: u32, changed_rows: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, changed_rows);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 700);
+    c2_u64(&mut p, 77);
+    c2_u32(
+        &mut p,
+        AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
+            | AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION
+            | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK
+            | AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS,
+    );
+    c2_u32(&mut p, 7);
+    c2_u32(&mut p, 88);
+    c2_u32(&mut p, 100);
+    c2_u32(&mut p, 96);
+    c2_i32(&mut p, -4);
+    c2_u32(&mut p, 0);
+    c2_i64(&mut p, 100_000);
+    c2_i64(&mut p, 96_000);
+    c2_i64(&mut p, -4_000);
+    c2_u32(&mut p, 3);
+    c2_i32(&mut p, 42_000);
+    p
+}
+
+fn d42_air_combat_losses_with_region_stats_payload() -> Vec<u8> {
+    let mut p = d42_air_combat_losses_payload(0, 1);
+    c2_u32(&mut p, AIR_REGION_STATS_TRAILER_MAGIC);
+    p.extend_from_slice(&AIR_REGION_STATS_TRAILER_VERSION.to_le_bytes());
+    p.extend_from_slice(&(AIR_REGION_STATS_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    c2_u32(&mut p, 1); // regional records
+    c2_u32(&mut p, 2); // damage entries
+    c2_u32(&mut p, 1); // observed region objects
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 1); // owner
+    c2_u32(&mut p, 88); // region
+    p.extend_from_slice(&[0, 1, 0, 1]); // side/selection/classification/copied
+    c2_u32(&mut p, 700); // wing id
+    c2_i32(&mut p, 12345); // CGameDate raw
+    c2_u32(&mut p, 96); // plane count snapshot
+    c2_u32(&mut p, 7); // mission mask
+    c2_u32(&mut p, 1); // attributed country
+    c2_u32(&mut p, 0); // damage first
+    c2_u32(&mut p, 2); // damage count
+    p.extend_from_slice(&[1, 4, 0, 0]); // losses / enemy planes
+    c2_u32(&mut p, 0);
+    c2_i64(&mut p, 300_000);
+    p.extend_from_slice(&[1, 5, 0, 0]); // losses / anti-air
+    c2_u32(&mut p, 0);
+    c2_i64(&mut p, 100_000);
+    p
+}
+
+fn d46_air_variant_archetypes_payload(status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 1);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0xCAFE_BABEu32);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 900);
+    c2_u32(
+        &mut p,
+        AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE
+            | AIR_VARIANT_ARCHETYPE_ROW_FLAG_BASE_AIRFRAME
+            | AIR_VARIANT_ARCHETYPE_ROW_FLAG_ROLE
+            | AIR_VARIANT_ARCHETYPE_ROW_FLAG_AIR_SUPERIORITY_WEIGHT,
+    );
+    c2_u32(&mut p, 201);
+    c2_u32(&mut p, 202);
+    c2_u32(&mut p, 203);
+    c2_i32(&mut p, 120_000);
+    c2_u32(
+        &mut p,
+        archetype46::SOURCE_LIVE_STATS
+            | archetype46::SOURCE_LIVE_TOKEN_DICTIONARY
+            | archetype46::SOURCE_STATIC_CATALOG
+            | archetype46::SOURCE_STATIC_SOURCE_ENUM,
+    );
+    c2_u32(&mut p, 0);
+    push_str(&mut p, "small_plane_airframe");
+    push_str(&mut p, "fighter_equipment");
+    push_str(&mut p, "fighter");
+    p
+}
+
+#[test]
+fn chunk2_folds_order_of_battle_with_domain_owned_merges() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (27, d27_order_payload(0, 10, &[5, 6])),
+        (28, d28_oob_payload(0)),
+        (29, d29_ships_payload(&[(300, 201, 1, "destroyer_1")], 0)),
+        (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        (
+            32,
+            d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+        ),
+    ]);
+
+    let oob = &snap["order_of_battle"];
+    assert_eq!(oob["battle_plan_orders"][0]["army"], json!(10));
+    assert_eq!(
+        oob["battle_plan_orders"][0]["order_instance"]["states"],
+        json!([5, 6])
+    );
+    assert_eq!(oob["army_groups"][0]["owner"], json!("GER"));
+    assert_eq!(oob["armies"][0]["field_marshal_group"], json!(100));
+    assert_eq!(oob["fleets"][0]["task_forces"][0]["id"], json!(201));
+    assert_eq!(
+        oob["fleets"][0]["task_forces"][0]["ships"][0]["_r2_ship_owner"]["owner"],
+        json!("GER")
+    );
+    assert_eq!(oob["air_wings"][0]["owner"], json!("GER"));
+    assert_eq!(oob["air_wings"][0]["air_base"], json!(9001));
+    assert_eq!(oob["air_wings"][0]["equipment"][0][0], json!(900));
+    assert_eq!(oob["by_country"]["GER"]["air_wings"], json!(1));
+}
+
+#[test]
+fn chunk2_d27_preserves_typed_army_group_owner_without_army_alias() {
+    let snap = chunk1_one_snapshot(vec![(
+        27,
+        d27_order_payload_owned(
+            0,
+            battleplans54::ORDER_OWNER_KIND_ARMY_GROUP,
+            23,
+            &[5, 6],
+        ),
+    )]);
+    let row = &snap["order_of_battle"]["battle_plan_orders"][0];
+    assert_eq!(row["owner_kind"], json!("army_group"));
+    assert_eq!(row["owner_id"], json!(23));
+    assert_eq!(row["army"], Value::Null);
+}
+
+#[test]
+fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
+    let mut row = d56_row(201, 200, 1, 12345, 2);
+    row.flags |= naval56::compact::FLAG_HAS_MISSION
+        | naval56::compact::FLAG_HAS_MISSION_STATE
+        | naval56::compact::FLAG_HAS_HOME_BASE
+        | naval56::compact::FLAG_HAS_REPAIR_BASE;
+    row.mission_enum = 9;
+    row.mission_state = 3;
+    row.home_base_province_id = 4021;
+    row.repair_base_province_id = 5088;
+    let rows = [row];
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (28, d28_oob_payload(0)),
+        (56, d56_payload(0, &rows)),
+    ]);
+
+    let extra = &snap["order_of_battle"]["extra"]["naval_missions_status_live"];
+    assert_eq!(extra["source"], json!("C"));
+    assert_eq!(extra["confidence"], json!("validated_slice"));
+    assert_eq!(extra["task_force_count"], json!(1));
+    assert_eq!(extra["validated_location_rows"], json!(1));
+    assert_eq!(extra["derived_region_rows"], json!(0));
+    assert_eq!(extra["ship_summary_rows"], json!(0));
+    assert_eq!(extra["dominant_hull_rows"], json!(0));
+    assert_eq!(extra["convoy_sunk_count_rows"], json!(1));
+    assert_eq!(extra["oob_command_join_checked"], json!(true));
+    assert_eq!(extra["oob_command_orphan_rows"], json!(0));
+    let row = &extra["task_forces"][0];
+    assert_eq!(row["task_force_id"], json!(201));
+    assert_eq!(row["fleet_id"], json!(200));
+    assert_eq!(row["owner"], json!("GER"));
+    assert_eq!(row["owner_tag"], json!("GER"));
+    assert_eq!(row["owner_tag_db_id"], json!(1));
+    assert_eq!(row["location_province_id"], json!(12345));
+    assert_eq!(row["location_province"], json!(12345));
+    assert_eq!(row["strategic_region_id"], Value::Null);
+    assert_eq!(row["ship_count"], Value::Null);
+    assert_eq!(row["dominant_hull_class"], Value::Null);
+    assert!(row.get("task_force_name").is_none());
+    assert_eq!(row["mission_enum"], json!(9));
+    assert_eq!(row["mission_name"], json!("NAVAL_INVASION_SUPPORT"));
+    assert_eq!(row["mission_state"], json!(3));
+    assert_eq!(row["detached_activity"], json!("refitting"));
+    assert_eq!(row["activity_key"], Value::Null);
+    assert_eq!(row["active_combat_epochs"], Value::Null);
+    assert_eq!(row["combat_membership_authority"], Value::Null);
+    assert_eq!(row["home_base_province_id"], json!(4021));
+    assert_eq!(row["repair_base_province_id"], json!(5088));
+    assert_eq!(row["sunk_convoys"], json!(2));
+    assert!(row.get("repair_progress_milli").is_none());
+    assert!(row.get("retreat_state").is_none());
+    assert!(row.get("convoy_route_context_id").is_none());
+    assert!(row.get("fixture_required").is_none());
+    assert!(row.get("active_battle_fixture_required").is_none());
+    assert!(row.get("source_status_flags").is_none());
+    assert_eq!(row["oob_command_task_force_seen"], json!(true));
+    assert_eq!(
+        snap["order_of_battle"]["by_country"]["GER"]["task_forces"],
+        json!(1)
+    );
+    assert!(!snap["provenance"]["collector"]["unfolded_domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|domain| domain["domain_id"] == json!(56)));
+}
+
+#[test]
+fn chunk2_d56_activity_joins_only_same_hour_d49_d50_member_epochs() {
+    use naval_combat_live_lane as naval4950;
+    let lifecycle = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 7,
+            body_ptr: 0,
+            deleted: false,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(0),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
+        }],
+    );
+    let members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::MemberRow {
+            combat_id: 240_580,
+            generation: 7,
+            deleted: false,
+            side: naval4950::CombatSide::Attacker,
+            group_index: 0,
+            member_index: 0,
+            unit_type_tag: 51,
+            ship_instance_id: Some(4431),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(1),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: 3,
+            state_bitmask: Some(2),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(201),
+            fleet_id: Some(200),
+            strength_raw: Some(10_000_000),
+            organisation_raw: Some(9_000_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }],
+    );
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (28, d28_oob_payload(0)),
+        (49, lifecycle),
+        (50, members),
+        (56, d56_payload(0, &[d56_row(201, 200, 1, 6434, 0)])),
+    ]);
+    let row = &snap["order_of_battle"]["extra"]["naval_missions_status_live"]
+        ["task_forces"][0];
+    assert_eq!(
+        row["active_combat_epochs"],
+        json!(["240580:7:attacker"])
+    );
+    assert_eq!(
+        row["activity_key"],
+        json!("TASK_FORCE_ACTIVITY_DESC_IN_COMBAT")
+    );
+    assert_eq!(
+        row["combat_membership_authority"],
+        json!("d49_d50_member_epoch")
+    );
+}
+
+#[test]
+fn chunk2_d56_activity_does_not_promote_non_fighting_members_and_clears_deleted_epochs() {
+    use naval_combat_live_lane as naval4950;
+    let lifecycle = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 7,
+            body_ptr: 0,
+            deleted: false,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(0),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
+        }],
+    );
+    let members = naval4950::encode_member_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::MemberRow {
+            combat_id: 240_580,
+            generation: 7,
+            deleted: false,
+            side: naval4950::CombatSide::Attacker,
+            group_index: 0,
+            member_index: 0,
+            unit_type_tag: 51,
+            ship_instance_id: Some(4431),
+            cship_join_validated: true,
+            is_convoy: false,
+            owner_tag_db_id: Some(1),
+            designed_max_strength_raw: Some(10_000_000),
+            battle_slot_index_raw: 3,
+            state_bitmask: Some(1),
+            engagement_weight_raw: Some(1_000),
+            task_force_id: Some(201),
+            fleet_id: Some(200),
+            strength_raw: Some(10_000_000),
+            organisation_raw: Some(9_000_000),
+            experience_raw: Some(100_000),
+            sunk_convoys: Some(0),
+        }],
+    );
+    let lifecycle_delete = naval4950::encode_lifecycle_payload(
+        5,
+        naval4950::STATUS_DELTA_DATA,
+        &[naval4950::LifecycleRow {
+            combat_id: 240_580,
+            generation: 7,
+            body_ptr: 0,
+            deleted: true,
+            location_id: Some(6434),
+            region_id: Some(18),
+            attacker_member_count: Some(1),
+            defender_member_count: Some(0),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
+        }],
+    );
+    let members_empty =
+        naval4950::encode_member_payload(5, naval4950::STATUS_DELTA_DATA, &[]);
+    let snapshots = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (49, lifecycle),
+            (50, members),
+            (56, d56_payload(0, &[d56_row(201, 200, 1, 6434, 0)])),
+        ],
+        vec![(49, lifecycle_delete), (50, members_empty)],
+    ]);
+
+    let member_epoch = &snapshots[0]["order_of_battle"]["extra"]
+        ["naval_missions_status_live"]["task_forces"][0];
+    assert_eq!(
+        member_epoch["active_combat_epochs"],
+        json!(["240580:7:attacker"])
+    );
+    assert_eq!(member_epoch["activity_key"], Value::Null);
+    assert_eq!(
+        member_epoch["combat_membership_authority"],
+        json!("d49_d50_member_epoch")
+    );
+
+    let deleted_epoch = &snapshots[1]["order_of_battle"]["extra"]
+        ["naval_missions_status_live"]["task_forces"][0];
+    assert_eq!(deleted_epoch["active_combat_epochs"], json!([]));
+    assert_eq!(deleted_epoch["activity_key"], Value::Null);
+    assert_eq!(
+        deleted_epoch["combat_membership_authority"],
+        json!("d49_d50_member_epoch")
+    );
+}
+
+#[test]
+fn chunk2_folds_d56_naval_supremacy_under_naval_air() {
+    let rows = [d56_row(201, 200, 1, 12345, 0)];
+    let supremacy_rows = [
+        naval56::NavalSupremacyRow {
+            region_id: 16,
+            controller_tag_db_id: 2,
+            current_raw: 67_962_800,
+            target_raw: 67_962_800,
+            base_target_raw: 67_962_800,
+            previous_raw: 67_962_800,
+            decline_from_raw: 67_962_800,
+            individual_ratio_raw: 87_173,
+        },
+        naval56::NavalSupremacyRow {
+            region_id: 18,
+            controller_tag_db_id: 44,
+            current_raw: 448_057_205,
+            target_raw: 448_057_205,
+            base_target_raw: 76_245_200,
+            previous_raw: 448_057_205,
+            decline_from_raw: 448_057_205,
+            individual_ratio_raw: 97_816,
+        },
+        // Second dominance entry for the SAME (region 16, controller 2/ENG)
+        // with distinct supremacy values. The game's naval-dominance array
+        // legitimately repeats a controller within one region; the fold must
+        // retain both occurrences rather than collapsing to the last write.
+        naval56::NavalSupremacyRow {
+            region_id: 16,
+            controller_tag_db_id: 2,
+            current_raw: 1_333_140,
+            target_raw: 66_657_000,
+            base_target_raw: 66_657_000,
+            previous_raw: 0,
+            decline_from_raw: 66_657_000,
+            individual_ratio_raw: 5_062,
+        },
+    ];
+    let snap = chunk1_one_snapshot(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (44, "USA")]),
+        ),
+        (56, d56_payload_with_supremacy(0, &rows, &supremacy_rows)),
+    ]);
+
+    let sidecar = &snap["naval_air"]["_r2_naval_supremacy"];
+    assert_eq!(sidecar["source"], json!("C"));
+    assert_eq!(sidecar["confidence"], json!("validated_slice"));
+    assert_eq!(sidecar["scale_raw"], json!(100_000));
+    // All three occurrences survive — the repeated (16, ENG) pair is NOT collapsed.
+    assert_eq!(sidecar["row_count"], json!(3));
+    let rows = sidecar["rows"].as_array().unwrap();
+    // Stable sort by (region, controller): the two region-16/ENG occurrences
+    // sort first, in emit order (original then the distinct second entry).
+    assert_eq!(rows[0]["region_id"], json!(16));
+    assert_eq!(rows[0]["controller"], json!("ENG"));
+    assert_eq!(rows[0]["current_raw"], json!(67_962_800));
+    assert_eq!(rows[0]["individual_ratio_raw"], json!(87_173));
+    assert!((rows[0]["current"].as_f64().unwrap() - 679.628).abs() < 0.00001);
+    assert!((rows[0]["individual_ratio"].as_f64().unwrap() - 0.87173).abs() < 0.00001);
+    assert_eq!(rows[1]["region_id"], json!(16));
+    assert_eq!(rows[1]["controller"], json!("ENG"));
+    assert_eq!(rows[1]["current_raw"], json!(1_333_140));
+    assert_eq!(rows[1]["target_raw"], json!(66_657_000));
+    assert_eq!(rows[1]["individual_ratio_raw"], json!(5_062));
+    assert_eq!(rows[2]["region_id"], json!(18));
+    assert_eq!(rows[2]["controller"], json!("USA"));
+    assert_eq!(rows[2]["target_raw"], json!(448_057_205));
+    assert_eq!(rows[2]["base_target_raw"], json!(76_245_200));
+}
+
+#[test]
+fn chunk2_d56_task_force_rows_include_d29_ship_count_and_dominant_hull() {
+    let rows = [d56_row(201, 200, 1, 12345, 2)];
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            29,
+            d29_ships_payload(
+                &[
+                    (300, 201, 1, "ship_hull_light_1"),
+                    (301, 201, 1, "ship_hull_submarine_1"),
+                    (302, 201, 1, "ship_hull_submarine_1"),
+                    (303, 202, 1, "ship_hull_heavy_1"),
+                ],
+                0,
+            ),
+        ),
+        (56, d56_payload(0, &rows)),
+    ]);
+
+    let extra = &snap["order_of_battle"]["extra"]["naval_missions_status_live"];
+    assert_eq!(extra["ship_summary_rows"], json!(1));
+    assert_eq!(extra["dominant_hull_rows"], json!(1));
+    let row = &extra["task_forces"][0];
+    assert_eq!(row["task_force_id"], json!(201));
+    assert_eq!(row["ship_count"], json!(3));
+    assert_eq!(row["dominant_hull_class"], json!("ship_hull_submarine_1"));
+}
+
+#[test]
+fn chunk2_folds_d57_session_metadata_under_top_level_r2_sidecar() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY | DOMAIN57_ROOT_PAUSE_CLOCK,
+        vec![domain57_player_row("IRE", 29)],
+        vec![domain57_event_row(
+            session57_lane::SessionEventKind::Pause,
+            1,
+        )],
+        0,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["country_tag"],
+        json!("IRE")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["tag_db_id"],
+        json!(29)
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["is_human_controlled"],
+        json!(true)
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["human_marker"],
+        json!(true)
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["human_name"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["player_key_hash"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["session_slot"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["host"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["connected"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(sidecar["pause"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(true));
+    assert!(snap["countries"].as_object().unwrap().is_empty());
+    assert!(snap["world"].get("session").is_none());
+    assert!(snap["world"].get("scenario").is_none());
+    assert_eq!(snap["provenance"]["mod"], Value::Null);
+}
+
+#[test]
+fn chunk2_d57_zero_human_rows_is_unavailable_but_pause_can_still_fold() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY | DOMAIN57_ROOT_PAUSE_CLOCK,
+        Vec::new(),
+        vec![domain57_event_row(
+            session57_lane::SessionEventKind::Pause,
+            0,
+        )],
+        session57_lane::STATUS_SOURCE_UNAVAILABLE | session57_lane::STATUS_PARTIAL_DATA,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("unavailable"));
+    assert_eq!(
+        sidecar["players_by_country"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(sidecar["pause"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(false));
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(57)
+            && problem["problem"] == json!("players_by_country_unavailable")));
+}
+
+#[test]
+fn a3_d57_game_speed_and_pause_fold_as_exact_raw_replay_anchor() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY | DOMAIN57_ROOT_PAUSE_CLOCK | DOMAIN57_ROOT_GAME_SPEED,
+        vec![domain57_player_row("IRE", 29)],
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 1),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 4),
+        ],
+        0,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(true));
+    assert_eq!(sidecar["game_speed"]["state"], json!("known"));
+    assert_eq!(sidecar["game_speed"]["raw"], json!(4));
+    assert_eq!(snap["session"]["speed_events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        snap["session"]["speed_events"][0]["hour_index"],
+        json!(16_959_360)
+    );
+    assert_eq!(snap["session"]["speed_events"][0]["speed"], json!(4));
+    assert_eq!(snap["session"]["speed_events"][0]["paused"], json!(true));
+    assert!(snap["world"].get("scenario").is_none());
+}
+
+#[test]
+fn a3_d57_game_speed_without_validated_speed_root_never_reaches_replay() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PAUSE_CLOCK,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 2),
+        ],
+        session57_lane::STATUS_PARTIAL_DATA,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    assert_eq!(
+        snap[DOMAIN57_R2_KEY]["game_speed"]["state"],
+        json!("unavailable")
+    );
+    assert!(snap.get("session").is_none());
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(57)
+            && problem["problem"] == json!("game_speed_unavailable")));
+}
+
+#[test]
+fn x12_d57_fold_rejects_a_source_that_does_not_match_the_state_delta() {
+    let roots = DOMAIN57_ROOT_PAUSE_CLOCK | DOMAIN57_ROOT_GAME_SPEED;
+    let sources = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        | session57_lane::SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED;
+    let baseline = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 2),
+        ],
+        0,
+    );
+    let mut fold = WorldFold::new("x12_delta_gate");
+    fold.fold_session_multiplayer_metadata(&baseline)
+        .expect("clean X12 baseline");
+
+    let wrong_delta = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 1),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 2),
+            domain57_x12_event_row(
+                session57_lane::SessionEventKind::GameSpeed,
+                2,
+                true,
+                1,
+                session57_lane::EVENT_SOURCE_X12_SPEED_SETTER,
+            ),
+        ],
+        0,
+    );
+    let error = fold
+        .fold_session_multiplayer_metadata(&wrong_delta)
+        .expect_err("speed source cannot carry a pause-only delta");
+    assert!(error.contains("source does not match"), "{error}");
+}
+
+#[test]
+fn x12_d57_fold_accepts_hook_baseline_and_startup_transition_in_first_frame() {
+    let roots = DOMAIN57_ROOT_PAUSE_CLOCK | DOMAIN57_ROOT_GAME_SPEED;
+    let sources = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        | session57_lane::SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED;
+    let first = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 3),
+            domain57_x12_event_row(
+                session57_lane::SessionEventKind::GameSpeed,
+                2,
+                false,
+                0,
+                session57_lane::EVENT_SOURCE_X12_PRE_MUTATION_BASELINE,
+            ),
+            domain57_x12_event_row(
+                session57_lane::SessionEventKind::GameSpeed,
+                3,
+                false,
+                1,
+                session57_lane::EVENT_SOURCE_X12_SPEED_SETTER,
+            ),
+        ],
+        0,
+    );
+    let mut fold = WorldFold::new("x12_hook_baseline");
+    fold.fold_session_multiplayer_metadata(&first)
+        .expect("hook pre-mutation baseline must admit startup changes");
+    let replay = fold
+        .build_domain57_replay_session(16_959_360)
+        .expect("exact X12 replay session");
+    assert_eq!(
+        replay["speed_events"][0]["source"],
+        json!("hook_pre_mutation_baseline")
+    );
+    assert_eq!(replay["speed_events"][0]["transition_sequence"], json!(0));
+    assert_eq!(replay["speed_events"][1]["transition_sequence"], json!(1));
+}
+
+#[test]
+fn x12_d57_fold_accepts_first_transition_after_clean_hourly_baseline() {
+    let roots = DOMAIN57_ROOT_PAUSE_CLOCK | DOMAIN57_ROOT_GAME_SPEED;
+    let sources = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        | session57_lane::SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED;
+    let baseline = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 2),
+        ],
+        0,
+    );
+    let mut fold = WorldFold::new("x12_clean_then_transition");
+    fold.fold_session_multiplayer_metadata(&baseline)
+        .expect("clean hourly baseline");
+
+    // Once the hook's clean atomic drain has supplied sequence zero, its first
+    // later mutation is sequence one and must not repeat a second baseline.
+    let transition = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 3),
+            domain57_x12_event_row(
+                session57_lane::SessionEventKind::GameSpeed,
+                3,
+                false,
+                1,
+                session57_lane::EVENT_SOURCE_X12_SPEED_SETTER,
+            ),
+        ],
+        0,
+    );
+    fold.fold_session_multiplayer_metadata(&transition)
+        .expect("sequence one after the clean baseline");
+    let replay = fold
+        .build_domain57_replay_session(16_959_360)
+        .expect("exact X12 replay session");
+    let history = replay["speed_events"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["source"], json!("hourly_hook_ready_baseline"));
+    assert_eq!(history[0]["transition_sequence"], json!(0));
+    assert_eq!(history[1]["source"], json!("speed_setter"));
+    assert_eq!(history[1]["transition_sequence"], json!(1));
+}
+
+#[test]
+fn x12_d57_fold_rejects_hourly_anchor_that_differs_from_history_tail() {
+    let roots = DOMAIN57_ROOT_PAUSE_CLOCK | DOMAIN57_ROOT_GAME_SPEED;
+    let sources = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        | session57_lane::SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED;
+    let baseline = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 2),
+        ],
+        0,
+    );
+    let mut fold = WorldFold::new("x12_anchor_tail");
+    fold.fold_session_multiplayer_metadata(&baseline)
+        .expect("clean hourly baseline");
+
+    let changed_without_transition = domain57_payload_with_source_flags(
+        roots,
+        sources,
+        Vec::new(),
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_event_row(session57_lane::SessionEventKind::GameSpeed, 3),
+        ],
+        0,
+    );
+    let error = fold
+        .fold_session_multiplayer_metadata(&changed_without_transition)
+        .expect_err("an unobserved state change must poison exact history");
+    assert!(error.contains("history tail"), "{error}");
+}
+
+#[test]
+fn chunk2_d57_a15_replay_json_matches_handoff_schema() {
+    let events = vec![
+        domain57_a15_event_row(
+            session57_lane::SessionEventKind::Hotjoin,
+            0xA11C_E001,
+            "Alice",
+            "",
+            29,
+            1,
+            0,
+            10,
+            1,
+            0,
+        ),
+        domain57_a15_event_row(
+            session57_lane::SessionEventKind::TagSwitch,
+            0xA11C_E001,
+            "Alice",
+            "",
+            30,
+            4,
+            29,
+            11,
+            1,
+            1,
+        ),
+        domain57_a15_event_row(
+            session57_lane::SessionEventKind::Chat,
+            0xA11C_E001,
+            "Alice",
+            "front ready?",
+            30,
+            0,
+            0,
+            12,
+            2,
+            2,
+        ),
+        domain57_a15_event_row(
+            session57_lane::SessionEventKind::SystemMessage,
+            0,
+            "CHAT_SYSTEM",
+            "player joined",
+            0,
+            0,
+            0,
+            13,
+            2,
+            3,
+        ),
+    ];
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY
+            | DOMAIN57_ROOT_PAUSE_CLOCK
+            | DOMAIN57_ROOT_CHAT_MESSAGES
+            | DOMAIN57_ROOT_PLAYER_EVENTS,
+        vec![domain57_player_row("IRE", 29)],
+        events,
+        0,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["state"], json!("unavailable"));
+    assert_eq!(sidecar["events"]["state"], json!("known"));
+    let rows = sidecar["events"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0]["kind"], json!("hotjoin"));
+    assert_eq!(rows[0]["actor_key_hash"], json!(0xA11C_E001u64));
+    assert_eq!(rows[0]["actor_name"], json!("Alice"));
+    assert_eq!(rows[0]["tag_db_id"], json!(29));
+    assert_eq!(rows[0]["value_i32"], json!(1));
+    assert_eq!(rows[0]["command_sequence"], json!(10));
+    assert_eq!(rows[0]["event_source_id"], json!(1));
+    assert_eq!(rows[1]["kind"], json!("tag_switch"));
+    assert_eq!(rows[1]["tag_db_id"], json!(30));
+    assert_eq!(rows[1]["value_i32"], json!(4));
+    assert_eq!(rows[1]["related_value_i32"], json!(29));
+    assert_eq!(rows[1]["event_state"], json!(1));
+    assert_eq!(rows[2]["kind"], json!("chat"));
+    assert_eq!(rows[2]["text"], json!("front ready?"));
+    assert_eq!(rows[2]["event_source_id"], json!(2));
+    assert_eq!(rows[3]["kind"], json!("system_message"));
+    assert_eq!(rows[3]["actor_name"], json!("CHAT_SYSTEM"));
+    assert_eq!(rows[3]["text"], json!("player joined"));
+    assert_eq!(rows[3]["command_sequence"], json!(13));
+    assert_eq!(rows[3]["event_state"], json!(3));
+    assert!(rows.iter().all(|row| row.as_object().unwrap().len() == 12));
+}
+
+#[test]
+fn chunk2_d57_message_family_mismatch_keeps_player_events_players_and_pause() {
+    let root_mask = DOMAIN57_ROOT_PLAYER_COUNTRY
+        | DOMAIN57_ROOT_PAUSE_CLOCK
+        | DOMAIN57_ROOT_CHAT_MESSAGES
+        | DOMAIN57_ROOT_PLAYER_EVENTS;
+    let source_flags = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        | session57_lane::SOURCE_FLAG_COMMAND_HOOK_VALIDATED;
+    let payload = domain57_payload_with_source_flags(
+        root_mask,
+        source_flags,
+        vec![domain57_player_row("IRE", 29)],
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 1),
+            domain57_a15_event_row(
+                session57_lane::SessionEventKind::Hotjoin,
+                7,
+                "Alice",
+                "",
+                29,
+                1,
+                0,
+                1,
+                1,
+                0,
+            ),
+            domain57_a15_event_row(
+                session57_lane::SessionEventKind::Chat,
+                7,
+                "Alice",
+                "ready",
+                29,
+                0,
+                0,
+                2,
+                2,
+                0,
+            ),
+        ],
+        0,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(true));
+    let rows = sidecar["events"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["kind"], json!("hotjoin"));
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(57)
+            && problem["problem"] == json!("message_event_family_unavailable")));
+}
+
+#[test]
+fn chunk2_d57_player_event_family_mismatch_keeps_messages_players_and_pause() {
+    let root_mask = DOMAIN57_ROOT_PLAYER_COUNTRY
+        | DOMAIN57_ROOT_PAUSE_CLOCK
+        | DOMAIN57_ROOT_CHAT_MESSAGES
+        | DOMAIN57_ROOT_PLAYER_EVENTS;
+    let source_flags = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        | session57_lane::SOURCE_FLAG_MESSAGE_HOOK_VALIDATED;
+    let payload = domain57_payload_with_source_flags(
+        root_mask,
+        source_flags,
+        vec![domain57_player_row("IRE", 29)],
+        vec![
+            domain57_event_row(session57_lane::SessionEventKind::Pause, 0),
+            domain57_a15_event_row(
+                session57_lane::SessionEventKind::Hotjoin,
+                7,
+                "Alice",
+                "",
+                29,
+                1,
+                0,
+                1,
+                1,
+                0,
+            ),
+            domain57_a15_event_row(
+                session57_lane::SessionEventKind::SystemMessage,
+                0,
+                "CHAT_SYSTEM",
+                "joined",
+                0,
+                0,
+                0,
+                2,
+                2,
+                0,
+            ),
+        ],
+        0,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(false));
+    let rows = sidecar["events"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["kind"], json!("system_message"));
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(57)
+            && problem["problem"] == json!("player_event_family_unavailable")));
+}
+
+#[test]
+fn chunk2_d57_unknown_event_kind_fails_closed() {
+    let mut payload = domain57_payload(
+        DOMAIN57_ROOT_CHAT_MESSAGES,
+        Vec::new(),
+        vec![domain57_a15_event_row(
+            session57_lane::SessionEventKind::Chat,
+            7,
+            "Alice",
+            "ready",
+            0,
+            0,
+            0,
+            1,
+            2,
+            0,
+        )],
+        0,
+    );
+    payload[session57_lane::PAYLOAD_HEADER_LEN..session57_lane::PAYLOAD_HEADER_LEN + 2]
+        .copy_from_slice(&99u16.to_le_bytes());
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+    assert!(snap.get(DOMAIN57_R2_KEY).is_none());
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("domain 57 fold skipped")));
+}
+
+#[test]
+fn chunk2_d54_partial_with_rows_is_unknown_and_surfaces_omissions() {
+    let rows = [d54_path_row(17, 2, vec![101, 102])];
+    let snap = chunk1_one_snapshot(vec![(
+        54,
+        d54_payload(COMPACT_STATUS_PARTIAL_DATA, &rows, 1, 1),
+    )]);
+
+    let extra = &snap["order_of_battle"]["extra"]["army_battleplans_depth_live"];
+    assert_eq!(
+        extra["known"],
+        json!(false),
+        "extra={extra:#} problems={:#} notes={:#}",
+        snap["provenance"]["collector"]["domain_problems"],
+        snap["provenance"]["notes"]
+    );
+    assert_eq!(extra["orders"], json!([]));
+    assert_eq!(extra["omitted_non_exact_rows_this_hour"], json!(1));
+    assert_eq!(extra["path_geometry_omitted_rows_this_hour"], json!(1));
+    assert_eq!(extra["identity_or_active_omitted_rows_this_hour"], json!(0));
+    assert_eq!(extra["orders_group_manager"]["known"], json!(false));
+    assert_eq!(extra["orders_group_manager"]["complete"], json!(false));
+    assert_eq!(extra["orders_group_manager"]["armies"], json!([]));
+    assert!(extra["provenance_notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("non-exact")));
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(54)
+            && problem["problem"] == json!("partial_identity_incomplete")));
+}
+
+#[test]
+fn chunk2_d54_partial_after_baseline_does_not_publish_or_mutate_stale_orders() {
+    let baseline = [d54_path_row(17, 2, vec![101, 102])];
+    let partial = [d54_path_row(17, 2, vec![999])];
+    let snaps = chunk1_snapshots(vec![
+        vec![(54, d54_payload(0, &baseline, 0, 0))],
+        vec![(
+            54,
+            d54_payload(COMPACT_STATUS_PARTIAL_DATA | DELTA, &partial, 1, 0),
+        )],
+        vec![],
+        vec![(54, d54_payload(DELTA, &[], 0, 0))],
+    ]);
+
+    let unknown = &snaps[1]["order_of_battle"]["extra"]["army_battleplans_depth_live"];
+    assert_eq!(unknown["known"], json!(false));
+    assert_eq!(unknown["orders"], json!([]));
+
+    let absent = &snaps[2]["order_of_battle"]["extra"]["army_battleplans_depth_live"];
+    assert_eq!(absent["known"], json!(false));
+    assert_eq!(absent["orders"], json!([]));
+
+    let recovered = &snaps[3]["order_of_battle"]["extra"]["army_battleplans_depth_live"];
+    assert_eq!(recovered["known"], json!(true));
+    assert_eq!(recovered["orders"][0]["path_provinces"], json!([101, 102]));
+}
+
+#[test]
+fn chunk2_d54_complete_manager_keeps_zero_order_army_and_exact_scalars() {
+    let carrier = battleplans54::orders_group_live::CompleteArmyOrdersGroups {
+        armies: vec![
+            battleplans54::orders_group_live::ArmyOrdersGroupRow {
+                army_id: 17,
+                execution_type: 0,
+                cohesion_type: 1,
+                leader_proximity: 2,
+            },
+            battleplans54::orders_group_live::ArmyOrdersGroupRow {
+                army_id: 18,
+                execution_type: 2,
+                cohesion_type: 3,
+                leader_proximity: 4,
+            },
+        ],
+        army_group_count: 1,
+        army_group_ids: vec![23],
+        registered_entry_count: 3,
+    };
+    let snap = chunk1_one_snapshot(vec![(
+        54,
+        d54_payload_with_orders_group_manager(0, &[], &carrier),
+    )]);
+
+    let extra = &snap["order_of_battle"]["extra"]["army_battleplans_depth_live"];
+    assert_eq!(extra["known"], json!(true));
+    assert_eq!(extra["orders"], json!([]));
+    let manager = &extra["orders_group_manager"];
+    assert_eq!(manager["known"], json!(true));
+    assert_eq!(manager["complete"], json!(true));
+    assert_eq!(manager["source"], json!("registered_reference_type_53"));
+    assert_eq!(manager["registered_entry_count"], json!(3));
+    assert_eq!(manager["army_group_count"], json!(1));
+    assert_eq!(manager["army_group_ids"], json!([23]));
+    assert_eq!(manager["armies"].as_array().unwrap().len(), 2);
+    assert_eq!(manager["armies"][0]["army_id"], json!(17));
+    assert_eq!(manager["armies"][0]["execution_type"], json!(0));
+    assert_eq!(manager["armies"][0]["cohesion_type"], json!(1));
+    assert_eq!(manager["armies"][0]["leader_proximity"], json!(2));
+    assert_eq!(manager["armies"][1]["army_id"], json!(18));
+    assert_eq!(manager["armies"][1]["execution_type"], json!(2));
+    assert_eq!(manager["armies"][1]["cohesion_type"], json!(3));
+    assert_eq!(manager["armies"][1]["leader_proximity"], json!(4));
+}
+
+#[test]
+fn chunk2_d54_serializes_typed_army_group_order_without_army_alias() {
+    let carrier = battleplans54::orders_group_live::CompleteArmyOrdersGroups {
+        armies: vec![battleplans54::orders_group_live::ArmyOrdersGroupRow {
+            army_id: 17,
+            execution_type: 0,
+            cohesion_type: 1,
+            leader_proximity: 2,
+        }],
+        army_group_count: 1,
+        army_group_ids: vec![23],
+        registered_entry_count: 2,
+    };
+    let mut row = d54_path_row(23, 0, vec![101, 102]);
+    row.owner_kind = battleplans54::ORDER_OWNER_KIND_ARMY_GROUP;
+    let snap = chunk1_one_snapshot(vec![(
+        54,
+        d54_payload_with_orders_group_manager(0, &[row], &carrier),
+    )]);
+
+    let order = &snap["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0];
+    assert_eq!(order["owner_kind"], json!("army_group"));
+    assert_eq!(order["owner_id"], json!(23));
+    assert_eq!(order["army_id"], Value::Null);
+}
+
+#[test]
+fn chunk2_d56_unmapped_owner_keeps_final_tag_index_unresolved() {
+    let rows = [d56_row(201, 200, 2, 12345, 0)];
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (56, d56_payload(0, &rows)),
+    ]);
+
+    assert_eq!(snap["tag_db_id_index"]["resolved"], json!(false));
+    assert_eq!(snap["tag_db_id_index"]["key"], json!("tag"));
+    let gaps = snap["tag_db_id_index"]["unresolved_tag_db_ids"]
+        .as_array()
+        .unwrap();
+    assert!(gaps.iter().any(|gap| gap == "2"));
+
+    let extra = &snap["order_of_battle"]["extra"]["naval_missions_status_live"];
+    assert_eq!(extra["task_forces"][0]["owner"], json!("2"));
+    assert_eq!(extra["task_forces"][0]["owner_tag_db_id"], json!(2));
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("tag_db_id -> TAG unresolved for 1: 2")));
+}
+
+#[test]
+fn chunk2_d56_failure_masks_unknown_without_clearing_then_valid_empty_clears() {
+    let rows = [d56_row(201, 200, 1, 12345, 0)];
+    let snaps = chunk1_snapshots(vec![
+        vec![(56, d56_payload(0, &rows))],
+        vec![(56, d56_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, &[]))],
+        vec![],
+        vec![(56, d56_payload(0, &[]))],
+    ]);
+
+    assert_eq!(
+        snaps[0]["order_of_battle"]["extra"]["naval_missions_status_live"]["task_force_count"],
+        json!(1)
+    );
+    assert_eq!(
+        snaps[1]["order_of_battle"]["extra"]["naval_missions_status_live"],
+        Value::Null
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(56)
+            && problem["problem"] == json!("compact_status_failure")));
+    assert_eq!(
+        snaps[2]["order_of_battle"]["extra"]["naval_missions_status_live"]["task_force_count"],
+        json!(1),
+        "failure hour must not replace the carried D56 accumulator with empty"
+    );
+    assert_eq!(
+        snaps[3]["order_of_battle"]["extra"]["naval_missions_status_live"]["task_force_count"],
+        json!(0),
+        "a valid empty full-replace frame is the measured empty state"
+    );
+}
+
+#[test]
+fn chunk2_d56_delta_before_baseline_marks_extra_unknown() {
+    let rows = [d56_row(201, 200, 1, 12345, 0)];
+    let snap = chunk1_one_snapshot(vec![(56, d56_payload(DELTA, &rows))]);
+
+    assert_eq!(
+        snap["order_of_battle"]["extra"]["naval_missions_status_live"],
+        Value::Null
+    );
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(56)
+            && problem["problem"] == json!("delta_before_baseline")));
+}
+
+#[test]
+fn chunk2_folds_d48_under_domain_owned_extras_without_d23_collisions() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (48, d48_payload(0, Some(42))),
+    ]);
+
+    let production_extra =
+        &snap["countries"]["GER"]["production"]["construction_buildings_state_damage_live"];
+    assert_eq!(production_extra["source"], json!("C"));
+    assert_eq!(
+        production_extra["construction_queue"][0]["target_state_id"],
+        json!(42)
+    );
+    assert_eq!(
+        production_extra["construction_queue"][0]["template_id"],
+        json!(20_013)
+    );
+    assert_eq!(
+        production_extra["construction_queue"][0]["target_location_id"],
+        json!(42)
+    );
+    assert_eq!(
+        production_extra["construction_queue"][0]["target_scope"],
+        json!("state")
+    );
+    assert_eq!(
+        production_extra["construction_queue"][0]["repair_levels_remaining"],
+        json!(0)
+    );
+    assert_eq!(
+        production_extra["construction_queue"][0]["is_repair"],
+        json!(false)
+    );
+    // W4: created_date_raw flows through the d48 fold (melt anchor GER line
+    // 18354 == raw 60827043 -> renders 1943.9.23.4 in the replay).
+    assert_eq!(
+        production_extra["construction_queue"][0]["created_date_raw"],
+        json!(60_827_043)
+    );
+
+    let state = snap["states"]["42"].as_object().unwrap();
+    assert!(!state.contains_key("resources"));
+    assert!(!state.contains_key("buildings"));
+    assert!(!state.contains_key("province_buildings"));
+    let state_extra = &state["construction_buildings_state_damage_live"];
+    assert_eq!(
+        state_extra["state_buildings"]["type_0x00002fab"]["level"],
+        json!(5)
+    );
+    assert_eq!(
+        state_extra["state_buildings"]["type_0x00002fab"]["healthy_level"],
+        json!(4)
+    );
+    assert_eq!(
+        state_extra["state_buildings"]["type_0x00002fab"]["partial_health_raw"],
+        json!(8_184_501u64)
+    );
+    assert_eq!(
+        state_extra["state_buildings"]["type_0x00002fab"]["token"],
+        json!("infrastructure")
+    );
+    assert_eq!(
+        state_extra["resource_amount_raw_by_id"]["tid_0x00003e03"],
+        json!(2_500_000)
+    );
+
+    let province = snap["provinces"]["2068"].as_object().unwrap();
+    assert!(!province.contains_key("state_id"));
+    assert_eq!(
+        province["construction_buildings_state_damage_live"]["state_id"],
+        json!(42)
+    );
+    assert_eq!(
+        province["construction_buildings_state_damage_live"]["buildings"]["type_0x00004cc1"]
+            ["damaged"],
+        json!(false)
+    );
+    assert_eq!(
+        province["construction_buildings_state_damage_live"]["buildings"]["type_0x00004cc1"]
+            ["token"],
+        json!("rail_way")
+    );
+}
+
+#[test]
+fn wave6_d48_rlc1_full_set_masks_partial_and_projects_measured_empty() {
+    let countries = country_identity_payload(&[(1, "GER"), (2, "FRA")]);
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, countries.clone()),
+            (48, d48_railway_payload(0, vec![d48_railway_row()])),
+        ],
+        vec![
+            (18, countries.clone()),
+            (48, d48_railway_payload(COMPACT_STATUS_PARTIAL_DATA, Vec::new())),
+        ],
+        vec![
+            (18, countries),
+            (48, d48_railway_payload(0, Vec::new())),
+        ],
+    ]);
+
+    let first = &snaps[0]["countries"]["GER"]["production"]
+        ["construction_buildings_state_damage_live"];
+    assert_eq!(first["railway_construction_lines"][0]["line_id"], json!(135_764));
+    assert_eq!(
+        first["railway_construction_lines"][0]["route_province_ids"][3],
+        json!(3_539)
+    );
+    assert!(first["railway_construction_lines"][0]
+        .as_object()
+        .unwrap()
+        .get("current_edge")
+        .is_none());
+    assert_eq!(
+        first["railway_construction_authority"]["schema"],
+        json!("RLC1")
+    );
+    assert_eq!(
+        snaps[0]["countries"]["FRA"]["production"]
+            ["construction_buildings_state_damage_live"]["railway_construction_lines"],
+        json!([]),
+        "country-complete RLC1 must project explicit measured empty"
+    );
+    assert_eq!(
+        snaps[0]["countries"]["FRA"]["production"]
+            ["construction_buildings_state_damage_live"]["construction_queue"],
+        json!([]),
+        "country-complete D48 construction must project explicit measured empty"
+    );
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["production"]
+            ["construction_buildings_state_damage_live"],
+        Value::Null,
+        "production-complete D48 must mask a partial RLC1 frame"
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("compact_status_failure")));
+    assert_eq!(
+        snaps[2]["countries"]["GER"]["production"]
+            ["construction_buildings_state_damage_live"]["railway_construction_lines"],
+        json!([]),
+        "clean empty RLC1 is authoritative deletion, not absence"
+    );
+}
+
+#[test]
+fn chunk2_d48_distinguishes_unknown_absent_and_resolved_empty_queue() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(48, d48_payload(0, None))],
+        vec![(48, d48_failure_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE))],
+        vec![],
+        vec![(48, d48_no_construction_payload())],
+    ]);
+
+    let first_extra =
+        &snaps[0]["countries"]["1"]["production"]["construction_buildings_state_damage_live"];
+    assert_eq!(first_extra["target_state_available"], json!(false));
+    assert!(first_extra["construction_queue"][0]
+        .as_object()
+        .unwrap()
+        .get("target_state_id")
+        .is_none());
+
+    assert_eq!(
+        snaps[1]["states"]["42"]["construction_buildings_state_damage_live"],
+        Value::Null
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("compact_status_failure")));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("domain extras unknown this hour")));
+
+    assert_eq!(
+        snaps[2]["states"]["42"]["construction_buildings_state_damage_live"],
+        Value::Null,
+        "absent D48 frames omit stale full-frame sidecars"
+    );
+    assert!(!snaps[2]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)));
+
+    assert_eq!(
+        snaps[3]["states"]["42"]["construction_buildings_state_damage_live"]
+            ["resource_amount_raw_by_id"]["tid_0x00003e03"],
+        json!(2_500_000)
+    );
+    assert_eq!(
+        snaps[3]["countries"]["1"]["production"]["construction_buildings_state_damage_live"]
+            ["construction_queue"],
+        json!([]),
+        "valid no-construction frame is an explicit measured empty queue, not source-unavailable"
+    );
+}
+
+#[test]
+fn chunk2_d48_delta_after_baseline_applies_carried_state() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(48, d48_payload(0, Some(42)))],
+        vec![(48, d48_payload(DELTA, Some(42)))],
+    ]);
+
+    assert_eq!(
+        snaps[0]["states"]["42"]["construction_buildings_state_damage_live"]
+            ["resource_amount_raw_by_id"]["tid_0x00003e03"],
+        json!(2_500_000)
+    );
+    assert_eq!(
+        snaps[1]["states"]["42"]["construction_buildings_state_damage_live"],
+        snaps[0]["states"]["42"]["construction_buildings_state_damage_live"],
+        "D48 DELTA_DATA applies to the prior baseline and renders the carried state"
+    );
+    assert!(!snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("delta_unsupported")));
+}
+
+#[test]
+fn chunk2_d48_partial_sparse_frame_fails_closed() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(48, d48_payload(0, None))],
+        vec![(48, d48_sparse_partial_payload())],
+    ]);
+
+    assert_eq!(
+        snaps[1]["countries"]["1"]["production"]["construction_buildings_state_damage_live"],
+        Value::Null,
+        "production-complete D48 must never surface a partial frame"
+    );
+    assert_eq!(
+        snaps[1]["states"]["42"]["construction_buildings_state_damage_live"],
+        Value::Null
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk2_d48_partial_construction_lines_fail_closed() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![
+                    d48_construction_row(77, 5_000_000),
+                    d48_construction_row(88, 2_000_000),
+                ],
+                vec![d48_state_building(0x2fab, 5)],
+            ),
+        )],
+        vec![(
+            48,
+            d48_custom_payload(
+                COMPACT_STATUS_PARTIAL_DATA,
+                vec![d48_construction_row(77, 6_000_000)],
+                Vec::new(),
+            ),
+        )],
+    ]);
+
+    assert_eq!(
+        snaps[1]["countries"]["1"]["production"]["construction_buildings_state_damage_live"],
+        Value::Null
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk2_d48_clean_frame_full_replace_clears_removed_construction_line() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![
+                    d48_construction_row(77, 5_000_000),
+                    d48_construction_row(88, 2_000_000),
+                ],
+                vec![d48_state_building(0x2fab, 5)],
+            ),
+        )],
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![d48_construction_row(77, 6_000_000)],
+                vec![d48_state_building(0x2fab, 5)],
+            ),
+        )],
+    ]);
+
+    let queue = snaps[1]["countries"]["1"]["production"]
+        ["construction_buildings_state_damage_live"]["construction_queue"]
+        .as_array()
+        .unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0]["id"], json!(77));
+    assert!(!queue.iter().any(|row| row["id"] == json!(88)));
+}
+
+#[test]
+fn chunk2_d48_partial_building_containers_fail_closed() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            48,
+            d48_custom_payload(
+                0,
+                vec![d48_construction_row(77, 5_000_000)],
+                vec![
+                    d48_state_building(0x2fab, 5),
+                    d48_state_building(0x3000, 7),
+                    d48_province_building(0x4cc1, 2),
+                    d48_province_building(0x4cc2, 4),
+                ],
+            ),
+        )],
+        vec![(
+            48,
+            d48_custom_payload(
+                COMPACT_STATUS_PARTIAL_DATA,
+                Vec::new(),
+                vec![
+                    d48_state_building(0x2fab, 6),
+                    d48_province_building(0x4cc1, 3),
+                ],
+            ),
+        )],
+    ]);
+
+    assert_eq!(
+        snaps[1]["states"]["42"]["construction_buildings_state_damage_live"],
+        Value::Null
+    );
+    assert_eq!(
+        snaps[1]["provinces"]["2068"]["construction_buildings_state_damage_live"],
+        Value::Null
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(48)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk2_folds_design_and_variant_domains_without_key_collisions() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (33, d33_variant_defs_payload(900, "Bf 109", "Bf 109 A")),
+        (35, d35_air_variant_stats_payload(900)),
+        (36, d36_reserves_payload(&[(1, 900, 250_000)], 0)),
+        (
+            37,
+            d33_variant_defs_payload(901, "Infantry Equipment", "Gew 98"),
+        ),
+        (39, d39_upgrades_payload(900, 2, 4)),
+        (40, d39_upgrades_payload(901, 1, 3)),
+        (46, d46_air_variant_archetypes_payload(DELTA)),
+    ]);
+
+    let designs = &snap["designs"];
+    assert_eq!(
+        designs["equipment_variants_live"]["900"]["live_definition"]["display_name"],
+        json!("Bf 109")
+    );
+    assert_eq!(
+        designs["equipment_variants_live"]["900"]["live_stats"]["_r2_air_variant_stats"]
+            ["equipment_token_raw"],
+        json!(201)
+    );
+    assert_eq!(
+        designs["equipment_variants_live"]["900"]["upgrade_levels"][0]["level"],
+        json!(4)
+    );
+    assert_eq!(
+        designs["equipment_variants_live"]["900"]["_r2_air_variant_archetypes"]["role_token"],
+        json!("fighter")
+    );
+    assert_eq!(
+        designs["_r2_stockpile_variant_defs"]["901"]["display_name"],
+        json!("Infantry Equipment")
+    );
+    assert_eq!(
+        designs["_r2_stockpile_variant_upgrades"]["901"][0]["level"],
+        json!(3)
+    );
+    assert_eq!(
+        designs["_r2_air_variant_reserves"][0]["owner"],
+        json!("GER")
+    );
+}
+
+#[test]
+fn chunk2_folds_air_sections_and_keeps_d42_out_of_events() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (31, d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0)),
+        (34, d34_air_base_status_payload(&[(9001, 64, 6508, 100)], 0)),
+        (
+            38,
+            d38_air_superiority_inputs_payload(&[(88, 1, 7, 900, 100_000)], 0),
+        ),
+        (42, d42_air_combat_losses_payload(0, 1)),
+    ]);
+
+    assert_eq!(
+        snap["naval_air"]["_r2_air_region_activity"][0]["owner"],
+        json!("GER")
+    );
+    assert_eq!(snap["strategic_air"]["air_bases"][0]["id"], json!(9001));
+    assert_eq!(
+        snap["strategic_air"]["_r2_air_superiority_inputs"][0]["variant_id"],
+        json!(900)
+    );
+    assert_eq!(
+        snap["strategic_air"]["_r2_air_combat_losses_live"][0]["count_delta"],
+        json!(-4)
+    );
+    assert_eq!(
+        snap["strategic_air"]["_r2_air_combat_losses_live"][0]["air_accidents"],
+        json!(3)
+    );
+    assert!(
+        (snap["strategic_air"]["_r2_air_combat_losses_live"][0]["experience"]
+            .as_f64()
+            .unwrap()
+            - 0.42)
+            .abs()
+            < 0.000001
+    );
+    let cumulative = &snap["strategic_air"]["_r2_air_wing_cumulative_scalars"];
+    assert_eq!(cumulative[0]["wing_id"], json!(700));
+    assert_eq!(cumulative[0]["air_accidents"], json!(3));
+    assert_eq!(cumulative[0]["experience_raw"], json!(42_000));
+    assert_eq!(snap["events"], json!([]));
+}
+
+#[test]
+fn chunk2_folds_d42_exact_air_region_combat_causes() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (42, d42_air_combat_losses_with_region_stats_payload()),
+    ]);
+    let row = &snap["strategic_air"]["_r2_air_region_combat_stats"][0];
+    assert_eq!(row["owner"], json!("GER"));
+    assert_eq!(row["region_id"], json!(88));
+    assert_eq!(row["wing_id"], json!(700));
+    assert_eq!(row["plane_count"], json!(96));
+    assert_eq!(
+        row["damage"][0]["cause"],
+        json!("planes_shot_down_by_enemy_planes")
+    );
+    assert_eq!(row["damage"][0]["amount_raw"], json!(300_000));
+    assert_eq!(
+        row["damage"][1]["cause"],
+        json!("planes_downed_by_anti_air")
+    );
+}
+
+fn d42_wing_row(
+    p: &mut Vec<u8>,
+    wing_id: u32,
+    flags: u32,
+    old_count: u32,
+    new_count: u32,
+    air_accidents: u32,
+    experience_raw: i32,
+) {
+    let count_delta = new_count as i64 - old_count as i64;
+    c2_u32(p, 1);
+    c2_u32(p, wing_id);
+    c2_u64(p, u64::from(wing_id));
+    c2_u32(p, flags);
+    c2_u32(p, 7);
+    c2_u32(p, 0);
+    c2_u32(p, old_count);
+    c2_u32(p, new_count);
+    c2_i32(p, count_delta as i32);
+    c2_u32(p, 0);
+    c2_i64(p, old_count as i64 * 100_000);
+    c2_i64(p, new_count as i64 * 100_000);
+    c2_i64(p, count_delta * 100_000);
+    c2_u32(p, air_accidents);
+    c2_i32(p, experience_raw);
+}
+
+fn d42_rows_payload(rows: impl FnOnce(&mut Vec<u8>) -> u32) -> Vec<u8> {
+    let mut body = Vec::new();
+    let row_count = rows(&mut body);
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, 0);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    p.extend_from_slice(&body);
+    p
+}
+
+#[test]
+fn d42_baseline_rows_feed_cumulative_map_without_event_rows() {
+    let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            42,
+            d42_rows_payload(|rows| {
+                d42_wing_row(rows, 700, baseline_flags, 100, 100, 3, 42_000);
+                d42_wing_row(rows, 701, baseline_flags, 50, 50, 0, 5_000);
+                2
+            }),
+        ),
+    ]);
+    // No loss/reinforcement/delete flags -> no hourly event rows.
+    assert_eq!(
+        snap["strategic_air"]["_r2_air_combat_losses_live"],
+        json!([])
+    );
+    let cumulative = &snap["strategic_air"]["_r2_air_wing_cumulative_scalars"];
+    assert_eq!(cumulative.as_array().unwrap().len(), 2);
+    assert_eq!(cumulative[0]["wing_id"], json!(700));
+    assert_eq!(cumulative[0]["air_accidents"], json!(3));
+    assert_eq!(cumulative[1]["wing_id"], json!(701));
+}
+
+#[test]
+fn d42_deleted_row_removes_wing_from_cumulative_map() {
+    let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let deleted_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_DELETED
+        | AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                42,
+                d42_rows_payload(|rows| {
+                    d42_wing_row(rows, 700, baseline_flags, 100, 100, 3, 42_000);
+                    1
+                }),
+            ),
+        ],
+        vec![(
+            42,
+            d42_rows_payload(|rows| {
+                d42_wing_row(rows, 700, deleted_flags, 100, 0, 3, 42_000);
+                1
+            }),
+        )],
+    ]);
+    assert_eq!(
+        snaps[0]["strategic_air"]["_r2_air_wing_cumulative_scalars"][0]["wing_id"],
+        json!(700)
+    );
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_wing_cumulative_scalars"],
+        json!([])
+    );
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_combat_losses_live"][0]["wing_id"],
+        json!(700)
+    );
+}
+
+#[test]
+fn d42_wing_scalar_values_without_measured_flag_fail_fold_closed() {
+    let flags = AIR_STRENGTH_DELTA_ROW_FLAG_LOSS | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snap = chunk1_one_snapshot(vec![(
+        42,
+        d42_rows_payload(|rows| {
+            d42_wing_row(rows, 700, flags, 100, 96, 3, 42_000);
+            1
+        }),
+    )]);
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("wing scalar values without measured flag")));
+}
+
+#[test]
+fn d42_duplicate_wing_id_in_one_payload_fails_fold_closed() {
+    let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
+        | AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE
+        | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+    let snap = chunk1_one_snapshot(vec![(
+        42,
+        d42_rows_payload(|rows| {
+            d42_wing_row(rows, 700, baseline_flags, 100, 100, 3, 42_000);
+            d42_wing_row(rows, 700, baseline_flags, 100, 100, 9, 10_000);
+            2
+        }),
+    )]);
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("appears twice in one payload")));
+}
+
+#[test]
+fn chunk2_sparse_unflagged_followups_preserve_prior_rows() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                29,
+                d29_ships_payload(&[(300, 201, 1, "destroyer_1"), (301, 201, 1, "sub_1")], 0),
+            ),
+            (
+                30,
+                d30_air_wings_payload(&[(1, 700, 77, 100), (1, 701, 78, 50)], 0),
+            ),
+            (
+                31,
+                d31_air_region_activity_payload(&[(88, 1, 7, 100), (89, 1, 8, 50)], 0),
+            ),
+            (
+                32,
+                d32_loadouts_payload(
+                    &[
+                        (1, 700, 77, 9001, vec![(900, 100_000)]),
+                        (1, 701, 78, 9002, vec![(901, 50_000)]),
+                    ],
+                    0,
+                ),
+            ),
+            (
+                34,
+                d34_air_base_status_payload(
+                    &[(9001, 64, 6508, 100), (9002, 65, 3364, 50)],
+                    0,
+                ),
+            ),
+            (
+                36,
+                d36_reserves_payload(&[(1, 900, 250_000), (1, 901, 50_000)], 0),
+            ),
+            (
+                38,
+                d38_air_superiority_inputs_payload(
+                    &[(88, 1, 7, 900, 100_000), (89, 1, 8, 901, 50_000)],
+                    0,
+                ),
+            ),
+        ],
+        vec![
+            (
+                29,
+                d29_ships_payload(&[(300, 201, 1, "destroyer_1_refit")], 0),
+            ),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 101)], 0)),
+            (31, d31_air_region_activity_payload(&[(88, 1, 7, 101)], 0)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 101_000)])], 0),
+            ),
+            (34, d34_air_base_status_payload(&[(9001, 64, 6508, 101)], 0)),
+            (36, d36_reserves_payload(&[(1, 900, 251_000)], 0)),
+            (
+                38,
+                d38_air_superiority_inputs_payload(&[(88, 1, 7, 900, 101_000)], 0),
+            ),
+        ],
+    ]);
+
+    assert_eq!(
+        snaps[1]["order_of_battle"]["ships"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        snaps[1]["order_of_battle"]["air_wings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        snaps[1]["naval_air"]["_r2_air_region_activity"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        snaps[1]["strategic_air"]["air_bases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        snaps[1]["designs"]["_r2_air_variant_reserves"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_superiority_inputs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn chunk2_d30_valid_empty_tombstone_removes_air_wing() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        ],
+        vec![(30, d30_air_wings_delete_payload(1, 700, 77))],
+    ]);
+
+    assert_eq!(
+        snaps[0]["order_of_battle"]["air_wings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        snaps[1]["order_of_battle"]["air_wings"],
+        json!([]),
+        "valid empty current set is represented by tombstones, not SOURCE_UNAVAILABLE"
+    );
+}
+
+#[test]
+fn chunk2_d30_failure_does_not_consume_pending_delete() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        ],
+        vec![(
+            30,
+            d30_air_wings_payload(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        )],
+        vec![(30, d30_air_wings_delete_payload(1, 700, 77))],
+    ]);
+
+    assert_eq!(
+        snaps[1]["order_of_battle"]["air_wings"],
+        Value::Null,
+        "failure frame must null the owned leaf for this hour"
+    );
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("air_wings state unknown this hour")));
+    assert_eq!(
+        snaps[2]["order_of_battle"]["air_wings"],
+        json!([]),
+        "recovered valid frame must still deliver the tombstone"
+    );
+}
+
+#[test]
+fn chunk2_d32_orphan_loadout_does_not_resurrect_deleted_air_wing() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+            ),
+        ],
+        vec![
+            (30, d30_air_wings_delete_payload(1, 700, 77)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+            ),
+        ],
+    ]);
+
+    assert_eq!(snaps[1]["order_of_battle"]["air_wings"], json!([]));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("air_wing_loadouts dropped 1 orphan row")));
+}
+
+#[test]
+fn chunk2_d32_orphan_note_is_current_hour_only() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+            ),
+        ],
+        vec![
+            (30, d30_air_wings_delete_payload(1, 700, 77)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+            ),
+        ],
+        vec![],
+    ]);
+
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("air_wing_loadouts dropped 1 orphan row")));
+    assert!(!snaps[2]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("air_wing_loadouts dropped")));
+}
+
+#[test]
+fn chunk2_d32_fresh_loadout_reattaches_after_d30_reappearance() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+            ),
+        ],
+        vec![(30, d30_air_wings_delete_payload(1, 700, 77))],
+        vec![
+            (30, d30_air_wings_payload(&[(1, 700, 77, 120)], 0)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9002, vec![(901, 200_000)])], 0),
+            ),
+        ],
+    ]);
+
+    assert_eq!(snaps[1]["order_of_battle"]["air_wings"], json!([]));
+    assert!(snaps[1]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("air_wing_loadouts dropped 1 orphan row")));
+    let wing = &snaps[2]["order_of_battle"]["air_wings"][0];
+    assert_eq!(wing["id"], json!(700));
+    assert_eq!(wing["air_base"], json!(9002));
+    assert_eq!(wing["equipment"][0][0], json!(901));
+    assert_eq!(
+        wing["_r2_air_wing_loadout"]["equipment"][0]["amount_raw"],
+        json!(200_000)
+    );
+    assert!(!snaps[2]["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("air_wing_loadouts dropped")));
+}
+
+#[test]
+fn chunk2_delta_before_baseline_marks_owned_leaf_unknown() {
+    let snap = chunk1_one_snapshot(vec![(27, d27_empty_payload(DELTA))]);
+    assert_eq!(snap["order_of_battle"]["battle_plan_orders"], Value::Null);
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(27)
+            && problem["problem"] == json!("delta_before_baseline")));
+}
+
+#[test]
+fn chunk2_d27_expected_partial_before_baseline_is_unknown() {
+    let snap = chunk1_one_snapshot(vec![(
+        27,
+        d27_order_payload(COMPACT_STATUS_PARTIAL_DATA, 10, &[7]),
+    )]);
+    assert_eq!(snap["order_of_battle"]["battle_plan_orders"], Value::Null);
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(27)
+            && problem["problem"] == json!("partial_before_baseline")));
+}
+
+#[test]
+fn chunk2_d27_expected_partial_after_baseline_is_unknown_until_clean_record() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(27, d27_order_payload(0, 10, &[7]))],
+        vec![(
+            27,
+            d27_order_payload(COMPACT_STATUS_PARTIAL_DATA | DELTA, 10, &[8]),
+        )],
+        vec![],
+        vec![(27, d27_empty_payload(DELTA))],
+    ]);
+
+    assert_eq!(
+        snaps[1]["order_of_battle"]["battle_plan_orders"],
+        Value::Null
+    );
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(27)
+            && problem["problem"] == json!("partial_identity_incomplete")));
+    assert_eq!(
+        snaps[2]["order_of_battle"]["battle_plan_orders"],
+        Value::Null,
+        "an absent d27 follow-up must not expose the retained baseline"
+    );
+    assert_eq!(
+        snaps[3]["order_of_battle"]["battle_plan_orders"][0]["order_instance"]["states"],
+        json!([7]),
+        "partial d27 rows must not mutate the retained identity baseline"
+    );
+}
+
+#[test]
+fn chunk2_d28_expected_partial_before_baseline_is_unknown() {
+    let snap = chunk1_one_snapshot(vec![(28, d28_oob_payload(COMPACT_STATUS_PARTIAL_DATA))]);
+    for leaf in ["army_groups", "armies", "fleets"] {
+        assert_eq!(snap["order_of_battle"][leaf], Value::Null);
+    }
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(28)
+            && problem["problem"] == json!("partial_before_baseline")));
+}
+
+#[test]
+fn chunk2_d28_expected_partial_after_baseline_is_unknown_until_clean_record() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(28, d28_oob_payload(0))],
+        vec![(28, d28_oob_payload(COMPACT_STATUS_PARTIAL_DATA | DELTA))],
+        vec![],
+        vec![(28, d28_oob_payload(DELTA))],
+    ]);
+
+    for leaf in ["army_groups", "armies", "fleets"] {
+        assert_eq!(snaps[1]["order_of_battle"][leaf], Value::Null);
+    }
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(28)
+            && problem["problem"] == json!("partial_identity_incomplete")));
+    assert_eq!(
+        snaps[2]["order_of_battle"]["armies"],
+        Value::Null,
+        "an absent d28 follow-up must not expose the retained baseline"
+    );
+    assert_eq!(
+        snaps[3]["order_of_battle"]["armies"][0]["id"],
+        json!(10),
+        "a later clean d28 record makes the retained accumulator current again"
+    );
+}
+
+#[test]
+fn chunk2_failure_nulls_owned_leaf_without_clearing_accumulator() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            34,
+            d34_air_base_status_payload(&[(9001, 64, 6508, 100)], 0),
+        )],
+        vec![(
+            34,
+            d34_air_base_status_payload(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        )],
+        vec![(34, d34_air_base_status_payload(&[], 0))],
+    ]);
+    assert_eq!(snaps[0]["strategic_air"]["air_bases"][0]["id"], json!(9001));
+    assert_eq!(snaps[1]["strategic_air"]["air_bases"], Value::Null);
+    assert_eq!(
+        snaps[2]["strategic_air"]["air_bases"][0]["id"],
+        json!(9001),
+        "post-baseline empty sparse frame means no changes, not a fabricated empty set"
+    );
+}
+
+fn d46_ace_row(
+    tag_db_id: u32,
+    ace_id: u32,
+    wing_id: Option<u32>,
+    alive: Option<bool>,
+    killer_ace_id: Option<u32>,
+    killer_country_tag_db_id: Option<u32>,
+) -> ace46::AirAceRosterRow {
+    let mut source_mask = ace46::SOURCE_LIVE_COUNTRY_ACE_VECTOR
+        | ace46::SOURCE_LIVE_ACE_OBJECT_LAYOUT
+        | ace46::SOURCE_DEV_SAVE_LAYOUT_VALIDATION;
+    if wing_id.is_some() {
+        source_mask |= ace46::SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT;
+    }
+    if alive.is_some() {
+        source_mask |= ace46::SOURCE_LIVE_ACE_DEATH_RECORD;
+        source_mask |= ace46::SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
+    }
+    ace46::AirAceRosterRow {
+        tag_db_id,
+        ace_id,
+        country_ace_index: 0,
+        wing_id,
+        alive,
+        handled: alive.map(|value| !value),
+        kill_type_raw: alive.map(|value| if value { 0 } else { 1 }),
+        killer_ace_id,
+        killer_country_tag_db_id,
+        source_mask,
+        name: Some("Hans".to_string()),
+        surname: Some("Rudel".to_string()),
+        callsign: Some("Adler".to_string()),
+    }
+}
+
+fn d46_payload_with_ace_trailer(rows: &[ace46::AirAceRosterRow], status_flags: u32) -> Vec<u8> {
+    let mut rows = rows.to_vec();
+    let mut next_index = std::collections::BTreeMap::<u32, u32>::new();
+    for row in &mut rows {
+        let index = next_index.entry(row.tag_db_id).or_default();
+        row.country_ace_index = *index;
+        *index = index.saturating_add(1);
+    }
+    let header = ace46::AirAceRosterHeader {
+        status_flags,
+        observed_country_rows: rows
+            .iter()
+            .map(|row| row.tag_db_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u32,
+        observed_ace_rows: rows.len() as u32,
+        wing_assignment_rows: rows.iter().filter(|row| row.wing_id.is_some()).count() as u32,
+        dead_rows: rows.iter().filter(|row| row.alive == Some(false)).count() as u32,
+        skipped_rows: 0,
+    };
+    let mut payload = d46_air_variant_archetypes_payload(DELTA);
+    payload.extend_from_slice(&ace46::encode_trailer(&header, &rows));
+    payload
+}
+
+fn d46_payload_with_v1_ace_trailer(rows: &[ace46::AirAceRosterRow]) -> Vec<u8> {
+    let mut rows = rows.to_vec();
+    let mut next_index = std::collections::BTreeMap::<u32, u32>::new();
+    for row in &mut rows {
+        let index = next_index.entry(row.tag_db_id).or_default();
+        row.country_ace_index = *index;
+        *index = index.saturating_add(1);
+    }
+    let header = ace46::AirAceRosterHeader {
+        status_flags: 0,
+        observed_country_rows: rows
+            .iter()
+            .map(|row| row.tag_db_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u32,
+        observed_ace_rows: rows.len() as u32,
+        wing_assignment_rows: rows.iter().filter(|row| row.wing_id.is_some()).count() as u32,
+        dead_rows: rows.iter().filter(|row| row.alive == Some(false)).count() as u32,
+        skipped_rows: 0,
+    };
+    let v2 = ace46::encode_trailer(&header, &rows);
+    let mut v1 = v2[..ace46::ACE_TRAILER_HEADER_LEN].to_vec();
+    v1[4..6].copy_from_slice(&ace46::ACE_TRAILER_VERSION_V1.to_le_bytes());
+    v1[8..10].copy_from_slice(&(ace46::ACE_TRAILER_ROW_LEN_V1 as u16).to_le_bytes());
+    for index in 0..rows.len() {
+        let start = ace46::ACE_TRAILER_HEADER_LEN + index * ace46::ACE_TRAILER_ROW_LEN;
+        let mut fixed = v2[start..start + ace46::ACE_TRAILER_ROW_LEN_V1].to_vec();
+        let flags = u32::from_le_bytes(fixed[8..12].try_into().unwrap())
+            & !(ace46::ROW_FLAG_HANDLED_KNOWN
+                | ace46::ROW_FLAG_HANDLED
+                | ace46::ROW_FLAG_KILL_TYPE_KNOWN);
+        fixed[8..12].copy_from_slice(&flags.to_le_bytes());
+        let source = u32::from_le_bytes(fixed[12..16].try_into().unwrap())
+            & !ace46::SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
+        fixed[12..16].copy_from_slice(&source.to_le_bytes());
+        v1.extend_from_slice(&fixed);
+    }
+    let string_offset =
+        ace46::ACE_TRAILER_HEADER_LEN + rows.len().saturating_mul(ace46::ACE_TRAILER_ROW_LEN);
+    v1.extend_from_slice(&v2[string_offset..]);
+
+    let mut payload = d46_air_variant_archetypes_payload(DELTA);
+    payload.extend_from_slice(&v1);
+    payload
+}
+
+#[test]
+fn chunk2_d46_ace_trailer_annotates_wings_and_builds_country_sidecar() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        (
+            46,
+            d46_payload_with_ace_trailer(
+                &[
+                    d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+                    d46_ace_row(1, 6265, None, Some(false), Some(5440), Some(92)),
+                ],
+                0,
+            ),
+        ),
+    ]);
+
+    let wing = &snap["order_of_battle"]["air_wings"][0];
+    assert_eq!(wing["id"], json!(700));
+    assert_eq!(wing["ace"]["id"], json!(5440));
+    assert_eq!(wing["ace"]["name"], json!("Hans"));
+    assert_eq!(wing["ace"]["alive"], json!(true));
+    assert_eq!(wing["ace"]["handled"], json!(false));
+    assert_eq!(wing["ace"]["kill_type_raw"], json!(0));
+    assert_eq!(wing["ace"]["lifecycle"], json!("alive"));
+
+    let receipt = &snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"];
+    let aces = &receipt["aces"];
+    assert_eq!(receipt["schema_version"], json!(1));
+    assert_eq!(receipt["carrier_version"], json!(2));
+    assert_eq!(receipt["owner_tag_db_id"], json!(1));
+    assert_eq!(receipt["observed_country_rows"], json!(1));
+    assert_eq!(receipt["observed_ace_rows"], json!(2));
+    assert_eq!(receipt["owner_row_count"], json!(2));
+    assert_eq!(
+        receipt["function_manifest_sha256"],
+        json!("f85162e5b2a531962e1080fb3add1867f4522a2aba7811d013a9f43c8e708720")
+    );
+    assert_eq!(aces.as_array().map(Vec::len), Some(2));
+    assert_eq!(aces[0]["owner_tag_db_id"], json!(1));
+    assert!(aces[0]["source_mask"].as_u64().is_some());
+    assert_eq!(aces[0]["ace_id"], json!(5440));
+    assert_eq!(aces[0]["wing_id"], json!(700));
+    assert_eq!(aces[0]["killer_ace_id"], Value::Null);
+    assert_eq!(aces[1]["ace_id"], json!(6265));
+    assert_eq!(aces[1]["alive"], json!(false));
+    assert_eq!(aces[1]["handled"], json!(true));
+    assert_eq!(aces[1]["kill_type_raw"], json!(1));
+    assert_eq!(aces[1]["lifecycle"], json!("dead_handled"));
+    assert_eq!(aces[1]["killer_ace_id"], json!(5440));
+    assert_eq!(aces[1]["killer_country_tag_db_id"], json!(92));
+}
+
+#[test]
+fn chunk2_d46_clean_zero_ace_owner_is_explicit_measured_empty() {
+    let header = ace46::AirAceRosterHeader {
+        status_flags: 0,
+        observed_country_rows: 1,
+        observed_ace_rows: 0,
+        wing_assignment_rows: 0,
+        dead_rows: 0,
+        skipped_rows: 0,
+    };
+    let mut payload = d46_air_variant_archetypes_payload(DELTA);
+    payload.extend_from_slice(&ace46::encode_trailer(&header, &[]));
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (46, payload),
+    ]);
+    let receipt = &snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"];
+    assert_eq!(receipt["observed_country_rows"], json!(1));
+    assert_eq!(receipt["observed_ace_rows"], json!(0));
+    assert_eq!(receipt["owner_row_count"], json!(0));
+    assert_eq!(receipt["aces"], json!([]));
+}
+
+#[test]
+fn chunk2_d46_ace_trailer_ambiguous_wing_claims_drop_the_annotation() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+        (
+            46,
+            d46_payload_with_ace_trailer(
+                &[
+                    d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+                    d46_ace_row(1, 6001, Some(700), Some(true), None, None),
+                ],
+                0,
+            ),
+        ),
+    ]);
+
+    let wing = &snap["order_of_battle"]["air_wings"][0];
+    assert_eq!(wing["id"], json!(700));
+    assert_eq!(wing.get("ace"), None);
+    // The sidecar still carries both rows (the ambiguity only drops the
+    // wing-side join, never the roster identity).
+    let aces = &snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"];
+    assert_eq!(aces.as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn chunk2_d46_ace_trailer_source_unavailable_retains_and_badges() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            46,
+            d46_payload_with_ace_trailer(&[], ace46::ACE_STATUS_SOURCE_UNAVAILABLE),
+        ),
+    ]);
+
+    assert_eq!(snap["countries"]["GER"].get("extra"), None);
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(46)
+            && problem["problem"] == json!("ace_roster_source_unavailable")));
+}
+
+#[test]
+fn chunk2_d20_division_supply_scalars_fold_with_presence() {
+    // Div A: supply_gain present-nonzero, disrupted present-nonzero.
+    // Div B: supply_gain present-ZERO, disrupted present-ZERO (valid, kept).
+    // Div C: both absent (flags clear) -> null, not 0.0.
+    let mut divs = Vec::new();
+    divisions_header(&mut divs, 3, 0);
+    // moving=0, in_combat=0; base_flags carries only the supply/disrupted bits
+    // added by the helper.
+    push_div_row_with_supply(&mut divs, 17, 0, 118, Some(25_000), Some(39_248));
+    push_div_row_with_supply(&mut divs, 18, 0, 119, Some(0), Some(0));
+    push_div_row_with_supply(&mut divs, 19, 0, 120, None, None);
+
+    let snap = snapshot_for_domain_records(vec![(20, divs)]);
+    let list = snap["divisions"].as_array().unwrap();
+    let by_id = |id: u32| {
+        list.iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("div {id} missing"))
+    };
+
+    let a = by_id(17);
+    assert!((a["supply_gain"].as_f64().unwrap() - 0.25).abs() < 1e-9);
+    assert!((a["disrupted_supply"].as_f64().unwrap() - 0.39248).abs() < 1e-9);
+
+    let b = by_id(18);
+    assert_eq!(b["supply_gain"], json!(0.0));
+    assert_eq!(b["disrupted_supply"], json!(0.0));
+
+    let c = by_id(19);
+    assert_eq!(c["supply_gain"], Value::Null);
+    assert_eq!(c["disrupted_supply"], Value::Null);
+}
+
+#[test]
+fn chunk2_d20_e4_fields_fold_with_presence() {
+    // Div A: all E4 fields present, SR true.
+    // Div B: present false/zero values (kept, not null).
+    // Div C: all absent -> null.
+    let mut divs = Vec::new();
+    divisions_header(&mut divs, 3, 0);
+    push_div_row_with_e4(&mut divs, 17, Some(true), Some(8777), Some(1234));
+    push_div_row_with_e4(&mut divs, 18, Some(false), Some(0), Some(0));
+    push_div_row_with_e4(&mut divs, 19, None, None, None);
+
+    let snap = snapshot_for_domain_records(vec![(20, divs)]);
+    let list = snap["divisions"].as_array().unwrap();
+    let by_id = |id: u32| {
+        list.iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("div {id} missing"))
+    };
+
+    let a = by_id(17);
+    assert_eq!(a["strategic_redeployment"], json!(true));
+    assert_eq!(a["current_manpower"], json!(8777));
+    assert_eq!(a["cumulative_losses"], json!(1234));
+
+    let b = by_id(18);
+    assert_eq!(b["strategic_redeployment"], json!(false));
+    assert_eq!(b["current_manpower"], json!(0));
+    assert_eq!(b["cumulative_losses"], json!(0));
+
+    let c = by_id(19);
+    assert_eq!(c["strategic_redeployment"], Value::Null);
+    assert_eq!(c["current_manpower"], Value::Null);
+    assert_eq!(c["cumulative_losses"], Value::Null);
+}
+
+#[test]
+fn chunk2_d63_country_core_scalars_fold_with_presence() {
+    // W1 domain 63: per-country core scalars. Values are the exact D04
+    // live-validated readings (see runs/crack_fanout/W1_country_rowgrowth).
+    // GER (tag_db_id 1): all fields present. manpower 1640616, convoys 465,
+    //   divisions_lost 130; experience raw i32 channels: army raw 901134
+    //   (/32768 = 27.50042...), navy raw 13831573 (/32768 = 422.10611...),
+    //   air raw 500*32768 = 16384000 (== 500.0), num_armies raw 13815830
+    //   (/32768 = 421.62567...). Daily channels set to small raws.
+    // SOV (tag_db_id 3): convoys present-zero (a country that has destroyed 0
+    //   convoys still folds a present 0), divisions_lost 365, no experience.
+    // USA (tag_db_id 68): all absent -> null.
+    let ger_exp: [i32; 7] = [
+        901_134,    // army   -> 27.50042...
+        39_322,     // army_daily -> ~1.20001
+        13_831_573, // navy   -> 422.10611...
+        3_378,      // navy_daily -> ~0.10306
+        16_384_000, // air    -> 500.0
+        66_060,     // air_daily -> ~2.01630
+        13_815_830, // num_armies_for_training -> 421.62567...
+    ];
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV"), (68, "USA")]);
+    let econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), Some(ger_exp)),
+        (3, Some(1_030_000), Some(0), Some(365), None),
+        (68, None, None, None, None),
+    ]);
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    let countries = &snap["countries"];
+
+    let ger = &countries["GER"];
+    assert_eq!(ger["manpower_pool"], json!(1_640_616));
+    assert_eq!(ger["convoys_destroyed"], json!(465));
+    assert_eq!(ger["divisions_lost"], json!(130));
+    let xp = &ger["experience_status"];
+    assert!((xp["army_experience"].as_f64().unwrap() - 27.500_427).abs() < 1e-4);
+    assert!((xp["navy_experience"].as_f64().unwrap() - 422.106_11).abs() < 1e-4);
+    assert!((xp["air_experience"].as_f64().unwrap() - 500.0).abs() < 1e-9);
+    assert!((xp["num_armies_for_training"].as_f64().unwrap() - 421.625_67).abs() < 1e-4);
+
+    let sov = &countries["SOV"];
+    assert_eq!(sov["manpower_pool"], json!(1_030_000));
+    assert_eq!(sov["convoys_destroyed"], json!(0)); // present zero, not null
+    assert_eq!(sov["divisions_lost"], json!(365));
+    assert_eq!(sov["experience_status"], Value::Null);
+
+    let usa = &countries["USA"];
+    assert_eq!(usa["manpower_pool"], Value::Null);
+    assert_eq!(usa["convoys_destroyed"], Value::Null);
+    assert_eq!(usa["divisions_lost"], Value::Null);
+    assert_eq!(usa["experience_status"], Value::Null);
+}
+
+#[test]
+fn chunk2_d63_country_core_scalars_rejects_malformed_row() {
+    // An experience channel carrying a nonzero value without the experience
+    // flag is a malformed row -> the fold fails closed (prior map retained,
+    // no country economy fields folded this frame).
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let mut econ =
+        country_core_scalars_payload(&[(1, Some(1_640_616), Some(465), Some(130), None)]);
+    // Corrupt: write a nonzero army-experience raw (row offset 20 within the
+    // 48-byte row, which starts at payload offset 20) while the experience flag
+    // stays clear.
+    let army_off = 20 + 20;
+    econ[army_off..army_off + 4].copy_from_slice(&999i32.to_le_bytes());
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    // Fold failed -> GER has no economy fields (the country object may exist
+    // from identity but must not carry manpower_pool from the rejected frame).
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("manpower_pool").is_none() || ger["manpower_pool"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d63_country_core_scalars_requires_exact_d18_roster() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let econ = country_core_scalars_payload(&[(
+        1,
+        Some(1_640_616),
+        Some(465),
+        Some(130),
+        None,
+    )]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    for tag in ["GER", "SOV"] {
+        let country = &snap["countries"][tag];
+        assert!(
+            country.get("manpower_pool").is_none(),
+            "non-bijective D63 must not publish a partial roster for {tag}"
+        );
+    }
+}
+
+#[test]
+fn chunk2_d63_country_core_scalars_validates_atomically_before_mutation() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let mut econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (3, Some(1_030_000), Some(0), Some(365), None),
+    ]);
+    // Corrupt only the second row after a valid first row. The absent
+    // experience flag with a nonzero channel rejects the entire D63 record.
+    let second_row = 20 + 48;
+    econ[second_row + 20..second_row + 24].copy_from_slice(&999i32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    for tag in ["GER", "SOV"] {
+        let country = &snap["countries"][tag];
+        assert!(
+            country.get("manpower_pool").is_none(),
+            "late-row corruption must not leave an earlier D63 prefix for {tag}"
+        );
+    }
+}
+
+#[test]
+fn chunk2_d63_failure_status_publishes_no_rows() {
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let mut econ =
+        country_core_scalars_payload(&[(1, Some(1_640_616), Some(465), Some(130), None)]);
+    econ[16..20].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(
+        ger.get("manpower_pool").is_none(),
+        "failure-badged D63 rows must be ignored"
+    );
+}
+
+#[test]
+fn chunk2_d64_delayed_events_fold_melt_anchored() {
+    // W3 domain 64: per-country pending delayed events. Melt-anchored (D04):
+    //   GER (tag 1): event_id 42900001, remaining 62h.
+    //   ITA (tag 2): event_id 6700000, remaining 2966h.
+    //   USA (tag 68): TWO events (36000046 rem 5*24+15=375h; 36000051 rem
+    //     1*720+6*24+21=885h) -> proves multiple events per country.
+    // Legacy wire-compatibility fixtures leave originator absent; exact-a729
+    // production collection now carries independently read +0xC0 originator.
+    //   ENG (tag 3): identity-only, no delayed events -> no delayed_events field
+    //     (absent == "no pending events").
+    let ident = country_identity_payload(&[(1, "GER"), (2, "ITA"), (68, "USA"), (3, "ENG")]);
+    let de = delayed_events_payload(&[
+        (1, 42_900_001, None, Some(62)),
+        (2, 6_700_000, None, Some(2966)),
+        (68, 36_000_046, None, Some(375)),
+        (68, 36_000_051, None, Some(885)),
+    ]);
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
+    let countries = &snap["countries"];
+
+    let ger = &countries["GER"]["delayed_events"];
+    assert_eq!(ger.as_array().unwrap().len(), 1);
+    assert_eq!(ger[0]["event_id"], json!(42_900_001));
+    assert_eq!(ger[0]["due_remaining_hours"], json!(62));
+    assert_eq!(ger[0]["originator_tag_db_id"], Value::Null);
+
+    let ita = &countries["ITA"]["delayed_events"];
+    assert_eq!(ita[0]["event_id"], json!(6_700_000));
+    assert_eq!(ita[0]["due_remaining_hours"], json!(2966));
+
+    // USA: two events, order preserved.
+    let usa = &countries["USA"]["delayed_events"];
+    assert_eq!(usa.as_array().unwrap().len(), 2);
+    assert_eq!(usa[0]["event_id"], json!(36_000_046));
+    assert_eq!(usa[0]["due_remaining_hours"], json!(375));
+    assert_eq!(usa[1]["event_id"], json!(36_000_051));
+    assert_eq!(usa[1]["due_remaining_hours"], json!(885));
+
+    // ENG: identity-only, no events -> no delayed_events field (absent == none).
+    let eng = &countries["ENG"];
+    assert!(eng.get("delayed_events").is_none() || eng["delayed_events"] == json!([]));
+}
+
+#[test]
+fn chunk2_d64_delayed_events_full_replace_clears_stale() {
+    // Full-replace regression: a country that HAD a pending event in frame 1 and
+    // has NONE in frame 2 must show an empty list in frame 2 (never a stale
+    // event). Two frames fed to the same fold.
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, seq: &mut u64, domain: u16, payload: &[u8]| {
+        push_record(
+            stream,
+            *seq,
+            raw,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            payload,
+        );
+        *seq += 1;
+    };
+    // Frame 1: GER has one pending event.
+    push(
+        &mut stream,
+        &mut seq,
+        18,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        64,
+        &delayed_events_payload(&[(1, 42_900_001, None, Some(62))]),
+    );
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2 (advance one hour): GER's event fired -> zero rows this frame.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        64,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &delayed_events_payload(&[]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d64_full_replace");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    // Frame 1: one event.
+    assert_eq!(
+        frame1["countries"]["GER"]["delayed_events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Frame 2: full-replace cleared the stale event -> empty list.
+    assert_eq!(frame2["countries"]["GER"]["delayed_events"], json!([]));
+}
+
+#[test]
+fn chunk2_d64_delayed_events_absent_due_folds_null() {
+    // A due-remaining-hours badged absent (flag clear) folds null, not 0.
+    let ident = country_identity_payload(&[(3, "ENG")]);
+    let de = delayed_events_payload(&[(3, 28_200_333, None, None)]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
+    let eng = &snap["countries"]["ENG"]["delayed_events"];
+    assert_eq!(eng[0]["event_id"], json!(28_200_333));
+    assert_eq!(eng[0]["due_remaining_hours"], Value::Null);
+    assert_eq!(eng[0]["originator_tag_db_id"], Value::Null);
+}
+
+#[test]
+fn chunk2_d64_delayed_events_rejects_zero_event_id() {
+    // A zero event_id is a malformed row -> fold fails closed (no list folded).
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let de = delayed_events_payload(&[(1, 0, None, Some(62))]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (64, de)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("delayed_events").is_none() || ger["delayed_events"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d64_del2_projects_all_exact_lifecycle_classes_without_touching_d75() {
+    let de = delayed_event_lifecycle_payload(
+        &[(1, 100_101, Some(2), Some(7))],
+        9,
+        &[
+            (1, 44, 1, 1, 100_101, 2, 11, 8, Some(7)),
+            (2, 45, 2, 1, 100_102, 2, 12, 0, None),
+            (3, 45, 3, 1, 100_103, 2, 13, 0, None),
+            (4, 45, 4, 1, 100_104, 2, 14, 9, None),
+        ],
+    );
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ITA")])),
+        (64, de),
+    ]);
+    let lifecycle = &snap["_r2_delayed_event_lifecycle_live"];
+    assert_eq!(lifecycle["hook_epoch"], json!("9"));
+    assert_eq!(lifecycle["first_sequence"], json!("1"));
+    assert_eq!(lifecycle["last_sequence"], json!("4"));
+    assert_eq!(lifecycle["events"][0]["reason"], json!("retained_decrement"));
+    assert_eq!(lifecycle["events"][0]["due_after"], json!(7));
+    assert_eq!(lifecycle["events"][1]["reason"], json!("executed"));
+    assert_eq!(
+        lifecycle["events"][2]["reason"],
+        json!("failed_trigger_consumed")
+    );
+    assert_eq!(
+        lifecycle["events"][3]["reason"],
+        json!("definition_cancelled")
+    );
+    assert_eq!(lifecycle["events"][0]["originator_tag_db_id"], json!(2));
+}
+
+#[test]
+fn chunk2_d64_malformed_first_del2_is_unavailable_not_absent() {
+    let mut de = delayed_event_lifecycle_payload(&[], 9, &[]);
+    de[30..32].copy_from_slice(&1u16.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(64, de)]);
+    assert_eq!(snap["_r2_delayed_event_lifecycle_live"], Value::Null);
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_fold_melt_anchored() {
+    // W5 domain 67: per-country OWN dynamic-modifier id SET. Melt-anchored (D04
+    // multiset counts, agent D2): GER 9, USA 1 (ABDA_supreme_command), ITA 5.
+    // ENG is identity-only (no modifier row) -> empty list (absent == none).
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (16, "ITA"), (3, "ENG")]);
+    let ger_ids: Vec<String> = (0..9).map(|i| format!("GER_dm_{i}")).collect();
+    let ita_ids: Vec<String> = (0..5).map(|i| format!("ITA_dm_{i}")).collect();
+    let ger_refs: Vec<&str> = ger_ids.iter().map(String::as_str).collect();
+    let ita_refs: Vec<&str> = ita_ids.iter().map(String::as_str).collect();
+    let dm = country_dynamic_modifiers_payload(
+        &[
+            (1, &ger_refs),
+            (68, &["ABDA_supreme_command"]),
+            (16, &ita_refs),
+        ],
+        0,
+    );
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (67, dm)]);
+    let countries = &snap["countries"];
+
+    // GER: 9 modifiers, sorted for a stable multiset.
+    let ger = &countries["GER"]["dynamic_modifier"];
+    assert_eq!(ger.as_array().unwrap().len(), 9);
+    let mut expected = ger_ids.clone();
+    expected.sort();
+    let got: Vec<String> = ger
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(got, expected);
+
+    // USA: exactly one, the shared/interned ABDA_supreme_command def.
+    let usa = &countries["USA"]["dynamic_modifier"];
+    assert_eq!(usa.as_array().unwrap().len(), 1);
+    assert_eq!(usa[0], json!("ABDA_supreme_command"));
+
+    // ITA: 5 modifiers.
+    let ita = &countries["ITA"]["dynamic_modifier"];
+    assert_eq!(ita.as_array().unwrap().len(), 5);
+
+    // ENG: identity-only -> empty list (full-replace cleared it, no row set it).
+    let eng = &countries["ENG"];
+    assert!(eng.get("dynamic_modifier").is_none() || eng["dynamic_modifier"] == json!([]));
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_full_replace_clears_stale() {
+    // Full-replace: a country that HAD a modifier in frame 1 and NONE in frame 2
+    // must show an empty list in frame 2, never a stale modifier.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    // Frame 1: GER has one modifier.
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2 (advance one hour): GER's modifier expired -> no GER row; USA now
+    // carries one. The frame is non-empty (USA present) so it is not treated as
+    // an all-absent source-unavailable frame; GER's list must be cleared.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(68, &["USA_focus_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d67_full_replace");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    // Frame 1: GER has its modifier.
+    assert_eq!(
+        frame1["countries"]["GER"]["dynamic_modifier"][0],
+        json!("GER_army_modifier")
+    );
+    // Frame 2: full-replace cleared GER's stale modifier -> empty list; USA set.
+    assert_eq!(frame2["countries"]["GER"]["dynamic_modifier"], json!([]));
+    assert_eq!(
+        frame2["countries"]["USA"]["dynamic_modifier"][0],
+        json!("USA_focus_modifier")
+    );
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_rejects_truncated_blob() {
+    // A row claiming more ids than the blob supplies is a torn payload -> the
+    // fold fails closed (no dynamic_modifier field folded this frame).
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let mut dm = country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0);
+    // Corrupt the row's id_count (row table starts at 20; id_count is at +4).
+    let id_count_off = 20 + 4;
+    dm[id_count_off..id_count_off + 4].copy_from_slice(&5u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(18, ident), (67, dm)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("dynamic_modifier").is_none() || ger["dynamic_modifier"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_rejects_noncontiguous_window() {
+    // A row whose id_blob_offset skips ids (a hole) or overlaps another row is a
+    // crafted/torn payload -> fold fails closed. Build a valid 2-country payload
+    // then corrupt the SECOND row's id_blob_offset so it points back at 0
+    // (overlap) instead of the expected running cursor.
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA")]);
+    let mut dm = country_dynamic_modifiers_payload(
+        &[(1, &["GER_army_modifier"]), (68, &["USA_focus_modifier"])],
+        0,
+    );
+    // Row 1 (USA) starts at header(20) + one 12-byte row = 32; its
+    // id_blob_offset is at +8 within that row.
+    let usa_offset_field = 20 + COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN + 8;
+    dm[usa_offset_field..usa_offset_field + 4].copy_from_slice(&0u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(18, ident), (67, dm)]);
+    // Fold rejected the whole frame -> neither country carries a folded list.
+    let ger = &snap["countries"]["GER"];
+    assert!(ger.get("dynamic_modifier").is_none() || ger["dynamic_modifier"] == Value::Null);
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_empty_frame_clears_all() {
+    // Q4 fail-closed correctness: a SUCCESSFUL frame in which zero countries
+    // carry a modifier (country_count==0, clean status) must CLEAR every known
+    // country's list, not retain a stale set. Frame 1 sets GER; frame 2 is an
+    // empty (0-row) successful frame -> GER's list must become empty.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: empty successful d67 frame (no rows, clean status).
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d67_empty_clears");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["dynamic_modifier"],
+        json!([]),
+        "an empty successful frame must clear the stale set, not retain it"
+    );
+}
+
+#[test]
+fn chunk2_d67_country_dynamic_modifiers_partial_data_retains_prior() {
+    // Q2/Q4 fail-closed: when the collector marks the frame torn (PARTIAL_DATA,
+    // which is NOT an expected-partial tolerance for d67), the fold must RETAIN
+    // the prior per-country set rather than publish a truncated set or clear it.
+    // Frame 1 sets GER; frame 2 carries PARTIAL_DATA -> GER's set is retained.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: a torn (PARTIAL_DATA) d67 frame with no rows. The prior GER set
+    // must survive (the collector drops rows on torn and sets PARTIAL_DATA).
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[], COMPACT_STATUS_PARTIAL_DATA),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d67_partial_retains");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["dynamic_modifier"][0],
+        json!("GER_army_modifier"),
+        "a torn (PARTIAL_DATA) frame must retain the prior set, not clear it"
+    );
+}
+
+#[test]
+fn a18_d67_v2_preserves_exact_instance_fields_and_measured_zero() {
+    let ident = country_identity_payload(&[(33, "AST")]);
+    let payload = country_dynamic_modifier_instances_payload(
+        &[(
+            33,
+            "AST_eminent_successors_spirit",
+            true,
+            &[15_000, -10_000, 0],
+            Some(0),
+        )],
+        0,
+    );
+    let snap = snapshot_for_domain_records_with_flags(vec![
+        (18, ident, 0),
+        (
+            67,
+            payload,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
+    ]);
+    let row = &snap["countries"]["AST"]["dynamic_modifier_instances"][0];
+    assert_eq!(row["modifier"], json!("AST_eminent_successors_spirit"));
+    assert_eq!(row["enabled"], json!(true));
+    assert_eq!(row["values_raw"], json!([15_000, -10_000, 0]));
+    assert_eq!(row["value_scale"], json!(100_000));
+    assert_eq!(row["remaining_days"], json!(0));
+    assert_eq!(
+        snap["_r2_dynamic_modifier_lifecycle_live"]["source_binary_sha256"],
+        json!("870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad")
+    );
+    assert_eq!(
+        snap["_r2_dynamic_modifier_lifecycle_live"]["static_authority_receipt_sha256"],
+        json!("bdbac3cb1158c971b408586611d6aba618ecfe85b5265e3b9e8c2c0bf545e415")
+    );
+    assert_eq!(
+        snap["_r2_dynamic_modifier_lifecycle_live"]["transitions"][0]["owner_tag"],
+        json!("AST")
+    );
+    assert!(
+        snap["_r2_dynamic_modifier_lifecycle_live"]
+            .get("absolute_expiry_hour")
+            .is_none(),
+        "the fold must never emit an expiry hour from remaining days"
+    );
+}
+
+#[test]
+fn a18_d67_v2_only_classifies_removal_after_observed_zero() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (offset, days, present) in [(0, Some(1), true), (1, Some(0), true), (2, None, false)] {
+        let raw = raw_for(16_959_360 + offset);
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(33, "AST")]),
+        );
+        sequence += 1;
+        let rows = if present {
+            vec![(
+                33,
+                "AST_eminent_successors_spirit",
+                true,
+                Vec::<i64>::new(),
+                days,
+            )]
+        } else {
+            Vec::new()
+        };
+        let borrowed = rows
+            .iter()
+            .map(|(owner, modifier, enabled, values, remaining)| {
+                (*owner, *modifier, *enabled, values.as_slice(), *remaining)
+            })
+            .collect::<Vec<_>>();
+        push_record_with_flags(
+            &mut stream,
+            sequence,
+            raw,
+            67,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &country_dynamic_modifier_instances_payload(&borrowed, 0),
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+    let mut fold = WorldFold::new("a18_zero_removal");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    let zero = parse(&snapshots[1].2);
+    let removed = parse(&snapshots[2].2);
+    assert_eq!(
+        zero["_r2_dynamic_modifier_lifecycle_live"]["transitions"][0]["kind"],
+        json!("zero_observed")
+    );
+    assert_eq!(
+        removed["_r2_dynamic_modifier_lifecycle_live"]["transitions"][0]
+            ["expiry_classification"],
+        json!("removed_after_observed_zero")
+    );
+    assert_eq!(
+        removed["countries"]["AST"]["dynamic_modifier_instances"],
+        json!([])
+    );
+}
+
+#[test]
+fn a18_d67_v3_folds_synchronous_zero_removal_without_a_fake_current_zero() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    for (raw, payload) in [
+        (
+            raw1,
+            country_dynamic_modifier_instances_payload(
+                &[(33, "AST_eminent_successors_spirit", true, &[15_000], Some(1))],
+                0,
+            ),
+        ),
+        (
+            raw2,
+            country_dynamic_modifier_instances_with_zero_removals_payload(
+                &[],
+                &[(33, "AST_eminent_successors_spirit", true, &[15_000], raw2)],
+                0,
+            ),
+        ),
+    ] {
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(33, "AST")]),
+        );
+        sequence += 1;
+        push_record_with_flags(
+            &mut stream,
+            sequence,
+            raw,
+            67,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &payload,
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+    let mut fold = WorldFold::new("a18_synchronous_zero_removal");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    let removed = parse(&snapshots[1].2);
+    assert_eq!(
+        removed["_r2_dynamic_modifier_lifecycle_live"]["transitions"],
+        json!([{
+            "owner_tag_db_id": 33,
+            "owner_tag": "AST",
+            "modifier": "AST_eminent_successors_spirit",
+            "kind": "removed",
+            "previous_remaining_days": 0,
+            "current_remaining_days": null,
+            "expiry_classification": "removed_after_observed_zero"
+        }])
+    );
+    assert_eq!(removed["countries"]["AST"]["dynamic_modifier_instances"], json!([]));
+}
+
+#[test]
+fn a18_d67_v2_gap_forces_baseline_and_never_infers_expiry() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        sequence,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(33, "AST")]),
+    );
+    sequence += 1;
+    push_record_with_flags(
+        &mut stream,
+        sequence,
+        raw1,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &country_dynamic_modifier_instances_payload(
+            &[(33, "AST_eminent_successors_spirit", true, &[], Some(0))],
+            0,
+        ),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    sequence += 1;
+
+    // Missing D67 hour: exact fields and lifecycle are explicitly unavailable.
+    let raw2 = raw_for(16_959_361);
+    push_record(
+        &mut stream,
+        sequence,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(33, "AST")]),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    sequence += 1;
+
+    // A later measured-empty frame is a fresh baseline, not evidence that the
+    // zero row expired during the missing interval.
+    let raw3 = raw_for(16_959_362);
+    push_record(
+        &mut stream,
+        sequence,
+        raw3,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(33, "AST")]),
+    );
+    sequence += 1;
+    push_record_with_flags(
+        &mut stream,
+        sequence,
+        raw3,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &country_dynamic_modifier_instances_payload(&[], 0),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw3,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("a18_gap");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    let gap = parse(&snapshots[1].2);
+    let resumed = parse(&snapshots[2].2);
+    assert_eq!(gap["countries"]["AST"]["dynamic_modifier_instances"], Value::Null);
+    assert_eq!(gap["_r2_dynamic_modifier_lifecycle_live"], Value::Null);
+    assert_eq!(
+        resumed["_r2_dynamic_modifier_lifecycle_live"]["continuity"],
+        json!("baseline")
+    );
+    assert_eq!(
+        resumed["_r2_dynamic_modifier_lifecycle_live"]["transitions"],
+        json!([])
+    );
+}
+
+#[test]
+fn chunk2_d65_special_project_programs_fold_melt_anchored() {
+    // W3 domain 65: per-country OWNER-JOINED program facilities. Melt-anchored
+    // (D04): GER id21 province 11366 unread 5; USA id6 province 6707 unread 5,
+    // USA id26 province 13010 unread 5; JAP id16 province 7169 unread 2.
+    // dropped_ambiguous=0 (no aliasing in this synthetic set) -> no PARTIAL_DATA,
+    // full authoritative fold.
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (72, "JAP")]);
+    let programs = special_project_programs_payload(
+        &[
+            (1, 21, 11366, 5),
+            (68, 6, 6707, 5),
+            (68, 26, 13010, 5),
+            (72, 16, 7169, 2),
+        ],
+        0,
+        0,
+    );
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+    let countries = &snap["countries"];
+
+    let ger = &countries["GER"]["special_project_programs"];
+    assert_eq!(ger.as_array().unwrap().len(), 1);
+    assert_eq!(ger[0]["owner_tag_db_id"], json!(1));
+    assert_eq!(ger[0]["program_id"], json!(21));
+    assert_eq!(ger[0]["province"], json!(11366));
+    assert_eq!(ger[0]["unread_prototype_rewards"], json!(5));
+
+    // USA: two facilities, sorted by program_id (6 before 26).
+    let usa = &countries["USA"]["special_project_programs"];
+    assert_eq!(usa.as_array().unwrap().len(), 2);
+    assert_eq!(usa[0]["program_id"], json!(6));
+    assert_eq!(usa[0]["unread_prototype_rewards"], json!(5));
+    assert_eq!(usa[1]["program_id"], json!(26));
+    assert_eq!(usa[1]["province"], json!(13010));
+
+    let jap = &countries["JAP"]["special_project_programs"];
+    assert_eq!(jap[0]["owner_tag_db_id"], json!(72));
+    assert_eq!(jap[0]["program_id"], json!(16));
+    assert_eq!(jap[0]["province"], json!(7169));
+    assert_eq!(jap[0]["unread_prototype_rewards"], json!(2));
+}
+
+#[test]
+fn chunk2_d65_complete_zero_rows_materialize_measured_empty_for_full_roster() {
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (72, "JAP")]);
+    let programs = special_project_programs_payload(&[], 0, 0);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+
+    for tag in ["GER", "USA", "JAP"] {
+        assert_eq!(
+            snap["countries"][tag]["special_project_programs"],
+            json!([]),
+            "{tag} is in the complete D18 roster and must receive measured-empty D65 state"
+        );
+    }
+}
+
+#[test]
+fn chunk2_d65_special_project_programs_partial_when_ambiguous_dropped() {
+    // dropped_ambiguous > 0 sets PARTIAL_DATA (an expected-partial tolerance for
+    // d65). The fold treats the owner-joined set as UNKNOWN this hour (retains
+    // the prior map) rather than fabricating disappearance of aliased facilities.
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let programs =
+        special_project_programs_payload(&[(1, 21, 11366, 5)], 5, COMPACT_STATUS_PARTIAL_DATA);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+    // Unknown-this-hour: GER carries no owner-joined facilities this frame (no
+    // fabricated authoritative set while ambiguity is present).
+    let ger = &snap["countries"]["GER"];
+    assert!(
+        ger.get("special_project_programs").is_none()
+            || ger["special_project_programs"] == Value::Null
+    );
+}
+
+#[test]
+fn chunk2_d65_special_project_programs_rejects_duplicate_join_key() {
+    // Two rows with the same (owner, program_id) is a malformed join -> fold
+    // fails closed.
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let programs = special_project_programs_payload(&[(1, 21, 11366, 5), (1, 21, 11366, 5)], 0, 0);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (65, programs)]);
+    let ger = &snap["countries"]["GER"];
+    assert!(
+        ger.get("special_project_programs").is_none()
+            || ger["special_project_programs"] == Value::Null
+    );
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_fold_melt_anchored() {
+    // W4 domain 66: per-occupied-state occupation extras. Melt-anchored (D04
+    // 00_d04_1944_melted.txt):
+    //   POR (47) controls ANG (180) state 891: occupation_law
+    //     local_police_force_garrison (FNV 304778569), garrison source POR (47)
+    //     (melt lines 1861550/1861556).
+    //   POR/ANG state 540: same law + source POR.
+    //   GER (1) controls SOV (3) state 218: military_governor_occupation
+    //     (FNV 1626184329), garrison source GER (1) (melt lines 1083781/1083810).
+    //   A law-only state (999) proves the presence bits fold independently.
+    let extras = occupation_state_extras_payload(
+        &[
+            (47, 180, 891, Some(304_778_569), Some(47)),
+            (47, 180, 540, Some(304_778_569), Some(47)),
+            (1, 3, 218, Some(1_626_184_329), Some(1)),
+            (1, 3, 999, Some(1_626_184_329), None),
+        ],
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    let states = &snap["states"];
+
+    let s891 = &states["891"]["occupation"];
+    assert_eq!(s891["occupation_law_token_id"], json!(304_778_569));
+    assert_eq!(s891["garrison_manpower_source_tag_db_id"], json!(47));
+    assert_eq!(s891["occupation_controller_tag_db_id"], json!(47));
+    assert_eq!(s891["occupied_tag_db_id"], json!(180));
+
+    let s540 = &states["540"]["occupation"];
+    assert_eq!(s540["occupation_law_token_id"], json!(304_778_569));
+    assert_eq!(s540["garrison_manpower_source_tag_db_id"], json!(47));
+
+    let s218 = &states["218"]["occupation"];
+    assert_eq!(s218["occupation_law_token_id"], json!(1_626_184_329));
+    assert_eq!(s218["garrison_manpower_source_tag_db_id"], json!(1));
+
+    // Law-only state 999: token present, garrison source absent (key omitted,
+    // not a fabricated 0).
+    let s999 = &states["999"]["occupation"];
+    assert_eq!(s999["occupation_law_token_id"], json!(1_626_184_329));
+    assert!(s999.get("garrison_manpower_source_tag_db_id").is_none());
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_garrison_only_folds_without_law() {
+    // A garrison-source-only row: law absent (key omitted), source present.
+    let extras = occupation_state_extras_payload(&[(47, 180, 891, None, Some(47))], 0);
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    let occ = &snap["states"]["891"]["occupation"];
+    assert!(occ.get("occupation_law_token_id").is_none());
+    assert_eq!(occ["garrison_manpower_source_tag_db_id"], json!(47));
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_full_replace_clears_stale() {
+    // Full-replace: a state present in frame 1 whose d66 row is gone in frame 2
+    // must drop its stale law token, not retain it. This exercises the FOLD's
+    // clear path directly with a clean (flags==0) authenticated measured-empty
+    // frame. Malformed/incomplete collector walks carry failure status and are
+    // retained fail-closed, preventing mass liberation from a failed read.
+    let raw = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_360 + 1);
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        66,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &occupation_state_extras_payload(&[(47, 180, 891, Some(304_778_569), Some(47))], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: no d66 rows at all (state liberated).
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        66,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &occupation_state_extras_payload(&[], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d66_full_replace");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame1["states"]["891"]["occupation"]["occupation_law_token_id"],
+        json!(304_778_569)
+    );
+    // Frame 2: stale token cleared.
+    let occ2 = &frame2["states"]["891"]["occupation"];
+    assert!(occ2.get("occupation_law_token_id").is_none());
+    assert!(occ2.get("occupation_law_token_encoding").is_none());
+    assert!(occ2.get("occupation_controller_tag_db_id").is_none());
+    assert!(occ2.get("occupied_tag_db_id").is_none());
+    assert!(occ2.get("garrison_manpower_source_tag_db_id").is_none());
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_rejects_field_without_flag() {
+    // A law token packed without its presence flag is a malformed row -> fold
+    // fails closed (no state mutated).
+    let mut extras = occupation_state_extras_payload(&[(47, 180, 891, None, Some(47))], 0);
+    // Corrupt: write a nonzero law token into the law slot while the LAW flag
+    // stays clear. Row base = header(20); flags@+12, law_token@+16.
+    let law_off = 20 + 16;
+    extras[law_off..law_off + 4].copy_from_slice(&304_778_569u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    // The fold errored, so state 891 has no occupation object from d66.
+    assert!(snap["states"]
+        .get("891")
+        .and_then(|s| s.get("occupation"))
+        .and_then(|o| o.get("occupation_law_token_id"))
+        .is_none());
+}
+
+#[test]
+fn chunk2_d66_occupation_state_extras_rejects_duplicate_key() {
+    // Two rows with the same (controller, occupied, state) is a malformed join.
+    let extras = occupation_state_extras_payload(
+        &[
+            (47, 180, 891, Some(304_778_569), Some(47)),
+            (47, 180, 891, Some(304_778_569), Some(47)),
+        ],
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(66, extras)]);
+    assert!(snap["states"]
+        .get("891")
+        .and_then(|s| s.get("occupation"))
+        .and_then(|o| o.get("occupation_law_token_id"))
+        .is_none());
+}
+
+#[test]
+fn chunk2_d11_production_license_trailer_folds_per_country() {
+    // LAT: two licensed variants; ROM: proven-empty set; GER: no trailer row
+    // (unreadable -> production_licenses null, absent != empty).
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    // The base payload's rows are all keyed to tag 1; add license rows for
+    // tags 1 (LAT-like) and 2 (ROM-like empty). Tag 3 gets no trailer row.
+    append_production_license_trailer(&mut prod, &[(1, vec![5132, 5081]), (2, vec![])]);
+
+    let snap = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "LAT"), (2, "ROM"), (3, "GER")]),
+        ),
+        (11, prod),
+    ]);
+
+    // LAT: measured, sorted ids as strings.
+    assert_eq!(
+        snap["countries"]["LAT"]["production"]["production_licenses"],
+        json!(["5081", "5132"])
+    );
+    // ROM: proven-empty set -> [] (distinct from null).
+    assert_eq!(
+        snap["countries"]["ROM"]["production"]["production_licenses"],
+        json!([])
+    );
+    let rom_production = snap["countries"]["ROM"]["production"].as_object().unwrap();
+    assert_eq!(
+        rom_production.len(),
+        1,
+        "a PLIC-only tag must not turn unavailable production vectors into measured empties"
+    );
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_leaf_presence_ambiguous")));
+    // GER: no production block at all this frame (it had no base production
+    // rows and no license trailer row), so no production object is created.
+    assert!(snap["countries"]
+        .get("GER")
+        .and_then(|c| c.get("production"))
+        .is_none());
+}
+
+#[test]
+fn x3_plic_v2_joins_exact_d53_licence_pair_lifecycle_and_order() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_license_v2_trailer(
+        &mut prod,
+        &[(1, vec![(5081, 7, 0), (5132, 7, 7)])],
+    );
+
+    let licence_kind = diplomacy53::compact::REL_KIND_LICENCE_PRODUCTION;
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.relation_flags = vec![diplomacy53::compact::RelationFlagRow {
+        src_tag_db_id: 7,
+        target_tag_db_id: 1,
+        flag_kind: licence_kind,
+        directed: true,
+    }];
+    rows.state_events.clear();
+    rows.state_events.push(diplomacy53::compact::StateEventRow {
+        owner_tag_db_id: 7,
+        target_tag_db_id: Some(1),
+        event_kind: diplomacy53::compact::STATE_EVENT_KIND_OBSERVED,
+        source_kind: diplomacy53::compact::STATE_EVENT_SOURCE_RELATION_FLAG,
+        object_hash: diplomacy53::compact::stable_hash32(&format!(
+            "relation_flag_start_{licence_kind}"
+        )),
+        value_hash: diplomacy53::compact::stable_hash32("start_date_raw"),
+        value_raw: 60_795_475,
+    });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (7, "SWE")])),
+        (11, prod),
+        (53, report.payload),
+    ]);
+    let production = &snapshot["countries"]["GER"]["production"];
+    assert_eq!(production["production_licenses"], json!(["5081", "5132"]));
+    assert_eq!(
+        production["production_license_variants"][1]["visible_order"],
+        json!(1)
+    );
+    assert_eq!(
+        production["production_license_agreements_complete"],
+        json!(true)
+    );
+    let agreements = production["production_license_agreements"]
+        .as_array()
+        .expect("complete agreement rows");
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0]["agreement_id"], json!("licence:7:1:60795475"));
+    assert_eq!(agreements[0]["owner"], json!("GER"));
+    assert_eq!(agreements[0]["partner"], json!("SWE"));
+    assert_eq!(agreements[0]["relation_first"], json!("SWE"));
+    assert_eq!(agreements[0]["variants"][0]["variant_id"], json!(5081));
+    assert_eq!(agreements[0]["variants"][1]["visible_order"], json!(1));
+}
+
+#[test]
+fn x3_plic_v2_never_elevates_without_current_complete_d53_join() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_license_v2_trailer(&mut prod, &[(1, vec![(5081, 7, 0)])]);
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (7, "SWE")])),
+        (11, prod),
+    ]);
+    let production = &snapshot["countries"]["GER"]["production"];
+    assert_eq!(
+        production["production_license_agreements_complete"],
+        json!(false)
+    );
+    assert!(production["production_license_agreements"].is_null());
+}
+
+#[test]
+fn x4_p1_d11_variant_join_chains_after_plic_and_folds_exact_id() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_license_trailer(&mut prod, &[(1, vec![5081])]);
+    append_production_variant_join_trailer(&mut prod, &[(1, 1, 349, 7316)]);
+
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    let production = &snap["countries"]["LAT"]["production"];
+    assert_eq!(
+        production["military_lines"][0]["equipment_variant_id"],
+        json!("7316")
+    );
+    assert_eq!(production["production_licenses"], json!(["5081"]));
+}
+
+#[test]
+fn x4_p1_d11_variant_join_rejects_non_bijective_line_coverage() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_variant_join_trailer(&mut prod, &[(1, 1, 999, 7316)]);
+    let mut fold = WorldFold::new("test");
+    let error = fold.fold_production(&prod).unwrap_err();
+    assert!(
+        error.contains("has no equipment_variant_id")
+            || error.contains("coverage is not bijective"),
+        "{error}"
+    );
+}
+
+#[test]
+fn x4_p2_d11_requested_factories_chains_after_plic_pvj1_and_folds_exact_target() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_license_trailer(&mut prod, &[(1, vec![5081])]);
+    append_production_variant_join_trailer(&mut prod, &[(1, 1, 349, 7316)]);
+    append_production_requested_factories_trailer(&mut prod, &[(1, 1, 349, 5)]);
+
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    let line = &snap["countries"]["LAT"]["production"]["military_lines"][0];
+    assert_eq!(line["active_factories"], json!(2));
+    assert_eq!(line["requested_factories"], json!(5));
+    assert_eq!(line["equipment_variant_id"], json!("7316"));
+}
+
+#[test]
+fn x4_p2_d11_requested_factories_rejects_non_bijective_line_coverage() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_requested_factories_trailer(&mut prod, &[(1, 1, 999, 5)]);
+    let mut fold = WorldFold::new("test");
+    let error = fold.fold_production(&prod).unwrap_err();
+    assert!(
+        error.contains("has no requested_factories") || error.contains("coverage is not bijective"),
+        "{error}"
+    );
+}
+
+#[test]
+fn x4_p2_d11_legacy_absence_does_not_fabricate_requested_factories() {
+    let prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    let line = snap["countries"]["LAT"]["production"]["military_lines"][0]
+        .as_object()
+        .unwrap();
+    assert!(!line.contains_key("requested_factories"));
+}
+
+#[test]
+fn xui12_d11_pls1_pef1_fold_exact_subtype_and_efficiency() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_line_subtype_trailer(&mut prod, &[(1, 1, 349, 4)]);
+    append_production_efficiency_trailer(&mut prod, &[(1, 1, 349, 7_500_000, 10_000_000, 125_000)]);
+
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    let line = &snap["countries"]["LAT"]["production"]["military_lines"][0];
+    assert_eq!(line["line_subtype"], json!("railway_gun"));
+    assert_eq!(line["efficiency"], json!(0.75));
+    assert_eq!(line["efficiency_cap"], json!(1.0));
+    assert_eq!(line["efficiency_growth"], json!(0.0125));
+}
+
+#[test]
+fn xui12_d11_pls1_rejects_kind_subtype_mismatch() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_line_subtype_trailer(&mut prod, &[(1, 1, 349, 3)]);
+    let mut fold = WorldFold::new("test");
+    let error = fold.fold_production(&prod).unwrap_err();
+    assert!(error.contains("incoherent kind/subtype"), "{error}");
+}
+
+#[test]
+fn xui12_d11_pef1_rejects_non_bijective_line_coverage() {
+    let mut prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    append_production_efficiency_trailer(&mut prod, &[(1, 1, 999, 7_500_000, 10_000_000, 125_000)]);
+    let mut fold = WorldFold::new("test");
+    let error = fold.fold_production(&prod).unwrap_err();
+    assert!(
+        error.contains("has no efficiency") || error.contains("coverage is not bijective"),
+        "{error}"
+    );
+}
+
+#[test]
+fn xui12_d11_legacy_absence_does_not_fabricate_subtype_or_efficiency() {
+    let prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    let line = snap["countries"]["LAT"]["production"]["military_lines"][0]
+        .as_object()
+        .unwrap();
+    for absent in [
+        "line_subtype",
+        "efficiency",
+        "efficiency_cap",
+        "efficiency_growth",
+    ] {
+        assert!(!line.contains_key(absent), "must not fabricate {absent}");
+    }
+}
+
+#[test]
+fn x4_p5_d11_mio_join_folds_assigned_id_and_proven_null() {
+    let mut prod = production_aggregates_payload(1, &[], &[(1, 2), (2, 3)]);
+    append_production_mio_join_trailer(&mut prod, &[(1, 1, 0, 33), (1, 2, 1, 0)]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "ENG")])),
+        (11, prod),
+    ]);
+    let production = &snap["countries"]["ENG"]["production"];
+    assert_eq!(production["military_lines"][0]["mio_id"], json!("33"));
+    assert_eq!(production["naval_lines"][0]["mio_id"], Value::Null);
+}
+
+#[test]
+fn x4_p5_d11_mio_join_rejects_non_bijective_line_coverage() {
+    let mut prod = production_aggregates_payload(1, &[], &[(1, 2)]);
+    append_production_mio_join_trailer(&mut prod, &[(1, 1, 999, 33)]);
+    let mut fold = WorldFold::new("test");
+    let error = fold.fold_production(&prod).unwrap_err();
+    assert!(
+        error.contains("has no mio_id") || error.contains("coverage is not bijective"),
+        "{error}"
+    );
+}
+
+#[test]
+fn x4_p5_d11_legacy_absence_does_not_fabricate_mio_id() {
+    let prod = production_aggregates_payload(1, &[], &[(1, 2)]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "ENG")])),
+        (11, prod),
+    ]);
+    let line = snap["countries"]["ENG"]["production"]["military_lines"][0]
+        .as_object()
+        .unwrap();
+    assert!(!line.contains_key("mio_id"));
+}
+
+#[test]
+fn chunk2_d11_production_without_license_trailer_folds_null() {
+    // A legacy-shaped production record (no PLIC trailer) folds
+    // production_licenses = null (not measured), never [] (empty).
+    let prod = production_payload(1, (10.0 * 100_000.0) as i64, 2);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "LAT")])),
+        (11, prod),
+    ]);
+    assert_eq!(
+        snap["countries"]["LAT"]["production"]["production_licenses"],
+        Value::Null
+    );
+}
+
+/// Build a d11 production payload with arbitrary stockpile rows and production
+/// lines for one tag (schema §3.6 fold-shape coverage). `stockpile` is a list of
+/// `(variant_id, amount_raw)`; `lines` is `(kind, active_factories)` where
+/// `kind == 2` is naval. No construction rows, no PLIC trailer.
+fn production_aggregates_payload(
+    tag: u32,
+    stockpile: &[(u32, i64)],
+    lines: &[(u32, i32)],
+) -> Vec<u8> {
+    let military = lines.iter().filter(|(k, _)| *k != 2).count() as u32;
+    let naval = lines.iter().filter(|(k, _)| *k == 2).count() as u32;
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    p.extend_from_slice(&1u32.to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&(stockpile.len() as u32).to_le_bytes()); // stockpile_count
+    p.extend_from_slice(&military.to_le_bytes()); // military_line_count
+    p.extend_from_slice(&naval.to_le_bytes()); // naval_line_count
+    p.extend_from_slice(&0u32.to_le_bytes()); // construction_count
+    for (variant_id, amount_raw) in stockpile {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&variant_id.to_le_bytes());
+        p.extend_from_slice(&amount_raw.to_le_bytes());
+    }
+    for (line_index, (kind, active_factories)) in lines.iter().enumerate() {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&(line_index as i32).to_le_bytes()); // line_id
+        p.extend_from_slice(&active_factories.to_le_bytes());
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // speed
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0i32.to_le_bytes()); // amount
+    }
+    p
+}
+
+/// Build a clean d11 payload whose keyed countries each carry at least one row
+/// for every non-PLIC production leaf. `declared_country_count` is independent
+/// of `keyed_tags` so coverage-mismatch regressions can exercise the wire's
+/// declared count without fabricating a tag for an uncovered country.
+fn production_country_coverage_payload(declared_country_count: u32, keyed_tags: &[u32]) -> Vec<u8> {
+    let keyed_count = keyed_tags.len() as u32;
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&declared_country_count.to_le_bytes()); // country_count
+    p.extend_from_slice(&declared_country_count.to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // stockpile_count
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // military_line_count
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // naval_line_count
+    p.extend_from_slice(&keyed_count.to_le_bytes()); // construction_count
+
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(10_000 + tag).to_le_bytes()); // variant_id
+        p.extend_from_slice(&100_000i64.to_le_bytes()); // amount = 1.0
+    }
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // military
+        p.extend_from_slice(&(*tag as i32).to_le_bytes()); // line_id
+        p.extend_from_slice(&1i32.to_le_bytes()); // active_factories
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // speed
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0i32.to_le_bytes()); // amount
+    }
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&2u32.to_le_bytes()); // naval
+        p.extend_from_slice(&(*tag as i32).to_le_bytes()); // line_id
+        p.extend_from_slice(&1i32.to_le_bytes()); // active_factories
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // speed
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0i32.to_le_bytes()); // amount
+    }
+    for tag in keyed_tags {
+        p.extend_from_slice(&tag.to_le_bytes());
+        p.extend_from_slice(&(20_000 + tag).to_le_bytes()); // line_id
+        p.extend_from_slice(&(30_000 + tag).to_le_bytes()); // template_id
+        p.extend_from_slice(&1i32.to_le_bytes()); // active_factories
+        p.extend_from_slice(&0i32.to_le_bytes()); // cost
+        p.extend_from_slice(&0i32.to_le_bytes()); // produced
+        p.extend_from_slice(&0u32.to_le_bytes()); // priority
+        p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    }
+    p
+}
+
+#[test]
+fn chunk2_d11_production_stockpile_map_total_and_factory_sums() {
+    // Two stockpile variants and two military + one naval production line fold to
+    // the schema §3.6 shape: `stockpile` is a variant-id -> amount MAP, with the
+    // derived `stockpile_total` sum and per-branch active-factory sums.
+    let prod = production_aggregates_payload(
+        1,
+        &[
+            (101, (12.5 * 100_000.0) as i64),
+            (202, (7.5 * 100_000.0) as i64),
+        ],
+        &[(1, 4), (1, 2), (2, 3)],
+    );
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, prod),
+    ]);
+    let prod = &snap["countries"]["GER"]["production"];
+    // stockpile is a map keyed by variant-id string.
+    assert!((prod["stockpile"]["101"].as_f64().unwrap() - 12.5).abs() < 1e-6);
+    assert!((prod["stockpile"]["202"].as_f64().unwrap() - 7.5).abs() < 1e-6);
+    assert!(prod["stockpile"].as_object().unwrap().len() == 2);
+    // stockpile_total is the exact sum of the measured amounts.
+    assert!((prod["stockpile_total"].as_f64().unwrap() - 20.0).abs() < 1e-6);
+    // factory sums split by branch (military = kind != 2, naval = kind == 2).
+    assert_eq!(prod["military_factories"], json!(6));
+    assert_eq!(prod["naval_factories"], json!(3));
+    assert_eq!(prod["military_lines"].as_array().unwrap().len(), 2);
+    assert_eq!(prod["naval_lines"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn chunk2_d11_zero_row_leaves_are_absent_not_measured_empty() {
+    // A military-line row proves this tag exists, but the wire carries no
+    // per-country presence/completeness bits for the other production vectors.
+    // Their zero rows are therefore ambiguous, not measured-empty values.
+    let prod = production_aggregates_payload(1, &[], &[(1, 4)]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, prod),
+    ]);
+    let production = snap["countries"]["GER"]["production"].as_object().unwrap();
+    assert_eq!(production["military_factories"], json!(4));
+    assert_eq!(production["military_lines"].as_array().unwrap().len(), 1);
+    for absent in [
+        "stockpile",
+        "stockpile_total",
+        "naval_lines",
+        "naval_factories",
+        "construction_queue",
+    ] {
+        assert!(
+            !production.contains_key(absent),
+            "ambiguous zero-row leaf {absent} must stay absent"
+        );
+    }
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_leaf_presence_ambiguous")));
+}
+
+#[test]
+fn x4_p6_d11_pcp1_distinguishes_proven_empty_from_unreadable() {
+    let mut prod = production_country_coverage_payload(2, &[]);
+    append_production_completeness_trailer(&mut prod, &[(1, 0b111), (2, 0)]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ENG")])),
+        (11, prod),
+    ]);
+    let proven_empty = snap["countries"]["GER"]["production"].as_object().unwrap();
+    assert_eq!(proven_empty["stockpile_complete"], json!(true));
+    assert_eq!(proven_empty["military_lines_complete"], json!(true));
+    assert_eq!(proven_empty["naval_lines_complete"], json!(true));
+    assert!(proven_empty["stockpile"].as_object().unwrap().is_empty());
+    assert_eq!(proven_empty["stockpile_total"], json!(0.0));
+    assert!(proven_empty["military_lines"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(proven_empty["military_factories"], json!(0));
+    assert!(proven_empty["naval_lines"].as_array().unwrap().is_empty());
+    assert_eq!(proven_empty["naval_factories"], json!(0));
+
+    let unreadable = snap["countries"]["ENG"]["production"].as_object().unwrap();
+    assert_eq!(unreadable["stockpile_complete"], json!(false));
+    assert_eq!(unreadable["military_lines_complete"], json!(false));
+    assert_eq!(unreadable["naval_lines_complete"], json!(false));
+    for absent in ["stockpile", "military_lines", "naval_lines"] {
+        assert!(!unreadable.contains_key(absent));
+    }
+}
+
+#[test]
+fn x4_p6_d11_rejects_non_bijective_or_incoherent_pcp1() {
+    let mut missing = production_country_coverage_payload(2, &[]);
+    append_production_completeness_trailer(&mut missing, &[(1, 0b111)]);
+    let mut fold = WorldFold::new("test");
+    assert!(fold
+        .fold_production(&missing)
+        .unwrap_err()
+        .contains("PCP1 country coverage is not bijective"));
+
+    let mut incoherent = production_aggregates_payload(1, &[(101, 100_000)], &[]);
+    append_production_completeness_trailer(&mut incoherent, &[(1, 0)]);
+    let mut fold = WorldFold::new("test");
+    assert!(fold
+        .fold_production(&incoherent)
+        .unwrap_err()
+        .contains("marks stockpile unreadable"));
+}
+
+#[test]
+fn b2_pcv1_folds_exact_convoy_bank_and_unreadable_wrapper() {
+    let mut prod = production_country_coverage_payload(0, &[]);
+    append_country_convoy_trailer(
+        &mut prod,
+        &[
+            (
+                1,
+                true,
+                20,
+                vec![(7316, 369 * 100_000), (9001, 4 * 100_000)],
+                Some(vec![(0, 12), (10, 8)]),
+            ),
+            (2, false, 0, vec![], None),
+        ],
+    );
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ENG")])),
+        (11, prod),
+    ]);
+    let ger = &snap["countries"]["GER"]["military"];
+    assert_eq!(ger["convoys_complete"], json!(true));
+    assert_eq!(ger["convoys_owned_raw"], json!(37_300_000i64));
+    assert_eq!(ger["convoys_count"], json!(373));
+    assert_eq!(ger["convoys_assigned"], json!(20));
+    assert_eq!(ger["convoys_available"], json!(353));
+    assert_eq!(ger["convoys"][0]["archetype"], json!("convoy_1"));
+    assert_eq!(ger["convoys"][0]["equip_type"], json!(70));
+    assert_eq!(ger["convoys"][0]["amount_raw"], json!(36_900_000i64));
+    let receipt = &snap["countries"]["GER"]["_r2_country_convoys_live"];
+    assert_eq!(receipt["complete"], json!(true));
+    assert_eq!(receipt["variant_count"], json!(2));
+    assert_eq!(receipt["classifier"], json!("convoy_1"));
+    assert_eq!(receipt["confidence"], json!("validated_exact"));
+    assert_eq!(
+        ger["convoy_priority_reservations"][1]["priority"],
+        json!(10)
+    );
+    assert_eq!(ger["convoy_priority_reservations"][1]["count"], json!(8));
+
+    let eng = &snap["countries"]["ENG"]["military"];
+    assert_eq!(eng["convoys_complete"], json!(false));
+    assert_eq!(eng["convoy_priority_reservations_complete"], json!(false));
+    assert!(eng.get("convoys_count").is_none());
+    assert!(eng.get("convoys").is_none());
+    assert_eq!(
+        snap["countries"]["ENG"]["_r2_country_convoys_live"]["complete"],
+        json!(false)
+    );
+}
+
+#[test]
+fn b2_pcv1_rejects_owned_assigned_inconsistency() {
+    let mut prod = production_country_coverage_payload(0, &[]);
+    append_country_convoy_trailer(
+        &mut prod,
+        &[(1, true, 2, vec![(7316, 100_000)], Some(vec![]))],
+    );
+    let mut fold = WorldFold::new("test");
+    assert!(fold
+        .fold_production(&prod)
+        .unwrap_err()
+        .contains("fails exact total law"));
+}
+
+#[test]
+fn chunk2_d11_partial_subset_retains_complete_prior_production() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let full = production_aggregates_payload(
+        1,
+        &[(101, 5 * 100_000), (202, 9 * 100_000)],
+        &[(1, 3), (2, 2)],
+    );
+    let mut partial = production_aggregates_payload(1, &[(101, 1 * 100_000)], &[(1, 1)]);
+    partial[16..20].copy_from_slice(&COMPACT_STATUS_PARTIAL_DATA.to_le_bytes());
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &full,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &partial,
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d11_full_then_partial");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["production"], frame1["countries"]["GER"]["production"],
+        "a PARTIAL d11 subset must retain the complete prior production block"
+    );
+    assert!(frame2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("compact_status_failure")));
+}
+
+#[test]
+fn chunk2_d11_country_coverage_unkeyed_all_zero_badges_retained() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let full = production_country_coverage_payload(1, &[1]);
+    // Collector-valid legacy/no-trailer shape: one CountryProductionRow was
+    // counted, but it serialized no stockpile, line, or construction rows.
+    let unkeyed_all_zero = production_country_coverage_payload(1, &[]);
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &full,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        11,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &unkeyed_all_zero,
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d11_full_then_unkeyed_all_zero");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame1 = parse(&snaps[0].2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["production"], frame1["countries"]["GER"]["production"],
+        "an uncovered clean d11 country must retain prior production for continuity"
+    );
+    assert!(frame2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_count_uncovered")));
+    assert!(frame2["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("declared=1 keyed=0 uncovered=1")));
+}
+
+#[test]
+fn chunk2_d11_country_coverage_under_keyed_badges_counts() {
+    let prod = production_country_coverage_payload(2, &[1]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ITA")])),
+        (11, prod),
+    ]);
+
+    assert!(snap["countries"]["GER"]["production"].is_object());
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)
+            && problem["problem"] == json!("production_count_uncovered")));
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("declared=2 keyed=1 uncovered=1")));
+}
+
+#[test]
+fn chunk2_d11_country_coverage_matching_stays_clean() {
+    let prod = production_country_coverage_payload(2, &[1, 2]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ITA")])),
+        (11, prod),
+    ]);
+
+    assert!(snap["countries"]["GER"]["production"].is_object());
+    assert!(snap["countries"]["ITA"]["production"].is_object());
+    assert!(!snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(11)));
+}
+
+#[test]
+fn chunk2_d11_production_rejects_duplicate_stockpile_variant() {
+    // Two stockpile rows for the same variant on one country is a torn read
+    // (map collapse would silently drop an amount) -> the fold fails closed and
+    // emits no production block, rather than lose the second amount.
+    let prod = production_aggregates_payload(1, &[(101, 5 * 100_000), (101, 9 * 100_000)], &[]);
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, prod),
+    ]);
+    assert!(snap["countries"]
+        .get("GER")
+        .and_then(|c| c.get("production"))
+        .is_none());
+}
+
+#[test]
+fn chunk2_d46_v1_ace_trailer_folds_without_fabricating_v2_fields() {
+    let payload = d46_payload_with_v1_ace_trailer(&[
+        d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+        d46_ace_row(1, 6265, None, Some(false), Some(5440), Some(92)),
+    ]);
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (46, payload),
+    ]);
+    let aces = snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"]
+        .as_array()
+        .expect("v1 ace sidecar");
+    assert_eq!(aces.len(), 2);
+    assert_eq!(aces[0]["alive"], json!(true));
+    assert_eq!(aces[0]["handled"], Value::Null);
+    assert_eq!(aces[0]["kill_type_raw"], Value::Null);
+    assert_eq!(aces[0]["lifecycle"], Value::Null);
+    assert_eq!(aces[1]["alive"], json!(false));
+    assert_eq!(aces[1]["handled"], Value::Null);
+    assert_eq!(aces[1]["kill_type_raw"], Value::Null);
+    assert_eq!(aces[1]["lifecycle"], Value::Null);
+}
+
+#[test]
+fn chunk2_d46_partial_frame_does_not_wipe_a_good_prior_roster() {
+    // Hour 1: a clean complete roster (2 aces, one on wing 700).
+    // Hour 2: a PARTIAL ace-roster trailer that dropped a torn country carries
+    // fewer rows. It MUST NOT clear+replace: hour-2 retains hour-1's roster in
+    // the map, while the wing annotation is suppressed because it is not fresh.
+    let clean = d46_payload_with_ace_trailer(
+        &[
+            d46_ace_row(1, 5440, Some(700), Some(true), None, None),
+            d46_ace_row(1, 6265, None, Some(false), Some(5440), Some(92)),
+        ],
+        0,
+    );
+    let partial_header = ace46::AirAceRosterHeader {
+        status_flags: ace46::ACE_STATUS_PARTIAL_DATA,
+        observed_country_rows: 17,
+        observed_ace_rows: 1,
+        wing_assignment_rows: 0,
+        dead_rows: 0,
+        skipped_rows: 1,
+    };
+    let partial_rows = vec![d46_ace_row(1, 5440, None, Some(true), None, None)];
+    let mut partial = d46_air_variant_archetypes_payload(DELTA);
+    partial.extend_from_slice(&ace46::encode_trailer(&partial_header, &partial_rows));
+
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (46, clean),
+        ],
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (46, partial),
+        ],
+    ]);
+
+    let h1 = &snaps[0];
+    assert_eq!(
+        h1["order_of_battle"]["air_wings"][0]["ace"]["id"],
+        json!(5440)
+    );
+    assert_eq!(
+        h1["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+
+    let h2 = &snaps[1];
+    // Partial hour: wing annotation suppressed (not fresh)...
+    assert_eq!(h2["order_of_battle"]["air_wings"][0].get("ace"), None);
+    assert_eq!(
+        h2["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert!(h2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(46)
+            && problem["problem"] == json!("ace_roster_partial")));
+}
+
+#[test]
+fn chunk2_d46_first_delta_payload_is_implicit_baseline() {
+    let snap = chunk1_one_snapshot(vec![(46, d46_air_variant_archetypes_payload(DELTA))]);
+    assert_eq!(
+        snap["designs"]["equipment_variants_live"]["900"]["archetype"],
+        json!("small_plane_airframe")
+    );
+    assert!(!snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(46)
+            && problem["problem"] == json!("delta_before_baseline")));
+}
+
+#[test]
+fn chunk2_d46_rejects_fabricated_raw_token_identity() {
+    let payload = archetype46::encode_payload(
+        &archetype46::AirVariantArchetypeHeader {
+            elapsed_wall_ms: 0,
+            status_flags: DELTA,
+            changed_rows: 1,
+            observed_variant_rows: 1,
+            classified_rows: 1,
+            unresolved_rows: 0,
+            static_catalog_hash: 0,
+        },
+        &[archetype46::AirVariantArchetypeRow {
+            variant_id: 900,
+            deleted: false,
+            equipment_token_raw: 201,
+            equipment_type_token_raw: 202,
+            interface_type_raw: 203,
+            air_superiority_weight_raw: None,
+            source_mask: archetype46::SOURCE_LIVE_STATS
+                | archetype46::SOURCE_STATIC_HEURISTIC,
+            archetype_token: Some("equipment_token_raw_201".into()),
+            base_airframe_token: None,
+            role_token: None,
+        }],
+    );
+    let snap = chunk1_one_snapshot(vec![(46, payload)]);
+    assert!(snap["designs"]["equipment_variants_live"].is_null());
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .is_some_and(|note| note.contains("domain 46 fold skipped"))));
+}
+
+#[test]
+fn chunk2_d46_rejects_static_semantics_without_catalog_hash() {
+    let payload = archetype46::encode_payload(
+        &archetype46::AirVariantArchetypeHeader {
+            elapsed_wall_ms: 0,
+            status_flags: DELTA,
+            changed_rows: 1,
+            observed_variant_rows: 1,
+            classified_rows: 1,
+            unresolved_rows: 0,
+            static_catalog_hash: 0,
+        },
+        &[archetype46::AirVariantArchetypeRow {
+            variant_id: 900,
+            deleted: false,
+            equipment_token_raw: 201,
+            equipment_type_token_raw: 202,
+            interface_type_raw: 203,
+            air_superiority_weight_raw: None,
+            source_mask: archetype46::SOURCE_LIVE_STATS
+                | archetype46::SOURCE_LIVE_TOKEN_DICTIONARY
+                | archetype46::SOURCE_STATIC_CATALOG
+                | archetype46::SOURCE_STATIC_SOURCE_ENUM,
+            archetype_token: Some("small_plane_airframe_2".into()),
+            base_airframe_token: Some("small_plane_airframe".into()),
+            role_token: Some("fighter".into()),
+        }],
+    );
+    let snap = chunk1_one_snapshot(vec![(46, payload)]);
+    assert!(snap["designs"]["equipment_variants_live"].is_null());
+}
+
+#[test]
+fn chunk2_malformed_payload_is_rejected_not_treated_as_empty() {
+    let snap = chunk1_one_snapshot(vec![(42, d42_air_combat_losses_payload(0, 0))]);
+    assert!(snap["strategic_air"]
+        .get("_r2_air_combat_losses_live")
+        .is_none());
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("domain 42 fold skipped")));
+}
+
+// --- DOMAIN 61 air_loss_stats_live (C1) -----------------------------------
+
+fn air_loss_stats_payload(status_flags: u32, rows: &[airloss61_lane::AirLossStatRow]) -> Vec<u8> {
+    airloss61_lane::encode_payload(
+        &airloss61_lane::AirLossStatHeader {
+            elapsed_wall_ms: 2,
+            status_flags,
+            schema_version: airloss61_lane::SCHEMA_VERSION,
+            field_count: airloss61_lane::EXPECTED_FIELD_COUNT,
+        },
+        rows,
+    )
+}
+
+#[test]
+fn air_loss_stats_folds_full_display_channel_country_sidecar() {
+    let mut channels = [0; airloss61_lane::CHANNEL_COUNT];
+    channels[0] = 2_500;
+    channels[3] = 10_400_000;
+    channels[19] = 21_872_000_000;
+    let row = airloss61_lane::AirLossStatRow {
+        owner_tag_db_id: 16,
+        country_idx: 16,
+        flags: airloss61_lane::ROW_FLAG_BINDING_VERIFIED | airloss61_lane::ROW_FLAG_STRUCT_VERIFIED,
+        channels,
+    };
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(16, "D04")])),
+        (61, air_loss_stats_payload(0, &[row])),
+    ]);
+
+    let rows = snap["strategic_air"]["_r2_air_loss_stats_live"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let d04 = &rows[0];
+    assert_eq!(d04["country"], json!("D04"));
+    assert_eq!(d04["owner_tag_db_id"], json!(16));
+    assert_eq!(d04["country_idx"], json!(16));
+    assert_eq!(d04["channels"]["our_fighters_lost"], json!(104.0));
+    assert_eq!(d04["raw"]["our_fighters_lost"], json!(10_400_000));
+    assert_eq!(d04["channels"]["enemy_bombers_disrupted"], json!(218_720.0));
+    assert_eq!(d04["channels"]["our_buildings_bombed"], json!(2.5));
+    assert_eq!(
+        d04["display_divisors"]["our_buildings_bombed"],
+        json!(1_000)
+    );
+    assert_eq!(d04["display_divisors"]["our_fighters_lost"], json!(100_000));
+    assert_eq!(
+        d04["channels"].as_object().unwrap().len(),
+        airloss61_lane::PINNED_CHANNELS.len()
+    );
+    assert!(d04["channels"].get("enemy_missiles_lost").is_some());
+
+    let dom = snap["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap();
+    assert!(dom.iter().any(|d| d == "air_loss_stats_live"));
+}
+
+#[test]
+fn air_loss_stats_non_clean_masks_current_hour_sidecar() {
+    let clean = airloss61_lane::AirLossStatRow {
+        owner_tag_db_id: 16,
+        country_idx: 16,
+        flags: airloss61_lane::ROW_FLAG_BINDING_VERIFIED | airloss61_lane::ROW_FLAG_STRUCT_VERIFIED,
+        channels: [0; airloss61_lane::CHANNEL_COUNT],
+    };
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (61, air_loss_stats_payload(0, &[clean])),
+        ],
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (61, air_loss_stats_payload(COMPACT_STATUS_PARTIAL_DATA, &[])),
+        ],
+    ]);
+    assert!(snaps[0]["strategic_air"]["_r2_air_loss_stats_live"].is_array());
+    assert_eq!(
+        snaps[1]["strategic_air"]["_r2_air_loss_stats_live"],
+        Value::Null
+    );
+}
+
+// --- DOMAIN 62 hub_motorization_live (P1) ---------------------------------
+
+fn hub_motorization_payload(
+    status_flags: u32,
+    total_settings_nodes: u32,
+    total_map_entries: u32,
+    rows: &[hub62_lane::HubMotorizationRow],
+) -> Vec<u8> {
+    hub62_lane::encode_payload(
+        &hub62_lane::HubMotorizationHeader {
+            elapsed_wall_ms: 2,
+            status_flags,
+            schema_version: hub62_lane::SCHEMA_VERSION,
+            total_settings_nodes,
+            total_map_entries,
+        },
+        rows,
+    )
+}
+
+fn hub_motorization_row() -> hub62_lane::HubMotorizationRow {
+    hub62_lane::HubMotorizationRow {
+        owner_tag_db_id: 16,
+        actor_tag_db_id: 17,
+        province_id: 13_071,
+        state_id: 5,
+        record_index: 7,
+        map_entry_index: 2,
+        motorization_level: 2,
+        flags: hub62_lane::ROW_FLAG_COUNTRY_VERIFIED
+            | hub62_lane::ROW_FLAG_STRUCT_VERIFIED
+            | hub62_lane::ROW_FLAG_NODE_MOTORIZED
+            | hub62_lane::ROW_FLAG_ACTOR_VERIFIED
+            | hub62_lane::ROW_FLAG_LEVEL_VERIFIED,
+    }
+}
+
+#[test]
+fn hub_motorization_folds_supply_sidecar() {
+    let row = hub_motorization_row();
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(16, "D04"), (17, "D05")])),
+        (62, hub_motorization_payload(0, 44, 1, &[row])),
+    ]);
+
+    let rows = snap["supply"]["_r2_hub_motorization_live"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let d04 = &rows[0];
+    assert_eq!(d04["country"], json!("D04"));
+    assert_eq!(d04["owner_tag_db_id"], json!(16));
+    assert_eq!(d04["motorization_country"], json!("D05"));
+    assert_eq!(d04["actor_tag_db_id"], json!(17));
+    assert_eq!(d04["province_id"], json!(13_071));
+    assert_eq!(d04["state_id"], json!(5));
+    assert_eq!(d04["record_index"], json!(7));
+    assert_eq!(d04["map_entry_index"], json!(2));
+    assert_eq!(d04["motorization_level"], json!(2));
+    assert_eq!(d04["truck_fraction_raw"], json!(100_000));
+    assert_eq!(d04["node_motorized"], json!(true));
+    assert_eq!(d04["scope"], json!("country_level"));
+
+    let dom = snap["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap();
+    assert!(dom.iter().any(|d| d == "hub_motorization_live"));
+}
+
+#[test]
+fn hub_motorization_non_clean_masks_current_hour_and_retains_map() {
+    let clean = hub_motorization_row();
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(16, "D04"), (17, "D05")])),
+            (62, hub_motorization_payload(0, 44, 1, &[clean])),
+        ],
+        vec![
+            (18, country_identity_payload(&[(16, "D04")])),
+            (
+                62,
+                hub_motorization_payload(COMPACT_STATUS_PARTIAL_DATA, 0, 0, &[]),
+            ),
+        ],
+        vec![(18, country_identity_payload(&[(16, "D04")]))],
+    ]);
+    assert!(snaps[0]["supply"]["_r2_hub_motorization_live"].is_array());
+    assert_eq!(snaps[1]["supply"]["_r2_hub_motorization_live"], Value::Null);
+    assert!(snaps[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(62)
+            && problem["problem"] == json!("compact_status_failure")));
+    let retained = snaps[2]["supply"]["_r2_hub_motorization_live"]
+        .as_array()
+        .unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0]["province_id"], json!(13_071));
+}
+
+// --- DOMAIN 60 capitulation_war_state_live (E1) ---------------------------
+
+fn capwar_real_date_raw(year: i32, doy: i32, hour: i32) -> i32 {
+    DATE_EPOCH_CONST + (year * 365 + doy) * 24 + hour
+}
+
+fn capwar_country_row(
+    tag_db_id: u32,
+    capitulated: bool,
+    capitulated_date_raw: i32,
+    legitimacy_raw: i32,
+    exile_army_leaders: i32,
+) -> capwar60::compact::CountryCapitulationRow {
+    capwar60::compact::CountryCapitulationRow {
+        tag_db_id,
+        capitulated,
+        capitulated_date_raw,
+        last_surrender_date_raw: capwar60::compact::CGAMEDATE_NULL_RAW,
+        faction_join_date_raw: capwar60::compact::CGAMEDATE_NULL_RAW,
+        legitimacy_raw,
+        exile_army_leaders,
+    }
+}
+
+fn capwar_payload(snapshot: &capwar60::compact::CapitulationWarSnapshot) -> Vec<u8> {
+    capwar60::compact::encode_payload(snapshot)
+}
+
+fn capwar_sample_snapshot() -> capwar60::compact::CapitulationWarSnapshot {
+    // FRA(3) capitulated 1940.6.18.2 with legitimacy 100.0 and 8 exile
+    // leaders; GER(47) not capitulated. One GER->FRA war started 1939.9.1.4.
+    let fra_date = capwar_real_date_raw(1940, 31 + 28 + 31 + 30 + 31 + 17, 2);
+    capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: capwar60::compact::STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR,
+        countries: vec![
+            capwar_country_row(3, true, fra_date, 10_000_000, 8),
+            capwar_country_row(47, false, capwar60::compact::CGAMEDATE_NULL_RAW, 0, 0),
+        ],
+        wars: vec![capwar60::compact::WarRow {
+            first_tag_db_id: 47,
+            second_tag_db_id: 3,
+            start_date_raw: capwar_real_date_raw(1939, 31 + 28 + 31 + 30 + 31 + 30 + 31 + 31, 4),
+            first_casualties: 1_110,
+            second_casualties: 948,
+            residuals: None,
+        }],
+    }
+}
+
+fn capwar_stream(records: Vec<(u16, Vec<u8>)>, raw: i32) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for (dom, payload) in records {
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            dom,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        seq += 1;
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    stream
+}
+
+#[test]
+fn capitulation_war_state_folds_countries_and_wars() {
+    let raw = raw_for(16_959_360);
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(47, 100, 200, 0, 0)])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 1);
+    let s = parse(&snaps[0].2);
+
+    let fra = &s["countries"]["FRA"]["capitulation"];
+    assert_eq!(fra["capitulated"], json!(true));
+    assert_eq!(fra["capitulated_date"], json!("1940.6.18.2"));
+    assert_eq!(fra["last_surrender_date"], Value::Null);
+    assert_eq!(fra["faction_join_date"], Value::Null);
+    assert!((fra["legitimacy"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+    assert_eq!(fra["legitimacy_raw"], json!(10_000_000));
+    assert_eq!(fra["exile_army_leaders"], json!(8));
+
+    let ger = &s["countries"]["GER"]["capitulation"];
+    assert_eq!(ger["capitulated"], json!(false));
+    assert_eq!(ger["capitulated_date"], Value::Null);
+
+    let wars = s["diplomacy_world"]["wars"].as_object().unwrap();
+    assert_eq!(wars.len(), 1);
+    let war = &wars["GER|FRA"];
+    assert_eq!(war["first"], json!("GER"));
+    assert_eq!(war["second"], json!("FRA"));
+    assert_eq!(war["first_tag_db_id"], json!(47));
+    assert_eq!(war["second_tag_db_id"], json!(3));
+    assert_eq!(war["start_date"], json!("1939.9.1.4"));
+    assert_eq!(war["first_casualties"], json!(1_110));
+    assert_eq!(war["second_casualties"], json!(948));
+    assert_eq!(war["threat_fixed5_raw"], Value::Null);
+    assert_eq!(war["first_was_instigator"], Value::Null);
+    assert_eq!(war["hostility_reason_instigator"], Value::Null);
+    assert_eq!(war["hostility_reason_defender"], Value::Null);
+    assert_eq!(
+        war["casualties_semantics"],
+        json!("live_running_accumulator")
+    );
+
+    let dom = s["provenance"]["collector"]["domains"].as_array().unwrap();
+    assert!(dom.iter().any(|d| d == "capitulation_war_state_live"));
+}
+
+#[test]
+fn h_b5_exact_war_residuals_fold_without_loss_or_inference() {
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.status_flags |= capwar60::compact::STATUS_WAR_RESIDUALS_EXACT;
+    snapshot.wars[0].residuals = Some(capwar60::compact::WarResiduals {
+        threat_fixed5_raw: 1_795_990,
+        first_was_instigator: true,
+        hostility_reason_instigator: capwar60::compact::HostilityReason::War,
+        hostility_reason_defender: capwar60::compact::HostilityReason::NotApplicable,
+    });
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("h-b5");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    let value = parse(&snapshots[0].2);
+    let war = &value["diplomacy_world"]["wars"]["GER|FRA"];
+    assert_eq!(war["threat_fixed5_raw"], json!(1_795_990));
+    assert_eq!(war["threat_fixed_scale"], json!(100_000));
+    assert_eq!(war["first_was_instigator"], json!(true));
+    assert_eq!(war["hostility_reason_instigator_raw"], json!(0));
+    assert_eq!(war["hostility_reason_instigator"], json!("war"));
+    assert_eq!(war["hostility_reason_defender_raw"], json!(5));
+    assert_eq!(war["hostility_reason_defender"], json!("not_applicable"));
+}
+
+#[test]
+fn capitulation_persists_across_hours_but_wars_go_unknown() {
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: no D60 record at all.
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let s1 = parse(&snaps[0].2);
+    assert_eq!(
+        s1["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    assert!(s1["diplomacy_world"]["wars"].is_object());
+
+    // Hour 2: capitulation state persists (last proven frame), wars unknown.
+    let s2 = parse(&snaps[1].2);
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+}
+
+#[test]
+fn capitulation_absent_country_gets_no_key() {
+    // D60 frame carries only FRA; GER materializes via fuel but must get NO
+    // capitulation key (absent != false).
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.countries.retain(|row| row.tag_db_id == 3);
+    snapshot.wars.clear();
+    snapshot.status_flags = 0;
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(47, 100, 200, 0, 0)])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    assert!(s["countries"]["FRA"]["capitulation"]["capitulated"].as_bool() == Some(true));
+    assert!(s["countries"]["GER"].get("capitulation").is_none());
+    // Proven frame with zero wars: genuine empty object, not null.
+    assert_eq!(s["diplomacy_world"]["wars"], json!({}));
+}
+
+#[test]
+fn capitulated_minor_without_other_domains_materializes_numeric() {
+    // A capitulated country with no identity mapping and no other domain rows
+    // must still surface (numeric key) and be recorded as unresolved. The
+    // identity record maps only GER so the tag index exists.
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.countries = vec![capwar_country_row(
+        99,
+        true,
+        capwar_real_date_raw(1941, 50, 6),
+        0,
+        0,
+    )];
+    snapshot.wars.clear();
+    snapshot.status_flags = 0;
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER")])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    assert_eq!(
+        s["countries"]["99"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    let gaps = s["tag_db_id_index"]["unresolved_tag_db_ids"]
+        .as_array()
+        .unwrap();
+    assert!(gaps.iter().any(|g| g == "99"));
+}
+
+#[test]
+fn capitulation_failure_status_keeps_last_map_and_wars_unknown() {
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: fail-closed empty SOURCE_UNAVAILABLE record.
+    let failed = capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        ..capwar60::compact::CapitulationWarSnapshot::default()
+    };
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&failed)),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let s2 = parse(&snaps[1].2);
+    // Last proven capitulation map is retained; wars are unknown (null).
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+    let problems = s2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(60)
+            && problem["problem"] == json!("compact_status_non_clean")));
+}
+
+#[test]
+fn capitulation_partial_only_frame_retains_map_not_wipes() {
+    // REGRESSION: the collector's per-row-skip fail-closed path emits an EMPTY
+    // payload with `status_flags | COMPACT_STATUS_PARTIAL_DATA` (see the
+    // collector `capwar_row_skips` return). The fold MUST retain the last
+    // proven capitulation map on that frame and NEVER rebuild it from the empty
+    // payload — a single torn country read on a live game would otherwise wipe
+    // the whole political-map capitulation state.
+    //
+    // NOTE on the shared mask: `COMPACT_STATUS_PARTIAL_DATA` IS currently a
+    // member of `COMPACT_STATUS_FAILURE_MASK`, so `compact_status_is_failure`
+    // already returns true for a partial-only frame. The fold guard makes the
+    // "retain on partial" intent EXPLICIT (`... || PARTIAL_DATA`) so this
+    // domain — a full-replace domain with no partial tolerance — stays correct
+    // even if PARTIAL_DATA were ever demoted out of the failure mask. This test
+    // is the behavioral guarantee regardless of that membership;
+    // `partial_data_is_treated_as_non_clean_for_full_replace_domains` below
+    // pins the assumption directly.
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: EMPTY payload with PARTIAL_DATA ONLY (exactly the collector's
+    // torn-row skip path — NO SOURCE_UNAVAILABLE, NO other failure bit).
+    let partial_only = capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: COMPACT_STATUS_PARTIAL_DATA,
+        ..capwar60::compact::CapitulationWarSnapshot::default()
+    };
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&partial_only)),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    // Hour 1: FRA capitulated proven.
+    let s1 = parse(&snaps[0].2);
+    assert_eq!(
+        s1["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true)
+    );
+
+    // Hour 2 (the bug): map RETAINED, not wiped. FRA still capitulated=true;
+    // wars go unknown (null) because the partial frame is not proven.
+    let s2 = parse(&snaps[1].2);
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true),
+        "PARTIAL-only frame must RETAIN the last proven capitulation map, not wipe it"
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+    let problems = s2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(60)
+            && problem["problem"] == json!("compact_status_non_clean")));
+}
+
+#[test]
+fn capitulation_clean_but_empty_frame_retains_map_not_wipes() {
+    // STRUCTURAL guard (closes the residual an adversarial review found): even a
+    // CLEAN-status D60 frame (status 0, no failure/partial bit) that carries
+    // ZERO country rows must NOT wipe the persistent map — an empty country set
+    // on a clean status is implausible (a real clean frame always resolves the
+    // live CCountry set) and is treated as non-authoritative.
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let mut stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&capwar_sample_snapshot())),
+        ],
+        raw1,
+    );
+    // Hour 2: EMPTY payload with a fully CLEAN status (0) — no failure/partial.
+    let clean_empty = capwar60::compact::CapitulationWarSnapshot {
+        elapsed_wall_ms: 1,
+        status_flags: 0,
+        ..capwar60::compact::CapitulationWarSnapshot::default()
+    };
+    stream.extend(capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&clean_empty)),
+        ],
+        raw2,
+    ));
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s2 = parse(&snaps[1].2);
+    assert_eq!(
+        s2["countries"]["FRA"]["capitulation"]["capitulated"],
+        json!(true),
+        "clean-but-empty frame must RETAIN the last proven map, not wipe it"
+    );
+    assert_eq!(s2["diplomacy_world"]["wars"], Value::Null);
+    let problems = s2["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap();
+    assert!(problems
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(60)
+            && problem["problem"] == json!("clean_but_empty_country_set")));
+}
+
+#[test]
+fn partial_data_is_treated_as_non_clean_for_full_replace_domains() {
+    // Pins the invariant the D60 fold relies on: PARTIAL_DATA must be treated
+    // as a non-clean frame for a full-replace domain with no partial tolerance.
+    // Today PARTIAL_DATA is a member of the failure mask (so the fold's
+    // `compact_status_is_failure(..) || PARTIAL_DATA` is true on the first
+    // term); this test guards the *behavioral* assumption so that if
+    // PARTIAL_DATA is ever demoted out of the mask, the explicit `|| PARTIAL`
+    // term in the fold — and this assertion — keep the retain semantics.
+    assert!(
+        compact_contract::compact_status_is_failure(COMPACT_STATUS_PARTIAL_DATA)
+            || (COMPACT_STATUS_PARTIAL_DATA & COMPACT_STATUS_PARTIAL_DATA) != 0,
+        "a PARTIAL_DATA frame must be non-clean for full-replace domains"
+    );
+    // And confirm domain 60 has NO expected-partial tolerance (it must fail
+    // closed on partial, never accept a partial frame as authoritative).
+    assert_eq!(compact_contract::expected_partial_tolerance(60), None);
+}
+
+#[test]
+fn capitulation_war_rows_without_badge_are_skipped_whole() {
+    // A payload whose war rows lack the mandatory running-accumulator badge
+    // must be rejected wholesale (decode fails; nothing folds).
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.status_flags = 0; // badge cleared while war rows present
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (10, fuel_payload(&[(3, 100, 200, 0, 0)])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("capwar");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let s = parse(&snaps[0].2);
+    assert!(s["countries"]["FRA"].get("capitulation").is_none());
+    assert_eq!(s["diplomacy_world"]["wars"], Value::Null);
+    assert!(s["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("domain 60 fold skipped")));
+}
+
+// --- W6 domain 68 session_header_live + domain 69 tech_sharing_groups_live --
+
+/// W6 domain 68 session_header_live payload builder. Fields are Option: None ->
+/// presence bit clear (scalar packs 0, string packs len=0). Mirrors the
+/// collector's compact_session_header_data_payload byte layout exactly.
+#[allow(clippy::too_many_arguments)]
+fn session_header_payload(
+    player_tag_db_id: Option<u32>,
+    dlcs: Option<u32>,
+    start_date_raw: Option<u32>,
+    save_version: Option<u32>,
+    session: Option<u32>,
+    ideology: Option<&str>,
+    cosmetic_tag: Option<&str>,
+    version: Option<&str>,
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut presence = 0u32;
+    if player_tag_db_id.is_some() {
+        presence |= 1 << 0;
+    }
+    if dlcs.is_some() {
+        presence |= 1 << 1;
+    }
+    if start_date_raw.is_some() {
+        presence |= 1 << 2;
+    }
+    if save_version.is_some() {
+        presence |= 1 << 3;
+    }
+    if session.is_some() {
+        presence |= 1 << 4;
+    }
+    if ideology.is_some() {
+        presence |= 1 << 5;
+    }
+    if cosmetic_tag.is_some() {
+        presence |= 1 << 6;
+    }
+    if version.is_some() {
+        presence |= 1 << 7;
+    }
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&presence.to_le_bytes());
+    p.extend_from_slice(&status_flags.to_le_bytes());
+    p.extend_from_slice(&player_tag_db_id.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&dlcs.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&start_date_raw.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&save_version.unwrap_or(0).to_le_bytes());
+    p.extend_from_slice(&session.unwrap_or(0).to_le_bytes());
+    for token in [ideology, cosmetic_tag, version] {
+        match token {
+            Some(value) => push_str(&mut p, value),
+            None => p.extend_from_slice(&0u16.to_le_bytes()),
+        }
+    }
+    p
+}
+
+/// W6 domain 69 TSG2 payload builder. The membership-only convenience path
+/// assigns zero dynamic adjustment to every member.
+fn tech_sharing_groups_payload(groups: &[(u32, &[u32])], status_flags: u32) -> Vec<u8> {
+    let groups: Vec<(u32, Vec<(u32, i64)>)> = groups
+        .iter()
+        .map(|(id_token, members)| (*id_token, members.iter().map(|tag| (*tag, 0i64)).collect()))
+        .collect();
+    tech_sharing_groups_bonus_payload(&groups, status_flags)
+}
+
+fn tech_sharing_groups_bonus_payload(
+    groups: &[(u32, Vec<(u32, i64)>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    use compact_contract::tech_sharing_groups::{
+        encode_payload_with_bonuses, TechSharingGroupBonusRow, TechSharingMemberBonus,
+    };
+    let rows: Vec<TechSharingGroupBonusRow> = groups
+        .iter()
+        .map(|(id_token, members)| TechSharingGroupBonusRow {
+            id_token: *id_token,
+            members: members
+                .iter()
+                .map(
+                    |(member_tag_db_id, dynamic_bonus_raw_fixed5)| TechSharingMemberBonus {
+                        member_tag_db_id: *member_tag_db_id,
+                        dynamic_bonus_raw_fixed5: *dynamic_bonus_raw_fixed5,
+                    },
+                )
+                .collect(),
+        })
+        .collect();
+    encode_payload_with_bonuses(&rows, 0, status_flags).expect("valid D69 test payload")
+}
+
+#[test]
+fn w6_d68_session_header_fold_melt_anchored() {
+    // W6 domain 68: TOP-LEVEL save/session header, melt-anchored to the D04 save
+    // (00_d04_1944_melted.txt): player="D04" (tag_db_id 368), ideology=fascism,
+    // cosmetic_tag="FRA_VICHY", dlcs=257535, start_date=1936.1.1.12 (raw
+    // 60759371), save_version=33, session=43695, version banner stem
+    // "Operation Postern v1.19.2.0.a729".
+    let ident = country_identity_payload(&[(368, "D04")]);
+    let header = session_header_payload(
+        Some(368),
+        Some(257_535),
+        Some(60_759_371),
+        Some(33),
+        Some(43_695),
+        Some("fascism"),
+        Some("FRA_VICHY"),
+        Some("Operation Postern v1.19.2.0.a729"),
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(18, ident), (68, header)]);
+    let sh = &snap["session_header"];
+    assert_eq!(sh["player"]["tag_db_id"], json!(368));
+    // player tag_db_id 368 resolves to TAG "D04" via the domain-18 map.
+    assert_eq!(sh["player"]["country_tag"], json!("D04"));
+    assert_eq!(sh["ideology"], json!("fascism"));
+    assert_eq!(sh["cosmetic_tag"], json!("FRA_VICHY"));
+    assert_eq!(sh["dlcs"], json!(257_535));
+    assert_eq!(sh["start_date_raw"], json!(60_759_371));
+    assert_eq!(sh["save_version"], json!(33));
+    assert_eq!(sh["session"], json!(43_695));
+    assert_eq!(sh["version"], json!("Operation Postern v1.19.2.0.a729"));
+}
+
+#[test]
+fn w6_d68_session_header_last_value_wins_partial_update() {
+    // A later frame that carries only the mutable fields (ideology + cosmetic +
+    // player) must UPDATE those while the static fields (dlcs/start_date/
+    // save_version/session/version) from the earlier frame REMAIN (last-value-
+    // wins merge, not full-replace to null).
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    // Frame 1: full header.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            Some(368),
+            Some(257_535),
+            Some(60_759_371),
+            Some(33),
+            Some(43_695),
+            Some("fascism"),
+            Some("FRA_VICHY"),
+            Some("Operation Postern v1.19.2.0.a729"),
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: only the mutable fields (a mid-game ideology + cosmetic change,
+    // and a hypothetical player switch to tag 2). Static fields omitted.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some("democratic"),
+            Some("ENG_RAJ"),
+            None,
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d68_lvw");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let sh = &frame2["session_header"];
+    // Mutable fields updated.
+    assert_eq!(sh["player"]["tag_db_id"], json!(2));
+    assert_eq!(sh["ideology"], json!("democratic"));
+    assert_eq!(sh["cosmetic_tag"], json!("ENG_RAJ"));
+    // Static fields retained from frame 1.
+    assert_eq!(sh["dlcs"], json!(257_535));
+    assert_eq!(sh["start_date_raw"], json!(60_759_371));
+    assert_eq!(sh["save_version"], json!(33));
+    assert_eq!(sh["session"], json!(43_695));
+    assert_eq!(sh["version"], json!("Operation Postern v1.19.2.0.a729"));
+}
+
+#[test]
+fn w6_d68_session_header_source_unavailable_retains_prior() {
+    // A SOURCE_UNAVAILABLE frame (a failure flag) must retain the whole prior
+    // header rather than clear it.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            Some(368),
+            Some(257_535),
+            None,
+            None,
+            None,
+            Some("fascism"),
+            None,
+            None,
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: gs unreadable -> SOURCE_UNAVAILABLE, no fields. Prior retained.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        68,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &session_header_payload(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d68_retain");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let sh = &frame2["session_header"];
+    assert_eq!(sh["player"]["tag_db_id"], json!(368));
+    assert_eq!(sh["ideology"], json!("fascism"));
+    assert_eq!(sh["dlcs"], json!(257_535));
+}
+
+#[test]
+fn w6_d68_session_header_rejects_scalar_without_flag() {
+    // A malformed payload where a scalar is nonzero but its presence bit is
+    // clear must fold closed (Err) and attach no session_header. Hand-build a
+    // payload with dlcs=999 but presence=0.
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&0u32.to_le_bytes()); // presence = 0
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&0u32.to_le_bytes()); // player
+    p.extend_from_slice(&999u32.to_le_bytes()); // dlcs nonzero without flag
+    p.extend_from_slice(&0u32.to_le_bytes()); // start_date
+    p.extend_from_slice(&0u32.to_le_bytes()); // save_version
+    p.extend_from_slice(&0u32.to_le_bytes()); // session
+    p.extend_from_slice(&0u16.to_le_bytes()); // ideology len 0
+    p.extend_from_slice(&0u16.to_le_bytes()); // cosmetic len 0
+    p.extend_from_slice(&0u16.to_le_bytes()); // version len 0
+    let snap = snapshot_for_domain_records(vec![(68, p)]);
+    assert!(
+        snap.get("session_header").is_none(),
+        "a malformed session_header frame must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_fold_melt_anchored() {
+    // W6 domain 69: TOP-LEVEL tech-sharing groups, membership melt-anchored to
+    // the D04 save's 9 groups (00_d04_1944_melted.txt L5626904+). Uses the
+    // discovery tag_db_ids (GER 1, ENG 2, SOV 3, FRA 5, ITA 16, JAP 48, USA 68)
+    // plus synthetic ids for minors, and asserts the fold reproduces each group's
+    // member multiset exactly. id_token values are synthetic per-group.
+    // The four smallest fully-known groups are asserted by TAG; the full set is
+    // asserted by member COUNT to match the melt's 6,10,2,7,2,1,2,2,2.
+    let ident = country_identity_payload(&[
+        (1, "GER"),
+        (2, "ENG"),
+        (3, "SOV"),
+        (5, "FRA"),
+        (16, "ITA"),
+        (48, "JAP"),
+        (68, "USA"),
+        (100, "BUL"),
+        (101, "MEX"),
+        (102, "FIN"),
+        (368, "D04"),
+    ]);
+    // Groups in melt order with synthetic minors where the exact db_id is not in
+    // the discovery test set. Member COUNTS mirror the melt exactly.
+    let groups: Vec<(u32, Vec<u32>)> = vec![
+        (0x0001, vec![2, 900, 901, 902, 903, 904]), // commonwealth_research (6)
+        (
+            0x0002,
+            vec![905, 906, 907, 908, 909, 910, 911, 912, 913, 914],
+        ), // CHI_tech (10)
+        (0x0003, vec![3, 915]),                     // SOV_soviet_academies (2)
+        (0x0004, vec![1, 16, 100, 916, 917, 918, 919]), // HUN_joint_air (7)
+        (0x0005, vec![16, 100]),                    // BUL_italian (2)
+        (0x0006, vec![102]),                        // FIN_joint (1)
+        (0x0007, vec![68, 101]),                    // MEX_USA (2)
+        (0x0008, vec![100, 1]),                     // BUL_axis (2)
+        (0x0009, vec![368, 1]),                     // VIC_learn_from_the_enemy (2)
+    ];
+    let group_refs: Vec<(u32, &[u32])> = groups.iter().map(|(t, m)| (*t, m.as_slice())).collect();
+    let payload = tech_sharing_groups_payload(&group_refs, 0);
+
+    let snap = snapshot_for_domain_records(vec![(18, ident), (69, payload)]);
+    let tsg = &snap["tech_sharing_group"];
+    assert_eq!(tsg["count"], json!(9));
+    let rows = tsg["groups"].as_array().unwrap();
+    assert_eq!(rows.len(), 9);
+    // Member counts match the melt's 6,10,2,7,2,1,2,2,2.
+    let counts: Vec<usize> = rows
+        .iter()
+        .map(|g| g["member_tag_db_ids"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(counts, vec![6, 10, 2, 7, 2, 1, 2, 2, 2]);
+
+    // VIC_learn_from_the_enemy = {D04, GER} resolves to TAGs {"D04","GER"}
+    // (sorted tag_db_ids [1, 368]).
+    let vic = &rows[8];
+    assert_eq!(vic["member_tag_db_ids"], json!([1, 368]));
+    let vic_members: Vec<&str> = vic["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(vic_members, vec!["GER", "D04"]);
+
+    // MEX_USA = {USA=68, MEX=101} resolves USA by TAG.
+    let mex_usa = &rows[6];
+    assert_eq!(mex_usa["member_tag_db_ids"], json!([68, 101]));
+    assert_eq!(mex_usa["members"][0], json!("USA"));
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_source_unavailable_retains_prior() {
+    // A SOURCE_UNAVAILABLE frame retains the prior group set (last-value-wins).
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_bonus_payload(&[(0x0009, vec![(368, 10_000), (1, -5_000)])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: manager unreadable -> SOURCE_UNAVAILABLE, no groups. Prior kept.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_payload(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d69_retain");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let tsg = &frame2["tech_sharing_group"];
+    assert_eq!(tsg["count"], json!(1));
+    assert_eq!(tsg["groups"][0]["member_tag_db_ids"], json!([1, 368]));
+    assert_eq!(
+        tsg["groups"][0]["member_bonuses"],
+        json!([
+            {
+                "member_tag_db_id": 1,
+                "country_tag": "GER",
+                "dynamic_bonus_raw_fixed5": -5_000,
+                "dynamic_bonus": -0.05,
+            },
+            {
+                "member_tag_db_id": 368,
+                "country_tag": "D04",
+                "dynamic_bonus_raw_fixed5": 10_000,
+                "dynamic_bonus": 0.1,
+            },
+        ])
+    );
+}
+
+#[test]
+fn w6_d69_clean_zero_group_frame_clears_prior_state() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_bonus_payload(&[(9, vec![(1, -5_000)])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    let raw2 = raw_for(16_959_361);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_bonus_payload(&[], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d69_zero_clears");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(frame2["tech_sharing_group"]["count"], json!(0));
+    assert_eq!(frame2["tech_sharing_group"]["groups"], json!([]));
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_rejects_noncontiguous_window() {
+    // A crafted TSG2 payload whose pair_blob_offset is non-contiguous must fold
+    // closed (Err) and attach no tech_sharing_group section.
+    let mut p = tech_sharing_groups_bonus_payload(&[(0x0009, vec![(1, -5_000), (368, 10_000)])], 0);
+    p[32..36].copy_from_slice(&5u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(69, p)]);
+    assert!(
+        snap.get("tech_sharing_group").is_none(),
+        "a non-contiguous tech_sharing_groups frame must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tsg2_preserves_signed_member_bonus_pairing_and_empty_groups() {
+    let ident = country_identity_payload(&[(1, "GER"), (68, "USA"), (368, "D04")]);
+    let payload = tech_sharing_groups_bonus_payload(
+        &[
+            (9, vec![(368, 10_000), (1, -5_000), (68, 0)]),
+            (10, Vec::new()),
+        ],
+        0,
+    );
+    let snap = snapshot_for_domain_records(vec![(18, ident), (69, payload)]);
+    let groups = snap["tech_sharing_group"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0]["runtime_ordinal"], json!(9));
+    assert_eq!(groups[0]["member_tag_db_ids"], json!([1, 68, 368]));
+    assert_eq!(groups[0]["members"], json!(["GER", "USA", "D04"]));
+    assert_eq!(
+        groups[0]["member_bonuses"],
+        json!([
+            {
+                "member_tag_db_id": 1,
+                "country_tag": "GER",
+                "dynamic_bonus_raw_fixed5": -5_000,
+                "dynamic_bonus": -0.05,
+            },
+            {
+                "member_tag_db_id": 68,
+                "country_tag": "USA",
+                "dynamic_bonus_raw_fixed5": 0,
+                "dynamic_bonus": 0.0,
+            },
+            {
+                "member_tag_db_id": 368,
+                "country_tag": "D04",
+                "dynamic_bonus_raw_fixed5": 10_000,
+                "dynamic_bonus": 0.1,
+            },
+        ])
+    );
+    assert_eq!(groups[1]["member_tag_db_ids"], json!([]));
+    assert_eq!(groups[1]["member_bonuses"], json!([]));
+    assert_eq!(
+        snap["tech_sharing_group"]["dynamic_bonus_fixed5_scale"],
+        json!(100_000)
+    );
+}
+
+#[test]
+fn w6_d69_rejects_legacy_payload_even_when_zero_rows_is_ambiguous() {
+    let mut legacy = Vec::new();
+    legacy.extend_from_slice(&0u64.to_le_bytes());
+    legacy.extend_from_slice(&0u32.to_le_bytes());
+    legacy.extend_from_slice(&0u32.to_le_bytes());
+    let snap = snapshot_for_domain_records(vec![(69, legacy)]);
+    assert!(snap.get("tech_sharing_group").is_none());
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_rejects_member_out_of_range() {
+    // A member tag_db_id beyond the guard ceiling folds closed.
+    let payload = tech_sharing_groups_payload(&[(0x0009, &[1, 999_999])], 0);
+    let snap = snapshot_for_domain_records(vec![(69, payload)]);
+    assert!(
+        snap.get("tech_sharing_group").is_none(),
+        "an out-of-range member tag_db_id must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_accepts_over_nine_up_to_ceiling() {
+    // The collector now walks the tech-sharing std::vector's active size, not a
+    // fixed 9 slots (re-gate 019f5467 BLOCKER): a save with MORE than 9 groups
+    // emits >9 rows and the fold MUST accept them (the old fixed-9 cap rejected a
+    // clean 10-group frame outright). 10 groups attaches; a payload beyond the
+    // shared ceiling (DOMAIN69_TECH_SHARING_MAX_GROUPS = 256) is still a
+    // torn/crafted record and folds closed.
+    let ten: Vec<(u32, &[u32])> = (1..=10u32).map(|i| (i, &[1u32][..])).collect();
+    let snap = snapshot_for_domain_records(vec![(69, tech_sharing_groups_payload(&ten, 0))]);
+    assert!(
+        snap.get("tech_sharing_group").is_some(),
+        "a clean 10-group frame must attach (>9 is now valid)"
+    );
+
+    let over: Vec<(u32, &[u32])> = (1..=257u32).map(|i| (i, &[1u32][..])).collect();
+    let snap = snapshot_for_domain_records(vec![(69, tech_sharing_groups_payload(&over, 0))]);
+    assert!(
+        snap.get("tech_sharing_group").is_none(),
+        "a group_count beyond the 256 ceiling must not attach the section"
+    );
+}
+
+#[test]
+fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
+    // Regression for the Codex DEFECT: a torn manager slot makes the collector
+    // emit a SHORT group set badged PARTIAL_DATA. Because d69 has no expected-
+    // partial tolerance, the fold must RETAIN the prior complete set rather than
+    // full-replace with a group missing. Frame 1: two groups. Frame 2: one group
+    // + PARTIAL_DATA -> the two-group set from frame 1 survives.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA"), (101, "MEX"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_bonus_payload(
+            &[
+                (0x0007, vec![(68, 7_000), (101, -1_000)]),
+                (0x0009, vec![(368, 10_000), (1, -5_000)]),
+            ],
+            0,
+        ),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Frame 2: a torn slot -> only one group emitted + PARTIAL_DATA. Prior kept.
+    let raw2 = raw_for(16_959_360 + 1);
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (68, "USA"), (101, "MEX"), (368, "D04")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        69,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_sharing_groups_payload(&[(0x0007, &[68, 101])], COMPACT_STATUS_PARTIAL_DATA),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d69_partial_retains");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let frame2 = parse(&snaps[1].2);
+    let tsg = &frame2["tech_sharing_group"];
+    assert_eq!(
+        tsg["count"],
+        json!(2),
+        "a PARTIAL_DATA frame must retain the prior 2-group set, not shrink to 1"
+    );
+    assert_eq!(
+        tsg["groups"][1]["member_bonuses"][0]["dynamic_bonus_raw_fixed5"],
+        json!(-5_000),
+        "a PARTIAL_DATA frame must retain the prior clean bonus pairing"
+    );
+}
+
+fn diplomacy_payload(status_flags: u32, rows: &[(u32, i32, u32, i64)]) -> Vec<u8> {
+    // Header: elapsed(u64) country_count(u32) country_count(u32) status(u32)
+    // relation_count(u32); rows: tag(u32) flags(u32) faction(i32)
+    // at_war_count(u32) casualties(i64).
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&5u64.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for &(tag, faction, at_war_count, casualties) in rows {
+        payload.extend_from_slice(&tag.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&faction.to_le_bytes());
+        payload.extend_from_slice(&at_war_count.to_le_bytes());
+        payload.extend_from_slice(&casualties.to_le_bytes());
+    }
+    payload
+}
+
+#[test]
+fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds() {
+    // G1-residue gate finding 3: fold_diplomacy previously ignored its status
+    // word, so a failing d17 record folded as authoritative. A failure frame
+    // (even combined with the informational WAR_SEGMENT_ABSENT bit) must
+    // leave diplomacy unchanged; WAR_SEGMENT_ABSENT ALONE must fold normally.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for (frame, status, casualties) in [
+        (0i64, 0u32, 100i64), // clean baseline
+        (
+            1,
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            999,
+        ), // failure -> must NOT fold
+        (2, COMPACT_STATUS_WAR_SEGMENT_ABSENT, 555), // informational alone -> folds
+    ] {
+        let raw = raw_for(16_959_360 + frame);
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(1, "GER")]),
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            17,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &diplomacy_payload(status, &[(1, 7, 2, casualties)]),
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+
+    let mut fold = WorldFold::new("d17_status_gate");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 3);
+    let frame1 = parse(&snaps[0].2);
+    assert_eq!(
+        frame1["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(100)
+    );
+    let frame2 = parse(&snaps[1].2);
+    assert_eq!(
+        frame2["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(100),
+        "a failure-status d17 frame must not replace diplomacy state"
+    );
+    let frame3 = parse(&snaps[2].2);
+    assert_eq!(
+        frame3["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(555),
+        "WAR_SEGMENT_ABSENT alone is informational and must fold"
+    );
+}
+
+#[test]
+fn chunk_promotes_exact_b4_history_without_optional_fixture() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(4, "GER"), (9, "ENG")])),
+        (70, sunk_convoy_history_payload(0)),
+    ]);
+    assert!(snapshot["world_events"]["sunk_convoys"].is_array());
+    assert_eq!(
+        snapshot["world_events"]["sunk_convoys_ordering"],
+        json!("engine_first_seen_aggregate_identity")
+    );
+    assert_eq!(
+        snapshot["_r2_sunk_convoy_history_live"]["authority"],
+        json!("exact_a729_sunk_convoy_history")
+    );
+    assert_eq!(
+        snapshot["_r2_sunk_convoy_history_live"]["production_activation_authorized"],
+        json!(true)
+    );
+    let candidate = &snapshot["_r2_sunk_convoy_history_live_candidate"];
+    assert_eq!(
+        candidate["authority"],
+        json!("static_exact20_evidence_candidate")
+    );
+    assert_eq!(candidate["production_activation_authorized"], json!(false));
+    assert_eq!(candidate["frame_hour"], json!(16_959_360));
+    assert_eq!(candidate["source_sequence"], json!(2));
+    assert_eq!(candidate["observed_rows"], json!(2));
+    assert_eq!(candidate["iterator_rows"], json!(2));
+    assert_eq!(candidate["d18_identity_complete"], json!(true));
+    let rows = candidate["rows"]
+        .as_array()
+        .expect("sunk convoy rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["month"], json!(10));
+    assert_eq!(rows[0]["convoys"], json!(2));
+    assert_eq!(rows[0]["killer_country"], json!("GER"));
+    assert_eq!(rows[0]["owner"], json!("ENG"));
+    assert_eq!(rows[0]["source_ordinal"], json!(0));
+    assert_eq!(
+        candidate["ordering"],
+        json!("engine_first_seen_aggregate_identity")
+    );
+    assert_eq!(
+        snapshot["world_events"]["sunk_convoys_route_attribution"],
+        Value::Null
+    );
+}
+
+#[test]
+fn b4_malformed_replacement_clears_prior_same_hour_candidate() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(4, "GER"), (9, "ENG")])),
+        (70, sunk_convoy_history_payload(0)),
+        (70, vec![0u8; 7]),
+    ]);
+    assert_eq!(
+        snapshot["_r2_sunk_convoy_history_live_candidate"],
+        Value::Null
+    );
+    assert_eq!(snapshot["_r2_sunk_convoy_history_live"], Value::Null);
+    assert_eq!(snapshot["world_events"]["sunk_convoys"], Value::Null);
+}
+
+#[test]
+fn b4_candidate_never_carries_into_a_later_hour_without_domain70() {
+    let first_hour = 16_959_360;
+    let second_hour = first_hour + 1;
+    let payload = compact_contract::naval_history::encode_exact_payload(
+        &[
+            compact_contract::naval_history::SunkConvoyHistoryRow {
+                month: 10,
+                convoys: 2,
+                killer_country_tag_db_id: 4,
+                owner_tag_db_id: 9,
+            },
+            compact_contract::naval_history::SunkConvoyHistoryRow {
+                month: 11,
+                convoys: 3,
+                killer_country_tag_db_id: 9,
+                owner_tag_db_id: 4,
+            },
+        ],
+        0,
+        first_hour as u64,
+        2,
+        0,
+        2,
+    )
+    .unwrap();
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(first_hour),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(4, "GER"), (9, "ENG")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(first_hour),
+        70,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &payload,
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_for(first_hour),
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_for(second_hour),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(4, "GER"), (9, "ENG")]),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_for(second_hour),
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("b4_no_stale_carry");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let first = parse(&snapshots[0].2);
+    let second = parse(&snapshots[1].2);
+    assert!(first["_r2_sunk_convoy_history_live_candidate"].is_object());
+    assert_eq!(second["_r2_sunk_convoy_history_live_candidate"], Value::Null);
+    assert_eq!(second["_r2_sunk_convoy_history_live"], Value::Null);
+    assert_eq!(second["world_events"]["sunk_convoys"], Value::Null);
+}
+
+#[test]
+fn h_convoy_domain90_appends_gap_free_rows_and_empty_drain_retains_history() {
+    let raw = raw_for(16_959_360);
+    let first = convoy_transport_attack_row(
+        1,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
+            ordinal: 441,
+            before_rows: 441,
+            after_rows: 442,
+            before_count: 0,
+            after_count: 1,
+        },
+    );
+    let second = convoy_transport_attack_row(
+        2,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::IncrementExisting,
+            ordinal: 441,
+            before_rows: 442,
+            after_rows: 442,
+            before_count: 1,
+            after_count: 2,
+        },
+    );
+    let snapshots = convoy_transport_attack_snapshots(vec![
+        convoy_transport_attack_payload(&[first], 1),
+        convoy_transport_attack_payload(&[second], 2),
+        convoy_transport_attack_payload(&[], 2),
+    ]);
+
+    for snapshot in &snapshots {
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks_complete"],
+            json!(true)
+        );
+    }
+    let rows = snapshots[2]["world_events"]["convoy_transport_attacks"]
+        .as_array()
+        .expect("exact convoy attack ledger");
+    assert_eq!(rows.len(), 2, "an empty drain must not clear history");
+    assert_eq!(rows[0]["producer_sequence"], json!(1));
+    assert_eq!(rows[1]["producer_sequence"], json!(2));
+    assert_eq!(rows[0]["route"]["producer_kind"], json!("lend_lease"));
+    assert_eq!(rows[0]["route"]["source"]["kind"], json!("state"));
+    assert_eq!(rows[0]["route"]["source"]["id"], json!(282));
+    assert_eq!(rows[0]["route"]["destination"]["id"], json!(64));
+    assert_eq!(rows[1]["d70_mutation"]["before_count"], json!(1));
+    assert_eq!(rows[1]["d70_mutation"]["after_count"], json!(2));
+    assert_eq!(
+        snapshots[2]["world_events"]["convoy_transport_attack_witness"]
+            ["producer_sequence_next"],
+        json!(3)
+    );
+    assert_eq!(
+        snapshots[2]["world_events"]["convoy_transport_attack_hook_telemetry"]
+            ["events_emitted"],
+        json!(2)
+    );
+}
+
+#[test]
+fn h_convoy_domain90_producer_gap_is_sticky_unobtainable() {
+    let raw = raw_for(16_959_360);
+    let first = convoy_transport_attack_row(
+        1,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
+            ordinal: 441,
+            before_rows: 441,
+            after_rows: 442,
+            before_count: 0,
+            after_count: 1,
+        },
+    );
+    let third = convoy_transport_attack_row(
+        3,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::IncrementExisting,
+            ordinal: 441,
+            before_rows: 442,
+            after_rows: 442,
+            before_count: 1,
+            after_count: 2,
+        },
+    );
+    let snapshots = convoy_transport_attack_snapshots(vec![
+        convoy_transport_attack_payload(&[first], 1),
+        convoy_transport_attack_payload(&[third], 3),
+        convoy_transport_attack_payload(&[], 3),
+    ]);
+
+    assert_eq!(
+        snapshots[0]["world_events"]["convoy_transport_attacks_complete"],
+        json!(true)
+    );
+    for snapshot in &snapshots[1..] {
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks_complete"],
+            json!(false)
+        );
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks"],
+            Value::Null
+        );
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attack_witness"]
+                ["history_unobtainable"],
+            json!(true)
+        );
+    }
+}
+
+#[test]
+fn h_convoy_domain90_requires_sequence_one_and_cross_d70_continuity() {
+    let raw = raw_for(16_959_360);
+    let starts_at_two = convoy_transport_attack_row(
+        2,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
+            ordinal: 441,
+            before_rows: 441,
+            after_rows: 442,
+            before_count: 0,
+            after_count: 1,
+        },
+    );
+    let first_snapshots = convoy_transport_attack_snapshots(vec![
+        convoy_transport_attack_payload(&[starts_at_two], 2),
+    ]);
+    assert_eq!(
+        first_snapshots[0]["world_events"]["convoy_transport_attacks_complete"],
+        json!(false)
+    );
+
+    let first = convoy_transport_attack_row(
+        1,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
+            ordinal: 441,
+            before_rows: 441,
+            after_rows: 442,
+            before_count: 0,
+            after_count: 1,
+        },
+    );
+    let broken_cardinality = convoy_transport_attack_row(
+        2,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::IncrementExisting,
+            ordinal: 440,
+            before_rows: 441,
+            after_rows: 441,
+            before_count: 1,
+            after_count: 2,
+        },
+    );
+    let chain_snapshots = convoy_transport_attack_snapshots(vec![
+        convoy_transport_attack_payload(&[first], 1),
+        convoy_transport_attack_payload(&[broken_cardinality], 2),
+    ]);
+    assert_eq!(
+        chain_snapshots[1]["world_events"]["convoy_transport_attacks_complete"],
+        json!(false)
+    );
+    assert_eq!(
+        chain_snapshots[1]["world_events"]["convoy_transport_attacks"],
+        Value::Null
+    );
+}
+
+#[test]
+fn h_convoy_domain90_incomplete_witness_is_sticky_unobtainable() {
+    let raw = raw_for(16_959_360);
+    let first = convoy_transport_attack_row(
+        1,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
+            ordinal: 441,
+            before_rows: 441,
+            after_rows: 442,
+            before_count: 0,
+            after_count: 1,
+        },
+    );
+    let mut incomplete = naval4950::ConvoyTransportAttackWitness {
+        hook_installed: true,
+        queue_drain_complete: true,
+        producer_sequence_next: 2,
+        drained_rows: 0,
+        remaining_events: 0,
+        active_callbacks: 0,
+        resolver_publication_sequence: 8,
+        resolver_game_hour_raw: raw,
+        resolver_member_bindings: 3,
+        resolver_route_bindings: 1,
+        telemetry: naval4950::ConvoyTransportAttackTelemetry {
+            callbacks_seen: 2,
+            original_calls: 2,
+            events_emitted: 1,
+            ..naval4950::ConvoyTransportAttackTelemetry::default()
+        },
+    };
+    incomplete.telemetry.dropped_queue_full = 1;
+    let incomplete_payload =
+        naval4950::encode_convoy_transport_attack_batch(&[], incomplete).unwrap();
+    let snapshots = convoy_transport_attack_snapshots(vec![
+        convoy_transport_attack_payload(&[first], 1),
+        incomplete_payload,
+        convoy_transport_attack_payload(&[], 1),
+    ]);
+
+    for snapshot in &snapshots[1..] {
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks_complete"],
+            json!(false)
+        );
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks"],
+            Value::Null
+        );
+    }
+    assert_eq!(
+        snapshots[1]["world_events"]["convoy_transport_attack_hook_telemetry"]
+            ["dropped_queue_full"],
+        json!(1)
+    );
+}
+
+#[test]
+fn h_convoy_domain90_malformed_payload_poison_is_sticky() {
+    let raw = raw_for(16_959_360);
+    let first = convoy_transport_attack_row(
+        1,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
+            ordinal: 441,
+            before_rows: 441,
+            after_rows: 442,
+            before_count: 0,
+            after_count: 1,
+        },
+    );
+    let second = convoy_transport_attack_row(
+        2,
+        raw,
+        naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::IncrementExisting,
+            ordinal: 441,
+            before_rows: 442,
+            after_rows: 442,
+            before_count: 1,
+            after_count: 2,
+        },
+    );
+    let snapshots = convoy_transport_attack_snapshots(vec![
+        convoy_transport_attack_payload(&[first], 1),
+        vec![0; naval4950::CONVOY_TRANSPORT_ATTACK_BATCH_HEADER_LEN],
+        convoy_transport_attack_payload(&[second], 2),
+    ]);
+
+    assert_eq!(
+        snapshots[0]["world_events"]["convoy_transport_attacks_complete"],
+        json!(true)
+    );
+    for snapshot in &snapshots[1..] {
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks_complete"],
+            json!(false)
+        );
+        assert_eq!(
+            snapshot["world_events"]["convoy_transport_attacks"],
+            Value::Null
+        );
+    }
+}
+
+#[test]
+fn xn15_domain77_folds_packet_native_frame_and_rejects_malformed() {
+    let launch_epoch_sha256 = portable_render_stream::compute_render_launch_epoch_sha256(
+        7,
+        8,
+        9,
+        10,
+        1,
+        11,
+        &"a".repeat(64),
+        &"b".repeat(64),
+    );
+    let selected_present =
+        serde_json::to_value(portable_render_stream::SelectedPresentReceipt::sealed(
+            1,
+            "c".repeat(64),
+            0,
+            0,
+            compact_contract::calendar::DATE_EPOCH_CONST + 16_959_360,
+            500,
+            600,
+        ))
+        .unwrap();
+    let payload_value = json!({
+        "schema": portable_render_stream::SCHEMA,
+        "authority": {"process_id":7,"process_start_nonce":"8","observer_installed_qpc":"9","d3d_device_created_qpc":"10","first_creation_sequence":"1","hook_epoch_nonce":"11","hook_set_receipt_sha256":"a".repeat(64),"capture_receipt_sha256":"b".repeat(64),"launch_epoch_sha256":launch_epoch_sha256,"effective_vfs_manifest_sha256": "22b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2", "effect_catalog_sha256": "32b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2", "entity_animation_catalog_sha256": "42b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2", "particle_runtime_mode": "submitted_packet_replay"},
+        "update_index": "16959360",
+        "first_sequence": "40",
+        "last_sequence": "42",
+        "presentation_qpc_frequency_hz": "10000000",
+        "display_submit_index": "0",
+        "selected_present": selected_present,
+        "snow_mud_texture": null,
+        "submits": [{"submit_index":"0","global_order":1,"presentation_qpc_ticks":"500","camera_carrier_ordinal":0,"ordered_scene_constant_buffers":[],"ordered_static_map_programs":[],"effect_lifecycle_events":[],"particles":[],"entity_presentations":[],"particle_packet_set_sha256":"52b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2","entities":[],"ordered_draws":[],"ordered_render_operations":[],"direct_visuals":[],"light_lifecycle_events":[],"tiled_lights":[],"weather_membership":[],"political_textures":[]}],
+        "checkpoint": {"last_sequence":"42","last_update_index":"16959360","last_submit_index":"0","next_stable_ids":{},"active_effect_lifecycle":[],"active_entity_presentation":[],"active_direct_visual_producers":[],"active_light_lifecycle":[],"latest_tiled_light_payload":null,"weather_state_and_ordered_membership":[],"active_effect_set_sha256":"62b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2","ordered_particle_packets_sha256":"72b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2","ordered_entity_submissions_sha256":"82b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2","ordered_direct_visual_producers_sha256":"92b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2","ordered_light_submissions_sha256":"a2b3fd4793db29e70f0e5c013f6ca5f53d4db80c0eae8cc27ae98392c1e797a2","weather_membership_sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","weather_state_sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","weather_lifecycle_sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","weather_visibility_sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","ordered_weather_packets_sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","weather_composition_sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"}
+    });
+    let payload = serde_json::to_vec(&payload_value).unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(77, payload.clone())]);
+    assert_eq!(
+        snapshot["production_render"]["update_index"],
+        json!("16959360")
+    );
+    assert_eq!(
+        snapshot["production_render"]["display_submit_index"],
+        json!("0")
+    );
+    assert_eq!(
+        snapshot["production_render"]["submits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut wrong_hour: Value = serde_json::from_slice(&payload).unwrap();
+    wrong_hour["update_index"] = json!("16959361");
+    wrong_hour["checkpoint"]["last_update_index"] = json!("16959361");
+    wrong_hour["selected_present"]["selected_game_hour_raw"] =
+        json!(compact_contract::calendar::DATE_EPOCH_CONST + 16_959_361);
+    let wrong_hour =
+        snapshot_for_domain_records(vec![(77, serde_json::to_vec(&wrong_hour).unwrap())]);
+    assert_eq!(wrong_hour["production_render"], Value::Null);
+    assert!(wrong_hour["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap_or_default()
+            .contains("differs from H4CR game_hour_raw")));
+
+    let duplicate = snapshot_for_domain_records(vec![(77, payload.clone()), (77, payload.clone())]);
+    assert_eq!(duplicate["production_render"], Value::Null);
+    assert!(duplicate["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(77)
+            && problem["problem"] == json!("invalid_production_render")));
+    assert!(duplicate["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap_or_default()
+            .contains("repeats domain 77")));
+
+    let mut empty: Value = serde_json::from_slice(&payload).unwrap();
+    empty["display_submit_index"] = Value::Null;
+    empty["submits"] = json!([]);
+    empty["checkpoint"]["last_submit_index"] = Value::Null;
+    let empty = snapshot_for_domain_records(vec![(77, serde_json::to_vec(&empty).unwrap())]);
+    assert_eq!(empty["production_render"], Value::Null);
+
+    let mut extra: Value = serde_json::from_slice(&payload).unwrap();
+    let mut second = extra["submits"][0].clone();
+    second["submit_index"] = json!("1");
+    second["global_order"] = json!(2);
+    second["presentation_qpc_ticks"] = json!("501");
+    extra["submits"].as_array_mut().unwrap().push(second);
+    extra["display_submit_index"] = json!("1");
+    extra["checkpoint"]["last_submit_index"] = json!("1");
+    let extra = snapshot_for_domain_records(vec![(77, serde_json::to_vec(&extra).unwrap())]);
+    assert_eq!(extra["production_render"], Value::Null);
+    assert!(extra["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap_or_default()
+            .contains("exactly one selected Present")));
+
+    let mut malformed = payload_value;
+    malformed["first_sequence"] = json!("42");
+    malformed["last_sequence"] = json!("40");
+    malformed["checkpoint"]["last_sequence"] = json!("40");
+    let malformed = serde_json::to_vec(&malformed).unwrap();
+    let rejected = snapshot_for_domain_records(vec![(77, malformed)]);
+    assert_eq!(rejected["production_render"], Value::Null);
+    assert!(rejected["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap_or_default()
+            .contains("sequence range is inverted")));
+}
+
+#[test]
+fn folded_domain_registry_exactly_matches_the_real_structural_dispatcher() {
+    let mut mismatches = compact_contract::ASSIGNED_COMPACT_DOMAINS
+        .iter()
+        .filter_map(|domain| {
+            let declared = FOLDED_DOMAIN_IDS.contains(&domain.id);
+            let dispatched = WorldFold::has_exact_structural_decoder(domain.id);
+            (declared != dispatched)
+                .then_some((domain.id, domain.wire_name, declared, dispatched))
+        })
+        .collect::<Vec<_>>();
+
+    for &domain_id in FOLDED_DOMAIN_IDS {
+        if compact_contract::assigned_descriptor_by_id(domain_id).is_none() {
+            mismatches.push((domain_id, "<unregistered>", true, true));
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "FOLDED_DOMAIN_IDS and fold_domain_data dispatcher disagree: {mismatches:?}"
+    );
+}
+
+
+#[test]
+fn a40_domain85_folds_pointer_free_selected_identity_and_exact_controller_order() {
+    let hour = 16_959_360u64;
+    let identity = |stable_id| selected85_lane::StableDesignIdentity {
+        object_type: selected85_lane::EQUIPMENT_VARIANT_TYPE,
+        stable_id,
+    };
+    let frame = selected85_lane::SelectedDesignerTransportFrame {
+        elapsed_wall_ms: 9,
+        status_flags: 0,
+        frame_hour: hour,
+        snapshot: Some(selected85_lane::SelectedDesignerIdentityFrame {
+            frame_hour: hour,
+            transition_sequence: 4,
+            executable_sha256: selected85_lane::EXACT_A729_EXECUTABLE_SHA256,
+            producer_manifest_sha256: selected85_lane::PRODUCER_MANIFEST_SHA256,
+            classifier_manifest_sha256: selected85_lane::CLASSIFIER_MANIFEST_SHA256,
+            division_click_thunk_artifact_sha256:
+                selected85_lane::DIVISION_CLICK_THUNK_ARTIFACT_SHA256,
+            division_wrapper_artifact_sha256:
+                selected85_lane::DIVISION_WRAPPER_ARTIFACT_SHA256,
+            source_record_identity: "a40:a729:selected:4".into(),
+            owner: selected85_lane::SelectedDesignerOwner::CountryEquipmentDesignerMode0,
+            family: selected85_lane::SelectedDesignerFamily::Ship,
+            expected_ordered_design_count: 3,
+            ordered_designs: vec![identity(100), identity(7), identity(55)],
+            selected_design: identity(7),
+            complete: true,
+        }),
+    };
+    let payload = selected85_lane::encode_payload(&frame).expect("exact d85 transport payload");
+    let snapshot = snapshot_for_domain_records(vec![(selected85_lane::DOMAIN_ID, payload)]);
+    let view = &snapshot["_r2_selected_designer_identity_live"];
+    assert_eq!(view["authority"], json!("exact_a729_selected_designer_identity"));
+    assert_eq!(view["family"], json!("ship"));
+    assert_eq!(view["owner"], json!("country_equipment_designer_mode_0"));
+    assert_eq!(view["ordered_designs"][0]["source_ordinal"], json!(0));
+    assert_eq!(view["ordered_designs"][1]["stable_id"], json!(7));
+    assert_eq!(view["selected_design"]["stable_id"], json!(7));
+    assert_eq!(
+        view["producer_manifest_sha256"],
+        json!("6dff47e4fae1f9d3aeabb63ac7e9a9cc13a27c429d5e217d686311d5a349cb6b")
+    );
+    let text = serde_json::to_string(view).unwrap();
+    assert!(!text.contains("pointer"));
+    assert!(!text.contains("0x141"));
+}
+
+#[test]
+fn a40_domain85_unavailable_and_torn_payloads_fail_closed() {
+    let unavailable = selected85_lane::encode_source_unavailable(
+        16_959_360,
+        1,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    )
+    .unwrap();
+    let failed = snapshot_for_domain_records(vec![(selected85_lane::DOMAIN_ID, unavailable)]);
+    assert_eq!(failed["_r2_selected_designer_identity_live"], Value::Null);
+
+    let torn = snapshot_for_domain_records(vec![(
+        selected85_lane::DOMAIN_ID,
+        b"SDI1-truncated".to_vec(),
+    )]);
+    assert_eq!(torn["_r2_selected_designer_identity_live"], Value::Null);
+}
+
+#[test]
+fn a33_domain86_folds_receipt_bound_writer_rows_without_pointer_identity() {
+    let hour = 16_959_360u64;
+    let payload = sunk86_lane::encode_payload(&sunk86_lane::SunkShipFrame {
+        elapsed_wall_ms: 5,
+        frame_hour: hour,
+        status_flags: 0,
+        authority: sunk86_lane::AuthorityState::StaticExact20Receipt,
+        snapshot: Some(sunk86_lane::SunkShipSnapshot {
+            source_sequence: 9,
+            producer_complete: true,
+            events: vec![sunk86_lane::SunkShipEvent {
+                event_sequence: 9,
+                combat_join_present: true,
+                combat_id: 44,
+                combat_generation: 3,
+                victim_country_id_raw: 2,
+                attacker_country_id_raw: 700,
+                ui_source_country_id_raw: 8,
+                sink_date_raw: raw_for(hour as i64),
+                victim_member_battle_slot_index: 4,
+                flags: sunk86_lane::EVENT_FLAG_KILLED,
+                victim_ship_reference_raw: [11, 12],
+                damage_source_reference_raw: [13, 14],
+                task_force_id_raw: 15,
+                terminal_context_raw: [16, 17],
+                cause_record_flag: false,
+                ship_name: "HMS Exact".into(),
+                ship_class_name: "Destroyer".into(),
+                attribution_source_name: "KMS Exact".into(),
+                attribution_source_class_name: "Cruiser".into(),
+            }],
+        }),
+    })
+    .expect("exact d86 transport payload");
+    let baseline_source = payload.clone();
+    let snapshot = snapshot_for_domain_records(vec![(sunk86_lane::DOMAIN_ID, payload)]);
+    let view = &snapshot["_r2_sunk_ship_history_live"];
+    assert_eq!(view["schema_version"], json!(3));
+    assert_eq!(view["authority"], json!("exact_a729_sunk_ship_writer"));
+    assert_eq!(view["events"][0]["combat_join_present"], json!(true));
+    assert_eq!(view["events"][0]["combat_generation"], json!(3));
+    assert_eq!(view["events"][0]["victim_country_id_raw"], json!(2));
+    assert_eq!(view["events"][0]["attacker_country_id_raw"], json!(700));
+    assert_eq!(view["events"][0]["victim_ship_reference_raw"], json!([11, 12]));
+    assert_eq!(view["events"][0]["damage_source_reference_raw"], json!([13, 14]));
+    assert_eq!(view["events"][0]["attribution_source_name"], json!("KMS Exact"));
+    assert_eq!(view["events"][0]["task_force_id_raw"], json!(15));
+    assert_eq!(view["events"][0]["terminal_context_raw"], json!([16, 17]));
+    assert_eq!(
+        view["events"][0]["victim_member_battle_slot_index"],
+        json!(4)
+    );
+    assert_eq!(view["events"][0]["killed"], json!(true));
+    let text = serde_json::to_string(view).unwrap();
+    assert!(!text.contains("pointer"));
+    assert!(!text.contains("ship_class_token"));
+
+    let mut baseline = sunk86_lane::decode_payload(&baseline_source).unwrap();
+    let baseline_event = &mut baseline.snapshot.as_mut().unwrap().events[0];
+    baseline_event.combat_join_present = false;
+    baseline_event.combat_id = 0;
+    baseline_event.combat_generation = 0;
+    baseline_event.victim_member_battle_slot_index = 0;
+    let baseline_view = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk86_lane::encode_payload(&baseline).unwrap(),
+    )]);
+    let baseline_event = &baseline_view["_r2_sunk_ship_history_live"]["events"][0];
+    assert_eq!(baseline_event["combat_join_present"], json!(false));
+    assert_eq!(baseline_event["combat_id"], json!(0));
+    assert_eq!(baseline_event["combat_generation"], json!(0));
+    assert_eq!(baseline_event["victim_member_battle_slot_index"], json!(0));
+    assert_eq!(baseline_event["victim_ship_reference_raw"], json!([11, 12]));
+}
+
+#[test]
+fn a34_domain87_folds_complete_ordered_panel_and_alert_membership() {
+    let hour = 16_959_360u64;
+    let payload = decision87_lane::encode_payload(&decision87_lane::DecisionPanelFrame {
+        elapsed_wall_ms: 6,
+        frame_hour: hour,
+        status_flags: 0,
+        authority: decision87_lane::AuthorityState::Exact20Receipt,
+        snapshot: Some(decision87_lane::DecisionPanelSnapshot {
+            source_sequence: 12,
+            producer_complete: true,
+            country_tag: "ENG".into(),
+            decision_catalog_sha256: "a".repeat(64),
+            materialization_qpc_ticks: 90,
+            selected_present: decision87_lane::SelectedPresentStamp {
+                frame_hour: hour,
+                selected_present_ordinal: 0,
+                selected_present_qpc_ticks: 100,
+                qpc_frequency_hz: 10_000_000,
+                selected_present_receipt_sha256: "b".repeat(64),
+            },
+            grid: decision87_lane::DecisionGridState {
+                clip_left: 0,
+                clip_top: 0,
+                clip_right: 502,
+                clip_bottom: 600,
+                content_origin_x: 0,
+                content_origin_y: 0,
+                content_extent_width: 502,
+                content_extent_height: 41,
+                scroll_min: 0,
+                scroll_max: 0,
+                scroll_target: 0,
+                scroll_current: 0,
+            },
+            children: vec![decision87_lane::DecisionPanelChild {
+                presentation_index: 0,
+                kind: decision87_lane::PanelChildKind::Decision,
+                decision_row_index: Some(0),
+                identity: "decision_one".into(),
+                name_text: Some("Exact decision".into()),
+                secondary_text: None,
+                expanded: None,
+                x: 0,
+                y: 0,
+                width: 502,
+                height: 41,
+            }],
+            available_alert_count: 1,
+            timeout_alert_count: 0,
+            rows: vec![decision87_lane::DecisionRow {
+                decision_id: "decision_one".into(),
+                category_id: "category_one".into(),
+                presentation_index: 0,
+                availability: decision87_lane::Availability::Available,
+                lifecycle: decision87_lane::Lifecycle::Pending,
+                interface_state: Some(1),
+                on_map_entry_ordinal: None,
+                target: Some(decision87_lane::Target::Country("FRA".into())),
+                cost: Some(decision87_lane::Cost {
+                    political_power: Some(50),
+                    custom_cost_available: None,
+                    formatted_text: Some("50".into()),
+                }),
+                remaining_timer_days: None,
+                cooldown_remaining_days: None,
+                name_text: "Exact decision".into(),
+                timer_text: None,
+                alert_to_take: true,
+                alert_timeout: false,
+            }],
+        }),
+    })
+    .expect("exact d87 transport payload");
+    let snapshot = snapshot_for_domain_records(vec![(decision87_lane::DOMAIN_ID, payload)]);
+    let view = &snapshot["_r2_decision_panel_live"];
+    assert_eq!(view["producer_complete"], json!(true));
+    assert_eq!(view["rows"][0]["presentation_index"], json!(0));
+    assert_eq!(view["rows"][0]["target"]["kind"], json!("country"));
+    assert_eq!(view["rows"][0]["interface_state"], json!(1));
+    assert_eq!(view["available_alert_count"], json!(1));
+}
+
+#[test]
+fn a33_a34_unavailable_payloads_project_null_without_stale_values() {
+    let status = COMPACT_STATUS_SOURCE_UNAVAILABLE;
+    let d86 = sunk86_lane::encode_unavailable(16_959_360, 0, status).unwrap();
+    let d87 = decision87_lane::encode_unavailable(16_959_360, 0, status).unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(86, d86), (87, d87)]);
+    assert_eq!(snapshot["_r2_sunk_ship_history_live"], Value::Null);
+    assert_eq!(snapshot["_r2_decision_panel_live"], Value::Null);
+}
+
+#[test]
+fn a36_domain88_folds_exact_rows_into_country_and_audit_view() {
+    const CANONICAL: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json"
+    ));
+    const CANONICAL_SHA256: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.sha256"
+    ));
+    let hour = 16_959_360u64;
+    let ability = abilities88_lane::AbilityFrame {
+        elapsed_wall_ms: 7,
+        status_flags: 0,
+        frame_hour: hour,
+        country_tag: "GER".into(),
+        selected_context_kind: abilities88_lane::SelectedContextKind::ArmyLeader,
+        selected_context_id: "leader:42".into(),
+        source_record_id: "a729:a36:16959360:GER:1:leader:42".into(),
+        complete: true,
+        rows: vec![abilities88_lane::AbilityRow {
+            ability_id: "force_attack".into(),
+            available: false,
+            active: true,
+            activation_hour: Some(hour - 3),
+            cooldown_total: abilities88_lane::TimerValue::Hours(504),
+            cooldown_remaining: abilities88_lane::TimerValue::NotStarted,
+            cost_command_power_fixed: Some(2_200_000),
+            target_kind: Some("army_leader".into()),
+            target_id: Some("leader:42".into()),
+            duration_total: abilities88_lane::TimerValue::Hours(168),
+            duration_remaining: abilities88_lane::TimerValue::Hours(165),
+            display_order: 0,
+            // Active rows carry the exact CAbility+0x2A8 resolver key. The
+            // engine constructs it from the final ordinary icon plus
+            // `_animated`; the fold must preserve that authenticated value.
+            icon: "GFX_ability_force_attack_animated".into(),
+            tooltip: Some("Force Attack".into()),
+            disabled_reason: Some("Already active".into()),
+            affected_division_ids: vec!["division:9".into()],
+        }],
+    };
+    let payload = abilities88_lane::production_carrier::encode_payload(
+        &abilities88_lane::production_carrier::ProductionAbilityFrame {
+            elapsed_wall_ms: 7,
+            frame_hour: hour,
+            status_flags: 0,
+            authority: abilities88_lane::production_carrier::AuthorityState::Exact20Receipt,
+            snapshot: Some(ability),
+        },
+    )
+    .expect("exact d88 transport payload");
+    let snapshot = snapshot_for_domain_records(vec![(
+        abilities88_lane::production_carrier::DOMAIN_ID,
+        payload,
+    )]);
+    let canonical: Value = serde_json::from_str(CANONICAL).expect("canonical d88 envelope");
+    let expected_sha = CANONICAL_SHA256
+        .split_ascii_whitespace()
+        .next()
+        .expect("canonical d88 sha256");
+    assert_eq!(
+        snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(CANONICAL.as_bytes())),
+        expected_sha
+    );
+    assert_eq!(snapshot["countries"]["GER"]["active_abilities"], canonical);
+    assert_eq!(
+        snapshot["_r2_active_command_abilities_live"],
+        snapshot["countries"]["GER"]["active_abilities"]
+    );
+}
+
+#[test]
+fn a36_domain88_unavailable_and_torn_payloads_fail_closed() {
+    let unavailable = abilities88_lane::production_carrier::encode_unavailable(
+        16_959_360,
+        7,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    )
+    .unwrap();
+    let failed = snapshot_for_domain_records(vec![(88, unavailable)]);
+    assert_eq!(failed["_r2_active_command_abilities_live"], Value::Null);
+
+    let torn = snapshot_for_domain_records(vec![(88, b"ABA2-truncated".to_vec())]);
+    assert_eq!(torn["_r2_active_command_abilities_live"], Value::Null);
+
+    let exact = abilities88_lane::production_carrier::encode_payload(
+        &abilities88_lane::production_carrier::ProductionAbilityFrame {
+            elapsed_wall_ms: 7,
+            frame_hour: 16_959_360,
+            status_flags: 0,
+            authority: abilities88_lane::production_carrier::AuthorityState::Exact20Receipt,
+            snapshot: Some(abilities88_lane::AbilityFrame {
+                elapsed_wall_ms: 7,
+                status_flags: 0,
+                frame_hour: 16_959_360,
+                country_tag: "GER".into(),
+                selected_context_kind: abilities88_lane::SelectedContextKind::ArmyLeader,
+                selected_context_id: "leader:42".into(),
+                source_record_id: "a729:a36:16959360:GER:1:leader:42".into(),
+                complete: true,
+                rows: Vec::new(),
+            }),
+        },
+    )
+    .expect("exact empty d88 transport payload");
+    let mut forged_receipt = exact;
+    forged_receipt[32] ^= 1;
+    let rejected = snapshot_for_domain_records(vec![(88, forged_receipt)]);
+    assert_eq!(rejected["_r2_active_command_abilities_live"], Value::Null);
+}
+
+#[test]
+fn a31_domain89_folds_pointer_free_final_item_order_and_presentation() {
+    let hour = 16_959_360u64;
+    let payload = focus89_lane::encode_payload(&focus89_lane::Frame {
+        elapsed_wall_ms: 7,
+        frame_hour: hour,
+        status_flags: 0,
+        authority: focus89_lane::AuthorityState::Exact20Receipt,
+        selected_present: Some(focus89_lane::SelectedPresentBinding {
+            materialization_qpc_ticks: 90,
+            selected_present_global_order: 7,
+            selected_present_candidate_id: 3,
+            selected_present_ordinal: 0,
+            selected_present_qpc_ticks: 100,
+            selected_present_cutoff_qpc_ticks: 110,
+            qpc_frequency_hz: 10_000_000,
+            selected_present_receipt_sha256: "ab".repeat(32),
+            selected_present_pass_identity_sha256: "cd".repeat(32),
+            selected_present_engine_instance_token: 17,
+            authored_surface_identity: focus89_lane::AUTHORED_SURFACE_IDENTITY.into(),
+            runtime_root_identity: focus89_lane::RUNTIME_ROOT_IDENTITY.into(),
+            effective_interface_winner: focus89_lane::EFFECTIVE_INTERFACE_WINNER.into(),
+            render_target_extent_pixels: [1920, 1080],
+            client_extent_pixels: [1920, 1080],
+            clip_rect: focus89_lane::RectI32 { x: 100, y: 100, width: 1200, height: 800 },
+            content_extent_pixels: [2000, 1600],
+            viewport_extent_pixels: [1200, 800],
+            canvas_origin_pixels_fixed5: [3200, 3200],
+            pan_pixels_fixed5: [-640, 960],
+            canvas_scale_bits: [1.0f32.to_bits(), 1.0f32.to_bits()],
+        }),
+        snapshot: Some(focus89_lane::Snapshot {
+            source_sequence: 11,
+            producer_complete: true,
+            country_tag: "GER".into(),
+            view_id: "nationalfocusview:GER".into(),
+            producer_record_identity: "a729:a31:16959360:GER:11".into(),
+            expected_visible_item_count: 2,
+            visible_items: vec![
+                focus89_lane::FocusPresentationItem {
+                    focus_id: "ger_a".into(),
+                    source_ordinal: 0,
+                    presentation_state_code: 1,
+                    display_progress_percent: 100,
+                    highlight_glow_visible: false,
+                    historical_marker_visible: true,
+                    joint_viewing_country_tag: None,
+                    selected_present_ui_operation_ordinals: vec![4, 5],
+                    selected_present_screen_rect:
+                        focus89_lane::RectI32 { x: 120, y: 140, width: 80, height: 80 },
+                },
+                focus89_lane::FocusPresentationItem {
+                    focus_id: "ger_b".into(),
+                    source_ordinal: 1,
+                    presentation_state_code: 3,
+                    display_progress_percent: 25,
+                    highlight_glow_visible: true,
+                    historical_marker_visible: false,
+                    joint_viewing_country_tag: Some("ITA".into()),
+                    selected_present_ui_operation_ordinals: vec![6],
+                    selected_present_screen_rect:
+                        focus89_lane::RectI32 { x: 240, y: 260, width: 80, height: 80 },
+                },
+            ],
+            selected_present_canvas_operation_ordinals: vec![2, 3],
+            selected_present_ui_operation_order: vec![2, 3, 4, 5, 6],
+        }),
+    })
+    .unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(focus89_lane::DOMAIN_ID, payload)]);
+    let exact = &snapshot["_r2_national_focus_presentation_live"];
+    assert_eq!(exact["country_tag"], json!("GER"));
+    assert_eq!(exact["schema_version"], json!(3));
+    assert_eq!(exact["materialization_qpc_ticks"], json!(90));
+    assert_eq!(
+        exact["selected_present"]["selected_present_global_order"],
+        json!(7)
+    );
+    assert_eq!(
+        exact["selected_present"]["selected_present_receipt_sha256"],
+        json!("ab".repeat(32))
+    );
+    assert_eq!(exact["items"][0]["focus_id"], json!("ger_a"));
+    assert_eq!(exact["items"][1]["source_ordinal"], json!(1));
+    assert_eq!(exact["items"][1]["continuous_glow_visible"], json!(true));
+    assert_eq!(exact["items"][1]["joint_viewing_country_tag"], json!("ITA"));
+    assert!(!exact.to_string().contains("0x"));
+}
+
+#[test]
+fn a31_domain89_unavailable_and_malformed_payloads_fail_closed() {
+    let unavailable = focus89_lane::encode_unavailable(
+        16_959_360,
+        7,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    )
+    .unwrap();
+    let snapshot = snapshot_for_domain_records(vec![(89, unavailable)]);
+    assert_eq!(
+        snapshot["_r2_national_focus_presentation_live"],
+        Value::Null
+    );
+    let malformed = snapshot_for_domain_records(vec![(89, b"NFP1-truncated".to_vec())]);
+    assert_eq!(
+        malformed["_r2_national_focus_presentation_live"],
+        Value::Null
+    );
+}
+
+fn exact_deployment_country(tag_db_id: u32) -> production11::DeploymentCountryRow {
+    production11::DeploymentCountryRow {
+        tag_db_id,
+        queue_complete: true,
+        conveyors: vec![production11::DeploymentConveyorRow {
+            ordinal: 0,
+            conveyor_id: 163,
+            name: "Infantry Division".to_string(),
+            template_id: 41,
+            amount: 0,
+            location: 6103,
+            priority: 2,
+            role: "__unknown_0x0".to_string(),
+            closed: true,
+            lines: vec![production11::DeploymentLineRow {
+                ordinal: 0,
+                line_id: 912,
+                name_order: None,
+                amount: 1,
+                training: Some(0.91264),
+                max_training: Some(0.95312),
+                manpower_have: None,
+                manpower_need: Some(7_200),
+                max_manpower: Some(9_600),
+                equipment_in_transit: vec![production11::DeploymentEquipmentRow {
+                    ordinal: 0,
+                    equipment_id: 7316,
+                    archetype: None,
+                    amount: 23.5,
+                }],
+            }],
+        }],
+    }
+}
+
+#[test]
+fn x4_pdq1_folds_exact_nullable_queue_and_accounts_authority_rows() {
+    let mut production = production_payload(1, 5 * 100_000, 3);
+    append_deployment_queue_trailer(&mut production, &[exact_deployment_country(1)]);
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, production.clone()),
+    ]);
+
+    let queue = snapshot["countries"]["GER"]["military"]["deployment_queue"]
+        .as_array()
+        .expect("complete queue is measured");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0]["id"], json!([163, 64]));
+    assert_eq!(queue[0]["template_id"], json!([41, 52]));
+    assert_eq!(queue[0]["amount"], json!(0));
+    assert_eq!(queue[0]["closed"], json!(true));
+    let line = &queue[0]["lines"][0];
+    assert_eq!(line["id"], json!([912, 63]));
+    assert_eq!(line["name_order"], Value::Null);
+    assert_eq!(line["manpower_have"], Value::Null);
+    assert_eq!(line["equipment_in_transit"][0]["equip_type"], json!(70));
+    assert_eq!(line["equipment_in_transit"][0]["archetype"], Value::Null);
+
+    let receipt = &snapshot["countries"]["GER"]["_r2_deployment_queue_live"];
+    assert_eq!(receipt["complete"], json!(true));
+    assert_eq!(receipt["conveyor_count"], json!(1));
+    assert_eq!(receipt["line_count"], json!(1));
+    assert_eq!(receipt["equipment_count"], json!(1));
+    assert_eq!(receipt["carrier"], json!("D11/PDQ1/v1+deployment_queue/v2"));
+    assert_eq!(
+        receipt["source"],
+        json!("CCountry+0xF70/CDeploymentManager+0x48")
+    );
+    assert_eq!(receipt["confidence"], json!("validated_exact"));
+
+    let authority = crate::domain_data_authority::summarize_domain_data_payload(
+        11,
+        &production,
+        crate::domain_data_authority::DomainDataContext::default(),
+    )
+    .expect("PDQ1 authority admits exact carrier");
+    assert_eq!(authority.data_units["deployment_queue_country_rows"], 1);
+    assert_eq!(authority.data_units["deployment_queue_complete_country_rows"], 1);
+    assert_eq!(authority.data_units["deployment_queue_conveyor_rows"], 1);
+    assert_eq!(authority.data_units["deployment_queue_line_rows"], 1);
+    assert_eq!(authority.data_units["deployment_queue_equipment_rows"], 1);
+}
+
+#[test]
+fn x4_pdq1_unknown_country_does_not_erase_prior_exact_queue() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let mut complete = production_payload(1, 5 * 100_000, 3);
+    append_deployment_queue_trailer(&mut complete, &[exact_deployment_country(1)]);
+    let mut unknown = production_payload(1, 6 * 100_000, 4);
+    append_deployment_queue_trailer(
+        &mut unknown,
+        &[production11::DeploymentCountryRow {
+            tag_db_id: 1,
+            queue_complete: false,
+            conveyors: Vec::new(),
+        }],
+    );
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push_record(&mut stream, 2, raw_a, 11, COMPACT_RECORD_TYPE_DOMAIN_DATA, &complete);
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(&mut stream, 4, raw_b, 11, COMPACT_RECORD_TYPE_DOMAIN_DATA, &unknown);
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("x4_pdq1_unknown_continuity");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let first = parse(&snapshots[0].2);
+    let second = parse(&snapshots[1].2);
+    assert_eq!(
+        second["countries"]["GER"]["military"]["deployment_queue"],
+        first["countries"]["GER"]["military"]["deployment_queue"]
+    );
+    assert_eq!(
+        second["countries"]["GER"]["_r2_deployment_queue_live"],
+        first["countries"]["GER"]["_r2_deployment_queue_live"]
+    );
+}
+
+#[test]
+fn x4_pdq1_must_be_self_sized_and_final() {
+    let mut production = production_payload(1, 5 * 100_000, 3);
+    append_deployment_queue_trailer(&mut production, &[exact_deployment_country(1)]);
+    production.push(0xA5);
+    let mut fold = WorldFold::new("x4_pdq1_trailing_drift");
+    assert!(fold
+        .fold_production(&production)
+        .expect_err("trailing drift must fail closed")
+        .contains("PDQ1 must be the final"));
+    let authority_error = crate::domain_data_authority::summarize_domain_data_payload(
+        11,
+        &production,
+        crate::domain_data_authority::DomainDataContext::default(),
+    )
+    .expect_err("authority must reject trailing drift");
+    assert!(authority_error
+        .errors
+        .iter()
+        .any(|error| error.contains("PDQ1 must be the final")));
+}
+
+#[test]
+fn x4_pdq1_complete_empty_writes_an_exact_empty_queue() {
+    let mut production = production_country_coverage_payload(1, &[1]);
+    append_deployment_queue_trailer(
+        &mut production,
+        &[production11::DeploymentCountryRow {
+            tag_db_id: 1,
+            queue_complete: true,
+            conveyors: Vec::new(),
+        }],
+    );
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (11, production),
+    ]);
+    assert!(snapshot["countries"]["GER"]["military"]["deployment_queue"]
+        .as_array()
+        .expect("complete empty is measured")
+        .is_empty());
+    assert_eq!(
+        snapshot["countries"]["GER"]["_r2_deployment_queue_live"]["conveyor_count"],
+        json!(0)
+    );
+}

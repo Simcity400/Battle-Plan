@@ -14,6 +14,7 @@
 
 
 
+
 For exact-a729 (`hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`), `CGameState+0x3A0` owns the technology-sharing manager. Each technology-sharing object is `0x50` bytes with vtable RVA `0x270B720`:
 
 | Offset | Field |
@@ -37,32 +38,22 @@ See also d47, d53, and d60.
 
 ## Files about this domain
 
-48 tracked files name this domain.
+42 tracked files name this domain.
 
-### Pinned evidence (3) — byte-exact, do not merge
-
-Production code verifies these hashes. They stay where they are.
-
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
-
-### Prose evidence (12) — mergeable
+### Prose evidence (10) — mergeable
 
 - `extractor/documents/CONFIRMED_COMPLETE_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/R2_VALIDATION_BOUNDS_AUDIT.md`
 - `extractor/documents/R4_PATCH_DAY_RUNBOOK.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/PRODUCTION_ENDGAME_PLAN.md`
 - `extractor/documents/domains/d1000_frame.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
 - `extractor/documents/domains/d64_delayed_events_live.md`
 - `extractor/documents/domains/d69_tech_sharing_groups_live.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (10) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/memory_manifest.json`
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
@@ -72,12 +63,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy_raw.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (23)
+### Code (19)
 
-- `extractor/live_capture/tests/test_extract_fold.py`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/bound_trips.rs`
 - `extractor/native/compact_contract/src/build_profile.rs`
@@ -97,6 +90,3 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/tech_sharing.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`
-- `replay_interface/replay/schema.py`
-- `replay_interface/replay/store.py`
-- `replay_interface/replay/tests/test_extract_domains.py`

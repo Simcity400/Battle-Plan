@@ -14,6 +14,7 @@
 
 
 
+
 Authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 CPR1 schema 3 carries exact trait/ace presentation only with the materializing
@@ -45,7 +46,7 @@ Replay applies row order, portrait, or modifier text only when its requested
 context exactly equals the authenticated d82 context.
 
 The live acquisition requires a complete same-launch A25 seed plus clean
-d47/d46 catalogs, then drains pointer-free CPR1/RTI1 batches and quiesces A39
+d47/d46 catalogs, then drains pointer-free CPR1 batches and quiesces A39
 before A25. The remaining fixture must retain one paused raw hour, land and
 navy mixed-state trait refreshes, a blocked-reason formatter-to-setter edge,
 literal and fallback portraits, assigned and unassigned living aces with
@@ -59,17 +60,15 @@ See also d46 and d47.
 
 ## Files about this domain
 
-30 tracked files name this domain.
+27 tracked files name this domain.
 
-### Prose evidence (10) — mergeable
+### Prose evidence (8) — mergeable
 
+- `documents/SEAM_CONTRACTS.md`
 - `extractor/documents/AUTO_ATTACH_DESIGN.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
 - `extractor/documents/domains/d46_air_variant_archetypes_live.md`
-- `extractor/documents/domains/d47_characters_leaders_cabinet_live.md`
-- `extractor/documents/domains/d73_politics_tooltip_inputs_live.md`
-- `extractor/documents/domains/d76_runtime_text_inputs_live.md`
 - `extractor/documents/domains/d82_character_presentation_live.md`
 - `extractor/documents/dossiers/A39/H_A39_PREREQUISITE_ENGINEERING_20260720.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
@@ -81,9 +80,8 @@ See also d46 and d47.
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 
-### Code (16)
+### Code (15)
 
-- `extractor/documents/dossiers/A39/verify_a39_character_presentation_live_fixture.py`
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
 - `extractor/native/collector/src/domain_registry.rs`

@@ -137,7 +137,6 @@ dependencies = [
  "naval_missions_status_live_lane",
  "nuke_stockpile_live_lane",
  "occupation_resistance_compliance_live_lane",
- "politics_tooltip_inputs_live_lane",
  "portable_content_manifest",
  "portable_render_stream",
  "power_balance_presentation_live_lane",
@@ -627,16 +626,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "politics_tooltip_inputs_live_lane"
-version = "0.1.0"
-dependencies = [
- "minhook",
- "serde",
- "serde_json",
- "windows-sys",
-]
-
-[[package]]
 name = "portable_compact_stream"
 version = "0.1.0"
 dependencies = [
@@ -782,13 +771,11 @@ dependencies = [
  "naval_missions_status_live_lane",
  "nuke_stockpile_live_lane",
  "occupation_resistance_compliance_live_lane",
- "politics_tooltip_inputs_live_lane",
  "portable_content_manifest",
  "portable_render_stream",
  "power_balance_presentation_live_lane",
  "production_render_submit_live_lane",
  "resolved_tooltip_instances_live_lane",
- "runtime_text_inputs_live_lane",
  "scientists_live_lane",
  "scripted_state_flags_variables_live_lane",
  "serde",
@@ -826,7 +813,6 @@ name = "runtime_text_inputs_live_lane"
 version = "0.1.0"
 dependencies = [
  "minhook",
- "serde_json",
  "sha2",
  "windows-sys",
 ]

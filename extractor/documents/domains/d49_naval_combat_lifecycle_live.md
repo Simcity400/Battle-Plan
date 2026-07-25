@@ -14,38 +14,45 @@
 
 
 
+
 Domain 49 shares several Stage-A failure origins with d50. Those origins must be represented by a closed descriptor whose affected-segment set names both domains; accounting creates one logical evidence unit per affected segment rather than guessing ownership from a domain-wide status OR.
 
 The current `so_*` drain is diagnostic only. Its count and separately stored last-sample value are not batch-coherent, counters can wrap without a terminal signal, and a count greater than one cannot recover earlier sample values. Exact accounting must preserve the full frame epoch/attempt, origin, cause, subsource, introduced status bits, sequence/hour, multiplicity, and optional sample. Until coherence and overflow gates exist, ambiguous evidence fails closed and cannot excuse a missing naval segment.
 
 A presence or lifecycle declaration may never mask the original status bits. Shared naval evidence must remain explicitly mapped to d49 and d50, and a failure set with missing, duplicate, foreign, or unreferenced evidence is invalid.
 
+### The land-combat mirror is refuted
+
+An earlier reader assumed naval and air battles reuse the land-combat structure.
+That was tested against `hoi4.exe 1.19.1.0.b49d` and **refuted**: a detector that
+enumerates `CCombatSide` (`MODULE+0x2980AC0`) and classifies participants found
+zero task-force and zero air-wing sides live, with the ship vtable pinned at
+`MODULE+0x2931998` (type 51). The land-side registry layout is not the naval or
+air one. Re-anchoring needs a save captured during an active fleet-versus-fleet
+battle — the earlier snapshot had none, which is why the question stayed open
+rather than being answered negatively by absence.
+
 See also d50.
 
 
 ## Files about this domain
 
-66 tracked files name this domain.
+53 tracked files name this domain.
 
-### Pinned evidence (5) — byte-exact, do not merge
+### Pinned evidence (2) — byte-exact, do not merge
 
 Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 - `extractor/native/lanes/naval_combat_live/evidence/production_speed5_retained_lifecycle.json` — `306b8d917bd9b422`
-- `extractor/re_evidence/B1_MARKET_ORACLE/market.json` — `79bad1df1dfccb2b`
-- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json` — `8c047f414db357d2`
-- `replay_interface/map_pipeline/assets/country_colors.json` — `83a02a762a56b2a6`
 
-### Prose evidence (23) — mergeable
+### Prose evidence (18) — mergeable
 
+- `extractor/documents/C1_STAGEB_REGISTRY_DESIGN.md`
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
 - `extractor/documents/RE_REMAINING.md`
-- `extractor/documents/archive/C0_DOSSIERS.md`
-- `extractor/documents/archive/EXTRACTION_OPTIMIZATION_PLAN.md`
-- `extractor/documents/archive/FINAL_SWEEP_RESULTS_2026-07-04.md`
 - `extractor/documents/domains/d10_fuel_live.md`
 - `extractor/documents/domains/d17_diplomacy_live.md`
 - `extractor/documents/domains/d21_land_combats_live.md`
@@ -56,17 +63,13 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d70_sunk_convoy_history_live.md`
 - `extractor/documents/domains/d86_sunk_ship_history_live.md`
-- `extractor/native/lanes/naval_combat_live/A8_A9_B6_CLOSEOUT.md`
 - `extractor/native/lanes/naval_combat_live/README.md`
 - `extractor/native/lanes/naval_missions_status_live/README.md`
-- `extractor/native/runs/perf_rearch_20260706/D53_ROOT_CAUSE.md`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md`
 - `replay_interface/documents/REPLAY_SCHEMA.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (13) — mergeable
 
 - `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
-- `extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
@@ -74,14 +77,14 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/production.json`
 - `extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`
 - `extractor/native/lanes/naval_combat_live/evidence/A8_A9_B6_ARTIFACT_MANIFEST.json`
+- `extractor/re_evidence/B1_MARKET_ORACLE/market.json`
+- `extractor/re_evidence/B4_B5_B7_OFFLINE_ORACLES/raid_instances.json`
+- `replay_interface/map_pipeline/assets/country_colors.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (27)
+### Code (20)
 
-- `extractor/memory_reader/combat/naval_combat_compact_gate.rs`
-- `extractor/memory_reader/combat/naval_combat_compact_lane.py`
-- `extractor/memory_reader/combat/naval_combat_slot_ready_packet.py`
 - `extractor/native/collector/src/domain_registry.rs`
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/compact_contract/src/status_origins.rs`
@@ -94,15 +97,11 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/naval_combat_live/src/member_epoch_runtime.rs`
 - `extractor/native/lanes/sunk_ship_history_live/src/a729_hook.rs`
 - `extractor/native/lanes/sunk_ship_history_live/src/lib.rs`
-- `extractor/native/lanes/sunk_ship_history_live/tools/verify_activation_probe.py`
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/production_content_vfs.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
-- `extractor/native/scripts/Invoke-A33SunkShipActivationProbe.ps1`
-- `extractor/native/scripts/Test-ProductionCaptureScripts.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/native/scripts/c0_pass2_spans.py`
-- `extractor/re_evidence/A6_A7_SUPPLY_CONVOY/verify_h_convoy_fixture.py`
 - `replay_interface/native/game_ui/src/unitview.rs`
 - `replay_interface/native/replay_core/src/world.rs`
