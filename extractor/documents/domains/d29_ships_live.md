@@ -12,24 +12,18 @@
 
 ## Condensed knowledge
 
-An active save-side task force must have its own
-`id={ id=<N> type=61 }` and at least one direct child `ship` with its own
-type-51 id. Read `definition` only at direct ship depth. Empty task-force
-references, history/refit/sunk definitions, and pending reference blocks are
-not active OOB.
+An active save task force owns `id={ id=<N> type=61 }` and at least one direct
+child ship with its own type-51 id. Read `definition` only at direct ship
+depth; exclude empty references and history, refit, sunk, or pending blocks.
+At raw hour `60830441` under executable SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
+live and melt matched 206 task forces and 1,690 ships while excluding 103
+non-active references.
 
-On the pinned D04 fixture (`u32[CGameState+0x468] == 60830441`, executable
-SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`),
-live and melt each yielded 206 active task forces and 1,690 ships, with zero
-live-only/melt-only ids, definition mismatches, or task-force-id mismatches.
-The parser excluded 103 non-active task-force references.
-
-The former live undercount came from treating direct `CFleet` subobject
-candidates differently from vector candidates and stopping after the first
-valid `CTaskForce` body delta. Both routes must use the same normalization and
-retain every valid body delta. D56 may derive `ship_count` and
-`dominant_hull_class` from d29 only for a clean same-hour d29 fold; otherwise
-both fields are null.
+Live traversal must normalize direct `CFleet` subobjects and vector candidates
+through one path and retain every valid `CTaskForce` body delta; stopping at
+the first valid delta undercounts. D56-derived summaries require a clean
+same-hour d29 fold and are otherwise null.
 
 See also d56.
 

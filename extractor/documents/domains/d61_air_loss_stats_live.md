@@ -14,7 +14,7 @@
 
 D61 is the per-country cumulative air-combat statistic: save `history{}`
 statistic id 23, an 89-field i64 fixed-point aggregate with a five-slot yearly
-ring. It is distinct from per-wing equipment deltas in d42.
+ring, distinct from per-wing equipment deltas in d42.
 
 For build `870ebf`, the exact root chain is:
 
@@ -30,21 +30,18 @@ field[i]    = i64[u64[record] + i*8]
 ```
 
 Require `u64[loophist] == module+0x29BBE58` and
-`u32[loophist+0x34] == 89`. The stats slot is the tag database id:
-the country table is `u64[CGameState+0x310]`, count at `+0x31C`, country
-vtable RVA `0x27D0E90`, and `tag_db_id` at country `+0x08`.
-Both arrays had length 440; 437/440 table entries self-matched, and the
-stat-bearing slots resolved to the expected belligerent countries. Emit a row
-only when the table entry validates and `tag_db_id == country_idx`.
+`u32[loophist+0x34] == 89`. `country_idx` is the tag database id, validated
+through country table `u64[CGameState+0x310]`, count `+0x31C`, country vtable
+RVA `0x27D0E90`, and id `+0x08`; mismatch suppresses the row.
 
 The strategic-air details table at RVA `0x29f8940` maps the 24 displayed
 channels to aggregate fields:
 `{0,1,2,3,10,17,24,39,36,37,38,40,41,42,43,44,51,58,65,80,77,78,79,81}`.
-The first 12 are own losses and the latter 12 enemy mirrors:
-buildings, troops, ships, fighters, bombers, CAS, transports, disrupted
-bombers, trains, trucks, railway guns, and missiles. Preserve raw i64 values.
-Display divisors are `1000` for fields 0 and 41 and `100000` for every other
-channel. Schema v2 uses `channels: [i64; 24]` and `ROW_LEN=208`.
+These are own/enemy pairs for buildings, troops, ships, fighters, bombers,
+CAS, transports, disrupted bombers, trains, trucks, railway guns, and
+missiles. Preserve raw i64 values. Display divisors are `1000` for fields 0
+and 41 and `100000` otherwise; schema v2 uses `channels: [i64; 24]` and
+`ROW_LEN=208`.
 
 Torn reads, an unproved country binding, wrong vtable, field count other than
 89, absent statistic, any failed channel, or raw magnitude above 10 million

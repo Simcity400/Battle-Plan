@@ -13,15 +13,12 @@
 ## Condensed knowledge
 
 `specialization_handle` is process-local and may be used only inside the d41
-delta tracker to match raw additions and tombstones before token resolution.
-After the authenticated census maps it to one of the four exact authored
-tokens, the world fold publishes only the closed enum/token with authority
-`exact_a729_serializer_token_enum_join`. Portable replay rejects any
-`_r2_specialization_handle`.
-
-Typed replay and UI key rows by resolved country plus the closed specialization
-enum. The fold may emit `_r2_tag_db_id` only from the current-hour d18 map, and
-replay requires every d41 country/id pair to match that witness.
+delta tracker for raw additions and tombstones before the authenticated
+four-token census. Portable fold/replay publishes only the closed
+specialization enum/token under authority
+`exact_a729_serializer_token_enum_join` and rejects
+`_r2_specialization_handle`. Country identity must come from the current-hour
+d18 `_r2_tag_db_id` witness; replay requires every pair to match it.
 
 See also d18.
 
