@@ -142,3 +142,10 @@ ghidra_scripts/
 
 # Reference-ledger output (regenerable: extractor/native/scripts/build_reference_ledger.py)
 extractor/coverage_audit/reference_ledger/reference_ledger.csv
+
+# Build, cache and profiling output (regenerable)
+.cargo-target/
+.cargo-timings/
+__pycache__/
+*.pyc
+*.pdb

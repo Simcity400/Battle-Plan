@@ -69,6 +69,22 @@ CODE_SUFFIXES = {
 
 MAX_SCAN_BYTES = 8 * 1024 * 1024
 
+# Files that tooling discovers by convention rather than by being named. Nothing
+# ever "cites" .gitignore, so a pure citation graph reports it as dead — and the
+# first run of this ledger did exactly that, taking the repo's .gitignore and
+# .gitattributes with it. Line-ending normalization for the whole tree lives in
+# .gitattributes, so losing it silently rewrites every file Git next touches.
+# These are never deletion candidates at any citation count.
+PROTECTED_BASENAMES = {
+    ".gitignore", ".gitattributes", ".gitmodules", ".editorconfig",
+    ".dockerignore", ".npmrc", ".nvmrc", "cargo.toml", "cargo.lock",
+    "pyproject.toml", "setup.py", "setup.cfg", "conftest.py", "pytest.ini",
+    "tox.ini", "makefile", "dockerfile", "rustfmt.toml", "clippy.toml",
+    "rust-toolchain", "rust-toolchain.toml", "license", "license.md",
+    "license.txt", "notice", "codeowners",
+}
+PROTECTED_DIR_PARTS = {".github", ".cargo", ".config"}
+
 
 def tracked_files(repo: Path) -> list[str]:
     out = subprocess.run(
@@ -246,7 +262,10 @@ def main() -> int:
         total = code_n + doc_n + ev_n + data_n
         via_dir, dir_counts = file_dir_citation.get(p, ("", {}))
 
-        if pinned:
+        parts = normalize(p).split("/")
+        if parts[-1] in PROTECTED_BASENAMES or PROTECTED_DIR_PARTS.intersection(parts):
+            verdict = "protected_by_convention"
+        elif pinned:
             verdict = "pinned_by_sha"
         elif code_n:
             verdict = "cited_by_code"
