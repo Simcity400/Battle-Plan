@@ -53,3 +53,8 @@ replay_interface/re_evidence/rendering_laws/T01/**/*.jsonl text eol=lf
 replay_interface/re_evidence/rendering_laws/T01/**/*.md text eol=lf
 replay_interface/re_evidence/rendering_laws/T01/**/*.py text eol=lf
 replay_interface/re_evidence/rendering_laws/refresh_c04_t00_t01_pins.py text eol=lf
+
+# The collector include_bytes!s this generated registry and checks it against a
+# SHA-256 constant in xui21_registry.rs. Any newline normalisation on checkout
+# changes the bytes and fails that check, so keep it exact on every platform.
+extractor/game_defs/out/fired_event_registry.json -text
