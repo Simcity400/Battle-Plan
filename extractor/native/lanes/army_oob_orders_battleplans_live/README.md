@@ -7,8 +7,7 @@
 > live count `+0xEC`. `+0x78/+0xE8` are capacities. Manager execution and
 > cohesion modes are semantically typed, the legacy per-order
 > stance/aggressiveness placeholders are retired, and no human-input RE gate
-> remains. See
-> `../army_battleplans_depth_live/X1_X8_TYPE1_TYPE4_SCALAR_RE_20260720.json`.
+> remains.
 
 > 2026-07-20 manager/scalar closeout: exact registered-reference table code
 > closes the complete army manager, and exact command writers close the u32
@@ -135,8 +134,8 @@ Direct land-OOB candidate roots:
 - current proof rejected no candidate hits for army, army group, theatre, or
   division roots.
 
-The older Python readers (`memory_reader/construction_orders_live.py` and
-`memory_reader/oob_command_live.py`) remain useful discovery lineage for the
+The older Python readers (`extractor/memory_reader/construction_orders_live.py` and
+`extractor/memory_reader/oob_command_live.py`) remain useful discovery lineage for the
 same shapes, but their hardcoded `16022851` offsets are not production-current.
 The live proof above used the Rust collector's current `870EBF` profile.
 

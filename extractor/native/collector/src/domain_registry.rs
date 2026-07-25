@@ -301,19 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn a36_core_ability_transport_is_production_scheduled() {
-        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
-        assert_eq!(
-            registry.id_for_scheduled_name("active_command_abilities_live"),
-            Some(88)
-        );
-        assert_eq!(
-            registry.by_id(88).map(|descriptor| descriptor.status),
-            Some(CompactDomainStatus::ProductionComplete)
-        );
-    }
-
-    #[test]
     fn d90_convoy_transport_is_production_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(

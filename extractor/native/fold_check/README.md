@@ -1,7 +1,6 @@
 # fold_check — fold-equivalence gate (G1)
 
-`fold_check` is the **lossless gate (G1)** for the extraction optimization plan
-(`extractor/documents/EXTRACTION_OPTIMIZATION_PLAN.md`). Every later optimization
+`fold_check` is the **lossless gate (G1)** for extraction optimization. Every later optimization
 — bulk-read collapse, delta emission, the `--profile production` switch, codec
 changes — must prove it did not change the *decoded* game state. This tool is the
 one-command check: it decodes a collector compact stream, runs the **production

@@ -22,6 +22,6 @@ transition is positive evidence and encodes `active=false` with an empty final
 order.
 
 Canonical RE provenance and the promotion disposition are in
-`extractor/documents/dossiers/A27_DESIGNER_VIEW_CONTEXT.md`.
+`../../../documents/domains/d78_design_catalog_context_live.md`.
 The same address/job/artifact/hash inventory is frozen as machine-readable
 evidence in `proofs/a27_designer_view_context/manifest.json`.

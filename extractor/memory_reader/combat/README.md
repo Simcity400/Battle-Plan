@@ -10,7 +10,7 @@ unless the live exe hash matches.
 
 ## Files
 - `combat_offsets.draft.json` — solved offsets/strides + confidence + honest residual.
-  Same draft style as `../division_offsets.draft.json` etc. Merge into the per-build
+  Same draft style as `../division_live/division_live_offsets.draft.json` etc. Merge into the per-build
   layout during reader productionization.
 - `combat_enum.py` — `CombatReader`: build gate + `enumerate_land_combats()`. Self-contained
   ctypes RPM/VirtualQuery helper (does **not** edit `winmem.py`).

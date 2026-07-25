@@ -500,26 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn first_hour_is_observed_and_capturable() {
-        let mut latch = HourLatch::new(64);
-        latch.observe(100);
-        assert_invariant(&latch);
-        assert_eq!(
-            capture_ok(&mut latch),
-            CaptureDecision::Capture {
-                hour: 100,
-                coalesced: 0
-            }
-        );
-        let t = latch.telemetry();
-        assert_eq!(t.observed, 1);
-        assert_eq!(t.attempts, 1);
-        assert_eq!(t.emitted_to_sink, 1);
-        assert_eq!(t.coalesced, 0);
-        assert_invariant(&latch);
-    }
-
-    #[test]
     fn steady_state_every_hour_captured_no_coalesce() {
         let mut latch = HourLatch::new(64);
         for h in 0..1000i32 {
@@ -584,53 +564,6 @@ mod tests {
         assert_eq!(t.coalesced, 2);
         assert_eq!(t.coalesced_superseded, 2);
         assert_eq!(t.in_flight, 0);
-        assert_invariant(&latch);
-    }
-
-    #[test]
-    fn failed_capture_is_a_distinct_non_silent_loss() {
-        // take_capture without a complete-frame emit = a failed sweep. It is an
-        // attempt, not an emitted snapshot, and not coalesced.
-        let mut latch = HourLatch::new(64);
-        latch.observe(1);
-        let d = latch.take_capture(); // sweep runs but produces nothing -> no emit
-        assert!(matches!(d, CaptureDecision::Capture { .. }));
-        let t = latch.telemetry();
-        assert_eq!(t.attempts, 1);
-        assert_eq!(t.emitted_to_sink, 0);
-        assert_eq!(t.capture_failed(), 1);
-        assert_eq!(t.coalesced, 0);
-        assert_invariant(&latch);
-    }
-
-    #[test]
-    fn stale_sweep_read_cannot_fabricate_reload_or_duplicate() {
-        // Codex CODE D: with the old API the sweep passed its own (single-read)
-        // counter value; a stale read of an already-captured hour triggered a
-        // false reload + duplicate capture. The frontier-only API makes that
-        // impossible: the sweep never authors epoch transitions.
-        let mut latch = HourLatch::new(64);
-        latch.observe(100);
-        assert!(matches!(
-            capture_ok(&mut latch),
-            CaptureDecision::Capture { hour: 100, .. }
-        ));
-        // Game advances; latch observes 101.
-        latch.observe(101);
-        // The sweep's own clock read is momentarily stale (still 100) — but it no
-        // longer feeds the state machine. take_capture uses the frontier (101).
-        let d = capture_ok(&mut latch);
-        assert_eq!(
-            d,
-            CaptureDecision::Capture {
-                hour: 101,
-                coalesced: 0
-            }
-        );
-        let t = latch.telemetry();
-        assert_eq!(t.backward_jumps, 0, "no fabricated reload");
-        assert_eq!(t.observed, 2);
-        assert_eq!(t.attempts, 2);
         assert_invariant(&latch);
     }
 

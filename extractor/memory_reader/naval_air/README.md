@@ -38,7 +38,7 @@ nc   = r.enumerate_naval_combats()         # [] today (land-mirror refuted) - ta
 ac   = r.enumerate_air_combats()           # [] today - air-wing sides; both are REAL detectors
 r.reject_stats                             # per-reason fail-closed telemetry
 ```
-`tag_table` is optional (`memory_reader/live_layers/tag_table.py`) to resolve controller
+`tag_table` is optional (`../live_layers/tag_table.py`) to resolve controller
 tag-db-ids → 3-letter TAGs.
 
 ## Semantics (important)

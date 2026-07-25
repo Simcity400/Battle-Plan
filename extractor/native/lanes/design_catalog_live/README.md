@@ -103,12 +103,10 @@ receipt.
 The retained frozen snapshot predates the whole-sweep coherence receipt and is
 historical evidence only. Production admission now rejects it until a new live
 capture supplies `current_date_raw`, `capture_hour_index`, and the double-read
-coherence seal. After re-capture, run the gates with the new snapshot:
+coherence seal. After re-capture, run the live acceptance gate with the new snapshot:
 
 ```powershell
 python extractor/native/lanes/design_catalog_live/live_a729_acceptance.py --snapshot-out C:\tmp\a27_current_same_tick\snapshot.json --report-out C:\tmp\a27_current_same_tick\report.json --oracle C:\tmp\a27_current_same_tick\designs.json
-python extractor/native/lanes/design_catalog_live/validate_live_producer.py --snapshot C:\tmp\a27_current_same_tick\snapshot.json --oracle C:\tmp\a27_current_same_tick\designs.json
-python -m pytest extractor/native/lanes/design_catalog_live/test_validate_live_producer.py extractor/native/lanes/design_catalog_live/test_a729_memory_reader.py -q
 ```
 
 ## Useful non-obvious findings

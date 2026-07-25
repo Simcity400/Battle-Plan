@@ -22,9 +22,7 @@ proof gates, and `.battleplan` validation/writer integration. It may attach the
 DLL, run proof gates, validate manifests/replay files, and perform temporary
 bounded preflight discovery. It must not walk memory hourly/sub-hourly, own the
 production hot extraction loop, or be required to keep up with speed five. See
-`../documents/MASTER_EXTRACTION_CONTRACT.md` for the current extractor backlog,
-`../documents/archive/plans/IN_PROCESS_COLLECTOR_PLAN.md` for historical
-collector planning context, and
+`../documents/MASTER_EXTRACTION_CONTRACT.md` for the current extractor backlog and
 `../../replay_interface/documents/HOI4REPLAY_CONTAINER_SPEC.md` for the portable recording format.
 
 ## Main Pieces
@@ -241,7 +239,7 @@ production-complete. Production completion requires the DLL/Rust recorder path.
 ```powershell
 python extractor/live_capture/recorder/recorder_main.py --smoke
 python -m live_capture.collector_attach --pid <hoi4-pid> --dll extractor/native/target/debug/collector.dll --pipe
-python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile extractor/live_capture/collector_profiles/vanilla_latest_2026_06_28.json --dll extractor/native/target/debug/collector.dll
+python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile extractor/live_capture/collector_profiles/vanilla_latest_2026_06_30.json --dll extractor/native/target/debug/collector.dll
 python -m live_capture.collector_session --pid <hoi4-pid> --dll extractor/native/target/debug/collector.dll --out-root replay_interface/replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
 python -m live_capture.collector_session --pid <hoi4-pid> --dll extractor/native/target/debug/collector.dll --out-root replay_interface/replay/snapshots/_collector_session_economy_gate --game-id production_fuel_misc_live --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay_interface/replay/snapshots/_collector_session_economy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-domain fuel_live --require-domain country_misc --require-domain country_scalars

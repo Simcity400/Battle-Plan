@@ -83,6 +83,5 @@ grants an integration slot, wire this gate in one of two ways:
 Any new compact domain must update both:
 
 - `extractor/native/recorder_host/src/main.rs` domain id/name/data decoder maps;
-- `contracts/compact_replay_gate_contract.json` and the `DOMAIN_CONTRACTS`
-  table here, including semantic counter names emitted under
+- the `DOMAIN_CONTRACTS` table here, including semantic counter names emitted under
   `compact_stream.per_domain.<domain>.data_units_total`.
