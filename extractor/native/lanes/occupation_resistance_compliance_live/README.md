@@ -164,9 +164,8 @@ failures before promotion; lane subagents do not run independent builds.
 
 ## Latest proof
 
-The collaboration/GIE blocker statements in the historical run summaries
-below describe pre-D04 probes and are superseded for collaboration by
-`extractor/re_evidence/E15_COLLABORATION/E15_EXACT_CLOSEOUT_20260721.md`.
+The collaboration/GIE blocker statements in the run summaries below describe
+pre-D04 probes and do not define the current collaboration disposition.
 They remain valid only as negative evidence against conflating GIE asset fields
 or legitimacy with collaboration progress.
 

@@ -53,5 +53,5 @@ The target live implementation must supply, for every admitted frame:
 - Job ID: `20260721T065804Z-wave6-xui05-a26-authority-controller-blo-4f0e1e91`
 - Ghidra evidence-manifest SHA-256: `a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177`
 - Full evidence and live-matrix contract:
-  `extractor/documents/dossiers/A26_WAVE5_FINAL_BLOB_ENGINEERING_20260720.md`
+  `../../../documents/domains/d72_resolved_tooltip_instances_live.md`
 

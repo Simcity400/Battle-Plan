@@ -60,14 +60,14 @@ fixture slots. Disposition of the historically-declared outputs:
 | `doc_signal_lines.csv` / `.json` | **owed** — repo doc-tree scan by the absent seed orchestrator |
 | `rtti_runtime_class_candidates.csv` | **owed** — vanilla `hoi4.exe` RTTI scan, not save-derived |
 | `lane_file_inventory.csv` / `evidence_file_inventory.csv` | **owed** — inventories of the absent seed bundle |
-| `compact_contract_evidence.json` | **owed** — superseded; use `native/domain_registry.json` + `compact_contract` |
+| `compact_contract_evidence.json` | **owed** — use `extractor/native/domain_registry.json` + `compact_contract` |
 
 In FULL mode (a reachable `--corpus-dir`) the four `save_path_catalog` /
 `dynamic_script_keys` / `ger_country_depth1_entries` outputs are produced at full
 fidelity from the melt; the six repo/exe-scan outputs remain owed (not save-derived).
 
 **OWED — weather deep subtree / open-vocab phenomenon-flag leaf (melt-corpus-gated).** The
-exhaustive save-path oracle (`coverage_audit/save_oracle.py`) enumerates NO deep weather path:
+exhaustive save-path oracle (`extractor/coverage_audit/save_oracle.py`) enumerates NO deep weather path:
 the tracked canonical universe stops at `weather.regions` / `weather.provinces`, so an
 open-vocab `weather.regions.*.<phenomenon flag>` leaf has no ground truth to validate against.
 It is therefore NOT carried as a blanket `weather.regions.*.*` cover — a blanket over that
@@ -1687,68 +1687,68 @@ historical census evidence only and are not authorization to reverse-engineer ex
 Top replay-relevant RTTI/string candidates from the exe and existing RTTI/vtable dumps. These are candidate object families, not accepted chains unless another evidence row says so.
 | Class candidate | Hits | Evidence source |
 | --- | --- | --- |
-| CGuiObject | 19847 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CCountry | 1329 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
-| CGameGui | 919 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
-| CGui | 656 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CToolTip | 418 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CInGameIdler | 378 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
-| CState | 227 | extractor/native/runs/wave3_delayed_event_870ebf/02_event_db_rtti.json |
-| CGameIdler | 165 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
-| CGameState | 150 | extractor/native/runs/wave3_delayed_event_870ebf/02_event_db_rtti.json |
+| CGuiObject | 19847 | pinned executable RTTI/string census |
+| CCountry | 1329 | pinned executable RTTI/string census |
+| CGameGui | 919 | pinned executable RTTI/string census |
+| CGui | 656 | pinned executable RTTI/string census |
+| CToolTip | 418 | pinned executable RTTI/string census |
+| CInGameIdler | 378 | pinned executable RTTI/string census |
+| CState | 227 | pinned executable RTTI/string census |
+| CGameIdler | 165 | pinned executable RTTI/string census |
+| CGameState | 150 | pinned executable RTTI/string census |
 | CCountryCharacterSelectionItem | 135 | <local-path> of Iron IV/hoi4.exe |
-| CProvince | 131 | extractor/native/runs/cracklist_a7_landcombat/p12_front_rtti.json |
-| CCountryCharacterSelector | 129 | extractor/native/runs/wave3_d47_advisor_trait_870ebf/01_rtti_rediscover.json |
+| CProvince | 131 | pinned executable RTTI/string census |
+| CCountryCharacterSelector | 129 | pinned executable RTTI/string census |
 | CArmy | 120 | <local-path> of Iron IV/hoi4.exe |
 | COperativeLeader | 111 | <local-path> of Iron IV/hoi4.exe |
 | CInGameInterfaceHandler | 104 | <local-path> of Iron IV/hoi4.exe |
-| CPersistentReloadableGameItemDatabase | 83 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CPersistentReloadableGameItemDatabase | 83 | pinned executable RTTI/string census |
 | CStatTooltipHandler | 83 | <local-path> of Iron IV/hoi4.exe |
-| CTaskForce | 75 | extractor/native/runs/nav49_d04/rtti_vtables.json |
+| CTaskForce | 75 | pinned executable RTTI/string census |
 | CBuildingRosterItem | 75 | <local-path> of Iron IV/hoi4.exe |
-| CSupplySystem | 71 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CUnitLeader | 70 | extractor/native/runs/wave3_delayed_event_870ebf/02_event_db_rtti.json |
+| CSupplySystem | 71 | pinned executable RTTI/string census |
+| CUnitLeader | 70 | pinned executable RTTI/string census |
 | CMapSecondaryMask | 70 | <local-path> of Iron IV/hoi4.exe |
-| CCombatant | 62 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CMarketStockpileWindow | 57 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
+| CCombatant | 62 | pinned executable RTTI/string census |
+| CMarketStockpileWindow | 57 | pinned executable RTTI/string census |
 | COrderInstance | 53 | <local-path> of Iron IV/hoi4.exe |
-| CCountrySupplySystem | 50 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CNavalMission | 48 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CAddEquipmentToMarketWindow | 47 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
-| CTheatre | 46 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CSupplyConsumer | 45 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CStrategicNavy | 45 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CCountrySupplySystem | 50 | pinned executable RTTI/string census |
+| CNavalMission | 48 | pinned executable RTTI/string census |
+| CAddEquipmentToMarketWindow | 47 | pinned executable RTTI/string census |
+| CTheatre | 46 | pinned executable RTTI/string census |
+| CSupplyConsumer | 45 | pinned executable RTTI/string census |
+| CStrategicNavy | 45 | pinned executable RTTI/string census |
 | CAgencyUpgradesWindow | 45 | <local-path> of Iron IV/hoi4.exe |
-| CShip | 42 | extractor/native/runs/nav49_d04/rtti_vtables.json |
-| CSunkShipInfo | 42 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CShip | 42 | pinned executable RTTI/string census |
+| CSunkShipInfo | 42 | pinned executable RTTI/string census |
 | CArmyLeader | 42 | <local-path> of Iron IV/hoi4.exe |
 | CTechnologyTemplate | 41 | <local-path> of Iron IV/hoi4.exe |
 | CNavyLeader | 40 | <local-path> of Iron IV/hoi4.exe |
 | CCountryPoliticsView | 39 | <local-path> of Iron IV/hoi4.exe |
 | CCountryAI | 37 | <local-path> of Iron IV/hoi4.exe |
 | CDivisionDesignerView | 37 | <local-path> of Iron IV/hoi4.exe |
-| CRailwayGun | 36 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CRailwayGun | 36 | pinned executable RTTI/string census |
 | CCountryTechTreeView | 35 | <local-path> of Iron IV/hoi4.exe |
 | CCharacterStatus | 35 | <local-path> of Iron IV/hoi4.exe |
 | CGameSetupInterestingCountriesWindow | 35 | <local-path> of Iron IV/hoi4.exe |
 | CMapMode | 35 | <local-path> of Iron IV/hoi4.exe |
-| CAirMission | 34 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CUnitNamesDatabase | 33 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CAirMission | 34 | pinned executable RTTI/string census |
+| CUnitNamesDatabase | 33 | pinned executable RTTI/string census |
 | COrdersGroup | 30 | <local-path> of Iron IV/hoi4.exe |
 | CGuiType | 30 | <local-path> of Iron IV/hoi4.exe |
 | CHomeBaseSelectionWindow | 30 | <local-path> of Iron IV/hoi4.exe |
 | CStrategicAir | 30 | <local-path> of Iron IV/hoi4.exe |
 | CAirWing | 30 | <local-path> of Iron IV/hoi4.exe |
 | CProjectListFilterWindow | 30 | <local-path> of Iron IV/hoi4.exe |
-| CCharacter | 29 | extractor/native/runs/wave3_d47_advisor_trait_870ebf/01_rtti_rediscover.json |
+| CCharacter | 29 | pinned executable RTTI/string census |
 | CEquipmentRoleSelectionWindow | 29 | <local-path> of Iron IV/hoi4.exe |
 | CGameLobby | 27 | <local-path> of Iron IV/hoi4.exe |
-| CFleet | 25 | extractor/native/runs/nav49_d04/rtti_vtables.json |
+| CFleet | 25 | pinned executable RTTI/string census |
 | CMapArrowObject | 25 | <local-path> of Iron IV/hoi4.exe |
 | CCompactShipEntry | 25 | <local-path> of Iron IV/hoi4.exe |
 | CAirUpdateCache | 25 | <local-path> of Iron IV/hoi4.exe |
-| CGetSupplyVehicles | 24 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CRaidMapIconVariant | 24 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CGetSupplyVehicles | 24 | pinned executable RTTI/string census |
+| CRaidMapIconVariant | 24 | pinned executable RTTI/string census |
 | CTaskForceCompositionEditor | 21 | <local-path> of Iron IV/hoi4.exe |
 | CCountryTag | 21 | <local-path> of Iron IV/hoi4.exe |
 | COperativeMission | 21 | <local-path> of Iron IV/hoi4.exe |
@@ -1773,29 +1773,29 @@ Top replay-relevant RTTI/string candidates from the exe and existing RTTI/vtable
 | CFleetViewEntry | 19 | <local-path> of Iron IV/hoi4.exe |
 | CInlinableGameItem | 19 | <local-path> of Iron IV/hoi4.exe |
 | CCountryTargetTrigger | 19 | <local-path> of Iron IV/hoi4.exe |
-| CTaskForceMapIconGridBox | 18 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CNavalBaseConvoyClient | 18 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CStrategicAI | 18 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CTaskForceMapIconGridBox | 18 | pinned executable RTTI/string census |
+| CNavalBaseConvoyClient | 18 | pinned executable RTTI/string census |
+| CStrategicAI | 18 | pinned executable RTTI/string census |
 | CStrategicAirManager | 18 | <local-path> of Iron IV/hoi4.exe |
-| CNavalCombat | 17 | extractor/native/runs/nav49_d04/rtti_vtables.json |
-| CSupplyNodeMapIcon | 17 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CCombat | 17 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CLandCombat | 17 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CJointNationalFocus | 17 | extractor/native/runs/wave3_delayed_event_870ebf/02_event_db_rtti.json |
+| CNavalCombat | 17 | pinned executable RTTI/string census |
+| CSupplyNodeMapIcon | 17 | pinned executable RTTI/string census |
+| CCombat | 17 | pinned executable RTTI/string census |
+| CLandCombat | 17 | pinned executable RTTI/string census |
+| CJointNationalFocus | 17 | pinned executable RTTI/string census |
 | CCountryArmyOfficerCorpView | 17 | <local-path> of Iron IV/hoi4.exe |
-| CEditMarketStockpileWindow | 16 | extractor/native/runs/economy_residuals_wave2_870ebf_20260703/market_license_rtti_market_stockpile.json |
+| CEditMarketStockpileWindow | 16 | pinned executable RTTI/string census |
 | CIntelLedgerNavyPanelController | 16 | <local-path> of Iron IV/hoi4.exe |
 | CRocketWingsSelectionItem | 16 | <local-path> of Iron IV/hoi4.exe |
-| CNavalCombatant | 15 | extractor/native/runs/nav49_d04/rtti_vtables.json |
-| CAirInLandCombat | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CAirRegionCombatData | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CCombatHistory | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CCombatHistoryEntry | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CCombatManager | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CNavalCombatMapIcon | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CNavalCombatResultSide | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CNavalCombatResults | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
-| CNavalLossesOverview | 15 | extractor/native/runs/wallcrack_combat_attribution/p01_rtti_names.json |
+| CNavalCombatant | 15 | pinned executable RTTI/string census |
+| CAirInLandCombat | 15 | pinned executable RTTI/string census |
+| CAirRegionCombatData | 15 | pinned executable RTTI/string census |
+| CCombatHistory | 15 | pinned executable RTTI/string census |
+| CCombatHistoryEntry | 15 | pinned executable RTTI/string census |
+| CCombatManager | 15 | pinned executable RTTI/string census |
+| CNavalCombatMapIcon | 15 | pinned executable RTTI/string census |
+| CNavalCombatResultSide | 15 | pinned executable RTTI/string census |
+| CNavalCombatResults | 15 | pinned executable RTTI/string census |
+| CNavalLossesOverview | 15 | pinned executable RTTI/string census |
 | CMapArrowTextDefinition | 15 | <local-path> of Iron IV/hoi4.exe |
 | COperativeLeaderWindow | 15 | <local-path> of Iron IV/hoi4.exe |
 | CFrontEndInterfaceHandler | 15 | <local-path> of Iron IV/hoi4.exe |
@@ -1834,25 +1834,25 @@ whether an item is open, blocked, derived, cracked-but-not-wired, or complete.
 
 | Name / gap | Master locator (not status) | Fixture/disasm needed | Evidence |
 | --- | --- | --- | --- |
-| hub motorization level/settings | A1 | same-frame hub toggle fixture with at least two known levels, ideally 1 and 3 | [archived wall-crack result](archive/WALL_CRACK_RESULTS_2026-07-04.md); domain 62 |
+| hub motorization level/settings | A1 | same-frame hub toggle fixture with at least two known levels, ideally 1 and 3 | [domain 62](domains/d62_hub_motorization_live.md) |
 | focus-paused state | A2 closed | RESOLVED: exact stable `CNationalFocusProgress+0xB0` boolean is wired and verified | master A2; domain 45 |
 | stored country/node disrupted supply pressure | A6 | RESOLVED: bounded `CSupplySystem+0x108` owner vector plus exact `CCountrySupplySystem+0x88` robin-hood table; retained D04/FRA nonzero anchors | [A6/A7 static closeout](../re_evidence/A6_A7_SUPPLY_CONVOY/STATIC_CLOSEOUT.md); domain 44 |
-| MP chat/messages, hotjoin, tag-switch | A15 | same-build 2-player MP session with controlled join/tag switch and unique chat text | [archived wall-crack result](archive/WALL_CRACK_RESULTS_2026-07-04.md); domain 57 |
-| game-speed root semantics | A3 closed | sealed same-process transcript proves UI speeds 1–5 as raw `0..4` and pause/resume orthogonality; X12 separately owns within-hour transition capture after hook engineering | master A3/X12; `dossiers/A3_P3_X12_EXHAUSTION_20260719.md`; domain 57 |
+| MP chat/messages, hotjoin, tag-switch | A15 | same-build 2-player MP session with controlled join/tag switch and unique chat text | [domain 57](domains/d57_session_multiplayer_metadata_live.md) |
+| game-speed root semantics | A3 closed | sealed same-process transcript proves UI speeds 1–5 as raw `0..4` and pause/resume orthogonality; X12 separately owns within-hour transition capture after hook engineering | master A3/X12; `domains/d57_session_multiplayer_metadata_live.md`; domain 57 |
 | air sortie lifecycle / kill attribution / last_killer | A4 | live advancing air-combat fixture with known losses/kills | master A4; domain 42 |
 | ace kill_type / wounded | A5 | ace death/wounded variance fixture; D04 has no discriminating wounded variance | master A5; domain 46 |
 | convoy combat loss route/context | A7 | exact terminal call `0x141962378`, owner/killer/count aggregation, and `CFEXMember+0xD0/+0xD8` client carrier are closed; instrument the pre-collapse hook plus live route-manager resolver, then run the controlled loss/no-loss fixture | master A7; A6/A7 terminal-route closeout; domain 44 |
-| naval mission enum/home base/repair/retreat/route semantics | A8 authority re-export | discovery-only receiver layouts conflict at `+0x4A8/+0x4B8/+0x4C0`; repeat the named formatter/serializer/caller/vtable/constructor routes under the clean 10-shard gate before any D56 field promotion. Human transitions are validation only after that prerequisite | master A8; `native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`; domain 56 |
-| naval combat lifecycle-end and member join/leave/sinking | A9 exact member-removal/sunk slice | D50 mechanically tombstones each vanished member independently of D49 parent survival; member state `0x20` is exactly `FEX_STATE_SUNK` and is consumed as the terminal sunk row. Generic tombstones remain untyped; leave/loss captures are optional regression validation | master A9; `native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`; domains 49–50 |
+| naval mission enum/home base/repair/retreat/route semantics | A8 authority re-export | discovery-only receiver layouts conflict at `+0x4A8/+0x4B8/+0x4C0`; repeat the named formatter/serializer/caller/vtable/constructor routes under the clean 10-shard gate before any D56 field promotion. Human transitions are validation only after that prerequisite | master A8; `extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`; domain 56 |
+| naval combat lifecycle-end and member join/leave/sinking | A9 exact member-removal/sunk slice | D50 mechanically tombstones each vanished member independently of D49 parent survival; member state `0x20` is exactly `FEX_STATE_SUNK` and is consumed as the terminal sunk row. Generic tombstones remain untyped; leave/loss captures are optional regression validation | master A9; `extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`; domains 49–50 |
 | operation owner and operation target semantics | A10 closed | OPIN v3 exactly carries definition, owner, country/state target, status, phase/progress, timing, and assigned operative identities; reciprocal assignment/controller presentation remains A30 | master A10/A30; domain 53 |
-| spy-network/intel-map percentages | A11 world-state closed | complete four-lane owner-target matrix plus exact network owner/target/slot, sorted states, per-state current strength, network-scoped national coverage, and reciprocal `build_network`/`quiet_network` operative membership are production-wired through INGR v4; selected network widget state remains explicitly out of scope | master A11/A30; `dossiers/A30/A11_D53_PRODUCTION_REAUDIT_20260720.md`; domain 53 |
+| spy-network/intel-map percentages | A11 world-state closed | complete four-lane owner-target matrix plus exact network owner/target/slot, sorted states, per-state current strength, network-scoped national coverage, and reciprocal `build_network`/`quiet_network` operative membership are production-wired through INGR v4; selected network widget state remains explicitly out of scope | master A11/A30; `domains/d53_diplomacy_intel_operatives_live.md`; domain 53 |
 | incoming/outgoing diplomatic action queues | C3; cracked-items ledger | wire the cracked `CCountry+0xFF8` incoming queue; derive outgoing by transpose | master C3; cracked ledger |
 | full war grouping/name/lifecycle semantics | B5; coverage map | read the already-discovered war-relation row addresses | master B5; domains 53/60 |
 | faction leader/name/join-leave timeline | fix-pipeline `facs-wire`; current residuals | exercise the d53 tri-state against a live faction roster; display-name resolution is cosmetic | master fix-pipeline/residuals; domain 53 |
-| subject level/autonomy-change semantics | A16 closed | exact current-status owner/extent/ratio/score/state/bounds authority plus AUST producer/fold/replay/UI integration; live transition matrix is optional regression only | master A16; `dossiers/A16_D53_SUBJECT_AUTONOMY_RE.md`; domain 53 |
+| subject level/autonomy-change semantics | A16 closed | exact current-status owner/extent/ratio/score/state/bounds authority plus AUST producer/fold/replay/UI integration; live transition matrix is optional regression only | `MASTER_EXTRACTION_CONTRACT.md` A16; domain 53 |
 | garrison law/template/manpower/equipment/suppression extras | B3; cracked-items ledger | deeper equipment-bank walk for id/type/amount | master B3; cracked ledger |
 | delayed-event due semantics | A19; cracked-items ledger | unpaused decrement + originator-vs-scope fixture | master A19; domain 64 |
-| special-project program owner, lifecycle, reward history, and breakthrough names | A23/X9 split | A23 still needs only the paused 26/26 d65 owner-equality gate. d41 lifecycle/reward history is exact-10 pinned and active; X9 breakthrough names are closed by the exact serializer-token census and portable D18-joined enum projection. No reward-selection or four-value permutation fixture remains | master A23/X9; `native/project_progress_live_lane/SPECIAL_PROJECT_LIFECYCLE_REWARD_RE_20260719.json`; domains 41/65 |
+| special-project program owner, lifecycle, reward history, and breakthrough names | A23/X9 split | A23 still needs only the paused 26/26 d65 owner-equality gate. d41 lifecycle/reward history is exact-10 pinned and active; X9 breakthrough names are closed by the exact serializer-token census and portable D18-joined enum projection. No reward-selection or four-value permutation fixture remains | master A23/X9; `extractor/native/project_progress_live_lane/SPECIAL_PROJECT_LIFECYCLE_REWARD_RE_20260719.json`; domains 41/65 |
 | scripted GUI open/widget state | A13 closed — out of scope | host-local widget state is excluded; authoritative scripted flags/events/hooks remain d51/d64/X10 work | master A13/X10; domains 51/64 |
 | decision numeric state/province targets, cooldowns, body fields, direct hooks | A12 closed / X10 open | RESOLVED for exact target bodies, lifecycle, and both cooldown vectors; only direct event-hook invocation proof remains under X10 | master A12/X10; domain 45 |
 | advisor roster, appointed advisor, portrait, unit-leader trait-token rows | per-domain table d47 | current-build `CAdvisor`/`CUnitLeaderTrait` revalidation and combined speed-5 proof | master per-domain table; domain 47 |

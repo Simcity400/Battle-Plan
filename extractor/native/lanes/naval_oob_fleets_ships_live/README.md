@@ -69,26 +69,17 @@ Proof commands:
 rustc --edition=2021 --test extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact_tests.exe
 extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact_tests.exe
 rustc --edition=2021 extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe
-extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe extractor/native/runs/compact_full_plus_naval_oob_870ebf_20260701_v1/collector_stream.bin --min-game-hours 48
+extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe <collector_stream.bin> --min-game-hours 48
 ```
-
-Current verified live proof source:
-
-- `extractor/native/runs/compact_full_plus_naval_oob_870ebf_20260701_v1/collector_stream.bin`
-- `extractor/native/runs/compact_full_plus_naval_oob_870ebf_20260701_v1/native_session.battleplan`
-- `extractor/native/runs/compact_full_plus_naval_oob_870ebf_20260701_v1/native_session_manifest.json`
 
 Lane-local gate outputs:
 
-- `extractor/native/runs/naval_oob_fleets_ships_live_870ebf_20260701_lane_gate_v1/naval_oob_gate_summary.json`
-  validates the requested seed run: 54 game hours, 54 domain-28 records, 54
+- The requested seed run validated 54 game hours, 54 domain-28 records, 54
   domain-29 records, 124 fleet rows, 195 task-force rows, 1,625 task-force
   member ship ids, 1,732 ship definition rows, no parse/order/failure flags.
-- `extractor/native/runs/naval_oob_fleets_ships_live_870ebf_20260701_lane_gate_v1/ship_owner_gate_summary.json`
-  validates the later ship-owner proof: 54 game hours, 2,080 owner-attributed
+- The later ship-owner proof validated 54 game hours, 2,080 owner-attributed
   ship rows, no parse/order/failure flags.
-- `extractor/native/runs/naval_oob_fleets_ships_live_870ebf_20260701_lane_gate_v1/tf_location_gate_summary.json`
-  validates the later task-force-location proof: 53 game hours, 203 task-force
+- The later task-force-location proof validated 53 game hours, 203 task-force
   location rows, 2,462 owner-attributed ship rows, no parse/order/failure flags.
 
 ## Integration plan
@@ -102,16 +93,12 @@ base/port linkage, and theatre/region rollups.
 
 ## Remaining-gap probe
 
-`naval_oob_gap_probe.py` is a lane-local read-only live probe for the remaining
+The lane-local gap probe is a read-only live probe for the remaining
 naval OOB fields. It mirrors the current compact native roots above and scans
 only bounded `CFleet`, `CTaskForce`, and `CShip` bodies or one bounded CShip
 indirect pointer layer for candidate evidence.
 
-Current proof output:
-
-- `extractor/native/runs/naval_oob_fleets_ships_live_870ebf_20260701_gap_probe_v1/naval_oob_gap_probe_summary.json`
-
-Live proof summary from that output:
+Live proof summary:
 
 - roots validated: `module+0x3316E90 -> CGameState`, `CGameState+0x310`
   country table, `CCountry`, `CFleet`, `CTaskForce`, `CShip`;
@@ -137,7 +124,7 @@ Live proof summary from that output:
   assignment/removal fixture before a production offset is promoted;
 - strategic-region rollups: validated as derived data. All 184 task forces map
   from validated `CTaskForce+0x18` province through
-  `memory_reader/weather/prov2region_mod.json` (13,413 entries), with no
+  `extractor/memory_reader/weather/prov2region_mod.json` (13,413 entries), with no
   missing task-force region rows;
 - theatre linkage: blocked by fixture contract. Direct `CTheatre` pointer
   candidates exist in `CFleet[0x0..0x1800]` at
@@ -153,10 +140,8 @@ that are not yet production-proven.
 Proof commands:
 
 ```powershell
-python -m py_compile extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gap_probe.py
 rustc --edition=2021 --test extractor/native/lanes/naval_oob_fleets_ships_live/gap_extension_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/gap_extension_compact_tests.exe
 extractor/native/lanes/naval_oob_fleets_ships_live/gap_extension_compact_tests.exe
-python extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gap_probe.py --out extractor/native/runs/naval_oob_fleets_ships_live_870ebf_20260701_gap_probe_v1/naval_oob_gap_probe_summary.json --snapshot-label gap_probe_v1
 ```
 
 ## Residual integration plan

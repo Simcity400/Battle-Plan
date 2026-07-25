@@ -20,7 +20,7 @@ The live-root proof is lane-local: `live_probe_session.py` and
 
 - `INTEGRATION_PACKET.md`: this shared integration packet.
 - The draft fold projection has been applied into
-  `recorder_host/src/world_fold.rs` and its tests.
+  `../../recorder_host/src/world_fold.rs` and its tests.
 - Existing evidence kept as-is: `README.md`, `live_probe_session.py`,
   `live_probe_session_strict.json`, `src/lib.rs`, `src/bin/proof.rs`.
 
@@ -100,7 +100,7 @@ domain-57 semantic alias so lane code imports one named profile surface.
 
 ```rust
 /// Domain 57 CGameState singleton slot, validated by the 2026-07-02
-/// `session_multiplayer_metadata_live/live_probe_session.py` passive probe.
+/// `extractor/native/lanes/session_multiplayer_metadata_live/live_probe_session.py` passive probe.
 /// Oracles: shared daily-update and long-string sentinels passed; strict SP
 /// probe observed exactly one human row, TAG IRE, name Ireland, gs/slot index 29.
 pub const DOMAIN57_CGAMESTATE_SINGLETON_RVA: usize = CG_STATE_DATE_OFFSET;
@@ -240,7 +240,7 @@ Fold:
   `pause.state = "unavailable"`.
 
 The draft pure fold module has been deleted after its logic was moved into
-`recorder_host/src/world_fold.rs`; keep future fold coverage in the recorder
+`../../recorder_host/src/world_fold.rs`; keep future fold coverage in the recorder
 host tests.
 
 ## Descriptor And Registry Drafts
