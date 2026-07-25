@@ -14,7 +14,6 @@ Where its information lives now:
 | What each domain/slice actually covers + what remains open (completion contract) | `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` |
 | The recorder static-artifacts table (migrated here) | `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` → "Static Artifacts Packed By Recorder" |
 | The exhaustive census of every extractable datum | `extractor/documents/EXTRACTION_ATLAS.md` |
-| The original registry content (frozen evidence) | `extractor/documents/archive/DOMAIN_REGISTRY.md` |
 
 Do not re-add a hand-maintained domain status table here — it duplicated the
 JSON and drifted stale. If a future workflow genuinely needs an ID registry,

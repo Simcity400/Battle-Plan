@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The validated current-build root is:
 
 ```text

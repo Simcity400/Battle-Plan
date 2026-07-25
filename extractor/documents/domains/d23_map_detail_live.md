@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 Wire layout:
 
 | Record | Size | Fields |

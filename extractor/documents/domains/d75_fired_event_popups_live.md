@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The producer graph is pinned to `hoi4.exe 1.19.2.0.a729`, image base
 `0x140000000`, SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.

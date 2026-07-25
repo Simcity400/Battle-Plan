@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The exact-a729 source is bound to executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 Collection starts from the authenticated, double-stable complete country

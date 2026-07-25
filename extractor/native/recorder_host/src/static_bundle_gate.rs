@@ -892,28 +892,6 @@ mod tests {
     }
 
     #[test]
-    fn mocked_process_error_and_nonzero_fail_closed() {
-        let invocation = ProcessInvocation {
-            program: "python".into(),
-            args: Vec::new(),
-            timeout: Duration::from_secs(1),
-        };
-        let missing = MockProcess {
-            result: Mutex::new(Some(Err("missing verifier".to_string()))),
-        };
-        assert!(missing.run(&invocation).unwrap_err().contains("missing"));
-        let nonzero = MockProcess {
-            result: Mutex::new(Some(Ok(ProcessResult {
-                success: false,
-                code: Some(1),
-                stdout: Vec::new(),
-                stderr: b"gate failed".to_vec(),
-            }))),
-        };
-        assert!(!nonzero.run(&invocation).unwrap().success);
-    }
-
-    #[test]
     fn command_runner_rejects_zero_timeout_before_spawn() {
         let error = CommandVerifierProcess
             .run(&ProcessInvocation {

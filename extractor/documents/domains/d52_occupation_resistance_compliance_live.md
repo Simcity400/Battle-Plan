@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The build gate is `hoi4.exe` SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
 the probe fails nonzero when the process is absent or the hash differs.

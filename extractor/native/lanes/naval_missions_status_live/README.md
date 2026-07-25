@@ -34,8 +34,8 @@ produces `[]`; non-fighting membership retains its epochs but no activity key.
 The other formatter branches remain unavailable because their
 full target/area/accessibility/efficiency inputs are not carried, so the fold
 does not turn `mission_state` into a guessed display label. Fresh exact-20
-authority and the production disposition are pinned in
-`../naval_combat_live/evidence/D56_ACTIVITY_MEMBER_EPOCH_PRODUCTION_20260720.json`.
+authority and the production disposition are summarized in
+`../../../documents/domains/d56_naval_missions_status_live.md`.
 
 The existing shared collector/recorder integration is retained; the recorder
 projection adds exact mission/detached-state names and the D49/D50 epoch join.
@@ -48,13 +48,6 @@ status file is edited by this lane.
 - `src/domain56_compact.rs`: final domain-56 wire schema, payload encoder, compact
   stream gate, and tests.
 - `naval_missions_status_probe.py`: bounded live proof probe against `hoi4.exe`.
-- `../../../documents/archive/native_lanes/naval_missions_status_live/REGISTRATION_PATCH_PLAN.md`: exact shared registration plan for the
-  orchestrator.
-
-Proof output:
-
-- `extractor/native/runs/naval_missions_status_live_870ebf_20260701_v1/naval_missions_status_probe.json`
-
 ## Live proof summary
 
 Process:
@@ -112,7 +105,7 @@ are never treated as loss-route identity.
 Strategic region rollups: validated slice with a mapping gap.
 
 The probe derives regions from `CTaskForce+0x18` plus
-`memory_reader/weather/prov2region_mod.json` with 13413 entries. One live task
+`extractor/memory_reader/weather/prov2region_mod.json` with 13413 entries. One live task
 force had `location_province_id = 0`, so region rows must be badged/omitted for
 unmapped or zero-location task forces.
 

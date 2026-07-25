@@ -57,10 +57,6 @@ attribution must not be relabelled as manpower or equipment loss.
   active opportunistic exact panel leader/modifier materialization carrier with
   no inferred flags or recorder-thread virtual calls.
   byte/identity gates, bounded queues, and pointer-erasing projectors.
-- `src/bin/land_combat_detail_lane_proof.rs`: lane-local compact/replay proof
-  harness.
-- `src/bin/land_combat_detail_stream_validate.rs`: read-only standalone product
-  validator for an existing compact stream.
 - `probe_870ebf_land_detail_roots.py`: bounded read-only live probe for the
   current 870ebf land-combat root and field census.
 

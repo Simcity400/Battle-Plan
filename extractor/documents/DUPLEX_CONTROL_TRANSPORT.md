@@ -125,7 +125,7 @@ terminal. CRC-32 is an integrity checksum, not authentication; peer PID/creation
 the unpredictable session id, pipe ACL, first-instance flag, and exact echo/digest comparisons are
 the authorization boundary. Any checksum mismatch rejects before a typed consumer sees a frame.
 
-The transport authority lives in `recorder_host/src/control_transport.rs`. `ControlChannel<I>` owns
+The transport authority lives in `extractor/native/recorder_host/src/control_transport.rs`. `ControlChannel<I>` owns
 send/receive counters and becomes permanently poisoned after any framing, ordering, direction, or
 I/O error. Construction consumes a move-only `SessionCapability`; claiming the same session id
 again in that process is permanently rejected, including after the channel is dropped. Production

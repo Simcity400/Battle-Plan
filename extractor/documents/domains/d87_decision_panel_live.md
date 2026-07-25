@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The correct exact-a729 owner is `CCountryDecisionView`, constructed at
 `0x1417128E0` with vftable `0x1429DECE8`. Its update is `0x141716270`;
 `decision_grid_container` is view `+0x580` and `decision_grid` is view `+0x588`.

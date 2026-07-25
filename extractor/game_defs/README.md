@@ -13,7 +13,7 @@ file-level override by relpath + `replace_path`) and the tolerant
 ## Resolution model (mod-over-vanilla)
 
 - Vanilla install: `BATTLE_PLAN_VANILLA` env var or `--vanilla` (no home path baked in).
-- Mod set: `../../replay_interface/game_assets/active_modset.json` (the committed, path-redacted
+- Mod set: `../../replay_interface/game_assets/active_modset.json` (the local, path-redacted
   manifest) re-resolved against the live user-data dir, or `--mods A.mod,B.mod`.
 - **`common/*` and `events/*`**: unit of override = the **file** (a mod file with
   the same relpath replaces the vanilla one; a new stem just adds). Duplicate

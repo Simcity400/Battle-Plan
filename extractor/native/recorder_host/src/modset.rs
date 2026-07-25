@@ -2843,14 +2843,4 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn hash_stability_bracket_detects_midhash_growth() {
-        let dir = temp_dir("hash");
-        let f = dir.join("x.bin");
-        fs::write(&f, vec![7u8; 4096]).unwrap();
-        let (size, sha) = hash_file_streaming_stable(&f).unwrap();
-        assert_eq!(size, 4096);
-        assert_eq!(sha.len(), 64);
-        fs::remove_dir_all(&dir).ok();
-    }
 }

@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The compact payload has a 36-byte header:
 
 `elapsed_wall_ms:u64, row_count:u32, changed_rows:u32, status_flags:u32, observed_air_base_rows:u32, observed_pool_rows:u32, deleted_rows:u32, reserved:u32`.

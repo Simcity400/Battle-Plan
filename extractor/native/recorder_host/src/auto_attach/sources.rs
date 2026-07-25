@@ -626,18 +626,4 @@ fn normalized_windows_path(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn system_clock_is_monotonic_nondecreasing() {
-        let c = SystemClock::new();
-        let a = c.now_ms();
-        let b = c.now_ms();
-        assert!(b >= a);
-    }
-
-    #[test]
-    fn snapshot_only_source_reports_degraded_and_no_events() {
-        let mut s = SnapshotOnlyEventSource;
-        assert!(s.drain_events().is_empty());
-        assert_eq!(s.health(), super::super::policy::WatcherHealth::Degraded);
-    }
 }

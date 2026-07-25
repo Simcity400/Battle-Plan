@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 Country variables, flags, and delayed-event roots require a complete current-
 frame country roster read directly from the gamestate tag-indexed table. A
 filtered `CountryIdentityCache.rows` set is insufficient. Two complete passes

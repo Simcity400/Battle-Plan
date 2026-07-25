@@ -11,13 +11,13 @@ misdiagnosis (FRAME_END mask, ec9cf0b15) was refuted and reverted. Second misdia
 ("save lacks bridge prerequisites; wire `--division-body-bridge` into presets or add
 expected-absence") was **refuted by the Codex design analysis of 2026-07-10** (thread
 `019f4b8f-c5c5-7a91-894b-69e3e572d7b1`, reply preserved in the orchestrator session log;
-key citations re-verified by the orchestrator against `compact_contract/src/lib.rs` and the
+key citations re-verified by the orchestrator against `extractor/native/compact_contract/src/lib.rs` and the
 latchsoak2 manifest before adoption).
 
 ## The corrected diagnosis (verified)
 
 Status flags: `BRIDGE_UNAVAILABLE = 1<<7 (128)`, `SOURCE_UNAVAILABLE = 1<<8 (256)`,
-`PARTIAL_DATA = 1<<9 (512)` (`compact_contract/src/lib.rs`). In the analyzed `latchsoak2` run:
+`PARTIAL_DATA = 1<<9 (512)` (`extractor/native/compact_contract/src/lib.rs`). In the analyzed `latchsoak2` run:
 
 | domain | status_or | decode | manifest reality (latchsoak2) |
 |---|---|---|---|
@@ -73,21 +73,21 @@ latchsoak2 stream partitions the 3,471 d47 records exactly (reconciles to the ma
 
 Three composing defects (all verified against source):
 1. **Stale root cache never refreshes (96.6%, dominant).** `prewarm_...roots`
-   (collector/src/lib.rs:17867) returns early forever once `has_stable_roots()`; it never
+   (`extractor/native/collector/src/lib.rs:17867`) returns early forever once `has_stable_roots()`; it never
    re-checks the shared heap-sweep generation the roots came from (:17925). One cached
    character dying → `has_rejections()` (adapter.rs:126, `rejected_roots != 0`) → the
    scheduler discards the whole populated frame for a rowless PARTIAL (scheduled.rs:96-102).
    Two deaths this run (hours 60824244, 60824352) then failed every subsequent frame. New
    characters are also never added after the first prewarm.
 2. **d47 consumes a CHANGED-ONLY politics delta as if it were a full snapshot** (latent).
-   `domain47_country_politics_roots` (collector/src/lib.rs:18507) iterates only emitted
+   `domain47_country_politics_roots` (`extractor/native/collector/src/lib.rs:18507`) iterates only emitted
    politics delta rows; empty→BRIDGE_UNAVAILABLE, but a nonempty SUBSET is accepted as
    complete (adapter.rs:301) while the fold clears d47 country fields before applying
    (world_fold.rs:7675) — a full replacement. A changed-subset hour could silently replace
    the whole active-ruler set. (Not the cause of THIS run's zeros, but real.)
 3. **read_time_us=0 is a measurement lie** (finding 4): `empty_native_scheduled_read`
    hardcodes `read_time_us: 0` (scheduled.rs:136), and the wrapper rebuilds status from the
-   OUTER status not `frame.status_flags` (collector/src/lib.rs:18371), so `bridge_unavailable_seen`
+   OUTER status not `frame.status_flags` (`extractor/native/collector/src/lib.rs:18371`), so `bridge_unavailable_seen`
    can read false while the country vector was actually empty (90/104 decoder-fail frames had
    0 country roots). `domain47_frame_parse_errors` counts MESSAGES not frames (104 frames × 15).
 
@@ -101,7 +101,7 @@ whenever a cached character dies.
 Do NOT emit surviving rows on a rejected frame (would convert an unreadable root into an
 unproven deletion — the fold is full-replacement). The repair is to RECOVER:
 1. **Generation-aware root cache + rejection recovery.** Add `sweep_generation: Option<u64>`
-   to `CompactDomain47PrewarmCache` (collector/src/lib.rs:4248), set on adoption. Rebuild
+   to `CompactDomain47PrewarmCache` (`extractor/native/collector/src/lib.rs:4248`), set on adoption. Rebuild
    roots when the shared sweep generation advances (drops dead characters, adds new ones —
    cheap reassembly from the already-published snapshot, not a cold scan). On any adapter
    rejection, invalidate the cached roots so the next prewarm revalidates against the latest
@@ -110,10 +110,10 @@ unproven deletion — the fold is full-replacement). The repair is to RECOVER:
    effectively one-shot, generation-awareness is inert and the rejection-triggered
    invalidation is the load-bearing half — verify before claiming the fix.
 2. **Full country topology, not politics delta** (defect 2): pass the complete validated
-   country-identity roots into d47 (collector/src/lib.rs:15353) and replace the delta walk
+   country-identity roots into d47 (`extractor/native/collector/src/lib.rs:15353`) and replace the delta walk
    at :18507 with a full-root builder. Verify appointed-advisor derivation is truly disabled
    (adapter.rs:256/276) so active-idea deltas are unneeded.
-3. **Preserve failure evidence** (defect 3): on payload replacement (collector/src/lib.rs:18379)
+3. **Preserve failure evidence** (defect 3): on payload replacement (`extractor/native/collector/src/lib.rs:18379`)
    copy the original `read_time_us`, OR in `frame.status_flags`, and emit normalized
    parse-error-kind counts/hashes so ONE live frame identifies the exact 15-message family
    (do not guess the adapter/decoder relaxation before that evidence exists).

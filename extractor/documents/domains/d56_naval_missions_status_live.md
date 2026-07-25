@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The live walk uses validated `CGameState`, the country table at `CGameState+0x310/+0x31C`, and:
 
 | Object/field | Meaning |

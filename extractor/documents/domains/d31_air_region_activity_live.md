@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 D31 carries `effective_planes`; it does not carry the engine’s transient
 `effective_air_superiority` cache. Consequently neither exact superiority nor
 the 0..9 UI strip frame is currently an observed d31 value.

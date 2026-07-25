@@ -274,75 +274,56 @@ Classified residuals:
 - `lend_lease_market_contract_mapping`: validated slice for the core directed
   purchase-contract mapping, not full lend-lease replay.
 
-Exact remaining blocker contract:
-`../../../documents/archive/native_lanes/market_trade_live/RESIDUAL_BLOCKERS_20260701.md`.
-
 Additional narrowed residual proofs:
 
-- `extractor/native/runs/market_trade_live_contract_fields_20260701_v1/purchase_contract_field_census.json`:
-  sampled 57 current contract rows; rejected speed/completed/delivery/progress
+- A residual proof sampled 57 current contract rows; rejected speed/completed/delivery/progress
   emission because candidate offsets are structural only without same-tick
   fixture validation keyed by `contract_id`.
-- `extractor/native/runs/market_trade_live_contract_same_tick_20260701_v2/purchase_contract_same_tick_probe.json`:
-  same-tick `1943.11.9.17` fixture validates speed (`CPurchaseContract+0xC0`),
+- A same-tick `1943.11.9.17` fixture validates speed (`CPurchaseContract+0xC0`),
   completed (`+0x25C`), days (`+0x1D0`), delivery-country tag id (`+0x5C`),
   and convoys (`+0x118/+0x11C`) for compact `MTD1` emission. The same bounded
   direct/first-level pointer scan accepted no efficiency or progress root.
-- `extractor/native/runs/market_trade_live_contract_same_tick_20260701_v3/purchase_contract_same_tick_probe.json`:
-  extends the same fixture to fixed-point raw values and validates efficiency
+- A follow-up extends the same fixture to fixed-point raw values and validates efficiency
   (`CPurchaseContract+0x1C0`), factory CIC progress (`+0x1E0`), and
   equipment-transfer progress (`+0x1E8`) for compact `MTD1` emission.
-- `extractor/native/runs/market_trade_live_market_stockpile_20260701_v2/market_stockpile_root_probe.json`:
-  no accepted RTTI/vtable root for the guessed market stockpile/status classes;
+- No accepted RTTI/vtable root was found for the guessed market stockpile/status classes;
   found an unaccepted `CCountry+0x1230` type-70 variant/amount vector candidate
   for 190 countries that needs a same-tick market-stockpile fixture.
-- `extractor/native/runs/market_trade_live_stockpile_fixture_20260701_v1/stockpile_save_compare.json`:
-  compared live `CCountry+0x1230` rows to parsed `autosave.hoi4` market
+- A proof compared live `CCountry+0x1230` rows to parsed `autosave.hoi4` market
   stockpile rows. It is fixture-blocked, not rejected: save `1943.6.1.1`,
   live `1943.6.19.16`, delta `447` game hours.
-- `extractor/native/runs/market_trade_live_stockpile_fixture_20260701_v3/stockpile_save_compare.json`:
-  repeated the comparison after a newer autosave. It is still fixture-blocked,
+- A repeat after a newer autosave is still fixture-blocked,
   not rejected: save `1943.9.1.1`, live `1943.9.18.23`, delta `430` game
   hours, 270 live rows, 481 save rows, and 0 exact matches.
-- `extractor/native/runs/market_trade_live_stockpile_fixture_20260701_v4/stockpile_save_compare.json`:
-  rejects `CCountry+0x1230` as the market stockpile root with a same-tick
-  fixture. Save and live are both `1943.11.9.17`; the candidate produced 272
+- A same-tick fixture rejects `CCountry+0x1230` as the market stockpile root.
+  Save and live are both `1943.11.9.17`; the candidate produced 272
   live rows while the save oracle had 494 market-stockpile rows, with
   0 exact matches, 26 amount mismatches, 246 live-only rows, and
   468 save-only rows.
-- `extractor/native/runs/market_trade_live_resource_flow_20260701_v1/resource_flow_root_probe.json`:
-  rejected `CCountry+0x5B8` and nearby `0x540..0x640` compact-vector
+- A bounded probe rejected `CCountry+0x5B8` and nearby `0x540..0x640` compact-vector
   interpretations as a production-ready resource-flow root.
-- `extractor/native/runs/market_trade_live_resource_flow_broad_20260701_v1/resource_flow_broad_probe.json`:
-  scanned compact-vector shapes across `CCountry+0x400..0x1800`. The only
+- A broad probe scanned compact-vector shapes across `CCountry+0x400..0x1800`. The only
   stable accepted-like family was `CCountry+0x1218` with resource id sequence
   `[0]`.
-- `extractor/native/runs/market_trade_live_resource_flow_state_shape_20260701_v1/resource_flow_state_shape_probe.json`:
-  rejects `CCountry+0x1218` as the full produced/exported/to_export flow root.
+- A state-shape probe rejects `CCountry+0x1218` as the full produced/exported/to_export flow root.
   In the same live frame it read 1,081 state roots, 718 state-resource rows,
   467 states with resources, and 0 invalid rows/vectors; 28/28 compared
   countries had more owned-state resource ids than the `+0x1218` candidate.
-- `extractor/native/runs/market_trade_live_license_detail_20260701_v2/license_detail_root_probe.json`:
-  found current-build license-production RTTI candidates, including
+- A probe found current-build license-production RTTI candidates, including
   `CEquipmentProductionLicense`, `CLicensedProductionConsumer`,
   `CLicensedProductionStatus`, and `CLicenceProductionAccessRelation=0x2949858`;
   found 0 direct `CCountry` owner hits and 15 unaccepted vector hits to
   `CLicensedProductionConsumer` at `CCountry+0x1070/+0x10A0`.
-- `extractor/native/runs/market_trade_live_license_vector_20260701_v1/license_vector_candidate_probe.json`:
-  rejects the exact `CCountry+0x1070/+0x10A0` vector path as a license-detail
+- A vector-candidate probe rejects the exact `CCountry+0x1070/+0x10A0` vector path as a license-detail
   root. The vectors are dense `size=cap=440` country-indexed tables; all hits
   reference one shared `CLicensedProductionConsumer` object, and that object has
   0 nested license/status objects and 0 equipment variant pointers.
-- `extractor/native/runs/market_trade_live_lend_lease_mapping_20260701_v1/lend_lease_mapping_probe.json`:
-  validates the `MTLL` directed mapping slice from live purchase contracts: 63
+- A live proof validates the `MTLL` directed mapping slice from purchase contracts: 63
   core contracts, 126 mapping rows, 63 outgoing, 63 incoming, 126 amount-valid,
   126 price-valid, 0 asymmetric contracts, 0 duplicate keys, and 0
   partial/source/worker/bridge failures.
 
 ## Omitted Candidate Proof
-
-Current proof:
-`extractor/native/runs/market_trade_live_omitted_20260701_v1/omitted_candidate_probe.json`.
 
 Result:
 
@@ -392,9 +373,6 @@ cargo run --manifest-path extractor\native\snapshot\Cargo.toml --bin pack_replay
 ```
 
 ## Registration Plan
-
-Exact patch plan:
-`../../../documents/archive/native_lanes/market_trade_live/REGISTRATION_PATCH_PLAN_20260701.md`.
 
 The lane packet does not edit shared entrypoints. The orchestrator should
 serialize shared registration after assigning final sibling record ids or a

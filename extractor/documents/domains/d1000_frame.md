@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 Frame-level domain census uses compiler truth, not Rust-source parsing. The
 oracle derives paths from `__file__` and performs exactly one
 production-selection build from the native crate root:

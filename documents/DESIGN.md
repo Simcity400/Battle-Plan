@@ -130,7 +130,7 @@ For replay file shape, the source of truth is
 
 For map and interface parity, the source of truth is
 `replay_interface/documents/MAP_REPLICA_PLAN.md` and
-`replay_interface/documents/UI_SOURCE_OF_TRUTH_REPORT.md`.
+`replay_interface/documents/UI_LAYOUT_LAW.md`.
 
 ## Non-Goals
 

@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 D60 uses a persistent capitulation map across hours; this is intentionally
 different from current-hour-only d53 state. Status bit 16 is mandatory and
 informational when war rows exist, describing running-accumulator semantics.

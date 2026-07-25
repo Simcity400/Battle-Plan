@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 D74/PBP2 is an optional typed semantic companion. Exact visible power-balance
 pixels belong to the authenticated selected-Present UI carrier; absence of d74
 must remain explicit and must not be replaced by a semantic reconstruction.

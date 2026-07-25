@@ -15,7 +15,6 @@
   ran while 20 shards were configured. Validate the executing shard's binary
   identity, mode, job ID, request/manifest hashes, and artifact hashes.
 - Agent/subagent concurrency limits are unrelated to Ghidra shard count.
-- Current details: `replay_interface/tools/ghidra/CURRENT_AUTHORITY.md`.
 
 ## Unified agent-native RE tooling
 
@@ -49,6 +48,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts
 - Before deleting a test, prove that it has no distinct contract or regression value. Exact body similarity alone is not deletion proof across separate producer/consumer or domain boundaries.
 - Use `-CacheMode Iterative` for repeated local edits or `-CacheMode Reusable` for clean/worktree builds. Add `-Timings` to produce an HTML Cargo timing report without a second compile.
 - The shared target directory is `.cargo-target`; do not override it. Its first build is intentionally cold.
-- Detailed usage: `extractor/native/scripts/CENTRAL_RUST_VALIDATION.md`.
 - Read-only test-quality audit: `python extractor/native/scripts/Audit-RustTests.py`.
-- Reviewed test-tier disposition: `extractor/native/scripts/TEST_SUITE_AUDIT.md`.

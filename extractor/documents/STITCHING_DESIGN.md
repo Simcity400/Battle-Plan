@@ -31,11 +31,9 @@ not present on this branch at the time of writing; section 4 defines only the
 interface stitching consumes. Until a conforming identity provider exists,
 cross-session stitching is disabled.
 
-The archived intent already requires segment lifecycle metadata, campaign
-continuity, rollback/time-jump handling, a new segment on rollback, and visible
-rollback spans rather than index corruption
-(`extractor/documents/archive/plans/RECORDING_LAYER_COMPLETION_PLAN.md:620-626`,
-`:688-710`, and `:1426-1443`). This document makes those requirements executable.
+Segment lifecycle metadata, campaign continuity, rollback/time-jump handling,
+a new segment on rollback, and visible rollback spans rather than index
+corruption are required. This document makes those requirements executable.
 
 ### Hard outcomes
 
@@ -55,13 +53,13 @@ rollback spans rather than index corruption
 
 The snapshot reader treats an index entry's `file` field as filename authority and
 loads through it rather than synthesizing a filename, including segment-prefixed
-rollback names (`extractor/native/snapshot/src/container.rs:448-476`). The existing
+rollback names (`portable_replay/native/snapshot/src/container.rs:448-476`). The existing
 round-trip test packs both an ordinary name and
 `s0003.000017050260.snapshot.json`, preserves both names in `index.json`, and loads
 the rollback snapshot by hour through that index
 (`extractor/native/snapshot/tests/container_roundtrip.rs:20-56` and `:181-212`).
 The packer copies payload bytes without reserialization and sorts manifest entries
-by path (`extractor/native/snapshot/src/pack.rs:1-8` and `:294-358`). Those are the
+by path (`portable_replay/native/snapshot/src/pack.rs:1-8` and `:294-358`). Those are the
 usable foundations; they are not segment creation.
 
 The current fold is single-timeline:

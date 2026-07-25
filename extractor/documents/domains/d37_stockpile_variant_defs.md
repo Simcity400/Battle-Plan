@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 For `hoi4.exe 1.19.2.0.a729`, the ordered production-manager line vector is
 `manager+0x58/+0x60/+0x64`, stride 8. Admitted military type-56 and naval
 type-57 lines identify their exact equipment variant through

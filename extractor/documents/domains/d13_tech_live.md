@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 Ahead-of-time presentation must come from the observed engine producer, not reconstruction from authored year, current date, `BASE_YEAR_AHEAD_PENALTY_FACTOR`, and an aggregate reduction field. Those inputs are corroborative only and cannot manufacture the effective quartet.
 
 Exact-a729 producer chain:

@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The static decisions catalog is keyed by decision id and carries category, localization key/name, icons, political-power cost, target metadata, cooldown/removal fields, visibility/availability metadata, `fire_only_once`, and exact source-file bytes/SHA-256. Missing/corrupt static data fails only the definition join; it is not evidence that live decision state failed.
 
 The validated live target slice is `CDecisionStatus+0xE8` active targeted-timed records. Exact-a729 country-target records require vtable RVA `0x27D5038`, definition pointer `record+0x10`, and nonzero bounded country `tag_db_id` at `record+0x20`. The retained sample contains 3,384 targeted-timed rows, of which 1,061 country-target rows across 180 tokens matched save/live exactly. Numeric state/province target ids, cooldowns, days/body fields, and unmatched transitions remain out of scope and must not be recast as country targets.

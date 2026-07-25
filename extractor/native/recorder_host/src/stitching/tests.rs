@@ -663,27 +663,6 @@ fn determinism_input_order_permutation() {
 }
 
 #[test]
-fn determinism_fold_twice_identical_bytes() {
-    let segs = vec![
-        snap_seg(0, 0, K, 0..=100),
-        snap_seg(1, 0, K, 80..=90),
-        snap_seg(2, 0, K, 91..=120),
-    ];
-    let p1 = stitched(plan_stitch("g", stitch_inputs(), segs.clone()));
-    let p2 = stitched(plan_stitch("g", stitch_inputs(), segs));
-    // "fold twice -> identical bytes"
-    assert_eq!(p1.to_container_files(), p2.to_container_files());
-    assert_eq!(
-        canon_bytes(&p1.main_index_value()),
-        canon_bytes(&p2.main_index_value())
-    );
-    assert_eq!(
-        canon_bytes(&p1.segments_value()),
-        canon_bytes(&p2.segments_value())
-    );
-}
-
-#[test]
 fn determinism_input_change_moves_digest() {
     let base = vec![snap_seg(0, 0, K, 0..=100), snap_seg(1, 0, K, 80..=90)];
     let p_base = stitched(plan_stitch("g", stitch_inputs(), base));

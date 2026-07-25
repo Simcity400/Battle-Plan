@@ -23,7 +23,7 @@ already fail-closed (readers refuse an unknown build).
 ## Step 1 — RTTI/vtable re-derivation (the structural half — already self-proven)
 ```
 # re-derive against the NEW exe: prints the updated constants block + a diff report
-python scripts/rtti_rederive.py --rederive "<new hoi4.exe>"
+python extractor/native/scripts/rtti_rederive.py --rederive "<new hoi4.exe>"
 ```
 - Re-derives every RTTI-named vtable RVA from the new image by matching each class's decorated
   RTTI name (+ COL offset to disambiguate multiple-inheritance vtables). This half is
@@ -90,8 +90,8 @@ failed/partial rather than being treated as valid capture data.
 ### One-shot command block (copy/paste for a routine patch)
 ```
 cd extractor/native
-python scripts/rtti_rederive.py --verify                       # baseline self-proof on current exe
-python scripts/rtti_rederive.py --rederive "<new hoi4.exe>"    # prints updated block + which vtables moved
+python extractor/native/scripts/rtti_rederive.py --verify                       # baseline self-proof on current exe
+python extractor/native/scripts/rtti_rederive.py --rederive "<new hoi4.exe>"    # prints updated block + which vtables moved
 bash ~/.claude/hoi4_gate_prompts/run_one_window.sh patchcheck 120 - --d53-relation-read-mode shadow
 python ../save_oracle/parse_world.py "<save>.hoi4"             # compare vs live d69 (groups/members)
 # review: per-domain status, *_sample sanity, d53 shadow agreement, oracle counts

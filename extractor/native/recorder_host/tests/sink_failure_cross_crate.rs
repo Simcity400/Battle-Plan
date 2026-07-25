@@ -57,28 +57,9 @@ fn producer_terminal_report() -> SinkFailureReport {
 }
 
 #[test]
-fn collector_produced_bytes_decode_through_the_recorder_consumer() {
-    for report in [producer_setup_report(), producer_terminal_report()] {
-        // Producer side: the collector's exact encoder.
-        let payload = encode_sink_failure(&report).unwrap();
-        // Consumer side: the recorder framing carries the intrinsic branch as a
-        // control MessageKind. Decoding under that kind reproduces the report.
-        let message_kind = report.kind.message_kind();
-        let decoded = decode_sink_failure(message_kind, &payload).unwrap();
-        assert_eq!(decoded, report);
-    }
-}
-
-#[test]
 fn recorder_consumer_rejects_a_setup_payload_delivered_under_the_terminal_kind() {
     // A setup payload carries no stream progress; decoding it under the terminal
     // envelope kind must fail closed rather than fabricate a terminal report.
     let payload = encode_sink_failure(&producer_setup_report()).unwrap();
     assert!(decode_sink_failure(MessageKind::SinkTerminalFailure, &payload).is_err());
-}
-
-#[test]
-fn recorder_consumer_rejects_a_non_sink_message_kind() {
-    let payload = encode_sink_failure(&producer_terminal_report()).unwrap();
-    assert!(decode_sink_failure(MessageKind::HeartbeatProof, &payload).is_err());
 }

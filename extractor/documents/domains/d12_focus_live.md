@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 d12 captures persistent focus state: current focus, continuous focus, and completed/progress fields as encoded. Ordered hourly-or-better snapshots make the following derivable without a direct callback domain:
 
 - start when current/continuous focus appears or changes;

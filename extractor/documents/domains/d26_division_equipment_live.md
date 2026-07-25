@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 D26 tolerates only `COMPACT_STATUS_PARTIAL_DATA`; source/state unavailable,
 profile mismatch, no clock/scalar source, worker panic, bridge unavailable,
 control invalid, and every other failure-mask bit make the domain unknown for

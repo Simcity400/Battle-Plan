@@ -49,6 +49,7 @@ def main() -> int:
     written = 0
     mergeable_total = 0
     carried = 0
+    stubs: list[tuple[int, str, int, str]] = []
 
     def existing_condensed(path: Path) -> str:
         """Preserve hand-written knowledge across a regeneration.
@@ -107,9 +108,16 @@ def main() -> int:
 
         path = OUT / f"d{did:02d}_{name}.md"
         keep = existing_condensed(path)
-        if keep:
-            lines += ["## Condensed knowledge", keep, "", ""]
-            carried += 1
+        if not keep:
+            # A file that lists filenames and states no knowledge is worse than
+            # no file: it reads as documentation while carrying none. Domains
+            # with nothing condensed are collected into one index instead.
+            stubs.append((did, name, len(files), meta.get("status", "unknown")))
+            if path.exists():
+                path.unlink()
+            continue
+        lines += ["## Condensed knowledge", keep, "", ""]
+        carried += 1
 
         lines += [
             "## Files about this domain",
@@ -141,8 +149,24 @@ def main() -> int:
         path.write_text("\n".join(lines), encoding="utf-8")
         written += 1
 
+    index = [
+        "# Domains with no condensed knowledge yet",
+        "",
+        "These domains are registered and, where schedulable, captured — but no",
+        "investigation prose survived consolidation for them, so there is nothing",
+        "to record beyond identity. They get a row here rather than a file each.",
+        "",
+        "| id | name | status | files naming it |",
+        "|---:|---|---|---:|",
+    ]
+    for did, name, nfiles, status in sorted(stubs):
+        index.append(f"| {did} | `{name}` | {status} | {nfiles} |")
+    index.append("")
+    (OUT / "UNDOCUMENTED_DOMAINS.md").write_text("\n".join(index), encoding="utf-8")
+
     print(f"wrote {written} domain files to {OUT}")
     print(f"carried existing Condensed knowledge forward in {carried}")
+    print(f"collected {len(stubs)} knowledge-free domains into UNDOCUMENTED_DOMAINS.md")
     print(f"mergeable prose/data entries across all domains: {mergeable_total}")
     return 0
 

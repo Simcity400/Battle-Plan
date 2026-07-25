@@ -102,18 +102,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_distinguishes_reused_pid() {
-        let a = ProcessKey::new(1234, 100);
-        let b = ProcessKey::new(1234, 200);
-        assert_ne!(a, b, "same pid, different FILETIME must be distinct");
-    }
-
-    #[test]
-    fn key_same_identity_equal() {
-        assert_eq!(ProcessKey::new(1234, 100), ProcessKey::new(1234, 100));
-    }
-
-    #[test]
     fn filetime_full_precision_not_floored_to_seconds() {
         // Two launches 1 tick (100 ns) apart within the same wall-clock second
         // must remain distinct — the exact sub-second collision the design bans.

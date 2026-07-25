@@ -57,7 +57,7 @@ deserializer evidence for executable SHA-256
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad` now proves
 `game_unique_seed` as signed `i32[CGameState+0x720]` and `game_unique_id` as the MSVC `std::string`
 object at `CGameState+0x728`; see
-[`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). The CID1 payload/parser and explicit
+[`d68_session_header_live.md`](domains/d68_session_header_live.md). The CID1 payload/parser and explicit
 IdentityV1/Legacy stateful validator are offline-green. Shared CFA1 validates the exact complete
 record and enforces durable write → flush → sync receipt ordering. Recorder main now validates before
 dispatch, retains opaque `ValidatedCid1`, excludes CID1 from ordinary counts, and allows manifest
@@ -81,7 +81,7 @@ cross-machine latch can be enabled.
 ## 4. Reload/relaunch stitching — PLANNER/FORMAT BUILT; PRODUCTION CALL SITE OPEN
 
 - The snapshot container already round-trips SEGMENT-PREFIXED ROLLBACK
-  filenames (snapshot/src/container.rs, pack.rs; tests pin both filename
+  filenames (`portable_replay/native/snapshot/src/container.rs`, `pack.rs`; tests pin both filename
   forms) — the file format was designed for branch/rollback timelines.
 - The archived RECORDING_LAYER_COMPLETION_PLAN carries the intended semantics:
   time rollback creates a NEW SEGMENT rather than corrupting the index;

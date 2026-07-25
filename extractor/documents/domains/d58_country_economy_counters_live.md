@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 Exact-a729 reusable anchors are:
 
 | Root/field | Value |

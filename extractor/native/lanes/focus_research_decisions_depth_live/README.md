@@ -103,9 +103,6 @@ Historical notes reported `144` depth records, `1` exact completed-focus row,
 input and gate artifacts are absent from this checkout, so those counts are not
 current certification evidence; the hardened gate must reject that old result
 until D45 DATA status authority is added and a fresh exact-duration proof passes.
-The shared collector hunk once proposed for that behavior is archived in
-`../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md`.
-
 Current-build root validation for fail-closed depth fields:
 
 ```powershell
@@ -187,10 +184,8 @@ python extractor\native\lanes\focus_research_decisions_depth_live\tools\analyze_
   --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\residual_blocker_gate_20260701_v10
 ```
 
-See `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/CURRENT_BUILD_ROOTS.md` for the validated/rejected roots,
-`../../../documents/archive/native_lanes/focus_research_decisions_depth_live/INTEGRATION_PATCH_PLAN.md` for the domain-45 integration shape, and
-`../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md` for residual-specific shared hunks that require
-an orchestrator slot.
+See `../../../documents/domains/d45_focus_research_decisions_depth_live.md` for
+the current domain-45 contract.
 
 ## 2026-07-17 A2/A12 promotion update
 
@@ -304,5 +299,4 @@ contract, so direct hooks remain blocked.
 
 ## Integration Plan
 
-The exact shared patch plan is in `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/INTEGRATION_PATCH_PLAN.md`. Keep this lane
-isolated until the orchestrator grants a shared integration slot.
+Keep this lane isolated until the orchestrator grants a shared integration slot.

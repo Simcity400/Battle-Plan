@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 D61 is the per-country cumulative air-combat statistic: save `history{}`
 statistic id 23, an 89-field i64 fixed-point aggregate with a five-slot yearly
 ring, distinct from per-wing equipment deltas in d42.

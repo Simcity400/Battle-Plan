@@ -6,8 +6,8 @@ audit tables every such bound and classifies its exceed-behavior. The standing l
 pattern) is: a bound MUST **fail closed WITH an attribution sample**, so a modded save that
 trips one **names itself in a single capture** instead of silently losing data.
 
-**Evidence scope:** 239 named ceiling constants swept across `collector/src/lib.rs` and
-`compact_contract/src/build_profile.rs`, filtered to the 149 that gate *content* (IDs, counts,
+**Evidence scope:** 239 named ceiling constants swept across `extractor/native/collector/src/lib.rs` and
+`extractor/native/compact_contract/src/build_profile.rs`, filtered to the 149 that gate *content* (IDs, counts,
 lengths, caps) — the mod-exceedable set. Pure
 value/magnitude sanity limits (100M-scale raw-word guards) and internal-safety limits
 (byte budgets, worker durations, cache-row caps) are catalogued but are **not** mod-support

@@ -87,17 +87,9 @@ Not owned here:
   actions/queues, intel map percentages, operations, operatives, spy networks,
   agency state, and compact event/state records are all proven through the
   production-shaped path.
-- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/INTEGRATION_PATCH_PLAN.md`: exact registration-only shared patch plan for
-  when the orchestrator opens an integration slot.
-- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/REGISTRATION_PATCH_PACKET.md`: concrete shared registry, collector
-  coordinator, and recorder hook packet for the integration owner.
-- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/OPERATIVE_LIFECYCLE_REGISTRATION_PATCH.md`: retained historical v20 packet;
-  its `identity+0x110` interpretation is disproven and must not be applied.
 - `validate_operative_lifecycle_registration_patch.py`: retirement verifier that
   preserves legacy decoder compatibility while preventing the v20 counter from
   serving as semantic promotion evidence.
-- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/AGENCY_CAPACITY_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
-  details for preserving v22 raw `agency_capacity_cluster_rows`.
 - `validate_agency_capacity_registration_patch.py`: lane-local verifier for the
   raw agency-capacity registration details, v16 semantic rejection proof, and
   v22 proof counters.

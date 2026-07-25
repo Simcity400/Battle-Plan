@@ -176,10 +176,10 @@ to `collector_record` (`Start-Hoi4ProductionSpeed5Capture.ps1:307-326`). The hos
 - pokes target threads, then holds/removes hooks (`main.rs:5259-5281`).
 
 The DLL starts one guarded worker from `DllMain`/hook callback
-(`collector/src/lib.rs:1122-1163`, `collector/src/lib.rs:71063-71096`), reads control
+(`extractor/native/collector/src/lib.rs:1122-1163`, `extractor/native/collector/src/lib.rs:71063-71096`), reads control
 beside its module, and connects to the PID/token pipe
-(`collector/src/lib.rs:1184-1219`, `collector/src/lib.rs:2087-2103`,
-`collector/src/lib.rs:45808-45833`). Auto-attach must reuse this, not add
+(`extractor/native/collector/src/lib.rs:1184-1219`, `extractor/native/collector/src/lib.rs:2087-2103`,
+`extractor/native/collector/src/lib.rs:45808-45833`). Auto-attach must reuse this, not add
 `CreateRemoteThread` or a second collector.
 
 ### Required ordering
@@ -200,7 +200,7 @@ beside its module, and connects to the PID/token pipe
 
 The pipe barrier is mandatory. Today the host spawns the pipe thread and immediately
 calls `attach_hook` (`main.rs:1193-1203`), while the DLL tries `CreateFileW` once and
-returns `None` on failure (`collector/src/lib.rs:45808-45833`). That leaves an
+returns `None` on failure (`extractor/native/collector/src/lib.rs:45808-45833`). That leaves an
 avoidable connect-before-listen race.
 
 Do not retry an uncertain hook/handshake outcome in the same live process. A second
@@ -240,11 +240,9 @@ observed. Do not synthesize earlier hours or backdate the segment. Record:
 - process/build/modset evidence and attempt id.
 
 The segment is replayable from that baseline. Joining it to an older segment depends
-on unbuilt campaign identity/stitching. Canon says missing live spans are `no_data`
-and uncertain continuity makes a boundary
-(`documents/archive/DESIGN_legacy_full_2026-07-02.md:747-767`); the recording plan
-requires time jumps/rollbacks to create segments and surface gaps
-(`archive/plans/RECORDING_LAYER_COMPLETION_PLAN.md:1426-1443`).
+on campaign identity/stitching. Missing live spans are `no_data`, uncertain
+continuity makes a boundary, and time jumps or rollbacks create segments that
+surface gaps.
 
 Never merge on modset, date, PID, or wall clock. Without campaign lineage finalize
 `stitching_status = campaign_identity_unresolved`. Later stitching may apply the

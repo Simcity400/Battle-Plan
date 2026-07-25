@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The accepted base slice is per-wing strength/equipment change: wing identity, owner, mission mask/region, old/new plane count, count delta, old/new equipment-bank sum, equipment delta, reinforcements, losses, deletes, and generation. It does not by itself provide sortie start/end, tactical wing-versus-wing pairing, a killer wing, ace participation, or an exact reinforcement-source reason.
 
 Several plausible roots were mechanically rejected on exact-a729:

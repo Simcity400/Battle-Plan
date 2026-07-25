@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 `specialization_handle` is process-local and may be used only inside the d41
 delta tracker for raw additions and tombstones before the authenticated
 four-token census. Portable fold/replay publishes only the closed

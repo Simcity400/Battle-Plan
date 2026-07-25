@@ -3,13 +3,13 @@
 Private, read-only tooling for recording and replaying the owner's Hearts of
 Iron IV multiplayer games.
 
-**Current status and remaining work live in exactly two documents:**
+**Current status and remaining work are split by layer:**
 
-- `documents/STATUS.md` — where each half of the project stands
-- `documents/REMAINING_WORK.md` — the single deduped backlog
+- `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` — extraction completion checklist and backlog
+- `replay_interface/documents/MAP_REPLICA_PLAN.md` — map and renderer parity plan
 
-Start there. `documents/SEAM_CONTRACTS.md` tracks what each half is waiting on
-from the other.
+Start there. `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md` defines
+the recorded-data contract between the replay and extraction layers.
 
 ## Layout
 
@@ -18,7 +18,7 @@ from the other.
 | `extractor/` | Recording half: injected DLL collector, Rust recorder host, compact domains, save-oracle validation, static parsing. Deep ledgers in `extractor/documents/`. |
 | `replay_interface/` | Playback half: replay app, map/UI rendering, container reader, RE evidence. Specs and the rendering-laws program board in `replay_interface/documents/`. |
 | `portable_replay/` | Neutral format crates both halves statically link. |
-| `documents/` | STATUS / REMAINING_WORK / SEAM_CONTRACTS / DESIGN + `archive/`. |
+| `documents/` | Project-wide design. |
 
 Anything in an `archive/` folder is historical evidence, never the current
 plan. The repo carries no process/rules docs (archived 2026-07-19).

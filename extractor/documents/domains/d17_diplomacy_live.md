@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The compact stream carries d17 as typed `COMPACT_RECORD_TYPE_DOMAIN_DATA` under the single H4CR sequence authority. Records are decoded fail-closed: unknown record types, invalid lengths, duplicate identities, or omitted numeric fields are not accepted; measured zero remains distinct from a missing row. `FRAME_END` is the final record for an hour, and internally parallel reads must still emit deterministically.
 
 Status bit 13 (`0x2000`) is d17-only informational war-segment accounting and is outside the shared failure mask. It must not bleed into dependent domains. A recorded case where d45 inherited `0x2000` came from OR-ing every country bundle's whole status word; d45's focus/tech/decision dependencies were clean, so this was semantic contamination rather than a d45 condition. Consumers must mask dependency status to the relevant domain families and `COMPACT_STATUS_FAILURE_MASK`.

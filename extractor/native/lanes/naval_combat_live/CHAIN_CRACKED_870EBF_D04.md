@@ -1,8 +1,7 @@
 # Naval combat 49/50 — full chain CRACKED on live 870ebf (D04 1944 fixture, 2026-07-03)
 
 Fixture: live `hoi4.exe` build `870ebf...`, save `D04_1944_02_11_18.hoi4` loaded and PAUSED,
-with 4 active `naval_combat` blocks (locations 6434, 2804, 1032, 8819). Same-tick melted save
-at `runs/division_manpower_assignment_870ebf_20260703_wave2/00_d04_1944_melted.txt` is the oracle.
+with 4 active `naval_combat` blocks (locations 6434, 2804, 1032, 8819). The same-tick melted save is the oracle.
 
 Evidence dir: `extractor/native/runs/nav49_d04/` (probes: `rtti_vtable_rediscover`,
 `side_layout_diag`, `handle_hunt`, `member_ref_hunt`, `group_chain`, `group_to_side`,
@@ -82,7 +81,7 @@ defender CFEXGroup (`+0x38`->defender side) count=9 ids = [0,3064,3099,3114,3051
    `validated_combat_count=4`, `member_bridge_row_count=117` (== save total),
    `cship_unresolved_member_count=0` (101/101 joins), Rust proof `passed`,
    4/4 locations+regions emitted, `.battleplan` byte-verified. Extended oracle
-   cross-check (`runs/nav49_50_port_validation/live_backref_precheck.json`): live
+   cross-check: live
    combat ids == save `naval_combat.id.id` 4/4; ship-id sets matched on 8/8 sides;
    member `+0xE0` state and `+0x120` slot multisets matched the save's
    `state`/`unique_id` on all sides.

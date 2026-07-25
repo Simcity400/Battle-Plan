@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 All layout evidence is exact-a729 (`hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`). The completed-history vector is at `CGameState+0x590`, laid out as data pointer `+0x00`, capacity `u32 +0x08`, count `u32 +0x0C`, with eight-byte entries. Each `CSunkShipInfo` has vtable `0x142941608` and size `0xA8`.
 
 | Offset | Exact field |

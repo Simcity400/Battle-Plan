@@ -13,6 +13,7 @@
 ## Condensed knowledge
 
 
+
 The listed source contains no durable d55 payload layout, combat-detail semantics, offsets, identities, or failure law.
 
 See also d52 and d54.
