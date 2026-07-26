@@ -1,0 +1,1026 @@
+//! Measure the wire format against the shipping compact stream on REAL d11
+//! `production_live` dynamics.
+//!
+//! Input: a real `collector_stream.bin` from a d11-scheduled capture
+//! (`runs/batch1/deepwar_t1`). The stream's own d11 DATA records are the shipping
+//! format's cost for the domain: a 40-byte header, three fixed-row base tables
+//! and a chain of up to ten self-sized trailer segments, **full-replace per
+//! country** — `fold_production` rebuilds its `per_tag` map from scratch each
+//! frame but writes it into one country at a time, so a country the frame does
+//! not mention keeps the production block it had. This tool replays those records
+//! into the running accumulator that behaviour implies — the same fold
+//! `world_fold::fold_production` performs, through `wire_format::d11`'s public
+//! `State`/`fold_payload` boundary so there is one implementation of it — and
+//! re-encodes every hour with this crate's grammar: a BASELINE at each 48-hour
+//! block start, field-granular stored-minimal DELTAs between.
+//!
+//! **The accumulator is the state, not the frame.** In `deepwar_t1` a frame
+//! touches a median of two countries out of a roster of 356, so a per-frame
+//! snapshot would measure a fraction of the domain. The wire arm encodes the
+//! accumulated seven collections; a country dropping a row is a wire tombstone.
+//!
+//! **Two parts of the domain are stop-reported, not measured.** The `PDQ1`
+//! trailer carries variable-length UTF-8 strings that §4 has no kind for, and
+//! `PCV1`'s convoy priority reservations are an ordered list whose order is not
+//! a function of any carried field (see `d11.rs`'s module docs for both, with
+//! the capture evidence). This harness parses both — every gate the fold
+//! enforces, so a payload the recorder refuses is refused here too — and
+//! accounts for them, but maps neither. Because the shipping arm would otherwise
+//! be charged for data the wire arm never carries, a second shipping artifact is
+//! written with the `PDQ1` suffix removed, and both ratios are reported.
+//! `ship_d11_no_pdq1.bin` is a size accounting only: it is a shipping record
+//! with its final trailer cut, not a valid record. The reservation run is not
+//! excised — it is interleaved inside `PCV1` rather than a suffix — so its
+//! 8 bytes/row stay charged to the shipping arm and are reported separately.
+//!
+//! **Nothing here re-derives a contract it can call.** Payload, trailer and row
+//! decoding go through `wire_format::d11`'s public boundary; H4CR framing, record
+//! semantics, sequence continuity and the domain-hour failure predicate go
+//! through `compact_contract`'s own parser, validator and constants.
+//!
+//! **The whole stream is validated before any artifact is written**, exactly as
+//! `bench_real_d22.rs` does and for the same reason: a truncated or spliced
+//! stream would otherwise yield a smaller but entirely plausible number.
+//! `scan_stream` enforces, fail-closed:
+//!
+//! - every record header through `compact_contract::parse_compact_record_header`;
+//! - every record through `compact_contract::stream_validator::StatefulStreamValidator`;
+//! - the hour-boundary rules of `recorder_host::stream_fold::BoundaryTracker`
+//!   (`recorder_host/src/stream_fold.rs:277`) that need no DOMAIN_PERF accounting;
+//! - the EOF rules of that tracker's `eof_check` (`:459`);
+//! - every d11 payload through `d11::split_payload`/`d11::parse_trailers` and
+//!   every row through `d11::record_from_*`, via `d11::fold_payload`.
+//!
+//! That is a documented **subset** of `stream_fold::verify_stream_logical_boundary`
+//! (`:537`), which additionally checks FRAME_END seal fields and DOMAIN_PERF
+//! accounting; `wire_format` cannot depend on `recorder_host`.
+//!
+//! **The exclusion and its position.** d11 has exactly one path on which the fold
+//! returns without folding: a failure status (`world_fold.rs:12488`). There is no
+//! delta grammar, so no delta-before-baseline and no rowless-partial case. The
+//! position matters: `:12482` checks the 40-byte header length, `:12488` checks
+//! the status, and only `:12504` checks the row counts — so a failure-status
+//! record whose counts do not add up is *skipped* by the recorder, not refused.
+//! This harness reads the header with `d11::split_header`, excludes on status,
+//! and only then calls `fold_payload`, which is where the counts are checked.
+//!
+//! Hour uniqueness is enforced over EVERY d11 DATA record, including
+//! failure-status ones, and before the status exclusion — otherwise a
+//! success+failure pair in one hour would slip through.
+//!
+//! Outputs, for the compression step (`scripts/compress_arms.py`):
+//!   ship_d11.bin          — the d11 DATA records verbatim, in stream order
+//!   ship_d11_no_pdq1.bin  — the same with each record's PDQ1 suffix removed
+//!   wire_new.bin          — the wire-format bodies, in hour order
+//!   *.offsets             — hour-boundary byte offsets, one per line
+
+use std::io::Write;
+use std::ops::Range;
+
+use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
+use compact_contract::stream_validator::StatefulStreamValidator;
+use compact_contract::{
+    compact_status_failure_flags_after_expected_partial_tolerance, compact_status_is_failure,
+    compact_status_unknown_flags_v1, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA,
+};
+use wire_format::body::{
+    apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedState,
+};
+use wire_format::d11::{self, Collections, State, StatusPredicates};
+use wire_format::Collection;
+
+const D11: u16 = 11;
+const BLOCK_HOURS: usize = 48;
+
+/// The two `compact_contract` predicates `d11::parse_trailers` needs for the
+/// `PDQ1` segment check (`world_fold.rs:27478`, `:27484`), handed over as
+/// function pointers so the reference library keeps its isolation.
+const STATUS: StatusPredicates = StatusPredicates {
+    unknown_flags: compact_status_unknown_flags_v1,
+    is_failure: compact_status_is_failure,
+};
+
+/// One usable d11 hour: its game hour, its byte span in the source stream, and
+/// how many bytes of that span the `PDQ1` suffix occupies.
+struct D11Hour {
+    game_hour: i32,
+    ship_span: Range<usize>,
+    pdq1_len: usize,
+}
+
+struct StreamScan {
+    hours: Vec<D11Hour>,
+    /// d11 records whose payload status flags mark the domain-hour failed
+    /// (`world_fold.rs:12488`). The fold retains the accumulator and folds
+    /// nothing, so the hour is not d11 data.
+    failure_records: usize,
+    /// d11 records that set `COMPACT_STATUS_DELTA_DATA`. `fold_production` never
+    /// reads that bit — d11 has no delta grammar — so this is reported, not acted
+    /// on. A non-zero count is a finding about the stream, not about this arm.
+    delta_bit_records: usize,
+    /// Measured d11 hours that do not follow the previous measured one by one.
+    non_contiguous: usize,
+    /// Frames carrying no country at all. 55 of `deepwar_t1`'s 903 hours are
+    /// exactly this and they touch nothing.
+    empty_frames: usize,
+    /// `world_fold.rs:12855`: hours where `country_count` exceeded the keyed set.
+    uncovered_country_hours: usize,
+    /// Rows the shipping base tables carried, summed over measured hours.
+    shipped_stockpile_rows: usize,
+    shipped_line_rows: usize,
+    shipped_construction_rows: usize,
+    /// Countries the frames touched, summed — the real replacement surface.
+    touched_countries: usize,
+    /// `PDQ1` segment bytes over the measured hours.
+    pdq1_bytes: usize,
+    /// `PCV1` reservation rows over the measured hours — parsed, checked and
+    /// stop-reported. Each is 8 bytes of the shipping arm.
+    reservation_rows: usize,
+    /// `PCV1` variant runs that were not ascending by `variant_id` — the runs
+    /// whose order `convoy_variant_ordinal` is load-bearing for rather than
+    /// merely redundant with key order. See `d11.rs`'s module docs.
+    unordered_variant_runs: usize,
+    /// `scale_raw` words at `+20` that were not 100_000. The fold never reads the
+    /// word (`world_fold.rs` uses its own constant), so this is an observation.
+    scale_raw_mismatches: usize,
+}
+
+/// Validate the whole stream and fold every usable d11 DATA record. Every
+/// rejection path is an `Err`, never a silently shorter measurement and never a
+/// panic.
+fn scan_stream(stream: &[u8], collections: &Collections) -> Result<StreamScan, String> {
+    // `StatefulStreamValidator` never sniffs a payload to pick a protocol, so
+    // the harness picks one from the FIRST RECORD'S FRAMING HEADER: an
+    // identity-bearing stream opens with CID1 at `(sequence, domain, type) =
+    // (0, 0, 4)` (`compact_contract/src/stream_validator.rs:104`).
+    let first = parse_compact_record_header(stream).map_err(|e| format!("first record: {e}"))?;
+    let mut validator = if first.sequence == 0
+        && first.domain_id == 0
+        && first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER
+    {
+        StatefulStreamValidator::identity_v1()
+    } else {
+        StatefulStreamValidator::legacy()
+    };
+
+    let mut scan = StreamScan {
+        hours: Vec::new(),
+        failure_records: 0,
+        delta_bit_records: 0,
+        non_contiguous: 0,
+        empty_frames: 0,
+        uncovered_country_hours: 0,
+        shipped_stockpile_rows: 0,
+        shipped_line_rows: 0,
+        shipped_construction_rows: 0,
+        touched_countries: 0,
+        pdq1_bytes: 0,
+        reservation_rows: 0,
+        unordered_variant_runs: 0,
+        scale_raw_mismatches: 0,
+    };
+
+    let mut open_hour: Option<i32> = None;
+    let mut last_closed_hour: Option<i32> = None;
+    let mut last_record_type: Option<u16> = None;
+    // Hour of the last d11 DATA record of ANY status — the uniqueness rule.
+    let mut last_d11_hour: Option<i32> = None;
+    // Hour of the last d11 record that entered the measurement — the contiguity
+    // report, which a skipped failure hour legitimately breaks.
+    let mut last_measured_hour: Option<i32> = None;
+    // The pass-1 accumulator, kept only so every payload, trailer and row is
+    // checked here rather than in pass 2.
+    let mut state = State::new();
+
+    let mut pos = 0usize;
+    while pos < stream.len() {
+        let header = parse_compact_record_header(&stream[pos..])
+            .map_err(|e| format!("record at byte {pos}: {e}"))?;
+        let payload_start = pos + COMPACT_RECORD_HEADER_LEN;
+        let record_end = payload_start
+            .checked_add(header.payload_len)
+            .ok_or_else(|| format!("record at byte {pos}: length overflow"))?;
+        if record_end > stream.len() {
+            return Err(format!(
+                "stream ends mid-record at byte {pos}: {} byte(s) present, record needs {}",
+                stream.len() - pos,
+                record_end - pos
+            ));
+        }
+        let payload = &stream[payload_start..record_end];
+
+        validator
+            .validate_record(&header, payload)
+            .map_err(|e| format!("record at byte {pos}: {e:?}"))?;
+
+        // The hour-boundary subset of `BoundaryTracker::observe`.
+        match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => match open_hour {
+                Some(open) if open != header.game_hour_raw => {
+                    return Err(format!(
+                        "DOMAIN_DATA at byte {pos} carries hour {} while hour {open} is open",
+                        header.game_hour_raw
+                    ))
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(last_closed) = last_closed_hour {
+                        if header.game_hour_raw <= last_closed {
+                            return Err(format!(
+                                "DOMAIN_DATA at byte {pos} reopens hour {} after hour \
+                                 {last_closed} closed",
+                                header.game_hour_raw
+                            ));
+                        }
+                    }
+                    open_hour = Some(header.game_hour_raw);
+                }
+            },
+            COMPACT_RECORD_TYPE_FRAME_END => {
+                match open_hour {
+                    Some(open) if open == header.game_hour_raw => {}
+                    Some(open) => {
+                        return Err(format!(
+                            "FRAME_END at byte {pos} closes hour {} while hour {open} is open",
+                            header.game_hour_raw
+                        ))
+                    }
+                    None => {
+                        return Err(format!(
+                            "FRAME_END at byte {pos} closes hour {} without an open \
+                             DOMAIN_DATA hour",
+                            header.game_hour_raw
+                        ))
+                    }
+                }
+                if let Some(last_closed) = last_closed_hour {
+                    if header.game_hour_raw <= last_closed {
+                        return Err(format!(
+                            "non-monotonic FRAME_END at byte {pos}: closed hour \
+                             {last_closed}, then {}",
+                            header.game_hour_raw
+                        ));
+                    }
+                }
+                open_hour = None;
+                last_closed_hour = Some(header.game_hour_raw);
+            }
+            _ => {}
+        }
+        last_record_type = Some(header.record_type);
+
+        if header.domain_id == D11 && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            // `world_fold.rs:12482` checks the 40-byte header length BEFORE
+            // `:12488` checks the status, so a malformed failure record is still
+            // a malformed record. Nothing past the header is validated yet.
+            let d11_header = d11::split_header(payload)
+                .map_err(|e| format!("d11 payload at byte {pos}: {e}"))?;
+
+            // One d11 DATA record per game hour, over EVERY d11 record and
+            // BEFORE any status-based exclusion.
+            if let Some(previous) = last_d11_hour {
+                if header.game_hour_raw <= previous {
+                    return Err(format!(
+                        "d11 DATA at byte {pos} carries hour {} after hour {previous}",
+                        header.game_hour_raw
+                    ));
+                }
+            }
+            last_d11_hour = Some(header.game_hour_raw);
+
+            if compact_status_failure_flags_after_expected_partial_tolerance(
+                D11,
+                d11_header.status_flags,
+            ) != 0
+            {
+                scan.failure_records += 1;
+                pos = record_end;
+                continue;
+            }
+            if d11_header.status_flags & COMPACT_STATUS_DELTA_DATA != 0 {
+                scan.delta_bit_records += 1;
+            }
+            if d11_header.scale_raw != 100_000 {
+                scan.scale_raw_mismatches += 1;
+            }
+
+            let outcome = d11::fold_payload(&mut state, collections, payload, STATUS)
+                .map_err(|e| format!("d11 payload at byte {pos}: {e}"))?;
+
+            if let Some(previous) = last_measured_hour {
+                if header.game_hour_raw != previous + 1 {
+                    scan.non_contiguous += 1;
+                }
+            }
+            last_measured_hour = Some(header.game_hour_raw);
+            if d11_header.country_count == 0 {
+                scan.empty_frames += 1;
+            }
+            if outcome.uncovered_countries > 0 {
+                scan.uncovered_country_hours += 1;
+            }
+            scan.shipped_stockpile_rows += d11_header.stockpile_count as usize;
+            scan.shipped_line_rows += d11_header.line_count() as usize;
+            scan.shipped_construction_rows += d11_header.construction_count as usize;
+            scan.touched_countries += outcome.touched_countries;
+            scan.pdq1_bytes += outcome.deployment_segment_len;
+            scan.reservation_rows += outcome.reservation_rows;
+            scan.unordered_variant_runs += outcome.unordered_variant_runs;
+            scan.hours.push(D11Hour {
+                game_hour: header.game_hour_raw,
+                ship_span: pos..record_end,
+                pdq1_len: outcome.deployment_segment_len,
+            });
+        }
+
+        pos = record_end;
+    }
+
+    // `BoundaryTracker::eof_check` (`recorder_host/src/stream_fold.rs:459`).
+    if let Some(open) = open_hour {
+        return Err(format!("game hour {open} left open at EOF"));
+    }
+    if last_closed_hour.is_none() {
+        return Err("stream closes no game hour (no FRAME_END records)".to_string());
+    }
+    if last_record_type != Some(COMPACT_RECORD_TYPE_FRAME_END) {
+        return Err(format!(
+            "stream ends after record type {}; final record must be a canonical FRAME_END",
+            last_record_type.map_or_else(|| "none".to_string(), |k| k.to_string())
+        ));
+    }
+    if scan.hours.is_empty() {
+        return Err("stream carries no usable d11 DATA records".to_string());
+    }
+
+    Ok(scan)
+}
+
+/// The schema's own collection names, so the report cannot drift from it.
+const COLLECTION_NAMES: [&str; 7] = Collections::NAMES;
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let input = args
+        .next()
+        .expect("usage: bench_real_d11 <collector_stream.bin> <out dir>");
+    let out_dir = args
+        .next()
+        .expect("usage: bench_real_d11 <collector_stream.bin> <out dir>");
+    let stream = std::fs::read(&input).expect("read stream");
+    let schema = d11::schema();
+    let collections = Collections::from_schema(&schema).expect("the built-in schema resolves");
+
+    // ---- Pass 1: validate the WHOLE stream and fold its d11 DATA records. ----
+    let scan = match scan_stream(&stream, &collections) {
+        Ok(scan) => scan,
+        Err(reason) => {
+            eprintln!("{input}: {reason}");
+            std::process::exit(1);
+        }
+    };
+    std::fs::create_dir_all(&out_dir).expect("out dir");
+
+    // ---- Pass 2: re-fold the accepted spans and encode both arms. ------------
+
+    let mut ship = Vec::new();
+    let mut ship_offsets = vec![0usize];
+    let mut ship_no_pdq1 = Vec::new();
+    let mut ship_no_pdq1_offsets = vec![0usize];
+    let mut wire = Vec::new();
+    let mut wire_offsets = vec![0usize];
+
+    let mut state = State::new();
+    let mut prior: Option<Vec<KeyedState>> = None;
+    let mut reader: Option<Vec<KeyedState>> = None;
+    let mut hours_seen = 0usize;
+    let mut baselines = 0usize;
+    let mut empty_hours = 0usize;
+    let mut baseline_bytes = 0usize;
+    let mut changed_rows = [0usize; 7];
+    let mut tombstones = [0usize; 7];
+    let mut state_rows_total = [0usize; 7];
+
+    let collection_list: Vec<&Collection> = collections.as_slice().to_vec();
+
+    for hour in &scan.hours {
+        // Shipping arm: the record's exact bytes, header included.
+        ship.extend_from_slice(&stream[hour.ship_span.clone()]);
+        ship_offsets.push(ship.len());
+        // And the same record with its PDQ1 suffix cut. PDQ1 is required to be
+        // the FINAL trailer (`world_fold.rs:27418`), so the cut is a suffix.
+        ship_no_pdq1
+            .extend_from_slice(&stream[hour.ship_span.start..hour.ship_span.end - hour.pdq1_len]);
+        ship_no_pdq1_offsets.push(ship_no_pdq1.len());
+
+        // Re-fold this hour's record into the running accumulator, through the
+        // same boundary pass 1 used.
+        let payload = &stream[hour.ship_span.start + COMPACT_RECORD_HEADER_LEN..hour.ship_span.end];
+        d11::fold_payload(&mut state, &collections, payload, STATUS)
+            .expect("pass 1 accepted this payload");
+        let current = state.to_vec();
+        for (i, rows) in current.iter().enumerate() {
+            state_rows_total[i] += rows.len();
+        }
+
+        // New arm: BASELINE at each block start, stored-minimal DELTA between.
+        let hour_start = wire.len();
+        let block_start = hours_seen % BLOCK_HOURS == 0;
+        let mut emitted = true;
+        if block_start || prior.is_none() {
+            encode_baseline(&schema, &current, &mut wire).expect("baseline encodes");
+            baselines += 1;
+            baseline_bytes += wire.len() - hour_start;
+        } else {
+            let prev = prior.as_ref().expect("prior");
+            let deltas: Vec<_> = collection_list
+                .iter()
+                .enumerate()
+                .map(|(i, collection)| {
+                    let d = diff(collection, &prev[i], &current[i]);
+                    if d.is_empty() {
+                        None
+                    } else {
+                        Some(d)
+                    }
+                })
+                .collect();
+            if deltas.iter().all(Option::is_none) {
+                empty_hours += 1;
+                emitted = false;
+            } else {
+                for (i, delta) in deltas.iter().enumerate() {
+                    if let Some(delta) = delta {
+                        changed_rows[i] += delta.changed.len();
+                        tombstones[i] += delta.tombstones.len();
+                    }
+                }
+                encode_delta(&schema, prev, &deltas, &mut wire).expect("delta encodes");
+            }
+        }
+        wire_offsets.push(wire.len());
+
+        // Reader replay: decode the bytes just written against the reader's OWN
+        // reconstructed prior, and require the result to be stored-equal to this
+        // hour's fold. An hour that emitted nothing is still checked — the
+        // reader's retained state must already equal the fold's.
+        if emitted {
+            let hour_bytes = &wire[hour_start..];
+            if block_start || reader.is_none() {
+                let (decoded, consumed) =
+                    decode_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
+                assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
+                assert_eq!(decoded.len(), 7, "seven collections in the body");
+                reader = Some(decoded);
+            } else {
+                let reader_prior = reader.take().expect("reader prior");
+                let (deltas, consumed) =
+                    decode_delta(&schema, &reader_prior, hour_bytes, 0).expect("delta decodes");
+                assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
+                let mut next = reader_prior;
+                for (i, delta) in deltas.iter().enumerate() {
+                    if let Some(delta) = delta {
+                        apply(&mut next[i], delta);
+                    }
+                }
+                reader = Some(next);
+            }
+        }
+        let replayed = reader.as_ref().expect("reader state");
+        for (i, collection) in collection_list.iter().enumerate() {
+            assert_eq!(
+                replayed[i].len(),
+                current[i].len(),
+                "game hour {}: collection {} row count",
+                hour.game_hour,
+                COLLECTION_NAMES[i]
+            );
+            assert!(
+                diff(collection, &replayed[i], &current[i]).is_empty(),
+                "game hour {}: reader collection {} is not stored-equal to the fold",
+                hour.game_hour,
+                COLLECTION_NAMES[i]
+            );
+        }
+
+        prior = Some(current);
+        hours_seen += 1;
+    }
+
+    for (name, bytes) in [
+        ("ship_d11.bin", &ship),
+        ("ship_d11_no_pdq1.bin", &ship_no_pdq1),
+        ("wire_new.bin", &wire),
+    ] {
+        let mut f = std::fs::File::create(std::path::Path::new(&out_dir).join(name)).unwrap();
+        f.write_all(bytes).unwrap();
+    }
+    for (name, offsets) in [
+        ("ship_d11.offsets", &ship_offsets),
+        ("ship_d11_no_pdq1.offsets", &ship_no_pdq1_offsets),
+        ("wire_new.offsets", &wire_offsets),
+    ] {
+        let mut f = std::fs::File::create(std::path::Path::new(&out_dir).join(name)).unwrap();
+        for o in offsets {
+            writeln!(f, "{o}").unwrap();
+        }
+    }
+
+    let delta_hours = hours_seen - baselines - empty_hours;
+    println!(
+        "hours                 {hours_seen} ({} non-contiguous steps, {} carrying no country)",
+        scan.non_contiguous, scan.empty_frames
+    );
+    println!(
+        "failure-status hours  {} (excluded from both arms)",
+        scan.failure_records
+    );
+    println!(
+        "delta-bit records     {} (d11 has no delta grammar; the fold never reads the bit)",
+        scan.delta_bit_records
+    );
+    println!(
+        "scale_raw != 100000   {} (the fold never reads the word)",
+        scan.scale_raw_mismatches
+    );
+    println!(
+        "uncovered-country hrs {} (world_fold.rs:12855 badges, folds the rest)",
+        scan.uncovered_country_hours
+    );
+    println!(
+        "shipped base rows     {} stockpile, {} line, {} construction",
+        scan.shipped_stockpile_rows, scan.shipped_line_rows, scan.shipped_construction_rows
+    );
+    println!(
+        "countries touched     {} total, {:.2}/hour (the real replacement surface)",
+        scan.touched_countries,
+        scan.touched_countries as f64 / hours_seen as f64
+    );
+    println!("accumulated rows avg:");
+    for (i, name) in COLLECTION_NAMES.iter().enumerate() {
+        println!(
+            "  {name:<20} {:>9.1}",
+            state_rows_total[i] as f64 / hours_seen as f64
+        );
+    }
+    println!("baselines             {baselines} (every {BLOCK_HOURS} h), {baseline_bytes} raw bytes");
+    println!(
+        "delta hours           {delta_hours}   empty hours {empty_hours}   {} raw delta bytes",
+        wire.len() - baseline_bytes
+    );
+    println!(
+        "baseline/delta split  {:.1}% baseline / {:.1}% delta of the wire arm's raw bytes",
+        100.0 * baseline_bytes as f64 / wire.len() as f64,
+        100.0 * (wire.len() - baseline_bytes) as f64 / wire.len() as f64
+    );
+    println!("real churn per delta hour (stored precision):");
+    for (i, name) in COLLECTION_NAMES.iter().enumerate() {
+        println!(
+            "  {name:<20} {:>8.3} changed, {:>8.3} tombstones",
+            changed_rows[i] as f64 / delta_hours.max(1) as f64,
+            tombstones[i] as f64 / delta_hours.max(1) as f64
+        );
+    }
+    println!(
+        "PDQ1 bytes            {} of {} shipping bytes ({:.1}%) — stop-reported, not measured",
+        scan.pdq1_bytes,
+        ship.len(),
+        100.0 * scan.pdq1_bytes as f64 / ship.len() as f64
+    );
+    println!(
+        "PCV1 reservation rows {} ({} bytes, {:.2}% of shipping) — stop-reported, not measured",
+        scan.reservation_rows,
+        scan.reservation_rows * 8,
+        100.0 * (scan.reservation_rows * 8) as f64 / ship.len() as f64
+    );
+    println!(
+        "unordered variant runs {} (runs where convoy_variant_ordinal is load-bearing rather \
+         than redundant with key order)",
+        scan.unordered_variant_runs
+    );
+    println!("ship_d11.bin          {} bytes", ship.len());
+    println!(
+        "ship_d11_no_pdq1.bin  {} bytes",
+        ship_no_pdq1.len()
+    );
+    println!(
+        "wire_new.bin          {} bytes ({:.1}% of ship, {:.1}% of ship without PDQ1)",
+        wire.len(),
+        100.0 * wire.len() as f64 / ship.len() as f64,
+        100.0 * wire.len() as f64 / ship_no_pdq1.len() as f64
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compact_contract::{COMPACT_DOMAIN_FRAME, COMPACT_FRAME_END_PAYLOAD_LEN};
+
+    fn scan(stream: &[u8]) -> Result<StreamScan, String> {
+        let collections = Collections::default();
+        scan_stream(stream, &collections)
+    }
+
+    /// One H4CR record, framed the way the recorder frames it
+    /// (`compact_contract/src/record_header.rs:60`).
+    fn record(sequence: u64, game_hour: i32, domain: u16, kind: u16, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(COMPACT_RECORD_HEADER_LEN + payload.len());
+        out.extend_from_slice(b"H4CR");
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&game_hour.to_le_bytes());
+        out.extend_from_slice(&domain.to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn frame_end(sequence: u64, game_hour: i32) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &vec![0u8; COMPACT_FRAME_END_PAYLOAD_LEN],
+        )
+    }
+
+    fn stockpile_row(tag: u32, variant_id: u32, amount_raw: i64) -> Vec<u8> {
+        let mut row = Vec::new();
+        row.extend_from_slice(&tag.to_le_bytes());
+        row.extend_from_slice(&variant_id.to_le_bytes());
+        row.extend_from_slice(&amount_raw.to_le_bytes());
+        row
+    }
+
+    /// A d11 DATA payload with one stockpile table and a PCP1 trailer.
+    fn d11_payload(status_flags: u32, tags: &[(u32, u32, i64)]) -> Vec<u8> {
+        let mut countries: Vec<u32> = tags.iter().map(|(t, _, _)| *t).collect();
+        countries.sort_unstable();
+        countries.dedup();
+        let mut out = Vec::new();
+        out.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
+        out.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+        out.extend_from_slice(&status_flags.to_le_bytes());
+        out.extend_from_slice(&100_000u32.to_le_bytes());
+        out.extend_from_slice(&(tags.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        for (tag, variant_id, amount) in tags {
+            out.extend_from_slice(&stockpile_row(*tag, *variant_id, *amount));
+        }
+        if !countries.is_empty() {
+            out.extend_from_slice(b"PCP1");
+            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&((20 + countries.len() * 8) as u32).to_le_bytes());
+            out.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            for tag in &countries {
+                out.extend_from_slice(&tag.to_le_bytes());
+                out.extend_from_slice(&7u32.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    fn good_stream() -> Vec<u8> {
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            100,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(0, &[(7, 500, 1_000)]),
+        ));
+        s.extend(frame_end(2, 100));
+        s.extend(record(
+            3,
+            101,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(0, &[(8, 600, 2_000)]),
+        ));
+        s.extend(frame_end(4, 101));
+        s
+    }
+
+    fn boundary(stream: &[u8], records: usize) -> usize {
+        let mut pos = 0usize;
+        for _ in 0..records {
+            let h = parse_compact_record_header(&stream[pos..]).expect("framed");
+            pos += COMPACT_RECORD_HEADER_LEN + h.payload_len;
+        }
+        pos
+    }
+
+    #[test]
+    fn a_well_formed_stream_yields_its_d11_hours() {
+        let s = scan(&good_stream()).expect("accepted");
+        assert_eq!(s.hours.len(), 2);
+        assert_eq!(s.hours[0].game_hour, 100);
+        assert_eq!(s.hours[1].game_hour, 101);
+        assert_eq!(s.failure_records, 0);
+        assert_eq!(s.non_contiguous, 0);
+        assert_eq!(s.shipped_stockpile_rows, 2);
+        assert_eq!(s.touched_countries, 2);
+        assert_eq!(s.pdq1_bytes, 0, "this stream carries no PDQ1 segment");
+        assert_eq!(s.scale_raw_mismatches, 0);
+    }
+
+    #[test]
+    fn a_failure_status_record_is_excluded_and_leaves_the_accumulator_alone() {
+        // Every failure bit in `COMPACT_STATUS_FAILURE_MASK`, one at a time. The
+        // fold retains the accumulator and folds nothing (`world_fold.rs:12488`),
+        // so the hour is not d11 data and must not enter either arm.
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D11,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d11_payload(1 << bit, &[(7, 500, 1)]),
+            ));
+            s.extend(frame_end(2, 100));
+            s.extend(record(
+                3,
+                101,
+                D11,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d11_payload(0, &[(8, 600, 2)]),
+            ));
+            s.extend(frame_end(4, 101));
+            let result = scan(&s).expect("the stream itself is well-formed");
+            assert_eq!(result.failure_records, 1, "bit {bit}");
+            assert_eq!(result.hours.len(), 1, "bit {bit}");
+            assert_eq!(result.hours[0].game_hour, 101, "bit {bit}");
+        }
+        // And the DELTA bit (1<<10) is not a failure bit — d11 never reads it,
+        // but it must not exclude the hour either.
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            100,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(1 << 10, &[(7, 500, 1)]),
+        ));
+        s.extend(frame_end(2, 100));
+        let result = scan(&s).expect("well-formed");
+        assert_eq!(result.failure_records, 0);
+        assert_eq!(result.delta_bit_records, 1);
+        assert_eq!(result.hours.len(), 1);
+    }
+
+    #[test]
+    fn a_failure_record_whose_counts_do_not_add_up_is_skipped_not_refused() {
+        // The exclusion's POSITION: `world_fold.rs:12488` checks the status
+        // before `:12504` checks `base_len`, so the recorder skips this record.
+        // A harness that validated the counts first would refuse a stream the
+        // recorder reads.
+        let mut payload = d11_payload(1, &[(7, 500, 1)]);
+        payload[24..28].copy_from_slice(&9_999u32.to_le_bytes());
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D11, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+        s.extend(frame_end(2, 100));
+        s.extend(record(
+            3,
+            101,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(0, &[(8, 600, 2)]),
+        ));
+        s.extend(frame_end(4, 101));
+        let result = scan(&s).expect("the stream itself is well-formed");
+        assert_eq!(result.failure_records, 1);
+        assert_eq!(result.hours.len(), 1);
+        // But a SUCCESS record with the same broken counts refuses the stream.
+        let mut payload = d11_payload(0, &[(7, 500, 1)]);
+        payload[24..28].copy_from_slice(&9_999u32.to_le_bytes());
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D11, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+        s.extend(frame_end(2, 100));
+        assert!(scan(&s).is_err());
+        // And a failure record too short even for the 40-byte header is refused,
+        // because `:12482` precedes `:12488`.
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            100,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &vec![0u8; 39],
+        ));
+        s.extend(frame_end(2, 100));
+        assert!(scan(&s).is_err());
+    }
+
+    #[test]
+    fn a_second_d11_record_in_one_hour_is_rejected() {
+        // The accumulator is incremental across hours, so two records in one
+        // hour would apply two frames to one measurement hour. The rule is
+        // checked over every d11 record and before status exclusion, so all four
+        // success/failure orderings are refused.
+        const FAILED: u32 = 1;
+        for (first, second) in [(0u32, 0u32), (0, FAILED), (FAILED, 0), (FAILED, FAILED)] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D11,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d11_payload(first, &[(7, 500, 1)]),
+            ));
+            s.extend(record(
+                2,
+                100,
+                D11,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d11_payload(second, &[(7, 500, 2)]),
+            ));
+            s.extend(frame_end(3, 100));
+            assert!(
+                scan(&s).is_err(),
+                "two d11 records in hour 100 with statuses {first:#x}/{second:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_truncated_on_a_record_boundary_is_rejected() {
+        let full = good_stream();
+        for records in [1usize, 3] {
+            let cut = boundary(&full, records);
+            assert!(
+                scan(&full[..cut]).is_err(),
+                "a stream cut after {records} record(s) leaves an hour open"
+            );
+        }
+        // A cut exactly at a FRAME_END boundary IS a well-formed shorter stream.
+        for (records, expected_hours) in [(2usize, 1usize), (4, 2)] {
+            let cut = boundary(&full, records);
+            let s = scan(&full[..cut]).expect("closed stream is well-formed");
+            assert_eq!(s.hours.len(), expected_hours, "cut after {records}");
+        }
+    }
+
+    #[test]
+    fn a_stream_ending_mid_record_is_rejected() {
+        let full = good_stream();
+        let boundaries: Vec<usize> = (0..=4).map(|n| boundary(&full, n)).collect();
+        for cut in 1..full.len() {
+            if boundaries.contains(&cut) {
+                continue;
+            }
+            assert!(scan(&full[..cut]).is_err(), "mid-record cut at {cut}");
+        }
+        assert!(scan(&[]).is_err(), "an empty stream is not a measurement");
+    }
+
+    #[test]
+    fn a_header_the_canonical_parser_rejects_is_rejected_here() {
+        for records in 0..4 {
+            let at = boundary(&good_stream(), records);
+            for (offset, patch) in [
+                (0usize, vec![b'X']),
+                (4, 2u16.to_le_bytes().to_vec()),
+                (6, 33u16.to_le_bytes().to_vec()),
+            ] {
+                let mut s = good_stream();
+                s[at + offset..at + offset + patch.len()].copy_from_slice(&patch);
+                assert!(
+                    scan(&s).is_err(),
+                    "record {records} patched at +{offset} must be refused"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_sequence_discontinuity_is_rejected() {
+        for records in 0..4 {
+            let at = boundary(&good_stream(), records);
+            for wrong in [0u64, 9] {
+                let mut s = good_stream();
+                s[at + 8..at + 16].copy_from_slice(&wrong.to_le_bytes());
+                assert!(scan(&s).is_err(), "record {records} sequence {wrong}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_end_that_does_not_close_its_open_hour_is_rejected() {
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            100,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(0, &[(7, 500, 1)]),
+        ));
+        s.extend(frame_end(2, 999));
+        assert!(scan(&s).is_err());
+
+        let mut s = Vec::new();
+        s.extend(frame_end(1, 100));
+        assert!(scan(&s).is_err());
+    }
+
+    #[test]
+    fn non_monotonic_hours_are_rejected() {
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            101,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(0, &[(7, 500, 1)]),
+        ));
+        s.extend(frame_end(2, 101));
+        s.extend(record(
+            3,
+            100,
+            D11,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d11_payload(0, &[(7, 500, 2)]),
+        ));
+        s.extend(frame_end(4, 100));
+        assert!(scan(&s).is_err());
+    }
+
+    #[test]
+    fn a_stream_with_no_d11_records_is_refused_not_reported_as_zero() {
+        let mut s = Vec::new();
+        s.extend(record(1, 100, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[0u8; 8]));
+        s.extend(frame_end(2, 100));
+        assert!(scan(&s).is_err());
+    }
+
+    #[test]
+    fn a_malformed_d11_payload_is_refused_not_skipped() {
+        let base = d11_payload(0, &[(7, 500, 1)]);
+        let mut bad: Vec<Vec<u8>> = Vec::new();
+        for len in [0usize, 8, 39] {
+            bad.push(base[..len].to_vec());
+        }
+        let mut short = base.clone();
+        short.pop();
+        bad.push(short);
+        // A trailing byte that is not a known trailer magic.
+        let mut long = base.clone();
+        long.push(0);
+        bad.push(long);
+        for offset in [24usize, 28, 32, 36] {
+            let mut huge = base.clone();
+            huge[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            bad.push(huge);
+            let mut big = base.clone();
+            big[offset..offset + 4].copy_from_slice(&1000u32.to_le_bytes());
+            bad.push(big);
+        }
+        for (i, payload) in bad.into_iter().enumerate() {
+            let mut s = Vec::new();
+            s.extend(record(1, 100, D11, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+            s.extend(frame_end(2, 100));
+            assert!(
+                scan(&s).is_err(),
+                "malformed payload {i} must refuse the stream"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_stream_never_panics_on_arbitrary_bytes() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for _ in 0..4_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let len = (state as usize) % 400;
+            let mut bytes = vec![0u8; len];
+            for byte in &mut bytes {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+            if len >= 4 && state & 1 == 0 {
+                bytes[..4].copy_from_slice(b"H4CR");
+            }
+            let _ = scan(&bytes);
+        }
+        let good = good_stream();
+        for i in 0..good.len() {
+            let mut s = good.clone();
+            s[i] ^= 0xFF;
+            let _ = scan(&s);
+        }
+    }
+}
