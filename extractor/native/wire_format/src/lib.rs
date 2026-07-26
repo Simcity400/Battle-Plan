@@ -32,6 +32,8 @@ pub mod d32;
 pub mod d34;
 pub mod d35;
 pub mod d36;
+pub mod d39;
+pub mod d40;
 pub mod d62;
 pub mod d63;
 pub mod d83;
@@ -41,6 +43,7 @@ pub mod record;
 pub mod schema;
 pub mod update;
 pub mod value;
+pub mod variant_upgrades;
 pub mod varint;
 
 pub use bitmap::Bitmap;
