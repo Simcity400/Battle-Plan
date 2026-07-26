@@ -968,8 +968,16 @@ closes them on a named corpus and harness before ~80 encoders are written.
   surface above moves the row-vs-columnar answer toward row-major. Reproduce with
   `cargo run -p wire_format --bin bench_real_dynamics` then
   `python extractor/native/scripts/bench_real_dynamics.py`; provenance and full table in
-  `extractor/native/runs/d20_real_dynamics/`. Still open here: the columnar arm has no delta
-  grammar to measure, and the world is an early-war one — a deep-war capture is the harder test.
+  `extractor/native/runs/d20_real_dynamics/`.
+
+  **The deep-war end of the surface is measured too.** The same instrument on the D04 1944
+  world (1,022 game-hours, ~3,322 divisions/hour): churn **2,393 changed rows/hour ≈ 72%/hour**
+  with zero empty hours — and the ratio holds: **12.4% raw, 54.0% whole-stream, 52.0% at
+  48-hour blocks**, all 1,023 hours decode-verified. Real churn therefore spans 21–72%/hour
+  against the modelled few percent, and the wire format sits at ~52–54% of shipping across the
+  whole measured range — the win is not a low-churn artifact. Provenance in
+  `extractor/native/runs/d20_deepwar/`. Still open here: the columnar arm has no delta grammar
+  to measure, and at these churn rates the case for specifying one is weak.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own
