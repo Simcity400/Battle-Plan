@@ -88,18 +88,18 @@ claim, and both matter:
 - **The comparison was 79 domains against 1, not against zero.** The floor is two hooks, not zero
   — `d3d11!D3D11CreateDevice` and `d3dcompiler_47!D3DCompile` must stay installed or the device
   cannot be discovered. Whether crashes reach zero or merely become rare is still unmeasured.
-- **Two distinct crash modes exist, roughly evenly split.** Three of the six full-instrumentation
-  crashes were a call through a null pointer — the half-written-detour signature the hypothesis
-  explains. The other three were a real code address, recurring across sessions at a different
-  ASLR base. **Fixing the hook-installation mechanism addresses only half the observed crashes.**
-  The second mode has no diagnosis yet.
+- **Two distinct crash modes exist, roughly evenly split**, and both are instrumentation-driven.
+  Three of the six full-instrumentation crashes were a call through a null pointer — the
+  half-written-detour signature. The other three faulted at `hoi4.exe+0xC66F46`, in the game's own
+  code rather than in `collector.dll`, with the collector confirmed loaded. Both modes occurred
+  zero times in the minimal arm. So heavy instrumentation destabilises the game in more than one
+  way, and there is no separate defect in our own surviving code to carry into the rebuild.
 
 Never measure this by counting crash-folder entries: that scores both modes identically, and the
 folder also collects ordinary play-session crashes.
 
 ## What is not yet known
 
-- The second crash mode above.
 - Whether coherent reads are achievable at the target cadence without the pause barrier.
 - The performance cost of sampling on constrained hardware.
 
