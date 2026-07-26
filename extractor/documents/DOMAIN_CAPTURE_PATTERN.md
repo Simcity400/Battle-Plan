@@ -220,7 +220,8 @@ nothing. Sampling cost and emission cost are separate problems and must not be c
 ## 4. Encoding
 
 **Field-presence and change bitmaps, varint and zigzag integers, bit-packed enums, differenced
-monotone counters, columnar blocks for large homogeneous tables.** Fixed-width is not the
+monotone counters, row-major records** (the layout question was closed by decision 2026-07-26 —
+see `WIRE_FORMAT.md` §13). Fixed-width is not the
 alternative to self-describing JSON; it merely removes field names while leaving 8-byte integers
 holding values of 3. Target 25–75% fewer pre-compression bytes than a fixed-width record.
 
@@ -418,19 +419,21 @@ another domain's absolute numbers.** Cardinalities differ by orders of magnitude
 cost more than d41. The reference domain establishes the *pattern* and the harness, not a
 universal threshold.
 
-**The reference domain settles the record layout for baselines, and has.** Deltas are where most
-real hours land and they are not modelled here, so the direction is established and the magnitude
-is not final. Measured on d20 —
-`extractor/native/runs/d20_reference/12_layout_compressed.txt` — **column-major compresses to 79.8%
-of row-major**, 5.08 MB against 6.37 MB over 720 hourly baselines at 3,051 divisions. That is why
-the measurement came before the fan-out: ~80 encoders built row-major would each carry about a
-fifth more bytes, and after they exist the layout cannot change without rewriting all of them.
+**The record layout is settled: row-major, closed by decision 2026-07-26** (`WIRE_FORMAT.md`
+§13). The synthetic baseline measurement here —
+`extractor/native/runs/d20_reference/12_layout_compressed.txt`, **column-major at 79.8% of
+row-major**, 5.08 MB against 6.37 MB over 720 hourly baselines at 3,051 divisions — was
+computed on a churn model that real captures later invalidated (measured changed-row churn is
+21–72%/hour, a regime the synthetic surface never measured), the one real columnar-vs-row
+comparison favored row-major, and no columnar delta grammar exists while most real hours are
+deltas. The layout-before-fan-out ordering this section argued for happened; the answer it
+produced is row-major.
 
 **Report the model with the number, and make the benchmark measure its own model.** An
 full-churn control — every carried value redrawn each hour — says 85.3%, and ships as a flag on
-the same binary so the figure can be re-run rather than taken on trust. Note the direction: more
-churn moves the ratio *toward* row-major, because destroying cross-hour redundancy costs columnar
-too. The answer is not monotone in the assumption it turns on, so quote the surface, not a bound. A model stated in a
+the same binary so the figure can be re-run rather than taken on trust. Those are only two measured
+synthetic points, not a directional churn law: the non-monotone ratio cannot be interpolated, and
+real changed-row churn is a quantity and regime this surface never measured. The answer is not monotone in the assumption it turns on, so quote the surface, not a bound. A model stated in a
 comment is not a model that was run. This one has been wrong four separate times — uncorrelated
 noise, a symmetric toggle reaching 50% by month end, a move destination that contradicted where the
 unit arrived, and a stop process that cancelled 98.8% of the journeys it advertised — and each

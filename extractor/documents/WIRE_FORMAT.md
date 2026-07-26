@@ -14,9 +14,18 @@ Two implementers reading this must produce **identical bytes** from identical st
 not yet true the gap is listed in §13 as OPEN, because byte-identity is what the dedup floor
 depends on.
 
-**This is not yet the fan-out contract.** §13 lists what is still open, and the largest item —
-row-major versus column-major — changes the record grammar itself. The reference domain closes
-those before ~80 encoders are written against this.
+**This is not yet the byte-final fan-out contract, but the record grammar is settled.** The
+largest §13 item — row-major versus column-major — was closed by decision on 2026-07-26: the
+row-major grammar is retained, on the evidence recorded in §13 (not on a direct columnar-delta
+comparison, which nothing exists to run). What §13 still holds open (symbol assignment, golden
+cross-implementation vectors, per-domain cadence) can still move bytes — a cadence change even
+re-hashes the schema, since `cadence_log2` is part of its canonical serialization (§11) — but
+it does not change how the fan-out's deliverables are made: field ids, kinds and four-state
+decisions survive those items outright, and boundary mappers survive structurally — with one
+recorded exception: mappers that emit `ContentId` today cast raw source ids and will gain a
+manifest-resolver input when §5's assignment rule lands, a planned cross-domain retrofit.
+That is why `DOMAIN_SCHEMA_RECIPE.md` scopes the fan-out to schemas, mappings and
+measurements rather than shipped bytes.
 
 Source citations are paths from the repository root.
 
@@ -919,13 +928,25 @@ redundancy that dominates this workload.
 These are why this document is not yet the fan-out contract. The reference domain (pattern §10)
 closes them on a named corpus and harness before ~80 encoders are written.
 
-- **Column-major blocks.** Measured on the reference domain: **column-major compresses to 79.8% of
+- **Column-major blocks — CLOSED BY DECISION 2026-07-26: the row-major grammar is retained.**
+  The synthetic month said columnar wins on baselines: **columnar compresses to 79.8% of
   row-major** — 5.08 MB against 6.37 MB over 720 hourly d20 baselines at 3,051 divisions, zstd
   level 3, raw 90.9%; 75.7% at 6-hour block spans, 79.1% at 48-hour — sliced on the encoder's
   recorded hour boundaries, not an average. Reproduce with
   `cargo run -p wire_format --bin bench_layout` then `python extractor/native/scripts/bench_layout.py`;
-  raw output in `extractor/native/runs/d20_reference/12_layout_compressed.txt`. **§3 and §7's
-  record grammar is therefore provisional and the columnar grammar is the one to specify.**
+  raw output in `extractor/native/runs/d20_reference/12_layout_compressed.txt`. But real
+  captures overturned the model that produced that margin: real *changed-row* churn is
+  21–72%/hour (the real-dynamics anchors below) — a quantity the synthetic model never
+  controlled, since its few-percent figures were movement/combat *occupancy* while its stored
+  rows churned near-totally (every division's organisation and strength walked each hour). The
+  synthetic margin therefore has no data point at the real regime, and since the surface is
+  non-monotone in churn, the margin at real rates is simply unmeasured. What is measured:
+  row-major beat columnar on the one real measurement that compared them (a single baseline,
+  `runs/d20_real_save/`), and most real hours are deltas — for which no columnar grammar
+  exists, so no direct columnar-delta comparison can be run.
+  On that basis §3 and §7's row-major record grammar is the committed one — an engineering
+  decision informed by these measurements, not itself a measurement — and a columnar delta
+  grammar will not be specified unless new evidence reopens the question.
 
   **The margin is model-dependent, and the model is an assumption, not a measurement.** How much
   the world churns per hour is the assumption that moves the number. The committed model holds
@@ -938,13 +959,16 @@ closes them on a named corpus and harness before ~80 encoders are written.
   `cargo run -p wire_format --bin bench_layout -- --white-noise` — reports **85.3%**, which is
   *above* the committed model, not below it: destroying cross-hour redundancy costs columnar as
   much as row-major and pushes both toward parity. Columnar's best case is neither extreme but the
-  middle, where noisy columns sit beside frozen ones. So the measured surface runs 79.8% at d20's
-  *modelled* rate to 85.3% at full churn, and "more churn than we assumed" moves the answer
-  *toward* row-major. The modelled rate is an assumption about d20, not a measurement of it; only a
-  real capture settles where d20 sits on that surface.
+  middle, where noisy columns sit beside frozen ones. So the surface is measured at exactly two
+  points — 79.8% at d20's *modelled* rate, 85.3% at full churn — and between them it is
+  unmeasured and, being non-monotone, cannot be interpolated. The modelled rate is an assumption
+  about d20, not a measurement of it — and its few-percent figures are movement/combat
+  *occupancy*, not changed-row churn; real captures (the anchors below) measured changed-row
+  churn at 21–72%/hour, a quantity and regime this surface simply has no data point for.
 
-  What this does *not* settle: it models baselines only, and most real hours are deltas, so the
-  delta grammar's layout is measured before the fan-out commits.
+  What this synthetic run does *not* settle by itself: it models baselines only, and most real
+  hours are deltas — the real-dynamics measurements in the anchors below are that evidence, and
+  the closure decision above rests on them.
 
   **One real anchor exists.** The D04 deep-war save (3,168 divisions, 1944.2.11.18, build a729)
   encoded as a single BASELINE against the shipping 120-byte compact rows carrying the same
@@ -964,8 +988,10 @@ closes them on a named corpus and harness before ~80 encoders are written.
   compressed, 54.2% at the container's 48-hour block shape.** Every hour was decode-verified —
   the reader replays its own reconstructed prior and must land stored-equal to the fold; all
   3,126 hours passed. **Measured real churn is 287 changed rows/hour ≈ 21%/hour at fixed-2
-  precision** — an order of magnitude above the modelled few-percent rate, which per the churn
-  surface above moves the row-vs-columnar answer toward row-major. Reproduce with
+  precision** — a changed-row rate the synthetic surface never measured (its few-percent
+  figures were movement/combat occupancy, not row churn). (The surface is
+  non-monotone in churn, so this invalidates the modelled margin without locating the ratio
+  at real rates.) Reproduce with
   `cargo run -p wire_format --bin bench_real_dynamics` then
   `python extractor/native/scripts/bench_real_dynamics.py`; provenance and full table in
   `extractor/native/runs/d20_real_dynamics/`.
@@ -973,8 +999,9 @@ closes them on a named corpus and harness before ~80 encoders are written.
   **The deep-war end of the surface is measured too.** The same instrument on the D04 1944
   world (1,022 game-hours, ~3,322 divisions/hour): churn **2,393 changed rows/hour ≈ 72%/hour**
   with zero empty hours — and the ratio holds: **12.4% raw, 54.0% whole-stream, 52.0% at
-  48-hour blocks**, all 1,023 hours decode-verified. Real churn therefore spans 21–72%/hour
-  against the modelled few percent, and the wire format sits at ~52–54% of shipping across the
+  48-hour blocks**, all 1,023 hours decode-verified. Real changed-row churn therefore spans
+  21–72%/hour, a quantity and regime the synthetic surface never measured (its few-percent
+  figures were movement/combat occupancy), and the wire format sits at ~52–54% of shipping across the
   whole measured range — the win is not a low-churn artifact. Provenance in
   `extractor/native/runs/d20_deepwar/`. Still open here: the columnar arm has no delta grammar
   to measure, and at these churn rates the case for specifying one is weak.
