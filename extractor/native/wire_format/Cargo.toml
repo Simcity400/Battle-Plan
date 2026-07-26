@@ -6,3 +6,9 @@ description = "Reference implementation of extractor/documents/WIRE_FORMAT.md: p
 
 [dependencies]
 blake3 = "1"
+# Used ONLY by the measurement binaries that read shipping compact streams
+# (`src/bin/bench_real_d63.rs`), never by the library: a harness that re-derives
+# the H4CR framing contract instead of calling it drifts from the recorder
+# silently. `compact_contract` is a leaf crate with no runtime dependencies of
+# its own, so this does not compromise the reference implementation's isolation.
+compact_contract = { path = "../compact_contract" }
