@@ -10,6 +10,27 @@ happened to read. This is the shape to copy.
 
 Every rule is written so a reviewer can check a new domain against it without knowing that domain.
 
+## The question a domain must answer first
+
+**What does the viewer need from you in order to redraw this?**
+
+DECISIONS makes playback the game's own scene, redrawn from the player's own content — not a
+summary of what happened. So a domain's coverage is set by what the renderer consumes, not by what
+an analyst would find interesting. Position, progress, orientation, ownership, the draw state d77
+carries: if the viewer reads it to put something on screen, this domain owes it.
+
+Two rules below exist only because of this, and they are the two most likely to be skipped:
+
+- **The appearance test on quantization** (§4). A value that decides where something is drawn is
+  `exact`, even though rounding it changes no outcome.
+- **The declared cadence** (§1). One sample per game hour is the default and is right for state the
+  engine itself only changes hourly. A domain that looks wrong at that resolution declares a finer
+  one and says why.
+
+A domain that captures everything an analyst wants and still renders wrong has failed. §11 makes
+that checkable: the replay layer's demands are extracted into a ledger and CI fails on any field it
+reads that no domain produces.
+
 ## 0. The arithmetic this document is sized against
 
 the game runs **8,760 game-hours per game-year**. A campaign is not "thousands of hours":
@@ -26,7 +47,7 @@ mods change the date range, and DECISIONS retains both branches of every reload 
 branch-hours can exceed calendar hours arbitrarily. Size for growth beyond the table, not to it. This is the number every budget below is derived from, and it is why
 per-domain intuitions are worthless: 1 KiB per domain-hour is ~7 GB uncompressed.
 
-**The size rule is ratified, and it is not a target.** `DECISIONS.md` now sets it: fidelity is
+**The size rule is not a target.** `DECISIONS.md` sets it: fidelity is
 never traded for bytes, and subject to that, size is minimised aggressively. **3–8 GB per campaign
 is a ceiling, not a budget to spend** — coming in far under it is better, and being within it is
 not a reason to stop reducing. So the aggregate byte cap in §1 is a *failure* threshold; the
@@ -50,6 +71,12 @@ A domain is conformant because it is inside these, measured — never because it
 to an unusable hitch: 100 µs each is a 7.9 ms stall every game hour, 1 ms each is 79 ms. A
 per-domain number cannot reject that; only the total deadline can.
 
+**Cadence multiplies three of the four.** A domain declares how many samples it takes per game hour
+— `cadence_log2` in its schema, one sample per hour by default (`WIRE_FORMAT.md` §1.1). **Doubling
+the sample rate** doubles that domain's sweep cost, its bytes per hour and its share of the
+aggregate caps, so a finer cadence is declared against those budgets and carries the rendered
+evidence that hourly was not enough. It is not free and it is not a preference.
+
 Budgets live in a **CI-generated ledger**, not hand-maintained tables that drift and not scattered
 across domain documents where no one can sum them.
 
@@ -64,13 +91,14 @@ it for what it proves.
 **Share acquisition across domains.** `CGameState`, the country table, tag and ownership maps, and
 page/region validation are resolved **once per sweep** into a shared immutable context, not once
 per domain. A heavy frame is already "dominated by ~1e6 `VirtualQuery` syscalls + allocs"
-(`collector/src/attach_log.rs:86337`) — that is a whole-frame total across domains, with d53 alone
-near 660k, so treat it as evidence that guard-probe volume dominates, **not** as a figure to
-multiply by eighty. The region-interval cache at `:86490` exists because per-page probing thrashed.
+(`extractor/native/collector/src/attach_log.rs:86336`–`:86337`) — that is a whole-frame total
+across domains, with d53 alone near 660k, so treat it as evidence that guard-probe volume
+dominates, **not** as a figure to multiply by eighty. The region-interval cache at `:86490`–`:86494`
+exists because per-page probing thrashed at ~946 µs per read.
 
 **Batch reads and reuse scratch buffers.** Read adjacent required fields in one guarded span and
 decode locally rather than one guarded probe per field. The nearest measurement in this codebase —
-a ~3.4× speedup at `collector/src/attach_log.rs:87246` — is for *scratch-buffer reuse on bulk
+a ~3.4× speedup at `extractor/native/collector/src/attach_log.rs:87246` — is for *scratch-buffer reuse on bulk
 reads*, not adjacent-field batching; it supports the buffer rule directly and the batching rule
 only by analogy. Batching needs its own measurement before it is claimed as a number.
 
@@ -97,7 +125,12 @@ pools with defined growth **outside** the tick-bracketed interval and defined ex
 
 Three mechanisms, in the order a domain should reach for them.
 
-**3.1 Emit-side byte-identity dedup — mandatory floor, always safe.**
+**This whole section scopes to a domain's state part.** An event stream is append-only: it has no
+prior state to compare against, no baseline to fall back to, and silence in it means "no events
+happened", which is already its smallest encoding. A hybrid domain applies §3 to its state part and
+§7's event rules to its event part, independently — the two never suppress each other.
+
+**3.1 Emit-side byte-identity dedup — mandatory floor for state, always safe.**
 After walking and canonically encoding the domain, compare against the **previous canonical full
 encoding** — not against the last bytes emitted. For a differ domain (3.2) the last emitted bytes
 are a field-mask delta and would never match a full encoding, so comparing against them silently
@@ -142,47 +175,72 @@ Without a proved signal a domain still **walks**, but 3.1 and 3.2 mean it usuall
 nothing. Sampling cost and emission cost are separate problems and must not be conflated.
 
 **3.4 Baselines and resets.**
-- **Adaptive checkpoints**, not a fixed N: emit a baseline when any of max hours, cumulative delta
-  bytes, cumulative patch operations, or measured decode time crosses its bound. A fixed cadence
-  wastes baselines on quiet domains and under-bounds bursty ones.
-- **Forced baseline after any discontinuity** — a gap, a malformed frame, a restart, a rollover, a
-  reload branch. Without this, state that changed during a gap is never reconstructed. This is the
-  single most likely permanent-loss defect in a delta design.
+- **Adaptive checkpoints**, not a fixed N: emit a baseline when any of max sample ticks, cumulative
+  delta bytes, or cumulative patch operations crosses its bound. **Every trigger is a deterministic
+  function of the data**, never of measured wall-clock decode time: a machine-dependent trigger
+  makes two recorders emit different bytes for identical state, breaking the dedup floor. A fixed
+  cadence wastes baselines on quiet domains and under-bounds bursty ones.
+- **Counters and comparison are pinned**, or two writers split a run differently: a bound fires
+  when the accumulated value **reaches or exceeds** it (`≥`), the prospective frame is **not**
+  counted toward the bound that decides it, and **every counter resets to zero on each emitted
+  baseline**. The bound *values* are part of the domain's declared contract, recorded in its
+  document and the CI ledger — two writers only produce identical bytes when implementing the same
+  contract.
+- **A baseline is emitted if and only if a trigger fires.** The triggers are: a checkpoint bound,
+  a state discontinuity (below), **the start of any block** — including campaign start, a schema or
+  cadence change, and a rollover — since `DELTA` and `UNCHANGED` are invalid before a baseline in
+  their own block (`WIRE_FORMAT.md` §1.5). There is no discretionary baseline, because a writer
+  that may emit one whenever it likes gives identical state two encodings.
+- **A firing checkpoint outranks dedup.** When a bound is crossed on a sample whose state is
+  byte-identical to the previous one, the baseline is emitted and `UNCHANGED` is not. The bounds
+  exist to keep seek cost finite, and a quiet domain is exactly the case that would otherwise
+  accumulate an unbounded delta chain.
+- **Forced baseline after any discontinuity** — a state-affecting gap, a malformed frame, a restart,
+  a rollover, a reload branch. Without this, state that changed during a gap is never reconstructed.
+  This is the single most likely permanent-loss defect in a delta design. An **event-only** gap is
+  not a state discontinuity and forces nothing (`WIRE_FORMAT.md` §1.5).
 - **Delta-before-baseline**: a hard error to the writer and to CI; to the *reader*, a typed gap for
   that domain until its next baseline. Failing a whole campaign for one bad segment contradicts
   "always produce a recording".
 
 ## 4. Encoding
 
-**Field-presence and change bitmaps, varint and zigzag integers, bit-packed enums, delta-of-delta
-for monotone counters, columnar blocks for large homogeneous tables.** Fixed-width is not the
+**Field-presence and change bitmaps, varint and zigzag integers, bit-packed enums, differenced
+monotone counters, columnar blocks for large homogeneous tables.** Fixed-width is not the
 alternative to self-describing JSON; it merely removes field names while leaving 8-byte integers
 holding values of 3. Target 25–75% fewer pre-compression bytes than a fixed-width record.
 
-**Absent, zero and unknown stay distinguishable** after encoding — via presence bitmaps, not
-sentinel values that collide with real data.
+**Absent, null, zero and unknown stay distinguishable** after encoding — via presence, null and
+unknown bitmaps, not sentinel values that collide with real data. Null is a fourth state, not a
+flavour of absent: "the relation genuinely points at nothing" and "this schema does not carry the
+field" are different facts, and d56's repair target is both at different times.
 
 **Quantize continuous values to a declared precision, where the value's use permits it.**
-DECISIONS sets comprehension-grade fidelity rather than pixel-exact reproduction, which licenses
-quantization in general — but not for a value whose exact magnitude explains a threshold crossing,
-where rounding changes the story the replay tells. Quantization is a per-field decision recorded
-with its justification, never a blanket rule. (An earlier draft cited `repair_progress_milli` as
-precedent; d56 records that field as unsupported and absent, so it is not one.) It is not a
-cosmetic saving: an unquantized float that jitters in its
-last bits is never byte-identical, so it **defeats the mandatory dedup floor and inflates every
+Quantization is a per-field decision recorded with its justification, never a blanket rule, and
+**two independent tests can each veto it** (`WIRE_FORMAT.md` §6):
+
+- **Outcome** — not for a value whose exact magnitude explains a threshold crossing, where rounding
+  changes the story the replay tells.
+- **Appearance** — not for a value the viewer draws from: position, progress along a path,
+  orientation, scale, blend weight, anything animated or interpolated. DECISIONS requires the
+  rendered replay to look and feel like the game. A rounded position changes no outcome at all, so
+  the outcome test passes it; it just makes a unit stutter where the game glides. It is not a cosmetic saving: an unquantized float
+that jitters in its low bits is never byte-identical, so it **defeats the mandatory dedup floor and inflates every
 field-mask delta** for float-carrying domains — economy, supply, combat. Each such field declares
 its precision in the wire format, and the declared precision is part of the domain's contract.
 
-**Symbol space belongs to the content manifest**, not the stream. Country tags, equipment names
-and province ids are defined by game and mod content; assign ids from the manifest and carry
-integers. Mod symbols first seen mid-campaign go to an append-only overflow table. File-wide
+**Symbol space belongs to the content, not the stream.** Country tags, equipment names and province
+ids are defined by game and mod content; carry integer ids, never text. **The rule that makes those
+ids deterministic for a given content set does not exist yet** and is listed OPEN in
+`WIRE_FORMAT.md` §13 — the portable content manifest defines content and VFS identity, which is a
+different thing. Mod symbols first seen mid-campaign go to an append-only overflow table. File-wide
 interning inside the stream is incompatible with independent decoding unless dictionary
 availability, ordering and recovery are all specified — prefer not to need it.
 
 **The wire format is `extractor/documents/WIRE_FORMAT.md`.** Section 4 states requirements; that
 document specifies the bytes. Per-domain record layouts are reviewed against it, and it carries the
-mechanisms these requirements need — presence and unknown bitmaps for the trichotomy, per-field
-quantization, and a `derived(expr)` declaration for fields that change deterministically with the
+mechanisms these requirements need — presence, null and unknown bitmaps for the four states, per-field
+quantization, and a clock-linear `derived` declaration for fields that change deterministically with the
 clock.
 
 ## 5. Compression and seek
@@ -198,9 +256,8 @@ rows changing per hour, zstd level 3:
 | 24-hour blocks | 0.28 MB | **4.9%** |
 
 **24-hour blocks cut compressed bytes by 95%.** Per-hour framing forfeits exactly the cross-hour
-redundancy that dominates this workload. An earlier draft claimed that penalty was "a few percent";
-it was wrong by more than an order of magnitude, which is why this is a committed benchmark rather
-than a citation.
+redundancy that dominates this workload. This is a committed benchmark rather than a citation
+because the margin is large enough to decide the design.
 
 **Read the benchmark for what it is.** It models full-state JSON — the shape this document intends
 to eliminate — so it establishes that cross-hour redundancy is large and worth keeping, and nothing
@@ -209,20 +266,23 @@ far smaller and the ratio will differ. Note also that 48-hour blocks beat 24 in 
 (0.16 MB vs 0.28 MB): the block span is **not settled here** and cannot be until there is a ratified
 seek budget to trade against. Re-measure on real captures in the target format before fixing it.
 
-**Indexed chunks, domain-major.** Compress in blocks spanning roughly 6–24 hours, indexed, so seek
-costs one block decode rather than a scan, and so the viewer decodes only the domains the current
-view binds. Chunk span is chosen from the seek budget, measured, not assumed.
+**Indexed chunks, domain-major.** Compress in blocks spanning many hours, indexed, so seek costs
+one block decode rather than a scan, and so the viewer decodes only the domains the current view
+binds. **The span is not fixed here** — the benchmark above has 48 hours beating 24, and the trade
+is against a seek budget with no ratified number. Chunk span is chosen from that budget, measured,
+not assumed.
 
 **Consider per-domain or prefix dictionaries** for small delta blocks whose byte patterns
 independent compression cannot learn. Treat 10–40% as an unverified target until measured.
 
-**The seek key is `(branch, hour)`, never `hour` alone.** Reloads keep both branches, so the same
-game hour exists in multiple segments and a bare hour index can select the wrong one.
+**The seek key is `(branch, tick)`, never a bare time.** Reloads keep both branches, so the same
+game time exists in multiple segments and a bare index can select the wrong one. The tick is the
+file-global unit of `WIRE_FORMAT.md` §1.1 — an hour index cannot address a playback position inside
+an hour once any domain samples faster than that.
 
 **Seek cost is baseline + bounded deltas + one block decode per bound domain.** With
 domain-major chunks a view binding N domains pays N block decodes, not one — the budget ranges
-over the bound set. Say that plainly; do not claim
-"one entry, never a scan" while also specifying delta chains. This repository already contains a
+over the bound set, and the seek budget is stated that way. This repository already contains a
 binary hour index and a sparse checkpoint/delta cache with a certified bounded seek — reuse it
 rather than reinventing.
 
@@ -249,15 +309,23 @@ is not fail-closed. Every such discontinuity forces a baseline per 3.4.
 Baseline / delta / tombstone models **state sets**. It is the wrong shape for **event streams** —
 fired popups, sunk-ship history, terminal combat records — where a "baseline" would re-emit
 unbounded history. Event domains are append-only with a resumable high-water mark; their gap
-semantics are "events between hour A and B were not captured", not "state unknown".
+semantics are "events between tick A and B were not captured", not "state unknown".
 
-**Classify by mutability, not by the word "event" in the name.** d64 delayed events is a state
-the instance on dispatch, so its rows mutate and are consumed. Getting this backwards makes an
+**Classify by mutability, not by the word "event" in the name.** d64 delayed events has a *state*
+the instance on dispatch, so those rows mutate and are consumed. Getting this backwards makes an
 append-only stream of rows that change every hour — the worst of both shapes.
 
 **Hybrids are permitted and must be declared as such.** A domain carrying both live state and a
 historical record declares both, and each part follows its own rules; it does not pick one and
-force the other through the wrong model.
+force the other through the wrong model. **d64 is a hybrid**, not a pure state set: its mutable
+pending rows are a state part and its lifecycle trailer is an event part. `WIRE_FORMAT.md` §10
+scopes every baseline and dedup rule to the state part for exactly this reason.
+
+**A state part declares the shape of each of its collections** — keyed set, ordered keyed list, or
+ordered occurrence list (`WIRE_FORMAT.md` §7.3). This is not a formatting detail: the same bytes mean
+different things under each, only a keyed set's contribution to a `DELTA` uses the delta grammar —
+ordered collections are replaced whole — and a domain that guesses either double-appends its rows
+or sorts away order the game treats as state.
 
 ## 8. Degradation on slow hardware
 
@@ -266,39 +334,59 @@ needs a **shedding order**: which domains degrade first, at what measured thresh
 becomes a typed gap. Absent a policy, an overloaded machine either stalls the game or drops data
 silently. Shedding is a product decision recorded per domain, not an emergent behaviour.
 
+**Shed whole domains; do not thin one domain's sampling.** Every state-affecting gap forces the next state
+observation to be a `BASELINE` (`WIRE_FORMAT.md` §1.5), because state may have moved and returned
+unobserved. So a domain sampled every other tick emits a baseline every other tick — the most
+expensive frame there is, at the moment the machine is least able to afford it. Dropping a domain
+entirely costs one gap and one baseline on recovery. A domain that should permanently sample less
+often lowers its `cadence_log2`, which is a schema change, not a gap.
+
 ## 9. Per-domain conformance checklist
 
 Answered in the domain's document; the ledger entries are CI-generated.
 
 **Both shapes:**
 
-- [ ] Shape declared: state set, or event stream.
+- [ ] Shape declared: state set, event stream, or hybrid carrying both.
+- [ ] **Render inputs listed** — every field the viewer reads to draw this domain, reconciled
+      against the render-coverage ledger (§11). A domain that renders wrong has failed regardless
+      of its other numbers.
+- [ ] **Cadence declared**, with its cost against the four budgets. A finer-than-hourly cadence
+      carries the visual evidence that hourly was not enough.
 - [ ] Hooks: each provably unsampleable, registered, counted against the CI cap.
 - [ ] Acquisition uses the shared sweep context; no per-domain re-resolution of shared roots.
 - [ ] Reads batched; cached roots revalidated by **owner edge + stable key + generation**.
 - [ ] Sweep tick-bracketed; torn sweeps emit typed gaps.
 - [ ] Buffers are bounded pools; growth outside the bracket; exhaustion emits a gap.
-- [ ] Encoding conforms to `WIRE_FORMAT.md`; absent/zero/unknown distinguishable; every continuous
-      field declares its quantization precision.
+- [ ] Encoding conforms to `WIRE_FORMAT.md`; absent/null/zero/unknown distinguishable; every
+      continuous field declares its quantization precision.
 - [ ] Shedding position and threshold recorded.
 - [ ] Four budgets measured on the standard corpus, inside per-domain **and** aggregate caps.
 
 **State-set domains additionally:**
 
+- [ ] Every collection's shape declared — keyed set, ordered keyed list, or ordered occurrence
+      list — with the evidence that decided it. Only keyed sets have a delta grammar; ordered
+      shapes are full replacement.
 - [ ] Emit-side byte-identity dedup against the previous canonical full encoding (mandatory).
 - [ ] Keyed differ in place, or a recorded reason it does not apply.
 - [ ] Any dirty-signal gating cites its evidence artifact path.
-- [ ] Forced baseline after every gap, restart, rollover and branch; dedup and differ suppressed
+- [ ] Forced baseline after every state-affecting gap, restart, rollover and branch; dedup and differ suppressed
       until that baseline is emitted.
 - [ ] Adaptive checkpoint bounds recorded.
 
 **Event-stream domains additionally** — baselines and tombstones do not apply, so these replace
 the four items above rather than adding to them:
 
-- [ ] Append-only with a resumable high-water mark; no re-emission of prior history.
-- [ ] Gap semantics are "events between hour A and B were not captured", not "state unknown".
-- [ ] High-water mark re-established after every restart, rollover and branch, and the recovery
-      path proved not to duplicate or skip across the discontinuity.
+- [ ] Append-only with a resumable frontier; no re-emission of prior history.
+- [ ] Frontier components declared — which one is the sequence, which are epoch components
+      (`WIRE_FORMAT.md` §9). A single scalar mark is insufficient wherever an epoch exists: d64's
+      is `(hook_epoch, sequence)`, and
+      `extractor/native/recorder_host/src/world_fold.rs:9500`–`:9510` refuses continuity across an
+      epoch change even when sequences look contiguous.
+- [ ] Gap semantics are "events between tick A and B were not captured", not "state unknown".
+- [ ] Frontier re-established after every restart, rollover and branch, and the recovery path
+      proved not to duplicate or skip across the discontinuity.
 - [ ] Retention bound recorded — an unbounded history has no baseline to fall back on.
 
 ## 10. Benchmark corpus and the reference domain
@@ -319,5 +407,49 @@ measured against each other on this corpus before the fan-out. The wire format d
 column-major as likely to win for large homogeneous tables; ~80 encoders must not be built to the
 loser, and after they exist the layout cannot be changed without rewriting all of them.
 
+**It establishes how cadence gets decided, not what every domain's cadence is.** The reference
+domain must drive something the viewer draws in motion, so its capture can be replayed and watched
+at hourly cadence and at a finer one. That comparison produces the *method* — a rendered parity
+test — and the harness to run it. **Each domain that claims a finer cadence then carries its own
+rendered evidence**: one domain's answer does not transfer to an unrelated render path, and the
+question is always what it looks like, which no amount of reasoning about tick rates settles.
+
 Build the pattern and the harness before the fan-out. Eighty domains built first and optimised
 second is eighty rewrites plus a container that can no longer be changed.
+
+## 11. Render coverage — the capture must satisfy the replay layer
+
+DECISIONS makes playback the game's own scene redrawn. The replay layer already exists and already
+states what it needs. **Its demands are enumerable, so coverage is a checkable property rather than
+a judgement.**
+
+**The ledger is rooted at the shipped product, not at a list of crates.** Its scope is the
+transitive call graph of `replay_interface/native/replay_app/src/main.rs:644` — the shipped `fn
+main`. A hand-maintained crate list goes stale silently and understates coverage: the application
+itself consumes replay state directly — `replay_interface/native/replay_app/src/app.rs:750` reads
+`production_render_status()` and `:910` reads `d48_buildings_status` straight off the `WorldFrame` —
+so a scanner pointed only at `replay_core` and the viewers would pass while missing product reads.
+
+**The join is typed, not by name.** Each demand resolves to a `(domain, collection_id, field_id)`
+producer, the machine identity pinned in `WIRE_FORMAT.md` §11. Matching on field name would
+silently pair a renderer's `status` with an unrelated domain's `status` and report coverage that
+does not exist.
+
+**The ledger is CI-generated and CI-enforced.** It extracts every field the replay layer reads,
+resolves each to its producer, and **fails the build on any read with no producer**. A missing
+field then surfaces as a named build error before the fan-out, not as something absent from the
+screen after eighty domains exist.
+
+This works without anyone understanding the replay layer's internal structure, which is the point:
+the ledger needs only what that layer *reads*, and reading is mechanically extractable. The
+rebuild changes acquisition and the wire format, but not what the renderer needs to draw a frame —
+so the demand list is stable across the rebuild and can be enforced now.
+
+**What the ledger cannot catch** is a field the replay layer *should* read and does not, because it
+was never captured to begin with. No static check finds an absence nobody encoded. That gap closes
+only by rendering a real capture and comparing it against the game, which is why the reference
+domain (§10) must drive something visible and why every domain's checklist asks for its render
+inputs by name.
+
+Coverage failures are ordinary work, not exceptions: expect the first ledger run to name many
+misses, and treat that list as the fan-out's real scope.

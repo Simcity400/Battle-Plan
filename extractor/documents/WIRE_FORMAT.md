@@ -3,88 +3,244 @@
 > **Read `documents/DECISIONS.md` first**, then `DOMAIN_CAPTURE_PATTERN.md`. This document is
 > subordinate to both. The pattern says *what* a domain must do; this says *how the bytes look*.
 
-Governing rule, from DECISIONS: **fidelity is never traded for bytes; subject to that, size is
-minimised aggressively.** 3–8 GB per campaign is a ceiling, not a budget. Every choice below is
-made in that order — first "does this lose anything?", then "is this the smallest encoding?".
+Two rules from DECISIONS govern every choice below, in this order:
+
+1. **The replay must look and feel like the game.** The viewer redraws the game's own scene from
+   the player's own content. What the capture owes it is every input that drawing needs.
+2. **Fidelity is never traded for bytes; subject to that, size is minimised aggressively.**
+   3–8 GB per campaign is a ceiling, not a budget.
 
 Two implementers reading this must produce **identical bytes** from identical state. Where that is
-not yet true the gap is marked **OPEN** rather than left to be discovered later, because
-byte-identity is what the dedup floor depends on.
+not yet true the gap is listed in §13 as OPEN, because byte-identity is what the dedup floor
+depends on.
+
+**This is not yet the fan-out contract.** §13 lists what is still open, and the largest item —
+row-major versus column-major — changes the record grammar itself. The reference domain closes
+those before ~80 encoders are written against this.
+
+Source citations are paths from the repository root.
 
 ## 0. Conventions
 
-Little-endian. `uN` is a fixed N-bit integer. `varint` is LEB128, unsigned. `zigzag` is
-`(n << 1) ^ (n >> 63)` then LEB128, so small negatives cost one byte. **Every length prefix is a
-varint.** Bitmaps are byte arrays; **field `i` is bit `i & 7` of byte `i >> 3`, LSB-first.**
+Little-endian.
 
-## 1. Blocks and frames
+- `uN` is a fixed N-bit integer.
+- `varint` is LEB128, unsigned, **shortest form required** — a representation with a redundant
+  trailing zero group is a corrupt frame. Maximum ten bytes; an eleventh continuation byte is
+  corrupt.
+- `zigzag(n)` is `(n << 1) ^ (n >> 63)` encoded as a varint, so small negatives cost one byte.
+  Used only where a value is genuinely signed.
+- Every length prefix is a `varint`.
+- **Bitmaps** are byte arrays; field `i` is bit `i & 7` of byte `i >> 3`, LSB-first. **Unused
+  trailing bits are zero.** A bitmap of zero bits occupies zero bytes.
+- **Padding bits are zero**, everywhere they occur.
+- Raw IEEE values are **`f64`, 8 bytes**, as their exact bit pattern. A domain reading a 32-bit
+  float widens it, which preserves the value. **A NaN is normalised to `0x7FF8000000000000`** — the
+  payload and sign of a NaN are not game state, and leaving the pattern unpinned would let two
+  writers emit different bytes for the same value.
 
-The container compresses **domain-major blocks** spanning many hours. A block header carries what
-every frame in it shares:
+## 1. Time, blocks and frames
+
+### 1.1 Ticks and cadence
+
+**There is one time coordinate for the whole file: the tick.** The container declares
+`ticks_per_hour_log2` once; a tick is `1 / 2^ticks_per_hour_log2` of a game hour, and every
+timestamp in this format — block bases, frame deltas, gap ranges, symbol availability — is an
+absolute tick index from campaign hour 0.
+
+One global unit is what makes timestamps comparable. Symbol availability, seek positions and gaps
+all span domains, so a per-domain unit would make "is this symbol available yet" and "which gap
+came first" unanswerable.
+
+**A domain's schema separately declares `cadence_log2`**: it samples `2^cadence_log2` times per
+game hour, `0` — once per hour — by default and by far the common case. `cadence_log2` must not
+exceed `ticks_per_hour_log2`. A domain samples on ticks that are multiples of
+`2^(ticks_per_hour_log2 − cadence_log2)`.
+
+A domain's **sample stride** is `2^(ticks_per_hour_log2 − cadence_log2)` ticks — the spacing
+between the ticks it may occupy. Every frame of that domain lands on a multiple of its stride.
+
+Finer cadence is declared, never assumed. DECISIONS requires the rendered replay to match the game,
+so a domain whose appearance is visibly wrong at hourly resolution raises its cadence and carries
+the rendered evidence that hourly was not enough. Cadence costs only the domain that declares it.
+
+`ticks_per_hour_log2` is not free, though: `tag` packs `tick_delta` above three `kind` bits, so a
+one-byte tag holds `tick_delta ≤ 15` and an hourly domain's one-hour delta stays one byte only
+while `ticks_per_hour_log2 ≤ 3`. Above that every hourly frame in the file costs a second tag byte.
+That is the trade the value is chosen against (§13).
+
+### 1.2 Blocks
+
+The container compresses **domain-major blocks** spanning many hours. A block carries frames for
+exactly one `(domain, branch)`. The header carries what every frame in it shares:
 
 | Block header | Type |
 |---|---|
 | `domain` | `varint` |
 | `branch` | `varint` |
 | `schema_hash` | `u64` |
-| `first_hour` | `varint` |
+| `first_tick` | `varint` |
 
+`cadence_log2` comes from the schema, so it is covered by `schema_hash` and is not repeated here.
 Hoisting `domain` and `branch` out of every frame saves 2–3 bytes on each of ~7 million frames.
 
-Each frame:
+### 1.3 Frames
 
 | Field | Type | Meaning |
 |---|---|---|
-| `len` | `varint` | byte length of `kind` + `body` |
-| `kind` | 3 bits, packed with the low bits of `hour_dd` | see below |
-| `hour_dd` | `zigzag` | second difference of `hour`; **reset at every block start and every `BASELINE`** |
-| `body` | bytes | per `kind` |
+| `len` | `varint` | byte length of everything after `len` — `tag` + `body` |
+| `tag` | `varint` | `(tick_delta << 3) \| kind` |
+| `body` | `len` − sizeof(`tag`) bytes | per `kind` |
 
-**`len` exists so an undecodable frame is skippable.** Without it, one domain a reader cannot
-decode (unknown schema, §6) makes every later frame in the block unreachable — turning a
-per-domain typed gap into an all-domains gap.
+`kind` is `tag & 7`; `tick_delta` is `tag >> 3`.
 
-**`hour_dd` is signed and chains reset at block boundaries.** Reload branches move hours backwards
-and cadence changes make second differences negative, so unsigned is unencodable. Resetting at
-block starts is what keeps a block independently decodable.
+| `kind` | Name | Part | Body |
+|---:|---|---|---|
+| `0` | `BASELINE` | state | complete, **self-contained** canonical state |
+| `1` | `DELTA` | state | changes since the reconstructed prior state |
+| `2` | `UNCHANGED` | state | `varint` run length in **sample ticks**, `≥ 1` |
+| `3` | `EVENTS` | event | append-only batch |
+| `4`, `5` | reserved | **state** | skipped by `len`; covers exactly one tick |
+| `6`, `7` | reserved | **event** | skipped by `len`; covers exactly one tick |
 
-| `kind` | Name | Body |
-|---:|---|---|
-| `0` | `BASELINE` | complete, **self-contained** canonical state |
-| `1` | `DELTA` | changed rows and tombstones |
-| `2` | `UNCHANGED` | `varint` run length in hours |
-| `3` | `GAP` | typed gap record |
-| `4` | `EVENTS` | append-only batch |
+**Reserved kinds are assigned to a part in advance** so that a reader which cannot decode one still
+knows which chain its `tick_delta` advances. Without that assignment, skipping an unknown frame
+would leave every later timestamp in the block ambiguous, which is the opposite of what `len` is
+for.
 
-`UNCHANGED` carries a **run length**, so a domain static for a year is one frame, not 8,760. With
-`domain` and `branch` hoisted, that frame is ~3 bytes.
+### 1.4 The two time chains
 
-**A `DELTA` or `UNCHANGED` frame is invalid before a `BASELINE` in its `(domain, branch)`.** Hard
-error to the writer and CI; to the reader, a typed gap for that domain until its next baseline.
-Every discontinuity — gap, restart, rollover, branch — forces a `BASELINE`.
+**A block carries two independent frame sequences — the state part and the event part — each with
+its own time chain.** `kind` says which part a frame belongs to (including reserved kinds), so no
+discriminator is needed.
+
+- `tick_delta` is an unsigned first difference against **the previous frame of the same part**,
+  measured from that frame's **last covered tick**. Last covered tick differs from tick only for
+  `UNCHANGED`, which spans a run.
+- **`first_tick` is the tick of the block's first frame**, and each part's first frame measures
+  `tick_delta` from it. The opening frame therefore carries `tick_delta = 0`; the other part's
+  first frame carries its own offset from `first_tick`, which may be any value. A hybrid block whose state opens at tick 0 and whose first
+  event batch lands at tick 500 encodes the latter as `tick_delta = 500`.
+- **Frames are written in nondecreasing order of their own tick; at equal ticks the state frame
+  precedes the `EVENTS` frame.** That fixes exactly one byte order.
+
+**Each `(domain, branch, tick)` carries at most one state observation and at most one event batch,
+across the whole file — not merely within a block.** A tick is covered by exactly one state frame
+or one `UNCHANGED` run, never both and never twice. **The blocks of one `(domain, branch)` cover
+disjoint tick ranges**, where a block's range is the hull from `first_tick` to the last tick
+covered by either part. Without this, two blocks could each claim the same tick and a reader would
+have no rule for which wins.
+
+Independent chains are what make hybrid domains (§10) framable: a tick carrying events while the
+state part is quiet needs the event frame not to disturb the state part's run. Nothing inside a
+block goes backwards — a block is one `(domain, branch)` with its own `first_tick`, so a reload
+branch starts a new block rather than moving time backwards, and a cadence change starts a new
+block because cadence is part of the schema.
+
+**`len` exists so a corrupt or unrecognised frame is skippable** without abandoning the rest of the
+block. A reader that meets a reserved `kind`, or a body it cannot parse, skips `len` bytes and
+continues; both chains survive because `tag` is always readable and its part is known. The block's
+own domain is decided by its header, so an unknown *schema* is refused at block level and never
+costs another domain anything.
+
+Gaps are not a frame kind. They live in the container's gap stream (§8), so a gap spanning every
+domain is written once rather than eighty times.
+
+### 1.5 `UNCHANGED` covers witnessed ticks only
+
+**The run is counted in the domain's own sample ticks, and both endpoints are sample ticks.**
+`UNCHANGED` with run length `N` at tick `t` covers the `N` consecutive sample ticks
+`t, t + S, …, t + (N−1)·S`, where `S` is the domain's sample stride (§1.1). Its **last covered tick
+is `t + (N−1)·S`**, which is what the next frame's `tick_delta` measures from. Counting in ticks
+instead would leave both endpoints free to sit anywhere between samples, so the same history would
+have many encodings.
+
+**A sample tick the domain did not successfully sample is never covered by `UNCHANGED`.** Coverage
+lost to shedding, backpressure, a torn sweep or a failed walk is a gap (§8). Ticks between samples
+are not coverage failures — the domain was never going to look at them. Silence must mean "we
+looked and nothing changed", never "we did not look".
+
+**A run covers exactly the maximal contiguous span of the domain's sample ticks that were sampled
+and unchanged.** It ends at the first sample tick that was gapped, changed, or carried a
+`BASELINE`. `EVENTS` frames never terminate a run — they belong to the other part.
+
+**A gap affecting the state part forces the next state observation to be a `BASELINE`.** State may
+have moved and returned while nobody was looking, so neither a delta nor an `UNCHANGED` can be
+justified across unobserved time. A gap whose `part` is `1` — event-only — does not: it says
+nothing about state, and forcing a baseline there would be an expensive lie about what was lost.
+
+This makes thinned sampling genuinely expensive — a domain missing every other sample emits a
+baseline every other sample — which is why shedding drops whole domains rather than thinning one
+(pattern §8). A domain that lowers its rate permanently changes `cadence_log2`, which is a schema
+change and a new block, not a gap.
+
+**A `DELTA` or `UNCHANGED` frame is invalid before a `BASELINE` in its block.** Hard error to the
+writer and CI; to the reader, a typed gap for that domain until its next baseline. Every state
+discontinuity — a state-affecting gap, restart, rollover, branch, schema or cadence change, or the
+start of a block — forces a `BASELINE` of the state part (§10).
+
+A domain static for a game year therefore costs a `BASELINE` plus an `UNCHANGED` frame of `len` (1)
++ `tag` (1) + run length (2–3) = **4–5 bytes**, rather than 8,760 frames. That figure assumes a
+one-byte tag — `ticks_per_hour_log2 ≤ 3`, §1.1 — and no checkpoint bound (pattern §3.4) firing
+inside the year; a bound that fires splits the run and adds a baseline.
 
 ## 2. Canonical form
 
-`UNCHANGED` and the dedup floor rest on byte-identity, so canonical form must be fully determined:
+`UNCHANGED` and the dedup floor rest on byte-identity, so canonical form must be fully determined.
+Row order depends on the collection's declared shape (§7.3):
 
-- **Rows are sorted by stable key**, never by walk order. d64 swap-removes on dispatch, physically
-  reordering survivors whose state did not change; walk order would make an unchanged hour differ
-  and silently disable dedup.
-- **Set- and map-valued fields are sorted by their key.**
-- **Tombstone lists are sorted.**
-- **Rounding is half-to-even** for `fixed(k)` and `ratio(d)`.
+| Shape | Canonical row order |
+|---|---|
+| **keyed set** | sorted **numerically** ascending by the full key tuple, key position order |
+| **ordered keyed list** | source order |
+| **ordered occurrence list** | source order |
+
+**Numerically**, because a signed (kind `1`) component sorts differently by zigzag code than by
+value, and only numeric order makes §7.4's non-negative first-component difference true.
+
+**Source order is the data** for both ordered shapes. Sorting them destroys state the game itself
+maintains, which the governing rule forbids outright.
+
+Within a row:
+
+- **Tombstone lists are sorted** by the full key tuple.
+- **Rounding is half-to-even** for `fixed(k)` and `ratio(d)`, per the arithmetic pinned in §6.
+
+**A field is never itself a collection.** A set or list owned per row is modelled as its own
+top-level collection, keyed by the parent's key. There is no nested-collection encoding and no kind
+code for one, so a schema that needs a per-row set declares two collections.
 
 Any nondeterminism here is a size bug, not a cosmetic one.
 
-## 3. Records: presence and unknown
+## 3. Records
+
+**Key fields never appear in a record body.** In a keyed collection a row is its key (§7.2)
+followed by a record of the **non-key fields only**; every bitmap and change mask below indexes
+non-key fields. An occurrence list has no key, so its record covers all of its fields. Encoding a
+key once removes both the duplication and any question of what a disagreement between two copies
+would mean.
+
+A record is four bitmaps followed by values:
 
 ```
-  presence bitmap   ceil(O/8) bytes   one bit per OPTIONAL field, schema order
-  unknown bitmap    ceil(P/8) bytes   present ONLY if the record's kind byte sets bit 0
-                                      one bit per PRESENT field, in ascending field order
-  [ bit-packed region ]               enums and booleans, schema order, LSB-first, byte-aligned end
-  [ varint / zigzag values ]          remaining present, non-unknown fields, schema order
+  presence bitmap    ceil(O/8) bytes, O = optional non-key fields in the schema; one bit per
+                     optional field, schema order. Omitted entirely when O = 0.
+  null bitmap        one bit per PRESENT NULLABLE field, ascending schema order
+  unknown bitmap     one bit per PRESENT UNKNOWN-CAPABLE field, ascending schema order
+  escape bitmap      one bit per PRESENT QUANTIZED field, ascending schema order
+  [ bit-packed region ]   enums, booleans, and ratio(d) values whose escape bit is CLEAR, that
+                          carry a value, schema order, LSB-first, zero-padded to a byte boundary
+  [ value bytes ]         remaining fields that carry a value, schema order — including any
+                          escaped ratio(d), which carries raw f64 here rather than bit-packed
 ```
+
+**The presence bitmap is always `ceil(O/8)` bytes**, fixed by the schema alone. Sizing it by how
+many optional fields are present would be circular — the reader needs the bitmap to know that.
+
+**The other three bitmaps exist iff the schema declares at least one non-key field with that
+capability, and each is `ceil(q/8)` bytes where `q` is the number of qualifying fields the presence
+bitmap says are present.** A row in which no qualifying field is present spends zero bytes on that
+bitmap. This is what makes four states cost nothing on records that need none of them.
 
 Fields the schema marks **required** carry no presence bit — a bit spent on a field that can never
 be missing costs a byte per row on wide records for nothing. d56 has nine non-key fields of which
@@ -92,191 +248,557 @@ at least `fleet_id` and `owner_tag_db_id` are structurally required.
 
 **Absent, null, zero and unknown are four different things.** This is a fidelity rule:
 
-| State | Encoding |
-|---|---|
-| **absent** — not applicable, or unsupported by this schema | presence bit `0` |
-| **null** — applicable, the relation genuinely points at nothing | presence bit `1`, unknown bit `0`, declared `nullable` marker |
-| **zero** — applicable, value is 0 | presence bit `1`, unknown bit `0`, value `0` |
-| **unknown** — applicable, not captured | presence bit `1`, unknown bit `1`, **no value bytes** |
+| State | Encoding | Value bytes |
+|---|---|---|
+| **absent** — not applicable, or unsupported by this schema | presence bit `0` | none |
+| **null** — applicable, the relation genuinely points at nothing | presence `1`, null `1` | **none** |
+| **zero** — applicable, value is 0 | presence `1`, null `0`, unknown `0`, value `0` | yes |
+| **unknown** — applicable, not captured | presence `1`, unknown `1` | **none** |
+
+Exactly one state holds per field. **A field may set at most one of its null and unknown bits, and
+its escape bit only when it carries a value** — presence `1`, null `0`, unknown `0`. Any other
+combination is corrupt: the reader rejects the frame and gaps that domain until its next baseline.
+Letting one silently win would let a writer bug pass as data.
 
 **Known-null is not not-applicable.** d56 distinguishes a task force with no repair target (null,
 and true) from a field this schema does not support (absent). Collapsing them loses the difference
-between "we know there is nothing" and "we do not carry this". A `nullable` field encodes null as a
-dedicated marker, never by clearing its presence bit.
+between "we know there is nothing" and "we do not carry this".
 
-Sentinels (`-1`, `u32::MAX`) are **forbidden** as encodings of absence or unknown: they collide
-with real data, silently.
+Sentinels (`-1`, `u32::MAX`) are **forbidden** as encodings of absence, null or unknown: they
+collide with real data, silently.
 
 ## 4. Scalars
 
-| Kind | Encoding |
-|---|---|
-| unsigned | `varint` |
-| signed | `zigzag` |
-| **monotone counter** | in `BASELINE`: **absolute**. In `DELTA`: `zigzag` **delta-of-delta** against the reconstructed prior value |
-| enum | bit-packed to `ceil(log2(n))` bits |
-| boolean | one bit |
-| content id | `varint` manifest id, §5 |
-| continuous | §6 |
+| Code | Kind | Encoding |
+|---:|---|---|
+| `0` | unsigned | `varint` |
+| `1` | signed | `zigzag` |
+| `2` | monotone counter | **absolute form: `varint`.** In `BASELINE` and wherever else an absolute value is called for, absolute. In `DELTA`: `zigzag` difference against the reconstructed prior value |
+| `3` | enum | bit-packed to `ceil(log2(n))` bits, cardinality `n ≥ 2` declared in the schema |
+| `4` | boolean | one bit |
+| `5` | content id | `varint` symbol id, §5 |
+| `6` | continuous | §6 |
 
-**Baselines are absolute — always.** A baseline whose counter is encoded against "the previous
-frame" would, after a gap, be encoded against a value nobody has. That makes the baseline
-non-self-contained and the counter unrecoverable, which is exactly the permanent-loss defect the
-pattern names. The delta base is the **reconstructed prior value**, not "the previous frame" —
-which may be an `UNCHANGED` run or a `DELTA` that did not carry this field.
+The codes are normative: they appear in the schema serialization (§11).
 
-**Monotone is an encoding hint, never a validity constraint.** d56's `sunk_convoys` is a
-task-force aggregate of per-ship counters, and ships transfer between task forces, so it legally
-decreases. A decoder that rejects a negative delta rejects valid data.
+**The delta base is the reconstructed prior value** — what the field holds after replaying every
+frame from the last `BASELINE` up to the immediately preceding covered tick. Not "the previous
+frame", which may be an `UNCHANGED` run or a `DELTA` that did not carry this field.
+
+**A field with no concrete prior value is emitted absolute.** If the reconstructed prior state has
+it absent, null or unknown, there is nothing to difference against. The reader sees the same
+reconstructed state, so it knows to expect the absolute form.
+
+**Baselines are absolute — always.** A baseline whose counter is encoded against a previous frame
+would, after a gap, be encoded against a value nobody has, making the baseline non-self-contained
+and the counter unrecoverable.
+
+**Monotone is an encoding hint, never a validity constraint.** d56's `sunk_convoys` is a task-force
+aggregate of per-ship counters, and ships transfer between task forces, so it legally decreases. A
+decoder that rejects a negative delta rejects valid data.
+
+Whether a second difference beats a first for counters is **OPEN** (§13): a steady increment above
+63 costs two bytes as a first difference and one as a second, so the answer is per-field and needs
+corpus evidence.
 
 ## 5. Symbols
 
 Country tags, equipment names, province and state ids are content-defined. The stream carries
-**manifest ids as varints**, never text. Symbols first seen mid-campaign go to an **append-only
-overflow table** keyed by `(branch, first-seen hour)`, so seeking backwards never needs a table not
-yet read. In-stream interning is forbidden — it must be fully read before any seek.
+**manifest ids as varints**, never text.
+
+This format requires that id assignment be **deterministic for a given content set** — two
+recorders on the same content must mint the same id for the same symbol, or no two files are
+comparable and no golden vector is stable. **That assignment rule does not exist yet and is listed
+OPEN in §13.** `PORTABLE_CONTENT_MANIFEST.md` defines content and VFS identity, which is a
+different thing and does not supply it.
+
+**Symbol ids are file-global.** Symbols first seen mid-campaign are appended to a single
+**append-only overflow table** in the container, each entry recording the `(branch, tick)` at which
+it became available — the global tick of §1.1, which is why that unit is file-wide rather than
+per-domain. A per-branch id space would store the same string once per branch at identical
+fidelity, which the size rule forbids.
+
+A reader seeking to tick `T` on branch `B` needs the overflow table's entries whose first-seen tick
+is `≤ T` on `B` or an ancestor branch. That is a container read, not a stream scan. **In-stream
+interning is forbidden** — it must be fully read before any seek.
 
 ## 6. Continuous values, quantization, derived fields
 
 Each continuous field declares one of:
 
-- `exact` — IEEE bits preserved. **The default.**
-- `fixed(k)` — value × 10^k, half-to-even, zigzag varint.
-- `ratio(d)` — a 0..1 fraction as a `d`-bit unsigned where `1.0` maps to `2^d − 1`.
+- `exact` — the `f64` bit pattern, 8 bytes, in the value region. **The default.**
+- `fixed(k)` — `zigzag(scale(v, 10^k))` in the value region, **`0 ≤ k ≤ 22`**.
+- `ratio(d)` — a `d`-bit unsigned in the bit-packed region, `1 ≤ d ≤ 32`, holding
+  `scale(v, 2^d − 1)`.
 
-**Quantized fields carry an escape.** `fixed(k)` and `ratio(d)` cannot represent NaN, infinities,
-signed zero, or out-of-range values. Each reserves one encoding meaning "exceptional", followed by
-raw IEEE bits. Without it quantization is lossy for values it was never checked against, silently.
+**`scale(v, m)` is pinned to IEEE binary64 arithmetic**: compute `v × m` as a binary64
+multiplication with round-to-nearest-even, then round that result to an integer half-to-even. Both
+steps are named because they disagree: `0.15` under `fixed(1)` yields `2` under this rule and `1`
+under exact-real arithmetic. Every implementation does the binary64 multiplication.
+
+**`k` is bounded at 22 so the multiplier itself is unambiguous.** Every power of ten up to `10^22`
+is exactly representable in binary64; past that, a writer computing `10^k` by repeated
+multiplication and one converting the decimal literal land on adjacent binary64 values and round
+the same input to different integers. Within the bound there is one multiplier and no way to
+disagree. `2^d − 1` is exact for every `d ≤ 32` by construction.
+
+### What may be quantized
+
+A field is `exact` unless its quantization is justified in the domain document, and **two
+independent tests can each veto it**:
+
+- **The outcome test.** Not for a value whose exact magnitude explains a threshold crossing, where
+  rounding changes the story the replay tells.
+- **The appearance test.** Not for a value the viewer draws from — position, progress along a path,
+  orientation, scale, blend weight, anything animated or interpolated. DECISIONS requires the
+  rendered replay to match the game; a rounded position does not change any outcome, it just makes
+  a unit stutter where the game glides, and the outcome test alone would let that through.
+
+A field that survives both tests may be quantized. One that fails either is `exact`.
+
+**The escape is a bitmap bit, not a reserved code.** A quantized field whose escape bit (§3) is set
+carries raw `f64` bits, 8 bytes, in the value region instead of its quantized form. Reserving a
+code inside the value cannot work: `ratio(d)` spends all `2^d` codes on the range, and `fixed(k)`
+is an unbounded zigzag varint with no spare code at all. A bitmap bit costs nothing when unused and
+works identically for both kinds.
+
+**The escape fires in exactly these cases, and no others:**
+
+- any non-finite value — NaN or ±infinity — or negative zero;
+- for `ratio(d)`, any `v` outside `[0.0, 1.0]`;
+- for `fixed(k)`, any `v` whose `scale(v, 10^k)` is not representable as an `i64`.
+
+Ordinary rounding loss is **not** an escape condition — quantization exists to round, and escaping
+on it would defeat the declaration entirely. Every `f64` takes exactly one branch, with no declared
+range to disagree about.
+
 A field whose escape fires often is mis-declared and reverts to `exact`.
 
-A field is `exact` unless its quantization is justified in the domain document. Quantization is
-licensed by comprehension-grade fidelity, but **not** for a value whose exact magnitude explains a
-threshold crossing.
-
 An unquantized float that jitters in its low bits is never byte-identical, so it defeats
-`UNCHANGED` and inflates every delta. This is where fidelity and size actually trade, per field,
-in writing.
+`UNCHANGED` and inflates every delta. This is where fidelity and size actually trade, per field.
 
-### Derived fields — the largest single saving available
+### Derived fields
 
-A field that changes **deterministically with the clock** may be declared `derived(expr)` and
-stored in a form that does not change. The motivating case is d64: `remaining_hours` decrements by
-exactly one every hour, so every pending row emits a delta every hour forever. Storing
-`due_hour = frame_hour + remaining_hours` is a **lossless bijection** given the frame hour — and it
-is what replay already computes — but the row now stays constant until the event is created or
+A field that changes **deterministically with the clock** may be declared `derived` and stored in a
+form that does not change. The stored value is
+
+```
+  stored = v + c × (frame_tick >> u)
+```
+
+for a declared integer `c` and a declared shift `u`, `0 ≤ u ≤ ticks_per_hour_log2`, computed in
+`i64`; overflow is a hard writer error, not a wrapped value.
+
+**A derived field's stored value is always encoded as an absolute `zigzag`, whatever its kind and
+whatever the frame.** Zigzag because the transform can carry an otherwise unsigned quantity
+negative; absolute because kind `2`'s `DELTA` differencing rule (§4) does not apply to a derived
+field — a stored value that is constant by construction has nothing to difference against, and
+allowing both readings would make `zigzag(stored)` and `zigzag(stored − prior)` equally defensible.
+
+**The shift exists because a field's clock is not always the tick.** A countdown measured in game
+hours advances once per `2^ticks_per_hour_log2` ticks, so a per-tick coefficient cannot hold it
+constant for any integer `c`: the value would drift by `2^ticks_per_hour_log2 − 1` every hour and
+the domain would emit a delta on every sample forever — the exact cost the mechanism exists to
+remove. `u` names the field's own unit; `u = ticks_per_hour_log2` makes the term the game hour.
+
+The transform is **clock-linear only**. An arbitrary expression would need a grammar, an evaluator
+and its own determinism proof, and the one saving that motivates it is d64: `remaining_hours`
+decrements by exactly one every game hour
+(`extractor/documents/domains/d64_delayed_events_live.md:27`), so every pending row would otherwise
+emit a delta every hour forever. Declared with `c = 1` and `u = ticks_per_hour_log2`, the stored
+value is `remaining_hours + frame_hour` — the due hour, a lossless bijection given the frame tick,
+and what replay already computes. The row then stays constant until the event is created or
 dispatched, collapsing the domain to `UNCHANGED` runs.
 
-A domain author must check every field against this before accepting an hourly delta. A field that
-changes every hour by a constant is a red flag, not a fact of life.
+A domain author checks every field against this before accepting a per-sample delta, **and states
+the field's clock unit when doing so**. A field that changes every sample by a constant is a red
+flag, not a fact of life.
 
-## 7. Delta frames
+## 7. State frame bodies
+
+A domain's schema declares an ordered list of collections.
+
+`BASELINE` body — every collection, in schema order:
+
+```
+  row count           varint
+  [ row ]             in canonical order (§2)
+```
+
+`DELTA` body:
+
+```
+  collection change bitmap   ceil(C/8) bytes, C = collections in the schema, schema order
+  [ contribution ]           for each collection whose bit is set, in schema order
+```
+
+**A collection whose bit is clear contributes no bytes.** Without the bitmap, an ordered collection
+would be fully re-serialized every time any *other* collection changed — d56's supremacy list
+re-emitted whenever one task force moved. That is pure waste at identical fidelity.
+
+**What a set collection contributes depends on its shape:**
+
+- **keyed set** — the delta grammar below.
+- **ordered keyed list, ordered occurrence list** — a **full replacement**: `varint` row count then
+  every row, identical to that collection's `BASELINE` contribution. An ordered collection has no
+  delta grammar, so "changed" means "replaced".
+
+A mixed-shape domain is therefore encodable in one frame: d56's task-force map contributes a delta
+while its supremacy list contributes a replacement, or nothing at all.
+
+### 7.1 Minimality
+
+A `DELTA` must be the *only* encoding of what changed, so every level of it is pinned:
+
+- **A collection's bit is set if and only if its reconstructed content differs this tick.** A set
+  bit whose keyed contribution carries zero changed rows and zero tombstones is invalid; so is a
+  set bit whose ordered replacement is byte-identical to the reconstructed prior content.
+- **A change mask bit is set if and only if that field's state or value differs.** An all-zero
+  change mask is invalid, and so is a mask bit on a field whose value is re-emitted unchanged.
+- **A `DELTA` whose change bitmap is all zero is invalid** — that state is `UNCHANGED`.
+
+Each of these would otherwise be a second legal encoding of "nothing happened", which both splits
+byte-identity and wastes bytes at equal fidelity.
+
+A keyed set's key sets are likewise exact, or one update could be split across two rows:
+
+- **Every key appears at most once** across the changed-row list, and at most once across the
+  tombstone list.
+- **The two lists are disjoint** — a key is updated or deleted this tick, never both.
+- **The changed-row list is exactly the keys that are new this tick plus the surviving keys whose
+  record content differs**, no more and no fewer. Omitting a changed or newly-inserted row loses
+  data without breaking any of the rules above, so it is stated as its own requirement.
+- **The tombstone list is exactly the keys present in the reconstructed prior state and absent
+  now**, no more and no fewer. A tombstone for a key that was already absent is invalid, and so is
+  omitting one for a key that has genuinely gone.
+
+### 7.2 Keyed-set delta grammar
 
 ```
   changed row count   varint
-  [ key, change mask, new presence bits, new unknown bits, values ]
+  [ changed row ]
   tombstone count     varint
-  [ key ]             sorted
+  [ key ]             sorted, delta-encoded per §7.4
 ```
 
-**A change mask alone cannot express a field becoming absent or unknown**, and that transition is
-routine: d56's repair-target province pointer goes non-null → null the moment a repair completes.
-One bitmap cannot both select changed fields and carry their new state. So a changed row carries
-the change mask *plus* the new presence and unknown bits **for the changed fields only**; values
-follow for those that are present and not unknown.
+**Every changed row begins with its key**, encoded per §7.4. The reader reads the key, looks it up
+in the state it has already reconstructed, and only then knows which grammar follows:
 
-Without this a writer must either drop the transition — leaving a stale repair target in every
+- **key not present → insert.** The rest of the row is a full record per §3 — non-key fields only,
+  since the key prefix already carried the key.
+- **key present → update.** The rest of the row is:
+
+```
+  change mask         ceil(F/8) bytes, F = non-key fields, one bit each, schema order
+  new null bits       bitmap, one bit per CHANGED NULLABLE field, ascending changed-field order
+  new unknown bits    bitmap, one bit per CHANGED UNKNOWN-CAPABLE field, ascending order
+  new escape bits     bitmap, one bit per CHANGED QUANTIZED field, ascending order
+  new presence bits   bitmap, one bit per CHANGED OPTIONAL field, ascending order
+  [ bit-packed region ]   changed fields that carry a value, zero-padded to a byte boundary
+  [ value bytes ]         changed fields that carry a value
+```
+
+Each of the four bit groups is a §0 bitmap: byte-aligned, zero-padded, zero bytes when empty. A
+changed field whose new state is absent, null or unknown carries **no value**. **A changed field
+whose new presence bit is `0` has its null, unknown and escape bits `0`** — it is absent, and the
+other three states describe present fields.
+
+**A change mask alone cannot express a field becoming absent, null or unknown**, and that
+transition is routine: d56's repair-target province pointer goes non-null → null the moment a
+repair completes. One bitmap cannot both select changed fields and carry their new state. Without
+the extra bits a writer must either drop the transition — leaving a stale repair target in every
 reconstruction until the next baseline — or emit a whole baseline for one cleared pointer.
 
-### Collection shapes
+Keys are immutable: a row whose key changes is a tombstone plus an insert, never an update.
 
-**Not every collection is a keyed set, and treating one as such destroys data.** A schema declares
-each collection as one of:
+### 7.3 Collection shapes
 
-- **keyed set** — unique stable key, upsert and tombstone semantics. The default.
-- **ordered occurrence list** — order is meaningful and duplicates are legitimate. d56's naval
-  supremacy is exactly this: `world_fold.rs:22123` records that the game's naval-dominance array
+**Not every collection is a keyed set, and treating one as such destroys data.** Each collection
+declares one shape:
+
+- **keyed set** — unique stable key, no meaningful order. Upsert and tombstone semantics. The
+  default, and **the only shape with a delta grammar**.
+- **ordered keyed list** — unique stable key **and** meaningful physical order. d11 production is
+  this: `extractor/documents/domains/d11_production_live.md:51`–`:52` records that conveyor and
+  line `(id,type)` pairs are lifecycle keys and that source order is authoritative with contiguous
+  ordinals, and the codec enforces ordinal contiguity and key uniqueness at
+  `extractor/native/lanes/country_economy_production_stockpile_live/src/deployment_queue.rs:373`–`:376`
+  and `:419`–`:422`. **Full replacement only.**
+- **ordered occurrence list** — meaningful physical order, duplicates legitimate, no unique key.
+  d56 naval supremacy is this: `extractor/native/recorder_host/src/world_fold.rs:22123` classifies
+  it as an order-preserving occurrence list, and `:22131`–`:22133` records that the game's array
   "can carry several distinct entries for the same `(region, controller)`; collapsing them would
-  lose data", and that a delta frame against such a list would **double-append** rather than upsert.
-  **Emitted as full replacement only — `DELTA` is forbidden for them**, which is what production
-  already does.
-- **ordered keyed list** — unique keys, meaningful physical order. Deltas carry an explicit
-  position, never an implied one.
+  (`extractor/documents/domains/d64_delayed_events_live.md:27`). **Full replacement only.**
 
-**A domain with legitimately duplicate identities is an occurrence list, not a broken keyed set.**
-d64 is the case: two pending instances of one event for one owner differ only in their countdown,
-so no unique stable key exists and duplicate-key rejection would gap valid hours forever. Declared
-as an occurrence list it is emitted as full replacement, and both the duplicates and the physical
-order survive.
+A delta against either ordered shape would **double-append** rather than upsert, which is why
+production already full-replaces them.
 
-This costs nothing here, which is why it is the right answer rather than a concession: combined
-with the `derived` due-hour transform (§6) the replacement bytes are **constant between creation
-and dispatch**, so `UNCHANGED` still fires and the domain stays near-silent. Full replacement is
-only paid on the hours something actually happens, and d64 carries few enough rows that those
-hours are cheap.
+**A domain with legitimately duplicate identities is not a broken keyed set.** d64's duplicates
+carry a `scope.random` seed that the oracle folds into its join key
+(`extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs:523`–`:527`),
+so they are not identical — but that seed is not proven stable or unique across a reload, so it
+cannot be a wire key. As an occurrence list, d64 needs no key at all and both the duplicates and
+the order survive.
+
+Full replacement costs little here: combined with the `derived` due-tick transform (§6) d64's
+replacement bytes are **constant between creation and dispatch**, so `UNCHANGED` still fires and
+the domain stays near-silent. Replacement is paid only on ticks something happens.
 
 A domain that has not declared its collection shapes is not reviewable: the same bytes mean
 different things under each.
 
-**Keys may be composite.** A key is the schema's declared key field list, encoded in schema order;
-d64's identity is `(owner_tag_db_id, event_id)`. Keys in both lists are **sorted and
-delta-encoded** against the previous key, which cuts key bytes substantially in key-heavy frames.
+### 7.4 Key encoding
+
+**A key member is restricted to kinds `0` (unsigned), `1` (signed) and `5` (content id)** — the
+three that encode as a self-delimiting varint or zigzag on their own. Enums and booleans live in a
+record's shared bit-packed region and have no bit container in a key prefix; a monotone counter's
+encoding depends on frame context. A schema declaring any other kind as a key member is invalid
+(§11).
+
+A key is the schema's key fields in `key_position` order. A component is **absolute** when encoded
+by its §4 kind encoding.
+
+- **Keyed set — `BASELINE` rows, `DELTA` changed rows, tombstones.** All three lists are sorted by
+  the full key tuple, so all three use the same scheme: **the first component of the first row is
+  absolute; each subsequent row's first component is an unsigned `varint` difference from the
+  previous row's; every later component is absolute.** Sorted order makes the first component
+  non-decreasing, so the difference is never negative and plain `varint` beats `zigzag` by a bit.
+  Later components jump around under sort and would not compress.
+- **Ordered keyed list rows.** Source order, not key order, so a difference has no reason to be
+  small or non-negative: **every component is absolute.**
+- **Ordered occurrence lists** have no key.
 
 **A delta may only be emitted from a walk proven complete** (pattern §3.2). An incomplete walk
-makes missing keys look like deletions and the tombstone list would encode real data loss as
-intent. An unproven walk emits `GAP` and the prior state stands.
+makes missing keys look like deletions, and the tombstone list would encode real data loss as
+intent. An unproven walk emits a gap and the prior state stands.
 
-## 8. Gap frames
+## 8. Gaps
 
-Gaps are frames, not absences of frames. Per DECISIONS a gap carries range, reason, affected
-domains and witness.
-
-A gap in a domain-major block covers that block's domain; its `hour_dd` is the gap start.
+Gaps are recorded, never implied by absence. Per DECISIONS a gap carries range, reason, affected
+domains and witness. **Gaps live in a container-level gap stream, not inside domain blocks** — one
+record whatever its breadth, decodable without decoding any domain block, so a reader that refuses
+one domain still sees every gap.
 
 | Field | Type |
 |---|---|
-| `hour_end_delta` | `varint` from gap start; `0` is a single hour |
-| `reason` | `u8` — torn sweep, source unavailable, partial data, coalesced, skipped, bridge unavailable, worker panic, coverage shortfall, backpressure |
-| `witness_kind` | `u8` discriminator |
-| `witness` | per kind: counter id + observed value, or status bits |
+| `tick_start` | `varint` — global ticks, §1.1 |
+| `tick_end_delta` | `varint` from `tick_start`; `0` is a single tick |
+| `branch` | `varint` |
+| `reason` | `u8` |
+| `part` | `u8` — `0` state, `1` event, `2` both |
+| `domain count` | `varint` |
+| `domain` × count | `varint`, sorted ascending, delta-encoded against the previous |
+| `witness_kind` | `u8` |
+| `witness` | per kind |
 
-A gap spanning **all** domains is emitted once per affected domain block. There is no
-multi-domain gap frame — one frame, one domain, so a reader that refuses one domain still reads
-the others' gaps.
+`part` is what lets a gap in a hybrid domain's event stream leave its reconstructed state valid
+(§10).
+
+**One normalisation algorithm is pinned**, because a set of gapped domains has many otherwise-legal
+groupings. "Maximal" alone does not choose: if A is gapped over ticks 1–3 and B over 2–4, then two
+per-domain records and the three slices `{A}`, `{A,B}`, `{B}` are all maximal in their own terms.
+
+Stored ranges are **inclusive** — `tick_end_delta = 0` is one tick — so normalisation first
+converts each to the half-open interval `[tick_start, tick_start + tick_end_delta + 1)` and
+converts back on emit.
+
+Within one `branch`, run this:
+
+1. Take every gapped observation as a half-open interval keyed by
+   `(domain, part-component, reason, witness)`. **`part = 2` is two observations**, one per
+   component, so overlap is always compared component-wise and never by the literal byte.
+2. **Resolve overlapping causes.** If one `(domain, part-component)` is covered at the same tick by
+   observations with different `reason` or `witness`, keep the one with the **lowest `reason` code**
+   and, if still tied, the lowest `witness_kind` then the lexicographically smallest witness
+   payload. Overlap for one component is a single fact with one best explanation; recording two
+   would both duplicate and violate the overlap ban below.
+3. **Cut the timeline at every surviving interval endpoint**, giving elementary intervals over
+   which the whole affected map is constant by construction.
+4. **Merge adjacent elementary intervals** whose affected map — every
+   `(domain, part-component) → (reason, witness)` entry — is identical.
+5. **Emit per interval, grouped by `(reason, witness)`, then by part signature.** Within a group,
+   a domain gapped in both components goes in a `part = 2` record, one gapped in state only in a
+   `part = 0` record, and one gapped in event only in a `part = 1` record. **Up to three records
+   per group per interval, and empty ones are not emitted.** A record carries one `part` byte for
+   its whole domain list, so a torn sweep hitting pure-state and hybrid domains together cannot be
+   one record — it is two.
+
+Deterministic and terminating: step 2 is a total order on causes, step 3 depends only on endpoints,
+step 4 only on equality. For A over ticks 1–3 and B over 2–4, both state-only, same reason and
+witness, it yields exactly `{A}` over 1, `{A,B}` over 2–3, `{B}` over 4.
+
+**No two records overlap** in time for the same `(domain, part-component, branch)`.
+
+**Records are sorted by `(tick_start, branch, reason, part, first domain)`**, which is total: two
+records sharing all five would have to overlap in a component, which step 2 and the ban forbid.
+
+| `reason` | Meaning |
+|---:|---|
+| `0` | torn sweep |
+| `1` | source unavailable |
+| `2` | partial data |
+| `3` | coalesced |
+| `4` | skipped |
+| `5` | bridge unavailable |
+| `6` | worker panic |
+| `7` | coverage shortfall |
+| `8` | backpressure |
+
+| `witness_kind` | Payload |
+|---:|---|
+| `0` | counter: `varint` counter id, `varint` observed value |
+| `1` | status bits: `varint` bit width, then `ceil(width/8)` bytes |
+| `2` | coverage: `varint` observed, `varint` expected |
+| `3` | tick bracket: `varint` start tick, `varint` end tick |
+| `4` | tick discontinuity: `varint` previous tick, `varint` next tick |
 
 ## 9. Event frames
 
 ```
-  high-water mark   varint   position AFTER this batch
-  event count       varint
-  [ event record ]           per §3
+  event count       varint, ≥ 1
+  [ event record ]           §3, in occurrence order
+  frontier                   the schema's frontier tuple, AFTER this batch
 ```
 
-The mark is **after** the batch, so a restart resumes from it without re-reading or skipping. No
-baselines, no tombstones. A gap means "events between A and B were not captured" — encoded with
-its own reason so the viewer can say that rather than "state unknown".
+Events are written in **occurrence order** and never reordered. **One `EVENTS` frame per tick per
+`(domain, branch)`, carrying every event for that tick.** Empty batches are invalid and a second
+batch at the same tick is invalid, so a given set of events has exactly one legal framing.
+
+**The frontier is composite and schema-defined**, not a single scalar. The schema declares an
+ordered list of frontier components, each with a `component_id`, and designates exactly one as the
+**sequence**; the rest are **epoch** components. The frame carries one `varint` per component.
+
+d64's continuity is `(hook_epoch, sequence)`:
+`extractor/native/recorder_host/src/world_fold.rs:9551`–`:9553` reads `hook_epoch`,
+`first_sequence` and `last_sequence`, and the epoch check at `:9500`–`:9510` refuses continuity
+across an epoch change — the `Some(_) => false` arm — even when the sequence numbers look
+contiguous. A single high-water mark cannot express that: after a reattachment the epoch changes
+while sequences may restart or appear to continue, so a scalar mark would let d64 silently
+duplicate or skip lifecycle events.
+
+Continuity rules:
+
+- A batch whose **epoch components differ** from the previous batch's is a discontinuity: the
+  reader emits a gap for that domain's event part rather than assuming the streams join.
+- Within one epoch, the batch's frontier sequence must equal the previous frontier's sequence plus
+  `event count`. Any other value is a discontinuity and a gap.
+- **The first batch of a `(domain, branch)`, and the first batch after a recorded event-part gap,
+  establish the frontier rather than being checked against one.** Continuity across a gap is
+  exactly what the gap says was lost; re-checking it would turn one recorded gap into a permanent
+  refusal of everything after it.
+
+The frontier is recorded **after** the batch, so a restart resumes from it without re-reading or
+skipping. No baselines, no tombstones. A gap here means "events between A and B were not
+captured", carried with its own reason so the viewer says that rather than "state unknown".
 
 ## 10. Hybrid domains
 
-A domain may declare **both** shapes — d64 is mutable pending state *plus* an append-only
-lifecycle trailer. Its block then carries state frames and `EVENTS` frames under one `domain`, and
-each part follows its own rules. **`UNCHANGED` and the dedup floor scope over the state part
-only**; an event batch never makes the state part look changed, and a quiet state part never
-suppresses events.
+A domain may declare **both** parts — d64 is mutable pending state *plus* an append-only lifecycle
+trailer. Its block carries state frames and `EVENTS` frames under one `domain`, on the two
+independent time chains of §1.4, and each part follows its own rules.
+
+Every rule is scoped:
+
+- `BASELINE`, `DELTA`, `UNCHANGED`, the delta-before-baseline rule and the forced-baseline-after-
+  discontinuity rule apply to the **state part only**. Event streams have no baselines; their
+  continuity mechanism is the frontier (§9).
+- **`UNCHANGED` and the dedup floor scope over the state part only.** An event batch never makes
+  the state part look changed, and a quiet state part never suppresses events. An `UNCHANGED` run
+  spans ticks that carry events, because events are on the other chain.
+- A gap record's `part` field selects which part it affects, so a gap in the event stream leaves
+  the reconstructed state valid.
 
 ## 11. Schema, versioning, mods
 
-A schema is an ordered field list — kind, quantization, presence index, key membership — plus its
-declared shape(s).
+A schema describes a domain: its cadence, its collections, their shapes and fields, and its event
+part if any.
+
+**`(domain, collection_id, field_id)` is the machine identity of a captured field**, and every
+component is assigned append-only and never reused for a different thing:
+
+- `domain` is unique across the registry and permanent once assigned.
+- `collection_id` is unique within its domain and permanent.
+- `field_id` is unique within its collection and permanent.
+
+Without this a reader holding an unknown schema definition can decode bytes into values but cannot
+say what any of them mean, and the render-coverage ledger (pattern §11) has nothing to join on but
+names — which would silently pair one domain's `status` with another's.
+
+### Canonical serialization
+
+Hashed and stored exactly as below. Every member is a `varint` except `derived_c`, which is
+`zigzag` because a coefficient may be negative.
+
+```
+  format_tag          varint  = 1
+  cadence_log2        varint  log2 of the number of samples per game hour
+  collection count    varint
+  per collection:
+    collection_id     varint
+    shape             varint  0 keyed set, 1 ordered keyed list, 2 ordered occurrence list
+    field list                per the field grammar below
+  event part          varint  0 absent, 1 present
+    if present:
+      field list              per the field grammar below — the event record's own fields
+      frontier count    varint
+      component_id      varint  × frontier count
+      sequence index    varint  which component is the sequence
+
+  field list:
+    field count       varint
+    per field:
+      field_id        varint
+      kind_code       varint  §4 table
+      flags           varint  bit0 optional, bit1 nullable, bit2 unknown-capable,
+                              bit3 key member, bit4 derived
+      key_position    varint  iff bit3 — 0-based position in the key tuple
+      enum_card       varint  iff kind_code = 3
+      quant_code      varint  iff kind_code = 6 — 0 exact, 1 fixed, 2 ratio
+      quant_param     varint  iff quant_code ≠ 0 — k for fixed, d for ratio
+      derived_c       zigzag  iff bit4 — the coefficient
+      derived_u       varint  iff bit4 — the shift naming the field's clock unit
+```
+
+The event part carries its own field list because §9 event records are §3 records: without it the
+hash would not determine how an event decodes, and two domains with different event records could
+share a hash. Frontier `component_id`s are serialized for the same reason — two schemas whose epoch
+components mean different things must hash differently.
+
+Presence bits are assigned to optional non-key fields in schema order, so there is no separate
+presence index to encode: a field is optional iff `flags` bit0 is set, and required fields have no
+bit. Key order is `key_position`, which §2 and §7.4 sort by.
+
+**A schema is invalid — a hard writer and CI error — if:**
+
+- `cadence_log2` exceeds the container's `ticks_per_hour_log2`;
+- an event field list marks a key member (event records have no key prefix);
+- a shape-2 collection marks a key member, or a shape-0 or shape-1 collection declares none;
+- `collection_id` repeats within the domain, or `field_id` repeats within a collection;
+- `key_position` values in a collection are not `0..n-1` exactly once;
+- a key member is optional, nullable, unknown-capable, derived, or of a kind other than `0`, `1`
+  or `5` (§7.4);
+- a `derived` field is not of kind `0`, `1` or `2`, or its `derived_u` exceeds
+  `ticks_per_hour_log2`.
+
+**`schema_hash` is the first 8 bytes of the BLAKE3 digest of those bytes.** Collisions are handled
+by detection, not by hope: the container stores hash → definition, a reader verifies that a stored
+definition rehashes to its key, and **a writer that would store a second, different definition
+under an existing hash fails hard.**
+
+### Storage and change
 
 **Schema definitions are stored in the container, append-only, keyed by hash.** Recording only the
 hash would strand physically-present, losslessly-encoded data behind a version mismatch, turning a
 versioning inconvenience into unreadable data. A reader that meets an unknown hash *and* cannot
-find its definition refuses that domain and reports a typed gap; with the definition present it
-decodes normally.
+find its definition refuses that domain and reports a gap; with the definition present it decodes.
 
-A schema change — game build, mod set, field added or retired — forces a `BASELINE` under the new
-hash. **Field indices are append-only across a domain's schema revisions**: a retired field keeps
-its index so older frames stay decodable.
+A schema change — game build, mod set, cadence, field added or retired — starts a new block under
+the new hash. **The state part forces a `BASELINE` in that block. The event part does not**: it has
+no baselines, and its continuity is carried by the frontier, which crosses a schema change unbroken
+so long as its epoch components do.
+
+Each frame decodes against the definition its block names, so a retired field costs nothing: the
+rule that matters is that **`field_id` is never reused for a different field**.
 
 ## 12. What this format deliberately does not do
 
@@ -286,11 +808,36 @@ redundancy that dominates this workload.
 
 ## 13. Open
 
-- **Column-major blocks** for large homogeneous tables (provinces, divisions) likely beat
-  row-major before compression. **Decided: measured against row-major on the reference domain**,
-  same corpus and harness, before the fan-out. The format commits to row-major only if it wins.
+These are why this document is not yet the fan-out contract. The reference domain (pattern §10)
+closes them on a named corpus and harness before ~80 encoders are written.
+
+- **Column-major blocks** for large homogeneous tables (provinces, divisions) likely beat row-major
+  before compression, and would change the record grammar in §3 and §7. Measured against row-major
+  on the reference domain, same corpus and harness. The format commits to row-major only if it wins.
+- **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
+  domain justifies, and is owned by the container format.
+- **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own
+  rendered-parity evidence — one reference domain proves the pattern and the harness, not another
+  domain's answer.
+- **Counter delta width.** Whether a second difference beats a first for monotone counters (§4) is
+  per-field and needs corpus evidence.
+- **`f32` storage.** Source 32-bit floats are widened to `f64` (§0). Whether a declared 4-byte form
+  pays after compression is unmeasured.
+- **Position-delta encoding for ordered keyed lists.** Full replacement is specified and safe; a
+  position-op grammar is worth defining only if measurement shows replacement costs too much.
+- **Block span.** The committed benchmark shows 48-hour blocks beating 24-hour; the trade is
+  against a seek budget with no ratified number.
 - **Per-domain zstd dictionaries** trained on baselines — 10–40% is an unverified target.
-- **Block span** is unsettled: the committed benchmark shows 48-hour blocks beating 24-hour, and
-  the trade is against a seek budget with no ratified number.
-- **Column-major blocks** are measured as part of the reference domain (§10 of the pattern), using
-  the same corpus and harness, before the fan-out commits ~80 encoders to a layout.
+- **Aggregate budget numbers.** The pattern's four budgets exist as a mechanism with no ratified
+  values.
+- **Tick origin and branch id assignment.** Both are consumed here and owned by the container
+  format, which specifies them.
+- **Symbol id assignment (§5).** The rule that makes base and overflow ids deterministic for a
+  given content set, and that orders symbols first seen at the same tick, is unwritten. Golden
+  vectors are not stable until it exists; it belongs with the content manifest, which does not
+  currently carry it.
+- **Golden vectors.** Byte-exact round-trip fixtures covering every state in §3, every shape in
+  §7.3, the escape branches in §6, insert-versus-update and every minimality rule in §7, the two
+  time chains in §1.4, and the frontier discontinuities in §9 are written with the reference
+  domain. Until they exist, "two implementers produce identical bytes" is a claim this document
+  makes and does not yet prove.

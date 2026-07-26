@@ -36,12 +36,12 @@ The user experience is the contract:
 
 ## Fidelity and coverage
 
-- **Comprehension-grade fidelity.** Enough to understand what happened and why, not pixel-exact reproduction.
-- **Hourly target cadence.** A machine that cannot meet it produces typed gaps, not a failure.
+- **The replay must look and feel like the game.** Playback is not a summary of what happened; it is the game's own scene, redrawn. The viewer renders from the player's own content using the game's own rules, so what the capture owes it is every input that drawing needs — position, progress, orientation, ownership, the draw state d77 carries — not merely the facts an analyst would want. We never record pixels: fidelity is judged by whether the rendered replay matches the game, and the capture is sized by what the renderer consumes.
+- **Hourly baseline cadence, finer where a domain needs it.** One sample per game hour is the default and suits state the engine itself only changes hourly. A domain whose appearance or behaviour is visibly wrong at that resolution declares a finer cadence and justifies it. A machine that cannot meet a domain's declared cadence produces typed gaps, not a failure.
 - **Gaps are first class.** "Not recording" and "recording failed" are distinct. A gap carries its hour or range, its reason, the affected domains, and a witness.
 - **Torn sweeps are gaps.** Sweeps are tick-bracketed; a sweep that spans a tick boundary is recorded as a typed gap rather than emitted as if coherent.
 - **Instrumentation is minimised.** Executable instrumentation is permitted only where a value is provably unsampleable, through one audited primitive, and every point is registered and justified.
-- **The file is as small as it can be without costing fidelity, and the order matters.** Fidelity is never traded for bytes: no dropped field, no collapsed distinction between absent, zero and unknown, no quantization of a value whose exact magnitude explains what happened. Subject to that, size is minimised aggressively — silence when nothing changed, compression that sees across hours, symbols carried as ids. **3–8 GB per campaign is a ceiling, not a budget to spend.** A design that comes in far under it is better, and "we are within the ceiling" is not a reason to stop reducing.
+- **The file is as small as it can be without costing fidelity, and the order matters.** Fidelity is never traded for bytes: no dropped field, no collapsed distinction between absent, zero and unknown, no quantization of a value whose exact magnitude explains what happened **or decides what is drawn**. Subject to that, size is minimised aggressively — silence when nothing changed, compression that sees across hours, symbols carried as ids. **3–8 GB per campaign is a ceiling, not a budget to spend.** A design that comes in far under it is better, and "we are within the ceiling" is not a reason to stop reducing.
 
 ## Sessions, campaigns and files
 
