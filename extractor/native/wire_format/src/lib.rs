@@ -25,6 +25,7 @@ pub mod d24;
 pub mod d26;
 pub mod d62;
 pub mod d63;
+pub mod d83;
 pub mod derived;
 pub mod frame;
 pub mod record;
