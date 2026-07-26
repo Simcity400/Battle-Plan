@@ -955,8 +955,21 @@ closes them on a named corpus and harness before ~80 encoders are written.
   which one snapshot does not have — consistent with, not contradicting, the 720-hour result.
   Reproduce with `python extractor/native/scripts/flatten_divisions.py` then
   `cargo run -p wire_format --bin bench_real_d20`; raw output and provenance in
-  `extractor/native/runs/d20_real_save/`. Real *dynamics* (deltas over time) remain unmeasured
-  until a real multi-hour capture exists.
+  `extractor/native/runs/d20_real_save/`.
+
+  **Real dynamics are now measured.** A live d20-only capture (2026-07-26, Ireland-1936 world,
+  3,126 contiguous game-hours, ~1,353 divisions/hour) replayed into hourly states and re-encoded
+  as 48-hour blocks of BASELINE + stored-minimal DELTAs, against the shipping d20 records
+  verbatim, both at zstd 3: **the wire format is 9.9% of shipping raw, 43.6% whole-stream
+  compressed, 54.2% at the container's 48-hour block shape.** Every hour was decode-verified —
+  the reader replays its own reconstructed prior and must land stored-equal to the fold; all
+  3,126 hours passed. **Measured real churn is 287 changed rows/hour ≈ 21%/hour at fixed-2
+  precision** — an order of magnitude above the modelled few-percent rate, which per the churn
+  surface above moves the row-vs-columnar answer toward row-major. Reproduce with
+  `cargo run -p wire_format --bin bench_real_dynamics` then
+  `python extractor/native/scripts/bench_real_dynamics.py`; provenance and full table in
+  `extractor/native/runs/d20_real_dynamics/`. Still open here: the columnar arm has no delta
+  grammar to measure, and the world is an early-war one — a deep-war capture is the harder test.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own
