@@ -25,6 +25,7 @@ pub mod d23;
 pub mod d24;
 pub mod d26;
 pub mod d29;
+pub mod d34;
 pub mod d35;
 pub mod d62;
 pub mod d63;
