@@ -23,6 +23,7 @@ pub mod early_render_startup_failure;
 pub mod early_render_vfs;
 pub mod early_render_vfs_payload;
 pub mod first_compact_ack;
+pub mod gap_record;
 pub mod identity_control;
 pub mod national_focus_presentation;
 pub mod naval_history;
@@ -40,6 +41,11 @@ pub mod status_origins;
 pub mod stream_validator;
 pub mod tech_sharing_groups;
 
+pub use gap_record::{
+    decode_gap_record, encode_gap_record, validate_gap_records, GapCounter, GapReason, GapRecord,
+    GapRecordCodecError, GapRecordValidationError, GapWitness, GAP_RECORD_MAGIC,
+    GAP_RECORD_VERSION, MAX_GAP_DOMAIN_COUNT,
+};
 pub use record_header::{
     parse_compact_record_header, CompactRecordHeader, RecordFramingError, COMPACT_MAX_PAYLOAD_LEN,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION,
