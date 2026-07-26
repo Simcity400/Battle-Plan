@@ -1005,6 +1005,16 @@ closes them on a named corpus and harness before ~80 encoders are written.
   whole measured range — the win is not a low-churn artifact. Provenance in
   `extractor/native/runs/d20_deepwar/`. Still open here: the columnar arm has no delta grammar
   to measure, and at these churn rates the case for specifying one is weak.
+
+  **First cross-domain anchor (d63, 2026-07-26).** The fan-out pilot measured a small
+  country-keyed table (d63 `country_core_scalars_live`, ~439 rows/hour, D04 deep-war world,
+  903 hours, every hour decode-verified): churn 39 changed rows/hour ≈ 9%/hour — below the
+  d20 band — and the wire format at **6.9% of shipping raw, 89.5% whole-stream, 83.2% at
+  48-hour blocks**. The compressed ratio narrows on small, low-churn tables: 48-hour
+  baselines re-photograph rarely-changing rows, and zstd already crushes the shipping arm's
+  redundancy. Still a win, and the raw margin (14.6×) is what the container's block shape
+  trades away. One datum, not a law; per-domain measurement is the point of the fan-out.
+  Provenance in `extractor/native/runs/batch1/pilot_d63/`.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own

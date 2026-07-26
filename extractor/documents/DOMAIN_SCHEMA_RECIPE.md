@@ -1,8 +1,12 @@
 # Domain schema recipe
 
-How to port one domain onto the wire format, as actually executed for d20. This is the
-recipe; `extractor/native/wire_format/src/d20.rs` is the worked example, and
-`WIRE_FORMAT.md` is the authority this conforms to.
+How to port one domain onto the wire format, as actually executed for d20 and then, as the
+pilot of this recipe, for d63. `extractor/native/wire_format/src/d63.rs` is the
+recipe-conformant worked example — its mapper, `key_from_row`/`split_payload` helpers, tests
+and measurement bin (`bench_real_d63.rs`) implement this recipe's contracts as written.
+`extractor/native/wire_format/src/d20.rs` is the original example; it predates several of
+these contracts and its retrofit items are flagged where they matter below. `WIRE_FORMAT.md`
+is the authority both conform to.
 
 **This is deliberately narrower than `DOMAIN_CAPTURE_PATTERN.md` §9.** That checklist covers
 acquisition, hooks, budgets, shedding and cadence for a collector re-architecture that does
@@ -58,7 +62,8 @@ reported as a finding.
 ### 1. Read the fold and write down the grammar
 
 Find `fn fold_<domain>` in `world_fold.rs`. Record, as a table: every field, its byte offset,
-its width, **its scale constant**, and the flag bit that gates it. Note the header length and
+its width, **its scale constant**, and the flag bit(s) that gate it — one flag may gate
+several fields (d63's single experience flag gates seven channels). Note the header length and
 row length constants, and whether a legacy shorter row exists (d20: 120-byte row, 104-byte
 legacy).
 
@@ -110,6 +115,15 @@ fields `.optional().nullable()` with no `.unknown_capable()` (`supply_gain` in t
 gate. That is a recorded d20 retrofit item, not a precedent.
 When your field's evidence says uncaptured or unreadable, choose Unknown even where d20's
 current schema chose Null.
+
+**When the fold is uninformative and the dossier is silent, read the collector's read path
+for the domain in `collector/src/attach_log.rs` (read-only) before reaching for the
+tie-break.** It is the only authority on *why* a gate is clear. d63's decision came from
+exactly there: "Fail-closed per field: an unreadable/out-of-range value folds ABSENT (null),
+never a fabricated 0" (`attach_log.rs:60210`) — the per-field reads return `None` only on
+unreadable memory or a range rejection, which is §3's Unknown, not Null. Corroborate
+empirically against your capture where you can (d63: across 396,417 real rows no gate is
+ever clear — a clear gate is a read-failure path, not a fact about the world).
 
 **Tie-break: if the fold gives no evidence and you cannot decide between Null and Unknown,
 choose Unknown.** Null asserts "definitively empty," and asserting it about a value that was
@@ -216,6 +230,17 @@ pub fn record_from_row(
 step-2 semantics and the step-1 scales live. Derived fields (§6) apply at this boundary,
 never inside the codec — which is exactly why the tick is a parameter.
 
+The mapper is not the only public boundary. Also export a **key extractor**
+(`key_from_row`) and a **payload-header splitter** (`split_payload`, carrying the fold's
+*structural* checks: header length, exact row-count arithmetic with overflow-checked
+multiplication, full-replace invariants like `changed_rows == row_count`; per-row semantic
+checks such as unknown-flag rejection stay in `record_from_row`). The measurement bin, the
+tests, and any future
+caller must share ONE derivation of the table header and the key. Re-derivation drifts: the
+pilot's round-2 Codex finding was exactly that class — a bespoke re-implementation of the
+H4CR stream framing that skipped version, header-length, sequence, record-flag and
+closed-EOF checks the shared contract enforces. `d63.rs` is the pattern.
+
 Known retrofit, not the pattern to copy: d20's mapper currently lives as a private
 `ShipRow::to_record` inside `bench_real_dynamics.rs` — it predates this contract. Yours goes
 in `dNN.rs` so the measurement bin, the tests, and any future caller share one mapping.
@@ -248,12 +273,40 @@ the crash knee sits between 20 and 40 scheduled domains
 (`extractor/native/runs/hookdose/README.md`). **Do not launch the game.** You will be given a
 `collector_stream.bin` containing your domain.
 
-Generalize `bench_real_dynamics.rs`'s approach for your domain, calling **your**
-`record_from_row`: walk the H4CR framing, keep your domain's DATA records, fold them into
-per-hour states, encode 48-hour blocks of BASELINE + stored-minimal DELTA, and compare
-against the shipping records verbatim at zstd 3. **The reader replay is mandatory**: decode
-what you encoded against the reader's own reconstructed prior and assert stored-equality with
-the fold, every hour. A size number without that assertion is not a result.
+Generalize the measurement approach for your domain, calling **your** `record_from_row` /
+`key_from_row` / `split_payload`: walk the H4CR framing, keep your domain's DATA records,
+fold them into per-hour states, encode 48-hour blocks of BASELINE + stored-minimal DELTA, and
+compare against the shipping records verbatim at zstd 3. `bench_real_d63.rs` is the
+recipe-conformant example; `bench_real_dynamics.rs` is the original form. **The reader replay
+is mandatory**: decode what you encoded against the reader's own reconstructed prior and
+assert stored-equality with the fold, every hour. A size number without that assertion is not
+a result.
+
+**Validate the stream, not just the magic.** `bench_real_dynamics.rs` checks only record
+magic and completeness, so it would silently measure a truncated or header-corrupt stream and
+report a plausible number — the pilot copied that faithfully and Codex caught it (that bin
+still carries the defect; it is form, not gospel). Your harness parses every record through
+`compact_contract::parse_compact_record_header`, runs the whole stream through
+`compact_contract::stream_validator::StatefulStreamValidator`, and additionally enforces the
+hour-boundary and EOF rules of `recorder_host::stream_fold`'s `BoundaryTracker`/`eof_check`
+— those two live in `recorder_host`, which `wire_format` must NOT depend on, so the harness
+implements their documented subset itself, exactly as `bench_real_d63.rs` does (its module
+header lists the rules with their `stream_fold.rs` line anchors). **Write no artifact until
+the stream passes.** Three rules the pilot's review rounds established:
+
+- Failure-status records fold nothing (`handle_compact_failure` retains the accumulator) —
+  exclude those hours from BOTH arms, using the fold's own predicate
+  (`compact_status_failure_flags_after_expected_partial_tolerance(domain_id, …)`), never a
+  hand-copied mask literal.
+- Enforce hour uniqueness across ALL of your domain's records — including failure-status
+  ones — BEFORE status exclusion, or a success+failure pair in one hour slips through.
+- A stream cut exactly at a FRAME_END boundary is a well-formed shorter stream: accept it.
+
+**Dependency ruling (already made — do not re-decide per domain):** the harness needs the
+shipping framing contract, so `wire_format` carries `compact_contract` (a leaf crate) as a
+dependency used only by measurement bins, documented as such in `Cargo.toml`. Never copy its
+constants. For compression, `scripts/bench_real_dynamics.py` hardcodes the d20 arm name; use
+`scripts/compress_arms.py <out_dir> <ship_arm_basename> [hours_per_span]` instead.
 
 Report: raw and compressed sizes both arms, the ratio, real churn per hour, and hours verified.
 
@@ -268,6 +321,10 @@ open. The items that touch this recipe:
   assignment rule lands: today's raw cast becomes a manifest-resolver lookup, and the
   signature gains a resolver input. That is a planned cross-domain retrofit; listing each
   `ContentId` field in your open questions is what lets the retrofit sweep find them.
+  **ContentId *keys* are a heavier retrofit class than ContentId values:** key components
+  sort and delta-encode by raw value (`body.rs`), so a manifest remap reorders keys and
+  changes the byte layout of every baseline and key list, not just one field's value.
+  d63's `tag_db_id` key is the first instance; flag any ContentId key separately.
 - **Row-major vs columnar** was the headline §13 question; it is now **closed by decision**
   (2026-07-26): the row-major grammar this recipe targets is retained. The basis is
   evidence, not a direct columnar-delta comparison (no columnar delta grammar exists to
@@ -292,6 +349,10 @@ Your work is not done when it compiles. It is done when Codex approves it.
 Read `C:\Users\Example\.claude\CODEX_PROTOCOL.md`. Mode A, one-shot, fresh thread per call:
 
 ```
+# ABSOLUTE path — agent shells reset cwd between calls; a relative ledger
+# scatters silently, which violates the resumability law.
+RUNDIR="extractor/native/runs/<batch>/<domain>"
+LEDGER="$RUNDIR/codex_thread_ledger.txt"
 VERDICT=""
 for ATTEMPT in 1 2; do
   OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl); ERR=$(mktemp /tmp/cdx_XXXXXX.err)
@@ -304,14 +365,14 @@ for ATTEMPT in 1 2; do
   # the command returns is too late. This survives cancellation mid-review.
   until [ -s "$AJ" ] || ! kill -0 $CDX 2>/dev/null; do sleep 1; done
   TID=$(python -c "import json,sys;print(json.loads(open(sys.argv[1]).readline()).get('thread_id',''))" "$AJ" 2>/dev/null)
-  echo "$TID review-<domain>-round-<n>-attempt-$ATTEMPT" >> codex_thread_ledger.txt
+  echo "$TID review-<domain>-round-<n>-attempt-$ATTEMPT" >> "$LEDGER"
   wait $CDX; CODE=$?
   # Usage-limit check comes FIRST — never trust exit status alone; an exit-0
   # reply carrying the signature is a dead thread, not a verdict.
   if grep -qiE "usage limit|out of credits|purchase more credits" "$ERR" "$OUT" 2>/dev/null; then
     # NEVER retry into a usage limit. Queue durably; resume later with
     #   codex exec -s danger-full-access resume "$TID"  (re-check state; continue, don't redo)
-    echo "USAGE_LIMIT $TID review-<domain>-round-<n>" >> codex_resume_queue.txt
+    echo "USAGE_LIMIT $TID review-<domain>-round-<n>" >> "$RUNDIR/codex_resume_queue.txt"
     exit 2
   fi
   if [ $CODE -eq 0 ] && [ -s "$OUT" ]; then VERDICT="$OUT"; break; fi
