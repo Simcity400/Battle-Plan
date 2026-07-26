@@ -945,6 +945,18 @@ closes them on a named corpus and harness before ~80 encoders are written.
 
   What this does *not* settle: it models baselines only, and most real hours are deltas, so the
   delta grammar's layout is measured before the fan-out commits.
+
+  **One real anchor exists.** The D04 deep-war save (3,168 divisions, 1944.2.11.18, build a729)
+  encoded as a single BASELINE against the shipping 120-byte compact rows carrying the same
+  information, both at zstd 3: **the new format is 5.3× smaller raw (22.8 vs 120.0 B/div) and
+  71.9% of shipping compressed** — conservative, because the save extract left the shipping rows'
+  supply/experience fields as well-compressing zeros. On that single baseline row-major beats
+  columnar (8.88 vs 9.48 B/div compressed): columnar's win needs cross-hour runs inside a block,
+  which one snapshot does not have — consistent with, not contradicting, the 720-hour result.
+  Reproduce with `python extractor/native/scripts/flatten_divisions.py` then
+  `cargo run -p wire_format --bin bench_real_d20`; raw output and provenance in
+  `extractor/native/runs/d20_real_save/`. Real *dynamics* (deltas over time) remain unmeasured
+  until a real multi-hour capture exists.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own
