@@ -18,6 +18,7 @@ pub mod bitmap;
 pub mod body;
 pub mod columnar;
 pub mod d20;
+pub mod d22;
 pub mod d63;
 pub mod derived;
 pub mod frame;
