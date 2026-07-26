@@ -108,7 +108,7 @@ See also d18 and d54.
 - `extractor/native/compact_contract/src/lib.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
-- `extractor/native/scripts/production_domain_roster.py`
+- `extractor/native/recorder_host/src/bin/domain_roster.rs`
 - `replay_interface/native/game_ui/src/binding_counters.rs`
 - `replay_interface/native/game_ui/tests/counter_binding.rs`
 - `replay_interface/native/replay_core/src/world.rs`

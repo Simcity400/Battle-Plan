@@ -59,3 +59,7 @@ path = "src/main.rs"
 [[bin]]
 name = "stream_fold"
 path = "src/bin/stream_fold.rs"
+
+[[bin]]
+name = "domain_roster"
+path = "src/bin/domain_roster.rs"

@@ -24,10 +24,10 @@ SIZES=${*:-"5 10 20 40"}
 mkdir -p "$OUT"
 RECEIPT=$OUT/dose.jsonl
 
-# `tr -d '\r'` is load-bearing: python prints CRLF on Windows and mapfile keeps
-# the CR, so every domain name would reach the recorder as "fuel_live\r" and be
-# rejected — the same class of silent no-op the validity gate below now catches.
-mapfile -t ROSTER < <(python "$ROOT/extractor/native/scripts/production_domain_roster.py" \
+# `tr -d '\r'` is belt-and-braces: the Rust roster binary emits bare LF, but a
+# stray CR here reaches the recorder as "fuel_live\r" and is rejected, which is
+# exactly the silent no-op the validity gate below exists to catch.
+mapfile -t ROSTER < <("$ROOT/.cargo-target/release/domain_roster.exe" \
   --native-root "$ROOT/extractor/native" | tr -d '\r')
 echo "roster: ${#ROSTER[@]} domains"
 

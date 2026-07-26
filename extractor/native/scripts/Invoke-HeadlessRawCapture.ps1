@@ -139,9 +139,9 @@ foreach ($entry in $staticCatalogs.GetEnumerator()) {
 # attach therefore selects the production roster explicitly, exactly as the
 # shipped product worker does. Passing no schedule at all would silently fall
 # back to the eight-domain compatibility set, so the roster is mandatory.
-$rosterTool = Join-Path $scriptDir 'production_domain_roster.py'
+$rosterTool = Join-Path $releaseRoot 'domain_roster.exe'
 if (-not (Test-Path -LiteralPath $rosterTool -PathType Leaf)) {
-    throw "Production roster tool is missing: $rosterTool"
+    throw "Production roster tool is missing: $rosterTool (cargo build --release -p recorder_host)"
 }
 if ($ScheduledDomainOverride.Count -gt 0) {
     # `powershell -File` binds a comma-joined argument as ONE literal string —
@@ -153,7 +153,7 @@ if ($ScheduledDomainOverride.Count -gt 0) {
     $scheduledDomains = @($ScheduledDomainOverride | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
     Write-Warning "Using an explicit $($scheduledDomains.Count)-domain roster override; this is a diagnostic configuration, not production coverage."
 } else {
-    $scheduledDomains = @(& $pythonExe $rosterTool --native-root $nativeRoot)
+    $scheduledDomains = @(& $rosterTool --native-root $nativeRoot)
     if ($LASTEXITCODE -ne 0) { throw 'Production domain roster derivation failed.' }
     if ($scheduledDomains.Count -eq 0) { throw 'Derived production domain roster is empty.' }
 }
