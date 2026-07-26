@@ -180,9 +180,9 @@ discontinuity — a state-affecting gap, restart, rollover, branch, schema or ca
 start of a block — forces a `BASELINE` of the state part (§10).
 
 A domain static for a game year therefore costs a `BASELINE` plus an `UNCHANGED` frame of `len` (1)
-+ `tag` (1) + run length (2–3) = **4–5 bytes**, rather than 8,760 frames. That figure assumes a
-one-byte tag — `ticks_per_hour_log2 ≤ 3`, §1.1 — and no checkpoint bound (pattern §3.4) firing
-inside the year; a bound that fires splits the run and adds a baseline.
++ `tag` (1) + run length (2–3) = **4–5 bytes**, rather than 8,760 frames. That figure is **per
+block**: every block opens with its own baseline, so a year spanning several blocks costs one such
+pair per block. It also assumes a one-byte tag — `ticks_per_hour_log2 ≤ 3`, §1.1.
 
 ## 2. Canonical form
 
@@ -238,8 +238,11 @@ A record is four bitmaps followed by values:
 many optional fields are present would be circular — the reader needs the bitmap to know that.
 
 **The other three bitmaps exist iff the schema declares at least one non-key field with that
-capability, and each is `ceil(q/8)` bytes where `q` is the number of qualifying fields the presence
-bitmap says are present.** A row in which no qualifying field is present spends zero bytes on that
+capability, and each is `ceil(q/8)` bytes.** `q` is the number of that capability's fields **present
+in this row**, in schema order: **every required qualifying field — which has no presence bit and is
+always present — plus every optional qualifying field the presence bitmap marks present.** Omitting
+required fields from `q` would leave a required nullable, unknown-capable or quantized field with
+two plausible encodings. A row in which no qualifying field is present spends zero bytes on that
 bitmap. This is what makes four states cost nothing on records that need none of them.
 
 Fields the schema marks **required** carry no presence bit — a bit spent on a field that can never
@@ -274,7 +277,7 @@ collide with real data, silently.
 | `0` | unsigned | `varint` |
 | `1` | signed | `zigzag` |
 | `2` | monotone counter | **absolute form: `varint`.** In `BASELINE` and wherever else an absolute value is called for, absolute. In `DELTA`: `zigzag` difference against the reconstructed prior value |
-| `3` | enum | bit-packed to `ceil(log2(n))` bits, cardinality `n ≥ 2` declared in the schema |
+| `3` | enum | bit-packed to `ceil(log2(n))` bits, cardinality `n ≥ 2` declared in the schema. **A code `≥ n` is corrupt**: the reader rejects the frame and gaps that domain until its next baseline, and a value the writer cannot map into `0..n-1` is a failed sample and a typed gap, never a coerced code |
 | `4` | boolean | one bit |
 | `5` | content id | `varint` symbol id, §5 |
 | `6` | continuous | §6 |
@@ -490,12 +493,13 @@ in the state it has already reconstructed, and only then knows which grammar fol
 
 ```
   change mask         ceil(F/8) bytes, F = non-key fields, one bit each, schema order
-  new null bits       bitmap, one bit per CHANGED NULLABLE field, ascending changed-field order
+  new presence bits   bitmap, one bit per CHANGED OPTIONAL field, ascending changed-field order
+  new null bits       bitmap, one bit per CHANGED NULLABLE field, ascending order
   new unknown bits    bitmap, one bit per CHANGED UNKNOWN-CAPABLE field, ascending order
   new escape bits     bitmap, one bit per CHANGED QUANTIZED field, ascending order
-  new presence bits   bitmap, one bit per CHANGED OPTIONAL field, ascending order
-  [ bit-packed region ]   changed fields that carry a value, zero-padded to a byte boundary
-  [ value bytes ]         changed fields that carry a value
+  [ bit-packed region ]   changed fields that carry a value, classified per §3 — enums, booleans
+                          and unescaped ratio(d) — zero-padded to a byte boundary
+  [ value bytes ]         the remaining changed fields that carry a value, per §3
 ```
 
 Each of the four bit groups is a §0 bitmap: byte-aligned, zero-padded, zero bytes when empty. A
@@ -602,30 +606,42 @@ Stored ranges are **inclusive** — `tick_end_delta = 0` is one tick — so norm
 converts each to the half-open interval `[tick_start, tick_start + tick_end_delta + 1)` and
 converts back on emit.
 
-Within one `branch`, run this:
+Normalisation is **per `(domain, part-component)`**, and only then grouped. Slicing the whole
+timeline at every domain's endpoints would fragment one long outage at every unrelated domain's
+boundary, which is size waste at identical fidelity.
+
+Within one `branch`:
 
 1. Take every gapped observation as a half-open interval keyed by
-   `(domain, part-component, reason, witness)`. **`part = 2` is two observations**, one per
-   component, so overlap is always compared component-wise and never by the literal byte.
-2. **Resolve overlapping causes.** If one `(domain, part-component)` is covered at the same tick by
-   observations with different `reason` or `witness`, keep the one with the **lowest `reason` code**
-   and, if still tied, the lowest `witness_kind` then the lexicographically smallest witness
-   payload. Overlap for one component is a single fact with one best explanation; recording two
-   would both duplicate and violate the overlap ban below.
-3. **Cut the timeline at every surviving interval endpoint**, giving elementary intervals over
-   which the whole affected map is constant by construction.
-4. **Merge adjacent elementary intervals** whose affected map — every
-   `(domain, part-component) → (reason, witness)` entry — is identical.
-5. **Emit per interval, grouped by `(reason, witness)`, then by part signature.** Within a group,
-   a domain gapped in both components goes in a `part = 2` record, one gapped in state only in a
-   `part = 0` record, and one gapped in event only in a `part = 1` record. **Up to three records
-   per group per interval, and empty ones are not emitted.** A record carries one `part` byte for
-   its whole domain list, so a torn sweep hitting pure-state and hybrid domains together cannot be
-   one record — it is two.
+   `(domain, part-component, reason, witness)`, where **`witness` means the `(witness_kind,
+   payload)` pair** — grouping on the payload alone would merge records of different kinds.
+   **`part = 2` is two observations**, one per component, so overlap is always compared
+   component-wise and never by the literal byte.
+2. **Resolve overlapping causes per tick.** Where one `(domain, part-component)` is covered at a
+   tick by observations with different `reason` or `witness`, that tick's cause is the one with the
+   **lowest `reason` code**, then lowest `witness_kind`, then the smallest witness payload compared
+   **as its canonical encoded bytes, unsigned and bytewise, shorter-is-smaller on a prefix**. The
+   comparison representation is pinned because it changes the answer: counter ids `255` and `256`
+   order one way as numbers and the other as the varints `FF 01` and `80 02`.
+   **A losing observation is masked only over the ticks the winner covers and keeps its cause
+   everywhere else** — dropping it wholesale would erase gap coverage outside the overlap,
+   leaving ticks with neither frames nor a gap record, which is the silent omission this section
+   exists to prevent.
+3. **Take maximal spans.** Each `(domain, part-component)` now yields maximal contiguous spans over
+   which its cause is constant.
+4. **Group spans sharing exactly `(tick_start, tick_end, reason, witness)`** into one record's
+   domain list. Nothing else merges: two domains gapped over different ranges stay separate records
+   even under one cause.
+5. **Split each group by part signature.** A domain in the group **via both components under this
+   group's own `(reason, witness)` and range** goes in a `part = 2` record, state-only in
+   `part = 0`, event-only in `part = 1`. A domain state-gapped by one cause and event-gapped by a
+   different one is in two groups and is never `part = 2` in either. Up to three records per
+   group; empty ones are not emitted. A record carries one `part` byte for its whole domain list,
+   so a torn sweep hitting pure-state and hybrid domains together is two records, not one.
 
-Deterministic and terminating: step 2 is a total order on causes, step 3 depends only on endpoints,
-step 4 only on equality. For A over ticks 1–3 and B over 2–4, both state-only, same reason and
-witness, it yields exactly `{A}` over 1, `{A,B}` over 2–3, `{B}` over 4.
+Deterministic and terminating: step 2 is a total order on causes, steps 3–5 only maximality and
+equality. For A over ticks 1–3 and B over 2–4, both state-only under one cause, it yields two
+records — `{A}` over 1–3 and `{B}` over 2–4 — not three slices.
 
 **No two records overlap** in time for the same `(domain, part-component, branch)`.
 
@@ -717,8 +733,10 @@ part if any.
 component is assigned append-only and never reused for a different thing:
 
 - `domain` is unique across the registry and permanent once assigned.
-- `collection_id` is unique within its domain and permanent.
-- `field_id` is unique within its collection and permanent.
+- `collection_id` is unique within its domain and permanent. **The event part carries one too**, so
+  an event field has the same three-part identity a state field does and the render-coverage ledger
+  can join on it.
+- `field_id` is unique within its collection — the event part included — and permanent.
 
 Without this a reader holding an unknown schema definition can decode bytes into values but cannot
 say what any of them mean, and the render-coverage ledger (pattern §11) has nothing to join on but
@@ -739,6 +757,7 @@ Hashed and stored exactly as below. Every member is a `varint` except `derived_c
     field list                per the field grammar below
   event part          varint  0 absent, 1 present
     if present:
+      collection_id     varint  the event part's own identity, distinct from every state collection
       field list              per the field grammar below — the event record's own fields
       frontier count    varint
       component_id      varint  × frontier count
@@ -773,7 +792,8 @@ bit. Key order is `key_position`, which §2 and §7.4 sort by.
 - `cadence_log2` exceeds the container's `ticks_per_hour_log2`;
 - an event field list marks a key member (event records have no key prefix);
 - a shape-2 collection marks a key member, or a shape-0 or shape-1 collection declares none;
-- `collection_id` repeats within the domain, or `field_id` repeats within a collection;
+- `collection_id` repeats within the domain — counting the event part's — or `field_id` repeats
+  within any one collection or within the event field list;
 - `key_position` values in a collection are not `0..n-1` exactly once;
 - a key member is optional, nullable, unknown-capable, derived, or of a kind other than `0`, `1`
   or `5` (§7.4);

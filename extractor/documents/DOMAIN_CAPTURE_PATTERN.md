@@ -44,7 +44,9 @@ the game runs **8,760 game-hours per game-year**. A campaign is not "thousands o
 At 79 scheduled domains, a decade is **~7 million domain-samples**. Every per-domain-hour cost
 multiplies by that. **These are working figures, not an upper bound**: campaigns run past 1945,
 mods change the date range, and DECISIONS retains both branches of every reload — so recorded
-branch-hours can exceed calendar hours arbitrarily. Size for growth beyond the table, not to it. This is the number every budget below is derived from, and it is why
+branch-hours can exceed calendar hours arbitrarily. Size for growth beyond the table, not to it.
+
+**~7 million domain-samples is the number every budget below is derived from**, and it is why
 per-domain intuitions are worthless: 1 KiB per domain-hour is ~7 GB uncompressed.
 
 **The size rule is not a target.** `DECISIONS.md` sets it: fidelity is
@@ -143,9 +145,9 @@ comparison is against actual canonical output, not a proxy, and deletion is expr
 differing. Near-static domains — tech, focus trees, equipment catalogues — are unchanged for most
 hours of a campaign, so this is the single largest byte win available and needs no per-domain proof.
 
-**Discontinuity beats dedup — 3.4 wins.** After a gap, restart, rollover or branch, the retained
-comparison state is invalid and dedup and the differ are both suppressed until a baseline has been
-emitted. Without this rule a writer can emit `unchanged` immediately after a gap, which the reader
+**Discontinuity beats dedup — 3.4 wins.** After a state-affecting gap, restart, rollover, branch,
+schema or cadence change, or the start of a block, the retained comparison state is invalid and
+dedup and the differ are both suppressed until a baseline has been emitted. Without this rule a writer can emit `unchanged` immediately after a gap, which the reader
 must discard under 3.4's own delta-before-baseline rule, leaving that domain gapped for the rest
 of the campaign. That is a permanent-loss bug hiding inside the mandatory floor.
 
@@ -175,26 +177,38 @@ Without a proved signal a domain still **walks**, but 3.1 and 3.2 mean it usuall
 nothing. Sampling cost and emission cost are separate problems and must not be conflated.
 
 **3.4 Baselines and resets.**
-- **Adaptive checkpoints**, not a fixed N: emit a baseline when any of max sample ticks, cumulative
-  delta bytes, or cumulative patch operations crosses its bound. **Every trigger is a deterministic
-  function of the data**, never of measured wall-clock decode time: a machine-dependent trigger
-  makes two recorders emit different bytes for identical state, breaking the dedup floor. A fixed
-  cadence wastes baselines on quiet domains and under-bounds bursty ones.
-- **Counters and comparison are pinned**, or two writers split a run differently: a bound fires
-  when the accumulated value **reaches or exceeds** it (`≥`), the prospective frame is **not**
-  counted toward the bound that decides it, and **every counter resets to zero on each emitted
-  baseline**. The bound *values* are part of the domain's declared contract, recorded in its
-  document and the CI ledger — two writers only produce identical bytes when implementing the same
-  contract.
+- **Adaptive checkpoints**, not a fixed N: emit a baseline when any bound below is reached. **Every
+  trigger is a deterministic function of the data**, never of measured wall-clock decode time: a
+  machine-dependent trigger makes two recorders emit different bytes for identical state, breaking
+  the dedup floor. A fixed cadence wastes baselines on quiet domains and under-bounds bursty ones.
+- **Each counter is defined exactly, or identical bounds still split runs differently.** All three
+  accumulate since the last emitted baseline:
+
+  | Counter | Counts |
+  |---|---|
+  | **delta samples** | sample ticks carrying a `DELTA` frame. **A `BASELINE` tick does not advance it** — the baseline resets every counter, so the counter is exactly `0` immediately after one. **`UNCHANGED`-covered ticks do not advance it either.** |
+  | **delta bytes** | total encoded `DELTA` frame bytes, **including `len` and `tag`**, not body alone |
+  | **patch operations** | changed rows + tombstones + ordered-replacement rows, summed across those `DELTA` frames |
+
+- **`UNCHANGED` is excluded from the temporal counter deliberately.** A maximal run is already a
+  single bounded replay step, so counting its ticks would periodically force a full baseline through
+  byte-identical state — repeating forever, since the counter resets each time. The bounds exist to
+  cap the work of reconstructing a tick, and an unchanged run costs one step regardless of length.
+- **Comparison and reset are pinned**: a bound fires when the accumulated value **reaches or
+  exceeds** it (`≥`), the prospective frame is **not** counted toward the bound that decides it, and
+  **every counter resets to zero on each emitted baseline**. The bound *values* are part of the
+  domain's declared contract, recorded in its document and the CI ledger.
 - **A baseline is emitted if and only if a trigger fires.** The triggers are: a checkpoint bound,
   a state discontinuity (below), **the start of any block** — including campaign start, a schema or
   cadence change, and a rollover — since `DELTA` and `UNCHANGED` are invalid before a baseline in
   their own block (`WIRE_FORMAT.md` §1.5). There is no discretionary baseline, because a writer
   that may emit one whenever it likes gives identical state two encodings.
-- **A firing checkpoint outranks dedup.** When a bound is crossed on a sample whose state is
-  byte-identical to the previous one, the baseline is emitted and `UNCHANGED` is not. The bounds
-  exist to keep seek cost finite, and a quiet domain is exactly the case that would otherwise
-  accumulate an unbounded delta chain.
+- **A pending checkpoint outranks dedup.** A bound reached while encoding one sample fires on the
+  next; if that next sample is byte-identical, the baseline is emitted and `UNCHANGED` is not. The
+  bound caps the delta chain a reader must replay to reconstruct any tick. Deferring the baseline
+  until the domain next changes would hold that chain at its full bound for arbitrarily long — a
+  domain that goes quiet right after a long burst pays the worst-case seek across the whole quiet
+  stretch, for no saving.
 - **Forced baseline after any discontinuity** — a state-affecting gap, a malformed frame, a restart,
   a rollover, a reload branch. Without this, state that changed during a gap is never reconstructed.
   This is the single most likely permanent-loss defect in a delta design. An **event-only** gap is
