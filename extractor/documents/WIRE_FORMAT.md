@@ -1015,6 +1015,31 @@ closes them on a named corpus and harness before ~80 encoders are written.
   redundancy. Still a win, and the raw margin (14.6×) is what the container's block shape
   trades away. One datum, not a law; per-domain measurement is the point of the fan-out.
   Provenance in `extractor/native/runs/batch1/pilot_d63/`.
+
+  **Wave 1 (2026-07-27): six more domains, one pattern and two measured spec gaps.** d10
+  fuel, d22 map_control, d23 map_detail, d24 weather, d26 division_equipment, d62
+  hub_motorization — each 903/903 hours decode-verified on the same D04 capture. Three
+  result layers, which must not be conflated. *Delta paths:* the wire grammar won every one
+  measured — 0.96–1,427 B/hour averaged over all non-baseline hours, against shipping
+  per-hour floors of ~64–9,640 B (d24's patch hours: 41% raw, 89% compressed).
+  *Whole-stream zstd-3:* d62 36.4%, d23 35.8%, d22 41.9%, d26 49.7% — but d10 101.2% and
+  d24 111.6% lose even here (small state and dense higher-churn state respectively).
+  *48-hour blocks:* all six worsen relative to whole-stream and five of six lose outright,
+  from d10's 117.3% up to d22's 709% (d62 still wins at 77.9%), each loss decomposing to
+  the 48-hour re-baseline against shipping lanes that baseline once per campaign — **block/re-baseline cadence is a per-domain container
+  question, not a grammar defect**, and it dominates exactly where state size exceeds
+  hourly churn by orders of magnitude. The two gaps: (1) power-of-two fixed-point sources
+  have no lossless `Fixed(k)` under the current codec — the identity
+  `r/32768 = r·5¹⁵/10¹⁵` holds mathematically, but binary64 scaling rounds to an adjacent
+  integer that passes the stability check and decodes to the neighbouring float — so d10's
+  `/32768` fields ship as `Exact` f64 at +10.5% zstd vs the shipping i64 words, and closing
+  the gap needs a codec-level exact path (integer-domain `Fixed` or a declared power-of-two
+  quantizer), while decimal sources have a cheap exact `Fixed(k)` (d24); (2) §8 gap normalisation needs an implementation — d26's
+  `sparse_partial` marks a *domain-hour* unknown, which a keyed set has no way to say.
+  Separately, the wave-1 survey confirmed §4's kinds include no string kind, which stops
+  d12/d14/d15/d18 outright — their identities or payload-bearing fields are strings (d18's
+  payload is a tag-string map; d12/d14/d15 are mixed-field rows whose keys or essential
+  fields are strings). Provenance in `extractor/native/runs/batch1/`.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own

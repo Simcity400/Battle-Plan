@@ -125,6 +125,16 @@ unreadable memory or a range rejection, which is §3's Unknown, not Null. Corrob
 empirically against your capture where you can (d63: across 396,417 real rows no gate is
 ever clear — a clear gate is a read-failure path, not a fact about the world).
 
+**A value the fold hard-enforces as a function of carried state is not a field.** d62's
+witness-flags word is constant over every row its codec accepts; d24 omitted four derived
+witness bits (two activity bits, two driver bits) and reinterpreted `MUD_PRESENT` as the
+*gate* on `mud_active`. Enforce the invariant in the mapper, test the identity, and leave
+it off the wire — re-encoding it would be a second copy of state the decoder must then keep
+consistent. Distinct rule, same domain: mutually-exclusive flag bits (d24's named-weather
+set) collapse into one `Enum` field — the information is kept, in a form where the overlap
+the fold rejects becomes inexpressible. Do not confuse the two: exclusivity justifies an
+Enum, never dropping the information.
+
 **Tie-break: if the fold gives no evidence and you cannot decide between Null and Unknown,
 choose Unknown.** Null asserts "definitively empty," and asserting it about a value that was
 merely uncaptured is irreversible fidelity loss; Unknown never lies. Every tie-broken field
@@ -192,6 +202,19 @@ questions list with one line saying what evidence would settle it. Under-quantiz
 bytes; over-quantizing silently corrupts what the replay draws, and only the second one is
 unrecoverable.
 
+**One more lossless case (d24): a decimal fixed-point source.** An int32 stored over a
+100_000 denominator is exactly `Fixed(5)` — not a precision budget but the source's own
+grid — and it also recovers the raw integer downstream consumers require, which `Exact`
+would spend 8 bytes/value to do. A `/32768` source has NO lossless `Fixed(k)` under the
+current codec: the identity `r/32768 = r·5¹⁵/10¹⁵` holds mathematically, but the codec
+scales through binary64, and rounding there produces an adjacent integer that passes the
+stability check and decodes to the neighbouring float (e.g. raw 295149 → …624 instead of
+…625). So `Exact` is the only lossless form for power-of-two sources today — d10's choice
+stands on that alone, beside its unjustified precision requirements — and its measured
++10.5% zstd penalty compares `Exact` f64 bytes against the shipping i64 words. Closing
+that gap needs a codec-level exact path (an integer-domain `Fixed`, or a declared
+power-of-two quantizer), a `WIRE_FORMAT.md` §13 item, not a schema-side choice.
+
 ### 5. Declare key and shape
 
 `Shape::KeyedSet` when rows have a stable identity that persists across hours — only keyed
@@ -233,9 +256,15 @@ never inside the codec — which is exactly why the tick is a parameter.
 The mapper is not the only public boundary. Also export a **key extractor**
 (`key_from_row`) and a **payload-header splitter** (`split_payload`, carrying the fold's
 *structural* checks: header length, exact row-count arithmetic with overflow-checked
-multiplication, full-replace invariants like `changed_rows == row_count`; per-row semantic
-checks such as unknown-flag rejection stay in `record_from_row`). The measurement bin, the
-tests, and any future
+multiplication, and the invariants YOUR authorities actually state — `changed_rows ==
+row_count` is unconditional for full-replace domains (d63), mode-dependent for
+baseline-plus-delta ones (d26's fold requires `<=` always and equality exactly when
+`DELTA_DATA` is set — a clean full baseline may be unequal), and absent for pure
+incremental payloads (asserting it on d10 was a round-1 finding); per-row semantic
+checks such as unknown-flag rejection stay in `record_from_row`). Where an invariant is mode-dependent or header-relative, take the
+mode or header value as a parameter (d26's `FrameMode`, d24's
+`check_province_id(id, observed_province_rows)`) instead of hard-coding one frame shape.
+The measurement bin, the tests, and any future
 caller must share ONE derivation of the table header and the key. Re-derivation drifts: the
 pilot's round-2 Codex finding was exactly that class — a bespoke re-implementation of the
 H4CR stream framing that skipped version, header-length, sequence, record-flag and
@@ -260,9 +289,11 @@ in `dNN.rs` so the measurement bin, the tests, and any future caller share one m
    quantized**. A schema with no quantized field instead records in a comment why no
    continuous field is drawn-rather-than-interpolated (or has no continuous fields at all).
 5. Shape/key test asserting the key fields and their kinds.
-6. **Every scale factor the mapper applies**: a raw row with known fixed-point bytes maps to
-   the expected `f64` per scaled field (this is the test that catches the 32768-vs-100000
-   class). Skip only if the domain has no scaled fields.
+6. **Every field's offset, with scale as the special case**: a raw row with known bytes at
+   each offset maps to the expected `Value` per field — for scaled fields with known
+   fixed-point words (this is the test that catches the 32768-vs-100000 class), and for
+   unscaled domains still field-by-field, because transposition is the same failure class
+   (d62's `owner`/`actor` are adjacent in the row and separated in the key).
 
 Run `cargo test -p wire_format` — the whole suite, not just yours.
 
@@ -294,13 +325,27 @@ implements their documented subset itself, exactly as `bench_real_d63.rs` does (
 header lists the rules with their `stream_fold.rs` line anchors). **Write no artifact until
 the stream passes.** Three rules the pilot's review rounds established:
 
-- Failure-status records fold nothing (`handle_compact_failure` retains the accumulator) —
-  exclude those hours from BOTH arms, using the fold's own predicate
-  (`compact_status_failure_flags_after_expected_partial_tolerance(domain_id, …)`), never a
-  hand-copied mask literal.
+- **Exclude every path on which YOUR fold returns without folding** — failure status is only
+  the common one (use the fold's own predicate,
+  `compact_status_failure_flags_after_expected_partial_tolerance(domain_id, …)`, never a
+  hand-copied mask literal). d26 has four such paths (failure, delta-before-baseline,
+  partial-before-baseline, rowless-partial); every domain whose fold implements a
+  baseline-plus-delta grammar has delta-before-baseline (a pure incremental payload with no
+  status guard, like d10, has neither). And derive the exclusion's POSITION from your fold's call order:
+  d63 checks status before its row loop, d62 decodes rows first — copying the pilot's order
+  into d62 was a Codex round-1 finding. A fold that never reads status at all (d10) forces
+  an explicit, recorded refuse-or-exclude decision; never choose silently.
 - Enforce hour uniqueness across ALL of your domain's records — including failure-status
   ones — BEFORE status exclusion, or a success+failure pair in one hour slips through.
 - A stream cut exactly at a FRAME_END boundary is a well-formed shorter stream: accept it.
+
+**Large-state and shipping-incremental domains cannot hold per-hour snapshots** (d22, d23,
+d24, d26 — up to ~24k rows/hour × 903 hours). Use a two-pass harness: validate everything
+while retaining only record spans, then re-fold through the same code path while encoding.
+Put the frame-level fold in `dNN.rs` as a public, tested `State` + `fold_payload` boundary —
+the fourth public boundary, beside the step-7 trio, whenever one record is not one state.
+Enumerate every OTHER writer of your domain's accumulator and prove it inert on your capture
+or model it (the recorder prunes d26's accumulator from D20 deletion rows).
 
 **Dependency ruling (already made — do not re-decide per domain):** the harness needs the
 shipping framing contract, so `wire_format` carries `compact_contract` (a leaf crate) as a
@@ -308,7 +353,15 @@ dependency used only by measurement bins, documented as such in `Cargo.toml`. Ne
 constants. For compression, `scripts/bench_real_dynamics.py` hardcodes the d20 arm name; use
 `scripts/compress_arms.py <out_dir> <ship_arm_basename> [hours_per_span]` instead.
 
-Report: raw and compressed sizes both arms, the ratio, real churn per hour, and hours verified.
+Report: raw and compressed sizes both arms, the ratio at BOTH the whole-stream and 48-h
+block shapes, the wire arm's baseline/delta raw split, real churn per hour, and hours
+verified. The split is not optional: five of six wave-1 domains showed the block ratio
+measures *re-baseline policy*, not grammar — shipping lanes baseline once per campaign
+while this arm re-baselines every 48 h, so a large low-churn table can lose at block shape
+(d22: 42% whole-stream vs 709% at blocks) while its delta path wins by 6–50×. Block cadence
+is the container's open question; report the split so the grammar comparison stays
+recoverable. (`compress_arms.py` requires both arms to cover the same hour count — append
+an offset for hours that emit nothing.)
 
 ## Known-open spec items — and why they do not block this work
 
