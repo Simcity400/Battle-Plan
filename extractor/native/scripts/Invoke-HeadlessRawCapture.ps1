@@ -144,7 +144,13 @@ if (-not (Test-Path -LiteralPath $rosterTool -PathType Leaf)) {
     throw "Production roster tool is missing: $rosterTool"
 }
 if ($ScheduledDomainOverride.Count -gt 0) {
-    $scheduledDomains = @($ScheduledDomainOverride)
+    # `powershell -File` binds a comma-joined argument as ONE literal string —
+    # it never gets PowerShell's array splitting. The 2026-07-26 crash trials
+    # passed "session_header_live,fuel_live" that way; the recorder rejected it
+    # as a single unknown domain and exited before injecting, so the whole
+    # minimal arm silently measured nothing. Split here so both invocation
+    # styles mean the same thing.
+    $scheduledDomains = @($ScheduledDomainOverride | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
     Write-Warning "Using an explicit $($scheduledDomains.Count)-domain roster override; this is a diagnostic configuration, not production coverage."
 } else {
     $scheduledDomains = @(& $pythonExe $rosterTool --native-root $nativeRoot)

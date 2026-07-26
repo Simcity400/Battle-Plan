@@ -12,6 +12,9 @@ CRASH="C:/Users/Example/OneDrive/Documents/Paradox Interactive/Hearts of Iron IV
 OUT=$ROOT/extractor/native/runs/crashrate
 NULL_CALL="0x0000000000000000"
 TRIALS=${1:-5}
+# The minimal arm's roster. Override for other floors, e.g. the d20 capture
+# question: MINIMAL_DOMAINS=session_header_live,divisions run_crash_trials.sh
+MINIMAL_DOMAINS=${MINIMAL_DOMAINS:-session_header_live,fuel_live}
 mkdir -p "$OUT"
 RECEIPT=$OUT/trials.jsonl
 
@@ -25,7 +28,7 @@ for arm in full minimal; do
     rm -rf "$dir"
 
     extra=()
-    [ "$arm" = minimal ] && extra=(-ScheduledDomainOverride session_header_live,fuel_live)
+    [ "$arm" = minimal ] && extra=(-ScheduledDomainOverride "$MINIMAL_DOMAINS")
 
     died=$(powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass \
         -File "$ROOT/extractor/native/scripts/Invoke-HeadlessRawCapture.ps1" \
@@ -41,7 +44,13 @@ for arm in full minimal; do
       [ "$a" = "$NULL_CALL" ] && break
     done
 
-    if [ -z "$rec" ]; then outcome=clean
+    # A trial only counts if the recorder actually got past argument parsing
+    # and attached: its stderr carries the modset line once injection ran. The
+    # 07-26 minimal arm failed this silently — the recorder rejected a
+    # comma-joined domain list and exited, and six no-op trials scored "clean".
+    if ! grep -q "modset:" "$dir/collector_record.stderr.log" 2>/dev/null; then
+      outcome=invalid_trial_no_injection
+    elif [ -z "$rec" ]; then outcome=clean
     elif [ "$addr" = "$NULL_CALL" ]; then outcome=collector_null_call
     elif [ -n "$addr" ]; then outcome=other_crash
     else outcome=crash_without_exception_record; fi
@@ -60,8 +69,9 @@ for arm in full minimal; do
   # second 0 and corrupt the tally. Swallow the status instead.
   rows=$(grep "\"arm\":\"$arm\"" "$RECEIPT" 2>/dev/null || true)
   count() { printf '%s\n' "$rows" | grep -c "$1" || true; }
-  printf "  %-8s trials %2s   collector_null_call %2s   other_crash %2s   clean %2s\n" \
+  printf "  %-8s trials %2s   collector_null_call %2s   other_crash %2s   clean %2s   invalid %2s\n" \
     "$arm" "$(printf '%s\n' "$rows" | grep -c '"arm"' || true)" \
-    "$(count collector_null_call)" "$(count other_crash)" "$(count '"outcome":"clean"')"
+    "$(count collector_null_call)" "$(count other_crash)" "$(count '"outcome":"clean"')" \
+    "$(count invalid_trial_no_injection)"
 done
 echo "receipts: $RECEIPT"
