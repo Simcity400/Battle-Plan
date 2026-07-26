@@ -41,6 +41,7 @@ The user experience is the contract:
 - **Gaps are first class.** "Not recording" and "recording failed" are distinct. A gap carries its hour or range, its reason, the affected domains, and a witness.
 - **Torn sweeps are gaps.** Sweeps are tick-bracketed; a sweep that spans a tick boundary is recorded as a typed gap rather than emitted as if coherent.
 - **Instrumentation is minimised.** Executable instrumentation is permitted only where a value is provably unsampleable, through one audited primitive, and every point is registered and justified.
+- **The file is as small as it can be without costing fidelity, and the order matters.** Fidelity is never traded for bytes: no dropped field, no collapsed distinction between absent, zero and unknown, no quantization of a value whose exact magnitude explains what happened. Subject to that, size is minimised aggressively — silence when nothing changed, compression that sees across hours, symbols carried as ids. **3–8 GB per campaign is a ceiling, not a budget to spend.** A design that comes in far under it is better, and "we are within the ceiling" is not a reason to stop reducing.
 
 ## Sessions, campaigns and files
 
