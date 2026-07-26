@@ -1,0 +1,8 @@
+[package]
+name = "wire_format"
+version = "0.1.0"
+edition = "2021"
+description = "Reference implementation of extractor/documents/WIRE_FORMAT.md: primitives, records, frames and schemas for the rebuilt replay stream. Golden vectors live beside the code and are the byte-identity gate."
+
+[dependencies]
+blake3 = "1"

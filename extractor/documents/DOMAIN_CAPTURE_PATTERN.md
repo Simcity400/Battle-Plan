@@ -235,10 +235,12 @@ Quantization is a per-field decision recorded with its justification, never a bl
 
 - **Outcome** — not for a value whose exact magnitude explains a threshold crossing, where rounding
   changes the story the replay tells.
-- **Appearance** — not for a value the viewer draws from: position, progress along a path,
-  orientation, scale, blend weight, anything animated or interpolated. DECISIONS requires the
+- **Appearance** — not for a value the viewer **interpolates or animates between samples**:
+  position, progress along a path, orientation, scale, blend weight. DECISIONS requires the
   rendered replay to look and feel like the game. A rounded position changes no outcome at all, so
-  the outcome test passes it; it just makes a unit stutter where the game glides. It is not a cosmetic saving: an unquantized float
+  the outcome test passes it; it just makes a unit stutter where the game glides. A value merely
+  *drawn* — a bar length, a badge threshold — may still be quantized, with the precision and an
+  invisible-at-max-zoom argument recorded in the domain document. It is not a cosmetic saving: an unquantized float
 that jitters in its low bits is never byte-identical, so it **defeats the mandatory dedup floor and inflates every
 field-mask delta** for float-carrying domains — economy, supply, combat. Each such field declares
 its precision in the wire format, and the declared precision is part of the domain's contract.
@@ -416,10 +418,25 @@ another domain's absolute numbers.** Cardinalities differ by orders of magnitude
 cost more than d41. The reference domain establishes the *pattern* and the harness, not a
 universal threshold.
 
-**The reference domain also settles the record layout.** Row-major and column-major encoders are
-measured against each other on this corpus before the fan-out. The wire format documents
-column-major as likely to win for large homogeneous tables; ~80 encoders must not be built to the
-loser, and after they exist the layout cannot be changed without rewriting all of them.
+**The reference domain settles the record layout for baselines, and has.** Deltas are where most
+real hours land and they are not modelled here, so the direction is established and the magnitude
+is not final. Measured on d20 —
+`extractor/native/runs/d20_reference/12_layout_compressed.txt` — **column-major compresses to 79.8%
+of row-major**, 5.08 MB against 6.37 MB over 720 hourly baselines at 3,051 divisions. That is why
+the measurement came before the fan-out: ~80 encoders built row-major would each carry about a
+fifth more bytes, and after they exist the layout cannot change without rewriting all of them.
+
+**Report the model with the number, and make the benchmark measure its own model.** An
+full-churn control — every carried value redrawn each hour — says 85.3%, and ships as a flag on
+the same binary so the figure can be re-run rather than taken on trust. Note the direction: more
+churn moves the ratio *toward* row-major, because destroying cross-hour redundancy costs columnar
+too. The answer is not monotone in the assumption it turns on, so quote the surface, not a bound. A model stated in a
+comment is not a model that was run. This one has been wrong four separate times — uncorrelated
+noise, a symmetric toggle reaching 50% by month end, a move destination that contradicted where the
+unit arrived, and a stop process that cancelled 98.8% of the journeys it advertised — and each
+correction moved the headline. The benchmark now prints its realised occupancy beside its sizes,
+and the destination is one shared function rather than two expressions, so the stated model and
+the executed one can be compared without re-deriving either.
 
 **It establishes how cadence gets decided, not what every domain's cadence is.** The reference
 domain must drive something the viewer draws in motion, so its capture can be replayed and watched

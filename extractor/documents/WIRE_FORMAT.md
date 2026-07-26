@@ -27,7 +27,7 @@ Little-endian.
 - `uN` is a fixed N-bit integer.
 - `varint` is LEB128, unsigned, **shortest form required** — a representation with a redundant
   trailing zero group is a corrupt frame. Maximum ten bytes; an eleventh continuation byte is
-  corrupt.
+  corrupt, and so is a tenth byte above `0x01`, which would carry the value past `u64::MAX`.
 - `zigzag(n)` is `(n << 1) ^ (n >> 63)` encoded as a varint, so small negatives cost one byte.
   Used only where a value is genuinely signed.
 - Every length prefix is a `varint`.
@@ -51,6 +51,9 @@ absolute tick index from campaign hour 0.
 One global unit is what makes timestamps comparable. Symbol availability, seek positions and gaps
 all span domains, so a per-domain unit would make "is this symbol available yet" and "which gap
 came first" unanswerable.
+
+**`ticks_per_hour_log2 ≤ 63`**, because a tick index is a `u64` and `2^ticks_per_hour_log2` must be
+representable in one. A container declaring more has no grid.
 
 **A domain's schema separately declares `cadence_log2`**: it samples `2^cadence_log2` times per
 game hour, `0` — once per hour — by default and by far the common case. `cadence_log2` must not
@@ -83,6 +86,14 @@ exactly one `(domain, branch)`. The header carries what every frame in it shares
 
 `cadence_log2` comes from the schema, so it is covered by `schema_hash` and is not repeated here.
 Hoisting `domain` and `branch` out of every frame saves 2–3 bytes on each of ~7 million frames.
+
+**`domain` and `branch` are bounded at `2^32 − 1`**, and a block declaring either above that is
+corrupt. The varint is unbounded on the wire, so without the bound one reader truncates an
+over-range identity onto a valid one — a block claiming domain `2^32` read as domain `0` — while
+another rejects it, and the two disagree about which blocks exist.
+
+**A block carries at least one frame.** `first_tick` is defined as the tick of the block's first
+frame, so a header with no frames names a tick that nothing occupies.
 
 ### 1.3 Frames
 
@@ -178,6 +189,16 @@ change and a new block, not a gap.
 writer and CI; to the reader, a typed gap for that domain until its next baseline. Every state
 discontinuity — a state-affecting gap, restart, rollover, branch, schema or cadence change, or the
 start of a block — forces a `BASELINE` of the state part (§10).
+
+**And a `BASELINE` appears only where one of those forces it.** A witnessed tick whose state
+changed is a `DELTA`; one whose state did not is covered by an `UNCHANGED` run. Without this rule
+the format has no byte-identity at all: given one history — state at tick 0, unchanged at tick 1 —
+a writer emitting `BASELINE` + `UNCHANGED` produces 19 bytes and one re-emitting the identical
+state as a second `BASELINE` produces 21, and both decode to the same thing. §7.1 pins the choice
+between `DELTA` and `UNCHANGED`; this pins the choice against `BASELINE`, which is the same
+question one level up. A reader still accepts a mid-block baseline, because a gap-forced one is
+legal and gaps are recorded outside the block — so this is a writer rule that a reader cannot
+check, which is exactly why it has to be stated rather than left to be inferred.
 
 A domain static for a game year therefore costs a `BASELINE` plus an `UNCHANGED` frame of `len` (1)
 + `tag` (1) + run length (2–3) = **4–5 bytes**, rather than 8,760 frames. That figure is **per
@@ -288,6 +309,15 @@ The codes are normative: they appear in the schema serialization (§11).
 frame from the last `BASELINE` up to the immediately preceding covered tick. Not "the previous
 frame", which may be an `UNCHANGED` run or a `DELTA` that did not carry this field.
 
+**The monotone difference is computed modulo `2^64`.** Both endpoints are `u64`, so their
+mathematical difference need not fit an `i64` — a counter going `0 → 2^64 − 1` differs by more than
+`i64` can hold. The difference is therefore taken as wrapping subtraction in `u64`, reinterpreted
+as `i64`, then zigzagged; the reader adds it back the same way. This recovers every endpoint
+exactly, and every pair of valid `u64` endpoints has exactly one encoding. Without the rule stated,
+an implementation using checked arithmetic errors where this one wraps, and the two disagree on
+bytes for state both consider valid — the difference is a compression device, not a claim that
+counters only rise.
+
 **A field with no concrete prior value is emitted absolute.** If the reconstructed prior state has
 it absent, null or unknown, there is nothing to difference against. The reader sees the same
 reconstructed state, so it knows to expect the absolute form.
@@ -339,6 +369,14 @@ multiplication with round-to-nearest-even, then round that result to an integer 
 steps are named because they disagree: `0.15` under `fixed(1)` yields `2` under this rule and `1`
 under exact-real arithmetic. Every implementation does the binary64 multiplication.
 
+**`dequantize(q, m)` is pinned the same way**: convert the integer `q` to binary64 with
+round-to-nearest-even, then perform **one binary64 division** by the same multiplier `m` that
+`scale` used. Division, not multiplication by a precomputed reciprocal — the two disagree, and
+because the escape rule below is a computation over `dequantize`, that disagreement is not confined
+to a last digit: under `fixed(11)` the two readings classify **6,236** stored integers near `2^53`
+differently, so one implementer would store the integer where the other escapes to raw `f64`.
+Different bytes from identical state is the one thing this document exists to prevent.
+
 **`k` is bounded at 22 so the multiplier itself is unambiguous.** Every power of ten up to `10^22`
 is exactly representable in binary64; past that, a writer computing `10^k` by repeated
 multiplication and one converting the decimal literal land on adjacent binary64 values and round
@@ -352,12 +390,19 @@ independent tests can each veto it**:
 
 - **The outcome test.** Not for a value whose exact magnitude explains a threshold crossing, where
   rounding changes the story the replay tells.
-- **The appearance test.** Not for a value the viewer draws from — position, progress along a path,
-  orientation, scale, blend weight, anything animated or interpolated. DECISIONS requires the
-  rendered replay to match the game; a rounded position does not change any outcome, it just makes
-  a unit stutter where the game glides, and the outcome test alone would let that through.
+- **The appearance test.** Not for a value the viewer **interpolates or animates between samples** —
+  position, progress along a path, orientation, scale, blend weight. DECISIONS requires the rendered
+  replay to match the game; a rounded position does not change any outcome, it just makes a unit
+  stutter where the game glides, and the outcome test alone would let that through.
 
 A field that survives both tests may be quantized. One that fails either is `exact`.
+
+**Being drawn is not by itself disqualifying.** A value the viewer reads once per frame and renders
+at low visual precision — a bar length, a badge threshold — may be quantized, provided the domain
+document records the precision and shows the rounding is invisible at maximum zoom. d20's
+`move_progress` fails the test because motion between provinces is interpolated from it; its
+`organisation` and `strength` do not, because they set bar lengths a few hundred pixels wide where
+five decimal places are far past anything visible. The distinction is interpolation, not exposure.
 
 **The escape is a bitmap bit, not a reserved code.** A quantized field whose escape bit (§3) is set
 carries raw `f64` bits, 8 bytes, in the value region instead of its quantized form. Reserving a
@@ -365,11 +410,31 @@ code inside the value cannot work: `ratio(d)` spends all `2^d` codes on the rang
 is an unbounded zigzag varint with no spare code at all. A bitmap bit costs nothing when unused and
 works identically for both kinds.
 
-**The escape fires in exactly these cases, and no others:**
+**The escape fires in exactly these cases, and no others.** They are tested **in order**, because
+the fourth is a computation over a stored integer `q` that only exists once the third has passed:
 
 - any non-finite value — NaN or ±infinity — or negative zero;
 - for `ratio(d)`, any `v` outside `[0.0, 1.0]`;
-- for `fixed(k)`, any `v` whose `scale(v, 10^k)` is not representable as an `i64`.
+- for `fixed(k)`, any `v` whose `scale(v, 10^k)` is not representable as an `i64`;
+- **any `v` whose stored integer `q` does not satisfy `quantize(dequantize(q)) == q`**, where
+  `quantize` is the stored-integer computation above — `scale(v, 10^k)` for `fixed(k)`,
+  `scale(v, 2^d − 1)` for `ratio(d)` — and **the comparison is between integers**, not between
+  the floats they came from.
+
+That last condition is not an optimisation, it is what makes §7.1 work. §7.1 obliges a writer to
+compare against the state the *reader* reconstructs. Where the round trip is not a fixed point, an
+unchanged source value differs from its own reconstruction: the writer emits a delta and the reader
+rejects it as a mask bit on a field that did not change, from legal input. The property fails once
+the stored integer leaves the range where `f64` holds integers exactly — under `fixed(11)`,
+`90071.99254740993` scales up to `2^53` and dequantizes to a float that scales back to `2^53 − 1`.
+It is stated as a computation rather than as a bound on `k` or on `v`, because every operation in it
+is pinned binary64 (§0) and a bound would be a claim about float round-trips that this document
+would then have to prove.
+
+**A reader enforces the fourth condition too.** A stored integer that is not its own
+reconstruction's quantization is one no legal writer emits, and two such integers can share a
+reconstruction — so accepting one gives a single value two encodings, exactly what the mirror rule
+(an escape bit set on a value that satisfies no escape condition) already forbids.
 
 Ordinary rounding loss is **not** an escape condition — quantization exists to round, and escaping
 on it would defeat the declaration entirely. Every `f64` takes exactly one branch, with no declared
@@ -391,6 +456,19 @@ form that does not change. The stored value is
 
 for a declared integer `c` and a declared shift `u`, `0 ≤ u ≤ ticks_per_hour_log2`, computed in
 `i64`; overflow is a hard writer error, not a wrapped value.
+
+**The transform is applied at the capture and replay boundaries, not inside the codec: a record
+holds stored values.** Capture converts a live value to its stored form before building a record;
+replay converts back after decoding one, for whichever tick it is drawing. Everything between —
+`UNCHANGED`, the change mask, the minimality rules, every comparison §7.1 calls for — then operates
+on stored values and needs no tick at all.
+
+The alternative, transforming inside the encoder, is what makes the mechanism fail to pay: every
+comparison would need the ticks of *both* records, reconstructed state would have to carry a tick
+per row, and the tick-invariance that lets a countdown collapse into one `UNCHANGED` run would stop
+being a property of the stored value and become an emergent property of the comparison. It is a
+stated contract rather than a caller's private business because a transformation applied outside
+the format cannot enforce the overflow rule above, and cannot supply the inverse a reader needs.
 
 **A derived field's stored value is always encoded as an absolute `zigzag`, whatever its kind and
 whatever the frame.** Zigzag because the transform can carry an otherwise unsigned quantity
@@ -462,6 +540,16 @@ A `DELTA` must be the *only* encoding of what changed, so every level of it is p
 
 Each of these would otherwise be a second legal encoding of "nothing happened", which both splits
 byte-identity and wastes bytes at equal fidelity.
+
+**Throughout §7, "differs" means differs *as stored*** — as the bytes this schema would hold, not
+as the source value. Under `fixed(2)` a field moving from `0.33` to `0.331` is a different value
+and the same stored value, so no bit is set and no row is emitted. This is not an optimisation: a
+writer comparing source values emits a row that reconstructs to the state the reader already has,
+which the reader must then reject. Quantization and the escape rule are both part of the stored
+form, so an escaping value and a non-escaping one always differ.
+
+**The writer compares against the reconstructed prior state, not against its own last input.**
+That is the state the reader holds, and minimality is defined relative to it.
 
 A keyed set's key sets are likewise exact, or one update could be split across two rows:
 
@@ -831,9 +919,32 @@ redundancy that dominates this workload.
 These are why this document is not yet the fan-out contract. The reference domain (pattern §10)
 closes them on a named corpus and harness before ~80 encoders are written.
 
-- **Column-major blocks** for large homogeneous tables (provinces, divisions) likely beat row-major
-  before compression, and would change the record grammar in §3 and §7. Measured against row-major
-  on the reference domain, same corpus and harness. The format commits to row-major only if it wins.
+- **Column-major blocks.** Measured on the reference domain: **column-major compresses to 79.8% of
+  row-major** — 5.08 MB against 6.37 MB over 720 hourly d20 baselines at 3,051 divisions, zstd
+  level 3, raw 90.9%; 75.7% at 6-hour block spans, 79.1% at 48-hour — sliced on the encoder's
+  recorded hour boundaries, not an average. Reproduce with
+  `cargo run -p wire_format --bin bench_layout` then `python extractor/native/scripts/bench_layout.py`;
+  raw output in `extractor/native/runs/d20_reference/12_layout_compressed.txt`. **§3 and §7's
+  record grammar is therefore provisional and the columnar grammar is the one to specify.**
+
+  **The margin is model-dependent, and the model is an assumption, not a measurement.** How much
+  the world churns per hour is the assumption that moves the number. The committed model holds
+  d20's stated shape — a few percent of divisions moving or fighting at any hour, on bounded random
+  walks — and the benchmark *measures* its own occupancy rather than asserting it, printing the
+  realised rates beside the sizes.
+
+  **The ratio is not monotone in churn**, which is the trap. A full-churn control — every carried
+  value redrawn independently each hour, runnable as
+  `cargo run -p wire_format --bin bench_layout -- --white-noise` — reports **85.3%**, which is
+  *above* the committed model, not below it: destroying cross-hour redundancy costs columnar as
+  much as row-major and pushes both toward parity. Columnar's best case is neither extreme but the
+  middle, where noisy columns sit beside frozen ones. So the measured surface runs 79.8% at d20's
+  *modelled* rate to 85.3% at full churn, and "more churn than we assumed" moves the answer
+  *toward* row-major. The modelled rate is an assumption about d20, not a measurement of it; only a
+  real capture settles where d20 sits on that surface.
+
+  What this does *not* settle: it models baselines only, and most real hours are deltas, so the
+  delta grammar's layout is measured before the fan-out commits.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own
@@ -856,8 +967,33 @@ closes them on a named corpus and harness before ~80 encoders are written.
   given content set, and that orders symbols first seen at the same tick, is unwritten. Golden
   vectors are not stable until it exists; it belongs with the content manifest, which does not
   currently carry it.
-- **Golden vectors.** Byte-exact round-trip fixtures covering every state in §3, every shape in
-  §7.3, the escape branches in §6, insert-versus-update and every minimality rule in §7, the two
-  time chains in §1.4, and the frontier discontinuities in §9 are written with the reference
-  domain. Until they exist, "two implementers produce identical bytes" is a claim this document
-  makes and does not yet prove.
+- **Golden vectors.** Byte-exact round-trip fixtures written with the reference domain are what
+  turn "two implementers produce identical bytes" from a claim into a gate. The set covers every
+  state in §3, the escape branches in §6, insert-versus-update and the minimality rules in §7.1,
+  and the two time chains in §1.4. Still missing: the ordered shapes in §7.3, and the frontier
+  discontinuities in §9. Those two sections remain unproven by construction.
+
+## 14. What this format retires
+
+This is the second record format in the tree. The first one keeps working until the last encoder
+is migrated, and then it is deleted — a format that outlives its replacement is a second way to
+write the same data, which is the one thing §2 exists to prevent.
+
+Superseded, and deleted when the last domain stops calling them:
+
+| what | where |
+|---|---|
+| H4CR record framing constants | `compact_contract/src/lib.rs`, `record_header.rs` |
+| record layout and validation | `compact_contract/src/record_semantics.rs`, `stream_validator.rs` |
+| gap records | `compact_contract/src/gap_record.rs`, superseded by §8 |
+
+Explicitly **not** superseded, and not to be deleted alongside them. `compact_stream` is a
+compression container over an opaque byte stream and is orthogonal to how a record is laid out.
+The domain descriptors, build profile, control transport, campaign identity and early-render
+modules in `compact_contract` describe what is captured and how the collector is driven, not the
+bytes it produces.
+
+The retirement condition is mechanical, so it can be checked rather than remembered: when no
+crate outside `compact_contract` imports the four files above, they go in the same commit that
+migrates the last caller. Migrating a domain and leaving its old encoder in place is not a
+finished migration.

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "wire_format",
     "compact_stream",
     "compact_contract",
     "snapshot",
