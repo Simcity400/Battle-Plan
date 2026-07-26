@@ -20,6 +20,7 @@ pub mod columnar;
 pub mod d10;
 pub mod d20;
 pub mod d22;
+pub mod d23;
 pub mod d62;
 pub mod d63;
 pub mod derived;
