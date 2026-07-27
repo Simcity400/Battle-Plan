@@ -8863,12 +8863,12 @@
             assert_eq!(rows.len(), 1);
             assert!(!rows[0].deleted);
             assert_eq!(rows[0].army_id, 17);
-            assert_eq!(rows[0].generation, 0);
+            assert_eq!(rows[0].generation, 1);
             assert_eq!(rows[0].slot_index, 2);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 0);
-            assert_eq!(tracker.next_generation, 1);
-            assert_eq!(tracker.previous[&sample.order_addr].generation, 0);
+            assert_eq!(tracker.next_generation, 2);
+            assert_eq!(tracker.previous[&sample.order_addr].generation, 1);
         }
 
         #[test]
@@ -8910,7 +8910,7 @@
                 compact_army_order_delta_rows(&mut tracker, vec![updated], true);
             assert_eq!(rows.len(), 1);
             assert!(!rows[0].deleted);
-            assert_eq!(rows[0].generation, 0);
+            assert_eq!(rows[0].generation, 1);
             assert_eq!(rows[0].target_states.as_deref(), Some(&[118, 119][..]));
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 0);
@@ -8920,7 +8920,7 @@
                     .as_deref(),
                 Some(&[118][..])
             );
-            assert_eq!(tracker.next_generation, 1);
+            assert_eq!(tracker.next_generation, 2);
         }
 
         #[test]
@@ -8960,13 +8960,13 @@
             assert_eq!(changed_rows, 0);
             assert_eq!(deleted_rows, 0);
             assert_eq!(tracker.previous[&sample.order_addr].slot_index, 2);
-            assert_eq!(tracker.next_generation, 1);
+            assert_eq!(tracker.next_generation, 2);
 
             // The next clean sample applies the slot change under the retained generation.
             let (rows, changed_rows, deleted_rows) =
                 compact_army_order_delta_rows(&mut tracker, vec![slot_change], false);
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].generation, 0);
+            assert_eq!(rows[0].generation, 1);
             assert_eq!(rows[0].slot_index, 3);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 0);
@@ -9001,7 +9001,7 @@
             let (rows, _, _) =
                 compact_army_order_delta_rows(&mut tracker, vec![sample.clone()], false);
             assert_eq!(rows.len(), 1);
-            assert_eq!(tracker.next_generation, 1);
+            assert_eq!(tracker.next_generation, 2);
 
             let (rows, changed_rows, deleted_rows) =
                 compact_army_order_delta_rows(&mut tracker, vec![replacement.clone()], true);
@@ -9009,20 +9009,106 @@
             assert_eq!(changed_rows, 0);
             assert_eq!(deleted_rows, 0);
             assert_eq!(tracker.previous[&sample.order_addr].army_id, 17);
-            assert_eq!(tracker.next_generation, 1);
+            assert_eq!(tracker.next_generation, 2);
 
             let (rows, changed_rows, deleted_rows) =
                 compact_army_order_delta_rows(&mut tracker, vec![replacement], false);
             assert_eq!(rows.len(), 2);
             assert!(rows
                 .iter()
-                .any(|row| row.deleted && row.army_id == 17 && row.generation == 0));
+                .any(|row| row.deleted && row.army_id == 17 && row.generation == 1));
             assert!(rows
                 .iter()
-                .any(|row| !row.deleted && row.army_id == 18 && row.generation == 1));
+                .any(|row| !row.deleted && row.army_id == 18 && row.generation == 2));
             assert_eq!(changed_rows, 2);
             assert_eq!(deleted_rows, 1);
-            assert_eq!(tracker.next_generation, 2);
+            assert_eq!(tracker.next_generation, 3);
+        }
+
+        // `fold_army_orders` fails the WHOLE d27 record closed when any row
+        // carries `generation == 0` (`recorder_host/src/world_fold.rs:14223`-
+        // `:14234`, mirrored by `wire_format/src/d27.rs:517`), and the record it
+        // drops is the capture's only full baseline, after which every following
+        // DELTA record trips `reject_delta_before_baseline`. A fresh tracker's
+        // very first frame must therefore hand out generation >= 1 on every row,
+        // in the emitted rows AND in the packed bytes the fold actually reads.
+        #[test]
+        fn compact_army_orders_first_frame_never_emits_generation_zero() {
+            fn order(army_id: u32, order_addr: usize, slot_index: u32) -> ArmyOrderSample {
+                ArmyOrderSample {
+                    owner_kind: battleplans54::ORDER_OWNER_KIND_ARMY,
+                    army_id,
+                    generation: 0,
+                    engine_order_instance_id: 2_000 + army_id,
+                    order_addr,
+                    slot_index,
+                    order_type: ORDER_TYPE_AREA_DEFENSE,
+                    target_states: Some(vec![118]),
+                    target_state_count: Some(1),
+                    target_status: "exact",
+                    path_provinces: None,
+                    geometry_status: "exact",
+                    assigned_division_ids: Some(vec![400 + army_id]),
+                    assigned_units_status: "exact",
+                    active: Some(true),
+                    active_status: "exact",
+                }
+            }
+
+            let mut tracker = ArmyOrderTracker::default();
+            assert_eq!(
+                tracker.next_generation, 0,
+                "the Default tracker is still zero-initialised; the guard lives in the delta path"
+            );
+
+            let samples = vec![
+                order(17, HEAP_LO + 0x100, 0),
+                order(17, HEAP_LO + 0x200, 1),
+                order(23, HEAP_LO + 0x300, 0),
+            ];
+            let (rows, changed_rows, deleted_rows) =
+                compact_army_order_delta_rows(&mut tracker, samples, false);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(changed_rows, 3);
+            assert_eq!(deleted_rows, 0);
+            for row in &rows {
+                assert!(
+                    row.generation >= 1,
+                    "d27 row {row:?} would fail the fold's typed-identity check"
+                );
+            }
+            assert_eq!(tracker.next_generation, 4);
+
+            // The packed bytes are what the fold reads: army_id at `base`, the
+            // generation u64 at `base + 4`, rows starting at header end.
+            let payload = compact_army_orders_data_payload(&rows, 80, 0, changed_rows, 3, 2, 3, 0);
+            let row_count = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+            assert_eq!(row_count, 3);
+            for index in 0..row_count {
+                let base = 40 + index * 48;
+                let army_id = u32::from_le_bytes(payload[base..base + 4].try_into().unwrap());
+                let generation =
+                    u64::from_le_bytes(payload[base + 4..base + 12].try_into().unwrap());
+                assert_ne!(army_id, 0, "row {index} has a zero owner id");
+                assert_ne!(
+                    generation, 0,
+                    "row {index} carries the generation the fold rejects"
+                );
+            }
+
+            // Every later generation is still monotonic and non-zero: a split on
+            // a known order address must not fall back to zero either.
+            let mut replacement = order(31, HEAP_LO + 0x100, 0);
+            replacement.target_states = Some(vec![119]);
+            let (rows, _, deleted_rows) =
+                compact_army_order_delta_rows(&mut tracker, vec![replacement], false);
+            assert_eq!(deleted_rows, 3, "the two absent orders plus the split tombstone");
+            for row in &rows {
+                assert!(row.generation >= 1, "{row:?}");
+            }
+            assert!(rows
+                .iter()
+                .any(|row| !row.deleted && row.army_id == 31 && row.generation == 4));
         }
 
         #[test]

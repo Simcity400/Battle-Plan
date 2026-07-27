@@ -109,14 +109,16 @@
 //! recorder therefore means counting the record as
 //! dropped and excluding its hour from both arms, not refusing the stream; a
 //! stream rejection would produce no measurement of a fold the recorder does
-//! run. **`deepwar_t1` exercises this**: the collector's generation counter
-//! starts at zero (`ArmyOrderTracker::next_generation`,
-//! `collector/src/attach_log.rs:15361`, `Default`-initialised, handed out at
-//! `:18536`) while `fold_army_orders` rejects `generation == 0`
-//! (`world_fold.rs:14226`), so the first order the collector ever sampled makes
-//! the capture's **first d27 record — its only full 794-row baseline —**
-//! unfoldable. Exactly one row in the whole capture carries generation 0. The
-//! count and every reason are printed, never absorbed.
+//! run. **`deepwar_t1` exercises this**: when that capture was recorded the d27
+//! emitter handed generation 0 to the first order it ever sampled —
+//! `compact_army_order_delta_rows` read `ArmyOrderTracker::next_generation`
+//! straight from its `Default` zero — while `fold_army_orders` rejects
+//! `generation == 0` (`world_fold.rs:14226`), so the capture's **first d27
+//! record — its only full 794-row baseline —** is unfoldable. Exactly one row in
+//! the whole capture carries generation 0. The collector now normalises that
+//! counter with `.max(1)` the way the D21 land-combat and D49/D50 naval trackers
+//! already did, so no new capture can carry such a row; `deepwar_t1` still does,
+//! and the count and every reason are printed, never absorbed.
 //!
 //! **`fold_army_orders` is the only writer of the d27 accumulator.**
 //! `self.army_orders` is touched at exactly four places in `world_fold.rs` — its
@@ -1393,10 +1395,12 @@ mod tests {
     }
 
     /// The generation-zero case `deepwar_t1` actually contains, pinned as a
-    /// regression: the collector's counter starts at 0 (`attach_log.rs:15361`,
-    /// `:18536`) and `fold_army_orders` rejects `generation == 0`
+    /// fold-side regression: `fold_army_orders` rejects `generation == 0`
     /// (`world_fold.rs:14226`), so the capture's first and only full baseline is
-    /// unfoldable. The recorder notes and continues, and so does this harness —
+    /// unfoldable. The collector no longer emits such a row —
+    /// `compact_army_order_delta_rows` normalises its counter with `.max(1)` —
+    /// but captures recorded before that fix still carry one, so the harness must
+    /// keep accounting for it. The recorder notes and continues, and so does this harness —
     /// and the delta records that follow then hit
     /// `reject_delta_before_baseline`, which is how a real capture reaches that
     /// exclusion at all.
