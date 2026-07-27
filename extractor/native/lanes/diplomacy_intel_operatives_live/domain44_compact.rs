@@ -30,13 +30,24 @@ pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const STATUS_CONTROL_INVALID: u32 = compact_contract::COMPACT_STATUS_CONTROL_INVALID;
-pub const STATUS_OPERATIONS_DETAIL_RESISTED: u32 = 1 << 16;
-pub const STATUS_INTEL_MAP_RESISTED: u32 = 1 << 17;
-pub const STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
-pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
-pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
-pub const STATUS_FACTION_GROUP_UNVALIDATED: u32 = 1 << 21;
-pub const STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED: u32 = 1 << 22;
+// Lane-local status badges are DECLARED by `compact_contract` (registered in
+// `lane_local_status_mask(53)`) and aliased here so lane and contract cannot
+// drift — the batch-3 defect was exactly this vocabulary existing only here,
+// which made every production d53 record with a badge an unknown-status-bit
+// stream rejection under the contract's validity rule.
+pub const STATUS_OPERATIONS_DETAIL_RESISTED: u32 =
+    compact_contract::DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED;
+pub const STATUS_INTEL_MAP_RESISTED: u32 = compact_contract::DOMAIN53_STATUS_INTEL_MAP_RESISTED;
+pub const STATUS_WAR_ROOT_UNVALIDATED: u32 =
+    compact_contract::DOMAIN53_STATUS_WAR_ROOT_UNVALIDATED;
+pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 =
+    compact_contract::DOMAIN53_STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED;
+pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 =
+    compact_contract::DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+pub const STATUS_FACTION_GROUP_UNVALIDATED: u32 =
+    compact_contract::DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED;
+pub const STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED: u32 =
+    compact_contract::DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
 pub const ROW_ID_DELETED: u32 = 1 << 31;
 
 pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE

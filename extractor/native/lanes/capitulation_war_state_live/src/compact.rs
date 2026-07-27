@@ -56,10 +56,13 @@ pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PAN
 /// (T1 Codex verdict). MANDATORY whenever war rows are present; the decoder
 /// fails closed on unbadged war rows so the semantic can never silently
 /// launder into "save-exact casualties".
-pub const STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR: u32 = 1 << 16;
+/// Declared by `compact_contract` (registered in `lane_local_status_mask(60)`)
+/// and aliased here so lane and contract cannot drift.
+pub const STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR: u32 =
+    compact_contract::DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR;
 /// Every war row in this v2 frame carries the complete exact H-B5 residual
 /// block. The decoder rejects mixed present/absent rows and badge mismatch.
-pub const STATUS_WAR_RESIDUALS_EXACT: u32 = 1 << 17;
+pub const STATUS_WAR_RESIDUALS_EXACT: u32 = compact_contract::DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
 
 pub const KNOWN_STATUS_FLAGS: u32 = compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE
     | compact_contract::COMPACT_STATUS_PROFILE_MISMATCH

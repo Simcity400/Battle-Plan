@@ -3745,8 +3745,7 @@ fn scan_compact_stream_with_identity_mode(
                     .or_default() += 1;
                 if payload.len() >= 36 {
                     let raw_status = read_u32_le(payload, 32);
-                    let unknown_status =
-                        compact_contract::compact_status_unknown_flags_v1(raw_status);
+                    let unknown_status = domain_status_unknown_bits(domain_id, raw_status);
                     if unknown_status != 0 {
                         summary.parse_errors.push(format!(
                             "offset {offset}: DOMAIN_PERF domain {domain_id} status {raw_status:#x} contains unknown v1 bits {unknown_status:#x}"
@@ -3851,7 +3850,7 @@ fn scan_compact_stream_with_identity_mode(
                         Ok(decoded) => {
                             if let Some(status_flags) = decoded.status_flags {
                                 let unknown_status =
-                                    compact_contract::compact_status_unknown_flags_v1(status_flags);
+                                    domain_status_unknown_bits(domain_id, status_flags);
                                 if unknown_status != 0 {
                                     summary.parse_errors.push(format!(
                                         "offset {offset}: DOMAIN_DATA domain {domain_id} status {status_flags:#x} contains unknown v1 bits {unknown_status:#x}"
@@ -4351,11 +4350,41 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
     ])
 }
 
+/// Unassigned-bit view of a record's status word. The domain's registered
+/// lane-local badges (`compact_contract::lane_local_status_mask` — d49, d51,
+/// d53, d60) are that domain's own vocabulary and are stripped BEFORE the
+/// v1 unassigned-bit check; checking the raw word rejected every production
+/// d53 record carrying its badge bits 16..=22 (batch-3a: 379 of 514 hours at
+/// status `0x530200`).
+fn domain_status_unknown_bits(domain_id: u16, status_flags: u32) -> u32 {
+    compact_contract::compact_status_unknown_flags_v1(
+        compact_contract::compact_status_for_global_interpretation(domain_id, status_flags),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Regression: the d53 production status word (`PARTIAL_DATA` plus badge
+    /// bits 16/17/20/22 — 379 of 514 batch-3a hours) must not be reported as
+    /// carrying unassigned v1 bits, while the same word on a domain with no
+    /// registered lane-local vocabulary still is.
+    #[test]
+    fn lane_local_badges_are_not_unknown_bits_for_their_own_domain() {
+        let d53_word = 0x0053_0200;
+        assert_eq!(super::domain_status_unknown_bits(53, d53_word), 0);
+        let d60_word = (1 << 16) | (1 << 17);
+        assert_eq!(super::domain_status_unknown_bits(60, d60_word), 0);
+        // Domain-scoped, never a global amnesty.
+        assert_eq!(super::domain_status_unknown_bits(52, d53_word), 0x0053_0000);
+        assert_eq!(super::domain_status_unknown_bits(61, d60_word), d60_word);
+        // A genuinely unassigned bit still surfaces for d53/d60.
+        assert_eq!(super::domain_status_unknown_bits(53, 1 << 30), 1 << 30);
+        assert_eq!(super::domain_status_unknown_bits(60, 1 << 23), 1 << 23);
+    }
 
     struct TmpDir(PathBuf);
 

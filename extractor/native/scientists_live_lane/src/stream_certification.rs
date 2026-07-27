@@ -175,7 +175,7 @@ pub fn decode_production_projects_scientists(
             "projects source is not exact DLL scan authority (source_kind {source_kind}, bridge_rows {bridge_rows})"
         ));
     }
-    reject_status(status_flags, "projects DATA")?;
+    reject_status(DOMAIN_PROJECTS_LIVE, status_flags, "projects DATA")?;
     let delta = status_flags & compact_contract::COMPACT_STATUS_DELTA_DATA != 0;
     let counts = [
         facility_count,
@@ -611,7 +611,9 @@ pub fn certify_canonical_stream(
                 }
                 match parse_perf(payload) {
                     Ok(authority) => {
-                        if let Err(error) = reject_status(authority.status_flags, "DOMAIN_PERF") {
+                        if let Err(error) =
+                            reject_status(header.domain_id, authority.status_flags, "DOMAIN_PERF")
+                        {
                             report.problems.push(format!("offset {offset}: {error}"));
                             break;
                         }
@@ -820,7 +822,7 @@ fn validate_frame_end(payload: &[u8], perf: &BTreeMap<u16, PerfAuthority>) -> Re
     let scheduled = u32_at(payload, 20)? as usize;
     let status = u32_at(payload, 24)?;
     let reserved = u32_at(payload, 28)?;
-    reject_status(status, "FRAME_END")?;
+    reject_status(compact_contract::COMPACT_DOMAIN_FRAME, status, "FRAME_END")?;
     let expected_status = perf.iter().fold(0u32, |status_or, (domain_id, authority)| {
         status_or
             | compact_contract::compact_status_for_global_interpretation(
@@ -839,14 +841,22 @@ fn validate_frame_end(payload: &[u8], perf: &BTreeMap<u16, PerfAuthority>) -> Re
     Ok(())
 }
 
-fn reject_status(status: u32, label: &str) -> Result<(), String> {
-    let unknown = compact_contract::compact_status_unknown_flags_v1(status);
+fn reject_status(domain_id: u16, status: u32, label: &str) -> Result<(), String> {
+    // Validity and failure classification are defined over the GLOBALLY
+    // interpretable view: a domain's registered lane-local badges are its own
+    // vocabulary, not unassigned bits and not failure evidence
+    // (`compact_contract::lane_local_status_mask`; the d53 0x530200 defect
+    // class). For every domain this certifier admits today the mask is zero
+    // and this is an identity, but the rule is the contract's, not the
+    // roster's.
+    let global = compact_contract::compact_status_for_global_interpretation(domain_id, status);
+    let unknown = compact_contract::compact_status_unknown_flags_v1(global);
     if unknown != 0 {
         return Err(format!(
             "{label} status {status:#x} has unknown bits {unknown:#x}"
         ));
     }
-    let failure = status & compact_contract::COMPACT_STATUS_FAILURE_MASK;
+    let failure = global & compact_contract::COMPACT_STATUS_FAILURE_MASK;
     if failure != 0 {
         return Err(format!(
             "{label} status {status:#x} has failure bits {failure:#x}"
@@ -1076,6 +1086,27 @@ fn i32_at(bytes: &[u8], offset: usize) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `reject_status` classifies over the globally interpretable
+    /// view, so a domain's registered lane-local badges (d53 bits 16..=22,
+    /// d60 bits 16..=17) are neither unknown bits nor failure bits for that
+    /// domain — while remaining unknown for every unregistered domain.
+    #[test]
+    fn reject_status_strips_registered_lane_local_badges_first() {
+        // d53's production word: PARTIAL_DATA is a genuine failure bit and
+        // must still reject — but as a FAILURE, not as unknown bits.
+        let err = reject_status(53, 0x0053_0200, "t").unwrap_err();
+        assert!(err.contains("failure bits 0x200"), "{err}");
+        // Badges alone are clean for their own domain.
+        assert!(reject_status(53, 0x0053_0000, "t").is_ok());
+        assert!(reject_status(60, (1 << 16) | (1 << 17), "t").is_ok());
+        // Unregistered domains still reject the same words as unknown.
+        let err = reject_status(DOMAIN_PROJECTS_LIVE, 0x0053_0000, "t").unwrap_err();
+        assert!(err.contains("unknown bits 0x530000"), "{err}");
+        // A truly unassigned bit stays unknown even for d53.
+        let err = reject_status(53, 1 << 30, "t").unwrap_err();
+        assert!(err.contains("unknown bits"), "{err}");
+    }
 
     #[derive(Clone)]
     struct FixtureScientist {

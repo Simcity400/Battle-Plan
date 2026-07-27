@@ -92,10 +92,55 @@ pub const MAX_SCHEDULED_DOMAINS: usize = 96;
 pub const DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
 pub const DOMAIN49_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED;
 
+// Domain-53 (diplomacy_intel_operatives_live) lane-local payload status bits:
+// per-segment validation badges the d53 extractor sets whenever a segment's
+// source proof is absent or a row family resisted validation (operations
+// detail, intel map, war root/lifecycle, incoming action queue, faction
+// groups, intel network graph). Emitted in production — batch-3a carries
+// `PARTIAL_DATA | bits 16/17/20/22` on 379 of 514 hours — and read by name in
+// `recorder_host`'s `fold_diplomacy_intel_operatives` witness gating. Unlike
+// the d49/d51 badges these bits sit OUTSIDE the assigned v1 vocabulary
+// (bits 14..=31 are globally unassigned), so a consumer enforcing
+// `compact_status_unknown_flags_v1` must strip them first via
+// `compact_status_for_global_interpretation`. The lane's own declarations
+// alias these constants (`lanes/diplomacy_intel_operatives_live/`
+// `domain44_compact.rs`), so lane and contract cannot drift; the sweep test
+// in `tests/lane_status_bit_sweep.rs` pins the registration itself.
+pub const DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED: u32 = 1 << 16;
+pub const DOMAIN53_STATUS_INTEL_MAP_RESISTED: u32 = 1 << 17;
+pub const DOMAIN53_STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
+pub const DOMAIN53_STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
+pub const DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
+pub const DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED: u32 = 1 << 21;
+pub const DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED: u32 = 1 << 22;
+pub const DOMAIN53_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED
+    | DOMAIN53_STATUS_INTEL_MAP_RESISTED
+    | DOMAIN53_STATUS_WAR_ROOT_UNVALIDATED
+    | DOMAIN53_STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
+    | DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
+    | DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED
+    | DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
+
+// Domain-60 (capitulation_war_state_live) lane-local payload status bits.
+// Bit 16 is a MANDATORY semantics badge whenever war rows are present (live
+// war casualties are running accumulators, not save-exact snapshots) — the
+// lane decoder fails closed on unbadged war rows — and bit 17 badges the v2
+// all-rows-carry-residuals frame shape. Both are production-emitted
+// (`lanes/capitulation_war_state_live/src/extractor.rs`) and, like d53's,
+// sit outside the assigned v1 vocabulary; same strip-before-classification
+// rule. The lane's declarations alias these constants
+// (`lanes/capitulation_war_state_live/src/compact.rs`).
+pub const DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR: u32 = 1 << 16;
+pub const DOMAIN60_STATUS_WAR_RESIDUALS_EXACT: u32 = 1 << 17;
+pub const DOMAIN60_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR
+    | DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
+
 pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
     match domain_id {
         49 => DOMAIN49_LANE_LOCAL_STATUS_MASK,
         51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
+        53 => DOMAIN53_LANE_LOCAL_STATUS_MASK,
+        60 => DOMAIN60_LANE_LOCAL_STATUS_MASK,
         _ => 0,
     }
 }
@@ -2267,6 +2312,120 @@ mod tests {
             ),
             COMPACT_STATUS_PARTIAL_DATA
         );
+    }
+
+    /// Regression for the batch-3 classification Finding 2: 379 of 514 hours
+    /// of the 3a capture carry the d53 status word
+    /// `PARTIAL_DATA | bits 16/17/20/22` = `0x530200`. Before domain 53 was
+    /// registered in `lane_local_status_mask`, the composed validity check
+    /// (`compact_status_unknown_flags_v1` over
+    /// `compact_status_for_global_interpretation`) reported bits `0x530000`
+    /// as unassigned, turning every such record into a stream rejection.
+    /// Post-fix the badges strip and the record classifies on the remaining
+    /// global vocabulary alone.
+    #[test]
+    fn d53_production_status_word_classifies_instead_of_rejecting() {
+        let observed = COMPACT_STATUS_PARTIAL_DATA
+            | DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED
+            | DOMAIN53_STATUS_INTEL_MAP_RESISTED
+            | DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
+            | DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
+        assert_eq!(observed, 0x0053_0200, "the measured batch-3a word");
+        let global = compact_status_for_global_interpretation(53, observed);
+        assert_eq!(global, COMPACT_STATUS_PARTIAL_DATA);
+        assert_eq!(
+            compact_status_unknown_flags_v1(global),
+            0,
+            "a registered lane badge is not an unassigned bit"
+        );
+        // Classification is otherwise UNCHANGED: the badges never intersect
+        // the failure mask, so d53's failure/partial verdict is the same one
+        // the raw word produced (domain 53 has no expected-partial tolerance).
+        assert_eq!(
+            compact_status_failure_flags_after_expected_partial_tolerance(53, observed),
+            COMPACT_STATUS_PARTIAL_DATA
+        );
+        // The full seven-bit vocabulary strips, not just the observed four —
+        // asserted per LITERAL bit, not via the mask constant, so removing
+        // one bit from the registered mask cannot stay self-consistent.
+        for bit in 16..=22u32 {
+            assert_eq!(
+                compact_status_for_global_interpretation(
+                    53,
+                    COMPACT_STATUS_PARTIAL_DATA | (1 << bit)
+                ),
+                COMPACT_STATUS_PARTIAL_DATA,
+                "d53 badge bit {bit} must strip"
+            );
+        }
+        // Unregistered domains still reject these bits — the mask is
+        // domain-scoped, never a global amnesty.
+        assert_eq!(
+            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(
+                52,
+                observed
+            )),
+            0x0053_0000
+        );
+    }
+
+    #[test]
+    fn d60_war_badges_classify_instead_of_rejecting() {
+        let observed = DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR
+            | DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
+        let global = compact_status_for_global_interpretation(60, observed);
+        assert_eq!(global, 0);
+        assert_eq!(compact_status_unknown_flags_v1(global), 0);
+        assert!(!compact_status_is_failure(global));
+        assert_eq!(
+            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(
+                61,
+                observed
+            )),
+            observed,
+            "the d60 badges stay unassigned for every other domain"
+        );
+    }
+
+    /// Pins the lane-local registry itself: exactly these domains carry a
+    /// non-zero mask, and every constant and mask is pinned to its LITERAL
+    /// bit value — never to another constant — so neither a dropped mask bit
+    /// nor a moved badge constant can stay self-consistent. A new lane-local
+    /// vocabulary must extend this test alongside the registration (the sweep
+    /// test in `tests/lane_status_bit_sweep.rs` fails first if it does not).
+    #[test]
+    fn lane_local_status_registry_is_exactly_the_declared_domains() {
+        for domain_id in 0..=u16::MAX {
+            let expected: u32 = match domain_id {
+                49 => 1 << 11,
+                51 => (1 << 11) | (1 << 12) | (1 << 13),
+                53 => 0x007F_0000,
+                60 => 0x0003_0000,
+                _ => 0,
+            };
+            assert_eq!(lane_local_status_mask(domain_id), expected, "domain {domain_id}");
+        }
+        // Each badge constant's exact wire position, individually.
+        assert_eq!(DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED, 1 << 16);
+        assert_eq!(DOMAIN53_STATUS_INTEL_MAP_RESISTED, 1 << 17);
+        assert_eq!(DOMAIN53_STATUS_WAR_ROOT_UNVALIDATED, 1 << 18);
+        assert_eq!(DOMAIN53_STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, 1 << 19);
+        assert_eq!(DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, 1 << 20);
+        assert_eq!(DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED, 1 << 21);
+        assert_eq!(DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED, 1 << 22);
+        assert_eq!(DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR, 1 << 16);
+        assert_eq!(DOMAIN60_STATUS_WAR_RESIDUALS_EXACT, 1 << 17);
+        // The two overlap-class masks sit inside the v1 vocabulary (legacy
+        // wire compatibility); the two badge-class masks sit wholly outside
+        // it (fresh bits, strip-before-classification).
+        assert_eq!(DOMAIN49_LANE_LOCAL_STATUS_MASK & !COMPACT_STATUS_V1_KNOWN_MASK, 0);
+        assert_eq!(DOMAIN51_LANE_LOCAL_STATUS_MASK & !COMPACT_STATUS_V1_KNOWN_MASK, 0);
+        assert_eq!(DOMAIN53_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK, 0);
+        assert_eq!(DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK, 0);
+        // Registration must never change failure classification: no badge
+        // bit may intersect the failure vocabulary.
+        assert_eq!(DOMAIN53_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK, 0);
+        assert_eq!(DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK, 0);
     }
 
     #[test]
