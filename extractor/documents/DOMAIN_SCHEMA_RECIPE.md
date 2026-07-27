@@ -818,6 +818,13 @@ Prompt rules that make the loop converge:
 - Codex has **no memory of this project**. Every prompt carries the full context: what the
   domain is, what the fold function says, what you built, and where the files are.
 
+**Round-8 rule (standing owner directive, 2026-07-27).** If round 8 still does not
+APPROVE, resume the round-8 thread (`codex exec -s danger-full-access resume "$TID" ...`,
+same model/effort/tier flags) and instruct Codex to apply its remaining fixes ITSELF in
+your worktree; re-run the full suite and your measurement, verify its diff scope with
+`git status --porcelain` + `git diff`, record the outcome as "round-8 self-fix", and
+complete. Do not loop past round 8.
+
 Fix findings **by property, not by the reported input** — sweep the whole kind/value space the
 finding implies, and carry the reviewer's own failing input into a regression test. Re-review
 after every fix round. Loop until Codex returns APPROVE with no in-class findings.
