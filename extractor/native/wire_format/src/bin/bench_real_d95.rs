@@ -54,6 +54,18 @@
 //! full authority. This crate cannot depend on `recorder_host` (it pulls in every
 //! capture lane), so the relevant predicates are mirrored here.
 //!
+//! The DATA payloads of every domain other than 95 and 18 pass UNVALIDATED
+//! beyond header sanity, the stream validator and the hour-boundary rules —
+//! production validates every domain's payload (`stream_fold.rs:593`). That
+//! unvalidated remainder is explicitly BOUNDED: every closed game hour must
+//! carry at least one d95 DATA record (several are legal, ordered by the
+//! within-hour sequence; the bound is enforced in [`commit_hour`]), and the
+//! d18 lane must be all-or-nothing — at least one record per closed hour when
+//! scheduled, none at all when not (the check after the EOF rules in
+//! [`scan_stream`]) — so a d95 or d18 record relabelled to another domain id,
+//! or dropped, refuses the run instead of silently dropping hours or silently
+//! converting them into no-roster exclusions.
+//!
 //! # Exclusions, in the fold's own order — and d95 has no status word
 //!
 //! `fold_pov_spotted_units` never reads a status word: the SPU1 payload does not
@@ -182,10 +194,11 @@ impl Excluded {
 struct StreamScan {
     hours: Vec<D95Hour>,
     excluded: Excluded,
-    /// Hours that closed without any d95 DATA record at all.
-    hours_without_d95: usize,
     /// d95 DATA records seen, of any outcome.
     d95_records: usize,
+    /// d18 DATA records seen, of any outcome — the completeness bound's
+    /// numerator (all-or-nothing against closed hours).
+    d18_records: usize,
     /// Measured d95 hours that do not follow the previous measured one by one.
     non_contiguous: usize,
     /// d95 DOMAIN_PERF status words, reported and never enforced.
@@ -324,15 +337,13 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
     // Reported, never refused — see the type's docs for why mirroring the
     // recorder beats applying the stricter rule to a dependency.
     let unassigned_status_bits = compact_status_unknown_flags_v1(status_flags);
-    // `world_fold.rs:13922`-`:13928`: a failure status leaves the map unchanged
-    // and returns Ok, so this record commits nothing — whatever an earlier record
-    // committed this hour stands.
-    if compact_status_is_failure(status_flags) {
-        return Ok(D18Fold {
-            roster: None,
-            unassigned_status_bits,
-        });
-    }
+    // The row walk below runs on EVERY record, whatever its status, because
+    // production's payload authority is status-independent:
+    // `validate_domain_data_payload_at` (`stream_fold.rs:593`) runs on every
+    // DOMAIN_DATA record and `decode_compact_country_identity_data_payload`
+    // never looks at the status word to decide whether to walk the rows (the
+    // d94 lesson, carried into d67's d18 arm as a round-2 finding). Only the
+    // COMMIT is status-gated, after the walk.
 
     let mut cursor = 20usize;
     let mut fresh: BTreeSet<u32> = BTreeSet::new();
@@ -492,6 +503,16 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
             payload.len()
         ));
     }
+    // `world_fold.rs:13922`-`:13928`: only now, with the whole payload
+    // validated, is the status word consulted. A failure status leaves the map
+    // unchanged and returns Ok, so this record commits nothing — whatever an
+    // earlier record committed this hour stands.
+    if compact_status_is_failure(status_flags) {
+        return Ok(D18Fold {
+            roster: None,
+            unassigned_status_bits,
+        });
+    }
     Ok(D18Fold {
         roster: Some(fresh),
         unassigned_status_bits,
@@ -514,11 +535,17 @@ fn scan_stream(
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
 
+    // COMPLETENESS accounting: closed game hours and the hours in which at
+    // least one d18 DATA record landed, for the d18 all-or-nothing bound (the
+    // per-hour d95 bound lives in `commit_hour`).
+    let mut closed_hours = 0usize;
+    let mut d18_covered_hours = 0usize;
+    let mut hour_saw_d18 = false;
     let mut scan = StreamScan {
         hours: Vec::new(),
         excluded: Excluded::default(),
-        hours_without_d95: 0,
         d95_records: 0,
+        d18_records: 0,
         non_contiguous: 0,
         perf_status: BTreeMap::new(),
         d18_failure_records: 0,
@@ -699,6 +726,11 @@ fn scan_stream(
 
                 open_hour = None;
                 last_closed_hour = Some(header.game_hour_raw);
+                closed_hours += 1;
+                if hour_saw_d18 {
+                    d18_covered_hours += 1;
+                }
+                hour_saw_d18 = false;
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
             }
@@ -708,7 +740,10 @@ fn scan_stream(
 
         if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
             match header.domain_id {
-                D18 => match d18_roster(payload) {
+                D18 => {
+                    scan.d18_records += 1;
+                    hour_saw_d18 = true;
+                    match d18_roster(payload) {
                     Ok(fold) => {
                         if fold.unassigned_status_bits != 0 {
                             scan.d18_unassigned_status_records += 1;
@@ -724,7 +759,8 @@ fn scan_stream(
                     // stream would be louder than the recorder on a domain this
                     // assignment does not port.
                     Err(_) => scan.d18_refused_records += 1,
-                },
+                    }
+                }
                 D95 => {
                     scan.d95_records += 1;
                     if let Err(reason) = hour_fold.fold_payload(payload, &roster) {
@@ -772,6 +808,23 @@ fn scan_stream(
         return Err("stream carries no d95 DATA records".to_string());
     }
 
+    // COMPLETENESS, the d18 half: the d18 lane must be all-or-nothing — at
+    // least one record per closed hour when scheduled, none at all when not
+    // (d18 is full-replace, and the mirror already tolerates several records
+    // per hour by last-success-wins). A d18 record lost in one hour would
+    // silently convert that hour's d95 records into no-roster exclusions, so
+    // anything between the two shapes is a partially-lost or relabelled d18
+    // lane and refuses the run. (The per-hour d95 bound is enforced in
+    // `commit_hour`.)
+    if scan.d18_records != 0 && d18_covered_hours != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but only {d18_covered_hours} carry a \
+             d18 DATA record; a capture scheduling d18 carries at least one per closed hour, \
+             and a partially-missing d18 lane would silently convert its hours' d95 records \
+             into no-roster exclusions"
+        ));
+    }
+
     Ok(scan)
 }
 
@@ -804,6 +857,116 @@ fn opens_block(hours_in_block: usize, previous_measured_hour: Option<i32>, game_
     match previous_measured_hour {
         Some(previous) => game_hour != previous.saturating_add(1),
         None => true,
+    }
+}
+
+/// One wire-arm hour: the §1.5/block baseline decision (`opens_block`), the
+/// encode, and the per-hour reader replay over both collections. Factored out
+/// of `main` so the tests execute the PRODUCTION encode path over a scanned
+/// stream: a mutant that reverts the baseline decision here to
+/// chain-position-only fails the gap test (a Codex round-2 finding — the
+/// earlier test exercised the decision function but not this callsite).
+struct WireHourOutcome {
+    opened_baseline: bool,
+    /// The baseline was opened by a gap rather than the chain length. The two
+    /// reasons are counted apart: reaching the 48-hour chain length is the
+    /// cadence, a gap is the spec's forced baseline.
+    gap_forced: bool,
+    emitted: bool,
+    bytes: usize,
+    changed_rows: usize,
+    tombstones: usize,
+}
+
+fn encode_wire_hour(
+    schema: &Schema,
+    hours_in_block: usize,
+    previous_measured_hour: Option<i32>,
+    hour: &D95Hour,
+    prior: &d95::SpottedUnitsState,
+    reader: &mut Vec<KeyedState>,
+    wire: &mut Vec<u8>,
+) -> WireHourOutcome {
+    let state = &hour.state;
+    let hour_start = wire.len();
+    let block_start = opens_block(hours_in_block, previous_measured_hour, hour.game_hour);
+    let gap_forced = block_start
+        && previous_measured_hour
+            .is_some_and(|previous| hour.game_hour != previous.saturating_add(1));
+    let mut emitted = true;
+    let mut changed_rows = 0usize;
+    let mut tombstones = 0usize;
+    if block_start {
+        encode_baseline(schema, &state.as_slice(), wire).expect("baseline encodes");
+    } else {
+        let deltas: Vec<Option<KeyedDelta>> = (0..d95::COLLECTION_COUNT)
+            .map(|i| {
+                let d = diff(&schema.collections[i], prior.get(i), state.get(i));
+                (!d.is_empty()).then_some(d)
+            })
+            .collect();
+        if deltas.iter().all(Option::is_none) {
+            emitted = false;
+        } else {
+            for (i, delta) in deltas.iter().enumerate() {
+                let Some(delta) = delta else { continue };
+                changed_rows += delta.changed.len();
+                tombstones += delta.tombstones.len();
+                // §7.1 minimality, checked rather than assumed.
+                check_minimal(&schema.collections[i], prior.get(i), state.get(i), delta)
+                    .unwrap_or_else(|e| panic!("hour {}: {e:?}", hour.game_hour));
+            }
+            encode_delta(schema, &prior.as_slice(), &deltas, wire).expect("delta encodes");
+        }
+    }
+    let bytes = wire.len() - hour_start;
+
+    // Reader replay: decode the bytes just written against the reader's OWN
+    // reconstructed prior, exactly as a conforming reader would, and require
+    // the result to be stored-equal to this hour's state. This is what makes
+    // the size claim a claim about decodable bytes. An hour that emitted
+    // nothing is still checked: the reader's retained state must already
+    // equal the fold's, which is precisely what "nothing changed" asserts.
+    if emitted {
+        let hour_bytes = &wire[hour_start..];
+        if block_start {
+            let (states, consumed) =
+                decode_baseline(schema, hour_bytes, 0).expect("baseline decodes");
+            assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
+            *reader = states;
+        } else {
+            let (deltas, consumed) =
+                decode_delta(schema, reader, hour_bytes, 0).expect("delta decodes");
+            assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
+            for (i, delta) in deltas.iter().enumerate() {
+                if let Some(delta) = delta {
+                    apply(&mut reader[i], delta);
+                }
+            }
+        }
+    }
+    for i in 0..d95::COLLECTION_COUNT {
+        assert_eq!(
+            reader[i].len(),
+            state.get(i).len(),
+            "game hour {}: collection {} row count",
+            hour.game_hour,
+            schema.collections[i].collection_id
+        );
+        assert!(
+            diff(&schema.collections[i], &reader[i], state.get(i)).is_empty(),
+            "game hour {}: collection {} is not stored-equal to the fold",
+            hour.game_hour,
+            schema.collections[i].collection_id
+        );
+    }
+    WireHourOutcome {
+        opened_baseline: block_start,
+        gap_forced,
+        emitted,
+        bytes,
+        changed_rows,
+        tombstones,
     }
 }
 
@@ -852,8 +1015,24 @@ fn commit_hour(
 ) -> Result<(), String> {
     let spans = std::mem::take(ship_spans);
     if spans.is_empty() {
-        scan.hours_without_d95 += 1;
-        return Ok(());
+        // COMPLETENESS: every closed game hour of a d95-scheduled capture
+        // carries at least one d95 DATA record (several are legal — the
+        // within-hour sequence orders them — and the reference capture carries
+        // exactly one per hour, 1,033/1,033). This bounds what this harness
+        // canNOT validate: production runs `validate_domain_data_payload_at` on
+        // EVERY domain's DATA payload (`stream_fold.rs:593`), while this
+        // harness owns only d95's grammar and the d18 mirror, so a d95 record
+        // relabelled to another domain id — or lost outright — would otherwise
+        // silently drop its hour from the measurement. A per-capture
+        // completeness assertion, NOT a grammar rule: a capture where d95 is
+        // not scheduled every hour fails here loudly and a human adjusts,
+        // instead of a number quietly shrinking (`bench_real_d65.rs`
+        // precedent).
+        return Err(format!(
+            "game hour {game_hour} closed without any d95 DATA record; every closed hour of \
+             a d95-scheduled capture must carry at least one, and this harness cannot \
+             validate the payloads of unmodelled domains to see where it went"
+        ));
     }
     let Some(state) = hour_fold
         .state(schema)
@@ -989,91 +1168,33 @@ fn main() {
             }
         }
 
-        // New arm: BASELINE at each block start, stored-minimal DELTA between.
-        let hour_start = wire.len();
-        let block_start = opens_block(hours_in_block, previous_measured_hour, hour.game_hour);
-        if block_start {
-            // The two reasons a block opens are counted apart: reaching the
-            // 48-hour chain length is the cadence, a gap is the spec's forced
-            // baseline. Counting "not at the chain start" as a gap would report
-            // every cadence baseline as one.
-            if previous_measured_hour
-                .is_some_and(|previous| hour.game_hour != previous.saturating_add(1))
-            {
+        // The wire-arm hour — block/gap baseline decision, encode and reader
+        // replay — through the SAME function the tests execute
+        // (`encode_wire_hour`).
+        let outcome = encode_wire_hour(
+            &schema,
+            hours_in_block,
+            previous_measured_hour,
+            hour,
+            &prior,
+            &mut reader,
+            &mut wire,
+        );
+        if outcome.opened_baseline {
+            if outcome.gap_forced {
                 gap_baselines += 1;
             }
             hours_in_block = 0;
-        }
-        let mut emitted = true;
-        if block_start {
-            encode_baseline(&schema, &state.as_slice(), &mut wire).expect("baseline encodes");
             baselines += 1;
-            baseline_bytes += wire.len() - hour_start;
+            baseline_bytes += outcome.bytes;
+        } else if outcome.emitted {
+            delta_changed_rows += outcome.changed_rows;
+            delta_tombstones += outcome.tombstones;
+            delta_bytes += outcome.bytes;
         } else {
-            let deltas: Vec<Option<KeyedDelta>> = (0..d95::COLLECTION_COUNT)
-                .map(|i| {
-                    let d = diff(&schema.collections[i], prior.get(i), state.get(i));
-                    (!d.is_empty()).then_some(d)
-                })
-                .collect();
-            if deltas.iter().all(Option::is_none) {
-                empty_hours += 1;
-                emitted = false;
-            } else {
-                for (i, delta) in deltas.iter().enumerate() {
-                    let Some(delta) = delta else { continue };
-                    delta_changed_rows += delta.changed.len();
-                    delta_tombstones += delta.tombstones.len();
-                    // §7.1 minimality, checked rather than assumed.
-                    check_minimal(&schema.collections[i], prior.get(i), state.get(i), delta)
-                        .unwrap_or_else(|e| panic!("hour {}: {e:?}", hour.game_hour));
-                }
-                encode_delta(&schema, &prior.as_slice(), &deltas, &mut wire)
-                    .expect("delta encodes");
-                delta_bytes += wire.len() - hour_start;
-            }
+            empty_hours += 1;
         }
         wire_offsets.push(wire.len());
-
-        // Reader replay: decode the bytes just written against the reader's OWN
-        // reconstructed prior, exactly as a conforming reader would, and require
-        // the result to be stored-equal to this hour's state. This is what makes
-        // the size claim a claim about decodable bytes. An hour that emitted
-        // nothing is still checked: the reader's retained state must already
-        // equal the fold's, which is precisely what "nothing changed" asserts.
-        if emitted {
-            let hour_bytes = &wire[hour_start..];
-            if block_start {
-                let (states, consumed) =
-                    decode_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
-                assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
-                reader = states;
-            } else {
-                let (deltas, consumed) =
-                    decode_delta(&schema, &reader, hour_bytes, 0).expect("delta decodes");
-                assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
-                for (i, delta) in deltas.iter().enumerate() {
-                    if let Some(delta) = delta {
-                        apply(&mut reader[i], delta);
-                    }
-                }
-            }
-        }
-        for i in 0..d95::COLLECTION_COUNT {
-            assert_eq!(
-                reader[i].len(),
-                state.get(i).len(),
-                "game hour {}: collection {} row count",
-                hour.game_hour,
-                schema.collections[i].collection_id
-            );
-            assert!(
-                diff(&schema.collections[i], &reader[i], state.get(i)).is_empty(),
-                "game hour {}: collection {} is not stored-equal to the fold",
-                hour.game_hour,
-                schema.collections[i].collection_id
-            );
-        }
 
         prior = state.clone();
         hours_seen += 1;
@@ -1112,8 +1233,8 @@ fn main() {
         scan.excluded.sequence_not_increasing
     );
     println!(
-        "hours without d95    {} (the domain emitted nothing)",
-        scan.hours_without_d95
+        "d18 records          {} over the capture (all-or-nothing bound held)",
+        scan.d18_records
     );
     println!(
         "d18 dependency       {} failure-status records, {} refused payloads (each commits \
@@ -1330,6 +1451,22 @@ mod tests {
         )
     }
 
+    /// A d18 record whose failure status commits nothing — the hour then has a
+    /// d18 record (the completeness bound holds) but no roster.
+    fn d18_failure_record(sequence: u64, game_hour: i32) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            D18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d18_payload(
+                COMPACT_STATUS_STATE_UNAVAILABLE,
+                &[(1, "GER"), (368, "D04")],
+                None,
+            ),
+        )
+    }
+
     fn d95_record(sequence: u64, game_hour: i32, capture_sequence: u64) -> Vec<u8> {
         record(
             sequence,
@@ -1380,7 +1517,6 @@ mod tests {
         assert_eq!(scan.d95_records, 2);
         assert_eq!(scan.excluded.total(), 0);
         assert_eq!(scan.non_contiguous, 0);
-        assert_eq!(scan.hours_without_d95, 0);
         assert_eq!(scan.land_max, 1);
         assert_eq!(scan.taskforce_max, 0);
         assert_eq!(scan.pov_countries, BTreeSet::from([368]));
@@ -1516,27 +1652,34 @@ mod tests {
     fn an_hour_without_a_d18_roster_is_excluded_not_measured() {
         // `world_fold.rs:10542`-`:10544`: the whole capture can be in this state
         // (batch-3 Finding 3), so it is an excluded hour, never a stream
-        // rejection.
+        // rejection. The hour still CARRIES a d18 record — a failure-status one,
+        // which commits nothing — so the completeness bound holds and the
+        // no-roster path is reached the way production reaches it on a complete
+        // capture.
         let mut s = Vec::new();
-        s.extend(d95_record(1, 100, 10));
-        s.extend(frame_end(2, 100));
-        s.extend(d18_record(3, 101));
-        s.extend(d95_record(4, 101, 20));
-        s.extend(frame_end(5, 101));
+        s.extend(d18_failure_record(1, 100));
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        s.extend(d18_record(4, 101));
+        s.extend(d95_record(5, 101, 20));
+        s.extend(frame_end(6, 101));
         let scan = run_scan(&s).expect("the stream itself is well-formed");
         assert_eq!(scan.hours.len(), 1);
         assert_eq!(scan.hours[0].game_hour, 101);
         assert_eq!(scan.excluded.no_roster_this_hour, 1);
         assert_eq!(scan.d95_records, 2);
 
-        // A d18 record in an EARLIER hour does not carry over: the known flag
-        // resets at the boundary while the id map persists (`:2999`-`:3002`).
+        // A d18 roster committed in an EARLIER hour does not carry over: the
+        // known flag resets at the boundary while the id map persists
+        // (`:2999`-`:3002`). Hour 101's d18 record is a failure-status one, so
+        // nothing commits in that hour and its d95 record is excluded.
         let mut stale = Vec::new();
         stale.extend(d18_record(1, 100));
         stale.extend(d95_record(2, 100, 10));
         stale.extend(frame_end(3, 100));
-        stale.extend(d95_record(4, 101, 20));
-        stale.extend(frame_end(5, 101));
+        stale.extend(d18_failure_record(4, 101));
+        stale.extend(d95_record(5, 101, 20));
+        stale.extend(frame_end(6, 101));
         let scan = run_scan(&stale).expect("well-formed");
         assert_eq!(scan.hours.len(), 1, "hour 101 has no roster of its own");
         assert_eq!(scan.excluded.no_roster_this_hour, 1);
@@ -1753,6 +1896,51 @@ mod tests {
         // The saturating edge: a previous hour at i32::MAX cannot be followed
         // contiguously, so it opens a block rather than overflowing.
         assert!(opens_block(1, Some(i32::MAX), i32::MIN));
+
+        // And through the PRODUCTION encode path, not just the decision
+        // function: scan a stream whose middle hour's d95 record is excluded
+        // (no d18 roster committed that hour — a failure-status d18 record),
+        // then drive the SAME `encode_wire_hour` main uses and require the
+        // post-gap hour to be a gap-forced baseline, not a delta.
+        let mut s = d18_record(1, 100);
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        s.extend(d18_failure_record(4, 101));
+        s.extend(d95_record(5, 101, 20)); // excluded: no roster this hour
+        s.extend(frame_end(6, 101));
+        s.extend(d18_record(7, 102));
+        s.extend(d95_record(8, 102, 30));
+        s.extend(frame_end(9, 102));
+        let scan = run_scan(&s).expect("well-formed");
+        assert_eq!(scan.hours.len(), 2);
+        assert_eq!(scan.excluded.no_roster_this_hour, 1);
+        let schema = test_schema();
+        let mut wire = Vec::new();
+        let mut reader: Vec<KeyedState> = vec![KeyedState::new(); d95::COLLECTION_COUNT];
+        let empty_prior = d95::SpottedUnitsState::new();
+        let o0 = encode_wire_hour(
+            &schema,
+            0,
+            None,
+            &scan.hours[0],
+            &empty_prior,
+            &mut reader,
+            &mut wire,
+        );
+        assert!(o0.opened_baseline && !o0.gap_forced);
+        let o1 = encode_wire_hour(
+            &schema,
+            1,
+            Some(scan.hours[0].game_hour),
+            &scan.hours[1],
+            &scan.hours[0].state,
+            &mut reader,
+            &mut wire,
+        );
+        assert!(
+            o1.opened_baseline && o1.gap_forced,
+            "the post-gap hour must be a gap-forced baseline, not a delta"
+        );
     }
 
     #[test]
@@ -1781,7 +1969,7 @@ mod tests {
             Ok(_) => panic!("a stream with no d95 records must be refused"),
             Err(err) => err,
         };
-        assert!(err.contains("no d95 DATA records"), "{err}");
+        assert!(err.contains("d95 DATA record"), "{err}");
     }
 
     #[test]
@@ -2090,14 +2278,41 @@ mod tests {
 
     #[test]
     fn an_hour_that_carries_no_d95_record_is_counted_not_measured() {
+        // Historically this hour was counted and reported; the completeness
+        // sweep made it a REFUSED STREAM instead (the `bench_real_d65.rs`
+        // bound): every closed hour of a d95-scheduled capture carries at least
+        // one d95 DATA record, so an hour with none is a partially-lost or
+        // relabelled d95 lane, not a quiet zero.
         let mut s = d18_record(1, 100);
         s.extend(d95_record(2, 100, 10));
         s.extend(frame_end(3, 100));
         s.extend(d18_record(4, 101));
         s.extend(frame_end(5, 101));
-        let scan = run_scan(&s).expect("well-formed");
-        assert_eq!(scan.hours.len(), 1);
-        assert_eq!(scan.hours_without_d95, 1);
+        let err = match run_scan(&s) {
+            Err(err) => err,
+            Ok(_) => panic!("a closed hour with no d95 record must refuse the stream"),
+        };
+        assert!(
+            err.contains("without any d95 DATA record"),
+            "the refusal names the completeness rule: {err}"
+        );
+    }
+
+    #[test]
+    fn a_partially_missing_d18_lane_refuses_the_stream() {
+        // The d18 half of the completeness bound: hour 101 carries a d95 record
+        // but no d18 record at all. Structurally well formed — only the
+        // completeness check can see it.
+        let mut s = d18_record(1, 100);
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        s.extend(d95_record(4, 101, 11));
+        s.extend(frame_end(5, 101));
+        let err = match run_scan(&s) {
+            Err(err) => err,
+            Ok(_) => panic!("a partially-missing d18 lane must refuse the stream"),
+        };
+        assert!(err.contains("d18"), "the refusal names the d18 bound: {err}");
     }
 
     #[test]
@@ -2147,6 +2362,18 @@ mod tests {
         ))
         .expect("a failure status is not a refusal");
         assert_eq!(failed.roster, None);
+
+        // The d94 lesson: production's payload authority is status-independent,
+        // so a failure-status d18 record's rows are still walked — a MALFORMED
+        // failure-status payload is a refusal, exactly like a malformed clean
+        // one, never a quiet nothing-committed.
+        let mut malformed = d18_payload(COMPACT_STATUS_STATE_UNAVAILABLE, &[(368, "D04")], None);
+        let len = malformed.len();
+        malformed.truncate(len - 1);
+        assert!(
+            d18_roster(&malformed).is_err(),
+            "a failure-status d18 record's rows must still be validated"
+        );
     }
 
     #[test]
@@ -2155,15 +2382,18 @@ mod tests {
         // underflows once an hour is excluded, because an excluded hour's records
         // are in neither arm. Two excluded hours, then one measured hour.
         let mut s = Vec::new();
-        // Hour 100 and 101: a d95 record with no d18 roster -> excluded.
-        s.extend(d95_record(1, 100, 10));
-        s.extend(frame_end(2, 100));
-        s.extend(d95_record(3, 101, 20));
-        s.extend(frame_end(4, 101));
+        // Hour 100 and 101: a d95 record whose hour's d18 record is a
+        // failure-status one, committing no roster -> excluded.
+        s.extend(d18_failure_record(1, 100));
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        s.extend(d18_failure_record(4, 101));
+        s.extend(d95_record(5, 101, 20));
+        s.extend(frame_end(6, 101));
         // Hour 102: measured.
-        s.extend(d18_record(5, 102));
-        s.extend(d95_record(6, 102, 30));
-        s.extend(frame_end(7, 102));
+        s.extend(d18_record(7, 102));
+        s.extend(d95_record(8, 102, 30));
+        s.extend(frame_end(9, 102));
         let scan = run_scan(&s).expect("well-formed");
         assert_eq!(scan.excluded.no_roster_this_hour, 2);
         assert_eq!(scan.d95_records, 3, "three records seen");

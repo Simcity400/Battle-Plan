@@ -88,6 +88,15 @@
 //! DOMAIN_DATA record of every domain, and `wire_format` cannot depend on
 //! `recorder_host`. The two payload grammars this harness *can* validate are
 //! d94's — fully, on every record — and d18's, which it must model anyway.
+//! Every other domain's DATA payloads pass UNVALIDATED beyond header sanity,
+//! the stream validator and the hour-boundary rules. That unvalidated
+//! remainder is explicitly BOUNDED: every closed game hour must carry at least
+//! one d94 DATA record (d94 tolerates several per hour, so "exactly one" is
+//! not its grammar), and the d18 lane must be all-or-nothing — exactly one
+//! record per closed hour when scheduled (the completeness checks in
+//! [`scan_stream`]) — so a d94 or d18 record relabelled to another domain id,
+//! or dropped, refuses the run instead of silently shrinking it or silently
+//! converting hours into no-roster exclusions.
 //!
 //! **Two passes, because the state is large.** 13,414 province slots an hour over
 //! 1,033 hours is 13.9M records; holding a snapshot per hour is not possible.
@@ -157,6 +166,29 @@ struct D94Hour {
     game_hour: i32,
     ship_span: Range<usize>,
     payload_span: Range<usize>,
+    /// True when this measured hour is exactly one game hour after the previous
+    /// MEASURED hour. False on the first measured hour and after any gap — an
+    /// excluded hour (any of the fold's three gates) or a non-contiguous hour
+    /// step — which is what forces both wire arms to open a fresh baseline
+    /// (`WireArm::push_hour`).
+    follows_previous: bool,
+}
+
+/// Whether a wire arm opens a BASELINE at this measured hour.
+///
+/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences:
+/// the arm's block cadence (every block opens with its own baseline, §1.5's
+/// closing paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap
+/// affecting the state part forces the next state observation to be a
+/// `BASELINE`." Every hour this domain did not successfully sample is such a
+/// gap — each excluded-hour gate, and any non-contiguous hour step — and d94's
+/// cadence is hourly, so a measured hour that does not follow the previous
+/// measured one by exactly one is preceded by one. Neither a delta nor a
+/// retained reader state can be justified across it. The rule applies to BOTH
+/// arms, including the single-baseline policy arm: block cadence is a policy,
+/// the gap-forced baseline is grammar.
+fn opens_baseline(hours_seen: usize, block_hours: usize, follows_previous: bool) -> bool {
+    hours_seen % block_hours == 0 || !follows_previous
 }
 
 struct StreamScan {
@@ -713,6 +745,17 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // bookkeeping.
     let mut accumulating_hour: Option<i32> = None;
     let mut hour_d94_records = 0usize;
+    // COMPLETENESS accounting: closed game hours, hours in which at least one
+    // d94 DATA record landed, and d18 DATA records of any outcome — see the
+    // checks after the EOF rules. The d18 lane is also tracked PER HOUR:
+    // aggregate counts alone would accept a compensating duplicate (two d18
+    // records in one hour, none in another) whose totals still match (a Codex
+    // round-1 finding).
+    let mut closed_hours = 0usize;
+    let mut d94_covered_hours = 0usize;
+    let mut d18_records = 0usize;
+    let mut d18_covered_hours = 0usize;
+    let mut hour_saw_d18 = false;
     let mut hour_span: Option<(Range<usize>, Range<usize>)> = None;
     let mut hour_excluded_reason: Option<String> = None;
 
@@ -722,20 +765,22 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         ($scan:expr) => {
             if let Some(hour) = accumulating_hour.take() {
                 if d94_state.seen() {
+                    d94_covered_hours += 1;
                     if d94_state.accepted().is_some() {
                         let (ship_span, payload_span) = hour_span
                             .clone()
                             .ok_or_else(|| format!("hour {hour}: accepted d94 with no span"))?;
-                        if let Some(previous) = last_measured_hour {
-                            if hour != previous + 1 {
-                                $scan.non_contiguous += 1;
-                            }
+                        let follows_previous =
+                            last_measured_hour.is_some_and(|previous| hour == previous + 1);
+                        if last_measured_hour.is_some() && !follows_previous {
+                            $scan.non_contiguous += 1;
                         }
                         last_measured_hour = Some(hour);
                         $scan.hours.push(D94Hour {
                             game_hour: hour,
                             ship_span,
                             payload_span,
+                            follows_previous,
                         });
                     } else {
                         $scan.excluded_hours.push((
@@ -898,6 +943,11 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
                 last_closed_hour = Some(header.game_hour_raw);
+                closed_hours += 1;
+                if hour_saw_d18 {
+                    d18_covered_hours += 1;
+                }
+                hour_saw_d18 = false;
                 // `world_fold::finish_hour` — the accumulators are snapshotted
                 // and reset here, so this is where the hour's verdict is taken.
                 close_accumulating_hour!(scan);
@@ -914,6 +964,8 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 accumulating_hour = Some(header.game_hour_raw);
             }
             if header.domain_id == D18 {
+                d18_records += 1;
+                hour_saw_d18 = true;
                 // Production's second, status-independent authority runs on EVERY
                 // d18 DOMAIN_DATA record and its complaint refuses the stream at
                 // seal time. It must come BEFORE the fold outcome is used, or a
@@ -1016,6 +1068,39 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         return Err("stream carries no usable d94 DATA records".to_string());
     }
 
+    // COMPLETENESS: every closed game hour must carry at least one d94 DATA
+    // record (d94 tolerates several per hour — `multi_record_hours` — so
+    // "exactly one" is not this domain's grammar), and the d18 lane must be
+    // all-or-nothing — exactly one record per closed hour when scheduled, none
+    // at all when not. This bounds what this harness canNOT validate:
+    // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
+    // payload (`stream_fold.rs:593`), while this harness owns only d94's and
+    // d18's grammars, so a record of either domain whose header was relabelled
+    // — or lost outright — would otherwise be silently ignored: a lost d94
+    // record silently drops its hour from the measurement, and a lost d18
+    // record silently converts its hour's d94 record into a no-roster
+    // exclusion. A per-capture completeness assertion, NOT a grammar rule
+    // (`bench_real_d65.rs` precedent).
+    if d94_covered_hours != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but only {d94_covered_hours} carry a \
+             d94 DATA record; every closed hour of a d94-scheduled capture must carry at \
+             least one, and this harness cannot validate the payloads of unmodelled domains \
+             to see where the difference went"
+        ));
+    }
+    // Both an aggregate and a PER-HOUR coverage check, because aggregate counts
+    // alone would accept a compensating duplicate — two d18 records in one hour
+    // and none in another — whose totals still match (Codex round-1 finding).
+    if d18_records != 0 && (d18_records != closed_hours || d18_covered_hours != closed_hours) {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but carries {d18_records} d18 DATA \
+             record(s) covering {d18_covered_hours} hour(s); a capture scheduling d18 \
+             carries exactly one per closed hour, and a partially-missing d18 lane would \
+             silently convert its hours' d94 records into no-roster exclusions"
+        ));
+    }
+
     Ok(scan)
 }
 
@@ -1034,6 +1119,8 @@ struct WireArm {
     reader: Option<KeyedState>,
     hours: usize,
     baselines: usize,
+    /// Baselines the §1.5 gap rule forced outside a scheduled block start.
+    gap_forced_baselines: usize,
     baseline_bytes: usize,
     empty_hours: usize,
     changed_rows: usize,
@@ -1049,6 +1136,7 @@ impl WireArm {
             reader: None,
             hours: 0,
             baselines: 0,
+            gap_forced_baselines: 0,
             baseline_bytes: 0,
             empty_hours: 0,
             changed_rows: 0,
@@ -1063,9 +1151,15 @@ impl WireArm {
         prior: Option<&KeyedState>,
         state: &KeyedState,
         game_hour: i32,
+        follows_previous: bool,
     ) {
         let hour_start = self.bytes.len();
-        let block_start = self.hours % self.block_hours == 0;
+        // BASELINE at each block start — and at every §1.5 gap, which forces a
+        // fresh baseline and restarts the delta chain (`opens_baseline`).
+        let block_start = opens_baseline(self.hours, self.block_hours, follows_previous);
+        if block_start && self.hours % self.block_hours != 0 {
+            self.gap_forced_baselines += 1;
+        }
         let mut emitted = true;
         if block_start || prior.is_none() {
             encode_baseline(schema, std::slice::from_ref(state), &mut self.bytes)
@@ -1144,11 +1238,12 @@ impl WireArm {
 
     fn report(&self, label: &str, ship_bytes: usize) {
         println!(
-            "{label:<24} {} bytes ({:.2}% of shipping)  {} baseline(s) {} B, {} delta hour(s) \
-             {} B, {} empty hour(s)",
+            "{label:<24} {} bytes ({:.2}% of shipping)  {} baseline(s) ({} \u{a7}1.5 \
+             gap-forced) {} B, {} delta hour(s) {} B, {} empty hour(s)",
             self.bytes.len(),
             100.0 * self.bytes.len() as f64 / ship_bytes.max(1) as f64,
             self.baselines,
+            self.gap_forced_baselines,
             self.baseline_bytes,
             self.delta_hours(),
             self.delta_bytes(),
@@ -1254,8 +1349,22 @@ fn main() {
             max_transition_changed = max_transition_changed.max(d.changed.len());
         }
 
-        blocked.push_hour(&schema, collection, prior.as_ref(), &state, hour.game_hour);
-        single.push_hour(&schema, collection, prior.as_ref(), &state, hour.game_hour);
+        blocked.push_hour(
+            &schema,
+            collection,
+            prior.as_ref(),
+            &state,
+            hour.game_hour,
+            hour.follows_previous,
+        );
+        single.push_hour(
+            &schema,
+            collection,
+            prior.as_ref(),
+            &state,
+            hour.game_hour,
+            hour.follows_previous,
+        );
 
         prior = Some(state);
         hours_seen += 1;
@@ -1561,9 +1670,17 @@ mod tests {
 
     #[test]
     fn an_hour_without_a_current_hour_d18_record_is_excluded_not_measured() {
-        // `world_fold.rs:10512`: the freshness gate. The roster persists, so the
-        // second hour's d94 record still names a country the map contains — and
-        // is refused anyway, which is exactly the distinction the mirror keeps.
+        // Historically this stream — hour 101 with a d94 record and NO d18
+        // record — proved the freshness gate (`world_fold.rs:10512`): the
+        // roster persists, so the second hour's d94 record still names a
+        // country the map contains, and is refused anyway. The completeness
+        // sweep made this shape a REFUSED STREAM instead: a capture that
+        // schedules d18 carries exactly one record per closed hour, so a d18
+        // record missing outright is a partially-lost or relabelled d18 lane,
+        // not an hour to exclude quietly. The freshness-gate distinction stays
+        // covered by `a_d18_failure_status_leaves_the_hour_unknown_and_excludes_it`,
+        // whose d18 record is PRESENT but status-failed — the only way
+        // production reaches the gate on a complete capture.
         let mut s = Vec::new();
         s.extend(hour(&mut 0u64, 100, 1, &[1, 2, 3]));
         // Hour 101: d94 but no d18.
@@ -1576,12 +1693,56 @@ mod tests {
             &fow(2, 368, &[1, 2, 4]),
         ));
         s.extend(frame_end_sealed(8, 101, 1, 1, 0, 0));
-        let scan = scan_stream(&s, StreamIdentityMode::Legacy).expect("the stream is well-formed");
-        assert_eq!(scan.hours.len(), 1, "only hour 100 folds");
-        assert_eq!(scan.hours[0].game_hour, 100);
-        assert_eq!(scan.excluded_hours.len(), 1);
-        assert_eq!(scan.excluded_hours[0].0, 101);
-        assert!(scan.excluded_hours[0].1.contains("D18 identity roster"));
+        let err = match scan_stream(&s, StreamIdentityMode::Legacy) {
+            Err(err) => err,
+            Ok(_) => panic!("a partially-missing d18 lane must refuse the stream"),
+        };
+        assert!(err.contains("d18"), "the refusal names the d18 bound: {err}");
+
+        // A COMPENSATING duplicate — two d18 records in hour 100, none in hour
+        // 101 — leaves the aggregate count equal to the closed hours and is
+        // caught only by the per-hour coverage check (Codex round-1 finding).
+        // Hour 101's d94 record is excluded by the freshness gate, so the fold
+        // cannot catch the missing roster either.
+        let mut s = Vec::new();
+        s.extend(perf(1, 100, D18, 0));
+        s.extend(perf(2, 100, D94, 0));
+        s.extend(record(
+            3,
+            100,
+            D18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d18_payload(0, &ROSTER),
+        ));
+        s.extend(record(
+            4,
+            100,
+            D18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d18_payload(0, &ROSTER),
+        ));
+        s.extend(record(
+            5,
+            100,
+            D94,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &fow(1, 368, &[1, 2, 3]),
+        ));
+        s.extend(frame_end_sealed(6, 100, 2, 2, 0, 0));
+        s.extend(perf(7, 101, D94, 0));
+        s.extend(record(
+            8,
+            101,
+            D94,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &fow(2, 368, &[1, 2, 4]),
+        ));
+        s.extend(frame_end_sealed(9, 101, 1, 1, 0, 0));
+        let err = match scan_stream(&s, StreamIdentityMode::Legacy) {
+            Err(err) => err,
+            Ok(_) => panic!("a compensating d18 duplicate must refuse the stream"),
+        };
+        assert!(err.contains("covering"), "the refusal shows the coverage: {err}");
     }
 
     #[test]
@@ -1621,6 +1782,149 @@ mod tests {
             assert_eq!(scan.d18_measured_hours, 1, "bit {bit}");
             assert_eq!(scan.d18_failure_status.get(&(1 << bit)), Some(&1), "bit {bit}");
         }
+    }
+
+    #[test]
+    fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
+        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
+        // the next state observation to be a `BASELINE`." Hour 101 carries a
+        // failure-status d18 record, so its d94 record is excluded by the
+        // freshness gate — the next measured hour must clear
+        // `follows_previous`, and `opens_baseline` must open a baseline on it
+        // wherever it lands in a block, in BOTH arms: block cadence is policy,
+        // the gap-forced baseline is grammar.
+        let mut sequence = 0u64;
+        let mut s = Vec::new();
+        s.extend(hour(&mut sequence, 100, 1, &[1, 2, 3]));
+        let next = |sequence: &mut u64| {
+            *sequence += 1;
+            *sequence
+        };
+        s.extend(perf(next(&mut sequence), 101, D18, 0));
+        s.extend(perf(next(&mut sequence), 101, D94, 0));
+        s.extend(record(
+            next(&mut sequence),
+            101,
+            D18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d18_payload(1 << 0, &ROSTER), // failure status -> freshness gate
+        ));
+        s.extend(record(
+            next(&mut sequence),
+            101,
+            D94,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &fow(2, 368, &[1, 2, 4]),
+        ));
+        s.extend(frame_end_sealed(next(&mut sequence), 101, 2, 2, 0, 0));
+        s.extend(hour(&mut sequence, 102, 3, &[1, 2, 5]));
+        let scan = scan_stream(&s, StreamIdentityMode::Legacy).expect("well-formed");
+        assert_eq!(scan.hours.len(), 2);
+        assert_eq!(scan.excluded_hours.len(), 1);
+        assert_eq!(scan.non_contiguous, 1);
+        assert!(!scan.hours[0].follows_previous, "the first hour follows none");
+        assert!(
+            !scan.hours[1].follows_previous,
+            "hour 102 does not follow hour 100"
+        );
+        // ...and that is what makes both encoders open a baseline for it, even
+        // though it is only the second measured hour of the block — including
+        // the single-baseline arm, whose block cadence alone would never
+        // baseline again.
+        assert!(opens_baseline(1, 48, scan.hours[1].follows_previous));
+        assert!(opens_baseline(1, usize::MAX, scan.hours[1].follows_previous));
+        // Through the PRODUCTION encode path (`WireArm::push_hour`), not just
+        // the decision function: the post-gap hour must be a gap-forced
+        // baseline in both arms.
+        let schema = wire_format::d94::schema();
+        let collection = &schema.collections[0];
+        let roster = d94::Roster::measured_this_hour(ROSTER.iter().map(|(id, _)| *id).collect());
+        let state0 = refold_hour(&s, &scan.hours[0], collection, &roster);
+        let state1 = refold_hour(&s, &scan.hours[1], collection, &roster);
+        for block_hours in [48usize, usize::MAX] {
+            let mut arm = WireArm::new(block_hours);
+            arm.push_hour(
+                &schema,
+                collection,
+                None,
+                &state0,
+                scan.hours[0].game_hour,
+                scan.hours[0].follows_previous,
+            );
+            assert_eq!(arm.baselines, 1);
+            assert_eq!(arm.gap_forced_baselines, 0);
+            arm.push_hour(
+                &schema,
+                collection,
+                Some(&state0),
+                &state1,
+                scan.hours[1].game_hour,
+                scan.hours[1].follows_previous,
+            );
+            assert_eq!(
+                arm.baselines, 2,
+                "block {block_hours}: the post-gap hour must be a baseline, not a delta"
+            );
+            assert_eq!(arm.gap_forced_baselines, 1);
+        }
+
+        // The decision function over its whole input space: a block boundary
+        // always opens one, and so does any gap, at every position in a block.
+        for hours_seen in 0..96 {
+            assert!(
+                opens_baseline(hours_seen, 48, false),
+                "a gap at position {hours_seen} must open a baseline"
+            );
+            assert_eq!(
+                opens_baseline(hours_seen, 48, true),
+                hours_seen % 48 == 0,
+                "contiguous position {hours_seen}"
+            );
+        }
+
+        // A contiguous run is unaffected: only the block boundary baselines.
+        let scan = scan_stream(&good_stream(), StreamIdentityMode::Legacy).expect("well-formed");
+        assert_eq!(scan.non_contiguous, 0);
+        assert!(scan.hours[1].follows_previous);
+        assert!(!opens_baseline(1, 48, scan.hours[1].follows_previous));
+    }
+
+    #[test]
+    fn a_closed_hour_without_a_d94_record_refuses_the_stream() {
+        // The cross-domain bound: hour 101 carries the d18 record and another
+        // domain's DATA record but no d94 record — structurally well formed, so
+        // only the completeness check can see it.
+        let mut sequence = 0u64;
+        let mut s = Vec::new();
+        s.extend(hour(&mut sequence, 100, 1, &[1, 2, 3]));
+        let next = |sequence: &mut u64| {
+            *sequence += 1;
+            *sequence
+        };
+        s.extend(perf(next(&mut sequence), 101, D18, 0));
+        s.extend(record(
+            next(&mut sequence),
+            101,
+            D18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d18_payload(0, &ROSTER),
+        ));
+        s.extend(record(
+            next(&mut sequence),
+            101,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[0u8; 8],
+        ));
+        s.extend(frame_end_sealed(next(&mut sequence), 101, 1, 1, 0, 0));
+        let err = match scan_stream(&s, StreamIdentityMode::Legacy) {
+            Err(err) => err,
+            Ok(_) => panic!("a closed hour with no d94 record must refuse the stream"),
+        };
+        assert!(
+            err.contains("at least one"),
+            "the refusal names the completeness rule: {err}"
+        );
     }
 
     #[test]

@@ -35,7 +35,15 @@
 //!   (`:328`-`:365`), the FRAME_END seal fields (`:46`-`:89`) with the seal's
 //!   domain-count cross-check (`:411`-`:419`), and `eof_check` (`:459`).
 //!   `wire_format` must not depend on `recorder_host`, so that documented subset
-//!   is re-implemented here exactly as `bench_real_d63.rs` does;
+//!   is re-implemented here exactly as `bench_real_d63.rs` does. The DATA
+//!   payloads of every domain other than 52 pass UNVALIDATED beyond header
+//!   sanity, the stream validator and the hour-boundary rules — production
+//!   validates every domain's payload (`stream_fold.rs:593`). That unvalidated
+//!   remainder is explicitly BOUNDED: every closed game hour must carry exactly
+//!   one d52 DATA record of any status (the `d52_records == closed_hours`
+//!   completeness check in [`scan_stream`]), so a d52 record relabelled to
+//!   another domain id — or dropped — refuses the run instead of silently
+//!   shrinking it;
 //! - **one d52 DATA record per game hour, over EVERY d52 record and BEFORE any
 //!   status exclusion**, so a success+failure pair in one hour cannot slip
 //!   through;
@@ -138,11 +146,145 @@ const DEFAULT_BLOCK_HOURS: usize = 48;
 struct D52Hour {
     game_hour: i32,
     is_baseline: bool,
+    /// True when this measured hour is exactly one game hour after the previous
+    /// MEASURED hour. False on the first measured hour and after any gap — an
+    /// excluded failure-status hour or a non-contiguous hour step — which is
+    /// what forces the encoder to open a fresh baseline (`opens_baseline`).
+    follows_previous: bool,
     /// The `row_count` the shipping payload carried — the collector's own notion
     /// of how many rows changed this hour, reported beside the wire arm's.
     shipping_rows: u32,
     record_span: Range<usize>,
     payload_span: Range<usize>,
+}
+
+/// Whether the wire arm opens a BASELINE at this measured hour.
+///
+/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences:
+/// the block cadence (every block opens with its own baseline, §1.5's closing
+/// paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the
+/// state part forces the next state observation to be a `BASELINE`." Every
+/// hour this domain did not successfully sample is such a gap — the excluded
+/// failure-status hour, and any non-contiguous hour step — and d52's cadence
+/// is hourly, so a measured hour that does not follow the previous measured
+/// one by exactly one is preceded by one. Neither a delta nor a retained
+/// reader state can be justified across it. `block_hours` is this bin's
+/// runtime block cadence (`DEFAULT_BLOCK_HOURS` unless overridden).
+fn opens_baseline(hours_seen: usize, block_hours: usize, follows_previous: bool) -> bool {
+    hours_seen % block_hours == 0 || !follows_previous
+}
+
+/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// per-hour reader replay over every collection. Factored out of `main` so the
+/// tests execute the PRODUCTION encode path over a scanned stream: a mutant
+/// that reverts the baseline decision here to block-position-only fails the
+/// gap test (a Codex round-1 finding — the earlier tests exercised the
+/// decision function but not this callsite).
+struct WireHourOutcome {
+    opened_baseline: bool,
+    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    gap_forced: bool,
+    emitted: bool,
+    changed_by_collection: Vec<usize>,
+    tombstones_by_collection: Vec<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_wire_hour(
+    schema: &wire_format::Schema,
+    hours_seen: usize,
+    block_hours: usize,
+    follows_previous: bool,
+    game_hour: i32,
+    prior: Option<&[KeyedState]>,
+    state: &[KeyedState],
+    reader: &mut Option<Vec<KeyedState>>,
+    wire: &mut Vec<u8>,
+) -> WireHourOutcome {
+    let hour_start = wire.len();
+    // BASELINE at each block start — and at every §1.5 gap, which forces a
+    // fresh baseline and restarts the delta chain (`opens_baseline`).
+    let block_start = opens_baseline(hours_seen, block_hours, follows_previous);
+    let gap_forced = block_start && hours_seen % block_hours != 0;
+    let mut emitted = true;
+    let mut changed_by_collection = vec![0usize; schema.collections.len()];
+    let mut tombstones_by_collection = vec![0usize; schema.collections.len()];
+    let opened_baseline = block_start || prior.is_none();
+    if opened_baseline {
+        encode_baseline(schema, state, wire).expect("baseline encodes");
+    } else {
+        let prev = prior.expect("a prior exists past the first hour");
+        let deltas: Vec<Option<KeyedDelta>> = schema
+            .collections
+            .iter()
+            .enumerate()
+            .map(|(i, collection)| {
+                let d = diff(collection, &prev[i], &state[i]);
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d)
+                }
+            })
+            .collect();
+        if deltas.iter().all(Option::is_none) {
+            emitted = false;
+        } else {
+            for (i, delta) in deltas.iter().enumerate() {
+                if let Some(delta) = delta {
+                    changed_by_collection[i] = delta.changed.len();
+                    tombstones_by_collection[i] = delta.tombstones.len();
+                }
+            }
+            encode_delta(schema, prev, &deltas, wire).expect("delta encodes");
+        }
+    }
+
+    // Reader replay: decode the bytes just written against the reader's OWN
+    // reconstructed prior and require the result to be stored-equal to this
+    // hour's folded state. An hour that emitted nothing is still checked.
+    if emitted {
+        let hour_bytes = &wire[hour_start..];
+        if block_start || reader.is_none() {
+            let (states, consumed) =
+                decode_baseline(schema, hour_bytes, 0).expect("baseline decodes");
+            assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
+            *reader = Some(states);
+        } else {
+            let reader_prior = reader.take().expect("a reader prior exists");
+            let (deltas, consumed) =
+                decode_delta(schema, &reader_prior, hour_bytes, 0).expect("delta decodes");
+            assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
+            let mut next = reader_prior;
+            for (state, delta) in next.iter_mut().zip(deltas.iter()) {
+                if let Some(delta) = delta {
+                    apply(state, delta);
+                }
+            }
+            *reader = Some(next);
+        }
+    }
+    let replayed = reader.as_ref().expect("a reader state exists");
+    for (i, collection) in schema.collections.iter().enumerate() {
+        assert_eq!(
+            replayed[i].len(),
+            state[i].len(),
+            "game hour {game_hour}: collection {} row count",
+            collection.collection_id
+        );
+        assert!(
+            diff(collection, &replayed[i], &state[i]).is_empty(),
+            "game hour {game_hour}: collection {} is not stored-equal to the fold",
+            collection.collection_id
+        );
+    }
+    WireHourOutcome {
+        opened_baseline,
+        gap_forced,
+        emitted,
+        changed_by_collection,
+        tombstones_by_collection,
+    }
 }
 
 #[derive(Debug)]
@@ -239,6 +381,10 @@ fn scan_stream(
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
 
+    // COMPLETENESS accounting: every d52 DATA record of ANY status, against
+    // every closed game hour — see the check after the EOF rules.
+    let mut d52_records = 0usize;
+    let mut closed_hours = 0usize;
     let mut scan = StreamScan {
         hours: Vec::new(),
         failure_records: 0,
@@ -405,12 +551,14 @@ fn scan_stream(
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
                 last_closed_hour = Some(header.game_hour_raw);
+                closed_hours += 1;
             }
             _ => {}
         }
         last_record_type = Some(header.record_type);
 
         if header.domain_id == D52 && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            d52_records += 1;
             // One d52 DATA record per game hour, over EVERY d52 record and
             // BEFORE any status-based exclusion: gating this on the record being
             // usable would let a success/failure pair through the rule entirely.
@@ -501,15 +649,16 @@ fn scan_stream(
                         ));
                     }
                     outcome => {
-                        if let Some(previous) = last_measured_hour {
-                            if header.game_hour_raw != previous + 1 {
-                                scan.non_contiguous += 1;
-                            }
+                        let follows_previous = last_measured_hour
+                            .is_some_and(|previous| header.game_hour_raw == previous + 1);
+                        if last_measured_hour.is_some() && !follows_previous {
+                            scan.non_contiguous += 1;
                         }
                         last_measured_hour = Some(header.game_hour_raw);
                         scan.hours.push(D52Hour {
                             game_hour: header.game_hour_raw,
                             is_baseline: outcome == FoldOutcome::Baseline,
+                            follows_previous,
                             shipping_rows: d52_header.row_count,
                             record_span: pos..record_end,
                             payload_span: payload_start..record_end,
@@ -537,6 +686,25 @@ fn scan_stream(
     }
     if scan.hours.is_empty() {
         return Err("stream carries no usable d52 DATA records".to_string());
+    }
+
+    // COMPLETENESS: every closed game hour must carry exactly one d52 DATA
+    // record, of any status. This bounds what this harness canNOT validate:
+    // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
+    // payload (`stream_fold.rs:593`), while this harness owns only d52's
+    // grammar, so a d52 record whose header was relabelled to another domain
+    // id — or lost outright — would otherwise be silently ignored and the run
+    // would report a plausible measurement over fewer hours. A per-capture
+    // completeness assertion, NOT a grammar rule: a capture where d52 is not
+    // scheduled every hour fails here loudly and a human adjusts, instead of a
+    // number quietly shrinking (`bench_real_d65.rs` precedent).
+    if d52_records != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but carries {d52_records} d52 DATA \
+             record(s); every closed hour of a d52-scheduled capture must carry exactly one, \
+             and this harness cannot validate the payloads of other domains to see where the \
+             difference went"
+        ));
     }
 
     Ok(scan)
@@ -590,6 +758,11 @@ fn main() {
     let mut reader: Option<Vec<KeyedState>> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
+    let mut gap_forced_baselines = 0usize;
+    // Whether each measured hour opened a baseline in the wire arm, for the
+    // baseline/delta byte split below — with §1.5 gap-forced baselines the
+    // block-position rule alone no longer decides it.
+    let mut baseline_flags: Vec<bool> = Vec::new();
     let mut empty_hours = 0usize;
     // Cadence-independent churn: changed rows over MEASURED-HOUR transitions,
     // taken before the block decision, so a change landing on a block boundary
@@ -628,83 +801,35 @@ fn main() {
             }
         }
 
-        let hour_start = wire.len();
-        let block_start = hours_seen % block_hours == 0;
-        let mut emitted = true;
-        if block_start || prior.is_none() {
-            encode_baseline(&schema, &state, &mut wire).expect("baseline encodes");
+        // The wire-arm hour — baseline decision, encode and reader replay —
+        // through the SAME function the tests execute (`encode_wire_hour`).
+        let outcome = encode_wire_hour(
+            &schema,
+            hours_seen,
+            block_hours,
+            hour.follows_previous,
+            hour.game_hour,
+            prior.as_deref(),
+            &state,
+            &mut reader,
+            &mut wire,
+        );
+        if outcome.gap_forced {
+            gap_forced_baselines += 1;
+        }
+        baseline_flags.push(outcome.opened_baseline);
+        if outcome.opened_baseline {
             baselines += 1;
-        } else {
-            let prev = prior.as_ref().expect("a prior exists past the first hour");
-            let deltas: Vec<Option<KeyedDelta>> = schema
-                .collections
-                .iter()
-                .enumerate()
-                .map(|(i, collection)| {
-                    let d = diff(collection, &prev[i], &state[i]);
-                    if d.is_empty() {
-                        None
-                    } else {
-                        Some(d)
-                    }
-                })
-                .collect();
-            if deltas.iter().all(Option::is_none) {
-                empty_hours += 1;
-                emitted = false;
-            } else {
-                delta_hours += 1;
-                for (i, delta) in deltas.iter().enumerate() {
-                    if let Some(delta) = delta {
-                        delta_changed[i] += delta.changed.len();
-                        delta_tombstones[i] += delta.tombstones.len();
-                    }
-                }
-                encode_delta(&schema, prev, &deltas, &mut wire).expect("delta encodes");
+        } else if outcome.emitted {
+            delta_hours += 1;
+            for (i, _) in schema.collections.iter().enumerate() {
+                delta_changed[i] += outcome.changed_by_collection[i];
+                delta_tombstones[i] += outcome.tombstones_by_collection[i];
             }
+        } else {
+            empty_hours += 1;
         }
         wire_offsets.push(wire.len());
-
-        // Reader replay: decode the bytes just written against the reader's OWN
-        // reconstructed prior and require the result to be stored-equal to this
-        // hour's folded state. An hour that emitted nothing is still checked.
-        if emitted {
-            let hour_bytes = &wire[hour_start..];
-            if block_start || reader.is_none() {
-                let (states, consumed) =
-                    decode_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
-                assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
-                reader = Some(states);
-            } else {
-                let reader_prior = reader.take().expect("a reader prior exists");
-                let (deltas, consumed) =
-                    decode_delta(&schema, &reader_prior, hour_bytes, 0).expect("delta decodes");
-                assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
-                let mut next = reader_prior;
-                for (state, delta) in next.iter_mut().zip(deltas.iter()) {
-                    if let Some(delta) = delta {
-                        apply(state, delta);
-                    }
-                }
-                reader = Some(next);
-            }
-        }
-        let replayed = reader.as_ref().expect("a reader state exists");
-        for (i, collection) in schema.collections.iter().enumerate() {
-            assert_eq!(
-                replayed[i].len(),
-                state[i].len(),
-                "game hour {}: collection {} row count",
-                hour.game_hour,
-                collection.collection_id
-            );
-            assert!(
-                diff(collection, &replayed[i], &state[i]).is_empty(),
-                "game hour {}: collection {} is not stored-equal to the fold",
-                hour.game_hour,
-                collection.collection_id
-            );
-        }
 
         prior = Some(state);
         hours_seen += 1;
@@ -724,12 +849,15 @@ fn main() {
         }
     }
 
-    // The wire arm's baseline/delta raw split, recovered from the offsets.
+    // The wire arm's baseline/delta raw split, from the per-hour baseline
+    // decisions the encode loop actually made (a §1.5 gap-forced baseline is a
+    // baseline wherever it sits in the block, so block position alone cannot
+    // classify these bytes).
     let mut baseline_bytes = 0usize;
     let mut delta_bytes = 0usize;
     for (index, window) in wire_offsets.windows(2).enumerate() {
         let len = window[1] - window[0];
-        if index % block_hours == 0 {
+        if baseline_flags[index] {
             baseline_bytes += len;
         } else {
             delta_bytes += len;
@@ -768,7 +896,11 @@ fn main() {
         "COL1 trailers        {} hours ({} complete, {} relation rows)",
         scan.col1_hours, scan.col1_complete_hours, scan.col1_relation_rows
     );
-    println!("baselines            {baselines} (every {block_hours} h)");
+    println!(
+        "baselines            {baselines} ({} at a {block_hours}-h block start, \
+         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+        baselines - gap_forced_baselines
+    );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
     println!("churn, cadence-independent (over {transitions} measured-hour transitions):");
     for (i, collection) in schema.collections.iter().enumerate() {
@@ -963,6 +1095,165 @@ mod tests {
             let scanned = scan(&s).unwrap_or_else(|e| panic!("bit {informational:#x}: {e}"));
             assert_eq!(scanned.hours.len(), 1, "bit {informational:#x}");
         }
+    }
+
+    #[test]
+    fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
+        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
+        // the next state observation to be a `BASELINE`." Both gap shapes d52
+        // can meet — an excluded failure-status hour, and a whole hour the
+        // capture never scheduled — must clear `follows_previous`, and
+        // `opens_baseline` must open a baseline on it wherever it lands in a
+        // block. A delta would relate two states across unobserved time.
+        //
+        // Shape 1: hour 101 carries a failure-status d52 record (excluded).
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D52, COMPACT_RECORD_TYPE_DOMAIN_DATA, &d52_payload(0, 7, 10)));
+        s.extend(frame_end(2, 100));
+        s.extend(record(
+            3,
+            101,
+            D52,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d52_payload(1 << 0, 7, 11), // failure status -> excluded
+        ));
+        s.extend(frame_end(4, 101));
+        s.extend(record(
+            5,
+            102,
+            D52,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d52_payload(COMPACT_STATUS_DELTA_DATA, 7, 12),
+        ));
+        s.extend(frame_end(6, 102));
+        let scanned = scan(&s).expect("well-formed");
+        assert_eq!(scanned.hours.len(), 2);
+        assert_eq!(scanned.failure_records, 1);
+        assert_eq!(scanned.non_contiguous, 1);
+        assert!(
+            !scanned.hours[0].follows_previous,
+            "the first hour follows none"
+        );
+        assert!(
+            !scanned.hours[1].follows_previous,
+            "hour 102 does not follow hour 100"
+        );
+        // ...and that is what makes the encoder open a baseline for it, even
+        // though it is only the second measured hour of the block — through the
+        // PRODUCTION encode path, not just the decision function.
+        assert!(opens_baseline(
+            1,
+            DEFAULT_BLOCK_HOURS,
+            scanned.hours[1].follows_previous
+        ));
+        let schema = d52::schema();
+        let mut fold = State::new();
+        let mut states = Vec::new();
+        for hour in &scanned.hours {
+            fold.fold_payload(&schema, &s[hour.payload_span.clone()])
+                .expect("pass 1 accepted this payload");
+            states.push(snapshot(&fold));
+        }
+        let mut wire = Vec::new();
+        let mut reader: Option<Vec<KeyedState>> = None;
+        let o0 = encode_wire_hour(
+            &schema,
+            0,
+            DEFAULT_BLOCK_HOURS,
+            scanned.hours[0].follows_previous,
+            scanned.hours[0].game_hour,
+            None,
+            &states[0],
+            &mut reader,
+            &mut wire,
+        );
+        assert!(o0.opened_baseline && !o0.gap_forced);
+        let o1 = encode_wire_hour(
+            &schema,
+            1,
+            DEFAULT_BLOCK_HOURS,
+            scanned.hours[1].follows_previous,
+            scanned.hours[1].game_hour,
+            Some(&states[0]),
+            &states[1],
+            &mut reader,
+            &mut wire,
+        );
+        assert!(
+            o1.opened_baseline && o1.gap_forced,
+            "the post-gap hour must be a gap-forced baseline, not a delta"
+        );
+
+        // Shape 2: hour 101 is never scheduled at all — the capture closes
+        // hours 100 and 102 only.
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D52, COMPACT_RECORD_TYPE_DOMAIN_DATA, &d52_payload(0, 7, 10)));
+        s.extend(frame_end(2, 100));
+        s.extend(record(
+            3,
+            102,
+            D52,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d52_payload(COMPACT_STATUS_DELTA_DATA, 7, 12),
+        ));
+        s.extend(frame_end(4, 102));
+        let scanned = scan(&s).expect("well-formed");
+        assert_eq!(scanned.hours.len(), 2);
+        assert_eq!(scanned.non_contiguous, 1);
+        assert!(!scanned.hours[1].follows_previous);
+        assert!(opens_baseline(
+            1,
+            DEFAULT_BLOCK_HOURS,
+            scanned.hours[1].follows_previous
+        ));
+
+        // The decision function over its whole input space: a block boundary
+        // always opens one, and so does any gap, at every position in a block.
+        for hours_seen in 0..(2 * DEFAULT_BLOCK_HOURS) {
+            assert!(
+                opens_baseline(hours_seen, DEFAULT_BLOCK_HOURS, false),
+                "a gap at position {hours_seen} must open a baseline"
+            );
+            assert_eq!(
+                opens_baseline(hours_seen, DEFAULT_BLOCK_HOURS, true),
+                hours_seen % DEFAULT_BLOCK_HOURS == 0,
+                "contiguous position {hours_seen}"
+            );
+        }
+
+        // A contiguous run is unaffected: only the block boundary baselines.
+        let scanned = scan(&good_stream()).expect("well-formed");
+        assert_eq!(scanned.non_contiguous, 0);
+        assert!(scanned.hours[1].follows_previous);
+        assert!(!opens_baseline(
+            1,
+            DEFAULT_BLOCK_HOURS,
+            scanned.hours[1].follows_previous
+        ));
+    }
+
+    #[test]
+    fn a_closed_hour_without_a_d52_record_refuses_the_stream() {
+        // The cross-domain bound: this harness validates only d52 payloads, so
+        // a d52 record relabelled to another domain — or dropped — would
+        // otherwise be silently ignored and the run would report a plausible
+        // measurement over fewer hours. Hour 100 carries a d52 record; hour
+        // 101 carries only another domain's DATA record. Every hour is
+        // structurally well formed — a DOMAIN_DATA record opens it and a
+        // FRAME_END closes it — so only the completeness check can see it.
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D52, COMPACT_RECORD_TYPE_DOMAIN_DATA, &d52_payload(0, 7, 10)));
+        s.extend(frame_end(2, 100));
+        s.extend(record(3, 101, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[0u8; 8]));
+        s.extend(frame_end(4, 101));
+        let err = match scan(&s) {
+            Err(err) => err,
+            Ok(_) => panic!("a closed hour with no d52 record must refuse the stream"),
+        };
+        assert!(
+            err.contains("every closed hour"),
+            "the refusal names the completeness rule: {err}"
+        );
     }
 
     #[test]

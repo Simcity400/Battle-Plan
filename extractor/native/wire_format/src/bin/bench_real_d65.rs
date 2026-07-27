@@ -222,6 +222,99 @@ fn opens_baseline(hours_seen: usize, follows_previous: bool) -> bool {
     hours_seen % BLOCK_HOURS == 0 || !follows_previous
 }
 
+/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// per-hour reader replay. Factored out of `main` so the tests execute the
+/// PRODUCTION encode path over a scanned stream: a mutant that reverts the
+/// baseline decision here to block-position-only fails the gap test (a Codex
+/// round-2 finding — the earlier test exercised the decision function but not
+/// this callsite).
+struct WireHourOutcome {
+    opened_baseline: bool,
+    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    gap_forced: bool,
+    emitted: bool,
+    changed_rows: usize,
+    tombstones: usize,
+}
+
+fn encode_wire_hour(
+    schema: &wire_format::Schema,
+    collection: &wire_format::Collection,
+    hours_seen: usize,
+    hour: &D65Hour,
+    prior: Option<&KeyedState>,
+    reader: &mut Option<KeyedState>,
+    wire: &mut Vec<u8>,
+) -> WireHourOutcome {
+    let state: &KeyedState = &hour.state;
+    let hour_start = wire.len();
+    let block_start = opens_baseline(hours_seen, hour.follows_previous);
+    let gap_forced = block_start && hours_seen % BLOCK_HOURS != 0;
+    let mut emitted = true;
+    let mut changed_rows = 0usize;
+    let mut tombstones = 0usize;
+    let opened_baseline = block_start || prior.is_none();
+    if opened_baseline {
+        encode_baseline(schema, std::slice::from_ref(state), wire).expect("baseline encodes");
+    } else {
+        let prev = prior.unwrap();
+        let d = diff(collection, prev, state);
+        if d.is_empty() {
+            emitted = false;
+        } else {
+            changed_rows = d.changed.len();
+            tombstones = d.tombstones.len();
+            encode_delta(schema, std::slice::from_ref(prev), &[Some(d)], wire)
+                .expect("delta encodes");
+        }
+    }
+
+    // Reader replay: decode the bytes just written against the reader's OWN
+    // reconstructed prior, exactly as a conforming reader would, and require
+    // the result to be stored-equal to this hour's state. This is what makes
+    // the size claim a claim about decodable bytes. An hour that emitted
+    // nothing is still checked: the reader's retained state must already
+    // equal the fold's, which is precisely what "nothing changed" asserts.
+    if emitted {
+        let hour_bytes = &wire[hour_start..];
+        if block_start || reader.is_none() {
+            let (states, consumed) =
+                decode_baseline(schema, hour_bytes, 0).expect("baseline decodes");
+            assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
+            *reader = Some(states.into_iter().next().unwrap());
+        } else {
+            let reader_prior = reader.take().unwrap();
+            let (deltas, consumed) =
+                decode_delta(schema, std::slice::from_ref(&reader_prior), hour_bytes, 0)
+                    .expect("delta decodes");
+            assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
+            let mut next = reader_prior;
+            apply(&mut next, deltas[0].as_ref().unwrap());
+            *reader = Some(next);
+        }
+    }
+    let replayed = reader.as_ref().unwrap();
+    assert_eq!(
+        replayed.len(),
+        state.len(),
+        "game hour {}: row count",
+        hour.game_hour
+    );
+    let residual = diff(collection, replayed, state);
+    assert!(
+        residual.is_empty(),
+        "game hour {}: reader state is not stored-equal to the fold",
+        hour.game_hour
+    );
+    WireHourOutcome {
+        opened_baseline,
+        gap_forced,
+        emitted,
+        changed_rows,
+        tombstones,
+    }
+}
+
 /// The shipping arm's bytes, split into framing, payload headers and rows.
 ///
 /// Takes the hours and rows that are actually IN the shipping arm — never the
@@ -706,6 +799,7 @@ fn main() {
     let mut reader: Option<KeyedState> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
+    let mut gap_forced_baselines = 0usize;
     let mut empty_hours = 0usize;
     let mut entries_total = 0usize;
 
@@ -750,68 +844,32 @@ fn main() {
         }
 
         // New arm: BASELINE at each block start or across a gap (see
-        // `opens_baseline`), stored-minimal DELTA between. On this capture there
-        // are zero non-contiguous steps, so the gap arm changes no reported
-        // number; it makes the arm's semantics defensible on a capture with one.
-        let hour_start = wire.len();
-        let block_start = opens_baseline(hours_seen, hour.follows_previous);
-        let mut emitted = true;
-        if block_start || prior.is_none() {
-            encode_baseline(&schema, std::slice::from_ref(state), &mut wire)
-                .expect("baseline encodes");
+        // `opens_baseline`), stored-minimal DELTA between — through the SAME
+        // function the tests execute (`encode_wire_hour`). On this capture
+        // there are zero non-contiguous steps, so the gap arm changes no
+        // reported number; it makes the arm's semantics defensible on a
+        // capture with one.
+        let outcome = encode_wire_hour(
+            &schema,
+            collection,
+            hours_seen,
+            hour,
+            prior,
+            &mut reader,
+            &mut wire,
+        );
+        if outcome.opened_baseline {
             baselines += 1;
-        } else {
-            let prev = prior.unwrap();
-            let d = diff(collection, prev, state);
-            if d.is_empty() {
-                empty_hours += 1;
-                emitted = false;
-            } else {
-                delta_changed_rows += d.changed.len();
-                delta_tombstones += d.tombstones.len();
-                encode_delta(&schema, std::slice::from_ref(prev), &[Some(d)], &mut wire)
-                    .expect("delta encodes");
+            if outcome.gap_forced {
+                gap_forced_baselines += 1;
             }
+        } else if outcome.emitted {
+            delta_changed_rows += outcome.changed_rows;
+            delta_tombstones += outcome.tombstones;
+        } else {
+            empty_hours += 1;
         }
         wire_offsets.push(wire.len());
-
-        // Reader replay: decode the bytes just written against the reader's OWN
-        // reconstructed prior, exactly as a conforming reader would, and require
-        // the result to be stored-equal to this hour's state. This is what makes
-        // the size claim a claim about decodable bytes. An hour that emitted
-        // nothing is still checked: the reader's retained state must already
-        // equal the fold's, which is precisely what "nothing changed" asserts.
-        if emitted {
-            let hour_bytes = &wire[hour_start..];
-            if block_start || reader.is_none() {
-                let (states, consumed) =
-                    decode_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
-                assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
-                reader = Some(states.into_iter().next().unwrap());
-            } else {
-                let reader_prior = reader.take().unwrap();
-                let (deltas, consumed) =
-                    decode_delta(&schema, std::slice::from_ref(&reader_prior), hour_bytes, 0)
-                        .expect("delta decodes");
-                assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
-                let mut next = reader_prior;
-                apply(&mut next, deltas[0].as_ref().unwrap());
-                reader = Some(next);
-            }
-        }
-        let replayed = reader.as_ref().unwrap();
-        assert_eq!(
-            replayed.len(),
-            state.len(),
-            "game hour {}: row count",
-            hour.game_hour
-        );
-        let residual = diff(collection, replayed, state);
-        assert!(
-            residual.is_empty(),
-            "game hour {}: reader state is not stored-equal to the fold",
-            hour.game_hour
-        );
 
         prior = Some(state);
         hours_seen += 1;
@@ -845,7 +903,11 @@ fn main() {
         "rows avg             {:.1}",
         entries_total as f64 / hours_seen as f64
     );
-    println!("baselines            {baselines} (every {BLOCK_HOURS} h)");
+    println!(
+        "baselines            {baselines} ({} at a {BLOCK_HOURS}-h block start, \
+         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+        baselines - gap_forced_baselines
+    );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
     println!(
         "churn cadence-indep  {:.3} changed rows/hour, {:.3} tombstones/hour over \
@@ -1885,8 +1947,28 @@ mod tests {
             "hour 102 does not follow hour 100"
         );
         // ...and that is what makes the encoder open a baseline for it, even
-        // though it is only the second measured hour of the block.
+        // though it is only the second measured hour of the block — through the
+        // PRODUCTION encode path, not just the decision function.
         assert!(opens_baseline(1, scan.hours[1].follows_previous));
+        let schema = d65::schema();
+        let collection = &schema.collections[0];
+        let mut wire = Vec::new();
+        let mut reader: Option<KeyedState> = None;
+        let o0 = encode_wire_hour(&schema, collection, 0, &scan.hours[0], None, &mut reader, &mut wire);
+        assert!(o0.opened_baseline && !o0.gap_forced);
+        let o1 = encode_wire_hour(
+            &schema,
+            collection,
+            1,
+            &scan.hours[1],
+            Some(&scan.hours[0].state),
+            &mut reader,
+            &mut wire,
+        );
+        assert!(
+            o1.opened_baseline && o1.gap_forced,
+            "the post-gap hour must be a gap-forced baseline, not a delta"
+        );
 
         // The decision function over its whole input space: a block boundary
         // always opens one, and so does any gap, at every position in a block.

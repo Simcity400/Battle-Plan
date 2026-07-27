@@ -99,6 +99,17 @@
 //! d50's semantics read, so this harness follows the fold. The 72 hours are
 //! counted and reported, not hidden.
 //!
+//! The DATA payloads of every domain other than 50 and 49 pass UNVALIDATED
+//! beyond header sanity, the stream validator and the hour-boundary rules —
+//! production validates every domain's payload (`stream_fold.rs:593`); this
+//! harness owns only d50's grammar and its modelled D49 parent lane. That
+//! unvalidated remainder is explicitly BOUNDED: every closed game hour must
+//! carry exactly one d50 DATA record of any status, and the d49 lane must be
+//! all-or-nothing — exactly one record per closed hour when scheduled, none at
+//! all when not (the completeness checks in [`scan_stream`]) — so a d50 or d49
+//! record relabelled to another domain id, or dropped, refuses the run instead
+//! of silently shrinking it or silently hiding the parent-lifecycle writer.
+//!
 //! Outputs, for the compression step (`compress_arms.py` beside the run):
 //!   ship_d50.bin   — the d50 DATA records verbatim (32-byte H4CR header +
 //!                    payload), concatenated in stream order
@@ -311,6 +322,10 @@ fn scan_stream(
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
 
+    // COMPLETENESS accounting: every d50 DATA record of ANY status, against
+    // every closed game hour — see the checks after the EOF rules.
+    let mut d50_records = 0usize;
+    let mut closed_hours = 0usize;
     let mut scan = StreamScan {
         hours: Vec::new(),
         failure_records: 0,
@@ -497,6 +512,7 @@ fn scan_stream(
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
                 last_closed_hour = Some(header.game_hour_raw);
+                closed_hours += 1;
             }
             _ => {}
         }
@@ -559,6 +575,7 @@ fn scan_stream(
         }
 
         if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA && header.domain_id == D50 {
+            d50_records += 1;
             // One d50 DATA record per game hour, checked over EVERY d50 record and
             // BEFORE any exclusion: gating this on the record being usable would
             // let a success + failure pair through the rule entirely, and two
@@ -660,6 +677,36 @@ fn scan_stream(
     }
     if scan.hours.is_empty() {
         return Err("stream carries no usable d50 DATA records".to_string());
+    }
+
+    // COMPLETENESS: every closed game hour must carry exactly one d50 DATA
+    // record of any status, and the d49 lane must be all-or-nothing — exactly
+    // one record per closed hour when scheduled, none at all when not. This
+    // bounds what this harness canNOT validate: production runs
+    // `validate_domain_data_payload_at` on EVERY domain's DATA payload
+    // (`stream_fold.rs:593`), while this harness owns only d50's and d49's
+    // grammars, so a record of either domain whose header was relabelled — or
+    // lost outright — would otherwise be silently ignored: a lost d50 record
+    // shrinks the run, and a lost d49 record silently hides the
+    // parent-lifecycle writer of this domain's accumulator. A per-capture
+    // completeness assertion, NOT a grammar rule (`bench_real_d65.rs`
+    // precedent).
+    if d50_records != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but carries {d50_records} d50 DATA \
+             record(s); every closed hour of a d50-scheduled capture must carry exactly one, \
+             and this harness cannot validate the payloads of unmodelled domains to see where \
+             the difference went"
+        ));
+    }
+    if scan.d49_records != 0 && scan.d49_records != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but carries {} d49 DATA record(s); a \
+             capture scheduling d49 carries exactly one per closed hour, and a \
+             partially-missing d49 lane would silently hide the parent-lifecycle writer of \
+             this domain's accumulator",
+            scan.d49_records
+        ));
     }
     scan.retired_keys = state.retired().len();
     scan.parent_keys = state.parents().len();
@@ -1168,6 +1215,82 @@ mod tests {
             COMPACT_STATUS_DELTA_DATA,
         ));
         s
+    }
+
+    #[test]
+    fn a_closed_hour_without_a_d50_record_refuses_the_stream() {
+        // The cross-domain bound: this harness validates only d50 and d49
+        // payloads, so a d50 record relabelled to another domain — or dropped —
+        // would otherwise be silently ignored and the run would report a
+        // plausible measurement over fewer hours. Hour 101 carries the d49
+        // record and another domain's DATA record but no d50 record — every
+        // hour is structurally well formed, so only the completeness check can
+        // see it.
+        let mut s = Vec::new();
+        s.extend(hour(
+            1,
+            100,
+            &[lifecycle_row(7, 1, false)],
+            &[member_row(7, 1, 11, 1_500_000)],
+            COMPACT_STATUS_DELTA_DATA,
+            COMPACT_STATUS_DELTA_DATA,
+        ));
+        s.extend(record(
+            4,
+            101,
+            D49,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &naval_payload(d50::LIFECYCLE_ROW_LEN as u16, COMPACT_STATUS_DELTA_DATA, &[]),
+        ));
+        s.extend(record(5, 101, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[0u8; 8]));
+        s.extend(frame_end(6, 101));
+        let err = match scan_stream(
+            &schema(),
+            &s,
+            StreamIdentityMode::Legacy,
+            d50::ParentPolicy::FoldFaithful,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("a closed hour with no d50 record must refuse the stream"),
+        };
+        assert!(
+            err.contains("every closed hour"),
+            "the refusal names the completeness rule: {err}"
+        );
+
+        // And a partially-missing d49 lane is refused too: hour 101 carries a
+        // d50 record but no d49 record at all.
+        let mut s = Vec::new();
+        s.extend(hour(
+            1,
+            100,
+            &[lifecycle_row(7, 1, false)],
+            &[member_row(7, 1, 11, 1_500_000)],
+            COMPACT_STATUS_DELTA_DATA,
+            COMPACT_STATUS_DELTA_DATA,
+        ));
+        s.extend(record(
+            4,
+            101,
+            D50,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &naval_payload(
+                d50::ROW_LEN as u16,
+                COMPACT_STATUS_DELTA_DATA,
+                &[member_row(7, 1, 11, 1_400_000)],
+            ),
+        ));
+        s.extend(frame_end(5, 101));
+        let err = match scan_stream(
+            &schema(),
+            &s,
+            StreamIdentityMode::Legacy,
+            d50::ParentPolicy::FoldFaithful,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("a partially-missing d49 lane must refuse the stream"),
+        };
+        assert!(err.contains("d49"), "the refusal names the d49 bound: {err}");
     }
 
     #[test]
