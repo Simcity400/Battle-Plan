@@ -119,8 +119,17 @@ pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
         // Key: the country's `tag_db_id` (`world_fold.rs:9278`), the same
-        // identity d18 keys its roster by and the one d63 is required to be
-        // bijective with (`:9396`). ContentId because a country tag is
+        // identity d18 keys its roster by. The fold's D18 gate is CONTAINMENT
+        // (every D18 tag must have a d63 row; rows for tags D18 cannot name
+        // are dropped at the persistence boundary with a provenance note,
+        // and previously written d63 fields are evicted when a tag later
+        // leaves the roster, because the persistent country map doubles as
+        // the completeness authority d48/d67 fabricate measured-empty
+        // entries from, `:9396`-`:9505`) — d63's collector walks
+        // the COMPLETE gamestate country table while D18 publishes the
+        // filtered cache, so d63 is a superset of D18 on real captures
+        // (439 vs 356 in all 903 deepwar_t1 hours) and the historical
+        // bijectivity gate folded zero hours. ContentId because a country tag is
         // content-defined (§5) — a manifest must resolve it for it to keep its
         // meaning under another mod set, which is the deciding question for
         // ContentId-vs-Unsigned. d20 classes its `owner` country the same way.

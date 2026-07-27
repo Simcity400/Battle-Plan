@@ -14779,7 +14779,10 @@ fn chunk2_d63_country_core_scalars_rejects_malformed_row() {
 }
 
 #[test]
-fn chunk2_d63_country_core_scalars_requires_exact_d18_roster() {
+fn chunk2_d63_country_core_scalars_refuses_an_hour_whose_rows_miss_a_d18_tag() {
+    // The loss the containment gate exists to catch: a D18 tag (SOV) with no
+    // d63 row. SOV is a country the snapshot can name, so tolerating the gap
+    // would publish the hour as measured while silently omitting its scalars.
     let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
     let econ = country_core_scalars_payload(&[(
         1,
@@ -14793,9 +14796,24 @@ fn chunk2_d63_country_core_scalars_requires_exact_d18_roster() {
         let country = &snap["countries"][tag];
         assert!(
             country.get("manpower_pool").is_none(),
-            "non-bijective D63 must not publish a partial roster for {tag}"
+            "a D63 record missing a D18 tag must not publish a partial roster for {tag}"
         );
     }
+    let note = snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("domain 63 fold skipped").then(|| note.to_owned())
+        })
+        .expect("the hour is skipped");
+    assert!(
+        note.contains("does not cover current-hour D18")
+            && note.contains("1 of 2 D18 tags missing")
+            && note.contains("d63 carries 1"),
+        "{note}"
+    );
 }
 
 #[test]
@@ -20166,5 +20184,1243 @@ fn d96_refuses_a_ptw1_whose_roster_witness_is_the_d18_count() {
     assert_eq!(
         snapshot["countries"]["C007"]["extra"]["_r2_preferred_tactic_live"]["preferred_weight"],
         Value::Null
+    );
+}
+
+// --- D63/D93: the D18 roster-containment gate, extras dropped --------------
+//
+// Same structural defect as d92/d96 (the block above), different consumer
+// topology. Both collectors walk the COMPLETE gamestate country table — d63 at
+// `attach_log.rs:60662` ("The filtered D18 cache is not a completeness
+// witness"), d93 at `:32180` — while D18 publishes the FILTERED
+// `country_identity.rows` cache (`:60364`), so both observed sets are strict
+// supersets of D18 whenever the gamestate carries slots the cache rejects
+// (`runs/batch1/deepwar_t1` measures d63 439 vs D18 356 in every one of its
+// 903 hours, the same 83 extra ids each hour), and the old equality gates
+// folded zero hours.
+//
+// Unlike d92 — whose projection iterates `tag_by_db_id` and structurally
+// cannot name an extra, so kept extras were unpublishable — BOTH of these
+// domains publish what they store: d63 writes through `country_mut` and
+// `build_snapshot` publishes every `self.countries` entry under a numeric-key
+// fallback (`world_fold.rs:5160`, `:3119`), and d93's projection iterates its
+// stored row set into the countries map the same way (`:6491`-`:6506`). That
+// fallback is the DESIGNED pathway for a measured row of a country D18 cannot
+// name — d83 nuke_stockpile (complete-roster walk, no D18 gate at all) already
+// publishes the same 83 extra slots numeric-keyed in every deepwar_t1 hour,
+// with `tag_db_id_index` reporting `resolved: false` and naming each id, and
+// the E13 measured-countries witness still enumerating only the D18 set. So
+// the containment gate KEEPS the extras, and these tests pin all four edges:
+// superset folds, extras publish numeric-keyed with the gap witnessed, a
+// missing D18 tag still refuses, equal rosters are byte-untouched.
+
+/// An AUR1 payload whose snapshot carries one row per `tags` entry (the lane
+/// emits one country row per complete-roster root even when the country has
+/// no upgrade group, `lanes/country_army_upgrade_requests_live/src/lib.rs:351`).
+/// `with_group` countries get one army group with one request row so the
+/// projection's value path is exercised, not just membership.
+fn army_upgrade_requests_payload(tags: &[u32], with_group: &[u32], frame_hour: u64) -> Vec<u8> {
+    let mut sorted: Vec<u32> = tags.to_vec();
+    sorted.sort_unstable();
+    let countries = sorted
+        .iter()
+        .map(|&tag_db_id| army_upgrades93::CountryArmyUpgradeRow {
+            tag_db_id,
+            groups: if with_group.contains(&tag_db_id) {
+                vec![army_upgrades93::ArmyUpgradeGroup {
+                    army: army_upgrades93::PersistentId {
+                        kind: army_upgrades93::ARMY_ID_TYPE,
+                        id: 900 + tag_db_id,
+                    },
+                    requests: vec![army_upgrades93::ArmyUpgradeRequestRow {
+                        equipment_variant: army_upgrades93::PersistentId {
+                            kind: army_upgrades93::EQUIPMENT_VARIANT_ID_TYPE,
+                            id: 70_000 + tag_db_id,
+                        },
+                        request_raw: 250_000,
+                        total_raw: 1_000_000,
+                    }],
+                    deliveries: Vec::new(),
+                }]
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    army_upgrades93::encode_payload(&army_upgrades93::ArmyUpgradeFrame {
+        elapsed_wall_ms: 3,
+        frame_hour,
+        status_flags: 0,
+        authority: army_upgrades93::AuthorityState::ExactA729Receipt,
+        snapshot: Some(army_upgrades93::ArmyUpgradeSnapshot {
+            source_sequence: 9,
+            countries,
+        }),
+    })
+    .expect("AUR1 encodes")
+}
+
+/// The deepwar shape in miniature: D18 publishes {GER, SOV}, d63 additionally
+/// carries two tags the filtered cache rejected. Every D18 country folds its
+/// measured values; the extras fold too and publish numeric-keyed.
+#[test]
+fn d63_folds_when_its_complete_roster_is_a_superset_of_the_filtered_d18_roster() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (3, Some(1_030_000), Some(0), Some(365), None),
+        (400, Some(555), Some(1), Some(2), None),
+        (401, None, None, None, None),
+    ]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+
+    assert!(
+        !snap["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 63 fold skipped")),
+        "notes: {:?}",
+        snap["provenance"]["notes"]
+    );
+    let ger = &snap["countries"]["GER"];
+    assert_eq!(ger["manpower_pool"], json!(1_640_616));
+    assert_eq!(ger["convoys_destroyed"], json!(465));
+    let sov = &snap["countries"]["SOV"];
+    assert_eq!(sov["manpower_pool"], json!(1_030_000));
+    assert_eq!(sov["convoys_destroyed"], json!(0));
+}
+
+/// The dropped-extras contract, pinned end to end: a d63 row for a country
+/// D18 cannot name is dropped at the persistence boundary — `self.countries`
+/// survives the hour reset and doubles as the completeness authority the
+/// full-set domains (d48 `world_fold.rs:20545`, d67 `:9858`) fabricate
+/// measured-empty entries from, so the extra must never reach `country_mut`.
+/// The drop is witnessed by a provenance note naming the id, the D18-covered
+/// rows fold unchanged, and the snapshot-wide `tag_db_id_index` stays fully
+/// resolved because nothing numeric-keyed was published.
+#[test]
+fn d63_an_extra_row_is_dropped_at_the_persistence_boundary_with_a_note() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (3, Some(1_030_000), Some(0), Some(365), None),
+        (400, Some(555), Some(1), Some(2), None),
+    ]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+
+    // Only the D18-resolved countries exist; the extra published nothing.
+    let countries = snap["countries"].as_object().expect("countries map");
+    assert_eq!(countries.keys().collect::<Vec<_>>(), vec!["GER", "SOV"]);
+    // The D18-covered rows folded unchanged.
+    assert_eq!(snap["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+    assert_eq!(snap["countries"]["SOV"]["divisions_lost"], json!(365));
+    // The drop is witnessed, by id, and the hour is NOT skipped.
+    assert!(
+        snap["provenance"]["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("country_core_scalars dropped 1 rows") && note.contains("[400]")
+            }),
+        "notes must witness the dropped id: {:?}",
+        snap["provenance"]["notes"]
+    );
+    assert!(
+        !snap["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 63 fold skipped")),
+        "the hour folds; only the extra is dropped: {:?}",
+        snap["provenance"]["notes"]
+    );
+    // Nothing unresolved was published.
+    assert_eq!(snap["tag_db_id_index"]["resolved"], json!(true));
+    // The measured-countries witness stays the D18 set.
+    let measured = snap["measured_countries"]["tag_db_ids"]
+        .as_array()
+        .expect("measured tag_db_ids");
+    assert!(measured.contains(&json!(1)) && measured.contains(&json!(3)));
+    assert!(
+        !measured.contains(&json!(400)),
+        "a dropped extra is never a measured-set member: {measured:?}"
+    );
+}
+
+/// Guard against the over-relaxed direction: containment is checked per D18
+/// tag, not by count. A d63 record that carries MORE rows than D18 but misses
+/// one D18 tag still refuses the hour.
+#[test]
+fn d63_extras_never_compensate_for_a_missing_d18_tag() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    // Three rows (more than D18's two), but SOV is missing.
+    let econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (400, Some(555), Some(1), Some(2), None),
+        (401, Some(6), Some(0), Some(0), None),
+    ]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+
+    let note = snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("domain 63 fold skipped").then(|| note.to_owned())
+        })
+        .expect("the hour is skipped");
+    assert!(
+        note.contains("does not cover current-hour D18")
+            && note.contains("1 of 2 D18 tags missing")
+            && note.contains("d63 carries 3"),
+        "{note}"
+    );
+    for tag in ["GER", "SOV"] {
+        assert!(
+            snap["countries"][tag].get("manpower_pool").is_none(),
+            "no partial publish for {tag} on a refused hour"
+        );
+    }
+}
+
+/// Behavior preservation: when the two rosters happen to be equal — every hour
+/// of every capture taken before the gamestate carried filtered slots — the
+/// containment gate folds exactly what the bijectivity gate folded, with no
+/// drop note.
+#[test]
+fn d63_equal_rosters_fold_identically_with_no_drop_note() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let econ = country_core_scalars_payload(&[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (3, Some(1_030_000), Some(0), Some(365), None),
+    ]);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (63, econ)]);
+
+    assert_eq!(snap["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+    assert_eq!(snap["countries"]["SOV"]["divisions_lost"], json!(365));
+    assert!(
+        !snap["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("domain 63 fold skipped")
+                    || note.contains("country_core_scalars dropped")
+            }),
+        "equal rosters must fold with no skip and no drop note: {:?}",
+        snap["provenance"]["notes"]
+    );
+}
+
+/// The reviewer's two-hour contamination sequence, d48 side. Hour N folds a
+/// clean D18 {GER} with a clean d63 carrying an extra row (tag_db_id 400).
+/// Hour N+1 folds a clean D18 {GER} with a clean D48 whose producer scanned
+/// only GER. Persistent `self.countries` survives the hour reset and D48's
+/// projection unions every numeric persistent key with its scan roster,
+/// creating missing entries as measured-empty with exact RLC1 authority
+/// (`world_fold.rs:20545`-`:20617`) — so a d63 extra that reaches
+/// `country_mut` makes hour N+1 publish fabricated measured-empty
+/// `construction_queue`/`railway_construction_lines` arrays for a country D48
+/// never scanned, and replay treats those as complete measured results. The
+/// extra must therefore never enter the persistent map: neither hour may
+/// contain a "400" country at all.
+#[test]
+fn d63_extras_never_seed_d48_measured_empty_fabrication_in_a_later_hour() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    // Hour N: clean D18 {GER}; clean d63 {GER, 400}.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        63,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_core_scalars_payload(&[
+            (1, Some(1_640_616), Some(465), Some(130), None),
+            (400, Some(555), Some(1), Some(2), None),
+        ]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour N+1: clean D18 {GER}; clean D48 that scanned only GER (one railway
+    // line for tag 1, no construction rows).
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        48,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &d48_railway_payload(0, vec![d48_railway_row()]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("d63_d48_two_hour_contamination");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let hour1 = parse(&snapshots[0].2);
+    let hour2 = parse(&snapshots[1].2);
+
+    // The decisive assertion: hour N+1 must not fabricate a measured-empty
+    // production entry for a country D48 never scanned. Pre-fix this printed
+    // construction_queue=[] and railway_construction_lines=[] with exact RLC1
+    // authority and "source":"C" for country 400.
+    assert!(
+        !hour2["countries"]
+            .as_object()
+            .expect("hour2 countries map")
+            .contains_key("400"),
+        "hour-2 d48 fabricated measured results for an unscanned country: {:?}",
+        hour2["countries"]["400"]
+    );
+    // The extra never entered the persistent roster in hour N either.
+    assert!(
+        !hour1["countries"]
+            .as_object()
+            .expect("hour1 countries map")
+            .contains_key("400"),
+        "hour-1 published the dropped d63 extra: {:?}",
+        hour1["countries"]["400"]
+    );
+    // The drop is witnessed, and the D18-covered row folded unchanged.
+    assert!(
+        hour1["provenance"]["notes"]
+            .as_array()
+            .expect("hour1 notes")
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("country_core_scalars dropped") && note.contains("400")
+            }),
+        "hour-1 notes must witness the drop: {:?}",
+        hour1["provenance"]["notes"]
+    );
+    assert_eq!(hour1["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+    // Hour N+1's measured results for the country D48 DID scan are intact.
+    let ger_extra =
+        &hour2["countries"]["GER"]["production"]["construction_buildings_state_damage_live"];
+    assert_eq!(
+        ger_extra["railway_construction_lines"][0]["line_id"],
+        json!(135_764)
+    );
+}
+
+/// The reviewer's two-hour contamination sequence, d67 side. Hour N folds a
+/// clean D18 {GER} with a clean d63 carrying an extra row (tag_db_id 400).
+/// Hour N+1 folds a clean D18 {GER} with a clean D67 whose producer scanned
+/// only GER. D67's full-replace clears every persistent numeric country
+/// before applying measured rows (`world_fold.rs:9858`), so a d63 extra that
+/// reaches `country_mut` receives a fabricated measured-empty
+/// `dynamic_modifier=[]` — concealment of a possibly active modifier on a
+/// country D67 never scanned. The extra must never enter the persistent map.
+#[test]
+fn d63_extras_never_seed_d67_full_replace_clears_in_a_later_hour() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    // Hour N: clean D18 {GER}; clean d63 {GER, 400}.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        63,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_core_scalars_payload(&[
+            (1, Some(1_640_616), Some(465), Some(130), None),
+            (400, Some(555), Some(1), Some(2), None),
+        ]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour N+1: clean D18 {GER}; clean D67 with a row for GER only.
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("d63_d67_two_hour_contamination");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let hour1 = parse(&snapshots[0].2);
+    let hour2 = parse(&snapshots[1].2);
+
+    // The decisive assertion: hour N+1 must not hand country 400 a fabricated
+    // measured-empty modifier list. Pre-fix this printed
+    // dynamic_modifier=[] for a country D67 never scanned.
+    assert!(
+        !hour2["countries"]
+            .as_object()
+            .expect("hour2 countries map")
+            .contains_key("400"),
+        "hour-2 d67 fabricated a measured-empty modifier list for an unscanned country: {:?}",
+        hour2["countries"]["400"]
+    );
+    assert!(
+        !hour1["countries"]
+            .as_object()
+            .expect("hour1 countries map")
+            .contains_key("400"),
+        "hour-1 published the dropped d63 extra: {:?}",
+        hour1["countries"]["400"]
+    );
+    // The country D67 DID scan folds normally.
+    assert_eq!(
+        hour2["countries"]["GER"]["dynamic_modifier"],
+        json!(["GER_army_modifier"])
+    );
+}
+
+/// The round-4 reviewer's sequence: a country ADMITTED under D18 whose tag
+/// later leaves the roster. Hour N folds D18 {GER, X40} with d63 {1, 400} —
+/// country 400 legitimately receives d63 fields through `country_mut`. Hour
+/// N+1's D18 shrinks to {GER} while d63 still carries both rows; D48 and D67
+/// then fold, each having scanned only GER. Dropping the CURRENT pending row
+/// is not enough here: 400's hour-N fields already sit in persistent
+/// `self.countries`, would publish under the numeric fallback key "400"
+/// (`build_snapshot`, `world_fold.rs:5160`), and would re-arm both
+/// fabrications (d48's persistent-key union `:20556`, d67's clear `:9871`).
+/// The fix evicts d63-owned fields of any persistent country outside the
+/// current D18 roster at every clean d63 fold, removing the entry when
+/// nothing else remains. No existing capture can exercise this transition
+/// (deepwar_t1's D18/extra partition is static across all 903 hours), so
+/// this constructed stream is the only regression net for it.
+#[test]
+fn d63_fields_of_a_tag_that_left_d18_are_evicted_not_republished() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let d63_rows: &[(u32, Option<u32>, Option<u32>, Option<u32>, Option<[i32; 7]>)] = &[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (400, Some(555), Some(1), Some(2), None),
+    ];
+    // Hour N: D18 names BOTH countries; d63 covers both. 400 is legitimate.
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (400, "X40")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        63,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_core_scalars_payload(d63_rows),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    // Hour N+1: D18 shrinks to {GER}; d63 still carries both rows; D48 and
+    // D67 each scanned only GER.
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        63,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_core_scalars_payload(d63_rows),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        67,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        48,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &d48_railway_payload(0, vec![d48_railway_row()]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("d63_departed_tag_eviction");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let hour1 = parse(&snapshots[0].2);
+    let hour2 = parse(&snapshots[1].2);
+
+    // Hour N: the admitted country published normally, under its TAG.
+    assert_eq!(hour1["countries"]["X40"]["manpower_pool"], json!(555));
+    assert!(
+        !hour1["countries"]
+            .as_object()
+            .expect("hour1 countries map")
+            .contains_key("400"),
+        "hour-1 must publish 400 under its D18 tag, not the numeric key"
+    );
+
+    // Hour N+1, the decisive assertions: the departed country publishes
+    // NOTHING — no stale hour-N scalars under "400" or "X40", no fabricated
+    // d48 production entry, no fabricated d67 empty modifier list. Pre-fix
+    // this printed 400's stale manpower_pool/convoys_destroyed plus
+    // construction_queue=[], railway_construction_lines=[] with RLC1
+    // authority, plus dynamic_modifier=[].
+    let hour2_countries = hour2["countries"].as_object().expect("hour2 countries map");
+    assert!(
+        !hour2_countries.contains_key("400"),
+        "hour-2 republished the departed country's stale d63 state: {:?}",
+        hour2["countries"]["400"]
+    );
+    assert!(
+        !hour2_countries.contains_key("X40"),
+        "hour-2 published the departed tag: {:?}",
+        hour2["countries"]["X40"]
+    );
+    // The eviction and the drop are both witnessed this hour.
+    let notes = hour2["provenance"]["notes"].as_array().expect("hour2 notes");
+    assert!(
+        notes.iter().any(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("roster replacement evicted d63/d67/d48 fields of 1 departed tags")
+                && note.contains("[400]")
+        }),
+        "hour-2 notes must witness the eviction: {notes:?}"
+    );
+    assert!(
+        notes.iter().any(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("country_core_scalars dropped 1 rows") && note.contains("[400]")
+        }),
+        "hour-2 notes must witness the drop of the still-measured row: {notes:?}"
+    );
+    // The still-covered country keeps folding normally across all domains.
+    assert_eq!(hour2["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+    assert_eq!(
+        hour2["countries"]["GER"]["dynamic_modifier"],
+        json!(["GER_army_modifier"])
+    );
+    assert_eq!(
+        hour2["countries"]["GER"]["production"]["construction_buildings_state_damage_live"]
+            ["railway_construction_lines"][0]["line_id"],
+        json!(135_764)
+    );
+}
+
+/// Builds the two-hour departed-tag stream with a caller-chosen record order
+/// for the shrink hour. Hour N admits {GER, X40} with d63 covering both; the
+/// shrink hour's records are given as (domain_id, payload) in the exact order
+/// they should land, letting tests pin ORDER-INDEPENDENCE: the stream
+/// validator and hour tracker do not enforce domain order, so every clean
+/// permutation is admissible and none may republish or fabricate for the
+/// departed country.
+fn departed_tag_snapshots(shrink_hour_records: Vec<(u16, Vec<u8>)>) -> Vec<Value> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    let d63_rows: &[(u32, Option<u32>, Option<u32>, Option<u32>, Option<[i32; 7]>)] = &[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (400, Some(555), Some(1), Some(2), None),
+    ];
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER"), (400, "X40")]),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        63,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_core_scalars_payload(d63_rows),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+    for (domain_id, payload) in shrink_hour_records {
+        push_record(
+            &mut stream,
+            seq,
+            raw2,
+            domain_id,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        seq += 1;
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut fold = WorldFold::new("d63_departed_tag_order_independence");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    snapshots.iter().map(|snap| parse(&snap.2)).collect()
+}
+
+/// Asserts the shrink-hour snapshot publishes NOTHING for the departed
+/// country under either its numeric key or its stale tag.
+fn assert_departed_country_absent(hour2: &Value) {
+    let countries = hour2["countries"].as_object().expect("hour2 countries map");
+    assert!(
+        !countries.contains_key("400"),
+        "shrink hour republished or fabricated for the departed country: {:?}",
+        hour2["countries"]["400"]
+    );
+    assert!(
+        !countries.contains_key("X40"),
+        "shrink hour published the departed tag: {:?}",
+        hour2["countries"]["X40"]
+    );
+}
+
+/// Round-5 reviewer's reordered stream, consumers-after-D18 variant: in the
+/// shrink hour D67 and D48 fold clean AFTER the D18 shrink but BEFORE d63.
+/// Eviction that lives at the d63 fold runs too late for them: d67's
+/// persistent iteration and d48's persistent-key union see the stale "400"
+/// entry, fabricate measured-empty results onto it, and the later d63
+/// eviction (four fields only) preserves the now-nonempty shell. The fix
+/// must neutralize the entry at the roster-shrink authority event and
+/// restrict both consumers to the current roster, so NO clean ordering
+/// fabricates.
+#[test]
+fn d63_departed_tag_survives_no_reordering_of_d67_d48_before_d63() {
+    let d63_rows: &[(u32, Option<u32>, Option<u32>, Option<u32>, Option<[i32; 7]>)] = &[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (400, Some(555), Some(1), Some(2), None),
+    ];
+    let snaps = departed_tag_snapshots(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            67,
+            country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+        ),
+        (48, d48_railway_payload(0, vec![d48_railway_row()])),
+        (63, country_core_scalars_payload(d63_rows)),
+    ]);
+    assert_departed_country_absent(&snaps[1]);
+    // The covered country folds normally in every domain.
+    assert_eq!(snaps[1]["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["dynamic_modifier"],
+        json!(["GER_army_modifier"])
+    );
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["production"]["construction_buildings_state_damage_live"]
+            ["railway_construction_lines"][0]["line_id"],
+        json!(135_764)
+    );
+}
+
+/// The harder permutation: D67 and D48 fold BEFORE the shrink hour's D18
+/// record (the fold's roster is still the previous hour's — the validator
+/// admits this). d67 v1 cannot distinguish measured-empty from unscanned
+/// without a current-hour roster witness (its collector emits no row for an
+/// empty country), so folding it against a stale roster is refused outright —
+/// same contract its DMI2 successor already enforces — and d48's
+/// measured-empty completeness union is unavailable without the current-hour
+/// witness (its scanned rows still fold). Nothing may be written for, or
+/// survive under, the departed country.
+#[test]
+fn d63_departed_tag_survives_consumers_folding_before_the_shrink_d18() {
+    let d63_rows: &[(u32, Option<u32>, Option<u32>, Option<u32>, Option<[i32; 7]>)] = &[
+        (1, Some(1_640_616), Some(465), Some(130), None),
+        (400, Some(555), Some(1), Some(2), None),
+    ];
+    let snaps = departed_tag_snapshots(vec![
+        (
+            67,
+            country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+        ),
+        (48, d48_railway_payload(0, vec![d48_railway_row()])),
+        (18, country_identity_payload(&[(1, "GER")])),
+        (63, country_core_scalars_payload(d63_rows)),
+    ]);
+    assert_departed_country_absent(&snaps[1]);
+    // d67 folded before the current-hour roster existed: refused, witnessed.
+    assert!(
+        snaps[1]["provenance"]["notes"]
+            .as_array()
+            .expect("hour2 notes")
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("domain 67 fold skipped")
+                    && note.contains("current-hour country_identity")
+            }),
+        "pre-roster d67 must be refused, not folded against a stale roster: {:?}",
+        snaps[1]["provenance"]["notes"]
+    );
+    // d48's scanned rows still fold; only the completeness union waits for a
+    // roster witness.
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["production"]["construction_buildings_state_damage_live"]
+            ["railway_construction_lines"][0]["line_id"],
+        json!(135_764)
+    );
+    assert_eq!(snaps[1]["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+}
+
+/// Shrink hour WITHOUT any d63 record: the eviction cannot live at the d63
+/// fold because the shrink hour is not guaranteed to carry one. The roster
+/// replacement itself is the authority event; the stale d63 fields must be
+/// evicted there and the consumers must not resurrect the entry.
+#[test]
+fn d63_departed_tag_is_evicted_even_when_the_shrink_hour_has_no_d63_record() {
+    let snaps = departed_tag_snapshots(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            67,
+            country_dynamic_modifiers_payload(&[(1, &["GER_army_modifier"])], 0),
+        ),
+        (48, d48_railway_payload(0, vec![d48_railway_row()])),
+    ]);
+    assert_departed_country_absent(&snaps[1]);
+    // The eviction is witnessed even with no d63 record this hour.
+    assert!(
+        snaps[1]["provenance"]["notes"]
+            .as_array()
+            .expect("hour2 notes")
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("roster replacement evicted") && note.contains("[400]")
+            }),
+        "the roster shrink must evict the departed country's d63 fields: {:?}",
+        snaps[1]["provenance"]["notes"]
+    );
+    // GER unaffected; its d63 scalars from hour N are retained (no d63 record
+    // this hour — pre-existing per-domain retention semantics).
+    assert_eq!(snaps[1]["countries"]["GER"]["manpower_pool"], json!(1_640_616));
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["dynamic_modifier"],
+        json!(["GER_army_modifier"])
+    );
+}
+
+/// Round-6 reviewer's sequence, the DMI2 branch under NORMAL D18-first
+/// ordering: hour N's clean DMI2 measures owners {GER, X40}; hour N+1's D18
+/// shrinks to {GER} (evicting X40's published state) and its clean DMI2
+/// carries only GER_new. The lifecycle tracker still holds owner 400's prior
+/// instance, so `observe` emits a removal transition for it — a transition
+/// whose owner the roster can no longer name. Aborting the frame on it (the
+/// pre-fix behavior) masked the lifecycle to null and retained GER's STALE
+/// `dynamic_modifier=["GER_old"]`. The fix settles such prior-driven removal
+/// transitions as witnessed roster-eviction echoes: the frame folds, GER
+/// publishes GER_new, and the departed owner publishes nothing.
+#[test]
+fn d63_departed_owner_settles_dmi2_lifecycle_instead_of_masking_the_frame() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let raw1 = raw_for(16_959_360);
+    let raw2 = raw_for(16_959_361);
+    for (raw, ident, dmi2) in [
+        (
+            raw1,
+            country_identity_payload(&[(1, "GER"), (400, "X40")]),
+            country_dynamic_modifier_instances_payload(
+                &[
+                    (1, "GER_old", true, &[15_000], Some(5)),
+                    (400, "X40_modifier", true, &[15_000], Some(3)),
+                ],
+                0,
+            ),
+        ),
+        (
+            raw2,
+            country_identity_payload(&[(1, "GER")]),
+            country_dynamic_modifier_instances_payload(
+                &[(1, "GER_new", true, &[15_000], Some(9))],
+                0,
+            ),
+        ),
+    ] {
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &ident,
+        );
+        seq += 1;
+        push_record_with_flags(
+            &mut stream,
+            seq,
+            raw,
+            67,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &dmi2,
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+    let mut fold = WorldFold::new("d63_departed_owner_dmi2_settlement");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2);
+    let hour1 = parse(&snapshots[0].2);
+    let hour2 = parse(&snapshots[1].2);
+
+    // Hour N: both owners measured, published under their tags.
+    assert_eq!(
+        hour1["countries"]["X40"]["dynamic_modifier"],
+        json!(["X40_modifier"])
+    );
+    // Hour N+1, the decisive assertions. The frame must FOLD: no skip note...
+    assert!(
+        !hour2["provenance"]["notes"]
+            .as_array()
+            .expect("hour2 notes")
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 67 fold skipped")),
+        "a departed owner's removal echo must not abort the DMI2 frame: {:?}",
+        hour2["provenance"]["notes"]
+    );
+    // ...GER publishes the FRESH measurement, not the stale hour-N list...
+    assert_eq!(
+        hour2["countries"]["GER"]["dynamic_modifier"],
+        json!(["GER_new"])
+    );
+    assert_eq!(
+        hour2["countries"]["GER"]["dynamic_modifier_instances"][0]["modifier"],
+        json!("GER_new")
+    );
+    // ...the lifecycle publishes (not masked null), carrying GER's own
+    // transitions — and NO transition for the departed owner 400.
+    let transitions = hour2["_r2_dynamic_modifier_lifecycle_live"]["transitions"]
+        .as_array()
+        .expect("hour2 lifecycle transitions must publish");
+    assert!(
+        transitions.iter().any(|transition| {
+            transition["owner_tag"] == json!("GER")
+                && transition["modifier"] == json!("GER_new")
+                && transition["kind"] == json!("added")
+        }),
+        "GER_new added transition missing: {transitions:?}"
+    );
+    assert!(
+        transitions.iter().any(|transition| {
+            transition["owner_tag"] == json!("GER")
+                && transition["modifier"] == json!("GER_old")
+                && transition["kind"] == json!("removed")
+        }),
+        "GER_old removed transition missing: {transitions:?}"
+    );
+    assert!(
+        !transitions
+            .iter()
+            .any(|transition| transition["owner_tag_db_id"] == json!(400)),
+        "a departed owner must not publish a transition: {transitions:?}"
+    );
+    // The settlement is witnessed, and the departed country publishes nothing.
+    assert!(
+        hour2["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("settled removal transitions of 1 departed owners")
+                    && note.contains("[400]")
+            }),
+        "the settlement must be witnessed: {:?}",
+        hour2["provenance"]["notes"]
+    );
+    assert_departed_country_absent(&hour2);
+}
+
+/// The settlement's one-echo contract: after a departed owner's removal
+/// transition is settled, the tracker's prior-replacement has already
+/// forgotten the owner — so when the owner RE-ENTERS the roster in a later
+/// hour, its instances restart as `added` from a clean slate, with no stale
+/// echo and no residue of the pre-departure instance.
+#[test]
+fn d63_readmitted_owner_restarts_as_added_after_a_settled_departure() {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let hours: [(i64, Vec<u8>, Vec<u8>); 3] = [
+        (
+            16_959_360,
+            country_identity_payload(&[(1, "GER"), (400, "X40")]),
+            country_dynamic_modifier_instances_payload(
+                &[
+                    (1, "GER_old", true, &[15_000], Some(5)),
+                    (400, "X40_modifier", true, &[15_000], Some(3)),
+                ],
+                0,
+            ),
+        ),
+        (
+            16_959_361,
+            country_identity_payload(&[(1, "GER")]),
+            country_dynamic_modifier_instances_payload(
+                &[(1, "GER_old", true, &[15_000], Some(5))],
+                0,
+            ),
+        ),
+        (
+            16_959_362,
+            country_identity_payload(&[(1, "GER"), (400, "X40")]),
+            country_dynamic_modifier_instances_payload(
+                &[
+                    (1, "GER_old", true, &[15_000], Some(5)),
+                    (400, "X40_reborn", true, &[15_000], Some(7)),
+                ],
+                0,
+            ),
+        ),
+    ];
+    for (hour, ident, dmi2) in hours {
+        let raw = raw_for(hour);
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &ident,
+        );
+        seq += 1;
+        push_record_with_flags(
+            &mut stream,
+            seq,
+            raw,
+            67,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &dmi2,
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+    let mut fold = WorldFold::new("d63_readmitted_owner_restart");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 3);
+    let hour2 = parse(&snapshots[1].2);
+    let hour3 = parse(&snapshots[2].2);
+
+    // Hour 2: departure settled, frame folded.
+    assert!(
+        hour2["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("settled removal transitions of 1 departed owners")),
+        "hour-2 must settle the departure: {:?}",
+        hour2["provenance"]["notes"]
+    );
+    // Hour 3: the readmitted owner restarts cleanly.
+    let transitions = hour3["_r2_dynamic_modifier_lifecycle_live"]["transitions"]
+        .as_array()
+        .expect("hour3 lifecycle transitions must publish");
+    assert_eq!(
+        transitions
+            .iter()
+            .filter(|transition| transition["owner_tag"] == json!("X40"))
+            .collect::<Vec<_>>()
+            .len(),
+        1,
+        "exactly one X40 transition: {transitions:?}"
+    );
+    assert!(
+        transitions.iter().any(|transition| {
+            transition["owner_tag"] == json!("X40")
+                && transition["modifier"] == json!("X40_reborn")
+                && transition["kind"] == json!("added")
+        }),
+        "the readmitted owner must restart as added: {transitions:?}"
+    );
+    assert_eq!(
+        hour3["countries"]["X40"]["dynamic_modifier"],
+        json!(["X40_reborn"])
+    );
+    // No settlement note in hour 3 — the echo happened exactly once.
+    assert!(
+        !hour3["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("settled removal transitions")),
+        "no second echo: {:?}",
+        hour3["provenance"]["notes"]
+    );
+}
+
+/// d93, superset shape: D18 publishes {GER, SOV}; the AUR1 snapshot carries
+/// both plus an extra the filtered cache rejected. The D18 countries project
+/// their measured groups, and the extra projects too, numeric-keyed.
+#[test]
+fn d93_folds_when_its_complete_roster_is_a_superset_of_the_filtered_d18_roster() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let aur = army_upgrade_requests_payload(&[1, 3, 400], &[1], 16_959_360);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (93, aur)]);
+
+    assert!(
+        !snap["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 93 fold skipped")),
+        "notes: {:?}",
+        snap["provenance"]["notes"]
+    );
+    // GER's measured group projects with its value path intact.
+    let ger = &snap["countries"]["GER"]["extra"]["army_upgrade_requests"];
+    let groups = ger["groups"].as_array().expect("GER groups");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["army"]["id"], json!(901));
+    assert_eq!(groups[0]["requests"][0]["request_raw"], json!(250_000));
+    assert_eq!(groups[0]["requests"][0]["request"], json!(2.5));
+    // SOV is measured-empty: a groups array with no entry, not absence.
+    let sov = &snap["countries"]["SOV"]["extra"]["army_upgrade_requests"];
+    assert_eq!(sov["groups"].as_array().expect("SOV groups").len(), 0);
+}
+
+/// The kept-extras contract, d93 side: the projection publishes the extra's
+/// measured graph under its numeric key through `resolve_country_key`'s
+/// documented never-fabricate fallback (`world_fold.rs:6491`-`:6506`,
+/// `:3119`), the `tag_db_id_index` witnesses the gap by id, and the E13
+/// measured-countries set stays D18's — the same shape d83 nuke_stockpile
+/// already ships for the same slots.
+#[test]
+fn d93_an_extra_row_publishes_numeric_keyed_with_the_gap_witnessed() {
+    let ident = country_identity_payload(&[(1, "GER")]);
+    let aur = army_upgrade_requests_payload(&[1, 400], &[400], 16_959_360);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (93, aur)]);
+
+    let countries = snap["countries"].as_object().expect("countries map");
+    assert_eq!(countries.keys().collect::<Vec<_>>(), vec!["400", "GER"]);
+    // The extra's measured group is published intact, with its replay join id.
+    let extra = &snap["countries"]["400"];
+    assert_eq!(extra["_r2_tag_db_id"], json!(400));
+    let groups = extra["extra"]["army_upgrade_requests"]["groups"]
+        .as_array()
+        .expect("extra groups");
+    assert_eq!(groups[0]["army"]["id"], json!(1300));
+    assert_eq!(groups[0]["requests"][0]["request_raw"], json!(250_000));
+    // The resolution gap is witnessed, by id.
+    assert_eq!(snap["tag_db_id_index"]["resolved"], json!(false));
+    assert!(
+        snap["tag_db_id_index"]["unresolved_tag_db_ids"]
+            .as_array()
+            .expect("unresolved ids")
+            .contains(&json!("400")),
+        "tag_db_id_index: {:?}",
+        snap["tag_db_id_index"]
+    );
+    // The measured-countries witness stays the D18 set: the extra is not in it.
+    let measured = snap["measured_countries"]["tag_db_ids"]
+        .as_array()
+        .expect("measured tag_db_ids");
+    assert!(measured.contains(&json!(1)) && !measured.contains(&json!(400)));
+}
+
+/// The loss the containment gate exists to catch, d93 side: a D18 tag with no
+/// AUR1 row would silently project as unavailable while the hour counted as
+/// measured. Extras never compensate — containment is per tag, not by count.
+#[test]
+fn d93_refuses_an_hour_whose_rows_miss_a_d18_tag() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    // Three rows (more than D18's two), but SOV is missing.
+    let aur = army_upgrade_requests_payload(&[1, 400, 401], &[], 16_959_360);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (93, aur)]);
+
+    let note = snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("domain 93 fold skipped").then(|| note.to_owned())
+        })
+        .expect("the hour is skipped");
+    assert!(
+        note.contains("does not cover current D18 roster")
+            && note.contains("1 of 2 D18 tags missing")
+            && note.contains("d93 carries 3"),
+        "{note}"
+    );
+    for tag in ["GER", "SOV"] {
+        assert!(
+            snap["countries"][tag]["extra"].get("army_upgrade_requests").is_none(),
+            "no partial publish for {tag} on a refused hour"
+        );
+    }
+}
+
+/// Behavior preservation, d93 side: equal rosters fold exactly as the equality
+/// gate folded them, with no drop note.
+#[test]
+fn d93_equal_rosters_fold_identically_with_no_drop_note() {
+    let ident = country_identity_payload(&[(1, "GER"), (3, "SOV")]);
+    let aur = army_upgrade_requests_payload(&[1, 3], &[3], 16_959_360);
+    let snap = snapshot_for_domain_records(vec![(18, ident), (93, aur)]);
+
+    let sov = &snap["countries"]["SOV"]["extra"]["army_upgrade_requests"];
+    assert_eq!(sov["groups"][0]["army"]["id"], json!(903));
+    assert_eq!(
+        snap["countries"]["GER"]["extra"]["army_upgrade_requests"]["groups"]
+            .as_array()
+            .expect("GER groups")
+            .len(),
+        0
+    );
+    assert!(
+        !snap["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("domain 93 fold skipped")
+                    || note.contains("country_army_upgrade_requests dropped")
+            }),
+        "equal rosters must fold with no skip and no drop note: {:?}",
+        snap["provenance"]["notes"]
     );
 }
