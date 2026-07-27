@@ -110,8 +110,9 @@ use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
 use compact_contract::stream_validator::StatefulStreamValidator;
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance,
-    expected_partial_tolerance_applies, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA,
+    compact_status_unknown_flags_v1, expected_partial_tolerance_applies,
+    parse_compact_record_header, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedDelta,
@@ -301,6 +302,32 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                 }
             }
             last_d28_hour = Some(header.game_hour_raw);
+
+            // VALIDITY BEFORE CLASSIFICATION. Everything below that reads the
+            // status word — the expected-partial tolerance, the DELTA_DATA read,
+            // the failure predicate — classifies the v1 vocabulary; none of it is
+            // a validity predicate. `compact_contract/src/lib.rs:121`-`:123` says
+            // so in as many words: "Callers handling untrusted status words must
+            // first reject a non-zero `compact_status_unknown_flags_v1` result;
+            // otherwise an unassigned bit has no defined classification." Bits
+            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // unassigned bit "is not evidence of a future informational status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` reads as "not
+            // a failure" — the failure helper masks with the *known* failure set
+            // and returns zero for a bit it does not know — and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness does the same rather than re-deriving a lenient rule.
+            // No capture carries an unassigned bit, so no measured number moves.
+            let unknown_status = compact_status_unknown_flags_v1(d28_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "d28 DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    header.game_hour_raw
+                ));
+            }
 
             // The fold's classification, from `compact_contract`'s predicates —
             // never a hand-copied mask literal, so it cannot drift from the
@@ -721,6 +748,87 @@ mod tests {
         assert_eq!(scan.counts.failure_records, 0);
         assert_eq!(scan.counts.withheld_partial, 0);
         assert_eq!(scan.counts.non_contiguous, 0);
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helper and the
+        // expected-partial tolerance classify the v1 vocabulary and are not
+        // validity predicates, so an unassigned bit must be rejected BEFORE
+        // classification — otherwise it silently reads as "not a failure", falls
+        // through the three fold-nothing guards, and the hour is measured as
+        // healthy.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, combined with the
+            // informational DELTA_DATA bit, and combined with the one failure bit
+            // d28 tolerates (PARTIAL_DATA). The rejection must not depend on any
+            // of it, nor on whether a baseline has been seen.
+            for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_PARTIAL_DATA] {
+                let mut first = Vec::new();
+                first.extend(record(
+                    1,
+                    100,
+                    D28,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d28_payload(status | extra, 7, &[1, 2]),
+                ));
+                first.extend(frame_end(2, 100));
+                assert!(
+                    scan_stream(&first, &schema()).is_err(),
+                    "status bit {bit} (+{extra:#x}) as the first record must be refused"
+                );
+                let mut after = Vec::new();
+                after.extend(record(
+                    1,
+                    100,
+                    D28,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d28_payload(0, 7, &[1, 2]),
+                ));
+                after.extend(frame_end(2, 100));
+                after.extend(record(
+                    3,
+                    101,
+                    D28,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d28_payload(status | extra, 7, &[1, 3]),
+                ));
+                after.extend(frame_end(4, 101));
+                assert!(
+                    scan_stream(&after, &schema()).is_err(),
+                    "status bit {bit} (+{extra:#x}) after a baseline must be refused"
+                );
+            }
+        }
+        // And the whole known v1 mask, minus the failure bits, is still accepted:
+        // the check must reject unassigned bits and nothing else. DELTA_DATA is
+        // the one d28 itself reads; PARTIAL_DATA's tolerated withhold path has its
+        // own tests.
+        for informational in [1u32 << 4, 1 << 5, COMPACT_STATUS_DELTA_DATA, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D28,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d28_payload(0, 7, &[1, 2]),
+            ));
+            s.extend(frame_end(2, 100));
+            s.extend(record(
+                3,
+                101,
+                D28,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d28_payload(informational, 7, &[1, 3]),
+            ));
+            s.extend(frame_end(4, 101));
+            let scan = scan_stream(&s, &schema())
+                .unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(scan.hours.len(), 2, "bit {informational:#x}");
+            assert_eq!(scan.counts.failure_records, 0, "bit {informational:#x}");
+            assert_eq!(scan.counts.withheld_partial, 0, "bit {informational:#x}");
+        }
     }
 
     #[test]

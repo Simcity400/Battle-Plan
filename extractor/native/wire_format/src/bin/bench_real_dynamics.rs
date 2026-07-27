@@ -180,23 +180,20 @@ impl ShipRow {
     }
 }
 
-fn main() {
-    let mut args = std::env::args().skip(1);
-    let input = args.next().expect("usage: bench_real_dynamics <collector_stream.bin> <out dir>");
-    let out_dir = args.next().expect("usage: bench_real_dynamics <collector_stream.bin> <out dir>");
-    std::fs::create_dir_all(&out_dir).expect("out dir");
-    let stream = std::fs::read(&input).expect("read stream");
-    let _ = STATUS_FAILURE_MASK_APPROX;
+/// One d20 DATA record kept by the pass-1 walk: its game hour, whether the
+/// record is an incremental update, its rows, and its byte span in the stream.
+type ScannedHour = (i32, bool, Vec<ShipRow>, std::ops::Range<usize>);
 
-    // ---- Pass 1: walk the H4CR framing, keep every d20 DATA record. --------
+/// Pass 1: walk the H4CR framing and keep every d20 DATA record.
+fn scan_d20_hours(stream: &[u8]) -> Vec<ScannedHour> {
     let mut pos = 0usize;
-    let mut hours: Vec<(i32, bool, Vec<ShipRow>, std::ops::Range<usize>)> = Vec::new();
+    let mut hours: Vec<ScannedHour> = Vec::new();
     let mut skipped_legacy = 0usize;
     while pos + H4CR_HEADER_LEN <= stream.len() {
         assert_eq!(&stream[pos..pos + 4], H4CR_MAGIC, "framing lost at {pos}");
         let domain_id = u16::from_le_bytes([stream[pos + 20], stream[pos + 21]]);
         let record_type = u16::from_le_bytes([stream[pos + 22], stream[pos + 23]]);
-        let payload_len = u32_at(&stream, pos + 24) as usize;
+        let payload_len = u32_at(stream, pos + 24) as usize;
         let game_hour = i32::from_le_bytes([
             stream[pos + 16],
             stream[pos + 17],
@@ -211,6 +208,30 @@ fn main() {
             assert!(payload.len() >= TABLE_HEADER_LEN, "short division table");
             let row_count = u32_at(payload, 8) as usize;
             let status = u32_at(payload, 16);
+
+            // VALIDITY BEFORE CLASSIFICATION. The `delta` decision below reads
+            // the status word to classify the v1 vocabulary; it is not a
+            // validity predicate. `compact_contract/src/lib.rs:121`-`:123` says
+            // so in as many words: "Callers handling untrusted status words must
+            // first reject a non-zero `compact_status_unknown_flags_v1` result;
+            // otherwise an unassigned bit has no defined classification." Bits
+            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // unassigned bit "is not evidence of a future informational status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` is silently
+            // read as a full baseline — the delta bit is clear — so the world map
+            // is CLEARED and rebuilt from that record's rows, and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this walk does the same rather than re-deriving a lenient rule. No
+            // capture carries an unassigned bit, so no measured number moves.
+            let unknown_status = compact_contract::compact_status_unknown_flags_v1(status);
+            assert!(
+                unknown_status == 0,
+                "d20 DATA at byte {pos}: hour {game_hour} carries unassigned v1 status bits \
+                 {unknown_status:#x}; an unassigned bit has no defined classification"
+            );
+
             let delta = status & STATUS_DELTA_DATA != 0;
             let body = &payload[TABLE_HEADER_LEN..];
             if body.len() == row_count * LEGACY_ROW_LEN && body.len() != row_count * ROW_LEN {
@@ -235,6 +256,18 @@ fn main() {
     }
     assert!(pos == stream.len(), "trailing bytes after the last record");
     assert!(skipped_legacy == 0, "unexpected legacy rows: {skipped_legacy}");
+    hours
+}
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let input = args.next().expect("usage: bench_real_dynamics <collector_stream.bin> <out dir>");
+    let out_dir = args.next().expect("usage: bench_real_dynamics <collector_stream.bin> <out dir>");
+    std::fs::create_dir_all(&out_dir).expect("out dir");
+    let stream = std::fs::read(&input).expect("read stream");
+    let _ = STATUS_FAILURE_MASK_APPROX;
+
+    let hours = scan_d20_hours(&stream);
     assert!(!hours.is_empty(), "stream carries no d20 DATA records");
 
     // ---- Pass 2: fold to per-hour states; encode both arms. ----------------
@@ -385,4 +418,117 @@ fn main() {
     );
     println!("ship_d20.bin         {} bytes", ship.len());
     println!("wire_new.bin         {} bytes ({:.1}%)", wire.len(), 100.0 * wire.len() as f64 / ship.len() as f64);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One H4CR record, framed the way the recorder frames it — only the fields
+    /// this walk reads are meaningful, the rest are the recorder's own shape.
+    fn record(sequence: u64, game_hour: i32, domain: u16, kind: u16, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(H4CR_HEADER_LEN + payload.len());
+        out.extend_from_slice(H4CR_MAGIC);
+        out.extend_from_slice(&1u16.to_le_bytes()); // version
+        out.extend_from_slice(&(H4CR_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&game_hour.to_le_bytes());
+        out.extend_from_slice(&domain.to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // record flags
+        assert_eq!(out.len(), H4CR_HEADER_LEN);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// A 120-byte extended division row: one live division with an owner.
+    fn division_row(div_id: u32, owner: u32) -> Vec<u8> {
+        let mut row = vec![0u8; ROW_LEN];
+        row[0..4].copy_from_slice(&7u32.to_le_bytes()); // country slot
+        row[4..8].copy_from_slice(&div_id.to_le_bytes());
+        row[8..12].copy_from_slice(&F_HAS_OWNER.to_le_bytes());
+        row[56..60].copy_from_slice(&owner.to_le_bytes());
+        row
+    }
+
+    /// A d20 division-table payload: the 32-byte header then the rows.
+    fn d20_payload(status_flags: u32, rows: &[Vec<u8>]) -> Vec<u8> {
+        let mut p = vec![0u8; TABLE_HEADER_LEN];
+        p[8..12].copy_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+        p[16..20].copy_from_slice(&status_flags.to_le_bytes());
+        for row in rows {
+            p.extend_from_slice(row);
+        }
+        p
+    }
+
+    fn one_record_stream(status_flags: u32, rows: &[Vec<u8>]) -> Vec<u8> {
+        record(1, 100, D20, RECORD_TYPE_DOMAIN_DATA, &d20_payload(status_flags, rows))
+    }
+
+    #[test]
+    fn a_well_formed_stream_yields_its_d20_hours() {
+        let hours = scan_d20_hours(&one_record_stream(0, &[division_row(1, 42)]));
+        assert_eq!(hours.len(), 1);
+        assert_eq!(hours[0].0, 100);
+        assert!(!hours[0].1, "a clear delta bit is a full baseline");
+        assert_eq!(hours[0].2.len(), 1);
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the v1 status helpers classify
+        // a known vocabulary and are not validity predicates, so an unassigned bit
+        // must be rejected BEFORE classification. Here classification is the
+        // baseline-vs-delta decision: with the bit unrecognised, `status &
+        // STATUS_DELTA_DATA` is zero and the record reads as a full baseline that
+        // CLEARS the world map — a measured hour built from a record with no
+        // defined meaning.
+        //
+        // This walk reports by panicking, as everything else in it does, so the
+        // refusals are caught rather than matched on a `Result`. The default hook
+        // would print 108 backtraces; it is restored before the accepting half.
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        // Every unassigned bit, alone and combined with a known failure bit and
+        // with the informational delta bit, with rows and without.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            for extra in [0u32, 1, STATUS_DELTA_DATA] {
+                for rows in [Vec::new(), vec![division_row(1, 42)]] {
+                    let stream = one_record_stream(status | extra, &rows);
+                    let refused = std::panic::catch_unwind(move || scan_d20_hours(&stream)).is_err();
+                    assert!(
+                        refused,
+                        "status bit {bit} (+{extra:#x}) with {} row(s) must be refused",
+                        rows.len()
+                    );
+                }
+            }
+        }
+        std::panic::set_hook(previous_hook);
+
+        // And a clean status word and every INFORMATIONAL v1 bit are still
+        // accepted, with the same baseline/delta classification as before: the
+        // check rejects unassigned bits and nothing else. d20's own informational
+        // bit is DELTA_DATA; bits 4, 5, 11 and 13 are inert here, exactly as they
+        // were.
+        //
+        // The failure bits are deliberately not asserted accepted. This walk has
+        // no failure exclusion at all — see `STATUS_FAILURE_MASK_APPROX` above,
+        // which is zero and unused — so what it does with a failure-status record
+        // is a separate question from this gate, and asserting the current
+        // behaviour here would freeze a rule `fold_divisions` does not have.
+        for known in [0u32, 1 << 4, 1 << 5, STATUS_DELTA_DATA, 1 << 11, 1 << 13] {
+            let hours = scan_d20_hours(&one_record_stream(known, &[division_row(1, 42)]));
+            assert_eq!(hours.len(), 1, "status {known:#x}");
+            assert_eq!(
+                hours[0].1,
+                known & STATUS_DELTA_DATA != 0,
+                "status {known:#x} keeps its baseline/delta classification"
+            );
+        }
+    }
 }

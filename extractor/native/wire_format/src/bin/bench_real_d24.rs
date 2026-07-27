@@ -66,9 +66,10 @@ use std::ops::Range;
 use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
 use compact_contract::stream_validator::StatefulStreamValidator;
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance, expected_partial_tolerance,
-    lane_local_status_mask, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
+    compact_status_failure_flags_after_expected_partial_tolerance,
+    compact_status_unknown_flags_v1, expected_partial_tolerance, lane_local_status_mask,
+    parse_compact_record_header, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedDelta,
@@ -266,15 +267,43 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
             }
             last_d24_hour = Some(header.game_hour_raw);
 
+            let d24_header = d24::parse_header(payload)
+                .map_err(|e| format!("d24 payload at byte {pos}: {e}"))?;
+
+            // VALIDITY BEFORE CLASSIFICATION. Everything below that reads the
+            // status word — the failure predicate here, the baseline/delta and
+            // failure decisions inside `fold_payload` — classifies the v1
+            // vocabulary; none of it is a validity predicate.
+            // `compact_contract/src/lib.rs:121`-`:123` says so in as many words:
+            // "Callers handling untrusted status words must first reject a
+            // non-zero `compact_status_unknown_flags_v1` result; otherwise an
+            // unassigned bit has no defined classification." Bits 14..=31 are
+            // unassigned (`status_flags_base.rs:21`-`:24`), and an unassigned bit
+            // "is not evidence of a future informational status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` reads as "not
+            // a failure" — the failure helper masks with the *known* failure set
+            // and returns zero for a bit it does not know — and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness does the same rather than re-deriving a lenient rule.
+            // No capture carries an unassigned bit, so no measured number moves.
+            let unknown_status = compact_status_unknown_flags_v1(d24_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "d24 DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    header.game_hour_raw
+                ));
+            }
+
             // `world_fold::handle_compact_failure` (`world_fold.rs:2843`, called
             // at `:16969`) marks the domain-hour unknown and RETAINS the prior
             // accumulator on a failure status, folding nothing from this record.
             // The predicate is `compact_contract`'s own, not a copied bit mask.
             let failed = compact_status_failure_flags_after_expected_partial_tolerance(
                 D24,
-                d24::parse_header(payload)
-                    .map_err(|e| format!("d24 payload at byte {pos}: {e}"))?
-                    .status_flags,
+                d24_header.status_flags,
             ) != 0;
 
             // Fold exactly as `fold_weather` does — including every way a row
@@ -733,6 +762,86 @@ mod tests {
         assert_eq!(s.non_contiguous, 0);
         assert_eq!(s.baseline_records, 1, "one full snapshot");
         assert_eq!(s.final_regions, d24::REGION_ROWS, "the delta deleted nothing");
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helpers classify
+        // the v1 vocabulary and are not validity predicates, so an unassigned bit
+        // must be rejected BEFORE classification — otherwise it silently reads as
+        // "not a failure", `fold_payload` gives it a baseline/delta meaning, and
+        // the hour is measured as healthy.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, and combined with the
+            // informational DELTA_DATA bit; as a snapshot and as an incremental
+            // record. The rejection must not depend on any of it.
+            for extra in [0u32, 1, d24::STATUS_DELTA_DATA] {
+                let mut s = Vec::new();
+                s.extend(record(
+                    1,
+                    100,
+                    D24,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &baseline_payload(status | extra, 10),
+                ));
+                s.extend(frame_end(2, 100));
+                assert!(
+                    scan(&s).is_err(),
+                    "status bit {bit} (+{extra:#x}) on a snapshot must be refused"
+                );
+                // And on a record that follows a clean baseline.
+                let mut after = Vec::new();
+                after.extend(record(
+                    1,
+                    100,
+                    D24,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &baseline_payload(0, 10),
+                ));
+                after.extend(frame_end(2, 100));
+                after.extend(record(
+                    3,
+                    101,
+                    D24,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &delta_payload(status | extra, 4, 11),
+                ));
+                after.extend(frame_end(4, 101));
+                assert!(
+                    scan(&after).is_err(),
+                    "status bit {bit} (+{extra:#x}) on a delta must be refused"
+                );
+            }
+        }
+        // And the whole known v1 mask, minus the failure bits, is still accepted:
+        // the check must reject unassigned bits and nothing else. DELTA_DATA is
+        // the one d24 itself reads, and it is a baseline/delta selector, not a
+        // failure.
+        for informational in [1u32 << 4, 1 << 5, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D24,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &baseline_payload(informational, 10),
+            ));
+            s.extend(frame_end(2, 100));
+            s.extend(record(
+                3,
+                101,
+                D24,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &delta_payload(informational, 4, 11),
+            ));
+            s.extend(frame_end(4, 101));
+            let result =
+                scan(&s).unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(result.hours.len(), 2, "bit {informational:#x}");
+            assert_eq!(result.failure_records, 0, "bit {informational:#x}");
+            assert_eq!(result.delta_before_baseline, 0, "bit {informational:#x}");
+        }
     }
 
     #[test]

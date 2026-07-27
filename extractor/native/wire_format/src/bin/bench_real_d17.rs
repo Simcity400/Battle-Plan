@@ -54,6 +54,14 @@
 //! failure-status ones, and before the exclusion, so a success+failure pair in
 //! one hour cannot slip through.
 //!
+//! **Validity before classification.** Every read of the status word here —
+//! the failure predicate, the war segment, the bridge bit — classifies the v1
+//! vocabulary and is not a validity check, so a status word carrying a bit
+//! version 1 does not assign refuses the stream before any of them run
+//! (`compact_contract/src/lib.rs:121`-`:123`). An unassigned bit is not
+//! evidence of a future informational status, and classifying one would report
+//! a measured hour for a record with no defined meaning.
+//!
 //! Outputs, for the compression step (`compress_arms.py` beside the run):
 //!   ship_d17.bin   — the d17 DATA records verbatim (32-byte H4CR header +
 //!                    payload), concatenated in stream order
@@ -108,10 +116,6 @@ struct Counts {
     /// the other is clear (`attach_log.rs:59398`-`:59413`); a disagreement would
     /// mean the two accountings have drifted apart.
     war_bit_disagreements: usize,
-    /// Measured hours carrying a status bit contract version 1 does not assign.
-    /// The fold folds them (`compact_status_is_failure` masks), so this is a
-    /// report, not an exclusion.
-    unknown_status_bit_hours: usize,
     /// Measured hours whose `changed_rows` word does not equal `country_count`.
     /// The fold never reads `+12`, so this is a report and never a rejection.
     changed_rows_disagreements: usize,
@@ -303,6 +307,36 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
             }
             last_d17_hour = Some(header.game_hour_raw);
 
+            // VALIDITY BEFORE CLASSIFICATION. Everything below that reads the
+            // status word — the failure predicate, `war_segment_of`, the
+            // `WAR_BRIDGE_APPLIED` read — classifies the v1 vocabulary; none of
+            // it is a validity predicate. `compact_contract/src/lib.rs:121`-
+            // `:123` says so in as many words: "Callers handling untrusted status
+            // words must first reject a non-zero `compact_status_unknown_flags_v1`
+            // result; otherwise an unassigned bit has no defined classification."
+            // Bits 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and
+            // an unassigned bit "is not evidence of a future informational
+            // status".
+            //
+            // This check previously ran INSIDE the measured branch, after
+            // `war_segment_of` and the failure predicate had already classified
+            // the word, and only incremented a reported counter. A record with
+            // `status_flags = 1 << 14` was therefore classified as "not a
+            // failure", given a war segment, and measured as a healthy hour with
+            // a note beside it. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness now does the same. No capture carries an unassigned
+            // bit — the reference stream's count was 0 — so no measured number
+            // moves.
+            let unknown_status = compact_status_unknown_flags_v1(d17_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "d17 DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    header.game_hour_raw
+                ));
+            }
+
             // `fold_diplomacy` reads the status word before anything else
             // (`world_fold.rs:13789`) and returns without folding on a failure
             // status, retaining the accumulator. The predicate is
@@ -331,9 +365,6 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                     d17_header.status_flags & COMPACT_STATUS_WAR_BRIDGE_APPLIED != 0;
                 if bridge_applied != (war_segment == WarSegment::Captured) {
                     counts.war_bit_disagreements += 1;
-                }
-                if compact_status_unknown_flags_v1(d17_header.status_flags) != 0 {
-                    counts.unknown_status_bit_hours += 1;
                 }
                 if d17_header.changed_rows != d17_header.country_count {
                     counts.changed_rows_disagreements += 1;
@@ -577,9 +608,9 @@ fn main() {
         c.war_segment_absent, c.at_war_gap_hours, c.war_bit_disagreements
     );
     println!(
-        "status/header notes  {} hours with an unassigned status bit, {} hours where \
-         changed_rows != country_count (both reported, neither enforced)",
-        c.unknown_status_bit_hours, c.changed_rows_disagreements
+        "status/header notes  {} hours where changed_rows != country_count (reported, not \
+         enforced); an unassigned v1 status bit refuses the stream rather than being reported",
+        c.changed_rows_disagreements
     );
     println!("payload rows         {} country rows", c.country_rows);
     println!(
@@ -732,6 +763,65 @@ mod tests {
         );
         assert_eq!(scan.counts.non_collector_shaped_tokens, 0);
         assert_eq!(scan.counts.changed_rows_disagreements, 0);
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helpers classify
+        // the v1 vocabulary and are not validity predicates, so an unassigned bit
+        // must be rejected BEFORE classification — otherwise it silently reads as
+        // "not a failure", is given a war segment, and the hour is measured as
+        // healthy with a counter incremented beside it.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, and combined with the two
+            // informational bits d17 itself reads; with rows and without. The
+            // rejection must not depend on any of it.
+            for extra in [0u32, 1, COMPACT_STATUS_WAR_SEGMENT_ABSENT, COMPACT_STATUS_WAR_BRIDGE_APPLIED] {
+                for countries in [Vec::new(), vec![country_row(7, 0, 3, 0, 0)]] {
+                    let mut s = Vec::new();
+                    s.extend(record(
+                        1,
+                        100,
+                        D17,
+                        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                        &d17_payload(status | extra, &countries, &[]),
+                    ));
+                    s.extend(frame_end(2, 100));
+                    assert!(
+                        scan_stream(&s, &d17::schema()).is_err(),
+                        "status bit {bit} (+{extra:#x}) with {} country row(s) must be refused",
+                        countries.len()
+                    );
+                }
+            }
+        }
+        // And the whole known v1 mask, minus the failure bits, is still accepted:
+        // the check must reject unassigned bits and nothing else. WAR_SEGMENT_ABSENT
+        // (bit 13) is the one every hour of the reference capture carries, and
+        // WAR_BRIDGE_APPLIED (bit 4) is its complement; DELTA_DATA,
+        // EXTRACTION_PERF_GATE and TRANSITION_BASELINE_RESET are informational too.
+        for informational in [
+            COMPACT_STATUS_WAR_BRIDGE_APPLIED,
+            1u32 << 5,
+            1 << 10,
+            1 << 11,
+            COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+        ] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D17,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d17_payload(informational, &[country_row(7, 0, 3, 0, 0)], &[]),
+            ));
+            s.extend(frame_end(2, 100));
+            let scan = scan_stream(&s, &d17::schema())
+                .unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(scan.hours.len(), 1, "bit {informational:#x}");
+            assert_eq!(scan.counts.failure_records, 0, "bit {informational:#x}");
+        }
     }
 
     #[test]

@@ -99,8 +99,9 @@ use std::ops::Range;
 use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
 use compact_contract::stream_validator::StatefulStreamValidator;
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance, parse_compact_record_header,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
+    compact_status_failure_flags_after_expected_partial_tolerance,
+    compact_status_unknown_flags_v1, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedState,
@@ -276,6 +277,32 @@ fn scan_stream(stream: &[u8], domain: Domain, schema: &Schema) -> Result<StreamS
                 }
             }
             last_domain_hour = Some(header.game_hour_raw);
+
+            // VALIDITY BEFORE CLASSIFICATION. The failure predicate below reads
+            // the status word to classify the v1 vocabulary; it is not a validity
+            // predicate. `compact_contract/src/lib.rs:121`-`:123` says so in as
+            // many words: "Callers handling untrusted status words must first
+            // reject a non-zero `compact_status_unknown_flags_v1` result;
+            // otherwise an unassigned bit has no defined classification." Bits
+            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // unassigned bit "is not evidence of a future informational status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` reads as "not
+            // a failure" — the failure helper masks with the *known* failure set
+            // and returns zero for a bit it does not know — and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness does the same rather than re-deriving a lenient rule.
+            // Neither capture carries an unassigned bit, so no measured number
+            // moves for either domain.
+            let unknown_status = compact_status_unknown_flags_v1(payload_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "{} DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    domain.name, header.game_hour_raw
+                ));
+            }
 
             // `world_fold::handle_compact_failure` marks the domain-hour unknown
             // and RETAINS the prior accumulator on a failure status (`:15450`),
@@ -711,6 +738,60 @@ mod tests {
         assert_eq!(s.non_contiguous, 0);
         assert_eq!(s.shipped_variant_rows, 1);
         assert_eq!(s.shipped_upgrade_rows, 1);
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helper classifies
+        // the v1 vocabulary and is not a validity predicate, so an unassigned bit
+        // must be rejected BEFORE classification — otherwise it silently reads as
+        // "not a failure" and the hour is measured as healthy.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, and combined with a known
+            // informational bit; with rows and without (145 of d39's 146 hours are
+            // rowless). The rejection must not depend on any of it.
+            for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
+                for (rows, entries) in [
+                    (Vec::new(), Vec::new()),
+                    (vec![variant_row(7, 0, 0, 1)], vec![entry(0, 3)]),
+                ] {
+                    let mut s = Vec::new();
+                    s.extend(record(
+                        1,
+                        100,
+                        D39,
+                        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                        &payload(status | extra, &rows, &entries),
+                    ));
+                    s.extend(frame_end(2, 100));
+                    assert!(
+                        scan(&s).is_err(),
+                        "status bit {bit} (+{extra:#x}) with {} row(s) must be refused",
+                        rows.len()
+                    );
+                }
+            }
+        }
+        // And the whole known v1 mask, minus the failure bits, is still accepted:
+        // the check must reject unassigned bits and nothing else. Neither d39 nor
+        // d40 reads an informational bit — the domains have no baseline/delta
+        // grammar — so each is measured exactly as a clean status word is.
+        for informational in [1u32 << 4, 1 << 5, COMPACT_STATUS_DELTA_DATA, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D39,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload(informational, &[variant_row(7, 0, 0, 1)], &[entry(0, 3)]),
+            ));
+            s.extend(frame_end(2, 100));
+            let scanned =
+                scan(&s).unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(scanned.hours.len(), 1, "bit {informational:#x}");
+            assert_eq!(scanned.failure_records, 0, "bit {informational:#x}");
+        }
     }
 
     #[test]

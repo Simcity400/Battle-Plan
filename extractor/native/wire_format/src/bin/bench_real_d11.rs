@@ -289,6 +289,31 @@ fn scan_stream(stream: &[u8], collections: &Collections) -> Result<StreamScan, S
             }
             last_d11_hour = Some(header.game_hour_raw);
 
+            // VALIDITY BEFORE CLASSIFICATION. Everything below that reads the
+            // status word classifies the v1 vocabulary; none of it is a validity
+            // predicate. `compact_contract/src/lib.rs:121`-`:123` says so in as
+            // many words: "Callers handling untrusted status words must first
+            // reject a non-zero `compact_status_unknown_flags_v1` result;
+            // otherwise an unassigned bit has no defined classification." Bits
+            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // unassigned bit "is not evidence of a future informational status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` reads as "not
+            // a failure" — the failure helper masks with the *known* failure set
+            // and returns zero for a bit it does not know — and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness does the same rather than re-deriving a lenient rule.
+            // No capture carries an unassigned bit, so no measured number moves.
+            let unknown_status = compact_status_unknown_flags_v1(d11_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "d11 DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    header.game_hour_raw
+                ));
+            }
+
             if compact_status_failure_flags_after_expected_partial_tolerance(
                 D11,
                 d11_header.status_flags,
@@ -732,6 +757,58 @@ mod tests {
         assert_eq!(s.touched_countries, 2);
         assert_eq!(s.pdq1_bytes, 0, "this stream carries no PDQ1 segment");
         assert_eq!(s.scale_raw_mismatches, 0);
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helpers classify
+        // the v1 vocabulary and are not validity predicates, so an unassigned bit
+        // must be rejected BEFORE classification — otherwise it silently reads as
+        // "not a failure" and the hour is measured as healthy.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, and combined with a known
+            // informational bit; with rows and without. The rejection must not
+            // depend on any of it.
+            for extra in [0u32, 1, 1 << 10] {
+                for tags in [Vec::new(), vec![(7u32, 500u32, 1_000i64)]] {
+                    let mut s = Vec::new();
+                    s.extend(record(
+                        1,
+                        100,
+                        D11,
+                        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                        &d11_payload(status | extra, &tags),
+                    ));
+                    s.extend(frame_end(2, 100));
+                    assert!(
+                        scan(&s).is_err(),
+                        "status bit {bit} (+{extra:#x}) with {} row(s) must be refused",
+                        tags.len()
+                    );
+                }
+            }
+        }
+        // And the whole known v1 mask, minus the failure bits, is still accepted:
+        // the check must reject unassigned bits and nothing else. WAR_BRIDGE_APPLIED,
+        // EXTRACTION_PERF_GATE, DELTA_DATA, TRANSITION_BASELINE_RESET and
+        // WAR_SEGMENT_ABSENT are informational; DELTA_DATA is the one d11 itself
+        // reads, and it is counted rather than excluded.
+        for informational in [1u32 << 4, 1 << 5, 1 << 10, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D11,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d11_payload(informational, &[(7, 500, 1_000)]),
+            ));
+            s.extend(frame_end(2, 100));
+            let scan = scan(&s)
+                .unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(scan.hours.len(), 1, "bit {informational:#x}");
+            assert_eq!(scan.failure_records, 0, "bit {informational:#x}");
+        }
     }
 
     #[test]

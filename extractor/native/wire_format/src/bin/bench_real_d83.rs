@@ -81,8 +81,9 @@ use std::ops::Range;
 use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
 use compact_contract::stream_validator::StatefulStreamValidator;
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance, parse_compact_record_header,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
+    compact_status_failure_flags_after_expected_partial_tolerance,
+    compact_status_unknown_flags_v1, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
 };
 use wire_format::body::{
     apply, check_minimal, decode_baseline, decode_delta, diff, encode_baseline, encode_delta,
@@ -273,6 +274,31 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                 }
             }
             last_d83_hour = Some(header.game_hour_raw);
+
+            // VALIDITY BEFORE CLASSIFICATION. The failure predicate below reads
+            // the status word to classify the v1 vocabulary; it is not a validity
+            // predicate. `compact_contract/src/lib.rs:121`-`:123` says so in as
+            // many words: "Callers handling untrusted status words must first
+            // reject a non-zero `compact_status_unknown_flags_v1` result;
+            // otherwise an unassigned bit has no defined classification." Bits
+            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // unassigned bit "is not evidence of a future informational status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` reads as "not
+            // a failure" — the failure helper masks with the *known* failure set
+            // and returns zero for a bit it does not know — and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness does the same rather than re-deriving a lenient rule.
+            // No capture carries an unassigned bit, so no measured number moves.
+            let unknown_status = compact_status_unknown_flags_v1(nuk_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "d83 DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    header.game_hour_raw
+                ));
+            }
 
             // Reported, never enforced — see `FrameNote`.
             if compact_contract::calendar::hour_index_from_raw(header.game_hour_raw)
@@ -669,6 +695,78 @@ mod tests {
         assert_eq!(scan.non_contiguous, 0);
         assert_eq!(scan.countries_max, 1);
         assert_eq!(scan.entries_max, 2, "two typed rows per country");
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helper classifies
+        // the v1 vocabulary and is not a validity predicate, so an unassigned bit
+        // must be rejected BEFORE classification — otherwise it silently reads as
+        // "not a failure" and the hour is measured as healthy.
+        //
+        // d83's payload contract couples status to authority, on the READ side
+        // too: `split_payload` refuses a receipted frame whose status word is
+        // non-zero (`d83.rs:427`), so every non-zero-status d83 record that
+        // reaches the status decision is the unavailable, rowless A17 form. That
+        // form is also refused further down, by `fold_payload`'s authority check
+        // (`d83.rs:756`) — which is why "is_err()" alone would prove nothing here.
+        // The assertion is therefore on the REASON: the stream must be refused as
+        // an unassigned status bit, before the word is classified at all. Without
+        // the gate the scan classifies first ("not a failure"), measures the hour,
+        // and only then fails on the missing receipt.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, and combined with a known
+            // informational bit. The rejection must not depend on any of it.
+            for extra in [0u32, 1, 1 << 10] {
+                let mut s = Vec::new();
+                s.extend(record(
+                    1,
+                    100,
+                    D83,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d83_payload(status | extra, 7, 0),
+                ));
+                s.extend(frame_end(2, 100));
+                let err = match scan_stream(&s, &test_schema()) {
+                    Ok(_) => panic!("status bit {bit} (+{extra:#x}) must be refused"),
+                    Err(e) => e,
+                };
+                assert!(
+                    err.contains("unassigned v1 status bits"),
+                    "status bit {bit} (+{extra:#x}) must be refused AS an unassigned status \
+                     bit, not incidentally: {err}"
+                );
+            }
+        }
+        // And the check rejects unassigned bits and nothing else. d83's own
+        // vocabulary is narrow: a clean status word (0, the receipted form — the
+        // one every hour of the reference capture carries) is measured, and a
+        // known informational bit riding on a failure status is still EXCLUDED by
+        // the failure predicate rather than refused by this gate.
+        let mut clean = Vec::new();
+        clean.extend(record(1, 100, D83, COMPACT_RECORD_TYPE_DOMAIN_DATA, &d83_payload(0, 7, 0)));
+        clean.extend(frame_end(2, 100));
+        let scan = scan_stream(&clean, &test_schema()).expect("a clean receipted frame is measured");
+        assert_eq!(scan.hours.len(), 1);
+        assert_eq!(scan.failure_records, 0);
+        for informational in [1u32 << 4, 1 << 5, 1 << 10, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D83,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d83_payload(informational | compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE, 7, 0),
+            ));
+            s.extend(frame_end(2, 100));
+            s.extend(record(3, 101, D83, COMPACT_RECORD_TYPE_DOMAIN_DATA, &d83_payload(0, 7, 0)));
+            s.extend(frame_end(4, 101));
+            let scan = scan_stream(&s, &test_schema())
+                .unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(scan.failure_records, 1, "bit {informational:#x} excluded, not refused");
+            assert_eq!(scan.hours.len(), 1, "bit {informational:#x}");
+        }
     }
 
     #[test]

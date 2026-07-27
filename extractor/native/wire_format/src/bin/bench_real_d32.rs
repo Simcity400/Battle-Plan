@@ -86,9 +86,9 @@ use std::ops::Range;
 use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
 use compact_contract::stream_validator::StatefulStreamValidator;
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance, parse_compact_record_header,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
-    COMPACT_STATUS_DELTA_DATA,
+    compact_status_failure_flags_after_expected_partial_tolerance,
+    compact_status_unknown_flags_v1, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedState,
@@ -159,6 +159,22 @@ impl AirWingRoster {
         }
         let row_count = u32_at(payload, 8) as usize;
         let status_flags = u32_at(payload, 16);
+        // VALIDITY BEFORE CLASSIFICATION, on d30's mirror as much as on d32's own
+        // pass. The two predicates below classify the v1 status vocabulary and are
+        // not validity checks (`compact_contract/src/lib.rs:121`-`:123`), so a
+        // status word carrying a bit version 1 does not assign is refused before
+        // either runs — bits 14..=31 are unassigned (`status_flags_base.rs:21`-
+        // `:24`) and an unassigned bit "is not evidence of a future informational
+        // status". Without this, an unassigned bit reads as "not a failure", the
+        // roster folds the frame, and the orphan-prune assertion below is made
+        // against a roster built from a record with no defined meaning.
+        let unknown_status = compact_status_unknown_flags_v1(status_flags);
+        if unknown_status != 0 {
+            return Err(format!(
+                "air_wings DATA carries unassigned v1 status bits {unknown_status:#x}; an \
+                 unassigned bit has no defined classification"
+            ));
+        }
         // `world_fold.rs:14620`: a failure status folds nothing and retains.
         if compact_status_failure_flags_after_expected_partial_tolerance(D30, status_flags) != 0 {
             return Ok(());
@@ -423,6 +439,33 @@ fn scan_stream(schema: &wire_format::Schema, stream: &[u8]) -> Result<StreamScan
             // (`world_fold.rs:14828`), then everything else.
             let d32_header = d32::peek_header(payload)
                 .map_err(|e| format!("d32 payload at byte {pos}: {e}"))?;
+
+            // VALIDITY BEFORE CLASSIFICATION. Everything below that reads the
+            // status word — the failure predicate here, the baseline/delta
+            // decision inside `fold_payload` — classifies the v1 vocabulary; none
+            // of it is a validity predicate. `compact_contract/src/lib.rs:121`-
+            // `:123` says so in as many words: "Callers handling untrusted status
+            // words must first reject a non-zero `compact_status_unknown_flags_v1`
+            // result; otherwise an unassigned bit has no defined classification."
+            // Bits 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and
+            // an unassigned bit "is not evidence of a future informational
+            // status".
+            //
+            // Without this, a record with `status_flags = 1 << 14` reads as "not
+            // a failure" — the failure helper masks with the *known* failure set
+            // and returns zero for a bit it does not know — and the hour is
+            // measured as healthy. The production lane rejects first
+            // (`lanes/division_state_movement_live/domain20_compact.rs:419`);
+            // this harness does the same rather than re-deriving a lenient rule.
+            // No capture carries an unassigned bit, so no measured number moves.
+            let unknown_status = compact_status_unknown_flags_v1(d32_header.status_flags);
+            if unknown_status != 0 {
+                return Err(format!(
+                    "d32 DATA at byte {pos}: hour {} carries unassigned v1 status bits \
+                     {unknown_status:#x}; an unassigned bit has no defined classification",
+                    header.game_hour_raw
+                ));
+            }
 
             // `handle_compact_failure` (`world_fold.rs:2843`, called at `:14828`)
             // marks the domain-hour unknown and RETAINS the prior accumulator,
@@ -912,6 +955,117 @@ mod tests {
         // The second hour is a sparse frame over the retained accumulator, so the
         // state is still one wing — not a fresh full replace.
         assert_eq!(scan.hours[1].wings.len(), 1);
+    }
+
+    #[test]
+    fn an_unassigned_status_bit_is_refused_not_classified() {
+        // `compact_contract/src/lib.rs:121`-`:123`: the failure helpers classify
+        // the v1 vocabulary and are not validity predicates, so an unassigned bit
+        // must be rejected BEFORE classification — otherwise it silently reads as
+        // "not a failure", gets a baseline/delta meaning, and the hour is measured
+        // as healthy. Both status readers in this bin are covered: d32's own pass
+        // and the d30 roster mirror the orphan-prune assertion is built on.
+        for bit in 14..32u32 {
+            let status = 1u32 << bit;
+            // Alone, combined with a known failure bit, and combined with the
+            // informational DELTA_DATA bit. The rejection must not depend on it.
+            for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
+                let mut on_d32 = Vec::new();
+                on_d32.extend(record(
+                    1,
+                    100,
+                    D30,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d30_payload(0, &[(7, 11, 3)]),
+                ));
+                on_d32.extend(record(
+                    2,
+                    100,
+                    D32,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d32_payload(
+                        status | extra,
+                        &[wing_row(7, 11, 3, 0, 408, 0, 1)],
+                        &[entry_row(900, 100_000)],
+                    ),
+                ));
+                on_d32.extend(frame_end(3, 100));
+                assert!(
+                    scan_stream(&schema(), &on_d32).is_err(),
+                    "d32 status bit {bit} (+{extra:#x}) must be refused"
+                );
+
+                let mut on_d30 = Vec::new();
+                on_d30.extend(record(
+                    1,
+                    100,
+                    D30,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d30_payload(status | extra, &[(7, 11, 3)]),
+                ));
+                on_d30.extend(record(
+                    2,
+                    100,
+                    D32,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &d32_payload(0, &[wing_row(7, 11, 3, 0, 408, 0, 1)], &[entry_row(900, 100_000)]),
+                ));
+                on_d30.extend(frame_end(3, 100));
+                assert!(
+                    scan_stream(&schema(), &on_d30).is_err(),
+                    "d30 roster status bit {bit} (+{extra:#x}) must be refused"
+                );
+            }
+        }
+        // And the whole known v1 mask, minus the failure bits, is still accepted
+        // on both readers: the check must reject unassigned bits and nothing else.
+        // DELTA_DATA is the one both domains read, and after a baseline it is a
+        // sparse update.
+        for informational in [1u32 << 4, 1 << 5, COMPACT_STATUS_DELTA_DATA, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D30,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d30_payload(0, &[(7, 11, 3)]),
+            ));
+            s.extend(record(
+                2,
+                100,
+                D32,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d32_payload(0, &[wing_row(7, 11, 3, 0, 408, 0, 1)], &[entry_row(900, 100_000)]),
+            ));
+            s.extend(frame_end(3, 100));
+            s.extend(record(
+                4,
+                101,
+                D30,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d30_payload(informational, &[(7, 11, 3)]),
+            ));
+            s.extend(record(
+                5,
+                101,
+                D32,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d32_payload(
+                    informational,
+                    &[wing_row(7, 11, 3, 0, 408, 0, 1)],
+                    &[entry_row(900, 250_000)],
+                ),
+            ));
+            s.extend(frame_end(6, 101));
+            let scan = scan_stream(&schema(), &s)
+                .unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
+            assert_eq!(scan.hours.len(), 2, "bit {informational:#x}");
+            assert_eq!(scan.failure_records, 0, "bit {informational:#x}");
+            assert_eq!(
+                scan.delta_before_baseline_records, 0,
+                "bit {informational:#x}"
+            );
+        }
     }
 
     #[test]
