@@ -508,11 +508,22 @@ fn country_core_scalars_payload(
 /// Each row: (owner_tag_db_id, event_id, originator?, due_remaining_hours?).
 /// `None` => absent (flag clear, zero-packed).
 fn delayed_events_payload(rows: &[(u32, u32, Option<u32>, Option<u32>)]) -> Vec<u8> {
+    delayed_events_payload_with_status(rows, 0)
+}
+
+/// As [`delayed_events_payload`], with an explicit header status word. The
+/// collector sets this from the per-country ROOTED WALK only
+/// (`attach_log.rs:61009`-`:61022`); the DEL2 trailer is appended afterwards
+/// from an independent hook drain, so a failing walk still ships a trailer.
+fn delayed_events_payload_with_status(
+    rows: &[(u32, u32, Option<u32>, Option<u32>)],
+    status_flags: u32,
+) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes()); // wall
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
-    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&status_flags.to_le_bytes()); // status
     for (owner, event_id, originator, due) in rows {
         let mut flags = 0u32;
         if due.is_some() {
@@ -535,7 +546,17 @@ fn delayed_event_lifecycle_payload(
     epoch: u64,
     rows: &[(u64, i32, u32, u32, u32, u32, u64, u32, Option<u32>)],
 ) -> Vec<u8> {
-    let mut p = delayed_events_payload(current);
+    delayed_event_lifecycle_payload_with_status(current, epoch, rows, 0)
+}
+
+/// As [`delayed_event_lifecycle_payload`], with an explicit table status word.
+fn delayed_event_lifecycle_payload_with_status(
+    current: &[(u32, u32, Option<u32>, Option<u32>)],
+    epoch: u64,
+    rows: &[(u64, i32, u32, u32, u32, u32, u64, u32, Option<u32>)],
+    status_flags: u32,
+) -> Vec<u8> {
+    let mut p = delayed_events_payload_with_status(current, status_flags);
     p.extend_from_slice(b"DEL2");
     p.extend_from_slice(&1u16.to_le_bytes());
     p.extend_from_slice(&48u16.to_le_bytes());
@@ -15046,6 +15067,213 @@ fn chunk2_d64_malformed_first_del2_is_unavailable_not_absent() {
     de[30..32].copy_from_slice(&1u16.to_le_bytes());
     let snap = snapshot_for_domain_records(vec![(64, de)]);
     assert_eq!(snap["_r2_delayed_event_lifecycle_live"], Value::Null);
+}
+
+// --- d64 DEL2 ledger vs the table-half failure gate ----------------------
+//
+// The d64 record carries two halves from two producers: the per-country table
+// (whose read outcome IS the header status word, `attach_log.rs:61009`-`:61022`)
+// and the DEL2 lifecycle trailer, drained from an independent hook whatever the
+// table walk did (`:60834`-`:60838`). The trailer is an append-only ledger the
+// drain has already consumed, so a frame the fold discards takes real events
+// with it and leaves `delayed_event_lifecycle_last_sequence` stale — the next
+// clean frame then looks like a sequence gap and permanently poisons the
+// history. These tests pin that the two halves settle independently, and that
+// the checks which make the ledger trustworthy are NOT weakened by that.
+
+/// One DEL2 row run: `count` consecutive `executed` events from `first`.
+fn del2_rows(
+    first: u64,
+    count: u64,
+) -> Vec<(u64, i32, u32, u32, u32, u32, u64, u32, Option<u32>)> {
+    (0..count)
+        .map(|index| (first + index, 44, 2u32, 1u32, 100_101u32, 2u32, 7u64, 0u32, None))
+        .collect()
+}
+
+/// Fold `hours` as consecutive game hours — one D18 identity record and one
+/// d64 DOMAIN_DATA record each — and return the per-hour snapshots.
+fn d64_hourly_snapshots(hours: &[Vec<u8>]) -> Vec<Value> {
+    let ident = country_identity_payload(&[(1, "GER"), (2, "ITA")]);
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (index, payload) in hours.iter().enumerate() {
+        let raw = raw_for(16_959_360 + index as i64);
+        for (domain_id, body) in [(18u16, &ident), (64u16, payload)] {
+            push_record(
+                &mut stream,
+                sequence,
+                raw,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                body,
+            );
+            sequence += 1;
+        }
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+    let mut fold = WorldFold::new("d64_lifecycle_ordering");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), hours.len());
+    snaps.iter().map(|snap| parse(&snap.2)).collect()
+}
+
+/// `(first_sequence, last_sequence, event count)` of a published ledger hour,
+/// or `None` where the hour published `null` (absent or failed history).
+fn del2_published(snapshot: &Value) -> Option<(u64, u64, usize)> {
+    let live = &snapshot["_r2_delayed_event_lifecycle_live"];
+    if live.is_null() {
+        return None;
+    }
+    Some((
+        live["first_sequence"].as_str().unwrap().parse().unwrap(),
+        live["last_sequence"].as_str().unwrap().parse().unwrap(),
+        live["events"].as_array().unwrap().len(),
+    ))
+}
+
+#[test]
+fn chunk2_d64_failure_status_table_still_settles_its_del2_ledger() {
+    // Hour 2's table read failed (SOURCE_UNAVAILABLE — the status every one of
+    // the 514 d64 records in runs/batch3/deepwar_a carries). Its trailer is
+    // still a drained, contiguous ledger segment and must be published; and
+    // because the sequence advanced with it, hours 3 and 4 must stay published
+    // too. Returning early on the failure gate loses hour 2's events AND
+    // permanently fails the history from hour 3 on.
+    let snaps = d64_hourly_snapshots(&[
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(1, 2)),
+        delayed_event_lifecycle_payload_with_status(
+            &[],
+            9,
+            &del2_rows(3, 2),
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        ),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(5, 2)),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(7, 2)),
+    ]);
+    assert_eq!(del2_published(&snaps[0]), Some((1, 2, 2)));
+    assert_eq!(
+        del2_published(&snaps[1]),
+        Some((3, 4, 2)),
+        "a failing table read is no evidence about the hook's drained ledger"
+    );
+    assert_eq!(
+        del2_published(&snaps[2]),
+        Some((5, 6, 2)),
+        "the failure hour must not leave a stale last_sequence behind it"
+    );
+    assert_eq!(del2_published(&snaps[3]), Some((7, 8, 2)));
+}
+
+#[test]
+fn chunk2_d64_failure_status_table_still_retains_the_prior_country_map() {
+    // The other half of the same ruling: settling the ledger must not start
+    // folding a failing frame's ROWS. Hour 2 badges SOURCE_UNAVAILABLE and
+    // carries a row for ITA that the fold must ignore, retaining hour 1's map.
+    let snaps = d64_hourly_snapshots(&[
+        delayed_events_payload(&[(1, 42_900_001, None, Some(62))]),
+        delayed_events_payload_with_status(
+            &[(2, 6_700_000, None, Some(2966))],
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        ),
+    ]);
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["delayed_events"][0]["event_id"],
+        json!(42_900_001),
+        "a failure-status frame must not clear the retained map"
+    );
+    let ita = &snaps[1]["countries"]["ITA"];
+    assert!(
+        ita.get("delayed_events").is_none() || ita["delayed_events"] == json!([]),
+        "a failure-status frame's rows must not be folded"
+    );
+}
+
+#[test]
+fn chunk2_d64_absent_trailer_on_a_failure_frame_is_not_a_ledger_hole() {
+    // A failing read either returns before the drain
+    // (`attach_log.rs:60815`-`:60824`) or never reaches it, so the queued
+    // events are still queued: hour 2 carrying no trailer is not a hole, and
+    // hour 3's contiguous segment must still publish.
+    let snaps = d64_hourly_snapshots(&[
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(1, 2)),
+        delayed_events_payload_with_status(&[], COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(3, 2)),
+    ]);
+    assert_eq!(del2_published(&snaps[0]), Some((1, 2, 2)));
+    assert_eq!(del2_published(&snaps[1]), None);
+    assert_eq!(
+        del2_published(&snaps[2]),
+        Some((3, 4, 2)),
+        "a failure frame that never drained must not fail the history"
+    );
+}
+
+#[test]
+fn chunk2_d64_absent_trailer_on_a_clean_frame_is_still_a_ledger_hole() {
+    // The converse, unchanged: the table read succeeded, so the trailer is
+    // missing because the hook is gone or its drain failed. Those events are
+    // lost, and the history stays failed for every later hour.
+    let snaps = d64_hourly_snapshots(&[
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(1, 2)),
+        delayed_events_payload(&[]),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(3, 2)),
+    ]);
+    assert_eq!(del2_published(&snaps[0]), Some((1, 2, 2)));
+    assert_eq!(del2_published(&snaps[1]), None);
+    assert_eq!(
+        del2_published(&snaps[2]),
+        None,
+        "a proven hole must fail the history permanently"
+    );
+}
+
+#[test]
+fn chunk2_d64_a_malformed_row_does_not_consume_the_del2_trailer() {
+    // Same property one layer down: a zero event_id fails the TABLE half, and
+    // is no more evidence about the trailer than a failure status is. Hour 2
+    // publishes its ledger and retains hour 1's map; hour 3 stays published.
+    let snaps = d64_hourly_snapshots(&[
+        delayed_event_lifecycle_payload(&[(1, 42_900_001, None, Some(62))], 9, &del2_rows(1, 2)),
+        delayed_event_lifecycle_payload(&[(1, 0, None, Some(62))], 9, &del2_rows(3, 2)),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(5, 2)),
+    ]);
+    assert_eq!(del2_published(&snaps[0]), Some((1, 2, 2)));
+    assert_eq!(
+        del2_published(&snaps[1]),
+        Some((3, 4, 2)),
+        "a malformed row must not throw the drained ledger away"
+    );
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["delayed_events"][0]["event_id"],
+        json!(42_900_001),
+        "the table half still fails closed on a malformed row"
+    );
+    assert_eq!(del2_published(&snaps[2]), Some((5, 6, 2)));
+}
+
+#[test]
+fn chunk2_d64_a_real_sequence_gap_still_fails_the_history_permanently() {
+    // Settling on more frames must not weaken what makes the ledger
+    // trustworthy: a genuine discontinuity (3 and 4 never arrived) is still
+    // fatal, on that hour and every hour after it.
+    let snaps = d64_hourly_snapshots(&[
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(1, 2)),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(5, 2)),
+        delayed_event_lifecycle_payload(&[], 9, &del2_rows(7, 2)),
+    ]);
+    assert_eq!(del2_published(&snaps[0]), Some((1, 2, 2)));
+    assert_eq!(del2_published(&snaps[1]), None);
+    assert_eq!(del2_published(&snaps[2]), None);
 }
 
 #[test]
