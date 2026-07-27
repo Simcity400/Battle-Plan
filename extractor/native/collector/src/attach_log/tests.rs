@@ -20156,6 +20156,140 @@
             assert!(split[3].contains("\"entity_key\":\"land_combat:271:1\""));
         }
 
+        // Generation zero is reserved as unavailable across the D21/D55 pair:
+        // the D55 detail lane carries the D21 `(combat_id, generation)`
+        // identity verbatim and rejects a zero generation in every one of its
+        // row validators (`land_combat_detail_events_live/src/lib.rs:1591`,
+        // `:1610`, `:1632`, `:1644`, `:2675`, plus the hard
+        // `assert!(row.generation > 0)` at `:1509`), and the fold's orphan
+        // prune joins D55 details to D21 combats on that same key
+        // (`recorder_host/src/world_fold.rs:6695`-`:6699`). A fresh tracker's
+        // very first compact frame must therefore hand out generation >= 1 on
+        // every combat row, every participant row, and in the packed bytes.
+        //
+        // The guard lives in `compact_land_combat_delta_read`, which is the
+        // tail of `read_compact_land_combats` split off from the live census
+        // so it can be driven from fabricated samples. Note the sibling
+        // JSON-lines path (`build_land_combat_raw_lines_from_samples`) is a
+        // different allocator with no such rule - see
+        // `land_combat_tracker_emits_start_update_and_end_events`, which
+        // legitimately observes `land_combat:271:0` there.
+        #[test]
+        fn compact_land_combat_first_frame_never_emits_generation_zero() {
+            fn sample(combat_id: u32, body_addr: usize, division: u32) -> LandCombatSample {
+                LandCombatSample {
+                    combat_id,
+                    generation: 0,
+                    body_addr,
+                    attacker_side_addr: 0,
+                    defender_side_addr: 0,
+                    location: Some(3986),
+                    day: Some(4618),
+                    duration: Some(17),
+                    attacker_divisions: Some(vec![division]),
+                    defender_divisions: Some(vec![division + 1]),
+                    attacker_status: "exact",
+                    defender_status: "exact",
+                    attacker_detail: None,
+                    defender_detail: None,
+                    attacker_attribution: Vec::new(),
+                    defender_attribution: Vec::new(),
+                    attacker_reserve_divisions: None,
+                    defender_reserve_divisions: None,
+                }
+            }
+
+            let mut tracker = LandCombatTracker::default();
+            assert_eq!(
+                tracker.next_generation, 0,
+                "the Default tracker is still zero-initialised; the guard lives in the read path"
+            );
+
+            // Three simultaneous combats on the first frame: a guard that only
+            // normalised the first hand-out would still leak a zero here.
+            let read = compact_land_combat_delta_read(
+                Instant::now(),
+                0,
+                &mut tracker,
+                vec![
+                    sample(271, HEAP_LO + 0x12_000, 1053),
+                    sample(272, HEAP_LO + 0x13_000, 2837),
+                    sample(273, HEAP_LO + 0x14_000, 4661),
+                ],
+            );
+            assert_eq!(read.rows.len(), 3);
+            assert_eq!(read.changed_rows, 3);
+            assert_eq!(read.participant_count, 6);
+            assert_eq!(read.ended_count, 0);
+            for row in &read.rows {
+                assert!(
+                    row.generation >= 1,
+                    "d21 row {}:{} would fail the D55 detail join closed",
+                    row.combat_id,
+                    row.generation
+                );
+            }
+            assert_eq!(tracker.next_generation, 4);
+            for sample in tracker.previous.values() {
+                assert!(sample.generation >= 1, "committed baseline {sample:?}");
+            }
+
+            // The packed bytes are what the fold reads: a 32-byte header, then
+            // 40-byte combat rows (combat_id u32 at the base, generation u64 at
+            // base + 4), then 24-byte participant rows carrying the same pair.
+            let payload = compact_land_combats_data_payload(
+                &read.rows,
+                80,
+                read.status_flags,
+                read.changed_rows,
+                read.participant_count,
+                read.ended_count,
+            );
+            let row_count = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+            let participant_count =
+                u32::from_le_bytes(payload[20..24].try_into().unwrap()) as usize;
+            assert_eq!(row_count, 3);
+            assert_eq!(participant_count, 6);
+            for index in 0..row_count {
+                let base = 32 + index * 40;
+                let combat_id = u32::from_le_bytes(payload[base..base + 4].try_into().unwrap());
+                let generation =
+                    u64::from_le_bytes(payload[base + 4..base + 12].try_into().unwrap());
+                assert_ne!(combat_id, 0, "combat row {index} has a zero combat id");
+                assert_ne!(
+                    generation, 0,
+                    "combat row {index} carries the generation D55 rejects"
+                );
+            }
+            for index in 0..participant_count {
+                let base = 32 + row_count * 40 + index * 24;
+                let generation =
+                    u64::from_le_bytes(payload[base + 4..base + 12].try_into().unwrap());
+                assert_ne!(
+                    generation, 0,
+                    "participant row {index} carries a zero generation"
+                );
+            }
+
+            // A body reallocation retires the epoch and opens a fresh one; that
+            // successor generation must not fall back to zero either.
+            let mut reallocated = sample(271, HEAP_LO + 0x99_000, 1053);
+            reallocated.day = Some(1);
+            let split = compact_land_combat_delta_read(
+                Instant::now(),
+                0,
+                &mut tracker,
+                vec![reallocated],
+            );
+            assert_eq!(split.rows.len(), 1);
+            assert_eq!(split.rows[0].combat_id, 271);
+            assert_eq!(
+                split.rows[0].generation, 4,
+                "the split epoch must follow the three first-frame generations"
+            );
+            assert_eq!(split.ended_count, 2);
+        }
+
         #[test]
         fn naval_combat_tracker_does_not_emit_unchanged_samples() {
             let control = raw_test_control();
@@ -20537,6 +20671,204 @@
                     & naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED,
                 0,
                 "absent region must fail closed via the lane badge"
+            );
+        }
+
+        // The D49/D50 generation is the epoch half of the `(combat_id,
+        // generation)` naval-combat identity, and it leaves the lane: the
+        // member epoch bindings this frame publishes are exactly what the A33
+        // sunk-ship hook joins against (`sunk_ship_history_live/src/
+        // a729_hook.rs:673` copies `resolved.epoch.generation` straight into
+        // `SunkShipEvent::combat_generation`), and D86's `validate_snapshot`
+        // fails the WHOLE SHP1 snapshot closed when a present combat join
+        // carries `combat_generation == 0` (`sunk_ship_history_live/src/
+        // lib.rs:152`-`:161`). A fresh tracker's very first frame must
+        // therefore hand out generation >= 1 on every lifecycle row, member
+        // row and epoch binding, in the emitted rows AND in the packed bytes
+        // the downstream decoder actually reads.
+        //
+        // `naval_combat_live_delta_emits_start_update_end_and_new_generation`
+        // only reaches this incidentally, via `> 1` on the FOURTH frame's
+        // restart generation; it asserts nothing about the first frame and
+        // nothing about the bindings D86 consumes.
+        #[test]
+        fn naval_combat_live_first_frame_never_emits_generation_zero() {
+            fn combat(combat_id: u32, offset: usize, ship_instance_id: u32) -> NavalWalkCombat {
+                NavalWalkCombat {
+                    combat_id,
+                    body_ptr: HEAP_LO + offset,
+                    location_id: Some(6434),
+                    region_id: Some(18),
+                    attacker_positioning_raw: Some(81_200),
+                    attacker_anti_air_raw: Some(123_000),
+                    attacker_member_count: 1,
+                    defender_positioning_raw: Some(76_500),
+                    defender_anti_air_raw: Some(98_000),
+                    defender_member_count: 1,
+                    members: vec![
+                        NavalWalkMemberRow {
+                            member_ptr: HEAP_LO + offset + 0x1_000,
+                            side: naval4950::CombatSide::Attacker,
+                            group_index: 0,
+                            member_index: 0,
+                            is_convoy: false,
+                            convoy_client: None,
+                            unit_type_tag: NAVAL_COMBAT_SHIP_TYPE_TAG,
+                            ship_instance_id: Some(ship_instance_id),
+                            owner_tag_db_id: Some(17),
+                            designed_max_strength_raw: Some(10_000_000),
+                            battle_slot_index_raw: 3,
+                            state_bitmask: Some(1),
+                            engagement_weight_raw: Some(1_000),
+                        },
+                        NavalWalkMemberRow {
+                            member_ptr: HEAP_LO + offset + 0x2_000,
+                            side: naval4950::CombatSide::Defender,
+                            group_index: 0,
+                            member_index: 0,
+                            is_convoy: true,
+                            convoy_client: Some(naval4950::ConvoyTerminalEntityHandle {
+                                id: 106_381 + combat_id,
+                                type_tag: naval4950::GAME_ENTITY_TYPE_TAG,
+                            }),
+                            unit_type_tag: 0,
+                            ship_instance_id: None,
+                            owner_tag_db_id: Some(18),
+                            designed_max_strength_raw: None,
+                            battle_slot_index_raw: 4,
+                            state_bitmask: Some(1),
+                            engagement_weight_raw: None,
+                        },
+                    ],
+                }
+            }
+
+            let mut tracker = CompactNavalCombatLiveTracker::default();
+            assert_eq!(
+                tracker.next_generation, 0,
+                "the Default tracker is still zero-initialised; the guard lives in the emit path"
+            );
+
+            // Two simultaneous combats on the first frame: a guard that only
+            // normalised the first hand-out would still leak a zero here.
+            let walk = NavalWalkFrame {
+                combats: vec![combat(240_580, 0x40_000, 1001), combat(240_581, 0x60_000, 1002)],
+                stale_dropped: 0,
+            };
+            let mut joins = BTreeMap::new();
+            for ship in [1001, 1002] {
+                joins.insert(
+                    ship,
+                    NavalShipJoinRow {
+                        task_force_id: 477,
+                        fleet_id: 88,
+                        strength_raw: Some(10_000_000),
+                        organisation_raw: Some(9_000_000),
+                        experience_raw: Some(100_000),
+                        sunk_convoys: Some(0),
+                    },
+                );
+            }
+
+            let read = naval_combat_live_emit_delta(
+                Instant::now(),
+                0,
+                &mut tracker,
+                &walk,
+                &joins,
+                2,
+                4,
+                0,
+            );
+            assert_eq!(read.lifecycle_emitted_rows, 2);
+            assert_eq!(read.member_emitted_rows, 4);
+
+            // 1. The emitted rows, round-tripped through the wire codec.
+            let (_, lifecycle_rows) =
+                naval4950::decode_lifecycle_rows(&read.lifecycle_payload).expect("lifecycle rows");
+            assert_eq!(lifecycle_rows.len(), 2);
+            for row in &lifecycle_rows {
+                assert_ne!(
+                    row.generation, 0,
+                    "lifecycle row {row:?} publishes the epoch id D86 rejects"
+                );
+            }
+            let (_, member_rows) =
+                naval4950::decode_member_rows(&read.member_payload).expect("member rows");
+            assert_eq!(member_rows.len(), 4);
+            for row in &member_rows {
+                assert_ne!(row.generation, 0, "member row {row:?}");
+            }
+
+            // 2. The member epoch bindings are the actual D86 join surface.
+            let bindings = read
+                .member_epoch_bindings
+                .as_ref()
+                .expect("a clean frame publishes member epoch bindings");
+            assert_eq!(bindings.len(), 4);
+            for binding in bindings {
+                assert_ne!(
+                    binding.combat_generation, 0,
+                    "binding {binding:?} would fail SHP1 validate_snapshot closed"
+                );
+            }
+
+            // 3. The packed bytes themselves: `combat_id` is a u32 at the row
+            // base and `generation` the u64 at base + 4, for both payloads.
+            for (payload, row_len) in [
+                (
+                    &read.lifecycle_payload,
+                    naval4950::LIFECYCLE_ROW_LEN,
+                ),
+                (&read.member_payload, naval4950::MEMBER_ROW_LEN),
+            ] {
+                let header_len =
+                    naval4950::domain49_50_naval_combat_live::PAYLOAD_HEADER_LEN;
+                let row_count =
+                    u32::from_le_bytes(payload[16..20].try_into().unwrap()) as usize;
+                assert!(row_count >= 2);
+                for index in 0..row_count {
+                    let base = header_len + index * row_len;
+                    let combat_id =
+                        u32::from_le_bytes(payload[base..base + 4].try_into().unwrap());
+                    let generation =
+                        u64::from_le_bytes(payload[base + 4..base + 12].try_into().unwrap());
+                    assert_ne!(combat_id, 0, "row {index} has a zero combat id");
+                    assert_ne!(generation, 0, "row {index} carries a zero generation");
+                }
+            }
+
+            // 4. The committed tracker state, and the epoch retired/restarted
+            // on a body reallocation, are non-zero too.
+            assert_eq!(tracker.next_generation, 3);
+            for (combat_id, (_, generation)) in &tracker.combat_epochs {
+                assert_ne!(*generation, 0, "committed epoch for combat {combat_id}");
+            }
+
+            let reallocated = NavalWalkFrame {
+                combats: vec![combat(240_580, 0x80_000, 1001)],
+                stale_dropped: 0,
+            };
+            let restarted = naval_combat_live_emit_delta(
+                Instant::now(),
+                0,
+                &mut tracker,
+                &reallocated,
+                &joins,
+                1,
+                2,
+                0,
+            );
+            let (_, restarted_rows) = naval4950::decode_lifecycle_rows(&restarted.lifecycle_payload)
+                .expect("restarted lifecycle rows");
+            for row in &restarted_rows {
+                assert_ne!(row.generation, 0, "restarted lifecycle row {row:?}");
+            }
+            assert!(
+                restarted_rows
+                    .iter()
+                    .any(|row| !row.deleted && row.combat_id == 240_580 && row.generation == 3),
+                "the reallocated body must open a fresh non-zero epoch: {restarted_rows:?}"
             );
         }
 
