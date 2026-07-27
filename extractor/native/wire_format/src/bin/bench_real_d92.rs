@@ -10,7 +10,7 @@
 //! re-encodes every hour with this crate's grammar: a BASELINE at each 48-hour
 //! block start, field-granular stored-minimal DELTAs between.
 //!
-//! **d92 is FULL REPLACE** (`world_fold.rs:10336`-`:10341`): each record carries
+//! **d92 is FULL REPLACE** (`world_fold.rs:10360`-`:10366`): each record carries
 //! the whole table and the prior state is discarded, so one record is one state
 //! and there is no accumulator to carry across hours. The fold still gets its own
 //! public `State`/`fold_payload` boundary in `wire_format::d92`, because the
@@ -26,8 +26,8 @@
 //! **Pass 1 cannot call the record mapper**, since the table it would resolve
 //! against does not exist yet. It instead applies the fold's own acceptance rules
 //! over a **key-only mirror**: `d92::split_payload` (which is the entire PTC1
-//! decode, see below), the D18 roster-equality gate over a key-only mirror of the
-//! D18 roster, and nothing else. That is enough to decide which hours are
+//! decode, see below), the D18 roster-containment gate over a key-only mirror of
+//! the D18 roster, and nothing else. That is enough to decide which hours are
 //! measured AND to *prove* pass 2 can never need a symbol pass 1 did not see:
 //! both passes walk exactly the same spans through exactly the same
 //! `split_payload`, and pass 1 enters every token of every measured hour into the
@@ -36,8 +36,10 @@
 //! # The modelled D18 dependency
 //!
 //! `fold_country_preferred_tactics` refuses the hour unless a **proven D18 record
-//! landed this same hour** (`world_fold.rs:10322`) and the observed tag set
-//! **EQUALS** the current D18 roster (`:10329`) — equality, not containment. D18
+//! landed this same hour** (`world_fold.rs:10320`) and the observed tag set
+//! **COVERS** the current D18 roster (`:10351`) — containment, not equality: d92
+//! reads the complete gamestate country table while D18 publishes the filtered
+//! identity cache, so d92 is a superset and only a MISSING D18 tag is a loss. D18
 //! is therefore **modelled**, not asserted-inert: this harness folds D18 itself,
 //! as a key-only mirror of `fold_country_identity` (`:13918`-`:14158`), which is
 //! all the gate needs. The mirror reproduces, in the fold's own order:
@@ -94,7 +96,7 @@
 //!    predicate rather than a copied bit mask. Position matters and is the fold's:
 //!    AFTER the decode, BEFORE the roster gates.
 //! 3. **Excluded hour — the D18 gates.** No proven D18 record this hour
-//!    (`:10322`), or a roster that is not equal to it (`:10329`). Both return
+//!    (`:10320`), or a roster that does not cover it (`:10351`). Both return
 //!    `Err` from the fold, and the recorder's d92 `Err` arm
 //!    (`:4897`-`:4906`) marks the domain unknown for the hour and continues — so
 //!    these are excluded hours, NOT stream rejections. Both are counted and
@@ -519,8 +521,9 @@ struct ScanCounts {
     failure_records: usize,
     /// Records refused because no proven D18 record landed that hour.
     no_roster_records: usize,
-    /// Records refused because the tag set did not EQUAL the D18 roster.
-    roster_mismatch_records: usize,
+    /// Records refused because the tag set did not COVER the D18 roster: at
+    /// least one D18 tag had no d92 row.
+    roster_uncovered_records: usize,
     /// Measured hours that do not follow the previous measured one by one.
     non_contiguous: usize,
     /// Measured records carrying no rows at all.
@@ -809,10 +812,12 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 pos = record_end;
                 continue;
             }
-            // Exclusion 3: the roster-EQUALITY gate (`:10329`).
+            // Exclusion 3: the roster-CONTAINMENT gate (`:10351`). A d92 tag D18
+            // filtered out is the normal shape and is FOLDED; only a D18 tag
+            // with no d92 row refuses the hour.
             let observed: BTreeSet<u32> = rows.iter().map(|row| row.tag_db_id).collect();
-            if observed != d18.roster {
-                counts.roster_mismatch_records += 1;
+            if d18.roster.difference(&observed).next().is_some() {
+                counts.roster_uncovered_records += 1;
                 if first_roster_mismatch.is_none() {
                     let only_d92: Vec<u32> =
                         observed.difference(&d18.roster).copied().take(8).collect();
@@ -900,14 +905,14 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         return Err(format!(
             "stream carries no usable d92 DATA records: {} d92 DATA records seen, of which \
              {} failure-status, {} with no proven D18 record that hour, {} with a tag set \
-             unequal to the D18 roster; D18 itself contributed {} proven, {} \
+             that does not cover the D18 roster; D18 itself contributed {} proven, {} \
              failure-status and {} unparseable records. First mismatch: {}",
             counts.failure_records
                 + counts.no_roster_records
-                + counts.roster_mismatch_records,
+                + counts.roster_uncovered_records,
             counts.failure_records,
             counts.no_roster_records,
-            counts.roster_mismatch_records,
+            counts.roster_uncovered_records,
             d18.proven_records,
             d18.failure_records,
             d18.model_failures,
@@ -1136,10 +1141,10 @@ fn main() {
         scan.counts.non_contiguous
     );
     println!(
-        "excluded hours       {} failure-status, {} no-D18-this-hour, {} roster-mismatch",
+        "excluded hours       {} failure-status, {} no-D18-this-hour, {} D18-not-covered",
         scan.counts.failure_records,
         scan.counts.no_roster_records,
-        scan.counts.roster_mismatch_records
+        scan.counts.roster_uncovered_records
     );
     println!(
         "d18 modelled         {} proven records, {} failure-status records, {} unparseable by \
@@ -1235,6 +1240,57 @@ mod tests {
             p.push(0); // cosmetic marker: absent
         }
         p
+    }
+
+    /// One canonical H4CR record.
+    fn push_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        payload: &[u8],
+    ) {
+        out.extend_from_slice(b"H4CR");
+        out.extend_from_slice(&1u16.to_le_bytes()); // version
+        out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&game_hour_raw.to_le_bytes());
+        out.extend_from_slice(&domain_id.to_le_bytes());
+        out.extend_from_slice(&record_type.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // record flags
+        out.extend_from_slice(payload);
+    }
+
+    /// A whole legacy-identity stream of one-hour frames: D18 then d92 then a
+    /// zero-count FRAME_END seal, which is the recorder's own record order.
+    fn stream_of(frames: &[(i32, Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut sequence = 1u64;
+        for (hour, d18, d92_payload) in frames {
+            for (domain, payload) in [(D18, d18), (D92, d92_payload)] {
+                push_record(
+                    &mut out,
+                    sequence,
+                    *hour,
+                    domain,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    payload,
+                );
+                sequence += 1;
+            }
+            push_record(
+                &mut out,
+                sequence,
+                *hour,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &vec![0u8; COMPACT_FRAME_END_PAYLOAD_LEN],
+            );
+            sequence += 1;
+        }
+        out
     }
 
     fn ptc_payload(rows: &[(u32, i32, &str)], source_sequence: u64) -> Vec<u8> {
@@ -1375,20 +1431,21 @@ mod tests {
         assert!(!fresh.known_this_hour, "D18 stays unproven for the hour");
     }
 
-    /// The measured blocker, pinned. On `runs/batch3/deepwar_c` the D18 roster is
-    /// the collector's FILTERED `country_identity.rows` cache (356/hour) while d92
-    /// reads `domain51_read_complete_country_roster` (439/hour), and the fold
-    /// demands the two be EQUAL (`world_fold.rs:10329`). Production's own
-    /// `stream_fold` reports "domain 92 fold skipped: country_preferred_tactic
-    /// roster does not equal current D18 roster (439 != 356)" on all 896 hours.
-    /// A superset must be refused, not tolerated.
+    /// The measured production shape, pinned. On `runs/batch3/deepwar_c` the D18
+    /// roster is the collector's FILTERED `country_identity.rows` cache
+    /// (356/hour) while d92 reads `domain51_read_complete_country_roster`
+    /// (439/hour). d92 is a strict SUPERSET in every one of the 896 hours — 83
+    /// extra ids, none ever missing — so the gate is containment
+    /// (`world_fold.rs:10351`): a superset folds and keeps every row; a d92
+    /// record that misses a D18 tag is refused, because that tag is one the
+    /// projection can name and would otherwise publish as unavailable.
     #[test]
-    fn a_superset_of_the_d18_roster_is_refused_by_the_gate() {
+    fn a_superset_of_the_d18_roster_folds_and_a_gap_in_it_does_not() {
         let schema = d92::schema();
         let mut acc = d92::State::new();
         let payload = ptc_payload(&[(1, 0, ""), (2, 0, ""), (3, 0, "")], 1);
         let roster: BTreeSet<u32> = [1u32, 2].into_iter().collect();
-        let err = d92::fold_payload(
+        d92::fold_payload(
             &schema,
             &mut acc,
             &payload,
@@ -1397,8 +1454,83 @@ mod tests {
             0,
             &Symbols::empty(),
         )
-        .expect_err("a superset is not an equal set");
-        assert!(err.contains("does not equal current D18 roster"), "{err}");
-        assert!(err.contains("3 != 2"), "the counts are reported: {err}");
+        .expect("a superset covers the D18 roster");
+        assert_eq!(
+            acc.countries().len(),
+            3,
+            "the tag D18 filtered out is kept, not dropped"
+        );
+
+        let gapped = ptc_payload(&[(1, 0, ""), (3, 0, "")], 1);
+        let roster: BTreeSet<u32> = [1u32, 2].into_iter().collect();
+        let err = d92::fold_payload(
+            &schema,
+            &mut acc,
+            &gapped,
+            &roster,
+            true,
+            0,
+            &Symbols::empty(),
+        )
+        .expect_err("a D18 tag with no d92 row is a loss");
+        assert!(err.contains("does not cover current D18 roster"), "{err}");
+        assert!(
+            err.contains("1 of 2 D18 tags missing") && err.contains("d92 carries 2"),
+            "the counts are reported: {err}"
+        );
+    }
+
+    /// The gate `scan_stream` applies is its OWN copy of the fold's rule
+    /// (`:815`-`:840`), not a call into `d92::fold_payload`, so the tests above
+    /// cannot see it drift. This one drives `scan_stream` end to end over a
+    /// synthetic stream carrying the deepwar_c shape: an hour where d92 is a
+    /// strict superset of D18 must be MEASURED, and an hour where one D18 tag
+    /// has no d92 row must be EXCLUDED and counted.
+    #[test]
+    fn scan_stream_measures_a_superset_hour_and_excludes_an_uncovered_one() {
+        let d18 = d18_payload(&[(1, "AAA"), (2, "BBB")], 0);
+        // Hour 1: d92 carries a third tag D18 filtered out, and it is selected —
+        // deepwar_c's tag 286 in miniature.
+        let superset = ptc_payload(&[(1, 0, ""), (2, 5, "shock"), (3, 6, "blitzkrieg")], 1);
+        // Hour 2: the same complete roster minus D18's tag 2.
+        let uncovered = ptc_payload(&[(1, 0, ""), (3, 6, "blitzkrieg")], 2);
+
+        let scan = scan_stream(
+            &stream_of(&[
+                (100, d18.clone(), superset),
+                (101, d18.clone(), uncovered),
+            ]),
+            StreamIdentityMode::Legacy,
+        )
+        .expect("the superset hour keeps the measurement non-empty");
+        assert_eq!(scan.hours.len(), 1, "exactly the superset hour is measured");
+        assert_eq!(scan.hours[0].game_hour, 100);
+        assert_eq!(
+            scan.counts.rows_folded, 3,
+            "all three rows are folded, including the tag D18 filtered out"
+        );
+        assert_eq!(scan.counts.selected_rows, 2);
+        assert_eq!(
+            scan.counts.roster_uncovered_records, 1,
+            "the hour that misses a D18 tag is excluded and counted"
+        );
+        assert_eq!(scan.counts.failure_records, 0);
+        assert_eq!(scan.counts.no_roster_records, 0);
+        assert_eq!(scan.d18_proven_records, 2);
+
+        // With only the uncovered hour, there is nothing to measure at all, and
+        // the harness must say WHICH exclusion emptied it rather than write an
+        // artifact.
+        let reason = match scan_stream(
+            &stream_of(&[(100, d18, ptc_payload(&[(1, 0, "")], 1))]),
+            StreamIdentityMode::Legacy,
+        ) {
+            Err(reason) => reason,
+            Ok(scan) => panic!("no hour is measurable, but {} were", scan.hours.len()),
+        };
+        assert!(
+            reason.contains("that does not cover the D18 roster") && reason.contains("1 only in D18"),
+            "{reason}"
+        );
     }
 }

@@ -1,6 +1,6 @@
 //! d92 `country_preferred_tactic_live` — each country's selected combat tactic.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:10307`-`:10344`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:10307`-`:10370`
 //! (`fold_country_preferred_tactics`, dispatched at `:4747`), its payload codec
 //! `extractor/native/compact_contract/src/preferred_tactic.rs`, and the collector
 //! read that produces every row
@@ -31,7 +31,7 @@
 //! raw integer or a token, so the 32768-vs-100000 class of error has no surface
 //! here. There is no legacy short row and no delta grammar.
 //!
-//! **Full replace per hour** (`world_fold.rs:10336`-`:10341`): the fold rebuilds
+//! **Full replace per hour** (`world_fold.rs:10360`-`:10366`): the fold rebuilds
 //! `country_preferred_tactics_this_hour` from the record's rows and discards the
 //! prior state. There is no accumulator to carry across hours, and every
 //! non-folding path clears it outright.
@@ -75,7 +75,7 @@
 //! the fold rather than assumed away. The codec requires the mapping to be
 //! **injective within one payload** (`preferred_tactic.rs:203`-`:209`), and
 //! nothing anywhere requires it to be the same mapping in the next payload: the
-//! fold stores whatever decodes (`world_fold.rs:10336`), so a frame whose id↔token
+//! fold stores whatever decodes (`world_fold.rs:10360`), so a frame whose id↔token
 //! mapping differs from the previous hour's is a frame the fold accepts. Neither
 //! field is therefore a function of the other on the payloads the fold folds, and
 //! dropping either would lose data on input the recorder accepts — the recipe's
@@ -99,7 +99,7 @@
 //!
 //! `source_sequence` is frame-level, not per-row, and it is **consumed by d96**:
 //! `fold_country_preferred_tactic_weights` refuses to fold without a clean d92
-//! snapshot *and* its sequence (`world_fold.rs:10349`-`:10365`), and
+//! snapshot *and* its sequence (`world_fold.rs:10380`-`:10389`), and
 //! `tactic_weight.rs:356` rejects a d96 payload whose sequence differs. Dropping
 //! it would make d96 unportable, so it is carried — as a one-row collection under
 //! a constant key, the shape d68 established for a payload-level scalar with no
@@ -126,11 +126,24 @@
 //! hard-enforces as a function of carried state is not a field" they are checked
 //! in [`split_payload`] and left off the wire.
 //!
-//! # Modelled dependency: the D18 roster-EQUALITY gate
+//! # Modelled dependency: the D18 roster-CONTAINMENT gate
 //!
 //! The fold refuses the hour unless a **proven D18 record landed this same hour**
-//! (`world_fold.rs:10322`-`:10328`) and the observed tag set **equals** the
-//! current D18 roster exactly (`:10329`-`:10335`) — equality, not containment.
+//! (`world_fold.rs:10320`-`:10325`) and the observed tag set **covers** the
+//! current D18 roster (`:10345`-`:10359`) — containment, not equality. The two
+//! sides are different enumerations by construction: d92's producer walks the
+//! COMPLETE gamestate country table (`attach_log.rs:33054`) so that an
+//! unreadable slot fails the frame closed (`:30886`-`:30891`), while D18
+//! publishes the deliberately FILTERED identity cache (`:60364`). d92 is
+//! therefore a superset — 439 rows against D18's 356 on `runs/batch3/deepwar_c`,
+//! the same 83 extra ids in all 896 hours, none ever missing.
+//!
+//! A d92 row for a tag D18 did not publish is **kept**, exactly as the fold
+//! keeps it (`:10360`-`:10367`): the projection is D18-keyed and never reads it
+//! (`:6329`), but the D96 join validates against the whole d92 row set, which is
+//! the set the collector itself validated before encoding
+//! (`compact_contract/src/tactic_weight.rs:355`).
+//!
 //! That makes D18 a modelled dependency, so [`fold_payload`] takes the roster and
 //! the freshness flag as typed inputs (recipe step 7) rather than re-deriving or
 //! assuming them.
@@ -148,9 +161,9 @@
 //! [`fold_payload`] **mutates before erroring**, mirroring the fold exactly: each
 //! of the fold's refusal paths clears `country_preferred_tactics_this_hour` (and,
 //! on the status path, the sequence too) before returning
-//! (`:10315`-`:10317`, `:10322`-`:10327`, `:10330`-`:10334`). A harness that
-//! assumed all-or-nothing would disagree with the recorder on exactly the frames
-//! that fail.
+//! (`:10316`-`:10317`, `:10321`, `:10352`). A harness that assumed
+//! all-or-nothing would disagree with the recorder on exactly the frames that
+//! fail.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -240,14 +253,14 @@ pub fn schema() -> Schema {
         collections: vec![
             Collection {
                 collection_id: COUNTRIES,
-                // Full replace each hour (`world_fold.rs:10336`), but `tag_db_id`
+                // Full replace each hour (`world_fold.rs:10360`), but `tag_db_id`
                 // is a stable identity that persists across hours, which is what
                 // a keyed set needs — and only a keyed set has a delta grammar
                 // (§7.3). The roster is constant at 439 rows on the measured
                 // capture, so the delta path is what this domain actually costs.
                 shape: Shape::KeyedSet,
                 fields: vec![
-                    // The country's `tag_db_id` (`world_fold.rs:10329`), the same
+                    // The country's `tag_db_id` (`world_fold.rs:10345`), the same
                     // identity D18 keys its roster by and which d92 is gated on
                     // being EQUAL to. `ContentId` because a country tag is
                     // content-defined (§5); d63 and d83 class theirs the same.
@@ -633,7 +646,7 @@ fn validate_rows(rows: &[TacticRow]) -> core::result::Result<(), String> {
     Ok(())
 }
 
-/// The key of one country row: its `tag_db_id` (`world_fold.rs:10329`).
+/// The key of one country row: its `tag_db_id` (`world_fold.rs:10345`).
 ///
 /// A zero `tag_db_id` never decodes (`preferred_tactic.rs:194`), and `TacticRow`
 /// is publicly constructible, so the check is here rather than assumed.
@@ -818,7 +831,7 @@ impl State {
     }
 
     /// Drop the hour's state, as the fold's gate refusals do
-    /// (`world_fold.rs:10323`, `:10331`).
+    /// (`world_fold.rs:10321`, `:10352`).
     fn clear(&mut self) {
         for collection in &mut self.collections {
             collection.clear();
@@ -830,15 +843,19 @@ impl State {
 /// because the harness has to report them apart (recipe step 9).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldRefusal {
-    /// The hour carried no proven D18 record (`world_fold.rs:10322`).
+    /// The hour carried no proven D18 record (`world_fold.rs:10320`).
     NoCurrentHourRoster,
-    /// The observed tag set is not EQUAL to the current D18 roster
-    /// (`world_fold.rs:10329`).
-    RosterMismatch { observed: usize, expected: usize },
+    /// The observed tag set does not COVER the current D18 roster: at least one
+    /// tag the projection can name has no measured row (`world_fold.rs:10351`).
+    RosterDoesNotCoverD18 {
+        missing: usize,
+        d18: usize,
+        observed: usize,
+    },
 }
 
 /// Fold one d92 DATA payload into `acc`, exactly as `fold_country_preferred_tactics`
-/// folds it (`world_fold.rs:10307`-`:10344`).
+/// folds it (`world_fold.rs:10307`-`:10370`).
 ///
 /// The caller has already excluded a failure-status record — that exclusion is
 /// the fold's own `handle_compact_failure` (`:10311`) and it sits *after* the
@@ -865,29 +882,33 @@ pub fn fold_payload(
     // The decode comes first, before any gate: `world_fold.rs:10309`.
     let (header, rows) = split_payload(payload)?;
 
-    // `:10322`-`:10328`.
+    // `:10320`-`:10325`.
     if !identity_known {
         acc.clear();
         return Err(refusal_message(FoldRefusal::NoCurrentHourRoster));
     }
-    // `:10329`-`:10335`. EQUALITY, not containment.
+    // `:10345`-`:10359`. CONTAINMENT (D18 ⊆ d92), not equality: d92 reads the
+    // complete country table and D18 the filtered cache, so a superset is the
+    // normal shape and only a MISSING D18 tag is a loss.
     let observed: BTreeSet<u32> = rows.iter().map(|row| row.tag_db_id).collect();
-    if &observed != roster {
+    let missing = roster.difference(&observed).count();
+    if missing != 0 {
         acc.clear();
-        return Err(refusal_message(FoldRefusal::RosterMismatch {
+        return Err(refusal_message(FoldRefusal::RosterDoesNotCoverD18 {
+            missing,
+            d18: roster.len(),
             observed: observed.len(),
-            expected: roster.len(),
         }));
     }
 
     let countries = schema.collection(COUNTRIES).map_err(|e| format!("{e:?}"))?;
     let frame = schema.collection(FRAME).map_err(|e| format!("{e:?}"))?;
 
-    // Full replace (`:10336`-`:10341`): the prior state is discarded, not merged.
+    // Full replace (`:10360`-`:10366`): the prior state is discarded, not merged.
     let mut next_countries = KeyedState::new();
     for row in &rows {
         let record = record_from_row(countries, row, frame_tick, symbols)?;
-        // The fold collects into a map keyed by `tag_db_id` (`:10339`), and
+        // The fold collects into a map keyed by `tag_db_id` (`:10364`), and
         // `validate_rows` has already proved the tags unique, so an insert can
         // never collapse two rows here.
         if next_countries.insert(key_from_row(row)?, record).is_some() {
@@ -913,9 +934,13 @@ fn refusal_message(refusal: FoldRefusal) -> String {
         FoldRefusal::NoCurrentHourRoster => {
             "country_preferred_tactic requires a current-hour D18 identity roster".into()
         }
-        FoldRefusal::RosterMismatch { observed, expected } => format!(
-            "country_preferred_tactic roster does not equal current D18 roster \
-             ({observed} != {expected})"
+        FoldRefusal::RosterDoesNotCoverD18 {
+            missing,
+            d18,
+            observed,
+        } => format!(
+            "country_preferred_tactic roster does not cover current D18 roster \
+             ({missing} of {d18} D18 tags missing; d92 carries {observed})"
         ),
     }
 }
@@ -1319,7 +1344,7 @@ mod tests {
         // Step 4's "quantization saves bytes" test does not apply: d92 has no
         // `Continuous` field at all. Every value it carries is an integer
         // identity or a symbol id, and the fold applies no scale factor anywhere
-        // (`world_fold.rs:10336`-`:10341` stores the decoded rows verbatim).
+        // (`world_fold.rs:10360`-`:10366` stores the decoded rows verbatim).
         for c in &schema().collections {
             for f in c.value_fields() {
                 assert!(
@@ -1682,11 +1707,12 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_gate_is_equality_not_containment() {
+    fn the_roster_gate_is_containment_d18_inside_d92() {
         let schema = schema();
         let mut acc = State::new();
-        // A strict subset of the roster is refused — this is the case a
-        // containment check would wrongly accept.
+        // A d92 record that MISSES a D18 tag is refused: that tag is one the
+        // projection can name (`world_fold.rs:6329`) and would otherwise be
+        // published as unavailable while the hour counted as measured.
         let err = fold_payload(
             &schema,
             &mut acc,
@@ -1696,10 +1722,13 @@ mod tests {
             0,
             &symbols(),
         )
-        .expect_err("refuses a subset");
-        assert!(err.contains("does not equal current D18 roster"), "{err}");
-        // A strict superset is refused too.
-        assert!(fold_payload(
+        .expect_err("refuses a roster it does not cover");
+        assert!(err.contains("does not cover current D18 roster"), "{err}");
+        assert!(err.contains("1 of 2 D18 tags missing"), "{err}");
+        assert!(err.contains("d92 carries 1"), "{err}");
+        // A strict superset is the NORMAL shape and must fold: d92 reads the
+        // complete country table, D18 the filtered cache.
+        fold_payload(
             &schema,
             &mut acc,
             &payload_with(&[none_row(1), none_row(2)], 0, 0, 1),
@@ -1708,8 +1737,13 @@ mod tests {
             0,
             &symbols(),
         )
-        .is_err());
-        // Same size, different membership — the case a count check would miss.
+        .expect("a superset covers the D18 roster");
+        assert_eq!(
+            acc.countries().len(),
+            2,
+            "the extra row is kept, not dropped: the D96 join validates the whole d92 row set"
+        );
+        // Same size, different membership — still a miss, still refused.
         assert!(fold_payload(
             &schema,
             &mut acc,
@@ -1722,11 +1756,78 @@ mod tests {
         .is_err());
     }
 
+    /// The production shape, at scale. `runs/batch3/deepwar_c` carries a d92
+    /// roster of 439 against a D18 roster of 356 in every one of its 896 hours —
+    /// the same 83 extra ids each hour, none ever missing (measured off the
+    /// capture; 71 of the extras sit above D18's highest id, 12 interleave, and
+    /// exactly one of them carries a selected tactic). The equality gate refused
+    /// all 896; containment folds all 896 and keeps every row.
+    #[test]
+    fn the_deepwar_c_superset_shape_folds_and_keeps_every_row() {
+        let schema = schema();
+        let mut acc = State::new();
+        let d18: Vec<u32> = (1..=356).collect();
+        // 356 D18 tags + 83 tags D18 filtered out; one of the extras is selected.
+        let mut ids: Vec<u32> = d18.clone();
+        ids.extend(357..=439);
+        let rows: Vec<Vec<u8>> = ids
+            .iter()
+            .map(|&id| {
+                if id == 400 {
+                    selected_row(id, 7, "shock")
+                } else {
+                    none_row(id)
+                }
+            })
+            .collect();
+        fold_payload(
+            &schema,
+            &mut acc,
+            &payload_with(&rows, 0, 0, 1),
+            &roster_of(&d18),
+            true,
+            0,
+            &symbols(),
+        )
+        .expect("439 rows cover a 356-tag D18 roster");
+        assert_eq!(acc.countries().len(), 439, "no row is dropped");
+        let c = schema.collection(COUNTRIES).expect("countries");
+        assert_eq!(
+            acc.countries()[&key(&[400u64])].values[index_of(&c, field::TACTIC_DATABASE_ID)],
+            Value::ContentId(7),
+            "the one selected extra keeps its tactic"
+        );
+        assert_eq!(
+            acc.countries()[&key(&[439u64])].values[index_of(&c, field::TACTIC_DATABASE_ID)],
+            Value::Null,
+            "the highest extra id is stored as the authenticated none row"
+        );
+        // Drop a single D18 tag from the middle of the same 439-row shape and the
+        // hour must be refused: that is the loss containment exists to catch.
+        let short: Vec<Vec<u8>> = ids
+            .iter()
+            .filter(|&&id| id != 200)
+            .map(|&id| none_row(id))
+            .collect();
+        let err = fold_payload(
+            &schema,
+            &mut acc,
+            &payload_with(&short, 0, 0, 2),
+            &roster_of(&d18),
+            true,
+            0,
+            &symbols(),
+        )
+        .expect_err("a missing D18 tag is a loss");
+        assert!(err.contains("1 of 356 D18 tags missing"), "{err}");
+        assert!(err.contains("d92 carries 438"), "{err}");
+    }
+
     #[test]
     fn a_refused_fold_clears_the_accumulator_as_the_recorder_does() {
         // The fold's error contract is NOT all-or-nothing: every gate refusal
         // sets `country_preferred_tactics_this_hour = None` before returning
-        // (`world_fold.rs:10323`, `:10331`). A harness that assumed otherwise
+        // (`world_fold.rs:10321`, `:10352`). A harness that assumed otherwise
         // would keep publishing last hour's tactics.
         let schema = schema();
         let mut acc = State::new();

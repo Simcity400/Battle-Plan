@@ -19911,3 +19911,260 @@ fn d14_rows_present_with_a_clear_presence_bit_are_never_dropped() {
     assert_eq!(politics["laws"]["economy"], json!("war_economy"));
     assert_eq!(politics["party_popularities"], Value::Null);
 }
+
+// --- D92/D96: the D18 roster-containment gate ------------------------------
+//
+// The collector's two country enumerations are deliberately different: d92
+// reads the COMPLETE gamestate country table (`attach_log.rs:33054`, via
+// `domain51_read_complete_country_roster`) so an unreadable slot fails the frame
+// closed (`:30886`-`:30891`), while D18 publishes the FILTERED
+// `country_identity.rows` cache (`:60364`), which may omit a slot it cannot
+// name. d92 is therefore a superset of D18. `runs/batch3/deepwar_c` measures
+// 439 d92 rows against 356 D18 rows in every one of its 896 hours — the same 83
+// extra ids each hour, none ever missing — so an equality gate publishes
+// nothing at all and d96 is invalid behind it. These tests fabricate that shape.
+
+/// A PTC1 payload. `selected` is `(tag_db_id, tactic_database_id, token)`.
+fn preferred_tactic_payload(
+    tags: &[u32],
+    selected: &[(u32, i32, &str)],
+    source_sequence: u64,
+) -> Vec<u8> {
+    let rows = tags
+        .iter()
+        .map(|&tag_db_id| {
+            let hit = selected.iter().find(|(id, _, _)| *id == tag_db_id);
+            preferred92::PreferredTacticRow {
+                tag_db_id,
+                tactic_database_id: hit.map_or(0, |(_, id, _)| *id),
+                tactic_id: hit.map(|(_, _, token)| (*token).to_owned()),
+            }
+        })
+        .collect();
+    preferred92::encode_payload(&preferred92::PreferredTacticSnapshot {
+        read_time_us: 0,
+        status_flags: 0,
+        source_sequence,
+        rows,
+    })
+    .expect("PTC1 encodes")
+}
+
+/// A PTW1 payload carrying one weight row per selected d92 country, exactly as
+/// the collector emits it (`attach_log.rs:33357`-`:33365`).
+fn preferred_tactic_weight_payload(
+    observed_country_count: u32,
+    selected: &[(u32, i32, &str)],
+    source_sequence: u64,
+) -> Vec<u8> {
+    let country_factor_raw = 5_000i64;
+    let rows = selected
+        .iter()
+        .map(
+            |&(tag_db_id, tactic_database_id, token)| weight96::CountryPreferredTacticWeightRow {
+                tag_db_id,
+                tactic_database_id,
+                tactic_id: token.to_owned(),
+                modifier_key: 40 + tag_db_id,
+                modifier_metadata_flags: 3,
+                modifier_metadata_gate: 0,
+                accumulator_entry_present: false,
+                accumulator_raw: 0,
+                effective_bonus_raw: country_factor_raw,
+            },
+        )
+        .collect();
+    weight96::encode_payload(&weight96::CountryPreferredTacticWeightSnapshot {
+        read_time_us: 0,
+        observed_country_count,
+        status_flags: 0,
+        source_sequence,
+        country_factor_raw,
+        rows,
+    })
+    .expect("PTW1 encodes")
+}
+
+/// The deepwar_c shape at full scale: D18 publishes 1..=356, d92 carries
+/// 1..=439. Every D18 country must be measured, and no extra may appear.
+#[test]
+fn d92_folds_when_its_complete_roster_is_a_superset_of_the_filtered_d18_roster() {
+    let d18: Vec<(u32, String)> = (1..=356u32).map(|id| (id, format!("C{id:03}"))).collect();
+    let d18_rows: Vec<(u32, &str)> = d18.iter().map(|(id, tag)| (*id, tag.as_str())).collect();
+    let d92_tags: Vec<u32> = (1..=439u32).collect();
+    // One selected country inside D18, one among the 83 D18 filtered out.
+    let selected = [(7u32, 11i32, "shock"), (400u32, 12i32, "blitzkrieg")];
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&d18_rows)),
+        (92, preferred_tactic_payload(&d92_tags, &selected, 5)),
+    ]);
+
+    let countries = snapshot["countries"].as_object().expect("countries map");
+    assert_eq!(
+        countries.len(),
+        356,
+        "the projection is D18-keyed: the 83 extra d92 rows are unnameable and never appear"
+    );
+    assert!(
+        !snapshot["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 92 fold skipped")),
+        "notes: {:?}",
+        snapshot["provenance"]["notes"]
+    );
+    // Every D18 country carries a measured row, none of them unavailable.
+    let unmeasured = countries
+        .values()
+        .filter(|country| country["extra"]["_r2_preferred_tactic_live"].is_null())
+        .count();
+    assert_eq!(unmeasured, 0, "every D18 country has a measured d92 row");
+    // The selected D18 country keeps its identity.
+    let selected_country = &countries["C007"]["extra"];
+    assert_eq!(selected_country["preferred_tactic"], json!(11));
+    assert_eq!(selected_country["preferred_tactic_token"], json!("shock"));
+    assert_eq!(
+        selected_country["_r2_preferred_tactic_live"]["source_sequence"],
+        json!(5)
+    );
+    assert_eq!(
+        selected_country["_r2_preferred_tactic_live"]["tag_db_id"],
+        json!(7)
+    );
+    // A none-selected D18 country is measured-none, not unavailable.
+    let none_country = &countries["C008"]["extra"];
+    assert_eq!(none_country["preferred_tactic"], json!(0));
+    assert_eq!(none_country["preferred_tactic_token"], Value::Null);
+    assert!(!none_country["_r2_preferred_tactic_live"].is_null());
+    // The extras are nowhere in the snapshot, under any name.
+    assert!(
+        !countries.contains_key("C400") && !countries.contains_key("C439"),
+        "no fabricated country for a tag D18 filtered out"
+    );
+}
+
+/// d96 folds behind the superset d92 and joins on the whole d92 row set — the
+/// set the collector itself validated before encoding
+/// (`compact_contract/src/tactic_weight.rs:355`). PTW1's roster witness is 439,
+/// the d92 count; substituting D18's 356 refuses every real frame.
+#[test]
+fn d96_folds_behind_a_superset_d92_and_projects_the_weight() {
+    let d18: Vec<(u32, String)> = (1..=356u32).map(|id| (id, format!("C{id:03}"))).collect();
+    let d18_rows: Vec<(u32, &str)> = d18.iter().map(|(id, tag)| (*id, tag.as_str())).collect();
+    let d92_tags: Vec<u32> = (1..=439u32).collect();
+    let selected = [(7u32, 11i32, "shock"), (400u32, 12i32, "blitzkrieg")];
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&d18_rows)),
+        (92, preferred_tactic_payload(&d92_tags, &selected, 5)),
+        (96, preferred_tactic_weight_payload(439, &selected, 5)),
+    ]);
+
+    assert!(
+        !snapshot["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 96 fold skipped")),
+        "notes: {:?}",
+        snapshot["provenance"]["notes"]
+    );
+    let weight =
+        &snapshot["countries"]["C007"]["extra"]["_r2_preferred_tactic_live"]["preferred_weight"];
+    assert_eq!(weight["observed_country_count"], json!(439));
+    assert_eq!(weight["source_sequence"], json!(5));
+    assert_eq!(weight["tag_db_id"], json!(7));
+    assert_eq!(weight["tactic_id"], json!("shock"));
+    assert_eq!(weight["effective_bonus_raw"], json!(5_000));
+    assert_eq!(weight["multiplier_numerator_raw"], json!(105_000));
+    // A none-selected D18 country projects an explicit no-weight null.
+    assert_eq!(
+        snapshot["countries"]["C008"]["extra"]["_r2_preferred_tactic_live"]["preferred_weight"],
+        Value::Null
+    );
+}
+
+/// The loss containment exists to catch: one D18 tag with no d92 row. That tag
+/// is one the projection can name, so tolerating it would publish the hour as
+/// measured while silently dropping a country's selection.
+#[test]
+fn d92_refuses_an_hour_whose_rows_miss_a_d18_tag() {
+    let d18: Vec<(u32, String)> = (1..=356u32).map(|id| (id, format!("C{id:03}"))).collect();
+    let d18_rows: Vec<(u32, &str)> = d18.iter().map(|(id, tag)| (*id, tag.as_str())).collect();
+    // 438 rows: the whole complete roster except D18's tag 200.
+    let d92_tags: Vec<u32> = (1..=439u32).filter(|&id| id != 200).collect();
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&d18_rows)),
+        (92, preferred_tactic_payload(&d92_tags, &[], 5)),
+    ]);
+
+    let note = snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("domain 92 fold skipped")
+                .then(|| note.to_owned())
+        })
+        .expect("the hour is skipped");
+    assert!(
+        note.contains("does not cover current D18 roster")
+            && note.contains("1 of 356 D18 tags missing")
+            && note.contains("d92 carries 438"),
+        "{note}"
+    );
+    // Fail closed for the WHOLE hour, not just the missing country.
+    let countries = snapshot["countries"].as_object().expect("countries map");
+    assert_eq!(
+        countries
+            .values()
+            .filter(|country| country["extra"]["_r2_preferred_tactic_live"].is_null())
+            .count(),
+        356,
+        "no country publishes a tactic on a refused hour"
+    );
+}
+
+/// d96's roster witness must be d92's count, never D18's. A PTW1 that claims
+/// the D18 count is what the pre-fix fold demanded, and it is a genuine
+/// producer/consumer disagreement: reject it.
+#[test]
+fn d96_refuses_a_ptw1_whose_roster_witness_is_the_d18_count() {
+    let d18: Vec<(u32, String)> = (1..=356u32).map(|id| (id, format!("C{id:03}"))).collect();
+    let d18_rows: Vec<(u32, &str)> = d18.iter().map(|(id, tag)| (*id, tag.as_str())).collect();
+    let d92_tags: Vec<u32> = (1..=439u32).collect();
+    let selected = [(7u32, 11i32, "shock")];
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&d18_rows)),
+        (92, preferred_tactic_payload(&d92_tags, &selected, 5)),
+        (96, preferred_tactic_weight_payload(356, &selected, 5)),
+    ]);
+
+    assert!(
+        snapshot["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap();
+                note.contains("domain 96 fold skipped")
+                    && note.contains("PTW1/D92 roster count or source-sequence mismatch")
+            }),
+        "notes: {:?}",
+        snapshot["provenance"]["notes"]
+    );
+    // d92 still folds — d96's refusal is its own.
+    assert_eq!(
+        snapshot["countries"]["C007"]["extra"]["preferred_tactic_token"],
+        json!("shock")
+    );
+    assert_eq!(
+        snapshot["countries"]["C007"]["extra"]["_r2_preferred_tactic_live"]["preferred_weight"],
+        Value::Null
+    );
+}
