@@ -15,6 +15,18 @@
 //! information: real values at their real offsets, zeros with the `has_` flag
 //! clear elsewhere — zeros compress well, so the bias of that choice favors
 //! the OLD format, making the comparison conservative.
+//!
+//! **Two bounds the stream-harness sweep enforces elsewhere are structurally
+//! N/A here, stated so the sweep can tell "checked, none" from "not checked".**
+//! (1) `WIRE_FORMAT.md` §1.5's gap-forces-baseline rule: this bin encodes ONE
+//! baseline from ONE save snapshot — there is no hour sequence, no delta chain,
+//! and no `UNCHANGED` run, so no gap can exist for a baseline to be forced
+//! across. (2) The cross-domain validation bound: the input is
+//! `flatten_divisions.py`'s flat text file, not an H4CR `collector_stream.bin`
+//! — no domain's payload, d20's included, is walked here, and nothing is
+//! excluded by status. The H4CR-stream measurement for d20 dynamics is
+//! `bench_real_dynamics.rs`, which is where those two properties live for this
+//! domain.
 
 use std::collections::BTreeMap;
 use std::io::Write;

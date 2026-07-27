@@ -89,6 +89,27 @@
 //!
 //! It also prints the real churn surface (changed rows per hour at stored
 //! precision) for both collections.
+//!
+//! **Only d32 DATA payloads — plus the d30 subset below — are validated.**
+//! Production runs `validate_domain_data_payload_at` on the DATA payload of
+//! EVERY domain (`stream_fold.rs:593`); this harness cannot, because validating
+//! another domain's payload means owning that domain's authority, and
+//! `wire_format` must not depend on `recorder_host`. The one exception is d30,
+//! whose key columns the orphan-prune guard must read: [`AirWingRoster`]
+//! validates every d30 DATA record's header length, exact row-count length and
+//! row flag words — on records of every status, mirroring the
+//! status-independence of production's d30 authority
+//! (`domain_data_authority.rs:6257`) — while everything d30 carries beyond
+//! those columns (counts, scale, reserved words, per-row value fields) passes
+//! unread. Every DATA record of any other domain passes with its H4CR header,
+//! sequence continuity, hour-boundary, PERF-binding and FRAME_END rules checked
+//! but its **payload bytes unread**.
+//! The concrete hazard — a d32 record relabelled to another domain id, or
+//! dropped outright, silently shrinking the measurement — is closed by an
+//! explicit completeness check in `scan_stream`: every closed game hour must
+//! carry exactly one d32 DATA record, of any status. That is a per-capture
+//! assertion, not a grammar rule; a capture where d32 is not scheduled every
+//! hour fails loudly there and a human adjusts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -109,6 +130,30 @@ use wire_format::d32;
 const D30: u16 = 30;
 const D32: u16 = 32;
 const BLOCK_HOURS: usize = 48;
+
+/// Whether the wire arm opens a BASELINE for this measured hour.
+///
+/// Two reasons, and the second is not a cadence choice: the 48-hour block
+/// boundary, or a measured hour that does not immediately follow the previous
+/// measured one. An hour this domain did not successfully sample is coverage
+/// the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190` is
+/// explicit: "A gap affecting the state part forces the next state observation
+/// to be a `BASELINE`. State may have moved and returned while nobody was
+/// looking, so neither a delta nor an `UNCHANGED` can be justified across
+/// unobserved time." Delta-encoding across the gap would produce bytes that
+/// decode — the reader's prior is never invalidated, so the local replay
+/// cannot notice — while asserting a continuity the capture does not have. The
+/// delta chain restarts at the forced baseline: every later delta chains from
+/// it, exactly as after a scheduled block start.
+fn opens_baseline(hours_seen: usize, previous_measured_hour: Option<i32>, game_hour: i32) -> bool {
+    if hours_seen % BLOCK_HOURS == 0 {
+        return true;
+    }
+    match previous_measured_hour {
+        Some(previous) => game_hour != previous.saturating_add(1),
+        None => true,
+    }
+}
 
 /// One usable d32 hour: its game hour, both folded collection states, and the
 /// byte span of the record that produced it (the shipping arm is those bytes
@@ -361,15 +406,15 @@ impl AirWingRoster {
                  unassigned bit has no defined classification"
             ));
         }
-        // `world_fold.rs:14620`: a failure status folds nothing and retains.
-        if compact_status_failure_flags_after_expected_partial_tolerance(D30, status_flags) != 0 {
-            return Ok(());
-        }
-        let delta = status_flags & COMPACT_STATUS_DELTA_DATA != 0;
-        // `world_fold.rs:14624`: a delta before any baseline folds nothing.
-        if delta && !self.baseline_seen {
-            return Ok(());
-        }
+        // STRUCTURE BEFORE CLASSIFICATION, the rest of the way: production's
+        // d30 payload authority (`decode_compact_air_wings_data_payload`,
+        // `domain_data_authority.rs:6257`) re-checks the payload length and
+        // walks EVERY row whatever the status word says — its authority is
+        // status-independent. A mirror that returned on a failure status before
+        // these checks would accept, on exactly the failure-status records, a
+        // malformed d30 payload the recorder itself refuses (the d94 lesson).
+        // So the length and the full row walk run on every record; only the
+        // STATE mutation below is gated on the fold's own classification.
         let expected = row_count
             .checked_mul(Self::ROW_LEN)
             .and_then(|n| n.checked_add(Self::HEADER_LEN))
@@ -377,12 +422,7 @@ impl AirWingRoster {
         if payload.len() != expected {
             return Err(format!("air_wings len {} != {expected}", payload.len()));
         }
-        // `replace_or_sparse_after_first`, `world_fold.rs:14636`.
-        let sparse = delta || self.baseline_seen;
-        if !sparse {
-            self.keys.clear();
-            self.baseline_seen = true;
-        }
+        let mut rows: Vec<((u32, u32, u64), bool)> = Vec::with_capacity(row_count);
         for index in 0..row_count {
             let base = Self::HEADER_LEN + index * Self::ROW_LEN;
             let key = (
@@ -394,7 +434,25 @@ impl AirWingRoster {
             if flags & !Self::KNOWN_FLAGS != 0 {
                 return Err("air_wings row has unknown flags".to_string());
             }
-            if flags & 1 != 0 {
+            rows.push((key, flags & 1 != 0));
+        }
+        // `world_fold.rs:14620`: a failure status folds nothing and retains.
+        if compact_status_failure_flags_after_expected_partial_tolerance(D30, status_flags) != 0 {
+            return Ok(());
+        }
+        let delta = status_flags & COMPACT_STATUS_DELTA_DATA != 0;
+        // `world_fold.rs:14624`: a delta before any baseline folds nothing.
+        if delta && !self.baseline_seen {
+            return Ok(());
+        }
+        // `replace_or_sparse_after_first`, `world_fold.rs:14636`.
+        let sparse = delta || self.baseline_seen;
+        if !sparse {
+            self.keys.clear();
+            self.baseline_seen = true;
+        }
+        for (key, deleted) in rows {
+            if deleted {
                 self.keys.remove(&key);
                 self.deleted_this_hour.insert(key);
             } else {
@@ -482,6 +540,10 @@ fn scan_stream(
     // Whether the hour currently open produced a measurable d32 state.
     let mut pending_hour: Option<D32Hour> = None;
 
+    // Closed game hours and d32 DATA records of ANY status — the
+    // completeness rule at the end of the scan.
+    let mut closed_hours = 0usize;
+    let mut d32_records = 0usize;
     let mut pos = 0usize;
     while pos < stream.len() {
         let header = parse_compact_record_header(&stream[pos..])
@@ -653,6 +715,7 @@ fn scan_stream(
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
                 last_closed_hour = Some(header.game_hour_raw);
+                closed_hours += 1;
             }
             _ => {}
         }
@@ -665,6 +728,7 @@ fn scan_stream(
         }
 
         if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA && header.domain_id == D32 {
+            d32_records += 1;
             // One d32 DATA record per game hour, checked over EVERY d32 record
             // and BEFORE any status-based exclusion: gating this on the record
             // being usable would let a success + failure pair through the rule
@@ -790,6 +854,25 @@ fn scan_stream(
         return Err("stream carries no usable d32 DATA records".to_string());
     }
 
+    // COMPLETENESS: every closed game hour must carry exactly one d32 DATA
+    // record, of any status. Production validates the payload of EVERY domain's
+    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // a d32 record relabelled to another domain id — or lost outright — would
+    // otherwise be silently ignored and the run would report a plausible
+    // measurement over fewer hours. Per-hour uniqueness is already enforced
+    // above, so equality of the two counts is exactly-one per closed hour. A
+    // per-capture assertion, not a grammar rule: a capture that does not
+    // schedule d32 every hour fails here loudly and a human adjusts, instead
+    // of a number quietly shrinking.
+    if d32_records != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but carries {d32_records} d32 DATA \
+             record(s); every closed hour of a d32-scheduled capture must carry exactly one, \
+             and this harness cannot validate the payloads of other domains to see where the \
+             difference went"
+        ));
+    }
+
     Ok(StreamScan {
         hours,
         failure_records,
@@ -850,6 +933,9 @@ fn main() {
     let mut reader: Option<(KeyedState, KeyedState)> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
+    // Baselines the §1.5 gap rule forced outside a scheduled block start.
+    let mut gap_forced_baselines = 0usize;
+    let mut previous_measured_hour: Option<i32> = None;
     let mut baseline_bytes = 0usize;
     let mut delta_bytes = 0usize;
     let mut empty_hours = 0usize;
@@ -873,9 +959,12 @@ fn main() {
 
         // New arm: BASELINE at each block start, stored-minimal DELTA between.
         let hour_start = wire.len();
-        let block_start = hours_seen % BLOCK_HOURS == 0;
+        let baseline_here = opens_baseline(hours_seen, previous_measured_hour, hour.game_hour);
+        if baseline_here && hours_seen % BLOCK_HOURS != 0 {
+            gap_forced_baselines += 1;
+        }
         let mut emitted = true;
-        if block_start || prior.is_none() {
+        if baseline_here || prior.is_none() {
             encode_baseline(&schema, &[state.0.clone(), state.1.clone()], &mut wire)
                 .expect("baseline encodes");
             baselines += 1;
@@ -926,7 +1015,7 @@ fn main() {
         // equal the fold's, which is precisely what "nothing changed" asserts.
         if emitted {
             let hour_bytes = &wire[hour_start..];
-            if block_start || reader.is_none() {
+            if baseline_here || reader.is_none() {
                 let (states, consumed) =
                     decode_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
                 assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
@@ -976,6 +1065,7 @@ fn main() {
         );
 
         prior = Some(state);
+        previous_measured_hour = Some(hour.game_hour);
         hours_seen += 1;
     }
 
@@ -1015,7 +1105,11 @@ fn main() {
         wings_total as f64 / hours_seen as f64,
         equipment_total as f64 / hours_seen as f64
     );
-    println!("baselines            {baselines} (every {BLOCK_HOURS} h)");
+    println!(
+        "baselines            {baselines} ({} every {BLOCK_HOURS} h, {gap_forced_baselines} \
+         forced by a gap in measured hours — WIRE_FORMAT §1.5)",
+        baselines - gap_forced_baselines
+    );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
     println!(
         "real churn           wings {:.2} changed/h, {:.3} tombstones/h; equipment {:.2} changed/h, \
@@ -2251,6 +2345,48 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_status_d30_record_is_still_structurally_validated() {
+        // Production's d30 payload authority (`decode_compact_air_wings_data_payload`,
+        // `domain_data_authority.rs:6257`) re-checks the payload length and walks
+        // EVERY row whatever the status word says — the authority is
+        // status-independent. A mirror that returned on the failure status before
+        // those checks would accept, on exactly the failure-status records, a
+        // malformed d30 payload the recorder itself refuses (the d94 lesson:
+        // a fold that returns early on failure status must not skip authority
+        // validation).
+        let mut roster = AirWingRoster::default();
+
+        // Truncated body under a failure status: refused, not skipped.
+        let mut short = d30_payload(1 << 0, &[(1, 2, 3)]);
+        short.pop();
+        assert!(
+            roster.fold(&short).is_err(),
+            "the length is validated before the status classifies the record"
+        );
+
+        // An unknown row flag under a failure status: refused, not skipped.
+        let mut bad_flags = d30_payload(1 << 0, &[(1, 2, 3)]);
+        let flags_at = AirWingRoster::HEADER_LEN + 16;
+        bad_flags[flags_at..flags_at + 4].copy_from_slice(&(1u32 << 7).to_le_bytes());
+        assert!(
+            roster.fold(&bad_flags).is_err(),
+            "row flags are validated before the status classifies the record"
+        );
+
+        // And a WELL-FORMED failure record still folds nothing and retains.
+        let mut roster = AirWingRoster::default();
+        roster.fold(&d30_payload(0, &[(1, 2, 3)])).expect("baseline folds");
+        roster
+            .fold(&d30_payload(1 << 0, &[(9, 9, 9)]))
+            .expect("a well-formed failure record is excluded, not refused");
+        assert!(roster.keys.contains(&(1, 2, 3)), "the accumulator is retained");
+        assert!(
+            !roster.keys.contains(&(9, 9, 9)),
+            "the failure frame folded nothing"
+        );
+    }
+
+    #[test]
     fn a_key_is_never_silently_dropped_by_the_wire_key_arity() {
         // The Key type carries the generation as a full u64; a truncation to u32
         // would silently merge two generations of one wing.
@@ -2284,5 +2420,70 @@ mod tests {
         let keys: Vec<&Key> = scan.hours[0].equipment.keys().collect();
         assert_eq!(*keys[0], d32::equipment_key(7, 11, 3, 900));
         assert_eq!(*keys[1], d32::equipment_key(7, 11, big, 900));
+    }
+
+    #[test]
+    fn a_gap_between_measured_hours_forces_a_baseline() {
+        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
+        // the next state observation to be a `BASELINE`." An excluded or missing
+        // hour between two measured ones is such a gap; delta-encoding across it
+        // would decode cleanly while asserting a continuity the capture does not
+        // have. The decision function, over its whole input space:
+        for hours_seen in 0..(2 * BLOCK_HOURS) {
+            assert!(
+                opens_baseline(hours_seen, None, 100),
+                "the first measured hour at position {hours_seen} opens a baseline"
+            );
+            assert!(
+                opens_baseline(hours_seen, Some(100), 102),
+                "a skipped hour at position {hours_seen} must open a baseline"
+            );
+            assert!(
+                opens_baseline(hours_seen, Some(100), 100),
+                "a non-advancing hour at position {hours_seen} must open a baseline"
+            );
+            assert_eq!(
+                opens_baseline(hours_seen, Some(100), 101),
+                hours_seen % BLOCK_HOURS == 0,
+                "a contiguous hour at position {hours_seen} is cadence-only"
+            );
+        }
+        // The clock edge cannot wrap into a false "contiguous".
+        assert!(opens_baseline(1, Some(i32::MAX), i32::MIN));
+    }
+
+    #[test]
+    fn an_hour_closed_without_a_d32_record_refuses_the_stream() {
+        // The completeness bound on what this harness does NOT validate (module
+        // docs): it cannot check other domains' payloads, so a d32 record
+        // relabelled to another domain id — or dropped — must be caught by
+        // counting, not silently measured as fewer hours.
+        let mut s = good_stream();
+        // Find the LAST d32 DATA record and relabel it to an unclaimed domain
+        // id. The stream stays well formed — sequence, hour boundaries and
+        // FRAME_END are untouched — so the completeness rule is the only rule
+        // that can catch it.
+        let mut pos = 0usize;
+        let mut target = None;
+        while pos < s.len() {
+            let header = parse_compact_record_header(&s[pos..]).expect("well-formed");
+            if header.domain_id == D32 && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+            {
+                target = Some(pos);
+            }
+            pos += COMPACT_RECORD_HEADER_LEN + header.payload_len;
+        }
+        let target = target.expect("good_stream carries a d32 DATA record");
+        // domain_id sits at +20: magic(4) + version(2) + header_len(2) +
+        // sequence(8) + game_hour(4).
+        s[target + 20..target + 22].copy_from_slice(&99u16.to_le_bytes());
+        let err = match scan_stream(&schema(), &s, StreamIdentityMode::Legacy) {
+            Err(e) => e,
+            Ok(_) => panic!("an hour with no d32 record must refuse the stream"),
+        };
+        assert!(
+            err.contains("game hour(s) but carries"),
+            "the completeness check must be what rejects it: {err}"
+        );
     }
 }

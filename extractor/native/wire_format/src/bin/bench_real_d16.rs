@@ -103,6 +103,20 @@
 //!                    payload), concatenated in stream order
 //!   wire_new.bin   — the wire-format bodies, concatenated in hour order
 //!   *.offsets      — hour-boundary byte offsets, one per line
+//!
+//! **Only d16 DATA payloads are validated.** Production runs
+//! `validate_domain_data_payload_at` on the DATA payload of EVERY domain
+//! (`stream_fold.rs:593`); this harness cannot, because validating another
+//! domain's payload means owning that domain's authority, and `wire_format`
+//! must not depend on `recorder_host`. Every DATA record of any other domain
+//! therefore passes with its H4CR header, sequence continuity, hour-boundary,
+//! PERF-binding and FRAME_END rules checked but its **payload bytes unread**.
+//! The concrete hazard — a d16 record relabelled to another domain id, or
+//! dropped outright, silently shrinking the measurement — is closed by an
+//! explicit completeness check in `scan_stream`: every closed game hour must
+//! carry exactly one d16 DATA record, of any status. That is a per-capture
+//! assertion, not a grammar rule; a capture where d16 is not scheduled every
+//! hour fails loudly there and a human adjusts.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -121,6 +135,35 @@ use wire_format::d16;
 
 const D16: u16 = 16;
 const BLOCK_HOURS: usize = 48;
+
+/// Whether the wire arm opens a BASELINE for this measured hour.
+///
+/// Two reasons, and the second is not a cadence choice: the block boundary at
+/// `block_hours`, or a measured hour that does not immediately follow the
+/// previous measured one. An hour this domain did not successfully sample is
+/// coverage the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190`
+/// is explicit: "A gap affecting the state part forces the next state
+/// observation to be a `BASELINE`. State may have moved and returned while
+/// nobody was looking, so neither a delta nor an `UNCHANGED` can be justified
+/// across unobserved time." Delta-encoding across the gap would produce bytes
+/// that decode — the reader's prior is never invalidated, so the local replay
+/// cannot notice — while asserting a continuity the capture does not have. The
+/// delta chain restarts at the forced baseline: every later delta chains from
+/// it, exactly as after a scheduled block start.
+fn opens_baseline(
+    hours_seen: usize,
+    block_hours: usize,
+    previous_measured_hour: Option<i32>,
+    game_hour: i32,
+) -> bool {
+    if hours_seen % block_hours == 0 {
+        return true;
+    }
+    match previous_measured_hour {
+        Some(previous) => game_hour != previous.saturating_add(1),
+        None => true,
+    }
+}
 
 /// One usable d16 hour: its game hour, the ACCUMULATED state after folding that
 /// hour's record, and the record's byte span in the source stream.
@@ -310,6 +353,10 @@ fn scan_stream(
     // d16 needs a frame-level fold boundary rather than a per-record state.
     let mut accumulator = d16::Accumulator::new();
 
+    // Closed game hours and d16 DATA records of ANY status — the
+    // completeness rule at the end of the scan.
+    let mut closed_hours = 0usize;
+    let mut d16_records = 0usize;
     let mut pos = 0usize;
     while pos < stream.len() {
         let header = parse_compact_record_header(&stream[pos..])
@@ -444,6 +491,7 @@ fn scan_stream(
                 }
                 open_hour = None;
                 last_closed_hour = Some(header.game_hour_raw);
+                closed_hours += 1;
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
             }
@@ -452,6 +500,7 @@ fn scan_stream(
         last_record_type = Some(header.record_type);
 
         if header.domain_id == D16 && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            d16_records += 1;
             let (d16_header, country_rows, timed_region) = d16::split_payload(payload)
                 .map_err(|e| format!("d16 payload at byte {pos}: {e}"))?;
 
@@ -616,6 +665,25 @@ fn scan_stream(
         return Err("stream carries no usable d16 DATA records".to_string());
     }
 
+    // COMPLETENESS: every closed game hour must carry exactly one d16 DATA
+    // record, of any status. Production validates the payload of EVERY domain's
+    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // a d16 record relabelled to another domain id — or lost outright — would
+    // otherwise be silently ignored and the run would report a plausible
+    // measurement over fewer hours. Per-hour uniqueness is already enforced
+    // above, so equality of the two counts is exactly-one per closed hour. A
+    // per-capture assertion, not a grammar rule: a capture that does not
+    // schedule d16 every hour fails here loudly and a human adjusts, instead
+    // of a number quietly shrinking.
+    if d16_records != closed_hours {
+        return Err(format!(
+            "stream closes {closed_hours} game hour(s) but carries {d16_records} d16 DATA \
+             record(s); every closed hour of a d16-scheduled capture must carry exactly one, \
+             and this harness cannot validate the payloads of other domains to see where the \
+             difference went"
+        ));
+    }
+
     Ok(StreamScan {
         hours,
         failure_records,
@@ -645,6 +713,8 @@ struct Measurement {
     /// Sum of the accumulator's row count over every hour.
     state_rows_total: usize,
     baselines: usize,
+    /// Baselines the §1.5 gap rule forced outside a scheduled block start.
+    gap_forced_baselines: usize,
     baseline_bytes: usize,
     /// Hours that emitted a wire DELTA, and the bytes they cost.
     delta_hours: usize,
@@ -681,6 +751,7 @@ fn measure(
     };
     let mut prior: Option<&KeyedState> = None;
     let mut reader: Option<KeyedState> = None;
+    let mut previous_measured_hour: Option<i32> = None;
 
     for hour in hours {
         // Shipping arm: the record's exact bytes, header included.
@@ -705,9 +776,17 @@ fn measure(
         }
 
         let hour_start = m.wire.len();
-        let block_start = m.hours_seen % block_hours == 0;
+        let baseline_here = opens_baseline(
+            m.hours_seen,
+            block_hours,
+            previous_measured_hour,
+            hour.game_hour,
+        );
+        if baseline_here && m.hours_seen % block_hours != 0 {
+            m.gap_forced_baselines += 1;
+        }
         let mut emitted = true;
-        if block_start || prior.is_none() {
+        if baseline_here || prior.is_none() {
             encode_baseline(schema, std::slice::from_ref(state), &mut m.wire)
                 .expect("baseline encodes");
             m.baselines += 1;
@@ -736,7 +815,7 @@ fn measure(
         // the fold's, which is precisely what "nothing changed" asserts.
         if emitted {
             let hour_bytes = &m.wire[hour_start..];
-            if block_start || reader.is_none() {
+            if baseline_here || reader.is_none() {
                 let (states, consumed) =
                     decode_baseline(schema, hour_bytes, 0).expect("baseline decodes");
                 assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
@@ -767,6 +846,7 @@ fn measure(
         );
 
         prior = Some(state);
+        previous_measured_hour = Some(hour.game_hour);
         m.hours_seen += 1;
     }
     m
@@ -861,8 +941,12 @@ fn main() {
         t.unread_timed_vector_rows
     );
     println!(
-        "baselines            {} (every {BLOCK_HOURS} h), {} raw bytes",
-        m.baselines, m.baseline_bytes
+        "baselines            {} ({} every {BLOCK_HOURS} h, {} forced by a gap in measured \
+         hours — WIRE_FORMAT §1.5), {} raw bytes",
+        m.baselines,
+        m.baselines - m.gap_forced_baselines,
+        m.gap_forced_baselines,
+        m.baseline_bytes
     );
     println!(
         "delta hours          {} ({} raw bytes)   empty hours {}",
@@ -1891,5 +1975,107 @@ mod tests {
             s[i] ^= 0xFF;
             let _ = scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy);
         }
+    }
+
+    #[test]
+    fn a_gap_between_measured_hours_forces_a_baseline() {
+        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
+        // the next state observation to be a `BASELINE`." The decision function
+        // over its whole input space:
+        for hours_seen in 0..(2 * BLOCK_HOURS) {
+            assert!(opens_baseline(hours_seen, BLOCK_HOURS, None, 100));
+            assert!(
+                opens_baseline(hours_seen, BLOCK_HOURS, Some(100), 102),
+                "a skipped hour at position {hours_seen} must open a baseline"
+            );
+            assert!(opens_baseline(hours_seen, BLOCK_HOURS, Some(100), 100));
+            assert_eq!(
+                opens_baseline(hours_seen, BLOCK_HOURS, Some(100), 101),
+                hours_seen % BLOCK_HOURS == 0,
+                "a contiguous hour at position {hours_seen} is cadence-only"
+            );
+        }
+        assert!(opens_baseline(1, BLOCK_HOURS, Some(i32::MAX), i32::MIN));
+
+        // And through `measure`: an excluded (failure-status) hour between two
+        // measured ones forces a baseline even mid-block, and the reader replay
+        // still verifies. Without the rule this delta would be EMPTY — the two
+        // measured states are equal — silently asserting "unchanged" across an
+        // hour nobody measured.
+        let schema = d16::schema();
+        let collection = &schema.collections[0];
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            100,
+            D16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d16_payload(0, &[country_row(7, 3, 1)], &[]),
+        ));
+        s.extend(frame_end(2, 100));
+        s.extend(record(
+            3,
+            101,
+            D16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d16_payload(1 << 0, &[], &[]), // STATE_UNAVAILABLE, rowless
+        ));
+        s.extend(frame_end(4, 101));
+        s.extend(record(
+            5,
+            102,
+            D16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d16_payload(0, &[country_row(7, 3, 1)], &[]),
+        ));
+        s.extend(frame_end(6, 102));
+        let scan = scan_stream(&s, collection, StreamIdentityMode::Legacy).expect("well-formed");
+        assert_eq!(scan.hours.len(), 2, "hour 101 is excluded");
+        let m = measure(&schema, collection, &s, &scan.hours, 1_000);
+        assert_eq!(
+            m.baselines, 2,
+            "hour 100 opens the block; hour 102 is forced by the gap"
+        );
+        assert_eq!(m.gap_forced_baselines, 1);
+
+        // The same two measured states with no gap: one baseline, one empty hour.
+        let contiguous = stream_of(&[1, 1]);
+        let scan = scan_stream(&contiguous, collection, StreamIdentityMode::Legacy)
+            .expect("well-formed");
+        let m = measure(&schema, collection, &contiguous, &scan.hours, 1_000);
+        assert_eq!(m.baselines, 1);
+        assert_eq!(m.gap_forced_baselines, 0);
+        assert_eq!(m.empty_hours, 1);
+    }
+
+    #[test]
+    fn an_hour_closed_without_a_d16_record_refuses_the_stream() {
+        // The completeness bound on what this harness does NOT validate (module
+        // docs): it cannot check other domains' payloads, so a d16 record
+        // relabelled to another domain id — or dropped — must be caught by
+        // counting, not silently measured as fewer hours.
+        let mut s = good_stream();
+        let mut pos = 0usize;
+        let mut target = None;
+        while pos < s.len() {
+            let header = parse_compact_record_header(&s[pos..]).expect("well-formed");
+            if header.domain_id == D16 && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+            {
+                target = Some(pos);
+            }
+            pos += COMPACT_RECORD_HEADER_LEN + header.payload_len;
+        }
+        let target = target.expect("good_stream carries a d16 DATA record");
+        // domain_id sits at +20: magic(4) + version(2) + header_len(2) +
+        // sequence(8) + game_hour(4).
+        s[target + 20..target + 22].copy_from_slice(&99u16.to_le_bytes());
+        let err = match scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy) {
+            Err(e) => e,
+            Ok(_) => panic!("an hour with no d16 record must refuse the stream"),
+        };
+        assert!(
+            err.contains("game hour(s) but carries"),
+            "the completeness check must be what rejects it: {err}"
+        );
     }
 }
