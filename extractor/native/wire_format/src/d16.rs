@@ -1,9 +1,9 @@
 //! d16 `decisions_live` — per-country decision-status counters.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:13726`-`:13778`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:13800`-`:13852`
 //! (`fold_decisions`), the collector write that produces the payload
-//! (`extractor/native/collector/src/attach_log.rs:69215`-`:69282`), and the read
-//! that produces the counters (`attach_log.rs:82775`-`:82869`).
+//! (`extractor/native/collector/src/attach_log.rs:69581`-`:69648`), and the read
+//! that produces the counters (`attach_log.rs:83141`-`:83235`).
 //! `extractor/documents/domains/d16_decisions_live.md` carries real field-level
 //! knowledge and is used below, with one recorded disagreement (see
 //! "The dossier's preservation claim is false on this path").
@@ -14,38 +14,38 @@
 //! **stop condition** and is parsed for validation and byte accounting only, never
 //! mapped onto a `Record`. See "Why `timed_live` stops" below.
 //!
-//! ## Payload grammar (`world_fold.rs:13728`-`:13771`, written at `attach_log.rs:69227`-`:69281`)
+//! ## Payload grammar (`world_fold.rs:13802`-`:13845`, written at `attach_log.rs:69593`-`:69647`)
 //!
 //! A 24-byte header:
 //!
 //! | offset | width | field | written |
 //! |---|---|---|---|
-//! | `+0`  | u64 | `elapsed_wall_ms` | `attach_log.rs:69228` |
-//! | `+8`  | u32 | `country_count`   | `:69229`, read `world_fold.rs:13729` |
-//! | `+12` | u32 | `changed_rows`    | `:69230` — the SAME word as `country_count` |
-//! | `+16` | u32 | `status_flags`    | `:69231` — **never read by the fold** |
-//! | `+20` | u32 | `timed_count`     | `:69232`, read `world_fold.rs:13730` |
+//! | `+0`  | u64 | `elapsed_wall_ms` | `attach_log.rs:69594` |
+//! | `+8`  | u32 | `country_count`   | `:69595`, read `world_fold.rs:13803` |
+//! | `+12` | u32 | `changed_rows`    | `:69596` — the SAME word as `country_count` |
+//! | `+16` | u32 | `status_flags`    | `:69597` — **never read by the fold** |
+//! | `+20` | u32 | `timed_count`     | `:69598`, read `world_fold.rs:13804` |
 //!
 //! then `country_count` fixed 32-byte country rows, then `timed_count`
 //! variable-length timed rows. The fold requires the cursor to land exactly on
-//! `payload.len()` (`:13767`), so the two tables together account for every byte.
+//! `payload.len()` (`:13841`), so the two tables together account for every byte.
 //!
 //! ### Country row — 32 bytes, of which the fold reads 20
 //!
 //! | offset | width | fold reads it? | field | scale | gate |
 //! |---|---|---|---|---|---|
-//! | `+0`  | u32 | yes (`:13735`) | `tag_db_id`                | raw | none (key) |
-//! | `+4`  | u32 | reads and **discards** (`:13736`, binding `_flags`) | `flags` | — | — |
-//! | `+8`  | u32 | yes (`:13737`) | `active_timed`             | raw | none |
-//! | `+12` | u32 | yes (`:13738`) | `active_targeted`          | raw | none |
-//! | `+16` | u32 | yes (`:13739`) | `active_targeted_timed`    | raw | none |
+//! | `+0`  | u32 | yes (`:13809`) | `tag_db_id`                | raw | none (key) |
+//! | `+4`  | u32 | reads and **discards** (`:13810`, binding `_flags`) | `flags` | — | — |
+//! | `+8`  | u32 | yes (`:13811`) | `active_timed`             | raw | none |
+//! | `+12` | u32 | yes (`:13812`) | `active_targeted`          | raw | none |
+//! | `+16` | u32 | yes (`:13813`) | `active_targeted_timed`    | raw | none |
 //! | `+20` | u32 | **no**         | `decisions_taken_bucket`   | raw | — |
 //! | `+24` | u32 | **no**         | `decision_to_re_enable`    | raw | — |
 //! | `+28` | u32 | **no**         | `timed_row_count`          | raw | — |
 //!
 //! **No scales anywhere.** Every word is a raw vector size the collector read out
-//! of `CDecisionStatus` (`attach_log.rs:82843`-`:82846`) and the fold emits each
-//! one unmodified (`world_fold.rs:13745`-`:13747`). There is no `FIXED_SCALE`, no
+//! of `CDecisionStatus` (`attach_log.rs:83209`-`:83212`) and the fold emits each
+//! one unmodified (`world_fold.rs:13819`-`:13821`). There is no `FIXED_SCALE`, no
 //! `/32768`, and no field this domain divides — the 32768-vs-100000 failure class
 //! cannot arise, and the offset test in the test module pins that as a claim
 //! rather than an assumption.
@@ -53,18 +53,18 @@
 //! The last three columns are the "12 unread bytes". They are **not** ported:
 //! the recipe's precedence rule makes `fold_decisions` the authority on what this
 //! domain carries, and it carries what the fold folds. Their names and meanings
-//! are recorded above (recovered from the writer at `attach_log.rs:69244`-`:69268`)
+//! are recorded above (recovered from the writer at `attach_log.rs:69610`-`:69634`)
 //! so the blind spot is documented rather than merely observed, and they are
 //! listed in the deliverable's open questions.
 //!
 //! ## The `flags` word at `+4` — semantics recovered, deliberately not ported
 //!
-//! `attach_log.rs:69235`-`:69241` writes exactly two bits:
+//! `attach_log.rs:69601`-`:69607` writes exactly two bits:
 //!
-//! - `1<<0` — `CountryDecisionsRow::status_present.is_some()` (`:69236`)
-//! - `1<<1` — `CountryDecisionsRow::timed_live.is_some()` (`:69239`)
+//! - `1<<0` — `CountryDecisionsRow::status_present.is_some()` (`:69602`)
+//! - `1<<1` — `CountryDecisionsRow::timed_live.is_some()` (`:69605`)
 //!
-//! The fold binds the word to `_flags` and drops it (`world_fold.rs:13736`), so
+//! The fold binds the word to `_flags` and drops it (`world_fold.rs:13810`), so
 //! under the recipe's precedence rule neither bit is part of this domain's data.
 //! Both bits are recorded here because one of them carries information nothing
 //! else on the wire does — see the next two sections — and both are open
@@ -76,19 +76,19 @@
 //! place, and the reasoning is unusual enough to be worth stating in full.
 //!
 //! **The fold gates nothing.** Unlike `fold_country_core_scalars`, `fold_decisions`
-//! reads all three counters unconditionally (`world_fold.rs:13737`-`:13739`) and
+//! reads all three counters unconditionally (`world_fold.rs:13811`-`:13813`) and
 //! emits every one as a JSON number. It never emits `Null` for them, under any
 //! input. Step 2's first authority therefore says "value", always.
 //!
 //! **The collector conflates a real zero with a failed read, and the payload
-//! cannot separate them.** `decision_status_present` (`attach_log.rs:82827`) reads
+//! cannot separate them.** `decision_status_present` (`attach_log.rs:83193`) reads
 //! six vector sizes and inserts a key only when `decision_vector_size` returned
-//! `Some(size)` **and** `size > 0` (`:82843`-`:82846`). `decision_vector_size`
+//! `Some(size)` **and** `size > 0` (`:83209`-`:83212`). `decision_vector_size`
 //! returns `None` on unreadable memory, a `size > cap` inversion, a capacity past
 //! `MAX_DECISION_STATUS_LIST`, or a data pointer that is not a heap object
-//! (`:82856`-`:82868`) — but it returns `Some(0)` for a genuinely empty vector
-//! (`:82861`), which the `size > 0` test then drops just the same. The writer
-//! then packs `.unwrap_or(0)` for every missing key (`:69255`-`:69256`). So a
+//! (`:83222`-`:83234`) — but it returns `Some(0)` for a genuinely empty vector
+//! (`:83227`), which the `size > 0` test then drops just the same. The writer
+//! then packs `.unwrap_or(0)` for every missing key (`:69621`-`:69622`). So a
 //! packed `0` means "this vector was empty" **or** "this vector could not be read",
 //! and no bit anywhere in the row distinguishes them: `flags` bit `1<<0` is the
 //! OR over all six keys, so it is set whenever any one of the six was readable and
@@ -117,10 +117,10 @@
 //! `timed_live=[]` separately from an unmeasured or failed country."* On the
 //! compact path that is not what happens. `fold_decisions` writes
 //! `obj.insert("timed_live", json!([]))` for **every** country row
-//! (`world_fold.rs:13750`) before any timed row is appended, and the only bit that
+//! (`world_fold.rs:13824`) before any timed row is appended, and the only bit that
 //! could tell the two apart — `flags` `1<<1`, written from
-//! `timed_live.is_some()` at `attach_log.rs:69239` — is the word the fold discards
-//! at `:13736`. A country whose timed vector was unreadable and a country whose
+//! `timed_live.is_some()` at `attach_log.rs:69605` — is the word the fold discards
+//! at `:13810`. A country whose timed vector was unreadable and a country whose
 //! timed vector was empty fold to the identical `"timed_live": []`.
 //!
 //! This is not hypothetical: the reference capture
@@ -136,11 +136,11 @@
 //!
 //! The second table's rows are 12 fixed bytes (`tag_db_id`, `days` i32, `state`
 //! i32) plus a length-prefixed UTF-8 `decision` token
-//! (`world_fold.rs:13755`-`:13759`, written at `attach_log.rs:69274`-`:69277`).
+//! (`world_fold.rs:13829`-`:13833`, written at `attach_log.rs:69640`-`:69643`).
 //! **Two independent stop conditions apply, and the first is the shape.**
 //!
 //! *Shape — settled, not open.* The fold `push`es each row onto the country's
-//! array (`:13763`). It does not upsert, does not dedup and does not sort, so a
+//! array (`:13837`). It does not upsert, does not dedup and does not sort, so a
 //! payload with one country row for tag 7 and two identical timed rows
 //! `(7, 30, 0, "x")` folds to two entries in source order, and any shape with a
 //! key would collapse them into one. That is §7.3's third shape word for word —
@@ -161,14 +161,14 @@
 //! assignment §13 leaves open.
 //!
 //! The full stop-report is the deliverable's, not this file's; this module parses
-//! the table because the fold's trailing-byte rule (`:13767`) makes the whole
+//! the table because the fold's trailing-byte rule (`:13841`) makes the whole
 //! payload invalid if it is malformed, and because the deliverable reports its
 //! byte share.
 //!
 //! ## Shape: upsert, never replace
 //!
 //! `fold_decisions` commits with `self.country_mut(tag).insert("decisions", ..)`
-//! per tag (`:13773`-`:13776`). A country that is **absent** from a payload keeps
+//! per tag (`:13847`-`:13850`). A country that is **absent** from a payload keeps
 //! whatever it was folded last — the fold clears nothing. That makes one d16
 //! record smaller than one d16 state, so [`Accumulator`] is the fourth public
 //! boundary the recipe calls for, and it is what the measurement harness folds
@@ -185,12 +185,12 @@
 //! ## Mirroring the fold's permissiveness
 //!
 //! `fold_decisions` is at the permissive end of the fold family. It does **not**
-//! reject a zero `tag_db_id` (contrast `world_fold.rs:9259`), does **not** reject
-//! undefined `flags` bits (contrast `:9263`), applies **no** range check to any
+//! reject a zero `tag_db_id` (contrast `world_fold.rs:9279`), does **not** reject
+//! undefined `flags` bits (contrast `:9283`), applies **no** range check to any
 //! counter, does **not** read `status_flags` at all, does **not** check
 //! `changed_rows` against `country_count`, and treats a `tag_db_id` repeated
 //! inside one frame as last-writer-wins rather than a rejected frame
-//! (`per_tag.insert`, `:13751`). Every one of those is mirrored here rather than
+//! (`per_tag.insert`, `:13825`). Every one of those is mirrored here rather than
 //! tightened, because tightening would reject payloads the recorder folds — the
 //! data-loss direction — and each is pinned by a test.
 
@@ -218,29 +218,29 @@ pub mod field {
     pub const ACTIVE_TARGETED_TIMED: u32 = 4;
 }
 
-// --- Payload grammar, from `world_fold.rs:13728`-`:13771`. --------------------
+// --- Payload grammar, from `world_fold.rs:13802`-`:13845`. --------------------
 
-/// `world_fold.rs:13728` — `need(payload, 24, "decisions header")`.
+/// `world_fold.rs:13802` — `need(payload, 24, "decisions header")`.
 pub const HEADER_LEN: usize = 24;
-/// `world_fold.rs:13734`/`:13740` — `need(payload, cursor + 32)` then `cursor += 32`.
+/// `world_fold.rs:13808`/`:13814` — `need(payload, cursor + 32)` then `cursor += 32`.
 pub const COUNTRY_ROW_LEN: usize = 32;
 /// The fixed part of a timed row, before its length-prefixed string
-/// (`world_fold.rs:13754`-`:13758`).
+/// (`world_fold.rs:13828`-`:13832`).
 pub const TIMED_ROW_FIXED_LEN: usize = 12;
-/// The `u16` length prefix `read_string` consumes (`world_fold.rs:30161`-`:30163`).
+/// The `u16` length prefix `read_string` consumes (`world_fold.rs:30257`-`:30259`).
 pub const STRING_LEN_PREFIX: usize = 2;
 
-/// `attach_log.rs:69236`-`:69238` — the country's decision-status counters were
+/// `attach_log.rs:69602`-`:69604` — the country's decision-status counters were
 /// readable and at least one was non-zero. Read into `_flags` and discarded by the
-/// fold (`world_fold.rs:13736`); recorded, not ported. See the module docs.
+/// fold (`world_fold.rs:13810`); recorded, not ported. See the module docs.
 pub const FLAG_STATUS_PRESENT: u32 = 1 << 0;
-/// `attach_log.rs:69239`-`:69241` — the country's active-timed vector was read
+/// `attach_log.rs:69605`-`:69607` — the country's active-timed vector was read
 /// successfully (possibly to an empty list). Discarded by the fold; this is the
 /// bit whose loss makes the dossier's preservation claim false.
 pub const FLAG_TIMED_LIVE_READ: u32 = 1 << 1;
 
 /// Byte offsets of the three words the fold reads past the key
-/// (`world_fold.rs:13737`-`:13739`), in row order. Used by the mapper and by the
+/// (`world_fold.rs:13811`-`:13813`), in row order. Used by the mapper and by the
 /// offset test, so a transposition cannot pass one and fail the other.
 pub const COUNTER_OFFSETS: [(u32, usize); 3] = [
     (field::ACTIVE_TIMED, 8),
@@ -249,7 +249,7 @@ pub const COUNTER_OFFSETS: [(u32, usize); 3] = [
 ];
 
 /// The three words at `+20`, `+24` and `+28` that `fold_decisions` never reads,
-/// with the names the writer gives them (`attach_log.rs:69248`-`:69268`). Present
+/// with the names the writer gives them (`attach_log.rs:69614`-`:69634`). Present
 /// as documentation and as the subject of a test that pins the mapper's
 /// indifference to them; deliberately not mapped onto any field.
 pub const UNREAD_TAIL_OFFSETS: [(&str, usize); 3] = [
@@ -261,7 +261,7 @@ pub const UNREAD_TAIL_OFFSETS: [(&str, usize); 3] = [
 pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
-        // Key: the country's `tag_db_id` (`world_fold.rs:13735`). ContentId
+        // Key: the country's `tag_db_id` (`world_fold.rs:13809`). ContentId
         // because a country tag is content-defined (§5) — a manifest must resolve
         // it for it to keep its meaning under another mod set, which is the
         // deciding question for ContentId-vs-Unsigned. d63's `tag_db_id` and
@@ -275,7 +275,7 @@ pub fn schema() -> Schema {
         // `Monotone` — §4 makes Monotone a hint for counters that *usually* rise,
         // and these do not. Not `ContentId`: a vector length is not an id and no
         // manifest resolves it. Not `Continuous`: the fold emits each as an
-        // integer with no divisor (`world_fold.rs:13745`-`:13747`).
+        // integer with no divisor (`world_fold.rs:13819`-`:13821`).
         //
         // No capability is declared on any of the three. The fold gates none of
         // them and emits a value under every input, and the collector's
@@ -295,7 +295,7 @@ pub fn schema() -> Schema {
             collection_id: COUNTRIES,
             // `tag_db_id` is a stable identity that persists across hours, and
             // only a keyed set has a delta grammar (§7.3). The fold's per-tag
-            // upsert (`world_fold.rs:13773`-`:13776`) is a keyed-set update, not
+            // upsert (`world_fold.rs:13847`-`:13850`) is a keyed-set update, not
             // a replacement: see [`Accumulator`].
             shape: Shape::KeyedSet,
             fields,
@@ -306,17 +306,17 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 24-byte payload header (`world_fold.rs:13728`-`:13730`, written at
-/// `attach_log.rs:69227`-`:69232`).
+/// The 24-byte payload header (`world_fold.rs:13802`-`:13804`, written at
+/// `attach_log.rs:69593`-`:69598`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
     pub country_count: u32,
-    /// `attach_log.rs:69230` packs the same word as `country_count`, and
+    /// `attach_log.rs:69596` packs the same word as `country_count`, and
     /// `fold_decisions` never reads it. Surfaced for reporting; see
     /// [`split_payload`] for why it is not enforced.
     pub changed_rows: u32,
-    /// `attach_log.rs:69231`. **`fold_decisions` never reads this word**, so this
+    /// `attach_log.rs:69597`. **`fold_decisions` never reads this word**, so this
     /// module cannot act on it either — the exclusion decision belongs to the
     /// caller and is recorded in the measurement harness.
     pub status_flags: u32,
@@ -325,7 +325,7 @@ pub struct PayloadHeader {
 
 /// Split a d16 DATA payload into its header, its country rows and the raw timed
 /// region, applying the structural checks `fold_decisions` applies
-/// (`world_fold.rs:13728`-`:13734`).
+/// (`world_fold.rs:13802`-`:13808`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness that
@@ -333,13 +333,13 @@ pub struct PayloadHeader {
 ///
 /// **The timed region is returned unvalidated.** Its length is not a function of
 /// the header — every row carries a variable-length string — so the fold's
-/// trailing-byte rule (`:13767`) can only be checked by walking it. That walk is
+/// trailing-byte rule (`:13841`) can only be checked by walking it. That walk is
 /// [`parse_timed_rows`], and a caller that wants the fold's acceptance decision
 /// must run it; [`Accumulator::fold_payload`] does.
 ///
 /// **No `changed_rows == country_count` check.** d16 *is* full-replace per tag,
-/// and the writer does pack the two words identically (`attach_log.rs:69229`-
-/// `:69230`), but `fold_decisions` never reads `+12` at all. Enforcing an
+/// and the writer does pack the two words identically (`attach_log.rs:69595`-
+/// `:69596`), but `fold_decisions` never reads `+12` at all. Enforcing an
 /// invariant the fold does not state would reject payloads the recorder folds,
 /// which is the data-loss direction; the harness counts mismatches and reports
 /// them instead (the reference capture has 0 in 903 records).
@@ -388,7 +388,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// One row of the stopped `timed_live` table, borrowed from the payload
-/// (`world_fold.rs:13755`-`:13759`).
+/// (`world_fold.rs:13829`-`:13833`).
 ///
 /// This is **not** a `Record` and there is no mapper for it. It exists so the
 /// fold's structural rules can be enforced and so the deliverable can account for
@@ -402,12 +402,12 @@ pub struct TimedRow<'a> {
 }
 
 /// Walk the timed region exactly as `fold_decisions` does
-/// (`world_fold.rs:13753`-`:13772`), including its trailing-byte rule.
+/// (`world_fold.rs:13827`-`:13846`), including its trailing-byte rule.
 ///
 /// The fold reads `timed_count` rows and then requires the cursor to land on
 /// `payload.len()`; a region with bytes left over, or one that runs short, is a
 /// malformed payload and the whole frame is rejected. `read_string`
-/// (`world_fold.rs:30160`-`:30170`) also rejects invalid UTF-8, which is mirrored.
+/// (`world_fold.rs:30256`-`:30266`) also rejects invalid UTF-8, which is mirrored.
 ///
 /// Total over arbitrary bytes: every read is bounds-checked, and each iteration
 /// consumes at least `TIMED_ROW_FIXED_LEN + STRING_LEN_PREFIX` bytes, so a
@@ -419,7 +419,7 @@ pub fn parse_timed_rows(
     let mut rows = Vec::new();
     let mut cursor = 0usize;
     for index in 0..timed_count {
-        // `world_fold.rs:13754` — `need(payload, cursor + 12, "decisions timed row")`.
+        // `world_fold.rs:13828` — `need(payload, cursor + 12, "decisions timed row")`.
         if region.len() < cursor + TIMED_ROW_FIXED_LEN {
             return Err(format!(
                 "decisions timed row {index}: {} byte(s) left, needs {TIMED_ROW_FIXED_LEN}",
@@ -430,7 +430,7 @@ pub fn parse_timed_rows(
         let days = i32_at(region, cursor + 4);
         let state = i32_at(region, cursor + 8);
         cursor += TIMED_ROW_FIXED_LEN;
-        // `read_string`, `world_fold.rs:30161`-`:30167`.
+        // `read_string`, `world_fold.rs:30257`-`:30263`.
         if region.len() < cursor + STRING_LEN_PREFIX {
             return Err(format!("decisions timed row {index}: truncated string length"));
         }
@@ -446,7 +446,7 @@ pub fn parse_timed_rows(
         cursor += len;
         rows.push(TimedRow { tag_db_id, days, state, decision });
     }
-    // `world_fold.rs:13767` — the cursor must land exactly on the end.
+    // `world_fold.rs:13841` — the cursor must land exactly on the end.
     if cursor != region.len() {
         return Err(format!(
             "decisions trailing bytes: consumed {cursor} of {} in the timed region",
@@ -456,10 +456,10 @@ pub fn parse_timed_rows(
     Ok(rows)
 }
 
-/// The key of one country row: its `tag_db_id` (`world_fold.rs:13735`, `:13751`).
+/// The key of one country row: its `tag_db_id` (`world_fold.rs:13809`, `:13825`).
 ///
 /// Zero is a legal key. `fold_decisions` applies no zero check — unlike
-/// `fold_country_core_scalars` (`:9259`) — so a zero `tag_db_id` becomes the
+/// `fold_country_core_scalars` (`:9279`) — so a zero `tag_db_id` becomes the
 /// country entry `0` rather than a rejected frame, and this mirrors that.
 pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_country_row_len(row)?;
@@ -467,7 +467,7 @@ pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
 }
 
 /// One compact row of the `countries` table, as the collector emits it today
-/// (`attach_log.rs:69242`-`:69268`), onto its stored Record. `row` is the raw
+/// (`attach_log.rs:69608`-`:69634`), onto its stored Record. `row` is the raw
 /// 32-byte row slice (the caller has already consumed the payload header via
 /// [`split_payload`]); d16 has exactly one country row form, so length selects
 /// nothing and a wrong length is rejected. `frame_tick` is §6's derived-field
@@ -477,7 +477,7 @@ pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// Nothing in this function can panic on any 32-byte input, and no 32-byte input
 /// is rejected: `fold_decisions` reads every one of these three words
 /// unconditionally, applies no range check and applies no flag gate
-/// (`world_fold.rs:13735`-`:13739`), so a mapper that refused a row here would
+/// (`world_fold.rs:13809`-`:13813`), so a mapper that refused a row here would
 /// drop data the recorder keeps. The row's `flags` word and its three unread tail
 /// words are ignored exactly as the fold ignores them.
 pub fn record_from_country_row(
@@ -505,7 +505,7 @@ pub fn record_from_country_row(
                 f.field_id
             ));
         };
-        // Raw, unscaled, ungated — `world_fold.rs:13737`-`:13747`. A zero here is
+        // Raw, unscaled, ungated — `world_fold.rs:13811`-`:13821`. A zero here is
         // a measured value (§3), not an empty state; see the module docs for why
         // the collector's zero-vs-unreadable conflation is not expressed as
         // `Unknown`.
@@ -522,14 +522,14 @@ pub struct FoldOutcome {
     /// Country rows in the payload (`header.country_count`).
     pub country_rows: usize,
     /// Country rows whose `tag_db_id` was already claimed earlier in the SAME
-    /// payload. The fold's `per_tag.insert` (`world_fold.rs:13751`) makes those
+    /// payload. The fold's `per_tag.insert` (`world_fold.rs:13825`) makes those
     /// last-writer-wins rather than a rejected frame, which is mirrored; the
     /// count is reported because it is a property worth noticing, not an error.
     pub duplicate_country_tags: usize,
     /// Rows in the stopped `timed_live` table, parsed for validation only.
     pub timed_rows: usize,
     /// Timed rows whose `tag_db_id` matched no country row in this payload. The
-    /// fold drops them silently (`world_fold.rs:13761`); counted here so the
+    /// fold drops them silently (`world_fold.rs:13835`); counted here so the
     /// silence is at least measured.
     pub timed_rows_dropped: usize,
 }
@@ -538,7 +538,7 @@ pub struct FoldOutcome {
 /// calls for, because one d16 record is not one d16 state.
 ///
 /// `fold_decisions` commits each payload with `self.country_mut(tag).insert(..)`
-/// (`world_fold.rs:13773`-`:13776`): it upserts the tags the payload carries and
+/// (`world_fold.rs:13847`-`:13850`): it upserts the tags the payload carries and
 /// **clears nothing**, so a country that stops appearing keeps its last folded
 /// counters indefinitely. There is no baseline/delta distinction to model — the
 /// fold never reads `status_flags` (and so never sees `COMPACT_STATUS_DELTA_DATA`)
@@ -560,15 +560,15 @@ impl Accumulator {
     /// Fold one d16 DATA payload, exactly as `fold_decisions` does.
     ///
     /// The caller owns the failure-status decision: `fold_decisions` never reads
-    /// `status_flags` (`world_fold.rs:13727`-`:13778` contains no read of `+16`),
+    /// `status_flags` (`world_fold.rs:13801`-`:13852` contains no read of `+16`),
     /// so there is no fold behaviour here to mirror and this function applies
     /// every payload it is given. The measurement harness records its own
     /// refuse-or-exclude choice explicitly.
     ///
     /// On `Err` the accumulator is left exactly as it was. That mirrors the fold,
-    /// whose every error path — the header check (`:13728`), the per-row `need`
-    /// (`:13734`, `:13754`), `read_string` (`:13759`) and the trailing-byte check
-    /// (`:13767`) — precedes its first world mutation at `:13773`.
+    /// whose every error path — the header check (`:13802`), the per-row `need`
+    /// (`:13808`, `:13828`), `read_string` (`:13833`) and the trailing-byte check
+    /// (`:13841`) — precedes its first world mutation at `:13847`.
     pub fn fold_payload(
         &mut self,
         countries_collection: &Collection,
@@ -586,7 +586,7 @@ impl Accumulator {
             rows += 1;
             let k = key_from_country_row(row)?;
             let record = record_from_country_row(countries_collection, row, 0)?;
-            // `per_tag.insert`, `world_fold.rs:13751`: last writer wins.
+            // `per_tag.insert`, `world_fold.rs:13825`: last writer wins.
             if staged.insert(k, record).is_some() {
                 duplicate_country_tags += 1;
             }
@@ -602,17 +602,17 @@ impl Accumulator {
         }
 
         // Parse the stopped table. Not mapped, but the fold's trailing-byte rule
-        // (`:13767`) rejects the WHOLE payload when it is malformed, so accepting
+        // (`:13841`) rejects the WHOLE payload when it is malformed, so accepting
         // a frame without this walk would accept frames the recorder refuses.
         let timed = parse_timed_rows(timed_region, header.timed_count)?;
-        // `world_fold.rs:13761` — a timed row whose tag matched no country row in
+        // `world_fold.rs:13835` — a timed row whose tag matched no country row in
         // this payload is dropped without a diagnostic.
         let timed_rows_dropped = timed
             .iter()
             .filter(|r| !tags.contains(&r.tag_db_id))
             .count();
 
-        // `world_fold.rs:13773`-`:13776` — upsert per tag, clear nothing.
+        // `world_fold.rs:13847`-`:13850` — upsert per tag, clear nothing.
         for (k, record) in staged {
             self.countries.insert(k, record);
         }
@@ -667,7 +667,7 @@ mod tests {
     }
 
     /// A raw 32-byte country row, built the way the collector packs one
-    /// (`attach_log.rs:69242`-`:69268`): tag, flags, the three ported counters,
+    /// (`attach_log.rs:69608`-`:69634`): tag, flags, the three ported counters,
     /// then the three words the fold never reads.
     fn country_row(tag: u32, flags: u32, counters: [u32; 3], tail: [u32; 3]) -> Vec<u8> {
         let mut row = Vec::with_capacity(COUNTRY_ROW_LEN);
@@ -692,7 +692,7 @@ mod tests {
         )
     }
 
-    /// A timed row exactly as `attach_log.rs:69274`-`:69277` packs one.
+    /// A timed row exactly as `attach_log.rs:69640`-`:69643` packs one.
     fn timed_row(tag: u32, days: i32, state: i32, decision: &str) -> Vec<u8> {
         let mut row = Vec::new();
         row.extend_from_slice(&tag.to_le_bytes());
@@ -758,7 +758,7 @@ mod tests {
         // test is the record of why rather than a silent omission. The schema
         // declares no `.optional()`, no `.nullable()` and no `.unknown_capable()`,
         // because `fold_decisions` reads all three counters unconditionally
-        // (`world_fold.rs:13737`-`:13739`) — there is no gate whose clear state
+        // (`world_fold.rs:13811`-`:13813`) — there is no gate whose clear state
         // could mean inapplicable, empty or uncaptured. So the mapper must emit a
         // value for every field on every 32-byte input, and it does, including on
         // an all-zero row and on a row with every bit set.
@@ -789,7 +789,7 @@ mod tests {
         // The common case in the reference capture: 58.50% of counter cells read
         // zero, overwhelmingly countries with no active decisions of that kind.
         // §3 keeps zero out of the three empty states, and the collector's
-        // zero-vs-unreadable conflation (`attach_log.rs:82843`-`:82846`) is not
+        // zero-vs-unreadable conflation (`attach_log.rs:83209`-`:83212`) is not
         // expressible from the payload, so it must not be guessed at here.
         let c = countries();
         let r = record_from_country_row(&c, &country_row(1, 0, [0; 3], [0; 3]), 0).expect("maps");
@@ -809,7 +809,7 @@ mod tests {
         // Distinct values per offset, so a transposed pair fails — the unscaled
         // form of the 32768-vs-100000 test. `active_timed` is at `+8`,
         // `active_targeted` at `+12`, `active_targeted_timed` at `+16`
-        // (`world_fold.rs:13737`-`:13739`).
+        // (`world_fold.rs:13811`-`:13813`).
         let c = countries();
         let r = record_from_country_row(&c, &country_row(9, 3, [100, 200, 300], [400, 500, 600]), 0)
             .expect("maps");
@@ -837,7 +837,7 @@ mod tests {
             }
         }
 
-        // No scale anywhere: the fold divides nothing (`:13745`-`:13747`), so
+        // No scale anywhere: the fold divides nothing (`:13819`-`:13821`), so
         // values that would be mangled by a 32768 or 100000 divisor survive whole.
         for raw in [1u32, 32_768, 100_000, u32::MAX] {
             let r = record_from_country_row(&c, &country_row(1, 0, [raw, raw, raw], [0; 3]), 0)
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn the_unread_row_tail_and_the_flags_word_change_nothing() {
-        // `world_fold.rs:13736` binds the flags word to `_flags` and drops it, and
+        // `world_fold.rs:13810` binds the flags word to `_flags` and drops it, and
         // nothing reads `+20`, `+24` or `+28`. Two rows differing only in those 16
         // bytes must map identically — the mapper must not have quietly adopted a
         // field the fold does not carry.
@@ -887,7 +887,7 @@ mod tests {
         // Step 4's "quantization saves bytes" test does not apply: quantization is
         // declared on `Continuous` fields only, and d16 has none. All three
         // counters are vector sizes the fold emits as integers with no divisor
-        // (`world_fold.rs:13745`-`:13747`), so there is nothing to draw rather
+        // (`world_fold.rs:13819`-`:13821`), so there is nothing to draw rather
         // than interpolate and nothing to round.
         let c = countries();
         assert_eq!(
@@ -1025,7 +1025,7 @@ mod tests {
     #[test]
     fn the_key_is_the_tag_db_id_and_zero_is_legal() {
         assert_eq!(key_from_country_row(&full_row()).expect("keys"), key(&[7]));
-        // `fold_decisions` applies no zero check (contrast `world_fold.rs:9259`),
+        // `fold_decisions` applies no zero check (contrast `world_fold.rs:9279`),
         // so a zero tag is a country entry, not a rejected frame.
         assert_eq!(
             key_from_country_row(&country_row(0, 0, [0; 3], [0; 3])).expect("keys"),
@@ -1103,7 +1103,7 @@ mod tests {
         assert_eq!(parsed[0], TimedRow { tag_db_id: 7, days: 30, state: 0, decision: "GER_test_decision" });
         assert_eq!(parsed[1], TimedRow { tag_db_id: 9, days: -1, state: 2, decision: "" });
 
-        // Trailing bytes: `world_fold.rs:13767` rejects the whole payload.
+        // Trailing bytes: `world_fold.rs:13841` rejects the whole payload.
         let mut extra = region.clone();
         extra.push(0);
         assert!(parse_timed_rows(&extra, 2).is_err(), "one trailing byte");
@@ -1115,7 +1115,7 @@ mod tests {
         for len in 0..region.len() {
             assert!(parse_timed_rows(&region[..len], 2).is_err(), "cut at {len}");
         }
-        // Invalid UTF-8 (`world_fold.rs:30167`).
+        // Invalid UTF-8 (`world_fold.rs:30263`).
         let mut bad = Vec::new();
         bad.extend_from_slice(&7u32.to_le_bytes());
         bad.extend_from_slice(&0i32.to_le_bytes());
@@ -1132,7 +1132,7 @@ mod tests {
 
     #[test]
     fn the_accumulator_upserts_and_never_clears() {
-        // The defining property (`world_fold.rs:13773`-`:13776`): a country absent
+        // The defining property (`world_fold.rs:13847`-`:13850`): a country absent
         // from a later payload keeps its last folded counters. Getting this wrong
         // would silently drop 355 of 356 countries in the reference capture.
         let c = countries();
@@ -1173,7 +1173,7 @@ mod tests {
 
     #[test]
     fn a_tag_repeated_inside_one_payload_is_last_writer_wins() {
-        // `per_tag.insert`, `world_fold.rs:13751` — not a rejected frame.
+        // `per_tag.insert`, `world_fold.rs:13825` — not a rejected frame.
         let c = countries();
         let mut acc = Accumulator::new();
         let out = acc
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn identical_timed_rows_are_two_occurrences_not_one() {
         // The stop report's shape claim, pinned as behaviour. `fold_decisions`
-        // `push`es (`world_fold.rs:13763`), so two byte-identical timed rows fold
+        // `push`es (`world_fold.rs:13837`), so two byte-identical timed rows fold
         // to two entries in source order. Any keyed collection would collapse them
         // into one, which is why `Shape::OrderedOccurrenceList` — unimplemented,
         // and a stop condition in its own right — is the collection's real shape.
@@ -1247,7 +1247,7 @@ mod tests {
 
     #[test]
     fn a_timed_row_with_no_matching_country_is_counted_not_rejected() {
-        // `world_fold.rs:13761` drops it silently; the count makes the silence
+        // `world_fold.rs:13835` drops it silently; the count makes the silence
         // visible without changing the fold's outcome.
         let c = countries();
         let mut acc = Accumulator::new();
@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn a_malformed_payload_leaves_the_accumulator_untouched() {
         // Every fold error path precedes the world mutation at
-        // `world_fold.rs:13773`, so a refused payload must not half-apply.
+        // `world_fold.rs:13847`, so a refused payload must not half-apply.
         let c = countries();
         let mut acc = Accumulator::new();
         acc.fold_payload(&c, &payload(0, &[country_row(1, 3, [1, 0, 0], [0; 3])], &[]))

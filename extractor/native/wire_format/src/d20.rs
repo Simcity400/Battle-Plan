@@ -1,6 +1,6 @@
 //! d20 `divisions_live` — the reference domain schema.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:18923`-`:19400`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:18997`-`:19474`
 //! (row decode and object build) and `extractor/documents/domains/d20_divisions_live.md`.
 //! The rationale for every quantization choice is in
 //! `extractor/native/runs/d20_reference/07_schema_v1.md`.
@@ -73,7 +73,7 @@ pub fn schema() -> Schema {
         fields.push(Field::new(id, Kind::Continuous).quant(BAR_PRECISION));
     }
     // The A15 extension fields. A legacy 104-byte row does not carry them
-    // (`world_fold.rs:18927`-`:18939`), and the schema does support them, so their
+    // (`world_fold.rs:19001`-`:19013`), and the schema does support them, so their
     // state on such a row is **unknown**, not absent — §3 reserves absent for
     // "not applicable, or unsupported by this schema".
     fields.push(

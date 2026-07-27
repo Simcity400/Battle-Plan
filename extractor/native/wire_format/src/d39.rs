@@ -1,12 +1,12 @@
 //! d39 `air_variant_upgrades` — the per-variant upgrade catalog for air variants.
 //!
 //! **The grammar lives in [`crate::variant_upgrades`]**, which d39 shares
-//! byte-for-byte with d40 `stockpile_variant_upgrades`: `world_fold.rs:4684` and
-//! `:4685` dispatch the same `fold_variant_upgrades` (`:15431`) for both, and the
-//! only divergences inside it are the accumulator it writes (`:15501`-`:15505`)
-//! and the name in its error strings (`:15432`-`:15436`). Read that module for
+//! byte-for-byte with d40 `stockpile_variant_upgrades`: `world_fold.rs:4704` and
+//! `:4705` dispatch the same `fold_variant_upgrades` (`:15505`) for both, and the
+//! only divergences inside it are the accumulator it writes (`:15575`-`:15579`)
+//! and the name in its error strings (`:15506`-`:15510`). Read that module for
 //! the payload tables, the four-state decision (none: `flags` must be exactly
-//! zero, `:15472`), the upsert-only fold, and the one place the mapping is
+//! zero, `:15546`), the upsert-only fold, and the one place the mapping is
 //! stricter than the fold.
 //!
 //! This module is the **domain identity**: §11 assigns field ids per domain, so
@@ -31,7 +31,7 @@ use crate::variant_upgrades::{self as shared, Domain, PayloadHeader, State, Tabl
 pub const DOMAIN: u32 = 39;
 
 /// The fold's own name for this domain in its diagnostics
-/// (`world_fold.rs:15433`).
+/// (`world_fold.rs:15507`).
 pub const NAME: &str = "air_variant_upgrades";
 
 /// The descriptor every shared entry point takes. Nothing else constructs one.

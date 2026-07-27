@@ -7,7 +7,7 @@
 //! `:23532`-`:23541`), and the collector read that produces the flags, the
 //! status word and the target-state child rows
 //! (`extractor/native/collector/src/attach_log.rs:19154`-`:19352`,
-//! `:46181`-`:46326`, `:69922`-`:69990`). `extractor/documents/domains/` carries
+//! `:46181`-`:46335`, `:69931`-`:69999`). `extractor/documents/domains/` carries
 //! no d27 dossier, so the fold and the collector read are the whole basis.
 //!
 //! **Payload grammar** (`world_fold.rs:14162`-`:14192`): a 40-byte header —
@@ -49,7 +49,7 @@
 //! array; the fold proves those ranges non-overlapping (`:14258`-`:14263`) and
 //! total (`:14293`-`:14295`), and proves each state id unique within its owning
 //! row (`:14296`-`:14298`). The ranges are re-packed by the collector on every
-//! frame from emission order (`attach_log.rs:69962`-`:69982`). So the ranges are
+//! frame from emission order (`attach_log.rs:69971`-`:69991`). So the ranges are
 //! flattened away here: collection [`ORDERS`] carries one row per order and
 //! collection [`TARGET_STATES`] one row per (order, state) pair, keyed by the
 //! order's key plus the state id.
@@ -92,10 +92,10 @@
 //! **`target_state_declared_count` is the four-state decision the fold alone
 //! gets wrong.** The fold reads `+32` unconditionally (`world_fold.rs:14277`)
 //! and stores whatever is there, so a fold-only reading publishes the packer's
-//! `unwrap_or(0)` filler (`attach_log.rs:69975`) as a measured **zero**. The
+//! `unwrap_or(0)` filler (`attach_log.rs:69984`) as a measured **zero**. The
 //! gate is real, it is just on the collector side: the packer sets
 //! `TARGET_STATE_COUNT` exactly when `row.target_state_count.is_some()`
-//! (`:69965`-`:69967`). `read_army_order_target_states`
+//! (`:69974`-`:69976`). `read_army_order_target_states`
 //! (`attach_log.rs:19291`-`:19352`) is the only producer of that `Option`, and
 //! its branches split cleanly:
 //!
@@ -139,12 +139,12 @@
 //! collector's own `COMPACT_ARMY_ORDER_TARGET_STATUS_*`
 //! (`attach_log.rs:10977`, `:11314`-`:11317`): `NONE=0, EXACT=1, UNSUPPORTED=2,
 //! OVERFLOW=3, VALIDATION_FAILED=4`, and `compact_army_order_target_status_code`
-//! (`:46320`-`:46326`) is total onto exactly that set — its `_ =>` arm maps
+//! (`:46329`-`:46335`) is total onto exactly that set — its `_ =>` arm maps
 //! anything else to `NONE`. Only `{0, 1, 2}` occur on `deepwar_t1`, but `3` and
 //! `4` are both reachable (`:19315`-`:19347`), so the cardinality is the
 //! producer's codomain and not the capture's histogram. `NONE` reaches the wire
 //! only through `deleted_compact_army_order_row`, whose `target_status` is the
-//! literal `"deleted"` (`:46303`) — and a deleted row is a removal, not a
+//! literal `"deleted"` (`:46312`) — and a deleted row is a removal, not a
 //! record, so this mapper never emits `Enum(NONE)` from a capture shaped like
 //! today's. It stays in the cardinality because the fold accepts the word and a
 //! future non-deleted `NONE` must map rather than fail.
@@ -158,7 +158,7 @@
 //! on it — `read_army_order_target_states` and
 //! `read_army_battleplans_depth_path_provinces` only *branch* on it, returning
 //! `"unsupported"` for a value they do not know (`:19295`, `:19362`) — and both
-//! `compact_army_order_row` (`:46278`) and the packer (`:69971`) copy it
+//! `compact_army_order_row` (`:46287`) and the packer (`:69980`) copy it
 //! verbatim. The fold reads it with `read_i32` and validates nothing
 //! (`world_fold.rs:14274`). So the codomain is all of `i32`, an `Enum(6)` would
 //! reject rows the fold folds — recipe step 2's "never gate against the fold" —
@@ -185,7 +185,7 @@
 //!
 //! **`generation` and `owner_id` are runtime instance identities.**
 //! `generation` is the collector's own tracker counter, handed out at
-//! `attach_log.rs:46199`-`:46215` and stable only within one capture;
+//! `attach_log.rs:46208`-`:46224` and stable only within one capture;
 //! `owner_id` is an engine army/army-group id. Neither is resolved by a content
 //! manifest, so both are `Unsigned` (§5's campaign test). The fold's own comment
 //! at `world_fold.rs:23507`-`:23512` explains why `slot_index` is *not* in the
@@ -200,7 +200,7 @@
 //! delete row may legally declare a target range; those target rows are
 //! validated and then discarded with the key, and [`fold_payload`] reproduces
 //! that. (The collector's own delete rows carry no range —
-//! `deleted_compact_army_order_row` sets `target_states: None` (`:46299`) — but
+//! `deleted_compact_army_order_row` sets `target_states: None` (`:46308`) — but
 //! "the emitter never does this" is not a reason to refuse it.)
 //!
 //! **The expected-partial withhold is a fold-nothing path, and it sits after the
@@ -279,7 +279,7 @@ pub const KNOWN_FLAGS: u32 = FLAG_DELETED | FLAG_TARGET_STATES | FLAG_TARGET_STA
 
 /// `COMPACT_ARMY_ORDER_TARGET_STATUS_*`, `collector/src/attach_log.rs:10977`
 /// and `:11314`-`:11317`. The producer,
-/// `compact_army_order_target_status_code` (`:46320`), is total onto this set.
+/// `compact_army_order_target_status_code` (`:46329`), is total onto this set.
 pub const TARGET_STATUS_NONE: u32 = 0;
 pub const TARGET_STATUS_EXACT: u32 = 1;
 pub const TARGET_STATUS_UNSUPPORTED: u32 = 2;
@@ -315,7 +315,7 @@ pub fn schema() -> Schema {
                     // identity created during play, so `Unsigned` (§5).
                     Field::new(f::OWNER_ID, Kind::Unsigned).key(1),
                     // The collector's own generation counter
-                    // (`attach_log.rs:46199`-`:46215`) — a runtime instance
+                    // (`attach_log.rs:46208`-`:46224`) — a runtime instance
                     // identity, `Unsigned`. Not `Monotone`: it is an identity,
                     // and §7.4 admits no `Monotone` key.
                     Field::new(f::GENERATION, Kind::Unsigned).key(2),
@@ -339,7 +339,7 @@ pub fn schema() -> Schema {
                     // The capture-quality code for the target-state read.
                     // `Enum` with the producer's full codomain, never the
                     // histogram of one capture. Always concrete: the packer
-                    // writes a code for every row (`attach_log.rs:69977`).
+                    // writes a code for every row (`attach_log.rs:69986`).
                     Field::new(f::TARGET_STATUS_CODE, Kind::Enum)
                         .enum_card(TARGET_STATUS_CARDINALITY),
                 ],
@@ -387,7 +387,7 @@ pub struct PayloadHeader {
 /// One parsed order row. `target_first`/`target_count` are kept because the
 /// caller needs them to find the row's target states, not because they are
 /// state: they index the frame's shared target array and are re-packed from
-/// emission order every frame (`attach_log.rs:69962`-`:69982`).
+/// emission order every frame (`attach_log.rs:69971`-`:69991`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OrderRow {
     pub owner_kind: u32,
@@ -671,7 +671,7 @@ pub fn record_from_row(
     // `target_state_declared_count`, so an out-of-vocabulary code must stop the
     // row before it is read as a gate. §4: "a value the writer cannot map into
     // 0..n-1 is a failed sample and a typed gap, never a coerced code." The
-    // producer is total onto `0..=4` (`attach_log.rs:46320`-`:46326`), so this
+    // producer is total onto `0..=4` (`attach_log.rs:46329`-`:46335`), so this
     // refuses nothing the collector can emit.
     let target_status_code = u32_at(row, 36);
     if target_status_code >= TARGET_STATUS_CARDINALITY {
@@ -682,7 +682,7 @@ pub fn record_from_row(
     }
 
     // `target_state_declared_count` is packed `unwrap_or(0)` under a clear gate
-    // (`attach_log.rs:69975`), so a non-zero word there is a captured value the
+    // (`attach_log.rs:69984`), so a non-zero word there is a captured value the
     // empty-state mapping below would silently drop — the one way this boundary
     // could lose data. Refused rather than mapped. Measured: 0 of 888 clear-gate
     // rows on deepwar_t1.
@@ -1403,7 +1403,7 @@ mod tests {
                 "status {status}"
             );
         }
-        // NONE is the `_ =>` arm (`attach_log.rs:46325`), reachable today only
+        // NONE is the `_ =>` arm (`attach_log.rs:46334`), reachable today only
         // on a delete row. On a live row it is still not "unsupported", so it
         // takes the conservative arm.
         let row = order_row(7, 1, 0, 1, 5, 0, 0, 0, TARGET_STATUS_NONE, OWNER_KIND_ARMY, 0);

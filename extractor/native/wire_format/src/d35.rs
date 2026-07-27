@@ -1,27 +1,27 @@
 //! d35 `air_variant_stats` — the per-variant aircraft stat catalog.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:15136`-`:15199`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:15210`-`:15273`
 //! (`fold_air_variant_stats`), its payload constants at `:987`-`:988`, the state
-//! struct and render at `:23761`-`:23815`, and the collector read and payload
+//! struct and render at `:23835`-`:23889`, and the collector read and payload
 //! writer that produce the rows
-//! (`extractor/native/collector/src/attach_log.rs:52739`-`:52793`,
-//! `:57157`-`:57223` and `:70118`-`:70154`).
+//! (`extractor/native/collector/src/attach_log.rs:52997`-`:53067`,
+//! `:57497`-`:57563` and `:70484`-`:70520`).
 //! `domains/UNDOCUMENTED_DOMAINS.md` lists d35 with no dossier; the fold and the
 //! collector read are the whole basis, which the recipe treats as sufficient.
 //!
-//! **Payload grammar** (`world_fold.rs:15137`-`:15173`, writer at
-//! `attach_log.rs:70126`-`:70134`): a 36-byte header — `elapsed_wall_ms` u64 at
+//! **Payload grammar** (`world_fold.rs:15211`-`:15247`, writer at
+//! `attach_log.rs:70492`-`:70500`): a 36-byte header — `elapsed_wall_ms` u64 at
 //! `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at `+12`, `status_flags` u32
 //! at `+16`, `observed_variant_rows` u32 at `+20`, `invalid_variant_rows` u32 at
 //! `+24`, `fixed_scale_raw` u32 at `+28`, `range_scale_raw` u32 at `+32` —
 //! followed by `row_count` fixed 64-byte rows. There is no legacy short row: the
-//! fold requires `payload.len() == 36 + row_count * 64` exactly (`:15156`), so
+//! fold requires `payload.len() == 36 + row_count * 64` exactly (`:15230`), so
 //! the length never selects a row form and the mapper accepts exactly one.
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `variant_id`               | raw               | none (key; zero rejected, `:15167`) |
-//! | `+4`  | u32 | `flags`                    | raw               | none (read and stored, never validated, `:15178`) |
+//! | `+0`  | u32 | `variant_id`               | raw               | none (key; zero rejected, `:15241`) |
+//! | `+4`  | u32 | `flags`                    | raw               | none (read and stored, never validated, `:15252`) |
 //! | `+8`  | u32 | `equipment_token_raw`      | raw               | none |
 //! | `+12` | u32 | `equipment_type_token_raw` | raw               | none |
 //! | `+16` | u32 | `interface_type_raw`       | raw               | none |
@@ -35,16 +35,16 @@
 //! | `+48` | i32 | `thrust`                   | `/fixed_scale_raw`| none |
 //! | `+52` | i32 | `fuel_consumption`         | `/fixed_scale_raw`| none |
 //! | `+56` | i32 | `build_cost_ic`            | `/fixed_scale_raw`| none |
-//! | `+60` | u32 | `reserved`                 | —                 | hard-enforced zero (`:15172`) |
+//! | `+60` | u32 | `reserved`                 | —                 | hard-enforced zero (`:15246`) |
 //!
 //! ## The two scales, and why neither is a constant of this module
 //!
 //! d35 is the first fan-out domain with **two different denominators, both
 //! carried in the payload header and NEITHER asserted against `FIXED_SCALE`**.
 //! `to_json` divides `range_raw` by `range_scale_raw` and the other nine stats by
-//! `fixed_scale_raw` (`world_fold.rs:23786`-`:23796`), and unlike d32/d36/d38 the
+//! `fixed_scale_raw` (`world_fold.rs:23860`-`:23870`), and unlike d32/d36/d38 the
 //! fold never calls `ensure_fixed_scale` — the only check is that both words are
-//! non-zero (`:15146`-`:15148`). So the header is the authority for both, and
+//! non-zero (`:15220`-`:15222`). So the header is the authority for both, and
 //! this module hard-codes neither: [`RowScales`] is a mapper input, not a
 //! constant. The capture the measurement runs against carries
 //! `(fixed, range) = (100_000, 1_000)` on all 146 hours, which is exactly the
@@ -55,7 +55,7 @@
 //!
 //! The same fact has a second consequence that a full-replace domain would not
 //! have: **the fold copies both header words into every row's stored state**
-//! (`world_fold.rs:15195`-`:15196`), and d35 never clears its accumulator. A row
+//! (`world_fold.rs:15269`-`:15270`), and d35 never clears its accumulator. A row
 //! inserted while the header said `1_000` keeps `1_000` even after a later header
 //! says something else, because nothing re-states it. The scales are therefore
 //! per-row state, not a per-frame constant, and they are carried as per-row
@@ -68,7 +68,7 @@
 //! ## Pure upsert: no delete grammar, no clear, no delta rejection
 //!
 //! `fold_air_variant_stats` guards `handle_compact_failure` and then inserts
-//! (`:15149`-`:15197`). It calls neither `replace_or_sparse_after_first` nor
+//! (`:15223`-`:15271`). It calls neither `replace_or_sparse_after_first` nor
 //! `reject_delta_before_baseline`, it never reads `COMPACT_STATUS_DELTA_DATA`,
 //! it has no delete bit, and it never clears the map. d22's shipping layer at
 //! least clears on a BASELINE; d35's has no baseline at all. Three consequences,
@@ -80,20 +80,20 @@
 //!    observation about one capture, and it is asserted every hour by the
 //!    measurement bin.
 //! 2. **One record is not one state.** The collector emits only rows that
-//!    changed since its own last frame (`attach_log.rs:52773`-`:52777`), so most
+//!    changed since its own last frame (`attach_log.rs:52773`-`:52777` (pre-9160a8a0 lines; see git history)), so most
 //!    hours carry a *rowless* payload and the hour's state is the accumulator,
 //!    not the record. This is the recipe's fourth public boundary: [`Accumulator`]
 //!    and [`Accumulator::fold_payload`] live here so the measurement bin, the
 //!    tests and any future caller share one replay of the shipping grammar.
 //! 3. **A variant whose collector read fails is silently stale, not removed.**
-//!    A row that fails `read_compact_air_variant_stats_row` (`:57157`) is counted
+//!    A row that fails `read_compact_air_variant_stats_row` (`:57497`) is counted
 //!    into `invalid_variant_rows` and omitted; with no delete row, the
 //!    accumulator keeps that variant's previous values. That is a property of the
 //!    shipping grammar, faithfully reproduced, and it is why `invalid_variant_rows`
 //!    is exposed on [`PayloadHeader`] rather than dropped.
 //!
 //! **`changed_rows` is not asserted equal to `row_count`.** The writer sets both
-//! from the same `rows.len()` (`attach_log.rs:70128`-`:70129`) and they are equal
+//! from the same `rows.len()` (`attach_log.rs:70494`-`:70495`) and they are equal
 //! on every record of the capture, but the fold does not read `changed_rows` at
 //! all. Asserting a producer identity the authority does not state is how a
 //! harness starts rejecting streams the recorder accepts — it was a round-1
@@ -103,11 +103,11 @@
 //!
 //! Every one of the sixteen value fields is present, non-null and known on every
 //! row the grammar admits. The fold has **no flag gate anywhere** — `flags` is
-//! read into the state and never tested (`:15178`), and no field's meaning
+//! read into the state and never tested (`:15252`), and no field's meaning
 //! depends on it. There is no legacy row, no optional trailer, and no per-field
 //! read that can fail its way into the payload: the collector's per-field reads
 //! are `?`-propagated out of `read_compact_air_variant_stats_row`
-//! (`attach_log.rs:57171`-`:57192`), so a single unreadable word drops the whole
+//! (`attach_log.rs:57511`-`:57532`), so a single unreadable word drops the whole
 //! *row*, and a row that is absent from the payload is not a row with an empty
 //! field. Uncaptured is a per-row event in this domain, never a per-field one.
 //!
@@ -120,12 +120,12 @@
 //! ## `flags` is carried; `reserved` is not
 //!
 //! These two words look alike and are opposite cases. `reserved` at `+60` is
-//! **hard-enforced zero by the fold** (`:15171`-`:15174`), so it is a value the
+//! **hard-enforced zero by the fold** (`:15245`-`:15248`), so it is a value the
 //! fold enforces as a function of nothing at all: the invariant is checked in
 //! [`record_from_row`] and the word is left off the wire, exactly as d62's
 //! witness-flags word and d24's derived weather bits were. `flags` at `+4` is
 //! **stored and never validated**. It is written as a literal `0u32` by today's
-//! writer (`attach_log.rs:70137`) and measures constant `0` across all 204 rows,
+//! writer (`attach_log.rs:70503`) and measures constant `0` across all 204 rows,
 //! but the fold accepts any value, so this module carries it as an opaque
 //! `Unsigned` witness. Rejecting a non-zero `flags` would make this mapper refuse
 //! rows the recorder folds without complaint; inventing a gate for it would
@@ -135,7 +135,7 @@
 //!
 //! `variant_id` is a **runtime instance identity**: the collector reads it out of
 //! live `CDivisionEquipmentVariant` heap objects
-//! (`DIVISION_EQUIPMENT_VARIANT_OFF_ID`, `attach_log.rs:57165`), variants are
+//! (`DIVISION_EQUIPMENT_VARIANT_OFF_ID`, `attach_log.rs:57505`), variants are
 //! designed during play, and variant 3421 is a different variant next campaign.
 //! No content manifest resolves it — the d33/d37 catalogs that name variants are
 //! themselves capture data. §5's deciding question answers "no", so it is
@@ -145,7 +145,7 @@
 //! The three token words answer the same question the same way, and the evidence
 //! is unusually direct: to turn `equipment_token_raw` into a name at all, the
 //! collector **scans the live process heap** for token-record objects
-//! (`refresh_compact_air_variant_token_dictionary`, `attach_log.rs:53530`-`:53560`),
+//! (`refresh_compact_air_variant_token_dictionary`, `attach_log.rs:53822`-`:53852`),
 //! maintaining an `ambiguous_tokens` set for the ones it cannot pin down. A
 //! number that can only be resolved by walking the heap of the process that
 //! produced it is a process-local handle, not a reference a manifest resolves;
@@ -199,29 +199,29 @@ pub mod field {
     pub const RANGE_SCALE_RAW: u32 = 17;
 }
 
-// --- Payload grammar, from `world_fold.rs:987`-`:988` and `:15137`-`:15197`. --
+// --- Payload grammar, from `world_fold.rs:987`-`:988` and `:15211`-`:15271`. --
 
 /// `AIR_VARIANT_STATS_HEADER_LEN`, `world_fold.rs:987`; `need(payload, 36, ...)`
-/// at `:15137`.
+/// at `:15211`.
 pub const HEADER_LEN: usize = 36;
 /// `AIR_VARIANT_STATS_ROW_LEN`, `world_fold.rs:988`. Fixed; no legacy form.
 pub const ROW_LEN: usize = 64;
 
 /// Which header word divides a stat. The fold picks per field, not per name
-/// (`world_fold.rs:23786`-`:23796`) — `range` is the single odd one out, and this
+/// (`world_fold.rs:23860`-`:23870`) — `range` is the single odd one out, and this
 /// enum exists so the choice is data the tests can enumerate rather than nine
 /// copies of one expression and one copy of another.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScaleChoice {
     /// `/ fixed_scale_raw` — nine of the ten stats.
     Fixed,
-    /// `/ range_scale_raw` — `range` alone (`world_fold.rs:23788`).
+    /// `/ range_scale_raw` — `range` alone (`world_fold.rs:23862`).
     Range,
 }
 
 /// The ten i32 stats, in row order, with their byte offsets and their scale.
-/// Taken from the fold's row reads (`world_fold.rs:15180`-`:15190`) paired with
-/// the render's divisions (`:23786`-`:23796`).
+/// Taken from the fold's row reads (`world_fold.rs:15254`-`:15264`) paired with
+/// the render's divisions (`:23860`-`:23870`).
 pub const STATS: [(u32, usize, ScaleChoice); 10] = [
     (field::SPEED_CACHE, 20, ScaleChoice::Fixed),
     (field::RANGE, 24, ScaleChoice::Range),
@@ -238,7 +238,7 @@ pub const STATS: [(u32, usize, ScaleChoice); 10] = [
 /// The two header denominators, as one value a caller cannot build wrong.
 ///
 /// `fold_air_variant_stats` rejects the whole payload when either word is zero
-/// (`world_fold.rs:15146`-`:15148`), and it does so **before** the status guard,
+/// (`world_fold.rs:15220`-`:15222`), and it does so **before** the status guard,
 /// so the check applies to failure-status records too. Making that the only
 /// constructor means no code path in this crate can divide by a denominator the
 /// fold would have refused, including the paths that legitimately parse a
@@ -277,10 +277,10 @@ impl RowScales {
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
-        // Key: `variant_id` (`world_fold.rs:15166`, `:15174`). `Unsigned`, not
+        // Key: `variant_id` (`world_fold.rs:15240`, `:15248`). `Unsigned`, not
         // `ContentId` — a runtime instance identity, see the module docs.
         Field::new(f::VARIANT_ID, Kind::Unsigned).key(0),
-        // Read and stored, never validated (`:15178`). An opaque witness word.
+        // Read and stored, never validated (`:15252`). An opaque witness word.
         Field::new(f::FLAGS, Kind::Unsigned),
         // Process-local token handles and an engine discriminator, all three
         // `Unsigned` — see the module docs for why none is a `ContentId` and why
@@ -291,10 +291,10 @@ pub fn schema() -> Schema {
     ];
 
     // The ten stats. `Continuous` because the fold divides every one of them
-    // (`world_fold.rs:23786`-`:23796`), and `Signed` under the hood because the
-    // fold reads them with `read_i32` (`:15180`-`:15190`) — the collector's own
+    // (`world_fold.rs:23860`-`:23870`), and `Signed` under the hood because the
+    // fold reads them with `read_i32` (`:15254`-`:15264`) — the collector's own
     // filter happens to admit only `0..=1_000_000_000`
-    // (`attach_log.rs:57294`), but the fold enforces no sign and neither does
+    // (`attach_log.rs:57634`), but the fold enforces no sign and neither does
     // this module.
     //
     // `Quant::Exact` for all ten, and this is the one quantization decision in
@@ -310,7 +310,7 @@ pub fn schema() -> Schema {
     }
 
     // The two denominators, carried per row because the fold stores them per row
-    // and d35 never clears (`world_fold.rs:15195`-`:15196`). They are what makes
+    // and d35 never clears (`world_fold.rs:15269`-`:15270`). They are what makes
     // the raw fixed-point word recoverable from the stored value.
     fields.push(Field::new(f::FIXED_SCALE_RAW, Kind::Unsigned));
     fields.push(Field::new(f::RANGE_SCALE_RAW, Kind::Unsigned));
@@ -334,8 +334,8 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 36-byte payload header (`world_fold.rs:15137`-`:15148`, writer at
-/// `attach_log.rs:70127`-`:70134`).
+/// The 36-byte payload header (`world_fold.rs:15211`-`:15222`, writer at
+/// `attach_log.rs:70493`-`:70500`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -344,19 +344,19 @@ pub struct PayloadHeader {
     pub changed_rows: u32,
     pub status_flags: u32,
     pub observed_variant_rows: u32,
-    /// Variants the collector saw but could not read (`attach_log.rs:52769`).
+    /// Variants the collector saw but could not read (`attach_log.rs:53030`).
     /// With no delete grammar these variants keep their previous values.
     pub invalid_variant_rows: u32,
     pub scales: RowScales,
 }
 
 /// Parse the header and apply **only the checks the fold performs before its
-/// status guard**: the 36-byte minimum (`world_fold.rs:15137`) and both scale
-/// words being non-zero (`:15146`-`:15148`).
+/// status guard**: the 36-byte minimum (`world_fold.rs:15211`) and both scale
+/// words being non-zero (`:15220`-`:15222`).
 ///
 /// The split from [`split_payload`] is not stylistic. `fold_air_variant_stats`
-/// returns early on a failure status at `:15149`-`:15155`, **before** the exact
-/// length check at `:15156`-`:15163`. A failure-status record whose length does
+/// returns early on a failure status at `:15223`-`:15229`, **before** the exact
+/// length check at `:15230`-`:15237`. A failure-status record whose length does
 /// not match its `row_count` is therefore a record the recorder accepts and folds
 /// nothing from, and a caller that ran the length check first would refuse a
 /// stream the recorder reads happily. Callers that must classify a record by
@@ -382,17 +382,17 @@ pub fn parse_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
 
 /// Split a d35 DATA payload into its header and its rows slice, applying every
 /// structural check `fold_air_variant_stats` applies to a record it will fold
-/// (`world_fold.rs:15137`-`:15163`).
+/// (`world_fold.rs:15211`-`:15237`).
 ///
 /// A zero-row payload is well-formed and common: the collector emits only rows
 /// that changed since its own last frame, so 145 of the capture's 146 records
 /// are exactly 36 bytes with `row_count == 0`. The fold's loop simply does not
-/// run (`:15165`), and this returns an empty rows slice rather than an error.
+/// run (`:15239`), and this returns an empty rows slice rather than an error.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u8]), String> {
     let header = parse_header(payload)?;
     // Checked arithmetic: `row_count` is a word from a file on disk, and
     // `row_count * ROW_LEN` overflows `usize` for a large enough value. The fold
-    // saturates here (`:15157`-`:15158`); saturating would turn an absurd count
+    // saturates here (`:15231`-`:15232`); saturating would turn an absurd count
     // into a plausible small length, so this rejects instead.
     let expected = (header.row_count as usize)
         .checked_mul(ROW_LEN)
@@ -407,12 +407,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     Ok((header, &payload[HEADER_LEN..]))
 }
 
-/// The key of one compact row: its `variant_id` (`world_fold.rs:15166`-`:15174`).
+/// The key of one compact row: its `variant_id` (`world_fold.rs:15240`-`:15248`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[variant_id_of_row(row)? as u64]))
 }
 
-/// `variant_id` with the fold's zero check (`world_fold.rs:15167`-`:15169`).
+/// `variant_id` with the fold's zero check (`world_fold.rs:15241`-`:15243`).
 pub fn variant_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let variant_id = u32_at(row, 0);
@@ -433,7 +433,7 @@ pub fn variant_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// **`scales` is a fourth parameter, and it has to be.** The recipe's fixed
 /// signature assumes a domain whose scale factors are constants of its own
 /// module; d35's are words in the payload header that the fold does not assert
-/// against anything (`world_fold.rs:15146`-`:15148`, divided at `:23786`-`:23796`).
+/// against anything (`world_fold.rs:15220`-`:15222`, divided at `:23860`-`:23870`).
 /// The recipe's own rule for this case is "where an invariant is mode-dependent
 /// or header-relative, take the mode or header value as a parameter instead of
 /// hard-coding one frame shape"; here it is a *value* rather than an invariant,
@@ -457,7 +457,7 @@ pub fn record_from_row(
     // its validity is still part of this row's validity.
     let _ = variant_id_of_row(row)?;
 
-    // `world_fold.rs:15171`-`:15174`: a non-zero `reserved` means the row is not
+    // `world_fold.rs:15245`-`:15248`: a non-zero `reserved` means the row is not
     // this grammar. The word is enforced and then left off the wire — re-encoding
     // a constant the fold already guarantees would be a second copy of state a
     // decoder must keep consistent.
@@ -472,7 +472,7 @@ pub fn record_from_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // `flags` is stored unvalidated (`:15178`); any value is data.
+            // `flags` is stored unvalidated (`:15252`); any value is data.
             field::FLAGS => Value::Unsigned(u32_at(row, 4) as u64),
             field::EQUIPMENT_TOKEN => Value::Unsigned(u32_at(row, 8) as u64),
             field::EQUIPMENT_TYPE_TOKEN => Value::Unsigned(u32_at(row, 12) as u64),
@@ -503,7 +503,7 @@ pub fn record_from_row(
 /// The running d35 state, replaying `fold_air_variant_stats`'s upsert grammar.
 ///
 /// d35 needs this and d63 did not: the collector emits only rows that changed
-/// since its own last frame (`attach_log.rs:52773`-`:52777`), so one record is
+/// since its own last frame (`attach_log.rs:52773`-`:52777` (pre-9160a8a0 lines; see git history)), so one record is
 /// not one state and the hour's content lives here rather than in the record.
 ///
 /// The whole grammar is "insert every row" — there is no baseline/delta
@@ -522,15 +522,15 @@ impl Accumulator {
     }
 
     /// Fold one d35 DATA payload, exactly as `fold_air_variant_stats` does from
-    /// `world_fold.rs:15156` onward.
+    /// `world_fold.rs:15230` onward.
     ///
     /// The caller must already have excluded failure-status records: the fold
-    /// returns at `:15149`-`:15155` before reaching any of this, retaining the
+    /// returns at `:15223`-`:15229` before reaching any of this, retaining the
     /// accumulator. Classify with [`parse_header`], not with this.
     ///
     /// **Rows are inserted as they are read, and a row error leaves the rows
     /// before it applied.** That is not an oversight — the fold's loop validates
-    /// and inserts one row at a time (`:15165`-`:15197`), so its accumulator is
+    /// and inserts one row at a time (`:15239`-`:15271`), so its accumulator is
     /// partially mutated on a mid-payload rejection too, and diverging here would
     /// mean a caller that continues past an error holds a different state than
     /// the recorder does. d22's `fold_payload` can promise all-or-nothing only
@@ -538,7 +538,7 @@ impl Accumulator {
     /// d35's do not. Pinned by `a_row_error_leaves_the_earlier_rows_applied`.
     ///
     /// A `variant_id` repeated inside one payload is **last-writer-wins**, not a
-    /// rejected frame: the fold's `.insert` (`:15176`) overwrites silently, where
+    /// rejected frame: the fold's `.insert` (`:15250`) overwrites silently, where
     /// d63's fold rejects the duplicate.
     pub fn fold_payload(
         &mut self,
@@ -603,7 +603,7 @@ mod tests {
     }
 
     /// A raw 64-byte row, built the way the collector packs one
-    /// (`attach_log.rs:70136`-`:70151`).
+    /// (`attach_log.rs:70502`-`:70517`).
     fn raw_row(variant_id: u32, flags: u32, tokens: [u32; 3], stats: [i32; 10]) -> Vec<u8> {
         raw_row_with_reserved(variant_id, flags, tokens, stats, 0)
     }
@@ -714,7 +714,7 @@ mod tests {
     fn the_schema_declares_no_empty_state_at_all() {
         // Step 8 case 3 wants a raw-bytes case per declared capability. d35
         // declares NONE: the fold has no flag gate anywhere (`flags` at +4 is
-        // read and never tested, `:15178`), there is no legacy row, and a
+        // read and never tested, `:15252`), there is no legacy row, and a
         // collector read that fails drops the whole row rather than emptying a
         // field. So there is no Absent, Null or Unknown case to build, and this
         // test is the record of that rather than an invented one. Every value
@@ -774,7 +774,7 @@ mod tests {
     fn an_extreme_row_roundtrips_byte_for_byte() {
         // The fold enforces no sign and no magnitude on the ten stats, so the
         // round-trip claim has to cover the whole i32 range, not the collector's
-        // narrower `0..=1_000_000_000` filter (`attach_log.rs:57294`).
+        // narrower `0..=1_000_000_000` filter (`attach_log.rs:57634`).
         let c = collection();
         for stats in [[i32::MIN; 10], [i32::MAX; 10], [0; 10]] {
             let row = raw_row(u32::MAX, u32::MAX, [u32::MAX; 3], stats);
@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn a_zero_scale_word_cannot_be_constructed_or_parsed() {
-        // `world_fold.rs:15146`-`:15148` rejects the payload; making `RowScales`
+        // `world_fold.rs:15220`-`:15222` rejects the payload; making `RowScales`
         // the only way in means no division by zero exists anywhere in the crate.
         assert!(RowScales::new(0, 1_000).is_err());
         assert!(RowScales::new(100_000, 0).is_err());
@@ -1009,8 +1009,8 @@ mod tests {
 
     #[test]
     fn flags_is_carried_opaquely_and_gates_nothing() {
-        // The writer packs a literal `0u32` (`attach_log.rs:70137`) and the fold
-        // stores whatever is there without a test (`:15178`). So: every value is
+        // The writer packs a literal `0u32` (`attach_log.rs:70503`) and the fold
+        // stores whatever is there without a test (`:15252`). So: every value is
         // accepted, every value is carried, and no other field's value moves with
         // it. Rejecting a non-zero would refuse rows the recorder folds.
         let c = collection();
@@ -1037,7 +1037,7 @@ mod tests {
     #[test]
     fn reserved_is_enforced_and_not_carried() {
         // The opposite case to `flags`: hard-enforced zero by the fold
-        // (`:15171`-`:15174`), so it is an invariant rather than a field.
+        // (`:15245`-`:15248`), so it is an invariant rather than a field.
         let c = collection();
         assert!(
             !c.fields.iter().any(|f| f.field_id == 18),
@@ -1096,7 +1096,7 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // Zero variant_id (`world_fold.rs:15167`-`:15169`).
+        // Zero variant_id (`world_fold.rs:15241`-`:15243`).
         assert!(record_from_row(
             &c,
             &raw_row(0, 0, [1, 1, 1], [1; 10]),
@@ -1165,7 +1165,7 @@ mod tests {
         assert!(split_payload(&truncated).is_err());
         // A row_count whose byte length overflows `usize` must be rejected, not
         // saturated into a plausible small length as the fold's own arithmetic
-        // would (`world_fold.rs:15157`).
+        // would (`world_fold.rs:15231`).
         let mut huge = p.clone();
         huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(split_payload(&huge).is_err());
@@ -1175,7 +1175,7 @@ mod tests {
     fn a_rowless_payload_is_well_formed_not_an_error() {
         // 145 of the capture's 146 records are exactly this: the collector had
         // nothing to re-state, so it emitted a bare header. The fold's row loop
-        // does not run (`:15165`) and the accumulator is retained untouched.
+        // does not run (`:15239`) and the accumulator is retained untouched.
         let c = collection();
         let p = payload((CAPTURE_FIXED_SCALE, CAPTURE_RANGE_SCALE), 0, &[]);
         assert_eq!(p.len(), HEADER_LEN);
@@ -1193,8 +1193,8 @@ mod tests {
 
     #[test]
     fn split_payload_does_not_run_the_checks_the_fold_defers_past_its_status_guard() {
-        // `fold_air_variant_stats` returns on a failure status at `:15149`-`:15155`,
-        // BEFORE the exact-length check at `:15156`. So a failure-status record
+        // `fold_air_variant_stats` returns on a failure status at `:15223`-`:15229`,
+        // BEFORE the exact-length check at `:15230`. So a failure-status record
         // with an inconsistent length is a record the recorder accepts. A caller
         // that classified by status must be able to read the header without the
         // length check refusing first — that is what `parse_header` is for, and
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn changed_rows_is_never_asserted_against_row_count() {
-        // The writer sets both from one `rows.len()` (`attach_log.rs:70128`), and
+        // The writer sets both from one `rows.len()` (`attach_log.rs:70494`), and
         // they are equal on all 146 records of the capture — but the fold never
         // reads `changed_rows`. Enforcing a producer identity no authority states
         // is how a harness starts refusing streams the recorder accepts (a
@@ -1308,7 +1308,7 @@ mod tests {
 
     #[test]
     fn a_repeated_variant_id_in_one_payload_is_last_writer_wins() {
-        // `world_fold.rs:15176` inserts without checking, so a repeat overwrites
+        // `world_fold.rs:15250` inserts without checking, so a repeat overwrites
         // rather than rejecting the frame — the opposite of d63, whose fold
         // rejects a duplicate `tag_db_id`. Mirroring the fold is the rule.
         let c = collection();
@@ -1327,7 +1327,7 @@ mod tests {
 
     #[test]
     fn a_row_error_leaves_the_earlier_rows_applied() {
-        // Faithful to `world_fold.rs:15165`-`:15197`, which validates and inserts
+        // Faithful to `world_fold.rs:15239`-`:15271`, which validates and inserts
         // one row at a time and so leaves its own accumulator partially mutated
         // on a mid-payload rejection. Diverging would mean a caller that
         // continues past an error holds a state the recorder does not.

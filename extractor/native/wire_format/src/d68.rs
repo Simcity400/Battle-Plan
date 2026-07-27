@@ -4,7 +4,7 @@
 //! (`fold_session_header`), its payload constants at `:224`-`:253`, the carried
 //! accumulator at `:1744` / `:2258`-`:2267`, the value it publishes at
 //! `:4080`-`:4102`, and the collector read that produces the presence flags
-//! (`extractor/native/collector/src/attach_log.rs:61775`-`:61960`).
+//! (`extractor/native/collector/src/attach_log.rs:61784`-`:61969`).
 //! `extractor/documents/domains/d68_session_header_live.md` carries campaign-identity
 //! RE knowledge but no field-level wire knowledge, so the fold and the collector
 //! read are the whole basis.
@@ -34,13 +34,13 @@
 //!   (`:10044`-`:10046`), which is the same "unchanged" rule at record
 //!   granularity.
 //!
-//! ## Payload grammar (`world_fold.rs:10040`-`:10139`, written at `attach_log.rs:61905`-`:61960`)
+//! ## Payload grammar (`world_fold.rs:10040`-`:10139`, written at `attach_log.rs:61914`-`:61969`)
 //!
 //! A 16-byte header:
 //!
 //! | offset | width | field | read at |
 //! |---|---|---|---|
-//! | `+0`  | u64 | `elapsed_wall_ms` | written `attach_log.rs:61936`; the fold never reads it |
+//! | `+0`  | u64 | `elapsed_wall_ms` | written `attach_log.rs:61945`; the fold never reads it |
 //! | `+8`  | u32 | `presence`        | `world_fold.rs:10042` |
 //! | `+12` | u32 | `status_flags`    | `:10043` |
 //!
@@ -100,13 +100,13 @@
 //! **4. The one empty state a stored d68 field can hold is `Unknown`** — the
 //! accumulator has never had a successful read of that field, so it is
 //! "applicable, not captured", §3's unknown word for word. The collector is
-//! explicit (`attach_log.rs:61779`-`:61781`): *"Each field is read independently
+//! explicit (`attach_log.rs:61788`-`:61790`): *"Each field is read independently
 //! and presence-flagged: a torn/absent read clears its bit (never a fabricated
 //! value)."* Every per-field guard behind that bit is a read failure or a validity
 //! rejection — an unreadable `CGameState`, a non-heap `CHuman` pointer, a
 //! `tag_db_id` that fails its range gate or does not resolve in this frame's
-//! validated country roster (`:61806`-`:61830`), a `start_date_raw` of zero
-//! (`:61858`), a build banner whose prefix does not match (`:61868`-`:61871`).
+//! validated country roster (`:61815`-`:61839`), a `start_date_raw` of zero
+//! (`:61867`), a build banner whose prefix does not match (`:61877`-`:61880`).
 //! None of the five scalars is a relation that can point at nothing — a session
 //! always has a start date, a save version, a session id and a human player — so
 //! `Null` is not reachable either, and no field declares `.nullable()`.
@@ -158,7 +158,7 @@
 //! ## Why the three strings stop
 //!
 //! `ideology`, `cosmetic_tag` and `version` are `read_msvc_string` /
-//! `read_module_ascii_cstr` tokens (`attach_log.rs:61841`-`:61871`), carried as
+//! `read_module_ascii_cstr` tokens (`attach_log.rs:61850`-`:61880`), carried as
 //! `u16` length + UTF-8 bytes (`world_fold.rs:10101`-`:10133`). §4 declares no
 //! string kind (`schema.rs:12`-`:20`), and the three do not stop for the same
 //! reason:
@@ -262,7 +262,7 @@ pub fn schema() -> Schema {
         // is a different country — which is what d63's key and d20's `owner`
         // class the same way.
         Field::new(f::PLAYER_TAG_DB_ID, Kind::ContentId).unknown_capable(),
-        // A bitmask of enabled DLCs (`attach_log.rs:61852`). `Unsigned`, not
+        // A bitmask of enabled DLCs (`attach_log.rs:61861`). `Unsigned`, not
         // `Enum`: the bits are independent, so a code space would have to be the
         // whole 2^32 power set, and §4's `Enum` is for mutually exclusive codes.
         // Not `ContentId` either — a DLC is an engine artifact, not mod content,
@@ -735,7 +735,7 @@ mod tests {
     }
 
     /// A raw payload, built the way the collector packs one
-    /// (`attach_log.rs:61905`-`:61958`).
+    /// (`attach_log.rs:61914`-`:61967`).
     fn raw_payload(
         elapsed_wall_ms: u64,
         presence: u32,

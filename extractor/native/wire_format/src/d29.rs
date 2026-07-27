@@ -1,16 +1,16 @@
 //! d29 `ships_live` — one row per live ship instance.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:14474`-`:14584`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:14548`-`:14658`
 //! (`fold_ships`), its payload constants at `:973`-`:974` and `:1039`-`:1045`, the
-//! render path that consumes the folded state (`:8600`-`:8614`, `:8519`-`:8553`),
+//! render path that consumes the folded state (`:8620`-`:8634`, `:8539`-`:8573`),
 //! and the collector read that produces the presence flags
-//! (`extractor/native/collector/src/attach_log.rs:47766`-`:47820`,
-//! `:47238`-`:47262`, `:47339`-`:47357`).
+//! (`extractor/native/collector/src/attach_log.rs:47977`-`:48031`,
+//! `:47449`-`:47473`, `:47550`-`:47568`).
 //! `extractor/documents/domains/d29_ships_live.md` describes the traversal that
 //! finds ships, not the row layout, so the fold and the collector read are the
 //! field-level basis.
 //!
-//! **Payload grammar** (`world_fold.rs:14475`-`:14548`): a 40-byte header —
+//! **Payload grammar** (`world_fold.rs:14549`-`:14622`): a 40-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `observed_ship_rows` u32 at `+20`,
 //! `observed_task_force_rows` u32 at `+24`, `deleted_rows` u32 at `+28`,
@@ -19,10 +19,10 @@
 //!
 //! **Rows are variable-length and are therefore walked, never index-addressed.**
 //! Each row is 40 fixed bytes (`SHIP_FIXED_ROW_LEN`, `:974`) followed by a
-//! u16-length-prefixed UTF-8 `definition` string (`read_string`, `:30160`),
-//! whose length is `0` exactly when `FLAG_DEFINITION` is clear (`:14539`-`:14544`
+//! u16-length-prefixed UTF-8 `definition` string (`read_string`, `:30256`),
+//! whose length is `0` exactly when `FLAG_DEFINITION` is clear (`:14613`-`:14618`
 //! reject both asymmetries). [`split_payload`] walks them the same way the fold
-//! does and enforces the fold's trailing-byte rule (`:14547`).
+//! does and enforces the fold's trailing-byte rule (`:14621`).
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
@@ -35,20 +35,20 @@
 //! | `+24` | u32 | `experience_raw`   | /100000   | none |
 //! | `+28` | u32 | `sunk_convoys`     | raw       | none |
 //! | `+32` | u32 | `owner_tag_db_id`  | raw       | `1<<3` |
-//! | `+36` | u32 | reserved           | —         | must be 0 (`:14533`) |
+//! | `+36` | u32 | reserved           | —         | must be 0 (`:14607`) |
 //! | `+40` | u16+n | `definition`     | symbol    | `1<<2` |
 //!
 //! **The scale is a frame invariant, not an assumption.** The header's
 //! `scale_raw` is asserted equal to `FIXED_SCALE` (`ensure_fixed_scale`,
-//! `:14504`/`:30149`), so a frame declaring another denominator is rejected
+//! `:14578`/`:30245`), so a frame declaring another denominator is rejected
 //! rather than read at its own scale.
 //!
 //! **The `/FIXED_SCALE` division belongs at this boundary.** `fold_ships` stores
 //! `strength_raw`/`organisation_raw`/`experience_raw` as the raw u32 words
-//! (`:14566`-`:14568`) and the division happens one layer later, in `ship_json`
-//! (`:8609`-`:8611`), which is the **only** consumer of the folded d29
+//! (`:14640`-`:14642`) and the division happens one layer later, in `ship_json`
+//! (`:8629`-`:8631`), which is the **only** consumer of the folded d29
 //! accumulator's numeric channels — the naval-combat lane reads raw strength from
-//! the *collector's* row (`attach_log.rs:40054`), never from this accumulator.
+//! the *collector's* row (`attach_log.rs:40229`), never from this accumulator.
 //! So the value a d29 consumer sees is the divided one, and that is what the
 //! record carries. `Quant::Fixed(5)` then costs nothing for the raw-integer
 //! reading either: the source is an int32 over a 100_000 denominator, so
@@ -65,23 +65,23 @@
 //!
 //! - `task_force_id` (`FLAG_TASK_FORCE`). The collector reaches a ship only by
 //!   walking a task force's ship vector and sets the field unconditionally on
-//!   every live row it builds (`attach_log.rs:47810`); the only `None` it
-//!   produces is on a tombstone (`:47860`), which carries no fields at all. A
+//!   every live row it builds (`attach_log.rs:48021`); the only `None` it
+//!   produces is on a tombstone (`:48077`), which carries no fields at all. A
 //!   live row with the gate clear is therefore not "this ship has no task force"
 //!   — it is a row the current read path cannot construct, i.e. uncaptured.
 //! - `owner_tag_db_id` (`FLAG_OWNER`). The owner is the ship's task force's
-//!   fleet's country (`attach_log.rs:47576`, `:47435`), read as
+//!   fleet's country (`attach_log.rs:47787`, `:47646`), read as
 //!   `snapshot_u32_or_read(...).and_then(valid_division_owner_tag_db_id).or_else(
-//!   || valid_division_owner_tag_db_id(index))` (`:47356`) — `None` only when both
+//!   || valid_division_owner_tag_db_id(index))` (`:47567`) — `None` only when both
 //!   the object's tag word and its country-table index fail the validity filter,
 //!   which is an unreadable/out-of-range read, not an unowned ship. Every ship
 //!   belongs to a fleet and every fleet to a country, so `null` would assert
 //!   something false.
 //! - `definition` (`FLAG_DEFINITION`). `read_msvc_string_with_snapshot`
-//!   (`attach_log.rs:86173`) returns `None` on unreadable memory, a size past
+//!   (`attach_log.rs:86539`) returns `None` on unreadable memory, a size past
 //!   `MAX_SHIP_DEFINITION_LEN`, an inconsistent capacity, a missing NUL, or a
 //!   non-printable byte, and the caller additionally discards a value that looks
-//!   like a formatted pointer (`:47806`). Every one of those is §3's "applicable,
+//!   like a formatted pointer (`:48017`). Every one of those is §3's "applicable,
 //!   not captured".
 //!
 //! Corroborated empirically: across the 53,970 live rows of
@@ -91,9 +91,9 @@
 //! like in a healthy capture.
 //!
 //! **The fold's own flag asymmetry is mirrored in behaviour, not in semantics.**
-//! `fold_ships` folds `task_force_id` as an `Option` (`:14563`) but folds a clear
-//! owner gate to the sentinel `owner_tag_db_id = 0` (`:14570`-`:14574`), and
-//! `ship_owner_key` (`:8586`) then reads that `0` as *unowned* and drops the ship
+//! `fold_ships` folds `task_force_id` as an `Option` (`:14637`) but folds a clear
+//! owner gate to the sentinel `owner_tag_db_id = 0` (`:14644`-`:14648`), and
+//! `ship_owner_key` (`:8606`) then reads that `0` as *unowned* and drops the ship
 //! from its per-country counts. `0` is not a legal tag
 //! (`valid_division_owner_tag_db_id` requires `> 0`, `attach_log.rs:16689`), so
 //! the sentinel is at least unambiguous — but collapsing "unreadable" into
@@ -107,7 +107,7 @@
 //! recorder already packs a `ship_definitions_static` catalog whose `ship_hulls`
 //! keys are exactly this vocabulary,
 //! `recorder_host/src/main.rs:7621`), it is the join key `naval_missions_status`
-//! groups task-force composition by (`world_fold.rs:8531`-`:8551`), and it is
+//! groups task-force composition by (`world_fold.rs:8551`-`:8571`), and it is
 //! read from the ship's own memory independently of `category_enum`. On this
 //! capture the two happen to be bijective (7 definitions, 7 categories, matching
 //! counts) — but nothing enforces that: `ship_category_label`
@@ -149,11 +149,11 @@ pub const HEADER_LEN: usize = 40;
 /// `SHIP_FIXED_ROW_LEN`, `world_fold.rs:974`. The **fixed** part only: a row is
 /// this plus a u16-length-prefixed `definition` string.
 pub const FIXED_ROW_LEN: usize = 40;
-/// The u16 length prefix that follows the fixed part (`read_string`, `:30160`).
+/// The u16 length prefix that follows the fixed part (`read_string`, `:30256`).
 pub const DEFINITION_LEN_PREFIX: usize = 2;
 
 /// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`. A set bit removes the key
-/// (`:14555`-`:14558`) — a wire tombstone, not a record.
+/// (`:14629`-`:14632`) — a wire tombstone, not a record.
 pub const FLAG_DELETED: u32 = 1 << 0;
 /// `SHIP_ROW_FLAG_TASK_FORCE`, `world_fold.rs:1039`.
 pub const FLAG_TASK_FORCE: u32 = 1 << 1;
@@ -162,11 +162,11 @@ pub const FLAG_DEFINITION: u32 = 1 << 2;
 /// `SHIP_ROW_FLAG_OWNER`, `world_fold.rs:1041`.
 pub const FLAG_OWNER: u32 = 1 << 3;
 /// `SHIP_KNOWN_FLAGS`, `world_fold.rs:1042`. Any other bit is a hard error
-/// (`:14519`) — an unrecognised flag word means the row is not this grammar.
+/// (`:14593`) — an unrecognised flag word means the row is not this grammar.
 pub const KNOWN_FLAGS: u32 = FLAG_DELETED | FLAG_TASK_FORCE | FLAG_DEFINITION | FLAG_OWNER;
 
 /// `FIXED_SCALE`, `world_fold.rs:156`. The header's `scale_raw` is asserted equal
-/// to it (`:14504`).
+/// to it (`:14578`).
 pub const FIXED_SCALE: f64 = 100_000.0;
 /// The same constant as the integer word the header carries, so the check is
 /// exact rather than a float comparison.
@@ -260,9 +260,9 @@ impl Symbols {
 pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
-        // Key: the ship's `instance_id` (`world_fold.rs:14527`, keyed at
-        // `:14552`-`:14560`). `Unsigned`, not `ContentId`: it is the high half of
-        // the engine's runtime object handle (`attach_log.rs:47783`), minted
+        // Key: the ship's `instance_id` (`world_fold.rs:14601`, keyed at
+        // `:14626`-`:14634`). `Unsigned`, not `ContentId`: it is the high half of
+        // the engine's runtime object handle (`attach_log.rs:47994`), minted
         // during play. No content manifest resolves it and it names a different
         // ship next campaign — d20's `div_id`/`army_id` case, not its `owner`
         // case.
@@ -275,15 +275,15 @@ pub fn schema() -> Schema {
         // symbol id. See `Symbols` for the §13-open assignment.
         Field::new(f::DEFINITION, Kind::ContentId).unknown_capable(),
         // The engine's ship-category discriminator. `Unsigned`, not `Enum`:
-        // `fold_ships` applies **no** bound to it (`:14530` reads the word and
-        // stores it verbatim at `:14565`), so an `Enum(n)` would reject a frame
+        // `fold_ships` applies **no** bound to it (`:14604` reads the word and
+        // stores it verbatim at `:14639`), so an `Enum(n)` would reject a frame
         // the recorder folds — §4 makes a code `>= n` corrupt. It is also not
         // `ContentId`: like d20's `div_type` it is an engine constant that is
         // identical under every mod set, and stability is not what makes an id
         // content. See the open questions for what would justify an `Enum`.
         Field::new(f::CATEGORY, Kind::Unsigned),
         // The three fixed-point channels. `Continuous` because the fold's
-        // consumer divides them (`:8609`-`:8611`), `Fixed(5)` because the source
+        // consumer divides them (`:8629`-`:8631`), `Fixed(5)` because the source
         // is an int32 over a 100_000 denominator and `10^5` is that grid exactly
         // — lossless, and it recovers the raw word a raw-reading consumer wants
         // without spending `Exact`'s 8 bytes. This is d24's decimal-fixed-point
@@ -307,7 +307,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: SHIPS,
-            // `replace_or_sparse_after_first` (`world_fold.rs:14550`, `:2927`):
+            // `replace_or_sparse_after_first` (`world_fold.rs:14624`, `:2947`):
             // the first record clears and repopulates, every later one upserts,
             // and a `FLAG_DELETED` row removes. That is a keyed set with a delta
             // grammar, which is the only shape §7.3 implements anyway.
@@ -320,7 +320,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 40-byte payload header (`world_fold.rs:14475`-`:14482`).
+/// The 40-byte payload header (`world_fold.rs:14549`-`:14556`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -348,12 +348,12 @@ pub struct ShipRow {
     pub experience_raw: u32,
     pub sunk_convoys: u32,
     pub owner_tag_db_id: u32,
-    /// `Some` exactly when `FLAG_DEFINITION` is set (`world_fold.rs:14539`-`:14544`).
+    /// `Some` exactly when `FLAG_DEFINITION` is set (`world_fold.rs:14613`-`:14618`).
     pub definition: Option<String>,
 }
 
 impl ShipRow {
-    /// `world_fold.rs:14555`: a set low bit removes the key and nothing else in
+    /// `world_fold.rs:14629`: a set low bit removes the key and nothing else in
     /// the row is read.
     pub fn is_deleted(&self) -> bool {
         self.flags & FLAG_DELETED != 0
@@ -361,13 +361,13 @@ impl ShipRow {
 }
 
 /// Read and fully validate the 40-byte payload header, **without walking the
-/// rows** (`world_fold.rs:14475`-`:14507`).
+/// rows** (`world_fold.rs:14549`-`:14581`).
 ///
 /// This split exists because the fold's own call order demands it. `fold_ships`
 /// applies every header check *before* it consults the status word
-/// (`handle_compact_failure` at `:14508`, `reject_delta_before_baseline` at
-/// `:14511`) and walks rows only *after* both
-/// (`:14515`). A caller that has to decide whether a record folds at all must
+/// (`handle_compact_failure` at `:14582`, `reject_delta_before_baseline` at
+/// `:14585`) and walks rows only *after* both
+/// (`:14589`). A caller that has to decide whether a record folds at all must
 /// therefore be able to validate the header without touching a row — otherwise
 /// it would apply row-level checks to a failure-status record the recorder never
 /// reads, and refuse a stream the recorder accepts.
@@ -391,7 +391,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
         deleted_rows: u32_at(payload, 28),
         scale_raw: u32_at(payload, 32),
     };
-    // `:14483`-`:14496`, `ensure_count_at_most`.
+    // `:14557`-`:14570`, `ensure_count_at_most`.
     if header.changed_rows > header.row_count {
         return Err(format!(
             "ships changed_rows {} > row_count {}",
@@ -404,8 +404,8 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             header.deleted_rows, header.row_count
         ));
     }
-    // `:14497`-`:14503`, `ensure_row_count_with_deletes`. Saturating on the right
-    // exactly as the fold's helper does (`:30138`), so a header claiming huge
+    // `:14571`-`:14577`, `ensure_row_count_with_deletes`. Saturating on the right
+    // exactly as the fold's helper does (`:30234`), so a header claiming huge
     // counts cannot wrap into a passing comparison.
     let allowed = (header.observed_ship_rows as u64).saturating_add(header.deleted_rows as u64);
     if header.row_count as u64 > allowed {
@@ -414,7 +414,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             header.row_count, header.observed_ship_rows, header.deleted_rows
         ));
     }
-    // `:14504`, `ensure_fixed_scale`. The denominator is declared per frame, so
+    // `:14578`, `ensure_fixed_scale`. The denominator is declared per frame, so
     // this is what makes `FIXED_SCALE` a fact about the payload rather than an
     // assumption about the domain.
     if header.scale_raw != FIXED_SCALE_RAW {
@@ -423,7 +423,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             header.scale_raw
         ));
     }
-    // `:14505`-`:14507`.
+    // `:14579`-`:14581`.
     if u32_at(payload, 36) != 0 {
         return Err("ships header reserved field is nonzero".into());
     }
@@ -431,20 +431,20 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 }
 
 /// Split a d29 DATA payload into its header and its rows, applying the fold's
-/// structural checks (`world_fold.rs:14475`-`:14548`).
+/// structural checks (`world_fold.rs:14549`-`:14622`).
 ///
 /// **Rows are variable-length, so this walks them** — 40 fixed bytes then a
 /// u16-length-prefixed string — exactly as `fold_ships` does, and returns one
 /// slice per row covering the whole row including its string. Index arithmetic
 /// over a fixed stride would silently mis-frame every row after the first
-/// definition. The walk ends with the fold's trailing-byte rule (`:14547`).
+/// definition. The walk ends with the fold's trailing-byte rule (`:14621`).
 ///
 /// The header invariants are [`peek_header`]'s, which are the fold's own and no
 /// others. d29 is **not** full-replace: `fold_ships` requires
 /// `changed_rows <= row_count` and `deleted_rows <= row_count`
-/// (`ensure_count_at_most`, `:14483`-`:14496`) and
+/// (`ensure_count_at_most`, `:14557`-`:14570`) and
 /// `row_count <= observed_ship_rows + deleted_rows`
-/// (`ensure_row_count_with_deletes`, `:14497`-`:14503`), never an equality —
+/// (`ensure_row_count_with_deletes`, `:14571`-`:14577`), never an equality —
 /// asserting `changed_rows == row_count` here would reject the sparse frames this
 /// domain is made of.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Vec<&[u8]>), String> {
@@ -485,7 +485,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Vec
         rows.push(&payload[cursor..row_end]);
         cursor = row_end;
     }
-    // `:14547`.
+    // `:14621`.
     if cursor != payload.len() {
         return Err(format!(
             "ships payload has {} trailing byte(s)",
@@ -498,12 +498,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Vec
 /// Parse one whole row slice, applying every per-row check `fold_ships` applies
 /// and **no others**.
 ///
-/// The fold's row rules are exactly four (`:14517`-`:14545`): the fixed part must
+/// The fold's row rules are exactly four (`:14591`-`:14619`): the fixed part must
 /// be present, an unknown flag bit is fatal, the `+36` reserved word must be
 /// zero, and the `FLAG_DEFINITION` bit and a non-empty string must agree in both
 /// directions. It applies **no range check** to any value word and **no
 /// zero-check** to `instance_id`. The collector and the naval gate lane do
-/// (`attach_log.rs:47782`-`:47800`,
+/// (`attach_log.rs:47993`-`:48011`,
 /// `lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs:1300`-`:1345`), but
 /// those are producer-side contracts; enforcing them here would reject frames the
 /// shipping recorder folds, which is the one thing this boundary must not do.
@@ -517,14 +517,14 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<ShipRow, String> {
         ));
     }
     let flags = u32_at(row, 4);
-    // `:14519`-`:14521`.
+    // `:14593`-`:14595`.
     if flags & !KNOWN_FLAGS != 0 {
         return Err(format!(
             "ships row {} has unknown flags {flags:#x}",
             u32_at(row, 0)
         ));
     }
-    // `:14533`-`:14536`.
+    // `:14607`-`:14610`.
     if u32_at(row, 36) != 0 {
         return Err("ships row reserved field is nonzero".into());
     }
@@ -537,10 +537,10 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<ShipRow, String> {
             row.len().saturating_sub(text_start)
         ));
     }
-    // `read_string`, `:30167`-`:30170`: invalid UTF-8 is a rejected frame.
+    // `read_string`, `:30263`-`:30266`: invalid UTF-8 is a rejected frame.
     let text = std::str::from_utf8(&row[text_start..])
         .map_err(|e| format!("ships definition: invalid utf-8: {e}"))?;
-    // `:14539`-`:14544`, both directions.
+    // `:14613`-`:14618`, both directions.
     let has_definition = flags & FLAG_DEFINITION != 0;
     if text.is_empty() && has_definition {
         return Err("ships definition flag with empty string".into());
@@ -562,10 +562,10 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<ShipRow, String> {
     })
 }
 
-/// The key of one row: its `instance_id` (`world_fold.rs:14527`, `:14556`).
+/// The key of one row: its `instance_id` (`world_fold.rs:14601`, `:14630`).
 ///
 /// Valid on a tombstone too — that is the whole point of a tombstone, and
-/// `fold_ships` reads exactly this word before removing (`:14557`).
+/// `fold_ships` reads exactly this word before removing (`:14631`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(ship_key(parse_row(row)?.instance_id))
 }
@@ -595,7 +595,7 @@ pub fn ship_key(instance_id: u32) -> Key {
 /// the in-stream interning §5 forbids.
 ///
 /// A **tombstone row is not a record** and is rejected here: a `FLAG_DELETED` row
-/// removes its key (`world_fold.rs:14555`) and carries no fields. Callers reach
+/// removes its key (`world_fold.rs:14629`) and carries no fields. Callers reach
 /// it through [`ShipRow::is_deleted`] and [`fold_payload`]. Same shape as d26's
 /// delete rows.
 ///
@@ -703,8 +703,8 @@ pub fn definitions_in_payload(payload: &[u8]) -> core::result::Result<Vec<String
 
 /// The accumulated ship set.
 ///
-/// d29 is incremental — `replace_or_sparse_after_first` (`world_fold.rs:14550`,
-/// `:2927`) clears only on the first record and upserts thereafter — so a single
+/// d29 is incremental — `replace_or_sparse_after_first` (`world_fold.rs:14624`,
+/// `:2947`) clears only on the first record and upserts thereafter — so a single
 /// record is **not** a state. This lives beside the mapper for the same reason
 /// [`split_payload`] does: the measurement harness, the tests and any future
 /// caller must share one implementation of the accumulation rules, because a
@@ -741,19 +741,19 @@ impl State {
 /// Fold one d29 DATA payload into `acc`, exactly as `fold_ships` folds it.
 ///
 /// `sparse` is the result of `replace_or_sparse_after_first(29, status_flags)`
-/// (`world_fold.rs:14550`, defined at `:2927`): **false only for the first
+/// (`world_fold.rs:14624`, defined at `:2947`): **false only for the first
 /// non-delta record of the stream**, true for every record after it and for any
 /// record carrying `COMPACT_STATUS_DELTA_DATA`. The caller supplies it rather
 /// than this function reading the bit, because that constant belongs to
 /// `compact_contract` and `wire_format`'s library half deliberately does not
 /// depend on that crate — copying the literal here is exactly the drift the
 /// shared-contract rule forbids. The caller also owns the `delta_baselines_seen`
-/// side effect that makes the decision stateful (`:2934`-`:2939`).
+/// side effect that makes the decision stateful (`:2954`-`:2959`).
 ///
 /// Two payloads the fold returns from **without folding** are likewise the
 /// caller's to exclude before calling: a failure status
-/// (`handle_compact_failure`, `:14508`) and a delta before any baseline
-/// (`reject_delta_before_baseline`, `:14511`). Both are checked *after* the
+/// (`handle_compact_failure`, `:14582`) and a delta before any baseline
+/// (`reject_delta_before_baseline`, `:14585`). Both are checked *after* the
 /// header validation above and *before* the row walk, which is why this function
 /// still validates the header on every call — a malformed header is a rejected
 /// frame whatever the status word says.
@@ -763,7 +763,7 @@ impl State {
 ///
 /// **Rows apply in payload order, last one winning.** `fold_ships` has no
 /// duplicate rejection: a second row for one `instance_id` overwrites the first
-/// in its map (`:14559`), and a delete followed by an insert of the same id in
+/// in its map (`:14633`), and a delete followed by an insert of the same id in
 /// one frame resurrects it. Refusing such a frame would refuse one the shipping
 /// recorder folds.
 pub fn fold_payload(
@@ -802,7 +802,7 @@ pub fn fold_payload(
     }
 
     // ---- Nothing below can fail, so `acc` is never left half-written. ----
-    // `:14551`-`:14553`: only a non-sparse record clears.
+    // `:14625`-`:14627`: only a non-sparse record clears.
     if !sparse {
         acc.ships.clear();
     }
@@ -858,7 +858,7 @@ mod tests {
     }
 
     /// A raw row, built the way the collector packs one
-    /// (`attach_log.rs:69772`-`:69784`).
+    /// (`attach_log.rs:70138`-`:70150`).
     #[allow(clippy::too_many_arguments)]
     fn raw_row(
         instance_id: u32,
@@ -1172,7 +1172,7 @@ mod tests {
 
     #[test]
     fn a_tombstone_row_is_not_a_record() {
-        // `world_fold.rs:14555`: a delete row removes its key and nothing in it
+        // `world_fold.rs:14629`: a delete row removes its key and nothing in it
         // is read as state. It still has a valid key.
         let c = collection();
         let row = tombstone_row(42);
@@ -1333,7 +1333,7 @@ mod tests {
             assert!(record_from_row(&c, &row, 0, &s).is_err(), "length {len}");
             assert!(key_from_row(&row).is_err(), "length {len}");
         }
-        // An unknown flag bit (`:14519`) — every one of them, not one sample.
+        // An unknown flag bit (`:14593`) — every one of them, not one sample.
         for bit in 4..32u32 {
             let row = raw_row(1, LIVE_FLAGS | (1 << bit), 1, 1, 1, 1, 1, 1, 1, "carrier");
             assert!(
@@ -1341,21 +1341,21 @@ mod tests {
                 "flag bit {bit} is not in KNOWN_FLAGS and must be rejected"
             );
         }
-        // A nonzero reserved word (`:14533`).
+        // A nonzero reserved word (`:14607`).
         let mut reserved = full_row();
         reserved[36..40].copy_from_slice(&1u32.to_le_bytes());
         assert!(record_from_row(&c, &reserved, 0, &s).is_err());
-        // The definition flag with an empty string (`:14539`).
+        // The definition flag with an empty string (`:14613`).
         let row = raw_row(1, LIVE_FLAGS, 1, 1, 1, 1, 1, 1, 1, "");
         assert!(record_from_row(&c, &row, 0, &s).is_err());
-        // A definition string with no flag (`:14542`).
+        // A definition string with no flag (`:14616`).
         let row = raw_row(1, LIVE_FLAGS & !FLAG_DEFINITION, 1, 1, 1, 1, 1, 1, 1, "carrier");
         assert!(record_from_row(&c, &row, 0, &s).is_err());
         // A declared string length that does not match the bytes carried.
         let mut short = full_row();
         short.pop();
         assert!(record_from_row(&c, &short, 0, &s).is_err());
-        // Invalid UTF-8 in the definition (`read_string`, `:30167`).
+        // Invalid UTF-8 in the definition (`read_string`, `:30263`).
         let mut bad_utf8 = raw_row(1, LIVE_FLAGS, 1, 1, 1, 1, 1, 1, 1, "carrier");
         let last = bad_utf8.len() - 1;
         bad_utf8[last] = 0xFF;
@@ -1391,7 +1391,7 @@ mod tests {
         let (back, _) = Record::decode(&c, &bytes, 0).expect("decodes");
         assert_eq!(back, record, "extreme words still round-trip");
         // A deleted row carrying live words: the fold ignores them entirely
-        // (`:14555`-`:14558`), even though the gate lane rejects the shape.
+        // (`:14629`-`:14632`), even though the gate lane rejects the shape.
         let live_delete = raw_row(7, FLAG_DELETED, 9, 9, 9, 9, 9, 9, 9, "");
         assert!(parse_row(&live_delete).expect("parses").is_deleted());
     }
@@ -1505,32 +1505,32 @@ mod tests {
         for len in HEADER_LEN..good.len() {
             assert!(split_payload(&good[..len]).is_err(), "truncated at {len}");
         }
-        // Trailing bytes (`:14547`).
+        // Trailing bytes (`:14621`).
         let mut trailing = good.clone();
         trailing.push(0);
         assert!(split_payload(&trailing).is_err());
-        // changed_rows > row_count (`:14483`).
+        // changed_rows > row_count (`:14557`).
         let mut bad = good.clone();
         bad[12..16].copy_from_slice(&2u32.to_le_bytes());
         assert!(split_payload(&bad).is_err());
-        // deleted_rows > row_count (`:14490`).
+        // deleted_rows > row_count (`:14564`).
         let mut bad = good.clone();
         bad[28..32].copy_from_slice(&2u32.to_le_bytes());
         assert!(split_payload(&bad).is_err());
-        // row_count > observed_ship_rows + deleted_rows (`:14497`).
+        // row_count > observed_ship_rows + deleted_rows (`:14571`).
         let mut bad = good.clone();
         bad[20..24].copy_from_slice(&0u32.to_le_bytes());
         assert!(split_payload(&bad).is_err());
         // ...and the boundary itself is accepted: one observed row plus none
         // deleted is exactly enough for one row.
         assert!(split_payload(&good).is_ok());
-        // A wrong scale_raw (`:14504`) — the frame declares its own denominator.
+        // A wrong scale_raw (`:14578`) — the frame declares its own denominator.
         for wrong in [0u32, 1, 32_768, 99_999, 1_000_000] {
             let mut bad = good.clone();
             bad[32..36].copy_from_slice(&wrong.to_le_bytes());
             assert!(split_payload(&bad).is_err(), "scale_raw {wrong}");
         }
-        // A nonzero header reserved word (`:14505`).
+        // A nonzero header reserved word (`:14579`).
         let mut bad = good.clone();
         bad[36..40].copy_from_slice(&1u32.to_le_bytes());
         assert!(split_payload(&bad).is_err());
@@ -1552,7 +1552,7 @@ mod tests {
     #[test]
     fn peek_header_validates_the_header_without_reading_a_row() {
         // The fold applies every header check before it consults the status word
-        // and walks rows only after (`:14475`-`:14515`), so a caller deciding
+        // and walks rows only after (`:14549`-`:14589`), so a caller deciding
         // whether a record folds must be able to do exactly this. A payload whose
         // header is sound but whose ROWS are not must still peek cleanly.
         let mut rows = full_row();
@@ -1620,7 +1620,7 @@ mod tests {
 
     #[test]
     fn the_first_record_replaces_and_later_records_upsert() {
-        // `replace_or_sparse_after_first`, `world_fold.rs:2927`: `sparse` is false
+        // `replace_or_sparse_after_first`, `world_fold.rs:2947`: `sparse` is false
         // exactly once. A later record leaves untouched keys alone.
         let schema = schema();
         let s = symbols();
@@ -1722,7 +1722,7 @@ mod tests {
 
     #[test]
     fn repeated_ids_in_one_frame_apply_in_payload_order() {
-        // `fold_ships` has no duplicate rejection (`:14554`-`:14580`): the last
+        // `fold_ships` has no duplicate rejection (`:14628`-`:14654`): the last
         // row for an id wins, and a delete followed by an insert resurrects it.
         // Refusing such a frame would refuse one the recorder folds.
         let schema = schema();

@@ -1,22 +1,22 @@
 //! d63 `country_core_scalars_live` — per-country core scalars.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:9235`-`:9388`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:9255`-`:9408`
 //! (`fold_country_core_scalars`), its payload constants at `:159`-`:172`, and the
 //! collector read that produces the presence flags
-//! (`extractor/native/collector/src/attach_log.rs:60207`-`:60391`).
+//! (`extractor/native/collector/src/attach_log.rs:60573`-`:60757`).
 //! `extractor/documents/domains/d63_country_core_scalars_live.md` carries no
 //! field-level knowledge, so the fold and the collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:9236`-`:9277`): a 20-byte header —
+//! **Payload grammar** (`world_fold.rs:9256`-`:9297`): a 20-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16` — followed by `row_count` fixed 48-byte
 //! rows. There is no legacy short row: the fold requires
-//! `payload.len() == 20 + row_count * 48` exactly (`:9240`), so the length never
+//! `payload.len() == 20 + row_count * 48` exactly (`:9260`), so the length never
 //! selects a row form and the mapper accepts exactly one.
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `tag_db_id`               | raw     | none (key; zero rejected, `:9259`) |
+//! | `+0`  | u32 | `tag_db_id`               | raw     | none (key; zero rejected, `:9279`) |
 //! | `+4`  | u32 | `flags`                   | —       | — |
 //! | `+8`  | u32 | `manpower_pool`           | raw     | `1<<0` |
 //! | `+12` | u32 | `convoys_destroyed`       | raw     | `1<<1` |
@@ -31,14 +31,14 @@
 //!
 //! **Every gated field is `unknown`, never `null` or `absent`, when its gate is
 //! clear.** `fold_country_core_scalars` emits JSON `Null` uniformly on a clear
-//! gate (`:9322`-`:9362`), which per `WIRE_FORMAT.md` §3 decides value-vs-nothing
+//! gate (`:9342`-`:9382`), which per `WIRE_FORMAT.md` §3 decides value-vs-nothing
 //! and nothing else. The collector decides the rest, and it is explicit
-//! (`attach_log.rs:60210`): *"Fail-closed per field: an unreadable/out-of-range
+//! (`attach_log.rs:60576`): *"Fail-closed per field: an unreadable/out-of-range
 //! value folds ABSENT (null), never a fabricated 0."* Each flag is exactly
-//! `Option::is_some()` (`:60364`-`:60375`) over a read that returns `None` only
+//! `Option::is_some()` (`:60730`-`:60741`) over a read that returns `None` only
 //! when the memory is unreadable, the pointer is not a heap object, the
 //! experience vtable does not match, or the value fails its range filter
-//! (`:60212`-`:60268`). That is §3's **unknown** — "applicable, not captured" —
+//! (`:60578`-`:60634`). That is §3's **unknown** — "applicable, not captured" —
 //! word for word. None of these four concepts is a relation that can point at
 //! nothing (so not `null`), and every one of them applies to every country row
 //! the D18 roster carries (so not `absent`). A country that has genuinely
@@ -74,9 +74,9 @@ pub mod field {
     pub const NUM_ARMIES_FOR_TRAINING: u32 = 11;
 }
 
-// --- Payload grammar, from `world_fold.rs:159`-`:172` and `:9236`-`:9277`. ----
+// --- Payload grammar, from `world_fold.rs:159`-`:172` and `:9256`-`:9297`. ----
 
-/// `world_fold.rs:9236` — `need(payload, 20, ...)`, then rows at `20 + i * 48`.
+/// `world_fold.rs:9256` — `need(payload, 20, ...)`, then rows at `20 + i * 48`.
 pub const HEADER_LEN: usize = 20;
 /// `COUNTRY_CORE_ROW_LEN`, `world_fold.rs:159`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 48;
@@ -86,13 +86,13 @@ pub const FLAG_CONVOYS_DESTROYED: u32 = 1 << 1;
 pub const FLAG_DIVISIONS_LOST: u32 = 1 << 2;
 pub const FLAG_EXPERIENCE: u32 = 1 << 3;
 /// `COUNTRY_CORE_KNOWN_FLAGS`, `world_fold.rs:164`. Any other bit is a hard
-/// error (`:9263`) — an unrecognised flag word means the row is not this grammar.
+/// error (`:9283`) — an unrecognised flag word means the row is not this grammar.
 pub const KNOWN_FLAGS: u32 =
     FLAG_MANPOWER_POOL | FLAG_CONVOYS_DESTROYED | FLAG_DIVISIONS_LOST | FLAG_EXPERIENCE;
 
 /// `COUNTRY_CORE_EXPERIENCE_SCALE`, `world_fold.rs:169`. **32768, not
 /// `FIXED_SCALE`**: the channels are raw signed int32 CFixedPoint, and the fold
-/// divides every one of the seven by this (`:9349`-`:9357`).
+/// divides every one of the seven by this (`:9369`-`:9377`).
 pub const EXPERIENCE_SCALE: f64 = 32768.0;
 
 /// `COUNTRY_CORE_MAX_MANPOWER_POOL`, `world_fold.rs:170`.
@@ -103,7 +103,7 @@ pub const MAX_CONVOYS_DESTROYED: u32 = 100_000_000;
 pub const MAX_DIVISIONS_LOST: u32 = 1_000_000;
 
 /// The seven experience channels, in row order, with their byte offsets
-/// (`world_fold.rs:9271`-`:9277`). All seven share the single `FLAG_EXPERIENCE`
+/// (`world_fold.rs:9291`-`:9297`). All seven share the single `FLAG_EXPERIENCE`
 /// gate and the single `EXPERIENCE_SCALE`.
 pub const EXPERIENCE_CHANNELS: [(u32, usize); 7] = [
     (field::ARMY_EXPERIENCE, 20),
@@ -118,9 +118,9 @@ pub const EXPERIENCE_CHANNELS: [(u32, usize); 7] = [
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
-        // Key: the country's `tag_db_id` (`world_fold.rs:9258`), the same
+        // Key: the country's `tag_db_id` (`world_fold.rs:9278`), the same
         // identity d18 keys its roster by and the one d63 is required to be
-        // bijective with (`:9376`). ContentId because a country tag is
+        // bijective with (`:9396`). ContentId because a country tag is
         // content-defined (§5) — a manifest must resolve it for it to keep its
         // meaning under another mod set, which is the deciding question for
         // ContentId-vs-Unsigned. d20 classes its `owner` country the same way.
@@ -146,7 +146,7 @@ pub fn schema() -> Schema {
     //
     // `num_armies_for_training` is `Continuous`, not `Unsigned`, because the
     // fold divides it by `EXPERIENCE_SCALE` like every other channel
-    // (`world_fold.rs:9357`) — the fold is the authority even where the name
+    // (`world_fold.rs:9377`) — the fold is the authority even where the name
     // reads like a count.
     for (id, _) in EXPERIENCE_CHANNELS {
         fields.push(
@@ -162,7 +162,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: COUNTRIES,
-            // Full-replace each frame (`world_fold.rs:9247` requires
+            // Full-replace each frame (`world_fold.rs:9267` requires
             // `changed_rows == row_count`), but `tag_db_id` is a stable identity
             // that persists across hours, which is what a keyed set needs — and
             // only a keyed set has a delta grammar (§7.3).
@@ -175,7 +175,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 20-byte payload header (`world_fold.rs:9236`-`:9239`).
+/// The 20-byte payload header (`world_fold.rs:9256`-`:9259`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -185,7 +185,7 @@ pub struct PayloadHeader {
 }
 
 /// Split a d63 DATA payload into its header and its rows slice, applying the
-/// fold's own structural checks (`world_fold.rs:9236`-`:9251`).
+/// fold's own structural checks (`world_fold.rs:9256`-`:9271`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -215,7 +215,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
             payload.len()
         ));
     }
-    // `world_fold.rs:9247`: d63 is full-replace, so a header claiming a partial
+    // `world_fold.rs:9267`: d63 is full-replace, so a header claiming a partial
     // update is a malformed frame rather than a delta to be applied.
     if header.changed_rows != header.row_count {
         return Err(format!(
@@ -226,12 +226,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     Ok((header, &payload[HEADER_LEN..]))
 }
 
-/// The key of one compact row: its `tag_db_id` (`world_fold.rs:9258`-`:9261`).
+/// The key of one compact row: its `tag_db_id` (`world_fold.rs:9278`-`:9281`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[tag_db_id_of_row(row)? as u64]))
 }
 
-/// `tag_db_id` with the fold's zero check (`world_fold.rs:9259`).
+/// `tag_db_id` with the fold's zero check (`world_fold.rs:9279`).
 pub fn tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let tag_db_id = u32_at(row, 0);
@@ -266,7 +266,7 @@ pub fn record_from_row(
     let _ = tag_db_id_of_row(row)?;
 
     let flags = u32_at(row, 4);
-    // `world_fold.rs:9263`: an unknown flag bit means the row is not this
+    // `world_fold.rs:9283`: an unknown flag bit means the row is not this
     // grammar, so nothing in it can be trusted.
     if flags & !KNOWN_FLAGS != 0 {
         return Err(format!(
@@ -280,7 +280,7 @@ pub fn record_from_row(
     let has_divisions_lost = flags & FLAG_DIVISIONS_LOST != 0;
     let has_experience = flags & FLAG_EXPERIENCE != 0;
 
-    // `validate_optional_u32_field`, `world_fold.rs:30101`: a present value must
+    // `validate_optional_u32_field`, `world_fold.rs:30197`: a present value must
     // be in range, and a gated-off field must pack a zero. The second half is
     // what makes an ungated non-zero word a malformed row rather than data.
     validate_optional_u32(
@@ -301,7 +301,7 @@ pub fn record_from_row(
         MAX_DIVISIONS_LOST,
         "divisions_lost",
     )?;
-    // `world_fold.rs:9309`-`:9319`: the seven channels only carry meaning under
+    // `world_fold.rs:9329`-`:9339`: the seven channels only carry meaning under
     // the flag, and must be zero-packed without it.
     if !has_experience
         && EXPERIENCE_CHANNELS
@@ -411,7 +411,7 @@ mod tests {
     }
 
     /// A raw 48-byte row, built the way the collector packs one
-    /// (`attach_log.rs:60377`-`:60388`).
+    /// (`attach_log.rs:60743`-`:60754`).
     fn raw_row(tag_db_id: u32, flags: u32, scalars: [u32; 3], experience: [i32; 7]) -> Vec<u8> {
         let mut row = Vec::with_capacity(ROW_LEN);
         row.extend_from_slice(&tag_db_id.to_le_bytes());
@@ -464,7 +464,7 @@ mod tests {
         // The schema declares exactly one capability, so the mapper may emit
         // exactly one empty state. Absent would claim the concept does not apply
         // to a country; Null would claim we know there is nothing. The collector
-        // clears a gate only when the read failed (`attach_log.rs:60210`), which
+        // clears a gate only when the read failed (`attach_log.rs:60576`), which
         // is §3's "applicable, not captured".
         let c = collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
@@ -717,9 +717,9 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // Zero tag_db_id (`world_fold.rs:9259`).
+        // Zero tag_db_id (`world_fold.rs:9279`).
         assert!(record_from_row(&c, &raw_row(0, KNOWN_FLAGS, [0; 3], [0; 7]), 0).is_err());
-        // An unknown flag bit (`:9263`) — every one of them, not just one sample.
+        // An unknown flag bit (`:9283`) — every one of them, not just one sample.
         for bit in 4..32u32 {
             let row = raw_row(1, KNOWN_FLAGS | (1 << bit), [0; 3], [0; 7]);
             assert!(
@@ -727,7 +727,7 @@ mod tests {
                 "flag bit {bit} is not in KNOWN_FLAGS and must be rejected"
             );
         }
-        // Out-of-range present values (`:9286`-`:9306`), each at max + 1.
+        // Out-of-range present values (`:9306`-`:9326`), each at max + 1.
         for (flag_index, max) in [
             (0usize, MAX_MANPOWER_POOL),
             (1, MAX_CONVOYS_DESTROYED),
@@ -744,7 +744,7 @@ mod tests {
             scalars[flag_index] = max;
             assert!(record_from_row(&c, &raw_row(1, KNOWN_FLAGS, scalars, [0; 7]), 0).is_ok());
         }
-        // A gated-off scalar carrying a non-zero word (`:30112`).
+        // A gated-off scalar carrying a non-zero word (`:30208`).
         for flag_index in 0..3usize {
             let mut scalars = [0u32; 3];
             scalars[flag_index] = 1;
@@ -754,7 +754,7 @@ mod tests {
                 "scalar {flag_index} is non-zero without its flag"
             );
         }
-        // A gated-off experience channel carrying a non-zero word (`:9309`),
+        // A gated-off experience channel carrying a non-zero word (`:9329`),
         // each of the seven independently.
         for channel in 0..7usize {
             let mut experience = [0i32; 7];
@@ -797,7 +797,7 @@ mod tests {
         let mut truncated = payload.clone();
         truncated.pop();
         assert!(split_payload(&truncated).is_err());
-        // changed_rows != row_count (`world_fold.rs:9247`).
+        // changed_rows != row_count (`world_fold.rs:9267`).
         let mut partial = payload.clone();
         partial[12..16].copy_from_slice(&0u32.to_le_bytes());
         assert!(split_payload(&partial).is_err());

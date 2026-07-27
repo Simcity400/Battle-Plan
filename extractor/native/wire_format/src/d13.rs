@@ -1,14 +1,14 @@
 //! d13 `tech_live` — per-country research census and per-slot active research.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:13301`-`:13582`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:13321`-`:13602`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-//! (`extractor/native/collector/src/attach_log.rs:68817`-`:68962`) and the
-//! collector read that produces every presence flag (`:80494`-`:80681`,
-//! `:80945`-`:80990`). `extractor/documents/domains/d13_tech_live.md` carries the
+//! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
+//! collector read that produces every presence flag (`:80860`-`:81047`,
+//! `:81311`-`:81356`). `extractor/documents/domains/d13_tech_live.md` carries the
 //! A29 producer knowledge and is quoted where it decides something.
 //!
-//! `fold_tech` is the only fold that takes `game_hour_raw` (`:13301`), and its
-//! sole consumer is the A29 same-hour authority gate at `:13505`. That hour is
+//! `fold_tech` is the only fold that takes `game_hour_raw` (`:13321`), and its
+//! sole consumer is the A29 same-hour authority gate at `:13525`. That hour is
 //! the engine's raw date word and **not** the container's tick coordinate
 //! (`compact_contract/src/calendar.rs:9`: `hour_index = raw_date - 43_799_999`),
 //! so it is a second clock input beside the recipe's `frame_tick` rather than the
@@ -19,25 +19,25 @@
 //!
 //! # Payload grammar
 //!
-//! A 32-byte header (`world_fold.rs:13302`-`:13304`, packer `attach_log.rs:68839`-`:68845`):
+//! A 32-byte header (`world_fold.rs:13322`-`:13324`, packer `attach_log.rs:69205`-`:69211`):
 //!
 //! | offset | width | header field | read by the fold? |
 //! |---|---|---|---|
 //! | `+0`  | u64 | `elapsed_wall_ms`    | no |
-//! | `+8`  | u32 | `country_count`      | yes (`:13303`) |
-//! | `+12` | u32 | `changed_rows`       | no (packer writes `country_count`, `:68841`) |
+//! | `+8`  | u32 | `country_count`      | yes (`:13323`) |
+//! | `+12` | u32 | `changed_rows`       | no (packer writes `country_count`, `:69207`) |
 //! | `+16` | u32 | `status_flags`       | no — see "status" below |
-//! | `+20` | u32 | `progress_scale_raw` | no (packer writes `1000`, `:68843`) |
-//! | `+24` | u32 | `live_scale_raw`     | no (packer writes `100000`, `:68844`) |
-//! | `+28` | u32 | `active_count`       | yes (`:13304`) |
+//! | `+20` | u32 | `progress_scale_raw` | no (packer writes `1000`, `:69209`) |
+//! | `+24` | u32 | `live_scale_raw`     | no (packer writes `100000`, `:69210`) |
+//! | `+28` | u32 | `active_count`       | yes (`:13324`) |
 //!
 //! then `country_count` fixed 16-byte country rows, then `active_count`
 //! **variable-length** active-research rows. The fold's structural bound is
-//! `32 + country_count*16 + active_count*40` as a *minimum* (`:13305`-`:13310`)
-//! and exact consumption at the end (`:13571`) — the row tails make the total
+//! `32 + country_count*16 + active_count*40` as a *minimum* (`:13325`-`:13330`)
+//! and exact consumption at the end (`:13591`) — the row tails make the total
 //! unpredictable from the header alone.
 //!
-//! ## Country row, 16 bytes (`world_fold.rs:13314`-`:13317`, packer `:68858`-`:68871`)
+//! ## Country row, 16 bytes (`world_fold.rs:13334`-`:13337`, packer `:69224`-`:69237`)
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
@@ -50,27 +50,27 @@
 //! answer, and dropping them is fidelity loss.** `fold_tech` reads `+8` and `+12`
 //! unconditionally and publishes whatever is there, so a country whose count the
 //! collector could not read folds as the literal number `4294967295`
-//! (`attach_log.rs:68863`, `:68869`: `unwrap_or(u32::MAX)`). The recipe sends the
+//! (`attach_log.rs:69229`, `:69235`: `unwrap_or(u32::MAX)`). The recipe sends the
 //! reader to the collector when the fold is uninformative, and the collector is
 //! explicit: `completed_tech_count` is `None` only when the memory is unreadable,
 //! the researched-list capacity contradicts its size, or the value trips
-//! `MAX_COMPLETED_TECH_COUNT` (`attach_log.rs:80515`-`:80544`), and
+//! `MAX_COMPLETED_TECH_COUNT` (`attach_log.rs:80881`-`:80910`), and
 //! `research_slot_count` is `None` only on an unreadable word or a value above
-//! `MAX_RESEARCH_SLOT_COUNT` (`:80545`-`:80546`). That is `WIRE_FORMAT.md` §3's
+//! `MAX_RESEARCH_SLOT_COUNT` (`:80911`-`:80912`). That is `WIRE_FORMAT.md` §3's
 //! **unknown** — "applicable, not captured" — word for word, never null and never
 //! absent. Those two bounds (2000 and 32, `attach_log/offsets.rs:274`-`:275`)
 //! also make `u32::MAX` unreachable as a real reading, so the sentinel is
 //! unambiguous.
 //!
 //! Bit `1<<2` says the country's **active-research list itself** was captured
-//! (`attach_log.rs:68855`). Without it, a country with no rows in the
+//! (`attach_log.rs:69221`). Without it, a country with no rows in the
 //! `active_research` collection would silently assert "researching nothing" about
 //! a list that was never read — the same fidelity loss d23 keeps
 //! `resources_captured` for. It is carried as a `Boolean` and is a real measured
 //! value in every row: the flag word is always readable, so it is never one of
 //! the three empty states.
 //!
-//! ## Active-research row (`world_fold.rs:13326`-`:13337`, packer `:68906`-`:68915`)
+//! ## Active-research row (`world_fold.rs:13346`-`:13357`, packer `:69272`-`:69281`)
 //!
 //! 40 fixed bytes, then up to three optional tails in this order:
 //!
@@ -81,23 +81,23 @@
 //! | `+8`  | u32 | `tech_handle_raw`          | raw       | none |
 //! | `+12` | u32 | `tech_def_index_raw`       | raw       | none |
 //! | `+16` | u32 | `progress_raw`             | **/1000** (rendered) | none |
-//! | `+20` | u32 | `flags`                    | —         | `& !0b1_1111` rejected (`:13332`) |
+//! | `+20` | u32 | `flags`                    | —         | `& !0b1_1111` rejected (`:13352`) |
 //! | `+24` | i64 | `live_progress_raw`        | **/100000** (rendered) | `1<<0` |
 //! | `+32` | i64 | `base_required_points_raw` | **/100000** (rendered) | `1<<1` |
-//! | tail  | u16-prefixed UTF-8 | `tech_name` | —        | `1<<2` (`:13370`) |
-//! | tail  | 4 × i64 | ahead-of-time quartet   | **/100000** (rendered) | `1<<3` (`:13376`) |
-//! | tail  | 176 B | A29 producer provenance   | —         | `1<<4` (`:13432`) |
+//! | tail  | u16-prefixed UTF-8 | `tech_name` | —        | `1<<2` (`:13390`) |
+//! | tail  | 4 × i64 | ahead-of-time quartet   | **/100000** (rendered) | `1<<3` (`:13396`) |
+//! | tail  | 176 B | A29 producer provenance   | —         | `1<<4` (`:13452`) |
 //!
 //! **Two scales in one row, and this port carries neither.** `progress_raw`
-//! divides by `TECH_PROGRESS_SCALE = 1000` (`:154`, applied `:13346`) while
+//! divides by `TECH_PROGRESS_SCALE = 1000` (`:154`, applied `:13366`) while
 //! `live_progress_raw`, `base_required_points_raw` and all four quartet fields
-//! divide by `TECH_LIVE_SCALE = 100_000` (`:155`, applied `:13352`, `:13364`,
-//! `:13413`-`:13425`) — a 100× error class inside one row. `fold_tech` is the
+//! divide by `TECH_LIVE_SCALE = 100_000` (`:155`, applied `:13372`, `:13384`,
+//! `:13433`-`:13445`) — a 100× error class inside one row. `fold_tech` is the
 //! only fold in the file that emits **both** forms of every one of these fields:
 //! `progress_raw` *and* `progress_units`, `live_progress_raw` *and*
 //! `live_progress_units`, and so on, plus the literal
-//! `"ahead_of_time_fixed_scale": 100_000` (`:13400`). Compare `fold_map_detail`
-//! (`:29937`) and `fold_country_core_scalars` (`:9349`), which emit the divided
+//! `"ahead_of_time_fixed_scale": 100_000` (`:13420`). Compare `fold_map_detail`
+//! (`:30033`) and `fold_country_core_scalars` (`:9369`), which emit the divided
 //! value only. So the fold's own answer for d13 is that the raw integer is
 //! first-class state and `*_units` is its rendering at a scale the fold also
 //! publishes — which is the recipe's derived-value rule, and it is why this
@@ -116,7 +116,7 @@
 //! ## Status
 //!
 //! `fold_tech` **never reads `status_flags`** — it has no `handle_compact_failure`
-//! call, unlike `fold_country_core_scalars` (`:9252`). Like d10, that forces an
+//! call, unlike `fold_country_core_scalars` (`:9272`). Like d10, that forces an
 //! explicit exclusion decision on the measurement side rather than a silent one;
 //! see `bin/bench_real_d13.rs`, which refuses a row-bearing failure-status record
 //! outright and counts-and-skips an empty one. Nothing about it belongs in this
@@ -131,31 +131,31 @@
 //! reported rather than dropped quietly, and neither occurs in the measured
 //! capture (0 of 364,487 active rows carry either tail).
 //!
-//! 1. **`tech_name`** (`world_fold.rs:13370`-`:13374`). The string bytes have no
+//! 1. **`tech_name`** (`world_fold.rs:13390`-`:13394`). The string bytes have no
 //!    kind. What survives is everything except the bytes: the numeric identity is
 //!    carried by `tech_handle_raw`/`tech_def_index_raw`, and the *capture fact* by
 //!    the `tech_name_captured` `Boolean`. The name is not independent state — the
-//!    collector resolves it as `tech_def_filter[handle]` (`attach_log.rs:80658`),
+//!    collector resolves it as `tech_def_filter[handle]` (`attach_log.rs:81024`),
 //!    a content-table rendering of the handle, exactly the argument d23 makes for
 //!    its `type_id` names. A §13 manifest that resolves `tech_handle_raw` restores
 //!    it; the Boolean records the one thing the handle does not, namely whether
 //!    that table resolved this handle at capture time.
 //!
-//! 2. **The 176-byte A29 provenance block** (`:13432`-`:13524`), except its
+//! 2. **The 176-byte A29 provenance block** (`:13452`-`:13544`), except its
 //!    `localization_branch`. Three independent reasons, each sufficient:
-//!    * Three of its fields are `[u8; 32]` SHA-256 digests (`:13440`, `:13450`,
-//!      `:13453`) and §4 has no bytes kind.
+//!    * Three of its fields are `[u8; 32]` SHA-256 digests (`:13460`, `:13470`,
+//!      `:13473`) and §4 has no bytes kind.
 //!    * It is an indivisible receipt. Every one of its remaining integers is an
 //!      argument to `a29_expected_source_record_sha256`
 //!      (`recorder_host/src/domain_data_authority.rs:72`-`:124`) or to
-//!      `SelectedPresentReceipt::sealed` (`world_fold.rs:13479`-`:13487`); they
+//!      `SelectedPresentReceipt::sealed` (`world_fold.rs:13499`-`:13507`); they
 //!      exist to be hashed. Publishing them without the digests publishes a
 //!      receipt no consumer can check, which is worse than publishing nothing.
-//!    * This crate structurally cannot enforce the two digest clauses (`:13517`,
-//!      `:13520`): the expected-digest function and its six pinned constants are
+//!    * This crate structurally cannot enforce the two digest clauses (`:13537`,
+//!      `:13540`): the expected-digest function and its six pinned constants are
 //!      `pub(crate)` in `recorder_host`, which `wire_format` must not depend on,
 //!      and copying them is the drift the shared-contract rule forbids. The other
-//!      **eighteen** clauses of the `:13491`-`:13521` predicate need no digest and
+//!      **eighteen** clauses of the `:13511`-`:13541` predicate need no digest and
 //!      are all enforced here, so a row this mapper accepts fails at most those
 //!      two.
 //!
@@ -172,7 +172,7 @@
 //!    `localization_branch` is ported because it is the one field in the block
 //!    with meaning outside the receipt: the dossier's branch table makes it the
 //!    *displayed form* (`0` no display, `1` unreduced, `2` reduced), the fold
-//!    constrains the quartet's shape by it (`:13493`-`:13502`), and it is not
+//!    constrains the quartet's shape by it (`:13513`-`:13522`), and it is not
 //!    recoverable from the quartet — the quartet `(0,0,0,0)` satisfies branch 0
 //!    and branch 1 alike. The dossier says so directly: "Branch identity comes
 //!    from the observed ordered name sequence, never inferred from the values."
@@ -186,13 +186,13 @@
 //!
 //! * `completed_tech_count`, `research_slot_count` — see above.
 //! * `live_progress_raw` — `None` on unreadable memory or a value outside
-//!   `0..=MAX_TECH_LIVE_PROGRESS_RAW` (`attach_log.rs:80633`-`:80634`).
+//!   `0..=MAX_TECH_LIVE_PROGRESS_RAW` (`attach_log.rs:80999`-`:81000`).
 //! * `base_required_points_raw` — `None` on an unreadable template, a
 //!   non-positive cost or scale, or an overflowing product
-//!   (`attach_log.rs:80945`-`:80990`).
+//!   (`attach_log.rs:81311`-`:81356`).
 //! * the quartet and `ahead_of_time_branch` — `None` when the game hour is
 //!   unreadable or no authenticated producer observation exists for this
-//!   technology at this hour (`attach_log.rs:80643`-`:80652`). The dossier
+//!   technology at this hour (`attach_log.rs:81009`-`:81018`). The dossier
 //!   records exactly this outcome for a late attach: "The late-attach fold
 //!   correctly contained the active research census but no quartet; authenticating
 //!   it requires the early-launch selected-Present path." The value existed in the
@@ -255,61 +255,61 @@ pub mod field {
     pub const AHEAD_OF_TIME_BRANCH: u32 = 16;
 }
 
-// --- Payload grammar, from `world_fold.rs:13302`-`:13337`. -------------------
+// --- Payload grammar, from `world_fold.rs:13322`-`:13357`. -------------------
 
-/// `world_fold.rs:13302` — `need(payload, 32, "tech header")`.
+/// `world_fold.rs:13322` — `need(payload, 32, "tech header")`.
 pub const HEADER_LEN: usize = 32;
-/// `world_fold.rs:13317` — `cursor += 16`.
+/// `world_fold.rs:13337` — `cursor += 16`.
 pub const COUNTRY_ROW_LEN: usize = 16;
-/// `world_fold.rs:13337` — `cursor += 40`, before any tail.
+/// `world_fold.rs:13357` — `cursor += 40`, before any tail.
 pub const ACTIVE_ROW_FIXED_LEN: usize = 40;
-/// `world_fold.rs:13377` — four `i64` ahead-of-time values.
+/// `world_fold.rs:13397` — four `i64` ahead-of-time values.
 pub const AHEAD_QUARTET_LEN: usize = 32;
-/// `world_fold.rs:13432` — the A29 producer provenance block.
+/// `world_fold.rs:13452` — the A29 producer provenance block.
 pub const A29_PROVENANCE_LEN: usize = 176;
 
 /// Country-row flag bits. **The fold never reads this word**; the collector packs
-/// it at `attach_log.rs:68848`-`:68859` and it is the only authority on why a
+/// it at `attach_log.rs:69214`-`:69225` and it is the only authority on why a
 /// value is missing. See the module docs.
 pub const COUNTRY_FLAG_COMPLETED_TECH_COUNT: u32 = 1;
 pub const COUNTRY_FLAG_RESEARCH_SLOT_COUNT: u32 = 1 << 1;
 pub const COUNTRY_FLAG_ACTIVE_RESEARCH: u32 = 1 << 2;
 
 /// The word the collector packs for a gated-off country count
-/// (`attach_log.rs:68863`, `:68869`: `unwrap_or(u32::MAX)`). Unreachable as a
+/// (`attach_log.rs:69229`, `:69235`: `unwrap_or(u32::MAX)`). Unreachable as a
 /// real reading: the collector's own bounds are 2000 and 32
 /// (`attach_log/offsets.rs:274`-`:275`).
 pub const COUNTRY_COUNT_ABSENT_SENTINEL: u32 = u32::MAX;
 
-/// Active-row flag bits (`world_fold.rs:13348`, `:13357`, `:13369`, `:13376`,
-/// `:13428`).
+/// Active-row flag bits (`world_fold.rs:13368`, `:13377`, `:13389`, `:13396`,
+/// `:13448`).
 pub const ACTIVE_FLAG_LIVE_PROGRESS: u32 = 1;
 pub const ACTIVE_FLAG_BASE_REQUIRED_POINTS: u32 = 1 << 1;
 pub const ACTIVE_FLAG_TECH_NAME: u32 = 1 << 2;
 pub const ACTIVE_FLAG_AHEAD_QUARTET: u32 = 1 << 3;
 pub const ACTIVE_FLAG_A29_PROVENANCE: u32 = 1 << 4;
-/// `world_fold.rs:13332` — `flags & !0b1_1111` is a hard error.
+/// `world_fold.rs:13352` — `flags & !0b1_1111` is a hard error.
 pub const ACTIVE_KNOWN_FLAGS: u32 = 0b1_1111;
 
 /// `TECH_PROGRESS_SCALE`, `world_fold.rs:154`. Applies to `progress_raw` alone
-/// (`:13346`). The header word at `+20` carries it too (`attach_log.rs:68843`).
+/// (`:13366`). The header word at `+20` carries it too (`attach_log.rs:69209`).
 pub const TECH_PROGRESS_SCALE: f64 = 1000.0;
 pub const TECH_PROGRESS_SCALE_RAW: u32 = 1000;
 /// `TECH_LIVE_SCALE`, `world_fold.rs:155`. **100× the other one**, and it applies
-/// to six fields in the same row: `live_progress_raw` (`:13352`),
-/// `base_required_points_raw` (`:13364`) and all four quartet values
-/// (`:13413`-`:13425`). The header word at `+24` carries it too
-/// (`attach_log.rs:68844`), and the fold restates it per row as
-/// `"ahead_of_time_fixed_scale": 100_000` (`:13400`).
+/// to six fields in the same row: `live_progress_raw` (`:13372`),
+/// `base_required_points_raw` (`:13384`) and all four quartet values
+/// (`:13433`-`:13445`). The header word at `+24` carries it too
+/// (`attach_log.rs:69210`), and the fold restates it per row as
+/// `"ahead_of_time_fixed_scale": 100_000` (`:13420`).
 pub const TECH_LIVE_SCALE: f64 = 100_000.0;
 pub const TECH_LIVE_SCALE_RAW: u32 = 100_000;
 
-/// `world_fold.rs:13395` — every quartet value must lie in `0..=10^10`.
+/// `world_fold.rs:13415` — every quartet value must lie in `0..=10^10`.
 pub const AHEAD_RAW_MAX: i64 = 10_000_000_000;
 
-/// `world_fold.rs:13491` — the A29 block's `authority` word.
+/// `world_fold.rs:13511` — the A29 block's `authority` word.
 pub const A29_AUTHORITY: u32 = 3;
-/// `world_fold.rs:13508` compares the block's `ui_action_gate_return_rva` against
+/// `world_fold.rs:13528` compares the block's `ui_action_gate_return_rva` against
 /// `A29_UI_YEAR_HELPER_RETURN_RVA`, which is `pub(crate)` in
 /// `recorder_host/src/domain_data_authority.rs:59`. The same value is published
 /// knowledge in `documents/domains/d13_tech_live.md:42` ("The helper detour's
@@ -317,7 +317,7 @@ pub const A29_AUTHORITY: u32 = 3;
 /// citable here rather than a private constant smuggled across a crate boundary.
 /// It is nevertheless a copied constant and is listed in the open questions.
 pub const A29_UI_YEAR_HELPER_RETURN_RVA: u32 = 0x01BC_F384;
-/// The three `localization_branch` codes (`world_fold.rs:13492`, dossier table).
+/// The three `localization_branch` codes (`world_fold.rs:13512`, dossier table).
 pub const AHEAD_BRANCH_CARDINALITY: u32 = 3;
 
 pub fn schema() -> Schema {
@@ -325,7 +325,7 @@ pub fn schema() -> Schema {
 
     // `countries`: the per-country research census.
     //
-    // The key is `tag_db_id` (`world_fold.rs:13314`), the identity d18's roster
+    // The key is `tag_db_id` (`world_fold.rs:13334`), the identity d18's roster
     // defines and d63 keys by. `ContentId` because a country tag is
     // content-defined (§5) — a manifest must resolve it for it to keep its
     // meaning under another mod set. It is a ContentId *key*, which §13 flags as
@@ -350,17 +350,17 @@ pub fn schema() -> Schema {
 
     // `active_research`: one row per occupied research slot.
     //
-    // The key is `(tag_db_id, slot_index)` (`world_fold.rs:13326`-`:13327`). A
+    // The key is `(tag_db_id, slot_index)` (`world_fold.rs:13346`-`:13347`). A
     // research slot is a stable identity that persists across hours — the same
     // slot keeps working, then takes a new technology — which is what makes the
     // delta grammar worth anything here; keying by the technology instead would
     // turn every completed research into a tombstone plus an insert.
     //
     // **This is a keyed set and not an ordered shape**, which is worth stating
-    // because the fold accumulates these rows into a JSON *array* (`:13567`).
+    // because the fold accumulates these rows into a JSON *array* (`:13587`).
     // Two facts make the array's order carry nothing: the collector sorts by
-    // `slot_index` before packing (`attach_log.rs:80679`), and it refuses a
-    // country whose slot indices repeat (`:80611`-`:80613`). So payload order is
+    // `slot_index` before packing (`attach_log.rs:81045`), and it refuses a
+    // country whose slot indices repeat (`:80977`-`:80979`). So payload order is
     // `slot_index` order, which is exactly the keyed set's own canonical order,
     // and no ordering information is lost. A payload that *did* repeat a
     // `(tag, slot_index)` is refused by [`state_from_payload`] rather than
@@ -370,7 +370,7 @@ pub fn schema() -> Schema {
     // `tech_handle_raw` and `tech_def_index_raw` are both `ContentId`: they index
     // the technology database, which mod content defines, so a manifest must
     // resolve them for them to keep their meaning. The collector requires the two
-    // to be equal (`attach_log.rs:80629`-`:80631`) and they are equal in all
+    // to be equal (`attach_log.rs:80995`-`:80997`) and they are equal in all
     // 364,487 measured rows — but `fold_tech` does not require it, so dropping
     // either one would lose data on input the recorder accepts.
     //
@@ -410,8 +410,8 @@ pub fn schema() -> Schema {
 
 // --- The payload header and its two tables -----------------------------------
 
-/// The 32-byte payload header (`world_fold.rs:13302`-`:13304`, packer
-/// `attach_log.rs:68839`-`:68845`).
+/// The 32-byte payload header (`world_fold.rs:13322`-`:13324`, packer
+/// `attach_log.rs:69205`-`:69211`).
 ///
 /// `changed_rows`, `status_flags` and the two scale words are carried here
 /// because they are captured bytes, not because anything below acts on them:
@@ -437,14 +437,14 @@ pub struct Tables<'a> {
 }
 
 /// Split a d13 DATA payload into its header and its two tables, applying the
-/// fold's own structural checks (`world_fold.rs:13302`-`:13310`).
+/// fold's own structural checks (`world_fold.rs:13322`-`:13330`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness that
 /// can drift from the recorder without anything failing.
 ///
 /// The fold's bound is a **minimum**, not an equality — the active rows carry
-/// optional tails — so the exact-consumption rule (`:13571`) belongs to
+/// optional tails — so the exact-consumption rule (`:13591`) belongs to
 /// [`active_row_spans`], which is the only function that can evaluate it.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tables<'_>), String> {
     if payload.len() < HEADER_LEN {
@@ -463,7 +463,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tab
         active_count: u32_at(payload, 28),
     };
     // Checked arithmetic: the counts are input from a file on disk, and the
-    // fold's `saturating_*` (`:13305`-`:13307`) turns an overflowing product into
+    // fold's `saturating_*` (`:13325`-`:13327`) turns an overflowing product into
     // a length shortfall rather than a wrapped, plausible one. Checked reports the
     // overflow as itself; both refuse the payload.
     let countries_len = (header.country_count as usize)
@@ -491,12 +491,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tab
 
 /// The byte span of each active-research row inside [`Tables::active`], walking
 /// the variable tails exactly as `fold_tech` walks them
-/// (`world_fold.rs:13324`-`:13570`) and enforcing its trailing-bytes rule
-/// (`:13571`).
+/// (`world_fold.rs:13344`-`:13590`) and enforcing its trailing-bytes rule
+/// (`:13591`).
 ///
-/// Only structure is decided here — the fixed-length bound (`:13325`), the flag
-/// mask (`:13332`, the fold's first act on a row), the string's own length
-/// (`:13370` via `read_string`, **`u16`-prefixed**, `world_fold.rs:30160`), and
+/// Only structure is decided here — the fixed-length bound (`:13345`), the flag
+/// mask (`:13352`, the fold's first act on a row), the string's own length
+/// (`:13390` via `read_string`, **`u16`-prefixed**, `world_fold.rs:30256`), and
 /// the two fixed tails. Everything semantic stays in [`record_from_active_row`],
 /// which is where the recipe puts per-row checks.
 pub fn active_row_spans(
@@ -516,7 +516,7 @@ pub fn active_row_spans(
         spans.push(cursor..end);
         cursor = end;
     }
-    // `world_fold.rs:13571`.
+    // `world_fold.rs:13591`.
     if cursor != active.len() {
         return Err(format!(
             "tech trailing bytes: consumed {cursor} of {} active-table bytes",
@@ -536,15 +536,15 @@ pub fn active_row_len(rest: &[u8]) -> core::result::Result<usize, String> {
         ));
     }
     let flags = u32_at(rest, 20);
-    // `world_fold.rs:13332` — an unrecognised flag word means the row is not this
+    // `world_fold.rs:13352` — an unrecognised flag word means the row is not this
     // grammar, so nothing in it (including its length) can be trusted.
     if flags & !ACTIVE_KNOWN_FLAGS != 0 {
         return Err(format!("row has unknown flags {flags:#x}"));
     }
     let mut len = ACTIVE_ROW_FIXED_LEN;
     if flags & ACTIVE_FLAG_TECH_NAME != 0 {
-        // `read_string`, `world_fold.rs:30160`: a **u16** length prefix, then that
-        // many UTF-8 bytes. The packer writes the same (`attach_log.rs:71578`).
+        // `read_string`, `world_fold.rs:30256`: a **u16** length prefix, then that
+        // many UTF-8 bytes. The packer writes the same (`attach_log.rs:71944`).
         if rest.len() < len + 2 {
             return Err("row is too short for the tech_name length prefix".into());
         }
@@ -561,7 +561,7 @@ pub fn active_row_len(rest: &[u8]) -> core::result::Result<usize, String> {
         }
     }
     if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
-        // `world_fold.rs:13429` — the provenance block requires the quartet, and
+        // `world_fold.rs:13449` — the provenance block requires the quartet, and
         // the check runs before the 176-byte `need`.
         if flags & ACTIVE_FLAG_AHEAD_QUARTET == 0 {
             return Err("A29 provenance without ahead quartet".into());
@@ -571,7 +571,7 @@ pub fn active_row_len(rest: &[u8]) -> core::result::Result<usize, String> {
             return Err("row is too short for the A29 provenance block".into());
         }
     } else if flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
-        // `world_fold.rs:13561` — the converse. The fold reaches it only after
+        // `world_fold.rs:13581` — the converse. The fold reaches it only after
         // consuming the quartet, which is why it is checked after the length is
         // known rather than beside the flag mask.
         return Err("ahead quartet lacks observed A29 producer provenance".into());
@@ -581,9 +581,9 @@ pub fn active_row_len(rest: &[u8]) -> core::result::Result<usize, String> {
 
 // --- Keys --------------------------------------------------------------------
 
-/// The key of one country row: its `tag_db_id` (`world_fold.rs:13314`).
+/// The key of one country row: its `tag_db_id` (`world_fold.rs:13334`).
 ///
-/// The fold validates nothing about it — not even zero, unlike d63 (`:9259`) —
+/// The fold validates nothing about it — not even zero, unlike d63 (`:9279`) —
 /// so neither does this.
 pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_country_row_len(row)?;
@@ -591,7 +591,7 @@ pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
 }
 
 /// The key of one active-research row: `(tag_db_id, slot_index)`
-/// (`world_fold.rs:13326`-`:13327`).
+/// (`world_fold.rs:13346`-`:13347`).
 pub fn key_from_active_row(row: &[u8]) -> core::result::Result<Key, String> {
     if row.len() < ACTIVE_ROW_FIXED_LEN {
         return Err(format!(
@@ -686,8 +686,8 @@ fn gated_country_count(
 /// field, so it is taken and ignored — every domain's mapper has the same shape.
 ///
 /// **A tick index is not the fold's game hour.** `fold_tech` is the only fold in
-/// `world_fold.rs` that takes `game_hour_raw` (`:13301`), and its sole consumer is
-/// the A29 same-hour authority gate at `:13505`. But `game_hour_raw` is the
+/// `world_fold.rs` that takes `game_hour_raw` (`:13321`), and its sole consumer is
+/// the A29 same-hour authority gate at `:13525`. But `game_hour_raw` is the
 /// engine's stored absolute hour counter, and the container's own coordinate is
 /// `hour_index = raw_date - DATE_EPOCH_CONST` with `DATE_EPOCH_CONST = 43_799_999`
 /// (`compact_contract/src/calendar.rs:9`, `:22`) — the reference capture's
@@ -717,7 +717,7 @@ pub fn record_from_active_row(
 }
 
 /// Whether an active-research row carries the A29 provenance tail
-/// (`world_fold.rs:13428`). Public so that a caller implementing the fail-closed
+/// (`world_fold.rs:13448`). Public so that a caller implementing the fail-closed
 /// policy the module docs describe does not re-derive the row's flag layout.
 pub fn active_row_carries_a29_provenance(row: &[u8]) -> core::result::Result<bool, String> {
     if row.len() < ACTIVE_ROW_FIXED_LEN {
@@ -744,10 +744,10 @@ pub fn payload_carries_a29_provenance(payload: &[u8]) -> core::result::Result<bo
 
 /// [`record_from_active_row`] in the fold's own shape: `frame_game_hour` is
 /// `fold_tech`'s `game_hour_raw` parameter, and `None` skips the same-hour clause
-/// exactly as `game_hour_raw.is_some_and(..)` does at `world_fold.rs:13505`.
+/// exactly as `game_hour_raw.is_some_and(..)` does at `world_fold.rs:13525`.
 ///
 /// This evaluates **eighteen of the twenty** clauses of the fold's A29 acceptance
-/// predicate. The two digest equalities (`world_fold.rs:13517`, `:13520`) need
+/// predicate. The two digest equalities (`world_fold.rs:13537`, `:13540`) need
 /// `recorder_host` internals this crate cannot reach; the module docs say what a
 /// caller must do about them, and `bin/bench_real_d13.rs` does it.
 pub fn record_from_active_row_at_hour(
@@ -816,7 +816,7 @@ fn parse_active_row(
     let live_word = i64_at(row, 24);
     let base_word = i64_at(row, 32);
 
-    // `world_fold.rs:13354` and `:13366`: a gated-off value must pack a zero.
+    // `world_fold.rs:13374` and `:13386`: a gated-off value must pack a zero.
     let live_progress_raw = if flags & ACTIVE_FLAG_LIVE_PROGRESS != 0 {
         Some(live_word)
     } else if live_word != 0 {
@@ -837,8 +837,8 @@ fn parse_active_row(
     if tech_name_captured {
         let name_len = u16::from_le_bytes([row[cursor], row[cursor + 1]]) as usize;
         cursor += 2;
-        // `world_fold.rs:13371` — an empty name is a rejected row, and
-        // `read_string` (`:30160`) rejects invalid UTF-8 before that. The bytes
+        // `world_fold.rs:13391` — an empty name is a rejected row, and
+        // `read_string` (`:30256`) rejects invalid UTF-8 before that. The bytes
         // themselves are a field-level stop-report (module docs); they are still
         // validated, because a row the fold refuses must not be measured.
         if name_len == 0 {
@@ -856,7 +856,7 @@ fn parse_active_row(
             i64_at(row, cursor + 16),
             i64_at(row, cursor + 24),
         );
-        // `world_fold.rs:13388`-`:13398`.
+        // `world_fold.rs:13408`-`:13418`.
         if [q.0, q.1, q.2, q.3]
             .iter()
             .any(|value| !(0..=AHEAD_RAW_MAX).contains(value))
@@ -896,12 +896,12 @@ fn parse_active_row(
 }
 
 /// Every clause of the A29 exact same-hour authority predicate
-/// (`world_fold.rs:13491`-`:13521`) that can be evaluated without recomputing a
+/// (`world_fold.rs:13511`-`:13541`) that can be evaluated without recomputing a
 /// SHA-256, and the block's `localization_branch` on success.
 ///
 /// Eighteen of the twenty clauses are here. The two that are not
-/// (`computed_selected_present_sha256 != ...` at `:13517` and
-/// `expected_source_record_sha256 != Some(..)` at `:13520`) need
+/// (`computed_selected_present_sha256 != ...` at `:13537` and
+/// `expected_source_record_sha256 != Some(..)` at `:13540`) need
 /// `recorder_host::domain_data_authority::a29_expected_source_record_sha256` and
 /// `portable_render_stream::SelectedPresentReceipt`, both unreachable from this
 /// crate; that is one of the three reasons the block is a field-level
@@ -930,7 +930,7 @@ fn check_a29_provenance(
     let candidate_set_sha256 = &block[112..144];
     let selected_present_receipt_sha256 = &block[144..176];
 
-    // `world_fold.rs:13491`-`:13502`, in the fold's own order.
+    // `world_fold.rs:13511`-`:13522`, in the fold's own order.
     if authority != A29_AUTHORITY {
         return a29_fail("authority");
     }
@@ -952,7 +952,7 @@ fn check_a29_provenance(
     if callback_thread_id == 0 {
         return a29_fail("callback_thread_id");
     }
-    // `world_fold.rs:13505` — the same-hour gate, and the whole reason this
+    // `world_fold.rs:13525` — the same-hour gate, and the whole reason this
     // domain's mapper takes the frame clock.
     if frame_game_hour.is_some_and(|frame_hour| producer_game_hour_raw != frame_hour) {
         return a29_fail("producer_game_hour_raw");
@@ -997,7 +997,7 @@ fn check_a29_provenance(
 }
 
 /// The fold's single message for every clause of the predicate
-/// (`world_fold.rs:13522`), plus the clause that failed. The clause name is
+/// (`world_fold.rs:13542`), plus the clause that failed. The clause name is
 /// diagnosis only and changes nothing about which rows are accepted.
 fn a29_fail(clause: &str) -> core::result::Result<u32, String> {
     Err(format!(
@@ -1019,24 +1019,24 @@ fn no_mapping(collection: &str, field_id: u32) -> String {
 /// **d13 is upsert-by-country, not full replace, and one record is not one
 /// state.** `fold_tech` builds a fresh `per_tag` map from the payload and then
 /// publishes it with `for (tag, obj) in per_tag { self.country_mut(tag).insert("research", obj) }`
-/// (`world_fold.rs:13577`-`:13580`). It touches only the tags the payload
+/// (`world_fold.rs:13597`-`:13600`). It touches only the tags the payload
 /// carries; a country the payload omits keeps the `research` object it already
 /// had. The collector *does* omit countries — `compact_tech_data_payload` packs
 /// only `rows.iter().filter(|row| row.research.is_some())`
-/// (`attach_log.rs:68824`), and `read_country_research` returns `None` whenever
+/// (`attach_log.rs:69190`), and `read_country_research` returns `None` whenever
 /// the country's tech-status object is unreadable or fails its vtable and
-/// back-link checks (`:80504`-`:80513`). Modelling each payload as the whole
+/// back-link checks (`:80870`-`:80879`). Modelling each payload as the whole
 /// state would emit tombstones for such a country and lose research state the
 /// recorder still holds.
 ///
 /// For a tag the payload *does* carry, everything is replaced: `per_tag` gives it
-/// a fresh `in_progress_live: []` (`:13321`) before any active row is attached,
+/// a fresh `in_progress_live: []` (`:13341`) before any active row is attached,
 /// so its previous slots do not survive. [`fold_payload_at_hour`] implements
 /// exactly that — upsert the country row, replace that tag's `(tag, *)` active
 /// rows, leave every other tag alone.
 ///
 /// **No other writer touches this accumulator.** `"research"` is written in
-/// `world_fold.rs` at `:13579` (this fold) and at `:3797`, which is d45's
+/// `world_fold.rs` at `:13599` (this fold) and at `:3817`, which is d45's
 /// projection-time `_r2_depth_in_progress_live` sidecar on a different key of the
 /// same object; nothing removes a country or clears `research`.
 #[derive(Clone, Debug, PartialEq)]
@@ -1100,8 +1100,8 @@ pub fn fold_payload(
 }
 
 /// [`fold_payload`] in the fold's own shape: `frame_game_hour` is `fold_tech`'s
-/// `game_hour_raw` parameter (`world_fold.rs:13301`), and `None` skips the A29
-/// same-hour clause exactly as `game_hour_raw.is_some_and(..)` does at `:13505`.
+/// `game_hour_raw` parameter (`world_fold.rs:13321`), and `None` skips the A29
+/// same-hour clause exactly as `game_hour_raw.is_some_and(..)` does at `:13525`.
 ///
 /// **Upsert by country, never a wholesale replace.** See [`TechState`]. Each tag
 /// the payload carries has its country record replaced and its whole `(tag, *)`
@@ -1113,16 +1113,16 @@ pub fn fold_payload(
 /// publishes.
 ///
 /// **Repeated country rows fold in payload order, last one winning.** The fold's
-/// `per_tag.insert` (`:13322`) overwrites, and every active row is attached after
-/// all country rows are read (`:13324`), so the surviving object collects them
+/// `per_tag.insert` (`:13342`) overwrites, and every active row is attached after
+/// all country rows are read (`:13344`), so the surviving object collects them
 /// all. A keyed set reproduces that exactly, and refusing the frame would refuse
 /// one the shipping recorder folds.
 ///
 /// **A repeated `(tag, slot_index)` is refused.** The fold `push`es onto an array
-/// (`:13567`) rather than inserting into a map, so both rows survive there and a
+/// (`:13587`) rather than inserting into a map, so both rows survive there and a
 /// keyed set can hold only one. Measuring such a frame would measure a state
 /// nobody holds. The collector cannot produce one — it rejects a country whose
-/// slot indices repeat (`attach_log.rs:80611`-`:80613`) — and none of the 364,487
+/// slot indices repeat (`attach_log.rs:80977`-`:80979`) — and none of the 364,487
 /// measured rows does.
 pub fn fold_payload_at_hour(
     schema: &Schema,
@@ -1153,7 +1153,7 @@ pub fn fold_payload_at_hour(
     for row in tables.countries.chunks_exact(COUNTRY_ROW_LEN) {
         let key = key_from_country_row(row)?;
         let record = record_from_country_row(countries_c, row, 0)?;
-        // Last writer wins, exactly like `per_tag.insert` (`:13322`).
+        // Last writer wins, exactly like `per_tag.insert` (`:13342`).
         countries.insert(key, record);
     }
 
@@ -1161,7 +1161,7 @@ pub fn fold_payload_at_hour(
     for span in active_row_spans(tables.active, header.active_count)? {
         let row = &tables.active[span];
         let key = key_from_active_row(row)?;
-        // `world_fold.rs:13564`-`:13566`.
+        // `world_fold.rs:13584`-`:13586`.
         let tag = key.0[0];
         if !countries.contains_key(&Key(vec![tag])) {
             return Err(format!("tech active row references unknown tag {tag}"));
@@ -1174,7 +1174,7 @@ pub fn fold_payload_at_hour(
 
     // ---- Nothing below can fail, so `acc` is never left half-written. ----
     // Every carried tag's active rows go first, whole: `per_tag` hands each
-    // carried country a fresh empty `in_progress_live` (`:13321`), so a slot the
+    // carried country a fresh empty `in_progress_live` (`:13341`), so a slot the
     // payload does not repeat for that country is gone. A tag the payload does
     // not carry is not touched at all.
     acc.collections[ACTIVE_RESEARCH_INDEX]

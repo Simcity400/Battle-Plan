@@ -2,12 +2,12 @@
 //! equipment variant held in a country stockpile.
 //!
 //! **The grammar lives in [`crate::variant_upgrades`]**, which d40 shares
-//! byte-for-byte with d39 `air_variant_upgrades`: `world_fold.rs:4684` and
-//! `:4685` dispatch the same `fold_variant_upgrades` (`:15431`) for both, and the
-//! only divergences inside it are the accumulator it writes (`:15501`-`:15505`)
-//! and the name in its error strings (`:15432`-`:15436`). Read that module for
+//! byte-for-byte with d39 `air_variant_upgrades`: `world_fold.rs:4704` and
+//! `:4705` dispatch the same `fold_variant_upgrades` (`:15505`) for both, and the
+//! only divergences inside it are the accumulator it writes (`:15575`-`:15579`)
+//! and the name in its error strings (`:15506`-`:15510`). Read that module for
 //! the payload tables, the four-state decision (none: `flags` must be exactly
-//! zero, `:15472`), the upsert-only fold, and the one place the mapping is
+//! zero, `:15546`), the upsert-only fold, and the one place the mapping is
 //! stricter than the fold.
 //!
 //! This module is the **domain identity**: §11 assigns field ids per domain, so
@@ -18,9 +18,9 @@
 //! this file, by construction, so the two domains cannot drift.
 //!
 //! The read paths differ even though the grammar does not: d39 walks the air
-//! variant definitions (`attach_log.rs:53731`-`:53763`) while d40 walks every
+//! variant definitions (`attach_log.rs:54023`-`:54055`) while d40 walks every
 //! country's stockpile and de-duplicates the variants it finds
-//! (`:53766`-`:53837`). That is why d40 is ~6× d39's volume — 1204 variants
+//! (`:54058`-`:54129`). That is why d40 is ~6× d39's volume — 1204 variants
 //! against 204 in the reference capture (`runs/batch2/deepwar_t1`, 146 hours, all
 //! 146 records status 0) — and why d40, unlike d39, actually carries upgrade
 //! entries: 228 of them, over 93 variants, at levels 0..13.
@@ -34,7 +34,7 @@ use crate::variant_upgrades::{self as shared, Domain, PayloadHeader, State, Tabl
 pub const DOMAIN: u32 = 40;
 
 /// The fold's own name for this domain in its diagnostics
-/// (`world_fold.rs:15435`).
+/// (`world_fold.rs:15509`).
 pub const NAME: &str = "stockpile_variant_upgrades";
 
 /// The descriptor every shared entry point takes. Nothing else constructs one.

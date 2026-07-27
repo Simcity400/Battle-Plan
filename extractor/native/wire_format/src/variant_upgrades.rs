@@ -1,20 +1,20 @@
 //! The `variant_upgrades` grammar, shared by **d39 `air_variant_upgrades`** and
 //! **d40 `stockpile_variant_upgrades`**.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:15431`-`:15510`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:15505`-`:15584`
 //! (`fold_variant_upgrades`), its payload constants at `:993`-`:995`, its domain
-//! ids at `:644`-`:645`, its dispatch at `:4684`-`:4685`, its accumulator element
-//! at `:23819`-`:23833`, and the collector read and payload writer that produce
-//! the rows (`extractor/native/collector/src/attach_log.rs:53731`-`:53886`,
-//! `:57226`-`:57290`, `:70197`-`:70243`). Neither domain has a dossier
+//! ids at `:644`-`:645`, its dispatch at `:4704`-`:4705`, its accumulator element
+//! at `:23893`-`:23907`, and the collector read and payload writer that produce
+//! the rows (`extractor/native/collector/src/attach_log.rs:54023`-`:54196`,
+//! `:57566`-`:57630`, `:70563`-`:70609`). Neither domain has a dossier
 //! (`documents/domains/UNDOCUMENTED_DOMAINS.md` lists 39 and 40), so the fold and
 //! the collector read are the whole basis.
 //!
 //! # One grammar, two domains
 //!
-//! `world_fold.rs:4684` and `:4685` dispatch **the same function** for both
+//! `world_fold.rs:4704` and `:4705` dispatch **the same function** for both
 //! domains; the only divergences inside it are the accumulator it writes
-//! (`:15501`-`:15505`) and the name in its error strings (`:15432`-`:15436`).
+//! (`:15575`-`:15579`) and the name in its error strings (`:15506`-`:15510`).
 //! The payload grammar is therefore byte-identical, and duplicating it into two
 //! modules would give the fan-out two copies of one authority to keep in step.
 //!
@@ -30,34 +30,34 @@
 //!
 //! # Payload grammar
 //!
-//! (`world_fold.rs:15437`-`:15500`, writer `attach_log.rs:70207`-`:70242`.) A
+//! (`world_fold.rs:15511`-`:15574`, writer `attach_log.rs:70573`-`:70608`.) A
 //! 44-byte header, then `row_count` fixed 16-byte variant rows, then
 //! `emitted_upgrade_rows` fixed 8-byte upgrade entries:
 //!
 //! | offset | width | header field |
 //! |---|---|---|
 //! | `+0`  | u64 | `elapsed_wall_ms` |
-//! | `+8`  | u32 | `row_count` (`:15442`) |
+//! | `+8`  | u32 | `row_count` (`:15516`) |
 //! | `+12` | u32 | `changed_rows` |
-//! | `+16` | u32 | `status_flags` (`:15443`) |
+//! | `+16` | u32 | `status_flags` (`:15517`) |
 //! | `+20` | u32 | `observed_variant_rows` |
 //! | `+24` | u32 | `observed_upgrade_rows` |
-//! | `+28` | u32 | `emitted_upgrade_rows` (`:15444`) |
+//! | `+28` | u32 | `emitted_upgrade_rows` (`:15518`) |
 //! | `+32` | u32 | `invalid_variant_rows` |
-//! | `+36` | u32 | reserved, must be zero (`:15445`, `:15447`) |
-//! | `+40` | u32 | reserved, must be zero (`:15446`, `:15447`) |
+//! | `+36` | u32 | reserved, must be zero (`:15519`, `:15521`) |
+//! | `+40` | u32 | reserved, must be zero (`:15520`, `:15521`) |
 //!
 //! | row | offset | width | field | scale | gate |
 //! |---|---|---|---|---|---|
-//! | variant | `+0`  | u32 | `variant_id`     | raw | none (key; zero rejected `:15468`) |
-//! | variant | `+4`  | u32 | `flags`          | —   | **must be exactly 0** (`:15472`) |
-//! | variant | `+8`  | u32 | `upgrade_first`  | —   | transport (`:15475`) |
-//! | variant | `+12` | u32 | `upgrade_count`  | —   | transport (`:15476`) |
-//! | upgrade | `+0`  | u32 | `upgrade_index`  | raw | none (key component, `:15497`) |
-//! | upgrade | `+4`  | u32 | `level`          | raw | none (`:15498`) |
+//! | variant | `+0`  | u32 | `variant_id`     | raw | none (key; zero rejected `:15542`) |
+//! | variant | `+4`  | u32 | `flags`          | —   | **must be exactly 0** (`:15546`) |
+//! | variant | `+8`  | u32 | `upgrade_first`  | —   | transport (`:15549`) |
+//! | variant | `+12` | u32 | `upgrade_count`  | —   | transport (`:15550`) |
+//! | upgrade | `+0`  | u32 | `upgrade_index`  | raw | none (key component, `:15571`) |
+//! | upgrade | `+4`  | u32 | `level`          | raw | none (`:15572`) |
 //!
 //! **No scale factor anywhere.** All four state-bearing words are integers the
-//! fold emits raw: `VariantUpgradeState::to_json` (`world_fold.rs:23826`-`:23831`)
+//! fold emits raw: `VariantUpgradeState::to_json` (`world_fold.rs:23900`-`:23905`)
 //! passes `upgrade_index` and `level` through `json!` unchanged, and the two row
 //! words that are not transport are the key. The 32768-vs-100000 class of error
 //! has no surface in this domain; the offset test in place of the scale test is
@@ -72,7 +72,7 @@
 //!   `level`.
 //!
 //! The `(upgrade_first, upgrade_count)` pair is **transport, never state**
-//! (`:15475`-`:15484`, `:15506`-`:15509`): it says where this frame happened to
+//! (`:15549`-`:15558`, `:15580`-`:15583`): it says where this frame happened to
 //! put a variant's entries in the shared array, so two frames carrying the same
 //! world with the arrays laid out differently would differ in every index. The
 //! fold itself keeps only the *slice* (`upgrades[first..end].to_vec()`), which is
@@ -81,7 +81,7 @@
 //!
 //! **The child key is the entry's ordinal in its variant's list, not its
 //! `upgrade_index` word.** What the fold stores per variant is a
-//! **`Vec<VariantUpgradeState>`** (`:15508`), and a `Vec` is a map from position
+//! **`Vec<VariantUpgradeState>`** (`:15582`), and a `Vec` is a map from position
 //! to element — so keying by position is what makes this collection reproduce the
 //! fold's own container, element for element, for **every** payload the fold
 //! accepts:
@@ -100,7 +100,7 @@
 //!
 //! `upgrade_index` therefore rides as an ordinary value field. In every row a
 //! real capture contains it equals the ordinal, because the collector writes its
-//! own loop counter into it (`attach_log.rs:57284`) — but the FOLD enforces
+//! own loop counter into it (`attach_log.rs:57624`) — but the FOLD enforces
 //! nothing of the kind, and the recipe's derived-witness rule is about invariants
 //! the fold holds, not about coincidences of one writer. Dropping it would make
 //! this schema unable to carry a payload the recorder accepts. Recorded in the
@@ -119,21 +119,21 @@
 //! # Four states: none
 //!
 //! Every field is a real measured value in every row. The row's `flags` word must
-//! be **exactly** zero (`world_fold.rs:15472`) — there is no gate bit, and in
+//! be **exactly** zero (`world_fold.rs:15546`) — there is no gate bit, and in
 //! particular no delete bit — so no field can be `Absent`, `Null` or `Unknown`,
 //! and the schema declares no `.optional()`, `.nullable()` or
 //! `.unknown_capable()` capability. That is the recipe's step-8 case 3, recorded
 //! here with its reason; `no_state_capability_is_declared` is the test that pins
 //! it. Uncaptured is an **hour-level** state in these domains, never a per-field
 //! one: a read that fails returns no rows and badges the record
-//! `COMPACT_STATUS_SOURCE_UNAVAILABLE` (`attach_log.rs:53738`-`:53749`,
-//! `:53772`-`:53783`, `:53817`), and a variant whose object or upgrade container
+//! `COMPACT_STATUS_SOURCE_UNAVAILABLE` (`attach_log.rs:54030`-`:54041`,
+//! `:54064`-`:54075`, `:54109`), and a variant whose object or upgrade container
 //! fails validation is dropped from the payload and counted in
 //! `invalid_variant_rows` with `COMPACT_STATUS_PARTIAL_DATA`
-//! (`:53855`-`:53858`, `:53874`-`:53876`) — both are failure statuses for these
+//! (`:54150`-`:54153`, `:54169`-`:54186`) — both are failure statuses for these
 //! domains (no expected-partial tolerance is registered for 39 or 40,
 //! `compact_contract/src/lib.rs:138`-`:158`), so the fold folds nothing and
-//! retains the accumulator (`world_fold.rs:15450`).
+//! retains the accumulator (`world_fold.rs:15524`).
 //!
 //! **Zero is a value.** `level == 0` is a real upgrade slot at level zero — 43 of
 //! the 228 d40 entries in the reference capture — and `upgrade_count == 0` is a
@@ -143,14 +143,14 @@
 //!
 //! `fold_variant_upgrades` has **one** mode. It never clears its accumulator and
 //! it never reads `COMPACT_STATUS_DELTA_DATA`; every record's rows are upserted
-//! with `target.insert(variant_id, …)` (`:15506`-`:15509`). Consequences that the
+//! with `target.insert(variant_id, …)` (`:15580`-`:15583`). Consequences that the
 //! rest of this module is built on:
 //!
 //! * There is no delta-before-baseline exclusion path — d22's and d23's second
 //!   exclusion does not exist here, because there is no baseline to be before.
 //!   The **only** path on which this fold returns without folding is a failure
-//!   status (`:15450`), and it sits **after** the reserved-word check (`:15447`)
-//!   and **before** the payload-length check (`:15457`). [`parse_header`] and
+//!   status (`:15524`), and it sits **after** the reserved-word check (`:15521`)
+//!   and **before** the payload-length check (`:15531`). [`parse_header`] and
 //!   [`split_payload`] are split at exactly that seam so a caller can reproduce
 //!   the order: a failure-status record with a nonzero reserved word is a
 //!   *rejected* frame, while a failure-status record whose length does not match
@@ -167,12 +167,12 @@
 //!
 //! The fold is the authority, so this module reproduces its permissiveness
 //! exactly and refuses **nothing** it accepts: a `variant_id` repeated inside one
-//! payload is last-writer-wins rather than a rejected frame (`:15506`, a plain
+//! payload is last-writer-wins rather than a rejected frame (`:15580`, a plain
 //! `insert` per row in payload order); two variants may address overlapping
 //! slices of the entry array; an entry no row addresses is still decoded and
-//! checked (`:15493`-`:15500`); `upgrade_index` is accepted over the whole `u32`
+//! checked (`:15567`-`:15574`); `upgrade_index` is accepted over the whole `u32`
 //! range with no zero check and no bound, and `level` likewise even though the
-//! collector masks it to `0..=255` (`attach_log.rs:57286`); a variant range may
+//! collector masks it to `0..=255` (`attach_log.rs:57626`); a variant range may
 //! repeat an `upgrade_index` or carry its indices in any order, both of which
 //! survive because the child key is the ordinal; and `changed_rows` is surfaced
 //! but not checked, because the fold never reads it.
@@ -197,7 +197,7 @@ use crate::value::Value;
 ///
 /// `id` is the compact domain id (`world_fold.rs:644`-`:645`) and becomes
 /// `Schema::domain`; `name` is the fold's own name for the domain in its
-/// diagnostics (`:15432`-`:15436`), carried so that an error from this module
+/// diagnostics (`:15506`-`:15510`), carried so that an error from this module
 /// reads the way the recorder's would. `crate::d39` and `crate::d40` each bind
 /// one of these; nothing else constructs one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,16 +223,16 @@ pub const COLLECTION_COUNT: usize = 2;
 pub mod field {
     pub const VARIANT_ID: u32 = 1;
     /// The entry's position in its own variant's list — the index of the fold's
-    /// `Vec` (`world_fold.rs:15508`), which is what gives the child rows an
+    /// `Vec` (`world_fold.rs:15582`), which is what gives the child rows an
     /// identity that reproduces that `Vec` exactly. See the module docs.
     pub const UPGRADE_ORDINAL: u32 = 2;
     /// The `upgrade_index` word the payload carries at entry `+0`
-    /// (`world_fold.rs:15497`). A value, not a key.
+    /// (`world_fold.rs:15571`). A value, not a key.
     pub const UPGRADE_INDEX: u32 = 3;
     pub const LEVEL: u32 = 4;
 }
 
-// --- Payload grammar, from `world_fold.rs:993`-`:995` and `:15437`-`:15500`. --
+// --- Payload grammar, from `world_fold.rs:993`-`:995` and `:15511`-`:15574`. --
 
 /// `VARIANT_UPGRADE_HEADER_LEN`, `world_fold.rs:993`.
 pub const HEADER_LEN: usize = 44;
@@ -253,14 +253,14 @@ pub fn schema(domain: Domain) -> Schema {
     // `variants`: the roster of variants this domain has ever carried.
     //
     // No value fields. A variant row's four words are its key, a flag word the
-    // fold requires to be zero (`world_fold.rs:15472`), and the `(first, count)`
+    // fold requires to be zero (`world_fold.rs:15546`), and the `(first, count)`
     // transport pair — so the row's whole non-key content is "this variant
     // exists". The record encodes to zero bytes; the collection costs its keys
     // and nothing else. See the module docs for why it is not dropped.
     let variants = Collection {
         collection_id: VARIANTS,
         // `variant_id` is a stable identity that persists across hours (it is the
-        // fold's own map key, `world_fold.rs:15508`), which is what a keyed set
+        // fold's own map key, `world_fold.rs:15582`), which is what a keyed set
         // needs — and only a keyed set has a delta grammar (§7.3), which this
         // domain needs because the shipping stream re-states a variant only when
         // it changes.
@@ -272,7 +272,7 @@ pub fn schema(domain: Domain) -> Schema {
     // its own variant's list — carrying the two words the entry holds.
     //
     // The ordinal is the key rather than the payload's `upgrade_index` word
-    // because the fold stores a **`Vec`** (`world_fold.rs:15508`), and a `Vec` is
+    // because the fold stores a **`Vec`** (`world_fold.rs:15582`), and a `Vec` is
     // exactly a map from position to element. Keying by position therefore makes
     // this collection reproduce the fold's own container for **every** payload
     // the fold accepts: two entries carrying the same `upgrade_index` are two
@@ -291,8 +291,8 @@ pub fn schema(domain: Domain) -> Schema {
             Field::new(f::VARIANT_ID, Kind::Unsigned).key(0),
             Field::new(f::UPGRADE_ORDINAL, Kind::Unsigned).key(1),
             // The payload word at entry `+0`, emitted raw by the fold
-            // (`world_fold.rs:15497`, `:23829`). The collector happens to write
-            // its own loop counter here (`attach_log.rs:57284`), which makes it
+            // (`world_fold.rs:15571`, `:23903`). The collector happens to write
+            // its own loop counter here (`attach_log.rs:57624`), which makes it
             // equal to the ordinal in every row a real capture contains — but the
             // FOLD enforces nothing of the kind, and the recipe's
             // derived-witness rule ("a value the fold hard-enforces as a function
@@ -301,7 +301,7 @@ pub fn schema(domain: Domain) -> Schema {
             // schema able to represent every payload the recorder accepts. See
             // the deliverable's open questions.
             Field::new(f::UPGRADE_INDEX, Kind::Unsigned),
-            // Raw `u32`, never scaled (`world_fold.rs:23830`). `Unsigned` and not
+            // Raw `u32`, never scaled (`world_fold.rs:23904`). `Unsigned` and not
             // `Monotone`: a level is a property of a design, not a counter, and a
             // redesign lowers it — the monotone hint would be a claim about the
             // data rather than merely an unhelpful one. Not `Continuous`, so §6's
@@ -323,29 +323,29 @@ pub fn schema(domain: Domain) -> Schema {
 
 // --- The payload header ------------------------------------------------------
 
-/// The 44-byte payload header (`world_fold.rs:15437`-`:15446`, written at
-/// `attach_log.rs:70217`-`:70226`).
+/// The 44-byte payload header (`world_fold.rs:15511`-`:15520`, written at
+/// `attach_log.rs:70583`-`:70592`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
-    /// How many variant rows the payload carries (`world_fold.rs:15442`).
+    /// How many variant rows the payload carries (`world_fold.rs:15516`).
     pub row_count: u32,
     /// How many rows the collector *saw* change. The fold never reads this
     /// field, so nothing here constrains it; the writer happens to set it equal
-    /// to `row_count` (`attach_log.rs:53877`, `:70219`), and asserting an
+    /// to `row_count` (`attach_log.rs:54187`, `:70585`), and asserting an
     /// equality the recorder does not enforce would reject streams the recorder
     /// accepts. Surfaced for reporting.
     pub changed_rows: u32,
     pub status_flags: u32,
     /// Variants the collector observed this hour, changed or not
-    /// (`attach_log.rs:53848`). Diagnostic; the fold never reads it.
+    /// (`attach_log.rs:54140`). Diagnostic; the fold never reads it.
     pub observed_variant_rows: u32,
     /// Upgrade entries observed across all observed variants. Diagnostic.
     pub observed_upgrade_rows: u32,
-    /// How many upgrade entries the payload carries (`world_fold.rs:15444`).
+    /// How many upgrade entries the payload carries (`world_fold.rs:15518`).
     pub emitted_upgrade_rows: u32,
     /// Variants dropped by the read because their object or upgrade container
-    /// failed validation (`attach_log.rs:53856`). Diagnostic: a nonzero value
+    /// failed validation (`attach_log.rs:54151`). Diagnostic: a nonzero value
     /// also sets `COMPACT_STATUS_PARTIAL_DATA`, which is a failure status for
     /// these domains, so the fold excludes such an hour outright.
     pub invalid_variant_rows: u32,
@@ -360,12 +360,12 @@ pub struct Tables<'a> {
 }
 
 /// Read the header and apply **only** the checks the fold applies *before* it
-/// consults the status word: the 44-byte minimum (`world_fold.rs:15437`) and the
-/// two reserved words (`:15447`).
+/// consults the status word: the 44-byte minimum (`world_fold.rs:15511`) and the
+/// two reserved words (`:15521`).
 ///
 /// This is split from [`split_payload`] because the fold's order is load-bearing.
-/// `handle_compact_failure` (`:15450`) returns before the payload-length check
-/// (`:15457`), so a failure-status record whose length does not match its counts
+/// `handle_compact_failure` (`:15524`) returns before the payload-length check
+/// (`:15531`), so a failure-status record whose length does not match its counts
 /// is *excluded*, not rejected — while a failure-status record with a nonzero
 /// reserved word **is** rejected. A caller that length-checks every record before
 /// excluding failures refuses streams the recorder folds; one that excludes
@@ -390,7 +390,7 @@ pub fn parse_header(domain: Domain, payload: &[u8]) -> core::result::Result<Payl
         emitted_upgrade_rows: u32_at(payload, 28),
         invalid_variant_rows: u32_at(payload, 32),
     };
-    // `world_fold.rs:15447` — both words, and either one alone is fatal.
+    // `world_fold.rs:15521` — both words, and either one alone is fatal.
     if u32_at(payload, 36) != 0 || u32_at(payload, 40) != 0 {
         return Err(format!("{} header reserved field is nonzero", domain.name));
     }
@@ -399,7 +399,7 @@ pub fn parse_header(domain: Domain, payload: &[u8]) -> core::result::Result<Payl
 
 /// Split a DATA payload into its header and its two arrays, applying every
 /// structural check the fold applies **after** the status word
-/// (`world_fold.rs:15453`-`:15492`): the exact payload length, every variant
+/// (`world_fold.rs:15527`-`:15566`): the exact payload length, every variant
 /// row's own words, every declared range against the entry array, and the exact
 /// coverage rule `declared_upgrades == emitted_upgrade_rows`.
 ///
@@ -416,7 +416,7 @@ pub fn split_payload(
     let header = parse_header(domain, payload)?;
     // Checked arithmetic: both counts are input from a file on disk, and
     // `count * stride` overflows `usize` for a large enough word. The fold uses
-    // `saturating_*` (`:15453`-`:15456`), which turns an overflowing product into
+    // `saturating_*` (`:15527`-`:15530`), which turns an overflowing product into
     // a length mismatch rather than a wrapped, plausible one; checked reports the
     // overflow as itself. Both refuse the payload.
     let variants_len = (header.row_count as usize)
@@ -447,7 +447,7 @@ pub fn split_payload(
         upgrades: &payload[rows_end..],
     };
 
-    // `world_fold.rs:15463`-`:15492`: every row is parsed and range-checked, and
+    // `world_fold.rs:15537`-`:15566`: every row is parsed and range-checked, and
     // the declared ranges must cover the entry array exactly, before anything is
     // folded. A payload that fails either is not this grammar.
     let mut declared: usize = 0;
@@ -469,7 +469,7 @@ pub fn split_payload(
 // --- Row decoding ------------------------------------------------------------
 
 /// One variant row's `variant_id` and the entry range it addresses, with the
-/// fold's own per-row checks (`world_fold.rs:15467`-`:15484`).
+/// fold's own per-row checks (`world_fold.rs:15541`-`:15558`).
 ///
 /// The range is transport, never state — see the module docs. It is public
 /// because the harness, the tests and [`fold_payload`] must all read it the same
@@ -482,11 +482,11 @@ pub fn variant_row(
     let variant_id = variant_id_of_row(domain, row)?;
     let first = u32_at(row, 8) as usize;
     let count = u32_at(row, 12) as usize;
-    // `world_fold.rs:15477`-`:15479`.
+    // `world_fold.rs:15551`-`:15553`.
     let end = first
         .checked_add(count)
         .ok_or_else(|| format!("{} upgrade range overflow", domain.name))?;
-    // `world_fold.rs:15480`-`:15484`.
+    // `world_fold.rs:15554`-`:15558`.
     if end > header.emitted_upgrade_rows as usize {
         return Err(format!(
             "{} upgrade range {first}+{count} exceeds {}",
@@ -497,7 +497,7 @@ pub fn variant_row(
 }
 
 /// A variant row's `variant_id`, with the fold's zero check
-/// (`world_fold.rs:15468`) and its exact-zero flags check (`:15472`).
+/// (`world_fold.rs:15542`) and its exact-zero flags check (`:15546`).
 ///
 /// The flags check belongs here rather than only in [`record_from_variant_row`]
 /// because it is what makes the row *this grammar*: a nonzero flag word means an
@@ -508,7 +508,7 @@ pub fn variant_id_of_row(domain: Domain, row: &[u8]) -> core::result::Result<u32
     if variant_id == 0 {
         return Err(format!("{} row has zero variant_id", domain.name));
     }
-    // `world_fold.rs:15471`-`:15474`. Exactly zero: there is no gate bit and no
+    // `world_fold.rs:15545`-`:15548`. Exactly zero: there is no gate bit and no
     // delete bit in this grammar, so every other bit pattern is an unknown row
     // form rather than a row with a feature this mapper can ignore.
     let flags = u32_at(row, 4);
@@ -521,7 +521,7 @@ pub fn variant_id_of_row(domain: Domain, row: &[u8]) -> core::result::Result<u32
     Ok(variant_id)
 }
 
-/// An upgrade entry's `upgrade_index` (`world_fold.rs:15497`).
+/// An upgrade entry's `upgrade_index` (`world_fold.rs:15571`).
 ///
 /// The fold applies no check to it at all — no zero rejection, no bound — so
 /// none is applied here.
@@ -530,7 +530,7 @@ pub fn upgrade_index_of_row(domain: Domain, entry: &[u8]) -> core::result::Resul
     Ok(u32_at(entry, 0))
 }
 
-/// The key of one variant row: its `variant_id` (`world_fold.rs:15508`).
+/// The key of one variant row: its `variant_id` (`world_fold.rs:15582`).
 pub fn key_from_variant_row(domain: Domain, row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[variant_id_of_row(domain, row)? as u64]))
 }
@@ -539,7 +539,7 @@ pub fn key_from_variant_row(domain: Domain, row: &[u8]) -> core::result::Result<
 ///
 /// Neither half is read from the entry's own bytes: `variant_id` belongs to the
 /// owning variant row and `ordinal` is the entry's position inside that row's
-/// range — the index of the fold's `Vec` (`world_fold.rs:15508`). That is what
+/// range — the index of the fold's `Vec` (`world_fold.rs:15582`). That is what
 /// makes the key total over every payload the fold accepts; see [`schema`].
 ///
 /// Infallible by construction, and shared rather than re-derived so the harness,
@@ -592,7 +592,7 @@ pub fn record_from_variant_row(
 
 /// One 8-byte upgrade entry onto its stored `upgrades` Record.
 ///
-/// **Raw, never scaled** (`world_fold.rs:23830`). See
+/// **Raw, never scaled** (`world_fold.rs:23904`). See
 /// [`record_from_variant_row`] for the shared contract.
 pub fn record_from_upgrade_row(
     domain: Domain,
@@ -611,10 +611,10 @@ pub fn record_from_upgrade_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         values.push(match f.field_id {
-            // `world_fold.rs:15497` reads the word at `+0` and `:23829` emits it
+            // `world_fold.rs:15571` reads the word at `+0` and `:23903` emits it
             // unchanged. No zero check and no bound: the fold applies neither.
             field::UPGRADE_INDEX => Value::Unsigned(u32_at(entry, 0) as u64),
-            // `world_fold.rs:15498` reads the word at `+4` and `:23830` emits it
+            // `world_fold.rs:15572` reads the word at `+4` and `:23904` emits it
             // unchanged. Zero is a real level, not an empty state.
             field::LEVEL => Value::Unsigned(u32_at(entry, 4) as u64),
             other => return Err(no_mapping(domain, "upgrades", other)),
@@ -651,7 +651,7 @@ fn no_mapping(domain: Domain, collection: &str, field_id: u32) -> String {
 /// The accumulated state of both collections, in [`schema`] order.
 ///
 /// A single record is not a state: the shipping stream re-states a variant only
-/// when the collector sees it change (`attach_log.rs:53859`-`:53864`), so most
+/// when the collector sees it change (`attach_log.rs:54154`-`:54159`), so most
 /// hours carry no rows at all and the hour's state is everything upserted since
 /// the stream began. This lives beside the mapper for the same reason
 /// [`split_payload`] does — the measurement harness, the tests and any future
@@ -705,15 +705,15 @@ impl State {
 }
 
 /// Fold one DATA payload into `acc`, exactly as `fold_variant_upgrades` folds it
-/// (`world_fold.rs:15493`-`:15509`).
+/// (`world_fold.rs:15567`-`:15583`).
 ///
 /// **One mode.** There is no baseline/delta split to pass in and no clear: every
-/// record upserts. A **failure-status** record folds nothing (`:15450`) and is
+/// record upserts. A **failure-status** record folds nothing (`:15524`) and is
 /// the caller's to exclude before calling this — see [`parse_header`] for why the
 /// exclusion sits where it does.
 ///
 /// **A variant's list is replaced whole.** `target.insert(variant_id, slice)`
-/// (`:15508`) overwrites the previous `Vec` rather than merging into it, so a
+/// (`:15582`) overwrites the previous `Vec` rather than merging into it, so a
 /// re-stated variant carrying fewer entries *drops* the entries it no longer
 /// carries. In the keyed-set projection that is a removal of the stale
 /// `(variant_id, upgrade_index)` rows, and the only way this domain ever produces
@@ -725,7 +725,7 @@ impl State {
 /// before it mutates.
 ///
 /// **Rows apply in payload order, last one winning.** The fold has no duplicate
-/// rejection for `variant_id` (`:15506`-`:15509` is a plain per-row `insert`), so
+/// rejection for `variant_id` (`:15580`-`:15583` is a plain per-row `insert`), so
 /// a repeated variant resolves the way its map resolves it.
 ///
 /// **Nothing is refused that the fold folds.** Children are keyed by their
@@ -762,7 +762,7 @@ pub fn fold_payload(
 
     // ---- Decode and check everything first. ----
     //
-    // `world_fold.rs:15493`-`:15500` decodes the whole entry array before it
+    // `world_fold.rs:15567`-`:15574` decodes the whole entry array before it
     // applies a single range, so an entry no row addresses is still decoded.
     // Here every entry is length-checked and mapped for the same reason: the
     // arrays are the frame's, not the addressed slice's.
@@ -831,7 +831,7 @@ pub fn fold_payload(
 }
 
 /// Replace every `(variant_id, *)` row with `entries`, mirroring
-/// `target.insert(variant_id, …)` (`world_fold.rs:15508`): the variant's list is
+/// `target.insert(variant_id, …)` (`world_fold.rs:15582`): the variant's list is
 /// carried whole by the row that owns it, so a row that carries the list carries
 /// all of it and the previous list is gone.
 fn replace_children(state: &mut KeyedState, variant_id: u32, entries: Vec<(Key, Record)>) {
@@ -905,7 +905,7 @@ mod tests {
     }
 
     /// A raw 16-byte variant row, packed the way the collector packs one
-    /// (`attach_log.rs:70230`-`:70235`).
+    /// (`attach_log.rs:70596`-`:70601`).
     fn variant_row_bytes(variant_id: u32, flags: u32, first: u32, count: u32) -> Vec<u8> {
         let mut row = Vec::with_capacity(ROW_LEN);
         for v in [variant_id, flags, first, count] {
@@ -915,7 +915,7 @@ mod tests {
         row
     }
 
-    /// A raw 8-byte upgrade entry (`attach_log.rs:70238`-`:70241`).
+    /// A raw 8-byte upgrade entry (`attach_log.rs:70604`-`:70607`).
     fn entry_bytes(upgrade_index: u32, level: u32) -> Vec<u8> {
         let mut e = Vec::with_capacity(ENTRY_ROW_LEN);
         e.extend_from_slice(&upgrade_index.to_le_bytes());
@@ -1040,11 +1040,11 @@ mod tests {
     #[test]
     fn no_state_capability_is_declared() {
         // The recipe's step-8 case 3, recorded with its reason. The row's `flags`
-        // word must be EXACTLY zero (`world_fold.rs:15472`), so there is no gate
+        // word must be EXACTLY zero (`world_fold.rs:15546`), so there is no gate
         // and no delete bit — no field can be Absent, Null or Unknown, and every
         // declared capability would cost real bits for a state the mapper can
         // never emit. Uncaptured is an hour-level state here (a failure status,
-        // `:15450`), never a per-field one.
+        // `:15524`), never a per-field one.
         for domain in domains() {
             for c in [variants_c(domain), upgrades_c(domain)] {
                 assert_eq!(c.optional_count(), 0, "collection {}", c.collection_id);
@@ -1058,7 +1058,7 @@ mod tests {
     fn no_field_is_continuous_so_no_quantization_applies() {
         // Step 4's "quantization saves bytes" test does not apply: there is no
         // continuous field at all. Every state-bearing word is an integer the
-        // fold emits raw (`world_fold.rs:23826`-`:23831`) — no scale, no measured
+        // fold emits raw (`world_fold.rs:23900`-`:23905`) — no scale, no measured
         // quantity, nothing a viewer draws or interpolates. Step 8's scale test
         // does not apply for the same reason, and
         // `every_field_is_emitted_raw_at_its_own_offset` pins what it would have.
@@ -1224,10 +1224,10 @@ mod tests {
                 );
                 assert!(upgrade_index_of_row(domain, &entry).is_err());
             }
-            // Zero variant_id (`world_fold.rs:15468`).
+            // Zero variant_id (`world_fold.rs:15542`).
             assert!(record_from_variant_row(domain, &v, &variant_row_bytes(0, 0, 0, 0), 0).is_err());
             assert!(key_from_variant_row(domain, &variant_row_bytes(0, 0, 0, 0)).is_err());
-            // A nonzero flag word (`:15472`) — EVERY bit, one at a time, because
+            // A nonzero flag word (`:15546`) — EVERY bit, one at a time, because
             // the fold compares against zero rather than masking known bits.
             for bit in 0..32u32 {
                 let row = variant_row_bytes(1, 1 << bit, 0, 0);
@@ -1283,7 +1283,7 @@ mod tests {
             for len in 0..HEADER_LEN {
                 assert!(parse_header(domain, &p[..len]).is_err(), "len {len}");
             }
-            // Either reserved word, any bit (`world_fold.rs:15447`).
+            // Either reserved word, any bit (`world_fold.rs:15521`).
             for offset in [36usize, 40] {
                 for bit in [0u32, 7, 31] {
                     let mut bad = p.clone();
@@ -1300,8 +1300,8 @@ mod tests {
     #[test]
     fn the_header_parse_and_the_length_check_are_split_at_the_folds_status_seam() {
         // The ordering property, and the reason `parse_header` exists.
-        // `handle_compact_failure` (`world_fold.rs:15450`) returns Ok BEFORE the
-        // payload-length check (`:15457`), so a record the recorder excludes on
+        // `handle_compact_failure` (`world_fold.rs:15524`) returns Ok BEFORE the
+        // payload-length check (`:15531`), so a record the recorder excludes on
         // status is never length-checked. A harness that called `split_payload`
         // on every record would refuse a stream the recorder folds; one that
         // excluded on status before reading the reserved words would accept a
@@ -1352,7 +1352,7 @@ mod tests {
 
             // Counts whose byte length overflows `usize` must be rejected, not
             // wrapped into a plausible small length. The fold saturates
-            // (`:15453`-`:15456`), which also refuses, by a different route.
+            // (`:15527`-`:15530`), which also refuses, by a different route.
             for offset in [8usize, 28] {
                 let mut huge = good.clone();
                 huge[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -1363,21 +1363,21 @@ mod tests {
             wrong[8..12].copy_from_slice(&1000u32.to_le_bytes());
             assert!(split_payload(domain, &wrong).is_err());
 
-            // A range that leaves the entry array (`:15480`).
+            // A range that leaves the entry array (`:15554`).
             let over = payload(
                 0,
                 &[variant_row_bytes(7, 0, 0, 4)],
                 &[entry_bytes(0, 1), entry_bytes(1, 2), entry_bytes(2, 3)],
             );
             assert!(split_payload(domain, &over).is_err());
-            // A range whose end overflows `usize` (`:15477`).
+            // A range whose end overflows `usize` (`:15551`).
             let overflow = payload(
                 0,
                 &[variant_row_bytes(7, 0, u32::MAX, u32::MAX)],
                 &[entry_bytes(0, 1)],
             );
             assert!(split_payload(domain, &overflow).is_err());
-            // Coverage: declared != emitted (`:15488`), in both directions. The
+            // Coverage: declared != emitted (`:15562`), in both directions. The
             // payload length is kept consistent so it is the coverage rule and not
             // the length that fires.
             let under = payload(
@@ -1408,7 +1408,7 @@ mod tests {
 
     #[test]
     fn a_record_upserts_and_never_clears() {
-        // The whole shipping grammar: `world_fold.rs:15506`-`:15509` inserts the
+        // The whole shipping grammar: `world_fold.rs:15580`-`:15583` inserts the
         // rows it carries and touches nothing else. There is no baseline, so a
         // record carrying no rows leaves the accumulated catalog standing — which
         // is what 141 of d40's 146 hours do.
@@ -1437,7 +1437,7 @@ mod tests {
 
     #[test]
     fn restating_a_variant_replaces_its_whole_list() {
-        // `target.insert(variant_id, slice)` (`world_fold.rs:15508`) overwrites
+        // `target.insert(variant_id, slice)` (`world_fold.rs:15582`) overwrites
         // the `Vec`, so a shorter list drops the entries it no longer carries.
         // This is the only removal in the whole domain, and the only source of a
         // wire tombstone.
@@ -1509,7 +1509,7 @@ mod tests {
 
     #[test]
     fn a_variant_repeated_in_one_payload_is_last_writer_wins() {
-        // `world_fold.rs:15506`-`:15509` is a plain per-row `insert` in payload
+        // `world_fold.rs:15580`-`:15583` is a plain per-row `insert` in payload
         // order, with no duplicate rejection. Refusing such a frame would refuse
         // one the shipping recorder folds.
         for domain in domains() {
@@ -1536,7 +1536,7 @@ mod tests {
     #[test]
     fn two_variants_may_share_one_slice_of_the_entry_array() {
         // The fold range-checks each row independently and copies the slice
-        // (`:15508`), so overlapping ranges are legal and each variant gets its
+        // (`:15582`), so overlapping ranges are legal and each variant gets its
         // own copy. The collector never packs one, but the recorder folds it.
         for domain in domains() {
             let u = upgrades_c(domain);
@@ -1568,7 +1568,7 @@ mod tests {
     fn the_child_rows_reproduce_the_folds_vec_element_for_element() {
         // The property the ordinal key exists for: for EVERY payload the fold
         // accepts, reading a variant's rows in key order gives back exactly the
-        // `Vec` the fold stored (`world_fold.rs:15508`). The two payloads that
+        // `Vec` the fold stored (`world_fold.rs:15582`). The two payloads that
         // would break an `upgrade_index`-keyed set are the interesting ones, and
         // the fold folds both.
         for domain in domains() {

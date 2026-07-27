@@ -1,34 +1,34 @@
 //! d34 `air_base_status` — per-air-base capacity, level and basing occupancy.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:15065`-`:15133`
+//! Derived from `extractor/native/recorder_host/src/world_fold.rs:15139`-`:15207`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-//! `:499`, the accumulator it folds into (`:1850`), the two consumers of that
-//! accumulator (`:8149`-`:8199`, `:8906`-`:8942`), and the collector read and
+//! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
+//! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows
-//! (`extractor/native/collector/src/attach_log.rs:55460`-`:55545`,
-//! `:55758`-`:55860`, `:71207`-`:71240`). `extractor/documents/domains/` carries
+//! (`extractor/native/collector/src/attach_log.rs:55780`-`:55870`,
+//! `:56098`-`:56200`, `:71573`-`:71606`). `extractor/documents/domains/` carries
 //! no d34 dossier, so the fold and the collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:15066`-`:15094`, writer at
-//! `attach_log.rs:71216`-`:71224`): a 36-byte header followed by `row_count`
+//! **Payload grammar** (`world_fold.rs:15140`-`:15168`, writer at
+//! `attach_log.rs:71582`-`:71590`): a 36-byte header followed by `row_count`
 //! fixed 32-byte rows. There is no legacy short row — the fold requires
-//! `payload.len() == 36 + row_count * 32` exactly (`:15087`-`:15094`), so the
+//! `payload.len() == 36 + row_count * 32` exactly (`:15161`-`:15168`), so the
 //! length never selects a row form and the mapper accepts exactly one.
 //!
 //! | header | offset | field | read by the fold? |
 //! |---|---|---|---|
 //! | u64 | `+0`  | `elapsed_wall_ms`         | no |
-//! | u32 | `+8`  | `row_count`               | **yes** (`:15071`) |
+//! | u32 | `+8`  | `row_count`               | **yes** (`:15145`) |
 //! | u32 | `+12` | `changed_rows`            | no |
-//! | u32 | `+16` | `status_flags`            | **yes** (`:15072`) |
+//! | u32 | `+16` | `status_flags`            | **yes** (`:15146`) |
 //! | u32 | `+20` | `observed_air_base_rows`  | no |
 //! | u32 | `+24` | `observed_pool_rows`      | no |
 //! | u32 | `+28` | `deleted_rows`            | no |
-//! | u32 | `+32` | `reserved`                | **yes**, must be 0 (`:15073`-`:15076`) |
+//! | u32 | `+32` | `reserved`                | **yes**, must be 0 (`:15147`-`:15150`) |
 //!
 //! **`changed_rows == row_count` is NOT an invariant of this domain.** d63's
-//! fold asserts it (`:9247`); this one never reads the word at all. The writer
-//! happens to set `changed_rows = rows.len()` (`attach_log.rs:71218`-`:71219`),
+//! fold asserts it (`:9267`); this one never reads the word at all. The writer
+//! happens to set `changed_rows = rows.len()` (`attach_log.rs:71584`-`:71585`),
 //! which is why it holds on all 146 records of the reference capture — an
 //! accident of one writer, not a rule, so [`split_payload`] does not enforce it.
 //! The recipe's own wording: carry "the invariants YOUR authorities actually
@@ -38,29 +38,29 @@
 //! |---|---|---|---|---|---|
 //! | `+0`  | u32 | `air_base_id`       | raw | none (key; zero **not** rejected) |
 //! | `+4`  | u32 | `state_id`          | raw | none |
-//! | `+8`  | u32 | `flags`             | —   | only `1<<0` DELETED is legal (`:15104`) |
+//! | `+8`  | u32 | `flags`             | —   | only `1<<0` DELETED is legal (`:15178`) |
 //! | `+12` | u32 | `capacity`          | raw | none |
 //! | `+16` | u32 | `building_level`    | raw | none |
 //! | `+20` | u32 | `based_wing_count`  | raw | none |
 //! | `+24` | u32 | `based_plane_count` | raw | none |
-//! | `+28` | u32 | `province_id`       | raw | none; `0` means unobtained (`:15107`-`:15110`) |
+//! | `+28` | u32 | `province_id`       | raw | none; `0` means unobtained (`:15181`-`:15184`) |
 //!
 //! **No scale factors anywhere.** Every one of the six carried values is a u32
-//! the fold stores verbatim (`:15118`-`:15129`) and every consumer reads back
-//! verbatim (`:8919`-`:8935`). There is no `FIXED_SCALE` word in the header and
+//! the fold stores verbatim (`:15192`-`:15203`) and every consumer reads back
+//! verbatim (`:8939`-`:8955`). There is no `FIXED_SCALE` word in the header and
 //! no division in the fold, so there is no continuous field and nothing to
 //! quantize.
 //!
 //! # This domain accumulates: one record is not one state
 //!
-//! `fold_air_base_status` calls `replace_or_sparse_after_first` (`:15095`,
-//! defined `:2927`). The FIRST record the fold sees clears the accumulator and
+//! `fold_air_base_status` calls `replace_or_sparse_after_first` (`:15169`,
+//! defined `:2947`). The FIRST record the fold sees clears the accumulator and
 //! is a complete snapshot; every later record is a **sparse patch** — the rows
 //! it carries are upserted, rows it omits keep their previous values, and a row
-//! with the DELETED bit removes its key (`:15114`-`:15117`). The collector emits
+//! with the DELETED bit removes its key (`:15188`-`:15191`). The collector emits
 //! exactly that shape: `emit_full_snapshot = tracker.previous.is_empty()`
-//! (`attach_log.rs:55499`), then per-hour changed rows plus a tombstone per
-//! disappeared id (`:55508`-`:55519`).
+//! (`attach_log.rs:55824`), then per-hour changed rows plus a tombstone per
+//! disappeared id (`:55833`-`:55844`).
 //!
 //! So the hour's state is the accumulator, not the record, and [`Accumulator`]
 //! is that fold — public here rather than rebuilt in a harness, per the recipe's
@@ -70,14 +70,14 @@
 //! record sets `COMPACT_STATUS_DELTA_DATA`.
 //!
 //! **`self.air_base_status` has exactly one writer.** `world_fold.rs` touches it
-//! at `:15097` (clear), `:15115` (remove) and `:15118` (insert) and nowhere
+//! at `:15171` (clear), `:15189` (remove) and `:15192` (insert) and nowhere
 //! else; the only other mentions are the two read sites and the field
 //! declaration. Unlike d26 there is no cross-domain pruner to model.
 //!
 //! # Four-state semantics
 //!
 //! **`province_id == 0` is `unknown`, and the fold says so in words.**
-//! `world_fold.rs:15107`-`:15110`: *"A7 exact-a729 placement closure reuses the
+//! `world_fold.rs:15181`-`:15184`: *"A7 exact-a729 placement closure reuses the
 //! former reserved word for the pointer-free CAirBase -> CProvince id. Zero
 //! remains accepted for older recordings and means province unobtained."* That
 //! is recipe step-2 case 3 — the value existed and the recording could not carry
@@ -86,7 +86,7 @@
 //! side: `read_compact_air_base_record` returns `None` (dropping the row
 //! entirely, counted as invalid) when the province pointer, its vtable, its
 //! back-link to the state, or its id fails to read
-//! (`attach_log.rs:55829`-`:55836`), so **today's collector cannot emit a zero
+//! (`attach_log.rs:56169`-`:56176`), so **today's collector cannot emit a zero
 //! province at all** — a zero can only come from a recording written before the
 //! word carried the id. Not `null`: every air base sits in a province, so the
 //! relation never genuinely points at nothing. Not `absent`: the concept applies
@@ -94,8 +94,8 @@
 //! reference capture, so the state is reachable but unseen there.
 //!
 //! *Recorded conflict.* Both JSON consumers render a zero province as
-//! `Value::Null` (`world_fold.rs:8920`-`:8924`, `:8928`-`:8932`, and
-//! `:8166`-`:8167` filters it out). JSON has no `unknown`, so that is the fold's
+//! `Value::Null` (`world_fold.rs:8940`-`:8944`, `:8948`-`:8952`, and
+//! `:8186`-`:8187` filters it out). JSON has no `unknown`, so that is the fold's
 //! uniform value-vs-nothing collapse (recipe §"Authorities", limit 1), not a
 //! semantic claim that outranks the fold's own comment. It is in the open
 //! questions.
@@ -103,12 +103,12 @@
 //! **Nothing else reaches an empty state.** `state_id`, `capacity`,
 //! `building_level`, `based_wing_count` and `based_plane_count` are read
 //! unconditionally with no gate, no range check and no sentinel
-//! (`:15102`, `:15124`-`:15127`); a zero in any of them is a real measured
+//! (`:15176`, `:15198`-`:15201`); a zero in any of them is a real measured
 //! value — an air base with no wings based on it reads `0` and that is a fact,
 //! not a missing reading. So the schema declares `unknown_capable` on
 //! `province_id` and **no** `optional` and **no** `nullable` field at all.
 //!
-//! **`flags` is not a field.** Its only legal bit is DELETED (`:15104`-`:15106`
+//! **`flags` is not a field.** Its only legal bit is DELETED (`:15178`-`:15180`
 //! rejects every other bit), and DELETED is a wire tombstone — a removal, not a
 //! row of data. [`record_from_row`] refuses a deleted row for the same reason
 //! d26's mapper does; the removal is expressed by [`Accumulator`] dropping the
@@ -145,46 +145,46 @@ pub const HEADER_LEN: usize = 36;
 pub const ROW_LEN: usize = 32;
 
 /// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`. The **only** legal flag bit:
-/// `flags & !ROW_FLAG_DELETED_LOW_BIT != 0` is a hard error (`:15104`-`:15106`).
+/// `flags & !ROW_FLAG_DELETED_LOW_BIT != 0` is a hard error (`:15178`-`:15180`).
 pub const ROW_FLAG_DELETED: u32 = 1;
 
 /// `SUPPLY_MAX_PROVINCE_ID`, `world_fold.rs:499`. A row whose province id
-/// exceeds this is rejected (`:15111`-`:15113`) — checked **before** the delete
+/// exceeds this is rejected (`:15185`-`:15187`) — checked **before** the delete
 /// branch, so it applies to tombstones too.
 pub const MAX_PROVINCE_ID: u32 = 13_413;
 
 /// The sentinel the fold documents as "province unobtained"
-/// (`world_fold.rs:15107`-`:15110`). Mapped to [`Value::Unknown`].
+/// (`world_fold.rs:15181`-`:15184`). Mapped to [`Value::Unknown`].
 pub const PROVINCE_ID_UNOBTAINED: u32 = 0;
 
 pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
         // Key. `Unsigned`, not `ContentId`: the id is the high half of a live
-        // engine object handle (`attach_log.rs:55811`), minted while the campaign
+        // engine object handle (`attach_log.rs:56151`), minted while the campaign
         // runs and bounded by `MAX_AIR_BASE_ID`. No content manifest resolves
         // "air base 407" — it is a runtime instance identity like d20's `div_id`,
         // and §5's deciding question ("must a manifest resolve this for it to
         // keep its meaning under another mod set?") answers no.
         Field::new(f::AIR_BASE_ID, Kind::Unsigned).key(0),
-        // The owning state's id (`world_fold.rs:15102`). `ContentId`: a state is
+        // The owning state's id (`world_fold.rs:15176`). `ContentId`: a state is
         // defined by map content, so state 1081 is whatever state the mod set
         // defines — the same call d22 makes for `province_state_id`.
         Field::new(f::STATE_ID, Kind::ContentId),
-        // Plane slots the base provides (`:15124`). A capacity that is spent and
+        // Plane slots the base provides (`:15198`). A capacity that is spent and
         // rebuilt, not a counter: `Unsigned`, and it falls when the base is
         // damaged, so `Monotone` would be a false hint.
         Field::new(f::CAPACITY, Kind::Unsigned),
         // The air-base building's level in the owning state
-        // (`attach_log.rs:55855`-`:55862`). Rises with construction and falls
+        // (`attach_log.rs:56195`-`:56202`). Rises with construction and falls
         // with damage: `Unsigned`.
         Field::new(f::BUILDING_LEVEL, Kind::Unsigned),
         // Occupancy, joined in from the strategic-air country containers
-        // (`attach_log.rs:55865`-`:55940`). Both move in both directions every
+        // (`attach_log.rs:56205`-`:56280`). Both move in both directions every
         // time a wing rebases: `Unsigned`, never `Monotone`.
         Field::new(f::BASED_WING_COUNT, Kind::Unsigned),
         Field::new(f::BASED_PLANE_COUNT, Kind::Unsigned),
-        // The province the base sits in (`:15110`). `ContentId` — a province is
+        // The province the base sits in (`:15184`). `ContentId` — a province is
         // content-defined, exactly as d20 and d22 class theirs. `unknown_capable`
         // and nothing else: see the module docs for why `0` is §3's *unknown*
         // rather than null, absent, or a real province zero.
@@ -198,7 +198,7 @@ pub fn schema() -> Schema {
         collections: vec![Collection {
             collection_id: AIR_BASES,
             // The fold keys by `air_base_id` into a `BTreeMap` that persists
-            // across hours (`world_fold.rs:1850`, `:15118`) and removes keys by
+            // across hours (`world_fold.rs:1870`, `:15192`) and removes keys by
             // the DELETED bit — a keyed set with a delta grammar, which §7.3
             // gives only to `KeyedSet`.
             shape: Shape::KeyedSet,
@@ -210,8 +210,8 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 36-byte payload header (`world_fold.rs:15066`-`:15076`, writer at
-/// `attach_log.rs:71217`-`:71224`). Every word is carried, including the four
+/// The 36-byte payload header (`world_fold.rs:15140`-`:15150`, writer at
+/// `attach_log.rs:71583`-`:71590`). Every word is carried, including the four
 /// the fold never reads, so a caller can report them without re-deriving offsets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
@@ -230,10 +230,10 @@ pub struct PayloadHeader {
 /// load-bearing (recipe §9: "derive the exclusion's POSITION from your fold's
 /// call order"). `fold_air_base_status` runs, in this sequence:
 ///
-/// 1. `need(payload, 36)` and the `reserved != 0` rejection (`:15066`-`:15076`);
+/// 1. `need(payload, 36)` and the `reserved != 0` rejection (`:15140`-`:15150`);
 /// 2. `handle_compact_failure` — returns without folding on a failure status;
 /// 3. `reject_delta_before_baseline` — returns without folding;
-/// 4. only then the exact-length check (`:15087`-`:15094`).
+/// 4. only then the exact-length check (`:15161`-`:15168`).
 ///
 /// A record excluded at step 2 or 3 is therefore never length-checked by the
 /// recorder, and a caller that validated the length first would refuse a stream
@@ -245,7 +245,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             payload.len()
         ));
     }
-    // `world_fold.rs:15073`-`:15076`: the trailing header word must be zero.
+    // `world_fold.rs:15147`-`:15150`: the trailing header word must be zero.
     let reserved = u32_at(payload, 32);
     if reserved != 0 {
         return Err(format!(
@@ -264,7 +264,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 }
 
 /// Split a d34 DATA payload into its header and its rows slice, applying the
-/// fold's structural checks (`world_fold.rs:15066`-`:15094`).
+/// fold's structural checks (`world_fold.rs:15140`-`:15168`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -277,7 +277,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     let header = peek_header(payload)?;
     // Checked arithmetic: `row_count` is input from a file on disk, and
     // `row_count * ROW_LEN` overflows `usize` for a large enough word. The fold
-    // saturates instead (`:15087`-`:15088`), which cannot wrap either — both
+    // saturates instead (`:15161`-`:15162`), which cannot wrap either — both
     // reject; this one reports which word was impossible.
     let expected = (header.row_count as usize)
         .checked_mul(ROW_LEN)
@@ -293,7 +293,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// One compact row, parsed and validated exactly as the fold's row loop does
-/// (`world_fold.rs:15099`-`:15129`) — including the order of its checks.
+/// (`world_fold.rs:15173`-`:15203`) — including the order of its checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AirBaseRow {
     pub air_base_id: u32,
@@ -312,12 +312,12 @@ pub struct AirBaseRow {
 ///
 /// The check order mirrors the fold exactly, because it decides which of two
 /// errors a doubly-invalid row reports and, more importantly, that a **deleted**
-/// row is still province-range-checked: `:15111` runs before the delete branch
-/// at `:15114`. A tombstone carrying a wild province word is a malformed frame
+/// row is still province-range-checked: `:15185` runs before the delete branch
+/// at `:15188`. A tombstone carrying a wild province word is a malformed frame
 /// to the recorder, so it is one here.
 ///
 /// The fold applies **no** other content rule: `air_base_id == 0` is accepted
-/// (unlike d63's `tag_db_id`, `:9259`), `state_id == 0` is accepted, and the
+/// (unlike d63's `tag_db_id`, `:9279`), `state_id == 0` is accepted, and the
 /// four counters have no upper bound. Tightening any of those here would make
 /// the mapper refuse a row the recorder folds, which the recipe's precedence
 /// rule forbids.
@@ -326,13 +326,13 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<AirBaseRow, String> {
     let air_base_id = u32_at(row, 0);
     let state_id = u32_at(row, 4);
     let flags = u32_at(row, 8);
-    // `world_fold.rs:15104`-`:15106`: DELETED is the only bit this grammar has.
+    // `world_fold.rs:15178`-`:15180`: DELETED is the only bit this grammar has.
     if flags & !ROW_FLAG_DELETED != 0 {
         return Err(format!(
             "air_base_status row {air_base_id} has unknown flags {flags:#x}"
         ));
     }
-    // `:15110`-`:15113`, before the delete branch.
+    // `:15184`-`:15187`, before the delete branch.
     let province_word = u32_at(row, 28);
     if province_word > MAX_PROVINCE_ID {
         return Err(format!(
@@ -352,8 +352,8 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<AirBaseRow, String> {
     })
 }
 
-/// The key of one compact row: its `air_base_id` (`world_fold.rs:15101`,
-/// `:15118`-`:15119`). Valid for deleted rows too — a tombstone names the key
+/// The key of one compact row: its `air_base_id` (`world_fold.rs:15175`,
+/// `:15192`-`:15193`). Valid for deleted rows too — a tombstone names the key
 /// it removes.
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[parse_row(row)?.air_base_id as u64]))
@@ -430,17 +430,17 @@ pub fn record_from_parsed_row(
 pub enum FoldOutcome {
     /// The first record: `replace_or_sparse_after_first` returned `false`, the
     /// accumulator was cleared, and this record's rows are the whole state
-    /// (`world_fold.rs:15096`-`:15098`).
+    /// (`world_fold.rs:15170`-`:15172`).
     Replace,
-    /// A sparse patch onto the retained accumulator (`:15095`).
+    /// A sparse patch onto the retained accumulator (`:15169`).
     Sparse,
-    /// `reject_delta_before_baseline` fired (`:15080`-`:15086`): the fold marked
+    /// `reject_delta_before_baseline` fired (`:15154`-`:15160`): the fold marked
     /// the domain-hour unknown, folded nothing, and RETAINED the accumulator. The
     /// hour carries no d34 state and must not be measured.
     DeltaBeforeBaseline,
 }
 
-/// The `air_base_status` accumulator (`world_fold.rs:1850`), folded exactly as
+/// The `air_base_status` accumulator (`world_fold.rs:1870`), folded exactly as
 /// `fold_air_base_status` folds it.
 ///
 /// This is the recipe's fourth public boundary: d34's state is not one record,
@@ -460,14 +460,14 @@ impl Accumulator {
     }
 
     /// Whether a replacing record has been folded — `delta_baselines_seen`
-    /// membership in `world_fold.rs:2927`-`:2940`, which is what decides both
+    /// membership in `world_fold.rs:2947`-`:2960`, which is what decides both
     /// whether an arriving DELTA is data and whether the next record clears.
     pub fn baseline_seen(&self) -> bool {
         self.baseline_seen
     }
 
     /// Fold one d34 DATA payload, exactly as `fold_air_base_status` does from
-    /// `:15077` onward.
+    /// `:15151` onward.
     ///
     /// `is_delta` is the caller's reading of `COMPACT_STATUS_DELTA_DATA` in
     /// `header.status_flags`. It is a parameter rather than a bit tested here
@@ -477,7 +477,7 @@ impl Accumulator {
     /// forbids.
     ///
     /// **The caller must already have excluded failure-status records.** The
-    /// fold checks `handle_compact_failure` first (`:15077`-`:15079`) and returns
+    /// fold checks `handle_compact_failure` first (`:15151`-`:15153`) and returns
     /// having folded nothing; that check needs `compact_contract`'s predicate, so
     /// it belongs to the caller. Everything after it is here, in the fold's own
     /// order — note that the delta-before-baseline exclusion precedes the
@@ -492,17 +492,17 @@ impl Accumulator {
     ///
     /// A key repeated inside one frame is **last-writer-wins in row order**,
     /// including an insert followed by a tombstone, because that is what the
-    /// fold's `insert`/`remove` loop does (`:15114`-`:15129`). It is not a
+    /// fold's `insert`/`remove` loop does (`:15188`-`:15203`). It is not a
     /// rejected frame: the fold applies no uniqueness rule, and the collector
     /// cannot produce one anyway (a base is either in `current` or deleted,
-    /// `attach_log.rs:55501`-`:55519`).
+    /// `attach_log.rs:55826`-`:55844`).
     pub fn fold_payload(
         &mut self,
         collection: &Collection,
         payload: &[u8],
         is_delta: bool,
     ) -> core::result::Result<FoldOutcome, String> {
-        // `world_fold.rs:15080`-`:15086`, BEFORE the length check at `:15087`.
+        // `world_fold.rs:15154`-`:15160`, BEFORE the length check at `:15161`.
         peek_header(payload)?;
         if is_delta && !self.baseline_seen {
             return Ok(FoldOutcome::DeltaBeforeBaseline);
@@ -521,7 +521,7 @@ impl Accumulator {
             }
         }
 
-        // `world_fold.rs:15095`-`:15098` — `replace_or_sparse_after_first` with
+        // `world_fold.rs:15169`-`:15172` — `replace_or_sparse_after_first` with
         // no expected-partial tolerance for domain 34 (`compact_contract`'s
         // `COMPACT_EXPECTED_PARTIAL_TOLERANCES` lists 26, 27, 28 and 54 only), so
         // the whole rule is: a delta is sparse, and otherwise the first record
@@ -590,7 +590,7 @@ mod tests {
     }
 
     /// A raw 32-byte row, packed the way the collector packs one
-    /// (`attach_log.rs:71230`-`:71237`) — note that `province_id` is LAST, after
+    /// (`attach_log.rs:71596`-`:71603`) — note that `province_id` is LAST, after
     /// the two occupancy counters, not adjacent to `state_id`.
     #[allow(clippy::too_many_arguments)]
     fn raw_row(
@@ -693,8 +693,8 @@ mod tests {
         // The schema declares exactly one empty state on exactly one field, so
         // the mapper may emit exactly that one. `optional` would claim an air
         // base can lack the concept of a province; `nullable` would claim we know
-        // it sits in none. The fold says the opposite (`:15107`-`:15110`) and the
-        // collector cannot even emit a zero (`attach_log.rs:55829`-`:55836`).
+        // it sits in none. The fold says the opposite (`:15181`-`:15184`) and the
+        // collector cannot even emit a zero (`attach_log.rs:56169`-`:56176`).
         let c = collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
         assert!(
@@ -741,8 +741,8 @@ mod tests {
         // to have no capacity, no building level and nothing based on it: every
         // one of those zeros is a measured fact. §3 keeps zero out of the three
         // empty states. `state_id` zero is included because the FOLD applies no
-        // zero check to it (`:15102`) even though the collector's read does
-        // (`attach_log.rs:55821`) — the fold is the authority.
+        // zero check to it (`:15176`) even though the collector's read does
+        // (`attach_log.rs:56161`) — the fold is the authority.
         let c = collection();
         let r = record_from_row(&c, &raw_row(0, 0, 0, 0, 0, 0, 0, 77), 0).expect("maps");
         for (id, expected) in [
@@ -762,7 +762,7 @@ mod tests {
     fn a_deleted_row_is_a_tombstone_and_never_a_record() {
         // The one state the mapper refuses to invent. A DELETED row carries a
         // zeroed capacity/level/occupancy and a RETAINED state and province
-        // (`attach_log.rs:55530`-`:55543`) — mapping it would publish a live air
+        // (`attach_log.rs:55855`-`:55868`) — mapping it would publish a live air
         // base with four zeroed counters for an air base that no longer exists.
         let c = collection();
         let row = raw_row(407, 1081, ROW_FLAG_DELETED, 0, 0, 0, 0, 13367);
@@ -781,7 +781,7 @@ mod tests {
     fn there_is_no_continuous_field_to_quantize() {
         // Step 4's "quantization saves bytes" test does not apply and cannot: d34
         // has no `Kind::Continuous` field at all, because the fold applies no
-        // scale factor to anything (`world_fold.rs:15118`-`:15129` stores six
+        // scale factor to anything (`world_fold.rs:15192`-`:15203` stores six
         // u32 words verbatim, and the header carries no scale word to assert).
         // Every value is an exact integer count or id, so there is nothing that
         // is "drawn rather than interpolated".
@@ -930,7 +930,7 @@ mod tests {
             assert!(parse_row(&row).is_err(), "length {len}");
             assert!(key_from_row(&row).is_err(), "length {len}");
         }
-        // Every flag bit that is not DELETED (`world_fold.rs:15104`), one at a
+        // Every flag bit that is not DELETED (`world_fold.rs:15178`), one at a
         // time, with and without DELETED also set.
         for bit in 1..32u32 {
             for base in [0u32, ROW_FLAG_DELETED] {
@@ -943,7 +943,7 @@ mod tests {
                 assert!(key_from_row(&row).is_err());
             }
         }
-        // Province id out of range (`:15111`), at the bound and one past it.
+        // Province id out of range (`:15185`), at the bound and one past it.
         assert!(parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, MAX_PROVINCE_ID)).is_ok());
         for bad in [MAX_PROVINCE_ID + 1, 20_000, u32::MAX] {
             assert!(
@@ -951,7 +951,7 @@ mod tests {
                 "province {bad} exceeds {MAX_PROVINCE_ID}"
             );
         }
-        // The range check precedes the delete branch (`:15111` before `:15114`),
+        // The range check precedes the delete branch (`:15185` before `:15188`),
         // so a TOMBSTONE with a wild province is rejected too.
         assert!(
             parse_row(&raw_row(1, 1, ROW_FLAG_DELETED, 0, 0, 0, 0, MAX_PROVINCE_ID + 1)).is_err(),
@@ -990,7 +990,7 @@ mod tests {
         let mut over = p.clone();
         over.push(0);
         assert!(split_payload(&over).is_err());
-        // A non-zero reserved word (`world_fold.rs:15073`-`:15076`), every bit.
+        // A non-zero reserved word (`world_fold.rs:15147`-`:15150`), every bit.
         for bit in 0..32u32 {
             let mut bad = p.clone();
             bad[32..36].copy_from_slice(&(1u32 << bit).to_le_bytes());
@@ -1013,8 +1013,8 @@ mod tests {
 
     #[test]
     fn changed_rows_is_carried_but_never_enforced() {
-        // d63's fold asserts `changed_rows == row_count` (`:9247`); THIS fold
-        // never reads the word (`:15071`-`:15073` read only rows, status and
+        // d63's fold asserts `changed_rows == row_count` (`:9267`); THIS fold
+        // never reads the word (`:15145`-`:15147` read only rows, status and
         // reserved). Enforcing it here would refuse a payload the recorder folds.
         let p = payload_with_counts(0, &[full_row()], 1, 0);
         let (header, _) = split_payload(&p).expect("accepted");
@@ -1099,7 +1099,7 @@ mod tests {
         assert!(acc.bases.contains_key(&make_key(&[2])));
 
         // A second non-delta record does NOT clear: only the FIRST one does
-        // (`world_fold.rs:2934`-`:2939`). This is the property that separates
+        // (`world_fold.rs:2954`-`:2959`). This is the property that separates
         // `replace_or_sparse_after_first` from d22's clear-on-every-baseline.
         let fifth = payload(0, &[raw_row(3, 30, 0, 1, 1, 1, 1, 503)]);
         acc.fold_payload(&c, &fifth, false).expect("folds");
@@ -1108,8 +1108,8 @@ mod tests {
 
     #[test]
     fn a_delta_before_any_baseline_folds_nothing_and_is_not_length_checked() {
-        // `reject_delta_before_baseline` (`:15080`-`:15086`) runs BEFORE the
-        // exact-length check (`:15087`), so a delta-before-baseline record is
+        // `reject_delta_before_baseline` (`:15154`-`:15160`) runs BEFORE the
+        // exact-length check (`:15161`), so a delta-before-baseline record is
         // reported as such even when its length is impossible — a caller that
         // validated the length first would refuse a stream the recorder accepts.
         let c = collection();
@@ -1130,7 +1130,7 @@ mod tests {
 
         // But a header that peek_header itself rejects is an error even before
         // the delta check, because `need()` and the reserved check precede
-        // `reject_delta_before_baseline` in the fold (`:15066`-`:15076`).
+        // `reject_delta_before_baseline` in the fold (`:15140`-`:15150`).
         let mut fresh = Accumulator::new();
         let mut bad_reserved = payload(0, &[]);
         bad_reserved[32..36].copy_from_slice(&1u32.to_le_bytes());
@@ -1141,7 +1141,7 @@ mod tests {
     #[test]
     fn a_delta_flagged_first_record_is_sparse_not_a_replace() {
         // `replace_or_sparse_after_first` returns `true` for a DELTA record even
-        // when no baseline was seen (`:2934`) — but `reject_delta_before_baseline`
+        // when no baseline was seen (`:2954`) — but `reject_delta_before_baseline`
         // has already sent that case away, so the reachable combination is a
         // DELTA record AFTER a baseline. It must patch, never clear.
         let c = collection();
@@ -1159,8 +1159,8 @@ mod tests {
     #[test]
     fn a_repeated_key_in_one_frame_is_last_writer_wins_in_row_order() {
         // The fold applies no uniqueness rule: it inserts and removes in row
-        // order (`:15114`-`:15129`), unlike d63 whose duplicate `tag_db_id` is a
-        // rejected frame (`:9363`). Rejecting here would refuse a frame the
+        // order (`:15188`-`:15203`), unlike d63 whose duplicate `tag_db_id` is a
+        // rejected frame (`:9383`). Rejecting here would refuse a frame the
         // recorder folds.
         let c = collection();
         let mut acc = Accumulator::new();
@@ -1220,7 +1220,7 @@ mod tests {
     fn a_tombstone_in_the_first_record_is_a_harmless_no_op() {
         // The first record clears before applying, so a tombstone in it removes
         // nothing. The collector never emits one there
-        // (`attach_log.rs:55507`-`:55519` skips deletes on a full snapshot), but
+        // (`attach_log.rs:55832`-`:55844` skips deletes on a full snapshot), but
         // the fold would accept it and so must this.
         let c = collection();
         let mut acc = Accumulator::new();
