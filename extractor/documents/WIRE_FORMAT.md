@@ -1072,6 +1072,66 @@ closes them on a named corpus and harness before ~80 encoders are written.
   raw / 70.6% compressed. *Delta paths keep winning where they were measured* — d28 9.7×
   raw, d36 10.5×, d32 7.3×, d34 9.6× on its sparse path. Provenance in
   `extractor/native/runs/batch2/` and `extractor/native/runs/batch1/`.
+
+  **Wave 5 (2026-07-27): twelve more domains, three degenerate captures, and the first
+  dense-array counter-evidence.** d48, d49, d50, d52, d56, d61, d65, d67, d70, d92, d94 and
+  d95, on the 514-hour `deepwar_a`, 750-hour `deepwar_b`, 1,033-hour `deepwar_b2` and
+  896-hour `deepwar_c` captures, every measured hour reader-replayed against the fold.
+  *Delta paths* stay the grammar's result: **d48** construction spends 5.99% of shipping raw
+  over the hours both arms carry a delta (16.7×) while its whole-stream zstd-3 is a wash at
+  99.9% and its blocks lose at 304.7%; **d61** air losses average 95.5 B per delta hour
+  against a 5,264 B/hour full-replace record (55×); **d67** dynamic modifiers carry every
+  change in 1,011 non-baseline hours in **202 raw bytes** against 24,053,712 B of shipping
+  records for the same hours; **d65** special projects change five rows in 514 hours at
+  7–11 B per emitting hour against a flat 488 B; **d70** sunk-convoy history carries every
+  change in 734 non-baseline hours in 1,246 B against 8,171,584 B; **d95** wins 7.9×.
+  *Whole-stream zstd-3 / 48-h blocks:* d56 18.8% / 38.7% (29.6% / 59.7% against the arm with
+  its stop-reported `NSUP` trailer cut), d70 18.4% / 58.1%, d67 20.2% / 82.4%, d95 16.9% /
+  28.2%, d61 48.5% / 56.1%, d65 4.7% / 24.7% — the block deficit decomposing to re-baseline
+  cadence every time. **d52** occupation is the honest-pair instance: 20.29% raw at the
+  shipping cadence but 89.8% whole-stream compressed — its delta path wins 5.38× raw and only
+  **1.11× compressed**, because a 64-byte row that changes one word still ships 63 mostly
+  unchanged bytes and zstd eats exactly that (474 kB → 57.5 kB, 8.2×); the grammar's
+  advantage is real but largely pre-paid by the compressor. **d94 pov_province_visibility is
+  the first dense-array counter-evidence — offered as evidence, not a reopening.** Its delta
+  path wins 4.5× compressed (4.35 vs 19.78 B/hour over the same 1,032 hours; 1,211× raw),
+  but one keyed-set baseline loses **23×** to the dense positional array plus zstd (36,115 B
+  compressed against 1,586 B for one shipping snapshot; 4.15 vs 1.00 B/row raw): the source
+  array's index is implicit where the keyed set spells every key out. Break-even is
+  ~2,320 hours per baseline against a 1,033-hour campaign, so no cadence within that capture
+  makes the wire arm smaller after compression. The closure above rests on 21–72%/hour
+  changed-row churn; d94 is 0.013%/hour over a dense, contiguous `ContentId` key space with
+  the cost entirely in the baseline's key list — whether that is new evidence in this
+  bullet's sense is the spec owner's call
+  (`runs/batch3/d94_pov_province_visibility/measurement.md`). **d56 confirms §7.3's by-name
+  stop with the first measured ordinal failure**: the supremacy list's one insertion
+  (64 → 65 rows) shifted the 40 entries behind it, which an ordinal key would publish as
+  forty updates to the *same* entries — false continuity; the ordinal-keyed reading was
+  built, measured (49,657 B raw against 28,288 B for the ported table alone) and rejected.
+  **d95 is the first wire encoding of unmeasured collection membership**: a clear per-surface
+  flag maps to Unknown on the frame's own `capture` record — a per-POV singleton shipped
+  every hour — and the codec refuses a payload whose unflagged surface carries rows
+  (`compact_contract/src/spotted_units.rs:153`–`:156`), so "unmeasured, with rows" is not a
+  representable input; the d17 war-graph blocker does not apply because the state has a
+  carrier that cannot contradict it. The state is measured, not hypothetical — the
+  task-force surface is unflagged on the first 53 of 1,033 hours — but 0 rows appear on any
+  hour, so d95's ratios measure a header-only table. **Three captures are degenerate, and
+  their ratios are not grammar results.** d49/d50: the naval province→region promotion
+  resolves nothing on `deepwar_a` (0 of 146 lifecycle rows carry a region), so d49 folds no
+  live row in 514 hours and its 0.03% raw / 0.6% compressed compare ~29 KB of framing and
+  tombstones against ten bytes of empty baselines; d50's fold-faithful arm keeps one hour
+  (512 of 514 records are orphans of the empty d49 accumulator), and its 14.9%-raw figure
+  comes from a labelled parent-identity-only size-accounting arm, not the recorder's
+  semantics. **d92 preferred-tactic was the third — an unsatisfiable-by-construction gate,
+  now fixed**: d92 publishes the complete 439-tag roster while D18 publishes a deliberately
+  filtered 356-tag cache, a strict superset every hour of `deepwar_c`, so the fold's
+  roster-EQUALITY gate folded 0 of 896 hours (production's own `stream_fold` says so
+  verbatim); equality could never pass, and the gate now demands **containment** — every D18
+  tag covered by a d92 row, which is what the projection actually reads
+  (`world_fold.rs:10345`–`:10359`). Post-fix, on real rows: 896/896 hours measured, 25,122 B
+  wire against 6,415,489 B shipping — **0.4% raw**
+  (`runs/batch3/d92_country_preferred_tactic/post_fix/`). Provenance for the wave:
+  `extractor/native/runs/batch3/`.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own

@@ -85,7 +85,20 @@ scale produces values wrong by ~3× (a 32768-scaled field read as 100_000), 100�
 10_000_000-scaled fields), or 100,000× (a raw-emitted field divided anyway) — and every
 round-trip test still passes, because the error is in the mapping, not the codec.
 
-**Then write down how each hour's payload relates to the state before it.** Four shapes are
+**One array can carry two divisors — carry RAW values plus scale metadata, never a chosen
+projection (d61).** `air_loss_stats_live`'s 24 channels share one value array with two display
+divisors in a single constant table: channels 0 and 12 divide by 1,000, the other 22 by
+100,000 (`lanes/air_loss_stats_live/src/lib.rs:102`–`:127`). The fold's own emitter carries
+raw, divisor and display side by side (`world_fold.rs:9162`–`:9178`), the display being a pure
+function of the other two — so the wire carries the raw `i64` with no divisor applied at the
+boundary, the per-channel mapping pinned in exactly one place (`d61::channel_display_value`),
+and the derived float recomputed downstream. Encoding a chosen projection instead would bake
+the divisor choice into the bytes, and the hazard is measured: `our_buildings_bombed` peaks at
+raw 56,600,000 — 56,600 buildings at the correct divisor and 566 at the wrong one, both
+plausible-looking, and no round-trip test can catch the wrong choice because the error is in
+the mapping, not the codec.
+
+**Then write down how each hour's payload relates to the state before it.** Five shapes are
 measured, and the difference decides your harness (step 9), your `split_payload` invariants
 (step 7) and whether you need an accumulator at all:
 
@@ -99,9 +112,33 @@ measured, and the difference decides your harness (step 9), your `split_payload`
 4. **Replace-or-sparse-after-first** — only the FIRST record replaces; every later record is a
    sparse patch even though nothing in it says so (d31, d34, d36 — three separate survey
    corrections). Reading records 2..n as snapshots silently drops every row they omit.
+5. **Two-accumulator, mode-selected seed** — the fold keeps a *projected state* and a separate
+   *delta baseline*, and the frame mode chooses which one the payload is applied to (d48).
+   `fold_construction_buildings_state_damage` (`world_fold.rs:20252`) seeds its working state
+   three ways — a DELTA frame from the delta baseline, a tolerated PARTIAL from the projected
+   state with a sparse merge, a CLEAN frame from empty (`:20339`–`:20355`, with a comment
+   naming the defect this exists to prevent) — and the two accumulators then advance on
+   **different conditions**: the projected state takes every folded frame, the delta baseline
+   only a clean or delta frame, never a partial (`:20618`–`:20625`). This is not shape 2 with
+   extra steps: shape 2 has one accumulator, so "apply the delta to the prior state" is
+   unambiguous, while here the two tables diverge the moment a tolerated partial lands.
+   Your `fold_payload` boundary takes the frame mode **and** the partial flag as typed inputs
+   (step 7's table), holds both accumulators and reproduces both advance conditions; seeding a
+   delta from the projected state is the defect this shape exists to name — it silently
+   re-introduces every phantom and reverted row a partial ever merged, for the rest of the
+   stream. **Implement the seed even where the tolerance table makes one arm unreachable**:
+   d48 has no `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry
+   (`compact_contract/src/lib.rs:136` lists domains 26, 27, 28 and 54 only), so its partial
+   arm is structurally dead today — it is implemented and tested anyway under step 7's
+   mirror-the-fold rule, and the measurement harness asserts the tolerance is still absent so
+   a later entry fails the run rather than silently invalidating the coverage caveat.
+   Otherwise the next porter reads "unreachable" as "omit it".
 
 **The cue for "do I need an accumulator" is the fold, not the payload:** *does the fold ever
-leave prior state untouched?* Not payload size, not the presence of a `DELTA_DATA` bit — d13's
+leave prior state untouched?* — and a second question: **does the fold keep more than one
+prior state?** If it does, which one a frame reads is part of the grammar (shape 5) and must
+be a typed input, never something the harness infers.
+Not payload size, not the presence of a `DELTA_DATA` bit — d13's
 packer omits countries whose read failed and d34 is a tiny table that is nonetheless
 sparse-after-first. A survey's row-count claim is guidance; the fold and your capture are the
 evidence, and a falsified survey line is corrected in the survey document, not worked around
@@ -252,6 +289,20 @@ lengths.
   reverse: `div_type` is identical in every campaign *and every mod set*, no manifest
   resolves it, and it is `Unsigned`. Stability alone does not make an id content; being
   defined *by* mod content does.
+  **A hashed content-defined token is still `ContentId`, and the test runs in both
+  directions.** Where the id is a *hash* of content-defined text — d52's
+  `occupation_law_token_id` is an FNV-1a-32 of the law's name (the fold labels the encoding
+  `fnv1a32_name_hash`, `world_fold.rs:17014`–`:17022`) — the deciding question is whether a
+  manifest MUST resolve the id for it to keep its meaning across mod sets, not whether one
+  *can* today. Today none can: such a field's §13 retrofit needs a name-hash **pre-image**
+  table that nothing currently ships (the collector has the string in hand and discards it
+  after hashing, `lanes/occupation_resistance_compliance_live/collector_module.rs:546`–`:554`)
+  — and classing the field `ContentId` is exactly what makes that gap findable by the
+  retrofit sweep. The converse holds too: d95's `type_id`/`stable_id` are read verbatim from
+  one packed engine word (`lanes/spotted_units_live/src/a729.rs:333`–`:338`), hash nothing on
+  their read path, and stay `Unsigned` on d20's `div_type` precedent. The rule's scope is a
+  content-defined string actually hashed on the field's read path — not any id that merely
+  looks hash-like.
 - **The manifest-id assignment rule does not exist yet** (`WIRE_FORMAT.md` §13). Where the
   source already carries a numeric id, today's boundary mappers cast the source `u32` straight
   into `Value::ContentId` (`bench_real_dynamics.rs:114`). Do the same, and record it once in
@@ -431,6 +482,7 @@ mapper. The measured family:
 | `scales: RowScales` | d35 (`d35.rs:247`, `:446`) | header-carried divisors — a **value** input, not merely an invariant |
 | `frame_game_hour: Option<i32>` | d13 (`d13.rs:753`) | the fold's **own clock**, which is not `frame_tick` |
 | `ordinal: u32` | d11 (`d11.rs:1987`) | the array position — whether it rides in the key (`key_from_construction_row`, `d11.rs:1941`) or is carried as a value field beside a fold-enforced key, as `record_from_line_row` does; step 5 |
+| `record_sequence: u64` | d70 (`d70.rs::fold_payload`; supplied by `apply_domain_data` at `world_fold.rs:4803`–`:4807`, `None` from the generic dispatcher at `:4737`) | the producer sequence the payload must be bound to — the fold refuses a payload whose stored sequence disagrees with the H4CR record that carried it (`:10268`–`:10274`), so a mapper derived from the generic dispatcher alone is wrong here |
 
 **A fold-level clock is a separate input from §6's `frame_tick`.** d13's A29 acceptance
 predicate reads `game_hour_raw`; conflating the two produced a round-1 finding. It gets its own
@@ -609,6 +661,61 @@ the stream passes.** Rules the review rounds established:
   the unavailable authority, a magic or authority-hash mismatch, a trailing-byte payload
   (`d83.rs:82`–`:104`) — is not an hour to skip; it invalidates the run. Say which of the three
   each of your fold's non-folding paths is, in the harness, by name.
+- **Where an independent authority predicate is STRICTER than the fold, measure what the fold
+  produces — and document the split (d49).** Production's status-independent payload authority
+  runs on every DOMAIN_DATA record and the harness runs it fail-closed; but d49's
+  `validate_d49_promoted_location_region` (`domain_data_authority.rs:8692`, applied at
+  `:8666`) is byte-for-byte the fold's own location/region refusal, and the two authorities
+  disagree about what it means: the certifier makes it fatal to the stream, while the
+  production fold path marks the domain-hour unknown, retains the accumulator and returns
+  `Ok` (`world_fold.rs:20079`–`:20091`; the `Err` arm at `:20080`–`:20085` fires only in the
+  separate validation-mode fold, not in production). The harness measures what the fold
+  produces, so it takes the fold's classification — excluded hour — counts it by cause,
+  applies every OTHER authority predicate fail-closed, and reports the certification
+  consequence as a named deviation rather than absorbing it
+  (`runs/batch3/d49_naval_combat_lifecycle/measurement.md`, where 72 of 514 hours are exactly
+  this case).
+- **Per-bin validation rules are NOT portable: re-derive every rule from YOUR domain's own
+  authorities, never copy a sibling bin's (d65).** The same header word carries different
+  rules per domain — `changed_rows` is `== row_count` where the fold reads the word (d63),
+  only `<= row_count` where the payload authority bounds it and the fold never reads it (d65)
+  — and the same defect class is enforced at different layers: d65's payload authority checks
+  `(owner, program_id)` duplicates status-independently, so a duplicate inside a
+  failure-status record refuses the stream, while d62 has no such authority check and the
+  same input there is merely an excluded hour. Copying in either direction either refuses
+  payloads the recorder folds or measures streams production refuses; pin each rule with its
+  own test.
+- **Before modelling an expected-partial tolerance branch, check the domain is actually in
+  `COMPACT_EXPECTED_PARTIAL_TOLERANCES`** (`compact_contract/src/lib.rs:136` — domains 26,
+  27, 28 and 54 only), **and check the branch's position.** `handle_compact_failure` applies
+  the tolerance-adjusted failure mask, so for an UNLISTED domain
+  `COMPACT_STATUS_PARTIAL_DATA` stays inside the mask it checks
+  (`COMPACT_STATUS_FAILURE_MASK`, `lib.rs:110`–`:118`) and the gate returns on exactly that
+  status — a tolerance branch positioned after it is dead code. d65's fold carries exactly
+  that: the tolerance call at `world_fold.rs:12299` sits behind the failure gate at
+  `:12292` and its predicate is constantly false for a domain the table does not list, so
+  the branch is unreachable twice over. Do not implement a dead branch in the harness; pin
+  the live classification with a test so a future tolerance entry breaks the test rather
+  than silently changing what is measured. The flip side is step 1's shape-5 rule: where the
+  FOLD's tolerance arm is live grammar (d48's mode-selected seed), implement it even though
+  the table makes it unreachable today.
+- **A gap forces a baseline (`WIRE_FORMAT.md` §1.5).** An excluded hour or non-contiguous
+  step is a state-affecting gap, and the next state observation after one must be a
+  `BASELINE` (`WIRE_FORMAT.md:187`–`:190`) — state may have moved and returned while nobody
+  was looking, and where the two states happen to be equal a delta arm would emit nothing at
+  all, silently asserting "unchanged" over an interval nobody measured. The encoder opens a
+  fresh baseline after ANY such gap, mid-block if that is where it lands (§1.5 permits it),
+  and the reader replay restarts its chain there. The rule decides the ENCODING only, not the
+  churn accounting: d50's regression test pins that the churn counters are unaffected by a
+  gap-forced baseline (`bench_real_d50.rs:1743` — "the gap rule decides the ENCODING, not
+  what changed"), and both bins count a transition between every pair of consecutive measured
+  states, across an excluded hour included (`bench_real_d50.rs:733`, `bench_real_d95.rs:983`)
+  — churn stays "changed rows over measured-hour transitions" exactly as defined above.
+  `bench_real_d50.rs` and `bench_real_d95.rs` enforce the baseline rule; bins written before
+  them chose baselines from
+  `hours_seen % BLOCK_HOURS` alone, which under-reports the wire arm's size and over-claims
+  its replay verification on any capture with an excluded hour — a standing sweep item,
+  flagged like d16's status-validity sweep.
 
 **Large-state and shipping-incremental domains cannot hold per-hour snapshots** (d22, d23,
 d24, d26 — up to ~24k rows/hour × 903 hours). Use a two-pass harness: validate everything
@@ -644,6 +751,25 @@ shipping framing contract, so `wire_format` carries `compact_contract` (a leaf c
 dependency used only by measurement bins, documented as such in `Cargo.toml`. Never copy its
 constants. For compression, `scripts/bench_real_dynamics.py` hardcodes the d20 arm name; use
 `scripts/compress_arms.py <out_dir> <ship_arm_basename> [hours_per_span]` instead.
+
+**Where the library half must transcribe a shipping codec, the duplication is machine-checked,
+never trusted (d67, d70).** The ruling above gives `compact_contract` to measurement bins
+only, so a domain whose row grammar lives in a codec crate is transcribed by hand into
+`dNN.rs` — d67's DMI2 (`compact_contract/src/dynamic_modifiers.rs`) and d70's SCH1
+(`compact_contract/src/naval_history.rs`) are the first two. Three checks hold the copy to
+the original: the harness dual-decodes **every** real capture record with both decoders and
+requires identical frames — header scalars, authority, ordering and every row, ordinal
+included (d67's `check_authority_payload`, 1,033/1,033 agree; d70's
+`cross_check_against_codec`, all 750); a fuzz-equivalence test requires identical
+accept/reject verdicts over random byte strings and single-bit mutations of a well-formed
+payload (d67's `the_two_decoders_agree_on_every_fuzzed_payload`, 20,000 cases; d70 sweeps
+every single-byte corruption and truncation of a good payload); and transcribed constants
+are asserted equal to their shipping originals where the port declares that test — d67's
+`every_transcribed_constant_equals_the_shipping_one` covers all 14 plus the calendar
+predicate, while d70 asserts its restated `FAILURE_STATUS_MASK` against
+`compact_contract`'s (`bench_real_d70.rs`, `assert_status_predicates_agree`) but has no
+per-constant equality test over its other restated constants — an open sweep item, not a
+license to skip the check in a new port. A drifted mirror fails the run, not the review.
 
 Report: raw and compressed sizes both arms, the ratio at BOTH the whole-stream and 48-h
 block shapes, the wire arm's baseline/delta raw split, real churn per hour, and hours
@@ -783,8 +909,11 @@ for ATTEMPT in 1 2; do
   echo "$TID review-<domain>-round-<n>-attempt-$ATTEMPT" >> "$LEDGER"
   wait $CDX; CODE=$?
   # Usage-limit check comes FIRST — never trust exit status alone; an exit-0
-  # reply carrying the signature is a dead thread, not a verdict.
-  if grep -qiE "usage limit|out of credits|purchase more credits" "$ERR" "$OUT" 2>/dev/null; then
+  # reply carrying the signature is a dead thread, not a verdict. The signature
+  # can arrive ONLY on the --json stdout JSONL stream ($AJ) with stderr quiet
+  # and the -o file empty — a lane that grepped only $ERR and $OUT retried
+  # straight into a limit (d49 lane, 2026-07-27). Grep all three.
+  if grep -qiE "usage limit|out of credits|purchase more credits" "$ERR" "$OUT" "$AJ" 2>/dev/null; then
     # NEVER retry into a usage limit. Queue durably; resume later with
     #   codex exec -s danger-full-access resume "$TID"  (re-check state; continue, don't redo)
     echo "USAGE_LIMIT $TID review-<domain>-round-<n>" >> "$RUNDIR/codex_resume_queue.txt"
@@ -804,6 +933,12 @@ Read the reply from `$OUT`, not stdout, and only after the exit-0 and non-empty 
 empty `$OUT` with a nonzero exit is a failed review, not an approval. Never `--ephemeral`,
 never `resume --last`.
 
+**A 401 is NOT a usage limit** — it is a transient auth failure, invisible to
+`codex login status` (which can report "Logged in" throughout), and the single fresh-thread
+retry the loop already runs is the right response; it has been observed to succeed (d49 lane,
+2026-07-27). Only the explicit usage-limit/credits signatures take the queue-and-resume path.
+`C:\Users\Example\.claude\CODEX_PROTOCOL.md` carries the same two rules.
+
 Prompt rules that make the loop converge:
 
 - **Neutral engineering language.** Codex's content filter refuses "attack", "adversarial",
@@ -817,6 +952,20 @@ Prompt rules that make the loop converge:
 - State that **a clean APPROVE is the expected outcome** if nothing in the class exists.
 - Codex has **no memory of this project**. Every prompt carries the full context: what the
   domain is, what the fold function says, what you built, and where the files are.
+- **The count-pin rule.** Every review prompt pins the worktree path AND the tree's current
+  test counts — total, per-crate, per-module — and a verdict whose observed counts do not
+  match the tree is REJECTED, whatever it says: a review that validated another checkout is
+  not a review. Two wave-5 wrong-checkout reviews were caught exactly this way. d61's round-1
+  APPROVE reported 1,253 tests across 36 binaries — the shared checkout without the change;
+  the worktree held 1,290, and the 37-test difference was exactly the two new files under
+  review (`runs/batch3/d61_air_loss_stats/measurement.md`). d48's round-4 reviewer
+  self-disclosed compiling the wrong checkout, discarded its own first run, and re-ran
+  against the worktree with its own observed counts (1,309, 37 d48 tests) before approving.
+  An APPROVE with mismatched counts is rejected and the round re-run pinned to the worktree.
+- **Give the review lane a private `CARGO_TARGET_DIR`.** Parallel lanes building one
+  workspace contend on the cargo lock, and a shared target dir wedged a wave-5 review for
+  minutes; a per-lane target dir removes the contention and keeps the reviewer's observed
+  test counts attributable to its own tree.
 
 **Round-8 rule (standing owner directive, 2026-07-27).** If round 8 still does not
 APPROVE, resume the round-8 thread (`codex exec -s danger-full-access resume "$TID" ...`,
