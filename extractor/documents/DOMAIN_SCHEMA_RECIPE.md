@@ -26,7 +26,14 @@ work, anything in `world_fold.rs` other than *reading* it.
 - **Ordered shapes.** `Shape::OrderedKeyedList` and `Shape::OrderedOccurrenceList` are full
   replacement and **are not implemented** — every encoder and decoder in `body.rs`
   hard-rejects a non-`KeyedSet` shape. If the domain needs one, stop and report; do not force
-  a keyed set.
+  a keyed set. **Read step 5's ordinal device first**: an ordered array whose order is a total
+  function of the carried fields stays a keyed set — the position rides in the key or beside
+  it — and only the arrays that fail that test fall through to this stop (d11's convoy
+  priority reservations, d16's `timed_live`).
+- **Player-authored free text.** Text no content manifest can ever resolve stops the
+  collection carrying it: d11's conveyor `name` is a player-typed division name, so §5's
+  symbol rule will never reach it whatever assignment rule lands (`d11.rs:224`–`:231`).
+  Content-defined text is **not** this case and is not a stop — see step 3.
 - **Event streams and hybrids.** If the domain's data is a happened-at-tick history rather
   than a state photographed on a cadence — or both at once, like d64's delayed-events chains
   (`WIRE_FORMAT.md` §9) — the event side has **no implementation** (`wire_format/src/lib.rs`
@@ -78,6 +85,28 @@ scale produces values wrong by ~3× (a 32768-scaled field read as 100_000), 100�
 10_000_000-scaled fields), or 100,000× (a raw-emitted field divided anyway) — and every
 round-trip test still passes, because the error is in the mapping, not the codec.
 
+**Then write down how each hour's payload relates to the state before it.** Four shapes are
+measured, and the difference decides your harness (step 9), your `split_payload` invariants
+(step 7) and whether you need an accumulator at all:
+
+1. **Full replace** — every record carries the whole table; the prior state is discarded
+   (d63, d18).
+2. **Baseline + delta** — a mode word says which (d26's `DELTA_DATA`, `FrameMode`); d26's fold
+   requires `changed_rows <= row_count` always and equality exactly on a **delta**
+   (`d26.rs:424`–`:434`), while a clean full baseline may be unequal.
+3. **Pure incremental** — every payload is a patch, there is no baseline record and no mode
+   word (d10; asserting `changed_rows == row_count` on it was a round-1 finding).
+4. **Replace-or-sparse-after-first** — only the FIRST record replaces; every later record is a
+   sparse patch even though nothing in it says so (d31, d34, d36 — three separate survey
+   corrections). Reading records 2..n as snapshots silently drops every row they omit.
+
+**The cue for "do I need an accumulator" is the fold, not the payload:** *does the fold ever
+leave prior state untouched?* Not payload size, not the presence of a `DELTA_DATA` bit — d13's
+packer omits countries whose read failed and d34 is a tiny table that is nonetheless
+sparse-after-first. A survey's row-count claim is guidance; the fold and your capture are the
+evidence, and a falsified survey line is corrected in the survey document, not worked around
+(d35's "constant 204 rows/hour" was `observed_variant_rows`, and d35 is pure incremental).
+
 ### 2. Decide each field's four-state semantics
 
 This is where most of the judgment is. §3 of `WIRE_FORMAT.md` defines four states, and they
@@ -106,6 +135,51 @@ decides null-vs-value only. The three-way choice is yours, made field by field:
    Unknown — the row physically cannot carry them. On a full 120-byte row with the flag
    clear, those same fields are Null.
 4. Otherwise it is a real value, including a real **Zero**.
+
+**A gate is not always a flag bit in the row, and finding the real one is the work.** Four
+shapes are measured, and each changes the answer for a whole class of fields:
+
+- **Kind-dependent gates (d28).** *Which* gates can even be clear depends on a key component.
+  The collector builds a different row per command kind and hard-codes `None` for the concepts
+  a kind does not have, so the same clear gate is **Absent** on the kind that never attempts
+  the read and **Unknown** on the kind whose read failed — recoverable only because `kind` is
+  key component 0 (`d28.rs:84`–`:101`). Decide per (field, kind), not per field.
+- **Sibling-status-word gates (d28's `leader_trait_count`).** A field with no flag of its own
+  may still have an empty state carried by a *neighbouring* word — and the obvious neighbour
+  can be the wrong one. The count is written `unwrap_or(0)` with no gate bit, so a `None` is
+  an indistinguishable zero; `leader_trait_status` looks like the disambiguator, but the
+  collector returns it as `None` on every one of its six leader-read failure paths, so mapping
+  `leader_trait_status == NONE` to Absent published 122 live army rows whose leader read had
+  failed as "not applicable". The state is a function of `leader_status` — the same word
+  `leader_id` and `leader_skill` use — swept over all 36 status pairs (`d28.rs:157`–`:175`,
+  `:805`–`:819`). Look for the sibling before concluding "no gate, always a value", then check
+  that the sibling you found means what its name says.
+- **Frame-status-driven Unknown (d17).** A frame-level status bit can decide *which* empty
+  state a clear row gate means. d17's `at_war_count`/`casualties` carry their value whenever
+  their own row flag is set, whatever the frame says; when the flag is **clear**, the frame's
+  `WAR_SEGMENT_ABSENT` bit is the only thing that separates "the segment found no relation" —
+  a measured **Zero** — from "the segment did not capture" — **Unknown** (`d17.rs:464`–`:475`,
+  `gated` at `:492`–`:500`). It is lossless only because the emitter packs a zero under a clear
+  gate, which the mapper enforces rather than assumes (`d17.rs:437`–`:451`; step 7's divergence
+  rule says why refusing the contradicting row is the honest move). This is a fidelity gain
+  over the fold, which fabricates zeros for both cases — and it is why the frame's status word
+  is a typed mapper input (step 7), not something the mapper re-derives.
+- **Value-derived gates, and the Zero-that-might-be-Unknown (d24, d16, d32).** Where presence
+  is carried by the value itself (`raw != 0` meaning present), a true zero is indistinguishable
+  from an unset one. That ambiguity is collector-side: **record it, never paper over it.** d16
+  reads three counters unconditionally and 58.50% of counter cells are zero, so mapping `0` to
+  Unknown would assert "not captured" over the majority of real data — the counters ship as
+  plain values with no capability anywhere, and the loss is reported upstream (`d16.rs:100`,
+  `:789`). d32's `air_base_id` is the tie-break in the wild: value-gated, no flag, and the
+  collector drops the whole wing on a failed read, so Null-vs-Unknown is undecidable →
+  **Unknown**, recorded.
+
+**Never gate against the fold; document the band instead (d36).** A mapper that refuses a row
+the fold accepts is data loss of exactly the kind this recipe exists to prevent — d36's round-1
+finding was a mapper rejecting `amount_raw` above the band where `Fixed(5)` reproduces the raw
+integer. The fix maps every `i64` the fold maps and states the reproduction band as a measured
+property: exact to `|raw| <= 2^51`, first failing inside `2^52`, pinned by a dense sweep
+(`d36.rs:137`–`:139`, `:953`). A precision claim is a tested band, not a validity constraint.
 
 **Known conflict in the worked example — the rule wins, not the example.** The fold's comment
 for `supply_gain` and `disrupted_supply` reads "Null when the field was absent (unreadable)"
@@ -178,10 +252,37 @@ lengths.
   reverse: `div_type` is identical in every campaign *and every mod set*, no manifest
   resolves it, and it is `Unsigned`. Stability alone does not make an id content; being
   defined *by* mod content does.
-- **The manifest-id assignment rule does not exist yet** (`WIRE_FORMAT.md` §13). Today's
-  boundary mappers cast the source `u32` straight into `Value::ContentId`
-  (`bench_real_dynamics.rs:114`). Do the same, and record it once in your open questions;
-  do not invent a per-domain mapping.
+- **The manifest-id assignment rule does not exist yet** (`WIRE_FORMAT.md` §13). Where the
+  source already carries a numeric id, today's boundary mappers cast the source `u32` straight
+  into `Value::ContentId` (`bench_real_dynamics.rs:114`). Do the same, and record it once in
+  your open questions; do not invent a per-domain mapping. Where the source carries **text**
+  there is no raw id to cast — that is the next bullet.
+- **Content-defined text is a `ContentId` resolved through a symbol table — not a stop
+  condition.** §4 declares no string kind and `Kind::legal_as_key` admits only `Unsigned`,
+  `Signed` and `ContentId` (`schema.rs:29`–`:31`), but §5 already answers the question for the
+  text these payloads actually carry: "Country tags, equipment names, province and state ids
+  are content-defined. The stream carries **manifest ids as varints, never text**"
+  (`WIRE_FORMAT.md:346`–`:351`). A text field whose vocabulary comes from mod content —
+  equipment and ship definitions, focus and ideology tokens, law/idea/advisor tokens, country
+  and cosmetic tags — is therefore a `ContentId` carried through a **symbol resolver the
+  caller supplies**, and because `ContentId` is a legal key kind the same rule turns a
+  text-KEYED collection into a `ContentId`-keyed one with no new shape.
+  **d29 is the worked example:** a `Symbols` table (`d29.rs:205`) taken as a typed mapper
+  parameter (`d29.rs:604`–`:609`), holding a sorted-vocabulary stand-in labelled as a stand-in,
+  with the two properties that make it safe stated exactly: nothing downstream computes from
+  the id's value, and the measurement is invariant under any assignment over **this domain's
+  own vocabulary** of fewer than 128 symbols, which is a one-byte varint either way
+  (`d29.rs:190`–`:199`). §5's ids are file-global, so an assignment over the whole content set
+  can still widen the varint — claim the invariance you measured, not more. Do the same, label
+  the stand-in, list the field in the ContentId retrofit sweep, and note the vocabulary may
+  only exist after pass 1 of the harness (step 9).
+  **Two things this rule does not unblock**, and neither is an argument about kinds:
+  player-authored free text (Scope), and a collection carrying a *second, independent*
+  blocker. d17's war graph is the measured instance of the second: even with a symbol id, a
+  keyed set cannot say "this collection's membership was not measured this hour", which is the
+  state of **903 of 903 hours** in the only capture (`d17.rs:71`–`:77`). That is a gap scope
+  narrower than §8's `(domain, part)` record and it has no implementation
+  (`WIRE_FORMAT.md` §13). The collection stops on that blocker, not on the text.
 - **`Monotone`** only when the value is a counter that *usually* rises. §4 makes monotone a
   hint, never a validity constraint — d20's `cumulative_losses` is `Monotone` even though
   transfers can decrease it.
@@ -224,6 +325,66 @@ Key fields: concrete, totally ordered, present in every row, never
 optional/nullable/unknown-capable/derived. d20's key is the `(div_id, div_type)` pair the
 fold builds its uid from.
 
+**An ordered array can still be a keyed set — the ordinal device.** The test is
+**the array's order must be a total function of the carried fields on every payload the FOLD
+accepts**, not merely on the payloads this capture happens to contain. Where it passes, the
+order survives in one of two forms, and which one is decided by whether the rows already have
+an identity:
+
+- **A carried field already ranks the array** — nothing to add. d11's `production_licenses`
+  v2 carries `visible_order` and the fold requires it to equal the item's position; v1's ids
+  are sorted ascending by the fold, which is the keyed set's own order (`d11.rs:173`–`:176`).
+- **The rows have a fold-enforced identity, but nothing ranks them** — keep the fold's key and
+  carry the position as a **value field**. d11's production lines keep the fold's
+  `(tag_db_id, kind, line_id)` key (`d11.rs:508`–`:516`) and carry `line_ordinal`, the dense
+  base-table position within the row's `(tag_db_id, kind)` run, as a required concrete field
+  (`d11.rs:537`–`:542`) — the only order witness on a frame that carries lines and no `PPR1`,
+  which the fold accepts. Convoy variants do the same beside their fold-enforced key, and their
+  redundancy with key order on this capture is reported rather than relied on, because "this
+  stream happens to be sorted" is not a property of the payloads the fold accepts
+  (`d11.rs:145`–`:161`, `:178`–`:186`).
+- **The rows have no identity of their own, and the position IS one** — then the position goes
+  **in the key**, generated at the boundary as a dense ordinal. d11's construction queue is
+  keyed `(tag_db_id, construction_ordinal, line_id)`: the fold enforces no key there and pushes
+  rows in wire order, so two rows can share every identity word; the ordinal is unique by
+  construction, refuses nothing, and leads `line_id` so the keyed set's own order **is** the
+  fold's array order (`d11.rs:162`–`:172`, `key_from_construction_row(row, ordinal)` at
+  `:1941`). **Under a `Vec`-valued fold with no key this is the only faithful reading**: a
+  `Vec` is a map from position to element, so the ordinal reproduces the container
+  element-for-element. d39/d40's round-1 finding was a key built from the row's own
+  `upgrade_index` word, which refused payloads the fold folds, collapsed duplicates, and would
+  have silently re-sorted descending ranges (`variant_upgrades.rs:84`–`:86`, `:271`–`:277`).
+
+**The question that decides a positional key is whether the position persists across hours as
+the same thing** — step 5's own requirement, applied to the ordinal. A queue slot and a
+variant's upgrade slot do. Two measured cases where it does not, and both stop:
+
+- d11's `convoy_priority_reservations`. The order is a function of no carried field — 2,633
+  consecutive samples are a *pure reorder* of an identical `{priority, count}` multiset — and
+  the rows carry an identity of their own: `priority` is unique within a country in every
+  country-hour of the capture, though the fold checks no uniqueness, so generality is unproven.
+  Keying by source index would replace whatever identity they have with a positional one, which
+  every reorder rewrites, and a positional index is not the "stable identity that persists
+  across hours" a keyed set requires (`d11.rs:191`–`:216`). It is an ordered list either way —
+  `OrderedKeyedList` if that uniqueness holds in general, `OrderedOccurrenceList` if duplicate
+  priorities are legitimate — and both are unimplemented, so the stop is the same.
+- d16's `timed_live`. Duplicates are legitimate, there is no key at all, and an entry's index
+  shifts as neighbours expire, so no position persists — §7.3's `OrderedOccurrenceList`
+  (`d16.rs:142`–`:153`), which §7.4 says carries no key.
+
+Both shapes are unimplemented, so both are reported. Where the two readings are both
+defensible, the choice is a recorded decision with its evidence, not a default: d32 read a
+loadout line's identity as its variant rather than its position — the ordinal there is
+transport, re-packed from emission order every frame, so a positional key would churn every row
+of every hour — and refused the frames its keyed set cannot express instead, an input its own
+producer cannot generate (`d32.rs:146`–`:170`; see step 7).
+
+A generated ordinal is counted at exactly one place: the mapper always takes it as a parameter
+(`record_from_line_row(collection, row, joins, ordinal, frame_tick)`, `d11.rs:1987`), and the
+key extractor takes it too where it is a key component (`d11.rs:1941`). **Every caller must
+count it the same way**, which is why it belongs to the shared boundary and is never a number a
+harness re-derives.
+
 ### 6. Write `wire_format/src/dNN.rs`
 
 Mirror `d20.rs`: a `DOMAIN` const, collection id consts, a `field` module of stable field-id
@@ -249,9 +410,97 @@ pub fn record_from_row(
 ) -> Result<Record, String>
 ```
 
-(Multiple collections in one domain: `record_from_<collection>_row` each.) This is where the
-step-2 semantics and the step-1 scales live. Derived fields (§6) apply at this boundary,
-never inside the codec — which is exactly why the tick is a parameter.
+(Multiple collections in one domain: `record_from_<collection>_row` each. A child row whose
+identity includes its parent's takes the parent id as its first argument:
+`key_from_<child>_row(parent_id, entry)` — d23's and d83's convention (`d23.rs:576`,
+`d83.rs:627`), so a caller that already parsed the parent does not parse it twice.) This is
+where the step-2 semantics and the step-1 scales live. Derived fields (§6) apply at this
+boundary, never inside the codec — which is exactly why the tick is a parameter.
+
+**The signature is those three fixed arguments PLUS whatever typed inputs the fold's semantics
+require** — one named parameter for each input the fold reads that the row itself does not
+carry. Take it; never re-derive it in a caller, and never hard-code one frame's shape into the
+mapper. The measured family:
+
+| Input | First instance | What the fold needs it for |
+|---|---|---|
+| `frame_tick: u64` | d63 | §6's derived-field input. A domain with no derived field names it and ignores it, so every mapper has the same shape |
+| `mode: FrameMode` | d26 (`d26.rs:373`) | which structural invariant holds on this frame |
+| `war_segment: WarSegment` | d17 (`d17.rs:208`, `:413`) | a frame status bit that decides one field's four-state answer for every row in the frame |
+| `symbols: &Symbols` | d29 (`d29.rs:604`) | §5 symbol resolution for content-defined text (step 3) |
+| `scales: RowScales` | d35 (`d35.rs:247`, `:446`) | header-carried divisors — a **value** input, not merely an invariant |
+| `frame_game_hour: Option<i32>` | d13 (`d13.rs:753`) | the fold's **own clock**, which is not `frame_tick` |
+| `ordinal: u32` | d11 (`d11.rs:1987`) | the array position — whether it rides in the key (`key_from_construction_row`, `d11.rs:1941`) or is carried as a value field beside a fold-enforced key, as `record_from_line_row` does; step 5 |
+
+**A fold-level clock is a separate input from §6's `frame_tick`.** d13's A29 acceptance
+predicate reads `game_hour_raw`; conflating the two produced a round-1 finding. It gets its own
+named parameter, and `None` reproduces the fold's own skip of the same-hour clause
+(`d13.rs:745`–`:756`). d13 exposes both forms — the fixed three-argument mapper, and an
+`_at_hour` variant carrying the fold's clock **in place of** the tick, since the tick is not
+what that fold reads; the three-argument form refuses the rows whose semantics need the clock
+rather than guessing one.
+
+**`parse_header` (or `peek_header`) and `split_payload` are separate boundaries where a
+non-folding exit sits between the checks the fold runs first and the body it reads last, and
+the split is YOUR fold's call order — not a universal shape.** In d34, d35, d36 and d32 the
+fold runs *some* header checks, returns without folding on a failure status — and, where its
+grammar has one, on a delta-before-baseline — and only *then* checks the payload length and
+reads rows. Which checks come first differs per fold and is not guessable: d34's are the
+36-byte minimum and its `reserved != 0` rejection (`d34.rs:227`–`:240`), d35's are the minimum
+and both scale words being non-zero, with no delta-before-baseline exit at all
+(`d35.rs:352`–`:364`), d36's are the 48-byte minimum, four count invariants and the scale
+assertion (`d36.rs:288`–`:340`), and d32's are the 44-byte minimum, four count relationships,
+the fixed-scale word and a reserved word (`d32.rs:421`–`:488`). Enforcing an
+invariant your fold checks *after* its early exit — the payload length being the usual one —
+would refuse records the recorder accepts and folds nothing from, so the header read a caller
+needs in order to *classify* a record must be reachable without paying for the body. Other
+folds are shaped differently and get a different split or none: d83 decodes the whole payload
+**before** consulting status, so a malformed payload is a refused stream whatever its status
+(`bin/bench_real_d83.rs:54`–`:61`), and d10, d13 and d16 never read the status word at all
+(`d13.rs:116`–`:124`, `d16.rs:189`–`:191`) — which is the same rule step 9 states for
+exclusions, applied one layer earlier. d29 and d11 need the same split for a second reason:
+their rows are variable-length, so the body walk needs header values before it can find a row
+boundary at all. Structural checks that couple header words to each other belong in the same
+place — the shape is not always `row_count` arithmetic (d83 couples authority, status, receipt
+and snapshot-present, `d83.rs:414`–`:430`).
+
+**Key-only collections are legal — and need one explicit check.** A collection that is pure key
+membership with zero value fields is precedented (d28's `MEMBERS`, d39/d40's `variants`), but
+its field loop iterates nothing, so a record built for the *wrong* collection would come out
+silently empty instead of failing. Verify `collection.collection_id` before the loop
+(`variant_upgrades.rs:633`).
+
+**Mirror the fold's permissiveness — refuse only where mapping the input would publish
+something false.** The default is d22's ruling: a port may not refuse what the fold accepts
+merely because the emitter provably never produces it, and the mirrored permissiveness is
+pinned by tests (this is the same rule as step 2's "never gate against the fold"). Mirroring is
+right there because the fold's own permissive collapse is last-writer-wins, so the keyed set
+reproduces its stored state exactly (`d32.rs:151`–`:156`).
+
+Two measured shapes of legitimate divergence, each named by the loss it prevents:
+
+- **The target shape cannot represent the input.** d32's fold stores a `Vec` in which two
+  same-variant loadout lines coexist; the keyed set's `(owner, wing, generation, variant_id)`
+  cannot express that, so mirroring would silently keep one line and drop the other — the
+  data-loss defect itself. The alternatives were an unimplemented `OrderedOccurrenceList` (a
+  stop) or an ordinal key component, which here is transport re-packed from emission order
+  every frame and would churn every row of every hour. So `split_payload` **rejects** a frame
+  carrying a duplicated variant inside one wing's range (`d32.rs:146`–`:170`).
+- **The input contradicts the invariant your four-state mapping rests on.** d17's
+  Unknown-on-a-clear-gate mapping is lossless only because the emitter packs a zero under a
+  clear gate; a clear-gate row carrying a non-zero word would have its captured value replaced
+  by Unknown, so the mapper refuses that row rather than mapping it (`d17.rs:437`–`:451`). d28
+  refuses a non-zero `leader_trait_count` under a non-`EXACT` status for the same reason — the
+  status-driven mapping would drop the count silently (`d28.rs:731`–`:741`).
+
+The test is one question: **would mapping this input lose or falsify data?** If yes, refusing
+is the honest option, and it is recorded with three things — the shape limit or invariant that
+makes the mapping unable to carry the input, the producer evidence that the input is
+unreachable in practice (d32: the collector rejects a duplicate variant,
+`attach_log.rs:57114`–`:57115`, and that rejection drops the whole wing row, `:56844`), and a
+test pinning the refusal. If no — if the input is merely surprising, or merely never emitted —
+mirror the fold. "The emitter never does this" is the reason a divergence is unreachable, never
+the reason it is right.
 
 The mapper is not the only public boundary. Also export a **key extractor**
 (`key_from_row`) and a **payload-header splitter** (`split_payload`, carrying the fold's
@@ -259,9 +508,13 @@ The mapper is not the only public boundary. Also export a **key extractor**
 multiplication, and the invariants YOUR authorities actually state — `changed_rows ==
 row_count` is unconditional for full-replace domains (d63), mode-dependent for
 baseline-plus-delta ones (d26's fold requires `<=` always and equality exactly when
-`DELTA_DATA` is set — a clean full baseline may be unequal), and absent for pure
-incremental payloads (asserting it on d10 was a round-1 finding); per-row semantic
-checks such as unknown-flag rejection stay in `record_from_row`). Where an invariant is mode-dependent or header-relative, take the
+`DELTA_DATA` is set — a clean full baseline may be unequal), absent for pure
+incremental payloads (asserting it on d10 was a round-1 finding), and **not an invariant at
+all where the fold never reads the word** — d17, d34 and d16 all carry a `changed_rows`
+header word their folds ignore (d16's is literally the same value as `country_count`), so it
+is parsed and reported, never enforced. The test is whether YOUR fold reads it, not which
+grammar class the domain is in; per-row semantic checks such as unknown-flag rejection stay in
+`record_from_row`). Where an invariant is mode-dependent or header-relative, take the
 mode or header value as a parameter (d26's `FrameMode`, d24's
 `check_province_id(id, observed_province_rows)`) instead of hard-coding one frame shape.
 The measurement bin, the tests, and any future
@@ -282,9 +535,10 @@ in `dNN.rs` so the measurement bin, the tests, and any future caller share one m
    `record_from_row`, asserting the exact `Value` per case — a real zero and full values
    always, plus a case for **each state the schema actually declares**: every capability the
    schema uses (`.optional()`, `.nullable()`, `.unknown_capable()`, legacy row) gets its
-   raw-bytes case; a schema that declares none of them says so in a test comment instead of
-   inventing cases. Hand-building a `Vec<Value>` does not count: d20's current four-state
-   test predates the mapper contract and would pass with a wrong mapper; yours must not.
+   raw-bytes case; a collection that declares none of them says so in a test comment instead
+   of inventing cases (the record is per collection, so the "no capabilities" note is too).
+   Hand-building a `Vec<Value>` does not count: d20's current four-state test predates the
+   mapper contract and would pass with a wrong mapper; yours must not.
 4. Quantization actually saves bytes versus an all-`Exact` variant — **if any field is
    quantized**. A schema with no quantized field instead records in a comment why no
    continuous field is drawn-rather-than-interpolated (or has no continuous fields at all).
@@ -293,7 +547,11 @@ in `dNN.rs` so the measurement bin, the tests, and any future caller share one m
    each offset maps to the expected `Value` per field — for scaled fields with known
    fixed-point words (this is the test that catches the 32768-vs-100000 class), and for
    unscaled domains still field-by-field, because transposition is the same failure class
-   (d62's `owner`/`actor` are adjacent in the row and separated in the key).
+   (d62's `owner`/`actor` are adjacent in the row and separated in the key). **The header is
+   covered by the same test**: every word `peek_header`/`parse_header` reads gets its own
+   known-bytes case (`d31.rs:1054`), because a transposed header word mis-slices every row
+   behind it and no round-trip or replay assertion can see that — both arms agree on the
+   wrong slice.
 
 Run `cargo test -p wire_format` — the whole suite, not just yours.
 
@@ -323,7 +581,7 @@ hour-boundary and EOF rules of `recorder_host::stream_fold`'s `BoundaryTracker`/
 — those two live in `recorder_host`, which `wire_format` must NOT depend on, so the harness
 implements their documented subset itself, exactly as `bench_real_d63.rs` does (its module
 header lists the rules with their `stream_fold.rs` line anchors). **Write no artifact until
-the stream passes.** Three rules the pilot's review rounds established:
+the stream passes.** Rules the review rounds established:
 
 - **Exclude every path on which YOUR fold returns without folding** — failure status is only
   the common one (use the fold's own predicate,
@@ -338,14 +596,48 @@ the stream passes.** Three rules the pilot's review rounds established:
 - Enforce hour uniqueness across ALL of your domain's records — including failure-status
   ones — BEFORE status exclusion, or a success+failure pair in one hour slips through.
 - A stream cut exactly at a FRAME_END boundary is a well-formed shorter stream: accept it.
+- **Reject an unassigned status bit BEFORE classifying the record.** The failure predicate and
+  its partial-tolerance sibling are classifiers over the *assigned* v1 status bits
+  (`compact_contract/src/status_flags_base.rs:21`–`:24`); an unassigned bit has no defined
+  classification and is not evidence of a future informational status, so a record carrying one
+  refuses the stream rather than falling through to "success" (`bin/bench_real_d16.rs:305`–
+  `:330`, test `an_unassigned_status_bit_is_refused_not_classified` at `:1141`). This defect was
+  present in every bench bin written before d16 and is flagged for a sweep — do not copy an
+  earlier bin's status handling without checking it.
+- **A third outcome exists beside "excluded hour" and "measured hour": a stream rejection.** A
+  fold `Err` that says the payload is not this grammar — d83's non-failure status word forcing
+  the unavailable authority, a magic or authority-hash mismatch, a trailing-byte payload
+  (`d83.rs:82`–`:104`) — is not an hour to skip; it invalidates the run. Say which of the three
+  each of your fold's non-folding paths is, in the harness, by name.
 
 **Large-state and shipping-incremental domains cannot hold per-hour snapshots** (d22, d23,
 d24, d26 — up to ~24k rows/hour × 903 hours). Use a two-pass harness: validate everything
 while retaining only record spans, then re-fold through the same code path while encoding.
+**A domain with content-defined text needs the two-pass harness whatever its size**, because
+the symbol vocabulary is what pass 1 builds and pass 2's mapping needs it (step 3). Pass 1
+therefore cannot call the mapper at all: d29 runs the fold's own accumulation rules over a
+**key-only mirror** of the accumulator, which is enough to collect the vocabulary and to
+*prove* pass 2 can never need a symbol pass 1 did not see (`bin/bench_real_d29.rs:32`,
+`:205`–`:212`, `:415`). Write that proof down; without it the stand-in table is an assumption.
 Put the frame-level fold in `dNN.rs` as a public, tested `State` + `fold_payload` boundary —
-the fourth public boundary, beside the step-7 trio, whenever one record is not one state.
-Enumerate every OTHER writer of your domain's accumulator and prove it inert on your capture
-or model it (the recorder prunes d26's accumulator from D20 deletion rows).
+the fourth public boundary, beside the step-7 trio — **whenever the harness would otherwise
+re-derive a multi-table or nested walk**, not only when one record is not one state: d83 is one
+record = one state and still needed it, because its two-level walk is grammar and grammar has
+exactly one home.
+
+**The `fold_payload` error contract is your fold's, not a fixed one.** d22's fold is
+all-or-nothing; d35's mutates part of the accumulator before erroring. Mirror whichever yours
+does and state it in the boundary's docs — a harness that assumes the wrong one silently
+disagrees with the recorder on exactly the frames that fail.
+
+Enumerate every OTHER writer of your domain's accumulator and choose one of three treatments,
+explicitly: **model it** (the recorder prunes d26's accumulator from D20 deletion rows),
+**prove it inert** on your capture, or — where the writer is another domain this assignment does
+not port — **assert it inert per capture**, reading only the key columns the check needs and
+failing the harness louder than the recorder would if it ever fires. d32 is the assert-inert
+instance: d30's end-of-hour orphan prune genuinely removes rows, modelling it would mean porting
+d30's payload grammar, and the harness instead fails on any drop (0 drops in 146 hours,
+`d32.rs:179`–`:191`, `bin/bench_real_d32.rs:60`–`:68`).
 
 **Dependency ruling (already made — do not re-decide per domain):** the harness needs the
 shipping framing contract, so `wire_format` carries `compact_contract` (a leaf crate) as a
@@ -363,6 +655,70 @@ is the container's open question; report the split so the grammar comparison sta
 recoverable. (`compress_arms.py` requires both arms to cover the same hour count — append
 an offset for hours that emit nothing.)
 
+**Churn is reported twice, because one number cannot answer both questions.** Report it
+**cadence-independent** — changed rows over *measured-hour transitions*, taken before the block
+decision so a change landing on a block boundary still counts — and separately along the
+**delta path**, changed rows and tombstones over the hours that actually emitted a delta
+(`bin/bench_real_d16.rs:435`–`:441`, `:674`–`:695`; `bin/bench_real_d17.rs:431`). The
+denominator matters: dividing an idle domain's churn by emitted-delta hours made d17 look ~900×
+busier, a round-2 review finding.
+
+**A stopped segment is accounted for in the shipping arm, never silently charged to yours.**
+Where part of the domain is stop-reported, the shipping records still carry its bytes, so the
+comparison charges your arm for data it was never allowed to encode. Two accountings, and both
+are acceptable:
+
+- **A byte split of the shipping arm** — say what each slice of the shipping stream is: the
+  slice your wire arm replaces, the per-record framing no per-collection port can claim, and
+  the stop-reported slice nobody claims. d16 reports its 136,422 shipping bytes as 52.9%
+  country rows (claimed), 37.1% framing and 10.1% stopped `timed_live`
+  (`runs/batch1/d16_decisions_live/measurement.md`).
+- **A second, cut shipping arm** — where the segment occupies a cuttable span, subtract its
+  bytes and report the wire ratio against both arms. d11 does this for the `PDQ1` trailer,
+  which the fold requires to be the final one, so the cut is a suffix: `ship_d11_no_pdq1.bin`
+  is each shipping record with that trailer removed and its payload length left as written — a
+  size-accounting artifact, not a valid record, and labelled as one
+  (`bin/bench_real_d11.rs:26`–`:34`, `:411`–`:415`, `:602`–`:611`).
+
+Where the segment is interleaved rather than cuttable, the byte split is the only option:
+cutting it would fabricate a stream the recorder never wrote. d11's `PCV1` reservation rows sit
+inside their trailer at 8 bytes a row, so they stay charged to the shipping arm and are
+reported as a named count, byte total and share (`bin/bench_real_d11.rs:591`–`:596`). Either
+way the number is stated, not absorbed; and where you do cut an arm, say what the cut arm *is*
+where you report it.
+
+**State what the capture never exercised.** A coverage caveat is mandatory, not a courtesy, and
+it names the path precisely. d83 encoded and replayed 19 baselines of 1,317 rows an hour, so
+its value path is exercised — but every stockpile is empty on this world, so **no non-zero
+amount was ever encoded and the delta path has zero coverage at all**: 0 changed rows over 884
+non-baseline hours (`runs/batch1/d83_nuke_stockpile_live/bench_real_d83.txt`). Its
+0.35%-of-shipping figure therefore measures a static table and nothing else. Name the path,
+name the reason, name the capture that would exercise it.
+
+## Two domains, one fold — the pair pattern
+
+Where `world_fold.rs` dispatches the **same** fold function for two domain ids, they are one
+grammar and must not become two implementations that drift. d39 `air_variant_upgrades` and d40
+`stockpile_variant_upgrades` are the worked example: `world_fold.rs:4684` and `:4685` both
+dispatch `fold_variant_upgrades` (`:15431`), and the only divergences inside it are the
+accumulator it writes and the domain's name in its error strings.
+
+- **The whole grammar lives in one shared module** (`variant_upgrades.rs`) parameterized by a
+  plain `Domain` **descriptor value** — id and name — which nothing but the two domain modules
+  constructs.
+- **`dNN.rs` is an identity binding.** §11 assigns field ids per domain, so each domain needs
+  its own `Schema` carrying its own domain value, and each needs the recipe's fixed boundary
+  (`record_from_*_row`, `key_from_*_row`, `split_payload`, `fold_payload`) reachable at its own
+  name. Every function forwards to the shared module; there is no logic in those files, by
+  construction (`d39.rs:12`–`:17`).
+- **The tests loop over both descriptors, and a `schema_hash` equality test machine-checks
+  "byte-identical grammar."** §11's canonical bytes cover the collections and their fields, not
+  the domain id, so `d39::schema().schema_hash() == d40::schema().schema_hash()` is a real
+  assertion — and it is what fails if a later edit gives one domain a field the other lacks
+  (`variant_upgrades.rs:244`–`:249`, `:980`–`:993`).
+- **Measure each domain separately.** One grammar does not mean one dataset: the pair measured
+  15.2% and 26.5% of shipping whole-stream on the same capture.
+
 ## Known-open spec items — and why they do not block this work
 
 `WIRE_FORMAT.md` §13 states the spec "is not yet the fan-out contract" and lists what is
@@ -378,6 +734,12 @@ open. The items that touch this recipe:
   sort and delta-encode by raw value (`body.rs`), so a manifest remap reorders keys and
   changes the byte layout of every baseline and key list, not just one field's value.
   d63's `tag_db_id` key is the first instance; flag any ContentId key separately.
+  **A domain whose source carries content-defined text already pays part of that retrofit**:
+  its mapper takes the symbol resolver today (step 3), so what the rule lands on is the
+  stand-in table's assignment, not the mapper's shape. And **"this domain has no `ContentId`"
+  is a sweep result, not a silence** — assert it, as d35 does with
+  `no_field_is_a_content_id`, so the retrofit sweep can tell "checked, none" from "not
+  checked".
 - **Row-major vs columnar** was the headline §13 question; it is now **closed by decision**
   (2026-07-26): the row-major grammar this recipe targets is retained. The basis is
   evidence, not a direct columnar-delta comparison (no columnar delta grammar exists to
@@ -468,8 +830,11 @@ after every fix round. Loop until Codex returns APPROVE with no in-class finding
 - [ ] The step-8 tests passing (a capability-conditional test that does not apply is recorded
       with its reason, not silently missing); full `cargo test -p wire_format` green, zero
       warnings
-- [ ] Measurement with per-hour reader replay verified, numbers reported — or a stop-condition
-      report for ordered/event/hybrid domains
+- [ ] Measurement with per-hour reader replay verified, numbers reported — churn both
+      cadence-independent and delta-path, any stop-reported segment accounted for in the
+      shipping arm (a byte split, or a second size-accounting arm where the segment is
+      cuttable), and every path the capture never exercised named as a coverage caveat — or a
+      stop-condition report for the collections that stop
 - [ ] Codex APPROVE, with the thread id recorded
 - [ ] Open questions listed — every `Exact`-because-unsure field, every Null/Unknown
       tie-break, every fold-vs-benchmark conflict, and the ContentId raw-cast note

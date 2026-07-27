@@ -619,10 +619,10 @@ declares one shape:
 
 - **keyed set** — unique stable key, no meaningful order. Upsert and tombstone semantics. The
   default, and **the only shape with a delta grammar**.
-- **ordered keyed list** — unique stable key **and** meaningful physical order. d11 production is
-  this: `extractor/documents/domains/d11_production_live.md:51`–`:52` records that conveyor and
-  line `(id,type)` pairs are lifecycle keys and that source order is authoritative with contiguous
-  ordinals, and the codec enforces ordinal contiguity and key uniqueness at
+- **ordered keyed list** — unique stable key **and** meaningful physical order. d11's deployment
+  queue is this: `extractor/documents/domains/d11_production_live.md:51`–`:52` records that
+  conveyor and line `(id,type)` pairs are lifecycle keys and that source order is authoritative
+  with contiguous ordinals, and the codec enforces ordinal contiguity and key uniqueness at
   `extractor/native/lanes/country_economy_production_stockpile_live/src/deployment_queue.rs:373`–`:376`
   and `:419`–`:422`. **Full replacement only.**
 - **ordered occurrence list** — meaningful physical order, duplicates legitimate, no unique key.
@@ -633,6 +633,18 @@ declares one shape:
 
 A delta against either ordered shape would **double-append** rather than upsert, which is why
 production already full-replaces them.
+
+**An ordered array whose order is a total function of its carried fields does not need these
+shapes.** Where the position is carried, or derivable at the boundary as a dense ordinal, the
+collection stays a keyed set: it keeps the order, keeps the delta grammar, and refuses nothing
+the fold accepts. The position rides in the key where the rows have no identity of their own
+(d11's construction queue) and as an ordinary field beside a fold-enforced key where they do
+(d11's production lines and convoy variant runs, both `Shape::KeyedSet` in the ported schema,
+`extractor/native/wire_format/src/d11.rs:504`–`:542` and `:628`–`:649`) —
+`extractor/documents/DOMAIN_SCHEMA_RECIPE.md` step 5 gives the test. The
+shapes above are needed exactly where that test fails: where no carried field recovers the
+order (d11's `convoy_priority_reservations`), or where duplicates are legitimate, no unique key
+exists and no position persists (d16's `timed_live`, d56, d64).
 
 **A domain with legitimately duplicate identities is not a broken keyed set.** d64's duplicates
 carry a `scope.random` seed that the oracle folds into its join key
@@ -1036,10 +1048,30 @@ closes them on a named corpus and harness before ~80 encoders are written.
   the gap needs a codec-level exact path (integer-domain `Fixed` or a declared power-of-two
   quantizer), while decimal sources have a cheap exact `Fixed(k)` (d24); (2) §8 gap normalisation needs an implementation — d26's
   `sparse_partial` marks a *domain-hour* unknown, which a keyed set has no way to say.
-  Separately, the wave-1 survey confirmed §4's kinds include no string kind, which stops
-  d12/d14/d15/d18 outright — their identities or payload-bearing fields are strings (d18's
-  payload is a tag-string map; d12/d14/d15 are mixed-field rows whose keys or essential
-  fields are strings). Provenance in `extractor/native/runs/batch1/`.
+  Separately, the wave-1 survey stopped d12/d14/d15/d18 on the absence of a string kind; the
+  formal stop reports since then locate the real mechanism in §5's symbol-id assignment rule,
+  under the symbol bullet below. Provenance in `extractor/native/runs/batch1/`.
+
+  **Waves 2–3 and the XL tier (2026-07-27): fourteen further domains.** d83, d29, d17, d35,
+  d34, d13, d31, d28, d36, d32, d39+d40, d16 and d11 — each hour reader-replayed against the
+  fold, on the same 903-hour D04 capture or the 146-hour batch-2 capture. Four anchors move
+  the picture wave 1 drew. *Size is not where the grammar fails:* **d11 production**, the
+  largest domain — ten trailer segments folded into seven keyed collections — measures
+  **7.8% of shipping raw, 45.7% whole-stream and 58.4% at 48-hour blocks** over 903/903
+  verified hours. *Two more domains win at BOTH shapes*, joining wave 1's d62:
+  **d31** air_region_activity at **20.4% raw / 61.2% whole-stream / 66.7% at blocks**
+  (~109 buckets/hour) and **d16** at **3.4% whole-stream / 23.2% at blocks** against its
+  shipping stream as-is — a stream of which the wire arm claims the 52.9% country-row slice,
+  while 37.1% is per-record framing and 10.1% is the stop-reported `timed_live` suffix the
+  wire arm makes no claim over. Small state makes re-baselining cheap, which is the other
+  face of wave 1's block-cadence finding. *Static catalogs collapse at the block shape, and it is
+  re-baseline policy every time:* d83's static table costs **42 compressed bytes**
+  whole-stream (0.3%) against 2.1% at blocks; the d39/d40 pair measures 15.2% and 26.5%
+  whole-stream with the same block collapse; d13 inverts at whole-stream (**117%**) because
+  zstd deduplicates 903 near-identical shipping payloads, while its delta path costs 0.66%
+  raw / 70.6% compressed. *Delta paths keep winning where they were measured* — d28 9.7×
+  raw, d36 10.5×, d32 7.3×, d34 9.6× on its sparse path. Provenance in
+  `extractor/native/runs/batch2/` and `extractor/native/runs/batch1/`.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own
@@ -1062,6 +1094,69 @@ closes them on a named corpus and harness before ~80 encoders are written.
   given content set, and that orders symbols first seen at the same tick, is unwritten. Golden
   vectors are not stable until it exists; it belongs with the content manifest, which does not
   currently carry it.
+
+  **It is the highest-value unwritten rule for the fan-out.** The four formal stop reports in
+  `extractor/native/runs/batch1/stop_reports/` (d12 `focus_live`, d14 `politics_live`, d15
+  `politics_residuals`, d18 `country_identity`) establish that nearly every string in those
+  domains is a content-defined token — focus and focus-tree ids, ideology and law-group names,
+  idea/advisor/spirit tokens, country TAGs, cosmetic tags — which §5 already says the stream
+  carries as varint manifest ids; and because `ContentId` is a legal key kind (§7.4), the same
+  rule fixes their string-**keyed** collections with no new shape. It resolves every field
+  kind in all four: d18 outright, d12 apart from its completed-focus occurrence list, d15's
+  country row (already representable today) and its advisor-detail fields, and every
+  content-token field of d14. What it leaves are residuals of two other kinds. *Shape:*
+  d14's `country_idea` and d15's `advisor_detail` both have unproven key uniqueness — the
+  folds reject no duplicate and the only corpus has zero rows of either — so each may yet be
+  an occurrence list; d14's `party_popularity` and `country_law` are settled, as is d15's
+  country row. *Representation:* `politics_country` would still be missing `leader_name`. **A string kind is not the mechanism these domains need.** The one genuine
+  string-kind candidate in all four is `leader_name`, a rendered display name on 174 rows that
+  carry no leader token at all: it needs a portable character-id-to-name authority (the row
+  does carry a numeric `char_id`) or a string kind. Another of the reports' strings needs
+  nothing new at all — d15's `last_election` is an `i32` datehour the collector renders to text
+  and which stays numeric.
+
+  **d18 is better read as the container's symbol-table feed than as a domain block.** It *is*
+  the country
+  TAG-to-symbol binding, and its access pattern is a container artefact's: the roster is
+  perfectly static (0 changed rows over 902 transitions) and its CIM1 extension changes twice
+  in 903 hours — mint once, never revise. Written as a domain block it would instead be a
+  block every reader of every other domain must decode first, which is the objection §8
+  already makes about gaps.
+
+- **Unimplemented collection shapes now have measured demand (§7.3).**
+  `OrderedOccurrenceList` has **four measured instances** — d16's `timed_live`, whose fold
+  pushes identical timed rows onto a country's array in source order without upsert, dedup or
+  sort; d56 naval supremacy; d64 delayed events; and d12's completed-focus set, where
+  duplicates are measured in the corpus. One further ordered array survives the ordinal device
+  and stops: d11's `convoy_priority_reservations`, where 2,633 consecutive samples are pure
+  reorders of an identical `{priority, count}` multiset, so no carried field recovers the
+  order — an `OrderedKeyedList` if `priority`'s observed per-country uniqueness holds in
+  general, an `OrderedOccurrenceList` if not, since the fold checks neither. All of these
+  shapes are full-replacement-only and none is implemented, so each instance stops a
+  collection today.
+
+- **Gaps below the whole domain: three measured instances, and two of them need a scope §8
+  does not have.** d26's `sparse_partial` marks a *domain-hour* unknown, which §8's
+  `(domain, part)` record already expresses — it needs the implementation and nothing more
+  (wave 1, above). The other two need a narrower scope as well: d17's war graph needs "this
+  collection's membership was not measured this hour", the state of **903 of 903** captured
+  hours, and gapping it under §8 as written would gap d17's countries collection too, which
+  measured fine; and d18's CIM1 extension carries three independent per-family availability
+  words inside one record, with the cores family unavailable across the entire capture while
+  claims and major status are not. A keyed set can mark a *row* unknown and §8 can gap a whole
+  domain; there is nothing in between. The symbol rule does not touch either of those two —
+  d17's war graph and d18's CIM1 families need this mechanism whatever §5 lands.
+
+- **Frame-level scalars have no home.** `elapsed_wall_ms`, the frame's own hour, source
+  sequence numbers, authority hashes and receipt words are facts about a frame, not about any
+  row, and §3's record grammar has nowhere to put them. Ported domains do one of three things
+  with them, and none of the three is a wire representation: parse and expose them at the
+  boundary where they never reach a record (d63, d34 — the header word is read, tested and
+  dropped); enforce them as invariants and keep them off the wire (d83's four authority hashes
+  are constants on every acceptable frame); or refuse the frame when the fact cannot be
+  checked (d13 refuses A29-bearing streams whose digest clauses it cannot evaluate). d83 makes
+  it acute: every scalar in its header is either an invariant or unrepresentable, so a capture
+  in which one of them legitimately varied would have nowhere to record it.
 - **Golden vectors.** Byte-exact round-trip fixtures written with the reference domain are what
   turn "two implementers produce identical bytes" from a claim into a gate. The set covers every
   state in §3, the escape branches in §6, insert-versus-update and the minimality rules in §7.1,
