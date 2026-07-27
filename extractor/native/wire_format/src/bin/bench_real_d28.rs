@@ -51,10 +51,18 @@
 //!
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
-//! full authority, and it additionally checks FRAME_END seal fields and
-//! DOMAIN_PERF domain accounting. This crate cannot depend on `recorder_host`
-//! (it pulls in every capture lane), so the subset is enforced here and the full
-//! check remains the recorder's.
+//! full authority. The five-check sweep adds FRAME_END seal validation
+//! (`stream_fold.rs:46`-`:89`, sited at `:401`-`:409`), DOMAIN_PERF hour binding
+//! (`:328`-`:365`) and seal count accounting (`:411`-`:419`), the DATA arm's
+//! pending-PERF rule (`:378`-`:386`), and caller-stated identity mode (`:220`).
+//!
+//! It also runs d28's status-independent payload authority on every record.
+//! `decode_compact_oob_command_data_payload`
+//! (`domain_data_authority.rs:5655`-`:6047`) checks exact/header counts and the
+//! member cap, then every command's kind/id/flags, optional-id gates and ranges,
+//! deletion zero-pack, statuses, member agreement and reserved word, followed by
+//! every member id/reserved word. [`check_authority_payload`] supplies what the
+//! pre-exclusion header read did not. Injective member ownership stays fold-only.
 //!
 //! **Which hours are measured.** `fold_oob_command` has four paths on which a
 //! d28 record folds nothing and the retained accumulator stands, and their
@@ -103,16 +111,16 @@
 //! It also prints the real churn surface (changed rows and tombstones per hour
 //! at stored precision, per collection).
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::ops::Range;
 
-use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
-use compact_contract::stream_validator::StatefulStreamValidator;
+use compact_contract::stream_validator::{StatefulStreamValidator, StreamIdentityMode};
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance,
-    compact_status_unknown_flags_v1, expected_partial_tolerance_applies,
-    parse_compact_record_header, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA,
+    compact_status_failure_flags_after_expected_partial_tolerance, compact_status_unknown_flags_v1,
+    expected_partial_tolerance_applies, parse_compact_record_header, COMPACT_FRAME_END_PAYLOAD_LEN,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedDelta,
@@ -123,6 +131,241 @@ use wire_format::Schema;
 
 const D28: u16 = 28;
 const BLOCK_HOURS: usize = 48;
+const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+const PROBE_DOMAIN_ID: u16 = 250;
+
+fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
+    if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: payload length {} is not \
+             {COMPACT_FRAME_END_PAYLOAD_LEN}",
+            payload.len()
+        ));
+    }
+    let emitted_domains = u32::from_le_bytes(payload[16..20].try_into().expect("4 bytes"));
+    let scheduled_domains = u32::from_le_bytes(payload[20..24].try_into().expect("4 bytes"));
+    let status_flags = u32::from_le_bytes(payload[24..28].try_into().expect("4 bytes"));
+    let reserved = u32::from_le_bytes(payload[28..32].try_into().expect("4 bytes"));
+    if reserved != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: reserved word is nonzero \
+             ({reserved:#010x})"
+        ));
+    }
+    if emitted_domains != scheduled_domains {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: emitted domain count \
+             {emitted_domains} does not match scheduled domain count {scheduled_domains}"
+        ));
+    }
+    let unknown = status_flags & !FRAME_END_KNOWN_STATUS_MASK;
+    if unknown != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: status flags {status_flags:#010x} \
+             contain unknown bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status_flags & COMPACT_STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: status flags {status_flags:#010x} \
+             contain fatal bits {fatal:#010x}"
+        ));
+    }
+    Ok((emitted_domains, scheduled_domains))
+}
+
+/// Status-independent d28 payload certification from
+/// `domain_data_authority.rs:5655`-`:6047`.
+fn check_authority_payload(payload: &[u8], at_byte: usize) -> Result<(), String> {
+    let (header, rows, members) =
+        d28::split_payload(payload).map_err(|e| format!("d28 authority at byte {at_byte}: {e}"))?;
+    if header.member_count as usize > 250_000 {
+        return Err(format!(
+            "d28 authority at byte {at_byte}: member count {} exceeds 250000",
+            header.member_count
+        ));
+    }
+    if header.observed_army_rows > header.root_rows {
+        return Err(format!(
+            "d28 authority at byte {at_byte}: observed army rows {} > root rows {}",
+            header.observed_army_rows, header.root_rows
+        ));
+    }
+    let u32_at = |bytes: &[u8], at: usize| {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
+    };
+    let valid_id = |value: u32| value > 0 && value <= 4_000_000;
+    let mut seen = BTreeSet::new();
+    let mut declared_members = 0usize;
+    for (row_index, row) in rows.chunks_exact(d28::ROW_LEN).enumerate() {
+        let kind = u32_at(row, 0);
+        let object_id = u32_at(row, 4);
+        let flags = u32_at(row, 8);
+        let parent_id = u32_at(row, 12);
+        let owner_id = u32_at(row, 16);
+        let leader_id = u32_at(row, 20);
+        let leader_skill = u32_at(row, 24);
+        let member_first = u32_at(row, 28) as usize;
+        let row_member_count = u32_at(row, 32) as usize;
+        let logical_member_count = u32_at(row, 36) as usize;
+        let member_count_engine = u32_at(row, 40);
+        let missing_member_count = u32_at(row, 44);
+        let leader_trait_count = u32_at(row, 48);
+        let statuses = [
+            u32_at(row, 52),
+            u32_at(row, 56),
+            u32_at(row, 60),
+            u32_at(row, 64),
+            u32_at(row, 68),
+        ];
+        let location = u32_at(row, 72);
+        let reserved = u32_at(row, 76);
+        let deleted = flags & d28::FLAG_DELETED != 0;
+
+        if !matches!(
+            kind,
+            d28::KIND_ARMY | d28::KIND_ARMY_GROUP | d28::KIND_FLEET | d28::KIND_TASK_FORCE
+        ) {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if !valid_id(object_id) {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has invalid object id {object_id}"
+            ));
+        }
+        if !seen.insert((kind, object_id, deleted)) {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} duplicates object"
+            ));
+        }
+        if flags & !d28::KNOWN_FLAGS != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has unknown flags {flags:#x}"
+            ));
+        }
+        if deleted
+            && (parent_id != 0
+                || owner_id != 0
+                || leader_id != 0
+                || leader_skill != 0
+                || row_member_count != 0
+                || logical_member_count != 0
+                || member_count_engine != 0
+                || missing_member_count != 0
+                || leader_trait_count != 0
+                || location != 0)
+        {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: deleted row {row_index} has live fields"
+            ));
+        }
+        for (flag, value, name) in [
+            (d28::FLAG_PARENT, parent_id, "parent"),
+            (d28::FLAG_OWNER, owner_id, "owner"),
+            (d28::FLAG_LEADER, leader_id, "leader"),
+        ] {
+            if flags & flag != 0 {
+                if !valid_id(value) {
+                    return Err(format!(
+                        "d28 authority at byte {at_byte}: row {row_index} has invalid {name} id {value}"
+                    ));
+                }
+            } else if value != 0 {
+                return Err(format!(
+                    "d28 authority at byte {at_byte}: row {row_index} has {name} id without flag"
+                ));
+            }
+        }
+        if flags & d28::FLAG_LOCATION != 0 {
+            if location == 0 || location > 1_000_000 {
+                return Err(format!(
+                    "d28 authority at byte {at_byte}: row {row_index} has invalid location {location}"
+                ));
+            }
+        } else if location != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has location without flag"
+            ));
+        }
+        if flags & d28::FLAG_LEADER_SKILL != 0 {
+            if leader_skill > 15 {
+                return Err(format!(
+                    "d28 authority at byte {at_byte}: row {row_index} has invalid leader skill {leader_skill}"
+                ));
+            }
+        } else if leader_skill != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has leader skill without flag"
+            ));
+        }
+        if flags & d28::FLAG_MEMBER_COUNT_ENGINE == 0 && member_count_engine != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has engine count without flag"
+            ));
+        }
+        if flags & d28::FLAG_MISSING_MEMBER_COUNT == 0 && missing_member_count != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has missing count without flag"
+            ));
+        }
+        if statuses.iter().any(|status| *status > 5) {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} has invalid status"
+            ));
+        }
+        if row_member_count == 0 {
+            if member_first != 0 {
+                return Err(format!(
+                    "d28 authority at byte {at_byte}: row {row_index} has member first without members"
+                ));
+            }
+        } else {
+            let end = member_first.checked_add(row_member_count).ok_or_else(|| {
+                format!("d28 authority at byte {at_byte}: row {row_index} member range overflows")
+            })?;
+            if end > header.member_count as usize {
+                return Err(format!(
+                    "d28 authority at byte {at_byte}: row {row_index} member range exceeds {}",
+                    header.member_count
+                ));
+            }
+            declared_members = declared_members.saturating_add(row_member_count);
+        }
+        if statuses[1] != 3 && row_member_count != logical_member_count {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} physical/logical member mismatch"
+            ));
+        }
+        if reserved != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+    if declared_members != header.member_count as usize {
+        return Err(format!(
+            "d28 authority at byte {at_byte}: member count {} != declared {declared_members}",
+            header.member_count
+        ));
+    }
+    for (row_index, row) in members.chunks_exact(d28::MEMBER_ROW_LEN).enumerate() {
+        let member_id = u32_at(row, 0);
+        if !valid_id(member_id) {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: member row {row_index} has invalid id {member_id}"
+            ));
+        }
+        if u32_at(row, 4) != 0 {
+            return Err(format!(
+                "d28 authority at byte {at_byte}: member row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// One usable d28 hour: its game hour, its byte span in the source stream (the
 /// shipping arm is those bytes verbatim, header included), the payload span the
@@ -191,25 +434,19 @@ struct StreamScan {
 /// Validate the whole stream against the canonical contract and fold every
 /// usable d28 DATA record. Every rejection path is an `Err`, never a silently
 /// shorter measurement and never a panic.
-fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
+fn scan_stream(
+    stream: &[u8],
+    schema: &Schema,
+    identity_mode: StreamIdentityMode,
+) -> Result<StreamScan, String> {
     let commands = &schema.collections[0];
     let members = &schema.collections[1];
 
-    // `StatefulStreamValidator` deliberately never sniffs a payload to pick a
-    // protocol, so the harness picks one explicitly from the FIRST RECORD'S
-    // FRAMING HEADER: an identity-bearing stream opens with the CID1 record at
-    // `(sequence, domain, type) = (0, 0, 4)`
-    // (`compact_contract/src/stream_validator.rs:104`), and anything else is
-    // legacy, whose first ordinary record is sequence 1. A wrong guess does not
-    // degrade to a lenient read — the validator rejects the very first record.
-    let first = parse_compact_record_header(stream).map_err(|e| format!("first record: {e}"))?;
-    let mut validator = if first.sequence == 0
-        && first.domain_id == 0
-        && first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER
-    {
-        StatefulStreamValidator::identity_v1()
-    } else {
-        StatefulStreamValidator::legacy()
+    // Identity mode is stated by the caller, never inferred from bytes. A
+    // decapitated IdentityV1 stream otherwise looks exactly like legacy.
+    let mut validator = match identity_mode {
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
 
     let mut hours: Vec<D28Hour> = Vec::new();
@@ -218,6 +455,8 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
     let mut open_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d28 DATA record of ANY status — the uniqueness rule.
     let mut last_d28_hour: Option<i32> = None;
     // Hour of the last d28 record that entered the measurement — the contiguity
@@ -252,6 +491,48 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
 
         // The hour-boundary subset of `BoundaryTracker::observe`.
         match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                if header.domain_id != PROBE_DOMAIN_ID
+                    && !non_probe_perf_domains.insert(header.domain_id)
+                {
+                    return Err(format!(
+                        "duplicate DOMAIN_PERF for domain {} in hour {} at byte {pos}",
+                        header.domain_id, header.game_hour_raw
+                    ));
+                }
+                match open_hour {
+                    Some(open) if open != header.game_hour_raw => {
+                        return Err(format!(
+                            "hour interleaving at byte {pos}: DOMAIN_PERF for hour {} while \
+                             hour {open} is still open",
+                            header.game_hour_raw
+                        ))
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(last_closed) = last_closed_hour {
+                            if header.game_hour_raw <= last_closed {
+                                return Err(format!(
+                                    "non-monotonic DOMAIN_PERF at byte {pos}: closed hour \
+                                     {last_closed}, then {}",
+                                    header.game_hour_raw
+                                ));
+                            }
+                        }
+                        match pending_perf_hour {
+                            Some(pending) if pending != header.game_hour_raw => {
+                                return Err(format!(
+                                    "PERF hour conflict at byte {pos}: pending hour {pending}, \
+                                     then {}",
+                                    header.game_hour_raw
+                                ))
+                            }
+                            Some(_) => {}
+                            None => pending_perf_hour = Some(header.game_hour_raw),
+                        }
+                    }
+                }
+            }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => match open_hour {
                 Some(open) if open != header.game_hour_raw => {
                     return Err(format!(
@@ -261,6 +542,15 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                 }
                 Some(_) => {}
                 None => {
+                    if let Some(pending) = pending_perf_hour {
+                        if pending != header.game_hour_raw {
+                            return Err(format!(
+                                "DATA hour conflict at byte {pos}: pending PERF hour {pending}, \
+                                 then DATA hour {}",
+                                header.game_hour_raw
+                            ));
+                        }
+                    }
                     if let Some(last_closed) = last_closed_hour {
                         if header.game_hour_raw <= last_closed {
                             return Err(format!(
@@ -274,6 +564,15 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                 }
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
+                let (emitted_domains, scheduled_domains) = check_frame_end_seal(payload, pos)?;
+                let observed = non_probe_perf_domains.len().min(u32::MAX as usize) as u32;
+                if observed != emitted_domains || observed != scheduled_domains {
+                    return Err(format!(
+                        "FRAME_END domain counts at byte {pos} claim emitted={emitted_domains} \
+                         scheduled={scheduled_domains}, but observed {observed} unique \
+                         non-probe DOMAIN_PERF domains"
+                    ));
+                }
                 match open_hour {
                     Some(open) if open == header.game_hour_raw => {}
                     Some(open) => {
@@ -300,6 +599,8 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                     }
                 }
                 open_hour = None;
+                pending_perf_hour = None;
+                non_probe_perf_domains.clear();
                 last_closed_hour = Some(header.game_hour_raw);
             }
             _ => {}
@@ -352,6 +653,8 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                     header.game_hour_raw
                 ));
             }
+
+            check_authority_payload(payload, pos)?;
 
             // The fold's classification, from `compact_contract`'s predicates —
             // never a hand-copied mask literal, so it cannot drift from the
@@ -463,20 +766,23 @@ fn census_member_order(payload: &[u8], counts: &mut ScanCounts) -> Result<(), St
 }
 
 fn main() {
+    const USAGE: &str =
+        "usage: bench_real_d28 <collector_stream.bin> <out dir> [legacy|identity-v1]";
     let mut args = std::env::args().skip(1);
-    let input = args
-        .next()
-        .expect("usage: bench_real_d28 <collector_stream.bin> <out dir>");
-    let out_dir = args
-        .next()
-        .expect("usage: bench_real_d28 <collector_stream.bin> <out dir>");
+    let input = args.next().expect(USAGE);
+    let out_dir = args.next().expect(USAGE);
+    let identity_mode = match args.next().as_deref() {
+        None | Some("legacy") => StreamIdentityMode::Legacy,
+        Some("identity-v1") => StreamIdentityMode::IdentityV1,
+        Some(other) => panic!("unknown identity mode {other:?}; {USAGE}"),
+    };
     let stream = std::fs::read(&input).expect("read stream");
     let schema = d28::schema();
 
     // ---- Pass 1: validate the WHOLE stream and fold its d28 DATA records. ---
     // No artifact is created before this succeeds, so a refused stream leaves no
     // partial measurement behind to be mistaken for a result.
-    let scan = match scan_stream(&stream, &schema) {
+    let scan = match scan_stream(&stream, &schema, identity_mode) {
         Ok(scan) => scan,
         Err(reason) => {
             eprintln!("{input}: {reason}");
@@ -689,6 +995,10 @@ mod tests {
         d28::schema()
     }
 
+    fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
+        super::scan_stream(stream, schema, StreamIdentityMode::Legacy)
+    }
+
     /// Build one H4CR record the way the recorder frames it
     /// (`compact_contract/src/record_header.rs:60`).
     fn record(sequence: u64, game_hour: i32, domain: u16, kind: u16, payload: &[u8]) -> Vec<u8> {
@@ -713,6 +1023,38 @@ mod tests {
             COMPACT_DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_END,
             &vec![0u8; COMPACT_FRAME_END_PAYLOAD_LEN],
+        )
+    }
+
+    fn perf(sequence: u64, game_hour: i32, domain: u16) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &vec![0u8; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN],
+        )
+    }
+
+    fn frame_end_sealed(
+        sequence: u64,
+        game_hour: i32,
+        emitted: u32,
+        scheduled: u32,
+        status: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
+        let mut payload = vec![0u8; 16];
+        payload.extend_from_slice(&emitted.to_le_bytes());
+        payload.extend_from_slice(&scheduled.to_le_bytes());
+        payload.extend_from_slice(&status.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
+        record(
+            sequence,
+            game_hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &payload,
         )
     }
 
@@ -764,6 +1106,24 @@ mod tests {
         p
     }
 
+    fn data(sequence: u64, game_hour: i32, status: u32) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            D28,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d28_payload(status, 7, &[1]),
+        )
+    }
+
+    fn scan_default(stream: &[u8]) -> Result<StreamScan, String> {
+        scan_stream(stream, &schema())
+    }
+
+    fn scan_mode(stream: &[u8], mode: StreamIdentityMode) -> Result<StreamScan, String> {
+        super::scan_stream(stream, &schema(), mode)
+    }
+
     /// Two closed hours, each carrying one d28 DATA record.
     fn good_stream() -> Vec<u8> {
         let mut s = Vec::new();
@@ -797,6 +1157,211 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
+        let mut ok = data(1, 100, 0);
+        ok.extend(frame_end_sealed(2, 100, 0, 0, 0, 0));
+        assert!(scan_default(&ok).is_ok());
+        let mut bad = vec![
+            frame_end_sealed(2, 100, 0, 1, 0, 0),
+            frame_end_sealed(2, 100, 1, 0, 0, 0),
+            frame_end_sealed(2, 100, 0, 0, 0, 1),
+        ];
+        for bit in 14..32 {
+            bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
+        }
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
+        }
+        for seal in bad {
+            let mut stream = data(1, 100, 0);
+            stream.extend(seal);
+            assert!(scan_default(&stream).is_err());
+        }
+        for len in [0usize, 1, 16, 31, 33, 64] {
+            let mut stream = data(1, 100, 0);
+            stream.extend(record(
+                2,
+                100,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &vec![0; len],
+            ));
+            assert!(scan_default(&stream).is_err(), "seal length {len}");
+        }
+        for status in [1 << 4, 1 << 5, 1 << 10, 1 << 11, 1 << 13] {
+            let mut stream = data(1, 100, 0);
+            stream.extend(frame_end_sealed(2, 100, 0, 0, status, 0));
+            assert!(scan_default(&stream).is_ok(), "status {status:#x}");
+        }
+    }
+
+    #[test]
+    fn perf_hour_binding_is_enforced() {
+        let mut ok = perf(1, 100, 20);
+        ok.extend(perf(2, 100, PROBE_DOMAIN_ID));
+        ok.extend(perf(3, 100, PROBE_DOMAIN_ID));
+        ok.extend(data(4, 100, 0));
+        ok.extend(frame_end_sealed(5, 100, 1, 1, 0, 0));
+        assert!(scan_default(&ok).is_ok());
+        let mut duplicate = perf(1, 100, 20);
+        duplicate.extend(perf(2, 100, 20));
+        duplicate.extend(data(3, 100, 0));
+        duplicate.extend(frame_end_sealed(4, 100, 1, 1, 0, 0));
+        assert!(scan_default(&duplicate).is_err());
+        let mut interleaved = data(1, 100, 0);
+        interleaved.extend(perf(2, 101, 20));
+        interleaved.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        assert!(scan_default(&interleaved).is_err());
+        let mut stale = data(1, 100, 0);
+        stale.extend(frame_end(2, 100));
+        stale.extend(perf(3, 100, 20));
+        stale.extend(data(4, 101, 0));
+        stale.extend(frame_end_sealed(5, 101, 1, 1, 0, 0));
+        assert!(scan_default(&stale).is_err());
+        let mut conflict = perf(1, 100, 20);
+        conflict.extend(perf(2, 101, 21));
+        conflict.extend(data(3, 100, 0));
+        conflict.extend(frame_end_sealed(4, 100, 2, 2, 0, 0));
+        assert!(scan_default(&conflict).is_err());
+        for (emitted, scheduled) in [(0, 0), (2, 2), (1, 2), (2, 1)] {
+            let mut stream = perf(1, 100, 20);
+            stream.extend(data(2, 100, 0));
+            stream.extend(frame_end_sealed(3, 100, emitted, scheduled, 0, 0));
+            assert!(scan_default(&stream).is_err());
+        }
+        let mut two_hours = perf(1, 100, 20);
+        two_hours.extend(data(2, 100, 0));
+        two_hours.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        two_hours.extend(perf(4, 101, 20));
+        two_hours.extend(data(5, 101, 0));
+        two_hours.extend(frame_end_sealed(6, 101, 1, 1, 0, 0));
+        assert!(scan_default(&two_hours).is_ok());
+    }
+
+    #[test]
+    fn a_data_record_must_open_the_hour_the_pending_perf_records_bound() {
+        for (perf_hour, data_hour) in [(100, 101), (101, 100), (100, 200), (200, 100)] {
+            let mut stream = perf(1, perf_hour, 20);
+            stream.extend(data(2, data_hour, 0));
+            stream.extend(frame_end_sealed(3, data_hour, 1, 1, 0, 0));
+            assert!(scan_default(&stream).is_err());
+        }
+        let mut agreeing = perf(1, 100, 20);
+        agreeing.extend(data(2, 100, 0));
+        agreeing.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        assert!(scan_default(&agreeing).is_ok());
+    }
+
+    #[test]
+    fn an_excluded_record_is_still_checked_by_the_payload_authority() {
+        const FAILED: u32 = 1;
+        let mut bad_payloads = Vec::new();
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad.pop();
+        bad_payloads.push(bad);
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad[24..28].copy_from_slice(&1u32.to_le_bytes());
+        bad_payloads.push(bad);
+        bad_payloads.push(d28_payload(FAILED, 0, &[1]));
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad[d28::HEADER_LEN + 8..d28::HEADER_LEN + 12].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        bad_payloads.push(bad);
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad[d28::HEADER_LEN + 16..d28::HEADER_LEN + 20]
+            .copy_from_slice(&4_000_001u32.to_le_bytes());
+        bad_payloads.push(bad);
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad[d28::HEADER_LEN + 24..d28::HEADER_LEN + 28].copy_from_slice(&1u32.to_le_bytes());
+        bad_payloads.push(bad);
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad[d28::HEADER_LEN + 52..d28::HEADER_LEN + 56].copy_from_slice(&6u32.to_le_bytes());
+        bad_payloads.push(bad);
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        bad[d28::HEADER_LEN + 76..d28::HEADER_LEN + 80].copy_from_slice(&1u32.to_le_bytes());
+        bad_payloads.push(bad);
+        let bad = d28_payload(FAILED, 7, &[4_000_001]);
+        bad_payloads.push(bad);
+        let mut bad = d28_payload(FAILED, 7, &[1]);
+        let member_reserved = d28::HEADER_LEN + d28::ROW_LEN + 4;
+        bad[member_reserved..member_reserved + 4].copy_from_slice(&1u32.to_le_bytes());
+        bad_payloads.push(bad);
+        let mut duplicate = d28_payload(FAILED, 7, &[]);
+        let row = duplicate[d28::HEADER_LEN..d28::HEADER_LEN + d28::ROW_LEN].to_vec();
+        duplicate.extend_from_slice(&row);
+        duplicate[8..12].copy_from_slice(&2u32.to_le_bytes());
+        duplicate[12..16].copy_from_slice(&2u32.to_le_bytes());
+        bad_payloads.push(duplicate);
+
+        // Every bad payload rides in a stream that WOULD otherwise measure: a
+        // second, well-formed hour follows it. Without that trailing hour the
+        // scan refuses for an unrelated reason — "no usable d28 DATA records" —
+        // and the assertion would hold with `check_authority_payload` deleted,
+        // which is a test that cannot fail for its own cause.
+        for payload in bad_payloads {
+            let mut stream = record(1, 100, D28, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload);
+            stream.extend(frame_end(2, 100));
+            stream.extend(data(3, 101, 0));
+            stream.extend(frame_end(4, 101));
+            assert!(scan_default(&stream).is_err());
+        }
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            let payload = d28_payload(1 << bit, 0, &[1]);
+            let mut stream = record(1, 100, D28, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload);
+            stream.extend(frame_end(2, 100));
+            stream.extend(data(3, 101, 0));
+            stream.extend(frame_end(4, 101));
+            assert!(scan_default(&stream).is_err(), "failure bit {bit}");
+        }
+
+        let mut well_formed = data(1, 100, FAILED);
+        well_formed.extend(frame_end(2, 100));
+        well_formed.extend(data(3, 101, 0));
+        well_formed.extend(frame_end(4, 101));
+        let scan = scan_default(&well_formed).expect("well-formed exclusion");
+        assert_eq!(scan.counts.failure_records, 1);
+        assert_eq!(scan.hours.len(), 1);
+
+        // Overlapping member ranges are a fold-only frame rule. The authority
+        // counts declared members but does not claim each member index.
+        let base = d28_payload(FAILED, 7, &[1, 2]);
+        let header = &base[..d28::HEADER_LEN];
+        let mut row1 = base[d28::HEADER_LEN..d28::HEADER_LEN + d28::ROW_LEN].to_vec();
+        row1[32..36].copy_from_slice(&1u32.to_le_bytes());
+        row1[36..40].copy_from_slice(&1u32.to_le_bytes());
+        let mut row2 = row1.clone();
+        row2[4..8].copy_from_slice(&8u32.to_le_bytes());
+        let members = &base[d28::HEADER_LEN + d28::ROW_LEN..];
+        let mut fold_only = header.to_vec();
+        fold_only[8..12].copy_from_slice(&2u32.to_le_bytes());
+        fold_only[12..16].copy_from_slice(&2u32.to_le_bytes());
+        fold_only.extend(row1);
+        fold_only.extend(row2);
+        fold_only.extend_from_slice(members);
+        let mut stream = record(1, 100, D28, COMPACT_RECORD_TYPE_DOMAIN_DATA, &fold_only);
+        stream.extend(frame_end(2, 100));
+        stream.extend(data(3, 101, 0));
+        stream.extend(frame_end(4, 101));
+        assert!(scan_default(&stream).is_ok());
+    }
+
+    #[test]
+    fn the_identity_protocol_is_stated_not_sniffed() {
+        use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
+        let legacy = good_stream();
+        assert!(scan_mode(&legacy, StreamIdentityMode::IdentityV1).is_err());
+        assert!(scan_mode(&legacy, StreamIdentityMode::Legacy).is_ok());
+        let mut identity = record(
+            0,
+            0,
+            0,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+            b"CID1-not-a-real-identity-payload",
+        );
+        identity.extend(legacy);
+        assert!(scan_mode(&identity, StreamIdentityMode::Legacy).is_err());
+    }
+
+    #[test]
     fn a_well_formed_stream_yields_its_d28_hours() {
         let scan = scan_stream(&good_stream(), &schema()).expect("accepted");
         assert_eq!(scan.hours.len(), 2);
@@ -824,7 +1389,12 @@ mod tests {
             // informational DELTA_DATA bit, and combined with the one failure bit
             // d28 tolerates (PARTIAL_DATA). The rejection must not depend on any
             // of it, nor on whether a baseline has been seen.
-            for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_PARTIAL_DATA] {
+            for extra in [
+                0u32,
+                1,
+                COMPACT_STATUS_DELTA_DATA,
+                COMPACT_STATUS_PARTIAL_DATA,
+            ] {
                 let mut first = Vec::new();
                 first.extend(record(
                     1,
@@ -865,7 +1435,13 @@ mod tests {
         // the check must reject unassigned bits and nothing else. DELTA_DATA is
         // the one d28 itself reads; PARTIAL_DATA's tolerated withhold path has its
         // own tests.
-        for informational in [1u32 << 4, 1 << 5, COMPACT_STATUS_DELTA_DATA, 1 << 11, 1 << 13] {
+        for informational in [
+            1u32 << 4,
+            1 << 5,
+            COMPACT_STATUS_DELTA_DATA,
+            1 << 11,
+            1 << 13,
+        ] {
             let mut s = Vec::new();
             s.extend(record(
                 1,
@@ -934,8 +1510,7 @@ mod tests {
         // and `eof_check` accepts it; refusing it would be wrong.
         for (records, expected_hours) in [(2usize, 1usize), (4, 2)] {
             let cut = boundary(&full, records);
-            let scan =
-                scan_stream(&full[..cut], &schema()).expect("closed stream is well-formed");
+            let scan = scan_stream(&full[..cut], &schema()).expect("closed stream is well-formed");
             assert_eq!(scan.hours.len(), expected_hours, "cut after {records}");
         }
     }
@@ -1211,13 +1786,22 @@ mod tests {
         assert_eq!(scan.counts.delta_before_baseline, 1);
         assert_eq!(scan.hours.len(), 1);
         assert_eq!(scan.hours[0].game_hour, 101);
-        assert!(!scan.hours[0].sparse, "hour 101 is still the first baseline");
+        assert!(
+            !scan.hours[0].sparse,
+            "hour 101 is still the first baseline"
+        );
     }
 
     #[test]
     fn a_stream_with_no_d28_records_is_refused_not_reported_as_zero() {
         let mut s = Vec::new();
-        s.extend(record(1, 100, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[0u8; 8]));
+        s.extend(record(
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[0u8; 8],
+        ));
         s.extend(frame_end(2, 100));
         assert!(scan_stream(&s, &schema()).is_err());
     }
@@ -1228,7 +1812,13 @@ mod tests {
         let mut payload = d28_payload(0, 7, &[1]);
         payload.truncate(payload.len() - 1);
         let mut s = Vec::new();
-        s.extend(record(1, 100, D28, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+        s.extend(record(
+            1,
+            100,
+            D28,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        ));
         s.extend(frame_end(2, 100));
         assert!(scan_stream(&s, &schema()).is_err());
 
@@ -1241,15 +1831,15 @@ mod tests {
         let row = d28::HEADER_LEN;
         let mut broken: Vec<Vec<u8>> = Vec::new();
         for (offset, word) in [
-            (0usize, 99u32),                    // kind
-            (4, 0),                             // object_id
-            (8, d28::FLAG_OWNER | (1 << 20)),   // unknown flag bit
-            (24, 5),                            // leader_skill without its flag
-            (72, 5),                            // location without its flag
-            (76, 1),                            // reserved
-            (52, d28::STATUS_CARDINALITY),      // parent_status out of vocabulary
-            (68, d28::STATUS_CARDINALITY + 1),  // leader_trait_status likewise
-            (48, 3),                            // leader_trait_count without EXACT
+            (0usize, 99u32),                   // kind
+            (4, 0),                            // object_id
+            (8, d28::FLAG_OWNER | (1 << 20)),  // unknown flag bit
+            (24, 5),                           // leader_skill without its flag
+            (72, 5),                           // location without its flag
+            (76, 1),                           // reserved
+            (52, d28::STATUS_CARDINALITY),     // parent_status out of vocabulary
+            (68, d28::STATUS_CARDINALITY + 1), // leader_trait_status likewise
+            (48, 3),                           // leader_trait_count without EXACT
         ] {
             let mut p = d28_payload(0, 7, &[1]);
             p[row + offset..row + offset + 4].copy_from_slice(&word.to_le_bytes());
@@ -1267,7 +1857,13 @@ mod tests {
         broken.push(p);
         for (i, payload) in broken.into_iter().enumerate() {
             let mut s = Vec::new();
-            s.extend(record(1, 100, D28, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+            s.extend(record(
+                1,
+                100,
+                D28,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            ));
             s.extend(frame_end(2, 100));
             assert!(
                 scan_stream(&s, &schema()).is_err(),

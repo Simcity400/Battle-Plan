@@ -134,8 +134,36 @@ pub const SCALE_DIGITS: u8 = 5;
 /// `amount_raw` is an `i64` (`world_fold.rs:15372`) and `Value::Continuous` is a
 /// binary64, so the pair is exact only while the round trip
 /// `round_ties_even((raw / 10^5) * 10^5)` returns `raw`. That holds for every
-/// `|raw| <= 2^51` and first fails inside `2^52` (measured — the test sweeps the
-/// top of this band densely, and `2^52` is the first exponent with failures).
+/// `|raw| <= 2^51` on every magnitude
+/// `fixed_five_reproduces_every_raw_in_the_band` tries.
+///
+/// **What that test is, stated exactly, because the distinction is the whole
+/// point of this paragraph.** It is a SAMPLE, not an enumeration: the edges, one
+/// value per decade, the 2,000 magnitudes immediately below the band's top, and
+/// 20,000 deterministic pseudorandom draws from `0..=2^51`. Two quadrillion
+/// integers are not enumerable, so the honest statement is "no failure was found
+/// at or below `2^51`", and this constant is published on that evidence.
+///
+/// **An earlier draft said the round trip "first fails inside `2^52`" (measured).
+/// That claim is withdrawn**: the test skips every `|raw|` above
+/// `EXACT_AMOUNT_RAW_BAND` outright, so it cannot locate the first failure, and
+/// nothing else here measures one.
+///
+/// **The maximal exact band is not claimed at all, in either direction.** The
+/// arithmetic is not domain-specific — it is `quantize(raw as f64 / 10^5,
+/// Fixed(5))`, the same function over the same grid as d38's `amount_raw` — so
+/// d38's witness carries over: `d38::FIRST_KNOWN_INEXACT_AMOUNT_RAW`,
+/// `3_435_973_836_800_005`, does not survive the round trip, while its
+/// predecessor does (`d38.rs`'s own
+/// `fixed_five_reproduces_every_raw_in_the_band`). That is one *existence*
+/// witness roughly 52.6% above this constant. It does NOT establish that it is
+/// the smallest failing magnitude, and neither test establishes that the exact
+/// magnitudes form a contiguous run — so "the exact band ends at X" is not a
+/// statement either file is entitled to make. Nothing gates on any of these
+/// numbers — the mapper maps every `i64` the fold maps — which is why the
+/// conservative, sampled bound is the safe one to publish and the sharper one is
+/// left unstated.
+///
 /// Above the band the stored value is still a legal point of the declared
 /// `10^-5` grid and still within one unit in the last place of the source, and
 /// encode/decode remains exactly consistent (§6's escape rule keeps an unstable
@@ -951,12 +979,11 @@ mod tests {
 
     #[test]
     fn fixed_five_reproduces_every_raw_in_the_band() {
-        // The Fixed(5)-vs-Exact defence, as an executable claim: over the whole
-        // accepted `amount_raw` band, `quantize(raw / 10^5)` returns `raw`
-        // unchanged — nothing is rounded, and the raw integer the fold's own
-        // renderer emits beside the scaled value (`world_fold.rs:8750`) survives
-        // the wire. Edges, decades, and a deterministic sweep of the top of the
-        // band, where the property fails first.
+        // The Fixed(5)-vs-Exact defence, as an executable claim: on every
+        // `amount_raw` magnitude tried at or below `EXACT_AMOUNT_RAW_BAND`,
+        // `quantize(raw / 10^5)` returns `raw` unchanged — nothing is rounded,
+        // and the raw integer the fold's own renderer emits beside the scaled
+        // value (`world_fold.rs:8750`) survives the wire.
         let q = Quant::Fixed(SCALE_DIGITS);
         let mut raws: Vec<i64> = vec![0, 1, -1, 5, 99_999, 100_000, 100_001, 10_100_000];
         for decade in 0..16u32 {

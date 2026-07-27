@@ -45,19 +45,27 @@
 //!
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
-//! full authority, and it additionally checks FRAME_END seal fields and
-//! DOMAIN_PERF domain accounting. This crate cannot depend on `recorder_host` (it
-//! pulls in every capture lane), so the subset is enforced here and the full
-//! check remains the recorder's. The subset covers every condition under which
-//! this harness would otherwise report a number for a stream it should refuse.
+//! full authority. The five-check sweep adds FRAME_END seal validation
+//! (`stream_fold.rs:46`-`:89`, sited at `:401`-`:409`), DOMAIN_PERF hour binding
+//! (`:328`-`:365`) and seal count accounting (`:411`-`:419`), the DATA arm's
+//! pending-PERF rule (`:378`-`:386`), and caller-stated identity mode (`:220`).
+//!
+//! It also runs d31's status-independent payload authority on every record.
+//! `decode_compact_air_region_activity_data_payload`
+//! (`domain_data_authority.rs:6410`-`:6577`) adds exact row walking, bounded
+//! region/owner/count fields, duplicate region-owner-mission rejection, deleted
+//! row zero-pack, legal flags and zero reserved words. Header predicates already
+//! run before exclusion; [`check_authority_payload`] supplies the remaining
+//! length and row predicates. Mission masks intentionally remain unrestricted.
 //!
 //! **The two paths on which `fold_air_region_activity` returns without folding**
 //! are excluded, at the position the fold puts them
 //! (`world_fold.rs:14715`-`:14728`):
 //!
 //! 1. **failure status** — after the header-structural checks and before the
-//!    exact-length check, so `d31::peek_header` runs on EVERY d31 record and
-//!    `d31::split_payload` only on the ones that are folded. The predicate is
+//!    fold's exact-length check, so `d31::peek_header` runs first on every d31
+//!    record. The independent payload authority still runs `d31::split_payload`
+//!    and the authority row checks before this exclusion. The predicate is
 //!    `compact_contract`'s own
 //!    `compact_status_failure_flags_after_expected_partial_tolerance`, never a
 //!    hand-copied bit mask: d31 has no expected-partial tolerance, so the whole
@@ -83,15 +91,16 @@
 //! It also prints the real churn surface (changed rows and tombstones per hour at
 //! stored precision) beside the shipping stream's own changed-row counts.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::ops::Range;
 
-use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
-use compact_contract::stream_validator::StatefulStreamValidator;
+use compact_contract::stream_validator::{StatefulStreamValidator, StreamIdentityMode};
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance,
-    compact_status_unknown_flags_v1, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA,
+    compact_status_failure_flags_after_expected_partial_tolerance, compact_status_unknown_flags_v1,
+    parse_compact_record_header, COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedState,
@@ -100,6 +109,101 @@ use wire_format::d31;
 
 const D31: u16 = 31;
 const BLOCK_HOURS: usize = 48;
+const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+const PROBE_DOMAIN_ID: u16 = 250;
+
+fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
+    if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: payload length {} is not \
+             {COMPACT_FRAME_END_PAYLOAD_LEN}",
+            payload.len()
+        ));
+    }
+    let emitted_domains = u32::from_le_bytes(payload[16..20].try_into().expect("4 bytes"));
+    let scheduled_domains = u32::from_le_bytes(payload[20..24].try_into().expect("4 bytes"));
+    let status_flags = u32::from_le_bytes(payload[24..28].try_into().expect("4 bytes"));
+    let reserved = u32::from_le_bytes(payload[28..32].try_into().expect("4 bytes"));
+    if reserved != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: reserved word is nonzero \
+             ({reserved:#010x})"
+        ));
+    }
+    if emitted_domains != scheduled_domains {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: emitted domain count \
+             {emitted_domains} does not match scheduled domain count {scheduled_domains}"
+        ));
+    }
+    let unknown = status_flags & !FRAME_END_KNOWN_STATUS_MASK;
+    if unknown != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: status flags {status_flags:#010x} \
+             contain unknown bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status_flags & COMPACT_STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: status flags {status_flags:#010x} \
+             contain fatal bits {fatal:#010x}"
+        ));
+    }
+    Ok((emitted_domains, scheduled_domains))
+}
+
+/// Status-independent d31 payload certification from
+/// `domain_data_authority.rs:6410`-`:6577`.
+fn check_authority_payload(payload: &[u8], at_byte: usize) -> Result<(), String> {
+    let (_, rows) =
+        d31::split_payload(payload).map_err(|e| format!("d31 authority at byte {at_byte}: {e}"))?;
+    let mut seen = BTreeSet::new();
+    for (row_index, row) in rows.chunks_exact(d31::ROW_LEN).enumerate() {
+        let parsed = d31::parse_row(row)
+            .map_err(|e| format!("d31 authority at byte {at_byte}: row {row_index}: {e}"))?;
+        if parsed.region_id == 0 || parsed.region_id > 65_535 {
+            return Err(format!(
+                "d31 authority at byte {at_byte}: row {row_index} has invalid region {}",
+                parsed.region_id
+            ));
+        }
+        if parsed.owner_tag_db_id == 0 || parsed.owner_tag_db_id > 1_024 {
+            return Err(format!(
+                "d31 authority at byte {at_byte}: row {row_index} has invalid owner {}",
+                parsed.owner_tag_db_id
+            ));
+        }
+        if !seen.insert((
+            parsed.region_id,
+            parsed.owner_tag_db_id,
+            parsed.mission_mask,
+        )) {
+            return Err(format!(
+                "d31 authority at byte {at_byte}: row {row_index} duplicates region/owner/mission"
+            ));
+        }
+        if parsed.wing_count > 20_000 {
+            return Err(format!(
+                "d31 authority at byte {at_byte}: row {row_index} has invalid wing count {}",
+                parsed.wing_count
+            ));
+        }
+        if parsed.plane_count > 10_000_000 || parsed.effective_planes > 10_000_000 {
+            return Err(format!(
+                "d31 authority at byte {at_byte}: row {row_index} has invalid plane count"
+            ));
+        }
+        if parsed.deleted
+            && (parsed.wing_count != 0 || parsed.plane_count != 0 || parsed.effective_planes != 0)
+        {
+            return Err(format!(
+                "d31 authority at byte {at_byte}: deleted row {row_index} has live counts"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// One usable d31 hour: its game hour, the accumulated state after folding that
 /// hour's record, and the record's byte span in the source stream (the shipping
@@ -133,22 +237,16 @@ struct StreamScan {
 /// d31 DATA records into per-hour states. Every rejection path is an `Err`, never
 /// a silently shorter measurement and never a panic — see the module docs for
 /// what is enforced and what the recorder's own validator additionally checks.
-fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<StreamScan, String> {
-    // `StatefulStreamValidator` deliberately never sniffs a payload to pick a
-    // protocol, so the harness picks one explicitly from the FIRST RECORD'S
-    // FRAMING HEADER: an identity-bearing stream opens with the CID1 record at
-    // `(sequence, domain, type) = (0, 0, 4)`
-    // (`compact_contract/src/stream_validator.rs:104`), and anything else is
-    // legacy, whose first ordinary record is sequence 1. A wrong guess does not
-    // degrade to a lenient read — the validator rejects the very first record.
-    let first = parse_compact_record_header(stream).map_err(|e| format!("first record: {e}"))?;
-    let mut validator = if first.sequence == 0
-        && first.domain_id == 0
-        && first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER
-    {
-        StatefulStreamValidator::identity_v1()
-    } else {
-        StatefulStreamValidator::legacy()
+fn scan_stream(
+    stream: &[u8],
+    collection: &wire_format::Collection,
+    identity_mode: StreamIdentityMode,
+) -> Result<StreamScan, String> {
+    // Identity mode is stated by the caller, never inferred from bytes. A
+    // decapitated IdentityV1 stream otherwise looks exactly like legacy.
+    let mut validator = match identity_mode {
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
 
     let mut hours: Vec<D31Hour> = Vec::new();
@@ -159,6 +257,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
     let mut open_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d31 DATA record of ANY status — the uniqueness rule.
     let mut last_d31_hour: Option<i32> = None;
     // Hour of the last d31 record that entered the measurement — the contiguity
@@ -193,6 +293,48 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
 
         // The hour-boundary subset of `BoundaryTracker::observe`.
         match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                if header.domain_id != PROBE_DOMAIN_ID
+                    && !non_probe_perf_domains.insert(header.domain_id)
+                {
+                    return Err(format!(
+                        "duplicate DOMAIN_PERF for domain {} in hour {} at byte {pos}",
+                        header.domain_id, header.game_hour_raw
+                    ));
+                }
+                match open_hour {
+                    Some(open) if open != header.game_hour_raw => {
+                        return Err(format!(
+                            "hour interleaving at byte {pos}: DOMAIN_PERF for hour {} while \
+                             hour {open} is still open",
+                            header.game_hour_raw
+                        ))
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(last_closed) = last_closed_hour {
+                            if header.game_hour_raw <= last_closed {
+                                return Err(format!(
+                                    "non-monotonic DOMAIN_PERF at byte {pos}: closed hour \
+                                     {last_closed}, then {}",
+                                    header.game_hour_raw
+                                ));
+                            }
+                        }
+                        match pending_perf_hour {
+                            Some(pending) if pending != header.game_hour_raw => {
+                                return Err(format!(
+                                    "PERF hour conflict at byte {pos}: pending hour {pending}, \
+                                     then {}",
+                                    header.game_hour_raw
+                                ))
+                            }
+                            Some(_) => {}
+                            None => pending_perf_hour = Some(header.game_hour_raw),
+                        }
+                    }
+                }
+            }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => match open_hour {
                 Some(open) if open != header.game_hour_raw => {
                     return Err(format!(
@@ -202,6 +344,15 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                 }
                 Some(_) => {}
                 None => {
+                    if let Some(pending) = pending_perf_hour {
+                        if pending != header.game_hour_raw {
+                            return Err(format!(
+                                "DATA hour conflict at byte {pos}: pending PERF hour {pending}, \
+                                 then DATA hour {}",
+                                header.game_hour_raw
+                            ));
+                        }
+                    }
                     if let Some(last_closed) = last_closed_hour {
                         if header.game_hour_raw <= last_closed {
                             return Err(format!(
@@ -215,6 +366,15 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                 }
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
+                let (emitted_domains, scheduled_domains) = check_frame_end_seal(payload, pos)?;
+                let observed = non_probe_perf_domains.len().min(u32::MAX as usize) as u32;
+                if observed != emitted_domains || observed != scheduled_domains {
+                    return Err(format!(
+                        "FRAME_END domain counts at byte {pos} claim emitted={emitted_domains} \
+                         scheduled={scheduled_domains}, but observed {observed} unique \
+                         non-probe DOMAIN_PERF domains"
+                    ));
+                }
                 match open_hour {
                     Some(open) if open == header.game_hour_raw => {}
                     Some(open) => {
@@ -241,6 +401,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                     }
                 }
                 open_hour = None;
+                pending_perf_hour = None;
+                non_probe_perf_domains.clear();
                 last_closed_hour = Some(header.game_hour_raw);
             }
             _ => {}
@@ -265,8 +427,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
 
             // `world_fold.rs:14680`-`:14714`: the header-structural checks run on
             // every record, before either exclusion, and are hard errors.
-            let payload_header = d31::peek_header(payload)
-                .map_err(|e| format!("d31 payload at byte {pos}: {e}"))?;
+            let payload_header =
+                d31::peek_header(payload).map_err(|e| format!("d31 payload at byte {pos}: {e}"))?;
 
             // VALIDITY BEFORE CLASSIFICATION. Everything below that reads the
             // status word — the failure predicate, the DELTA_DATA read —
@@ -293,6 +455,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                     header.game_hour_raw
                 ));
             }
+
+            check_authority_payload(payload, pos)?;
 
             // `world_fold::handle_compact_failure` (`world_fold.rs:2843`, called
             // at `:14715`) marks the domain-hour unknown and RETAINS the prior
@@ -368,13 +532,16 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
 }
 
 fn main() {
+    const USAGE: &str =
+        "usage: bench_real_d31 <collector_stream.bin> <out dir> [legacy|identity-v1]";
     let mut args = std::env::args().skip(1);
-    let input = args
-        .next()
-        .expect("usage: bench_real_d31 <collector_stream.bin> <out dir>");
-    let out_dir = args
-        .next()
-        .expect("usage: bench_real_d31 <collector_stream.bin> <out dir>");
+    let input = args.next().expect(USAGE);
+    let out_dir = args.next().expect(USAGE);
+    let identity_mode = match args.next().as_deref() {
+        None | Some("legacy") => StreamIdentityMode::Legacy,
+        Some("identity-v1") => StreamIdentityMode::IdentityV1,
+        Some(other) => panic!("unknown identity mode {other:?}; {USAGE}"),
+    };
     let stream = std::fs::read(&input).expect("read stream");
     let schema = d31::schema();
     let collection = &schema.collections[0];
@@ -383,7 +550,7 @@ fn main() {
     // No artifact is created before this succeeds, so a refused stream leaves no
     // partial measurement behind to be mistaken for a result. Everything that can
     // fail on stream content fails here, with a diagnosis and no unwind.
-    let scan = match scan_stream(&stream, collection) {
+    let scan = match scan_stream(&stream, collection, identity_mode) {
         Ok(scan) => scan,
         Err(reason) => {
             eprintln!("{input}: {reason}");
@@ -563,6 +730,13 @@ mod tests {
         d31::schema().collections[0].clone()
     }
 
+    fn scan_stream(
+        stream: &[u8],
+        collection: &wire_format::Collection,
+    ) -> Result<StreamScan, String> {
+        super::scan_stream(stream, collection, StreamIdentityMode::Legacy)
+    }
+
     /// Build one H4CR record the way the recorder frames it
     /// (`compact_contract/src/record_header.rs:60`).
     fn record(sequence: u64, game_hour: i32, domain: u16, kind: u16, payload: &[u8]) -> Vec<u8> {
@@ -590,9 +764,49 @@ mod tests {
         )
     }
 
+    fn perf(sequence: u64, game_hour: i32, domain: u16) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &vec![0u8; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN],
+        )
+    }
+
+    fn frame_end_sealed(
+        sequence: u64,
+        game_hour: i32,
+        emitted: u32,
+        scheduled: u32,
+        status: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
+        let mut payload = vec![0u8; 16];
+        payload.extend_from_slice(&emitted.to_le_bytes());
+        payload.extend_from_slice(&scheduled.to_le_bytes());
+        payload.extend_from_slice(&status.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
+        record(
+            sequence,
+            game_hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &payload,
+        )
+    }
+
     /// One 32-byte d31 row, packed as the collector packs one
     /// (`attach_log.rs:69847`-`:69858`).
-    fn row(region: u32, owner: u32, mask: u32, flags: u32, wings: u32, planes: u32, eff: u32) -> Vec<u8> {
+    fn row(
+        region: u32,
+        owner: u32,
+        mask: u32,
+        flags: u32,
+        wings: u32,
+        planes: u32,
+        eff: u32,
+    ) -> Vec<u8> {
         let mut r = Vec::new();
         for w in [region, owner, mask, flags, wings, planes, eff, 0] {
             r.extend_from_slice(&w.to_le_bytes());
@@ -604,7 +818,9 @@ mod tests {
     fn d31_payload(status_flags: u32, rows: &[Vec<u8>], observed_bucket_rows: u32) -> Vec<u8> {
         let deleted = rows
             .iter()
-            .filter(|r| u32::from_le_bytes(r[12..16].try_into().unwrap()) & d31::ROW_FLAG_DELETED != 0)
+            .filter(|r| {
+                u32::from_le_bytes(r[12..16].try_into().unwrap()) & d31::ROW_FLAG_DELETED != 0
+            })
             .count() as u32;
         let mut p = Vec::new();
         p.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
@@ -619,6 +835,24 @@ mod tests {
             p.extend_from_slice(r);
         }
         p
+    }
+
+    fn data(sequence: u64, game_hour: i32, status: u32) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            D31,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d31_payload(status, &[row(37, 12, 512, 0, 4, 76, 61)], 1),
+        )
+    }
+
+    fn scan_default(stream: &[u8]) -> Result<StreamScan, String> {
+        scan_stream(stream, &test_collection())
+    }
+
+    fn scan_mode(stream: &[u8], mode: StreamIdentityMode) -> Result<StreamScan, String> {
+        super::scan_stream(stream, &test_collection(), mode)
     }
 
     /// Two closed hours: a baseline then a delta, the shape the real stream has.
@@ -655,6 +889,202 @@ mod tests {
             pos += COMPACT_RECORD_HEADER_LEN + h.payload_len;
         }
         pos
+    }
+
+    #[test]
+    fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
+        let mut ok = data(1, 100, 0);
+        ok.extend(frame_end_sealed(2, 100, 0, 0, 0, 0));
+        assert!(scan_default(&ok).is_ok());
+        let mut bad = vec![
+            frame_end_sealed(2, 100, 0, 1, 0, 0),
+            frame_end_sealed(2, 100, 1, 0, 0, 0),
+            frame_end_sealed(2, 100, 0, 0, 0, 1),
+        ];
+        for bit in 14..32 {
+            bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
+        }
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
+        }
+        for seal in bad {
+            let mut stream = data(1, 100, 0);
+            stream.extend(seal);
+            assert!(scan_default(&stream).is_err());
+        }
+        for len in [0usize, 1, 16, 31, 33, 64] {
+            let mut stream = data(1, 100, 0);
+            stream.extend(record(
+                2,
+                100,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &vec![0; len],
+            ));
+            assert!(scan_default(&stream).is_err(), "seal length {len}");
+        }
+        for status in [1 << 4, 1 << 5, 1 << 10, 1 << 11, 1 << 13] {
+            let mut stream = data(1, 100, 0);
+            stream.extend(frame_end_sealed(2, 100, 0, 0, status, 0));
+            assert!(scan_default(&stream).is_ok(), "status {status:#x}");
+        }
+    }
+
+    #[test]
+    fn perf_hour_binding_is_enforced() {
+        let mut ok = perf(1, 100, 20);
+        ok.extend(perf(2, 100, PROBE_DOMAIN_ID));
+        ok.extend(perf(3, 100, PROBE_DOMAIN_ID));
+        ok.extend(data(4, 100, 0));
+        ok.extend(frame_end_sealed(5, 100, 1, 1, 0, 0));
+        assert!(scan_default(&ok).is_ok());
+        let mut duplicate = perf(1, 100, 20);
+        duplicate.extend(perf(2, 100, 20));
+        duplicate.extend(data(3, 100, 0));
+        duplicate.extend(frame_end_sealed(4, 100, 1, 1, 0, 0));
+        assert!(scan_default(&duplicate).is_err());
+        let mut interleaved = data(1, 100, 0);
+        interleaved.extend(perf(2, 101, 20));
+        interleaved.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        assert!(scan_default(&interleaved).is_err());
+        let mut stale = data(1, 100, 0);
+        stale.extend(frame_end(2, 100));
+        stale.extend(perf(3, 100, 20));
+        stale.extend(data(4, 101, 0));
+        stale.extend(frame_end_sealed(5, 101, 1, 1, 0, 0));
+        assert!(scan_default(&stale).is_err());
+        let mut conflict = perf(1, 100, 20);
+        conflict.extend(perf(2, 101, 21));
+        conflict.extend(data(3, 100, 0));
+        conflict.extend(frame_end_sealed(4, 100, 2, 2, 0, 0));
+        assert!(scan_default(&conflict).is_err());
+        for (emitted, scheduled) in [(0, 0), (2, 2), (1, 2), (2, 1)] {
+            let mut stream = perf(1, 100, 20);
+            stream.extend(data(2, 100, 0));
+            stream.extend(frame_end_sealed(3, 100, emitted, scheduled, 0, 0));
+            assert!(scan_default(&stream).is_err());
+        }
+        let mut two_hours = perf(1, 100, 20);
+        two_hours.extend(data(2, 100, 0));
+        two_hours.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        two_hours.extend(perf(4, 101, 20));
+        two_hours.extend(data(5, 101, 0));
+        two_hours.extend(frame_end_sealed(6, 101, 1, 1, 0, 0));
+        assert!(scan_default(&two_hours).is_ok());
+    }
+
+    #[test]
+    fn a_data_record_must_open_the_hour_the_pending_perf_records_bound() {
+        for (perf_hour, data_hour) in [(100, 101), (101, 100), (100, 200), (200, 100)] {
+            let mut stream = perf(1, perf_hour, 20);
+            stream.extend(data(2, data_hour, 0));
+            stream.extend(frame_end_sealed(3, data_hour, 1, 1, 0, 0));
+            assert!(scan_default(&stream).is_err());
+        }
+        let mut agreeing = perf(1, 100, 20);
+        agreeing.extend(data(2, 100, 0));
+        agreeing.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        assert!(scan_default(&agreeing).is_ok());
+    }
+
+    #[test]
+    fn an_excluded_record_is_still_checked_by_the_payload_authority() {
+        const FAILED: u32 = 1;
+        let mut bad_payloads = Vec::new();
+        let mut bad = d31_payload(FAILED, &[row(37, 12, 512, 0, 4, 76, 61)], 1);
+        bad.pop();
+        bad_payloads.push(bad);
+        bad_payloads.push(d31_payload(FAILED, &[row(0, 12, 512, 0, 4, 76, 61)], 1));
+        bad_payloads.push(d31_payload(
+            FAILED,
+            &[row(65_536, 12, 512, 0, 4, 76, 61)],
+            1,
+        ));
+        bad_payloads.push(d31_payload(FAILED, &[row(37, 0, 512, 0, 4, 76, 61)], 1));
+        bad_payloads.push(d31_payload(FAILED, &[row(37, 1_025, 512, 0, 4, 76, 61)], 1));
+        bad_payloads.push(d31_payload(
+            FAILED,
+            &[
+                row(37, 12, 512, 0, 4, 76, 61),
+                row(37, 12, 512, 0, 5, 80, 70),
+            ],
+            2,
+        ));
+        bad_payloads.push(d31_payload(FAILED, &[row(37, 12, 512, 2, 4, 76, 61)], 1));
+        bad_payloads.push(d31_payload(
+            FAILED,
+            &[row(37, 12, 512, 0, 20_001, 76, 61)],
+            1,
+        ));
+        bad_payloads.push(d31_payload(
+            FAILED,
+            &[row(37, 12, 512, 0, 4, 10_000_001, 61)],
+            1,
+        ));
+        bad_payloads.push(d31_payload(
+            FAILED,
+            &[row(37, 12, 512, d31::ROW_FLAG_DELETED, 1, 0, 0)],
+            1,
+        ));
+        let mut bad = d31_payload(FAILED, &[row(37, 12, 512, 0, 4, 76, 61)], 1);
+        let reserved = d31::HEADER_LEN + 28;
+        bad[reserved..reserved + 4].copy_from_slice(&1u32.to_le_bytes());
+        bad_payloads.push(bad);
+
+        // Every bad payload rides in a stream that WOULD otherwise measure: a
+        // second, well-formed hour follows it. Without that trailing hour the
+        // scan refuses for an unrelated reason — "no usable d31 DATA records" —
+        // and the assertion would hold with `check_authority_payload` deleted,
+        // which is a test that cannot fail for its own cause.
+        for payload in bad_payloads {
+            let mut stream = record(1, 100, D31, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload);
+            stream.extend(frame_end(2, 100));
+            stream.extend(data(3, 101, 0));
+            stream.extend(frame_end(4, 101));
+            assert!(scan_default(&stream).is_err());
+        }
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            let payload = d31_payload(1 << bit, &[row(0, 12, 512, 0, 4, 76, 61)], 1);
+            let mut stream = record(1, 100, D31, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload);
+            stream.extend(frame_end(2, 100));
+            stream.extend(data(3, 101, 0));
+            stream.extend(frame_end(4, 101));
+            assert!(scan_default(&stream).is_err(), "failure bit {bit}");
+        }
+
+        let mut well_formed = data(1, 100, FAILED);
+        well_formed.extend(frame_end(2, 100));
+        well_formed.extend(data(3, 101, 0));
+        well_formed.extend(frame_end(4, 101));
+        let scan = scan_default(&well_formed).expect("well-formed exclusion");
+        assert_eq!(scan.failure_records, 1);
+        assert_eq!(scan.hours.len(), 1);
+
+        // Mission masks have no authority range predicate
+        // (`domain_data_authority.rs:6492`-`:6548`).
+        let payload = d31_payload(FAILED, &[row(37, 12, u32::MAX, 0, 4, 76, 61)], 1);
+        let mut stream = record(1, 100, D31, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload);
+        stream.extend(frame_end(2, 100));
+        stream.extend(data(3, 101, 0));
+        stream.extend(frame_end(4, 101));
+        assert!(scan_default(&stream).is_ok());
+    }
+
+    #[test]
+    fn the_identity_protocol_is_stated_not_sniffed() {
+        use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
+        let legacy = good_stream();
+        assert!(scan_mode(&legacy, StreamIdentityMode::IdentityV1).is_err());
+        assert!(scan_mode(&legacy, StreamIdentityMode::Legacy).is_ok());
+        let mut identity = record(
+            0,
+            0,
+            0,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+            b"CID1-not-a-real-identity-payload",
+        );
+        identity.extend(legacy);
+        assert!(scan_mode(&identity, StreamIdentityMode::Legacy).is_err());
     }
 
     #[test]
@@ -724,7 +1154,13 @@ mod tests {
         // And the whole known v1 mask, minus the failure bits, is still accepted:
         // the check must reject unassigned bits and nothing else. DELTA_DATA is
         // the one d31 itself reads, and after a baseline it is a sparse update.
-        for informational in [1u32 << 4, 1 << 5, COMPACT_STATUS_DELTA_DATA, 1 << 11, 1 << 13] {
+        for informational in [
+            1u32 << 4,
+            1 << 5,
+            COMPACT_STATUS_DELTA_DATA,
+            1 << 11,
+            1 << 13,
+        ] {
             let mut s = Vec::new();
             s.extend(record(
                 1,
@@ -803,8 +1239,15 @@ mod tests {
         assert_eq!(scan.hours.len(), 4);
         assert_eq!(scan.hours[0].state.len(), 2);
         assert_eq!(scan.hours[1].state.len(), 2, "a delta does not clear");
-        assert_eq!(scan.hours[2].state, scan.hours[1].state, "an empty delta is a no-op");
-        assert_eq!(scan.hours[3].state.len(), 1, "the delete removed one bucket");
+        assert_eq!(
+            scan.hours[2].state, scan.hours[1].state,
+            "an empty delta is a no-op"
+        );
+        assert_eq!(
+            scan.hours[3].state.len(),
+            1,
+            "the delete removed one bucket"
+        );
     }
 
     #[test]
@@ -947,7 +1390,11 @@ mod tests {
             100,
             D31,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &d31_payload(COMPACT_STATUS_DELTA_DATA, &[row(37, 12, 512, 0, 5, 80, 70)], 1),
+            &d31_payload(
+                COMPACT_STATUS_DELTA_DATA,
+                &[row(37, 12, 512, 0, 5, 80, 70)],
+                1,
+            ),
         ));
         s.extend(frame_end(4, 100));
         assert!(scan_stream(&s, &test_collection()).is_err());
@@ -1030,7 +1477,11 @@ mod tests {
             100,
             D31,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &d31_payload(COMPACT_STATUS_DELTA_DATA, &[row(37, 12, 512, 0, 4, 76, 61)], 1),
+            &d31_payload(
+                COMPACT_STATUS_DELTA_DATA,
+                &[row(37, 12, 512, 0, 4, 76, 61)],
+                1,
+            ),
         ));
         s.extend(frame_end(2, 100));
         s.extend(record(
@@ -1056,36 +1507,43 @@ mod tests {
         let mut payload = d31_payload(1, &[row(37, 12, 512, 0, 4, 76, 61)], 1);
         payload[32..36].copy_from_slice(&1u32.to_le_bytes()); // reserved0
         let mut s = Vec::new();
-        s.extend(record(1, 100, D31, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+        s.extend(record(
+            1,
+            100,
+            D31,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        ));
         s.extend(frame_end(2, 100));
         assert!(scan_stream(&s, &test_collection()).is_err());
 
-        // But the exact-length check runs AFTER the exclusion (`:14729`), so a
-        // failure-status record whose length disagrees with its row_count is
-        // accepted by the fold — and must be accepted here.
+        // The fold itself returns before its exact-length check, but the
+        // independent status-agnostic authority (`domain_data_authority.rs:6410`)
+        // still walks the rows and refuses the certified stream.
         let mut payload = d31_payload(1, &[row(37, 12, 512, 0, 4, 76, 61)], 1);
         payload.pop();
         let mut s = Vec::new();
-        s.extend(record(1, 100, D31, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
-        s.extend(frame_end(2, 100));
         s.extend(record(
-            3,
-            101,
+            1,
+            100,
             D31,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &d31_payload(0, &[row(9, 3, 1, 0, 2, 30, 0)], 1),
+            &payload,
         ));
-        s.extend(frame_end(4, 101));
-        let scan = scan_stream(&s, &test_collection())
-            .expect("the fold returns Ok before it checks the length");
-        assert_eq!(scan.failure_records, 1);
-        assert_eq!(scan.hours.len(), 1);
+        s.extend(frame_end(2, 100));
+        assert!(scan_stream(&s, &test_collection()).is_err());
     }
 
     #[test]
     fn a_stream_with_no_d31_records_is_refused_not_reported_as_zero() {
         let mut s = Vec::new();
-        s.extend(record(1, 100, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[0u8; 8]));
+        s.extend(record(
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[0u8; 8],
+        ));
         s.extend(frame_end(2, 100));
         assert!(scan_stream(&s, &test_collection()).is_err());
     }
@@ -1125,7 +1583,13 @@ mod tests {
 
         for (i, payload) in invalid.into_iter().enumerate() {
             let mut s = Vec::new();
-            s.extend(record(1, 100, D31, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+            s.extend(record(
+                1,
+                100,
+                D31,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            ));
             s.extend(frame_end(2, 100));
             assert!(
                 scan_stream(&s, &test_collection()).is_err(),

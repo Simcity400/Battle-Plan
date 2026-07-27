@@ -41,9 +41,14 @@
 //!   (sequence continuity from the stream's first record, record-type and
 //!   record-flag semantics, FRAME_END shape);
 //! - the hour boundary rules of `recorder_host::stream_fold::BoundaryTracker`
-//!   (`recorder_host/src/stream_fold.rs:277`) that do not require DOMAIN_PERF
-//!   accounting: a DOMAIN_DATA record opens its game hour, a FRAME_END closes the
-//!   open hour and only that hour, and closed hours strictly increase;
+//!   (`recorder_host/src/stream_fold.rs:277`): a DOMAIN_DATA record opens its
+//!   game hour, a FRAME_END closes the open hour and only that hour, and closed
+//!   hours strictly increase;
+//! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`) and the DATA arm's
+//!   pending-PERF rule (`:378`-`:386`);
+//! - the FRAME_END seal fields (`stream_fold.rs:46`-`:89`) and the seal's
+//!   domain-count cross-check against distinct non-probe PERF domains
+//!   (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END.
 //!
@@ -54,11 +59,23 @@
 //!
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
-//! full authority, and it additionally checks FRAME_END seal fields and
-//! DOMAIN_PERF domain accounting. This crate cannot depend on `recorder_host` (it
-//! pulls in every capture lane), so the subset is enforced here and the full
-//! check remains the recorder's. The subset covers every condition under which
-//! this harness would otherwise report a number for a stream it should refuse.
+//! full authority. Production's `validate_domain_data_payload_at`
+//! (`stream_fold.rs:594`) also applies `decode_compact_fuel_data_payload`
+//! (`domain_data_authority.rs:932`-`:1011`) to every d10 DATA record whatever its
+//! status. `d10::split_payload`, already before the exclusion, covers its header,
+//! exact-length, scale, changed-row, and duplicate-key predicates. The remaining
+//! row predicates (zero key, unknown flags, negative current/max) are replayed by
+//! [`check_authority_payload`] before classification. The authority deliberately
+//! does not bound positive current/max or gain/cost; those mapper/collector rules
+//! remain on folded records. d10's pre-existing status policy is stricter in a
+//! different dimension: every row-bearing failure record is refused because
+//! `fold_fuel` would apply it, so no excluded row can demonstrate a fold-only row
+//! rule being accepted.
+//!
+//! The seal fields, PERF binding, pending-PERF rule, status-independent payload
+//! authority, and stated identity mode are the five-check sweep. Production
+//! receives that mode from its caller (`stream_fold.rs:220`); the capture is
+//! legacy, so `main` defaults to `legacy`.
 //!
 //! Outputs, for the compression step (`compress_arms.py` beside the run):
 //!   ship_d10.bin   — the d10 DATA records verbatim (32-byte H4CR header +
@@ -70,16 +87,16 @@
 //! It also prints the real churn surface (changed rows per hour at stored
 //! precision).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::ops::Range;
 
-use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
-use compact_contract::stream_validator::StatefulStreamValidator;
+use compact_contract::stream_validator::{StatefulStreamValidator, StreamIdentityMode};
 use compact_contract::{
-    compact_status_failure_flags_after_expected_partial_tolerance,
-    compact_status_unknown_flags_v1, parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
+    compact_status_failure_flags_after_expected_partial_tolerance, compact_status_unknown_flags_v1,
+    parse_compact_record_header, COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
 };
 use wire_format::body::{
     apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, Key, KeyedState,
@@ -116,26 +133,97 @@ struct StreamScan {
     non_contiguous: usize,
 }
 
+const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+const PROBE_DOMAIN_ID: u16 = 250;
+
+/// `recorder_host::stream_fold::validate_frame_end_seal_fields`
+/// (`stream_fold.rs:46`-`:89`), kept local because `wire_format` cannot depend on
+/// `recorder_host`.
+fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
+    if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: payload length {} is not \
+             {COMPACT_FRAME_END_PAYLOAD_LEN}",
+            payload.len()
+        ));
+    }
+    let emitted_domains = u32::from_le_bytes(payload[16..20].try_into().expect("4 bytes"));
+    let scheduled_domains = u32::from_le_bytes(payload[20..24].try_into().expect("4 bytes"));
+    let status_flags = u32::from_le_bytes(payload[24..28].try_into().expect("4 bytes"));
+    let reserved = u32::from_le_bytes(payload[28..32].try_into().expect("4 bytes"));
+    if reserved != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: reserved word is nonzero \
+             ({reserved:#010x})"
+        ));
+    }
+    if emitted_domains != scheduled_domains {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: emitted domain count \
+             {emitted_domains} does not match scheduled domain count {scheduled_domains}"
+        ));
+    }
+    let unknown = status_flags & !FRAME_END_KNOWN_STATUS_MASK;
+    if unknown != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: status flags {status_flags:#010x} \
+             contain unknown bits {unknown:#010x}"
+        ));
+    }
+    let fatal = status_flags & COMPACT_STATUS_FAILURE_MASK;
+    if fatal != 0 {
+        return Err(format!(
+            "FRAME_END seal violation at byte {at_byte}: status flags {status_flags:#010x} \
+             contain fatal bits {fatal:#010x}"
+        ));
+    }
+    Ok((emitted_domains, scheduled_domains))
+}
+
+/// The predicates in `decode_compact_fuel_data_payload`
+/// (`domain_data_authority.rs:932`-`:1011`) that `d10::split_payload` has not
+/// already run. This intentionally does not call `record_from_row`: that mapper
+/// also enforces collector magnitude bounds which this authority does not.
+fn check_authority_payload(body: &[u8], at_byte: usize) -> Result<(), String> {
+    for (row_index, row) in body.chunks_exact(d10::ROW_LEN).enumerate() {
+        d10::key_from_row(row)
+            .map_err(|e| format!("d10 authority row {row_index} at byte {at_byte}: {e}"))?;
+        let flags = u32::from_le_bytes(row[4..8].try_into().expect("4 bytes"));
+        if flags & !d10::ROW_KNOWN_FLAGS != 0 {
+            return Err(format!(
+                "d10 authority row {row_index} at byte {at_byte}: unknown flags {flags:#x}"
+            ));
+        }
+        let current = i64::from_le_bytes(row[8..16].try_into().expect("8 bytes"));
+        let max = i64::from_le_bytes(row[16..24].try_into().expect("8 bytes"));
+        if current < 0 {
+            return Err(format!(
+                "d10 authority row {row_index} at byte {at_byte}: current_raw is negative"
+            ));
+        }
+        if max < 0 {
+            return Err(format!(
+                "d10 authority row {row_index} at byte {at_byte}: max_raw is negative"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validate the whole stream against the canonical contract and decode the usable
 /// d10 DATA records. Every rejection path is an `Err`, never a silently shorter
 /// measurement and never a panic — see the module docs for what is enforced and
 /// what the recorder's own validator additionally checks.
-fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<StreamScan, String> {
-    // `StatefulStreamValidator` deliberately never sniffs a payload to pick a
-    // protocol, so the harness picks one explicitly from the FIRST RECORD'S
-    // FRAMING HEADER: an identity-bearing stream opens with the CID1 record at
-    // `(sequence, domain, type) = (0, 0, 4)` (`compact_contract/src/stream_validator.rs:104`),
-    // and anything else is legacy, whose first ordinary record is sequence 1.
-    // A wrong guess does not degrade to a lenient read — the validator rejects
-    // the very first record.
-    let first = parse_compact_record_header(stream).map_err(|e| format!("first record: {e}"))?;
-    let mut validator = if first.sequence == 0
-        && first.domain_id == 0
-        && first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER
-    {
-        StatefulStreamValidator::identity_v1()
-    } else {
-        StatefulStreamValidator::legacy()
+fn scan_stream(
+    stream: &[u8],
+    collection: &wire_format::Collection,
+    identity_mode: StreamIdentityMode,
+) -> Result<StreamScan, String> {
+    // Production takes identity mode from its caller (`stream_fold.rs:220`);
+    // sniffing cannot distinguish legacy from IdentityV1 with CID1 removed.
+    let mut validator = match identity_mode {
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
 
     let mut hours: Vec<D10Hour> = Vec::new();
@@ -145,6 +233,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
     let mut open_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
+    let mut pending_perf_hour: Option<i32> = None;
+    let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d10 DATA record of ANY status — the uniqueness rule.
     let mut last_d10_hour: Option<i32> = None;
     // Hour of the last d10 record that entered the measurement — the contiguity
@@ -176,6 +266,48 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
 
         // The hour-boundary subset of `BoundaryTracker::observe`.
         match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                if header.domain_id != PROBE_DOMAIN_ID
+                    && !non_probe_perf_domains.insert(header.domain_id)
+                {
+                    return Err(format!(
+                        "duplicate DOMAIN_PERF for domain {} in hour {} at byte {pos}",
+                        header.domain_id, header.game_hour_raw
+                    ));
+                }
+                match open_hour {
+                    Some(open) if open != header.game_hour_raw => {
+                        return Err(format!(
+                            "hour interleaving at byte {pos}: DOMAIN_PERF for hour {} while \
+                             hour {open} is still open",
+                            header.game_hour_raw
+                        ))
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(last_closed) = last_closed_hour {
+                            if header.game_hour_raw <= last_closed {
+                                return Err(format!(
+                                    "non-monotonic DOMAIN_PERF at byte {pos}: closed hour \
+                                     {last_closed}, then {}",
+                                    header.game_hour_raw
+                                ));
+                            }
+                        }
+                        match pending_perf_hour {
+                            Some(pending) if pending != header.game_hour_raw => {
+                                return Err(format!(
+                                    "PERF hour conflict at byte {pos}: pending hour {pending}, \
+                                     then {}",
+                                    header.game_hour_raw
+                                ))
+                            }
+                            Some(_) => {}
+                            None => pending_perf_hour = Some(header.game_hour_raw),
+                        }
+                    }
+                }
+            }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => match open_hour {
                 Some(open) if open != header.game_hour_raw => {
                     return Err(format!(
@@ -185,6 +317,15 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                 }
                 Some(_) => {}
                 None => {
+                    if let Some(pending) = pending_perf_hour {
+                        if pending != header.game_hour_raw {
+                            return Err(format!(
+                                "DATA hour conflict at byte {pos}: pending PERF hour \
+                                 {pending}, then DATA hour {}",
+                                header.game_hour_raw
+                            ));
+                        }
+                    }
                     if let Some(last_closed) = last_closed_hour {
                         if header.game_hour_raw <= last_closed {
                             return Err(format!(
@@ -198,6 +339,19 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                 }
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
+                let (emitted_domains, scheduled_domains) = check_frame_end_seal(payload, pos)?;
+                let observed_perf_domains =
+                    non_probe_perf_domains.len().min(u32::MAX as usize) as u32;
+                if observed_perf_domains != emitted_domains
+                    || observed_perf_domains != scheduled_domains
+                {
+                    return Err(format!(
+                        "FRAME_END seal violation at byte {pos}: seal reports \
+                         emitted={emitted_domains}, scheduled={scheduled_domains}, but \
+                         {observed_perf_domains} distinct non-probe DOMAIN_PERF domain(s) \
+                         were observed"
+                    ));
+                }
                 match open_hour {
                     Some(open) if open == header.game_hour_raw => {}
                     Some(open) => {
@@ -225,6 +379,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                 }
                 open_hour = None;
                 last_closed_hour = Some(header.game_hour_raw);
+                pending_perf_hour = None;
+                non_probe_perf_domains.clear();
             }
             _ => {}
         }
@@ -273,6 +429,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                     header.game_hour_raw
                 ));
             }
+
+            check_authority_payload(body, pos)?;
 
             // Failure-status records are excluded from both arms, with
             // `compact_contract`'s own predicate rather than a copied bit mask so
@@ -333,8 +491,8 @@ fn scan_stream(stream: &[u8], collection: &wire_format::Collection) -> Result<St
                 // to prevent.
                 let mut rows: Vec<(Key, Record)> = Vec::new();
                 for row in body.chunks_exact(d10::ROW_LEN) {
-                    let key =
-                        d10::key_from_row(row).map_err(|e| format!("d10 row at byte {pos}: {e}"))?;
+                    let key = d10::key_from_row(row)
+                        .map_err(|e| format!("d10 row at byte {pos}: {e}"))?;
                     let record = d10::record_from_row(collection, row, 0)
                         .map_err(|e| format!("d10 row at byte {pos}: {e}"))?;
                     rows.push((key, record));
@@ -381,10 +539,16 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let input = args
         .next()
-        .expect("usage: bench_real_d10 <collector_stream.bin> <out dir>");
+        .expect("usage: bench_real_d10 <collector_stream.bin> <out dir> [legacy|identity-v1]");
     let out_dir = args
         .next()
-        .expect("usage: bench_real_d10 <collector_stream.bin> <out dir>");
+        .expect("usage: bench_real_d10 <collector_stream.bin> <out dir> [legacy|identity-v1]");
+    let identity_mode = match args.next().as_deref().unwrap_or("legacy") {
+        "legacy" => StreamIdentityMode::Legacy,
+        "identity-v1" => StreamIdentityMode::IdentityV1,
+        other => panic!("unknown identity mode {other:?}; expected legacy or identity-v1"),
+    };
+    assert!(args.next().is_none(), "too many arguments");
     let stream = std::fs::read(&input).expect("read stream");
     let schema = d10::schema();
     let collection = &schema.collections[0];
@@ -393,7 +557,7 @@ fn main() {
     // No artifact is created before this succeeds, so a refused stream leaves no
     // partial measurement behind to be mistaken for a result. Everything that can
     // fail on stream content fails here, with a diagnosis and no unwind.
-    let scan = match scan_stream(&stream, collection) {
+    let scan = match scan_stream(&stream, collection, identity_mode) {
         Ok(scan) => scan,
         Err(reason) => {
             eprintln!("{input}: {reason}");
@@ -582,6 +746,41 @@ mod tests {
         )
     }
 
+    fn perf(sequence: u64, game_hour: i32, domain: u16) -> Vec<u8> {
+        record(
+            sequence,
+            game_hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &vec![0u8; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN],
+        )
+    }
+
+    fn frame_end_sealed(
+        sequence: u64,
+        game_hour: i32,
+        emitted: u32,
+        scheduled: u32,
+        status: u32,
+        reserved: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(COMPACT_FRAME_END_PAYLOAD_LEN);
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&emitted.to_le_bytes());
+        payload.extend_from_slice(&scheduled.to_le_bytes());
+        payload.extend_from_slice(&status.to_le_bytes());
+        payload.extend_from_slice(&reserved.to_le_bytes());
+        assert_eq!(payload.len(), COMPACT_FRAME_END_PAYLOAD_LEN);
+        record(
+            sequence,
+            game_hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &payload,
+        )
+    }
+
     /// A d10 DATA payload: the 24-byte header then one 40-byte row per entry.
     fn d10_payload(status_flags: u32, rows: &[(u32, i64)]) -> Vec<u8> {
         let mut payload = Vec::new();
@@ -636,7 +835,12 @@ mod tests {
 
     #[test]
     fn a_well_formed_stream_yields_its_d10_hours() {
-        let scan = scan_stream(&good_stream(), &test_collection()).expect("accepted");
+        let scan = scan_stream(
+            &good_stream(),
+            &test_collection(),
+            StreamIdentityMode::Legacy,
+        )
+        .expect("accepted");
         assert_eq!(scan.hours.len(), 2);
         assert_eq!(scan.hours[0].game_hour, 100);
         assert_eq!(scan.hours[1].game_hour, 101);
@@ -668,7 +872,7 @@ mod tests {
                     ));
                     s.extend(frame_end(2, 100));
                     assert!(
-                        scan_stream(&s, &test_collection()).is_err(),
+                        scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
                         "status bit {bit} (+{extra:#x}) with {} row(s) must be refused",
                         rows.len()
                     );
@@ -690,7 +894,7 @@ mod tests {
                 &d10_payload(informational, &[(7, 32_768)]),
             ));
             s.extend(frame_end(2, 100));
-            let scan = scan_stream(&s, &test_collection())
+            let scan = scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy)
                 .unwrap_or_else(|e| panic!("informational bit {informational:#x}: {e}"));
             assert_eq!(scan.hours.len(), 1, "bit {informational:#x}");
             assert_eq!(scan.failure_records, 0, "bit {informational:#x}");
@@ -720,7 +924,8 @@ mod tests {
             &d10_payload(0, &[]),
         ));
         s.extend(frame_end(4, 101));
-        let scan = scan_stream(&s, &test_collection()).expect("accepted");
+        let scan =
+            scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).expect("accepted");
         assert_eq!(scan.hours.len(), 2);
         assert!(scan.hours[1].rows.is_empty());
     }
@@ -750,7 +955,7 @@ mod tests {
         ));
         s.extend(frame_end(4, 101));
         let collection = test_collection();
-        let scan = scan_stream(&s, &collection).expect("accepted");
+        let scan = scan_stream(&s, &collection, StreamIdentityMode::Legacy).expect("accepted");
 
         let mut state: KeyedState = BTreeMap::new();
         for hour in &scan.hours {
@@ -779,8 +984,15 @@ mod tests {
             next.insert(key.clone(), record.clone());
         }
         let d = diff(&collection, &prior, &next);
-        assert!(d.tombstones.is_empty(), "an accumulated d10 state never shrinks");
-        assert_eq!(d.changed.len(), 1, "only the country the hour carried moved");
+        assert!(
+            d.tombstones.is_empty(),
+            "an accumulated d10 state never shrinks"
+        );
+        assert_eq!(
+            d.changed.len(),
+            1,
+            "only the country the hour carried moved"
+        );
     }
 
     #[test]
@@ -793,7 +1005,7 @@ mod tests {
         for records in [1usize, 3] {
             let cut = boundary(&full, records);
             assert!(
-                scan_stream(&full[..cut], &test_collection()).is_err(),
+                scan_stream(&full[..cut], &test_collection(), StreamIdentityMode::Legacy).is_err(),
                 "a stream cut after {records} record(s) leaves an hour open"
             );
         }
@@ -803,7 +1015,7 @@ mod tests {
         // closed, not the hours the untruncated file had.
         for (records, expected_hours) in [(2usize, 1usize), (4, 2)] {
             let cut = boundary(&full, records);
-            let scan = scan_stream(&full[..cut], &test_collection())
+            let scan = scan_stream(&full[..cut], &test_collection(), StreamIdentityMode::Legacy)
                 .expect("closed stream is well-formed");
             assert_eq!(scan.hours.len(), expected_hours, "cut after {records}");
         }
@@ -819,12 +1031,12 @@ mod tests {
                 continue;
             }
             assert!(
-                scan_stream(&full[..cut], &test_collection()).is_err(),
+                scan_stream(&full[..cut], &test_collection(), StreamIdentityMode::Legacy).is_err(),
                 "mid-record cut at {cut}"
             );
         }
         assert!(
-            scan_stream(&[], &test_collection()).is_err(),
+            scan_stream(&[], &test_collection(), StreamIdentityMode::Legacy).is_err(),
             "an empty stream is not a measurement"
         );
     }
@@ -843,7 +1055,7 @@ mod tests {
                 let mut s = good_stream();
                 s[at + offset..at + offset + patch.len()].copy_from_slice(&patch);
                 assert!(
-                    scan_stream(&s, &test_collection()).is_err(),
+                    scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
                     "record {records} patched at +{offset} must be refused"
                 );
             }
@@ -860,7 +1072,7 @@ mod tests {
                 let mut s = good_stream();
                 s[at + 8..at + 16].copy_from_slice(&wrong.to_le_bytes());
                 assert!(
-                    scan_stream(&s, &test_collection()).is_err(),
+                    scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
                     "record {records} sequence {wrong}"
                 );
             }
@@ -878,12 +1090,12 @@ mod tests {
             &d10_payload(0, &[(7, 32_768)]),
         ));
         s.extend(frame_end(2, 999)); // closes an hour that is not open
-        assert!(scan_stream(&s, &test_collection()).is_err());
+        assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
 
         // A FRAME_END with nothing open at all.
         let mut s = Vec::new();
         s.extend(frame_end(1, 100));
-        assert!(scan_stream(&s, &test_collection()).is_err());
+        assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
     }
 
     #[test]
@@ -907,7 +1119,7 @@ mod tests {
             &d10_payload(0, &[(7, 65_536)]),
         ));
         s.extend(frame_end(4, 100));
-        assert!(scan_stream(&s, &test_collection()).is_err());
+        assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
     }
 
     #[test]
@@ -941,7 +1153,7 @@ mod tests {
             ));
             s.extend(frame_end(3, 100));
             assert!(
-                scan_stream(&s, &test_collection()).is_err(),
+                scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
                 "two d10 records in hour 100 with statuses {first:#x}/{second:#x}"
             );
         }
@@ -971,8 +1183,8 @@ mod tests {
                 &d10_payload(0, &[(7, 65_536)]),
             ));
             s.extend(frame_end(4, 101));
-            let scan =
-                scan_stream(&s, &test_collection()).expect("the stream itself is well-formed");
+            let scan = scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy)
+                .expect("the stream itself is well-formed");
             assert_eq!(scan.failure_records, 1, "bit {bit}");
             assert_eq!(scan.hours.len(), 1, "bit {bit}");
             assert_eq!(scan.hours[0].game_hour, 101, "bit {bit}");
@@ -988,7 +1200,8 @@ mod tests {
             &d10_payload(1 << 10, &[(7, 32_768)]),
         ));
         s.extend(frame_end(2, 100));
-        let scan = scan_stream(&s, &test_collection()).expect("well-formed");
+        let scan =
+            scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).expect("well-formed");
         assert_eq!(scan.failure_records, 0);
         assert_eq!(scan.hours.len(), 1);
     }
@@ -1005,7 +1218,7 @@ mod tests {
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
             for rows in [
                 vec![(7u32, 32_768i64)],
-                vec![(0, 32_768)],             // a row the fold itself rejects
+                vec![(0, 32_768)], // a row the fold itself rejects
                 vec![(7, 32_768), (9, 65_536)],
             ] {
                 let mut s = Vec::new();
@@ -1026,7 +1239,7 @@ mod tests {
                 ));
                 s.extend(frame_end(4, 101));
                 assert!(
-                    scan_stream(&s, &test_collection()).is_err(),
+                    scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
                     "failure bit {bit} with {} row(s) must refuse the stream",
                     rows.len()
                 );
@@ -1037,9 +1250,15 @@ mod tests {
     #[test]
     fn a_stream_with_no_d10_records_is_refused_not_reported_as_zero() {
         let mut s = Vec::new();
-        s.extend(record(1, 100, 20, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[0u8; 8]));
+        s.extend(record(
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[0u8; 8],
+        ));
         s.extend(frame_end(2, 100));
-        assert!(scan_stream(&s, &test_collection()).is_err());
+        assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
     }
 
     #[test]
@@ -1049,9 +1268,15 @@ mod tests {
         let mut payload = d10_payload(0, &[(7, 32_768)]);
         payload.truncate(payload.len() - 1);
         let mut s = Vec::new();
-        s.extend(record(1, 100, D10, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+        s.extend(record(
+            1,
+            100,
+            D10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        ));
         s.extend(frame_end(2, 100));
-        assert!(scan_stream(&s, &test_collection()).is_err());
+        assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
 
         // A row the mapper rejects must make the SCAN fail, not be accepted and
         // then unwind while measuring. The whole row-rejection space is covered
@@ -1081,10 +1306,16 @@ mod tests {
         invalid.push(d10_payload(0, &[(7, d10::MAX_FUEL_RAW + 1)]));
         for (i, payload) in invalid.into_iter().enumerate() {
             let mut s = Vec::new();
-            s.extend(record(1, 100, D10, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+            s.extend(record(
+                1,
+                100,
+                D10,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            ));
             s.extend(frame_end(2, 100));
             assert!(
-                scan_stream(&s, &test_collection()).is_err(),
+                scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
                 "invalid payload {i} must make the scan fail"
             );
         }
@@ -1097,12 +1328,287 @@ mod tests {
         payload[8..12].copy_from_slice(&2u32.to_le_bytes());
         payload[12..16].copy_from_slice(&2u32.to_le_bytes());
         let mut s = Vec::new();
-        s.extend(record(1, 100, D10, COMPACT_RECORD_TYPE_DOMAIN_DATA, &payload));
+        s.extend(record(
+            1,
+            100,
+            D10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        ));
         s.extend(frame_end(2, 100));
         assert!(
-            scan_stream(&s, &test_collection()).is_err(),
+            scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err(),
             "duplicate tag_db_id in one frame"
         );
+    }
+
+    #[test]
+    fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
+        let data = |seq, hour| {
+            record(
+                seq,
+                hour,
+                D10,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d10_payload(0, &[(7, 32_768)]),
+            )
+        };
+        let mut ok = Vec::new();
+        ok.extend(data(1, 100));
+        ok.extend(frame_end_sealed(2, 100, 0, 0, 0, 0));
+        assert!(scan_stream(&ok, &test_collection(), StreamIdentityMode::Legacy).is_ok());
+
+        let mut bad = vec![
+            frame_end_sealed(2, 100, 0, 0, 0, 1),
+            frame_end_sealed(2, 100, 0, 1, 0, 0),
+            frame_end_sealed(2, 100, 1, 0, 0, 0),
+        ];
+        for bit in 14..32u32 {
+            bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
+        }
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
+        }
+        for seal in bad {
+            let mut s = Vec::new();
+            s.extend(data(1, 100));
+            s.extend(seal);
+            assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
+        }
+        for len in [0usize, 1, 16, 31, 33, 64] {
+            let mut s = Vec::new();
+            s.extend(data(1, 100));
+            s.extend(record(
+                2,
+                100,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &vec![0u8; len],
+            ));
+            assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
+        }
+        for status in [1u32 << 4, 1 << 5, 1 << 10, 1 << 11, 1 << 13] {
+            let mut s = Vec::new();
+            s.extend(data(1, 100));
+            s.extend(frame_end_sealed(2, 100, 0, 0, status, 0));
+            assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_ok());
+        }
+        let mut later = Vec::new();
+        later.extend(data(1, 100));
+        later.extend(frame_end_sealed(2, 100, 0, 0, 0, 0));
+        later.extend(data(3, 101));
+        later.extend(frame_end_sealed(4, 101, 0, 0, 0, 1));
+        assert!(scan_stream(&later, &test_collection(), StreamIdentityMode::Legacy).is_err());
+    }
+
+    #[test]
+    fn perf_hour_binding_is_enforced() {
+        let data = |seq, hour| {
+            record(
+                seq,
+                hour,
+                D10,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d10_payload(0, &[(7, 32_768)]),
+            )
+        };
+        let mut ok = Vec::new();
+        ok.extend(perf(1, 100, 20));
+        ok.extend(perf(2, 100, D10));
+        ok.extend(perf(3, 100, PROBE_DOMAIN_ID));
+        ok.extend(data(4, 100));
+        ok.extend(frame_end_sealed(5, 100, 2, 2, 0, 0));
+        assert!(scan_stream(&ok, &test_collection(), StreamIdentityMode::Legacy).is_ok());
+
+        let mut probes = Vec::new();
+        probes.extend(perf(1, 100, PROBE_DOMAIN_ID));
+        probes.extend(perf(2, 100, PROBE_DOMAIN_ID));
+        probes.extend(data(3, 100));
+        probes.extend(frame_end_sealed(4, 100, 0, 0, 0, 0));
+        assert!(scan_stream(&probes, &test_collection(), StreamIdentityMode::Legacy).is_ok());
+
+        let mut duplicate = Vec::new();
+        duplicate.extend(perf(1, 100, 20));
+        duplicate.extend(perf(2, 100, 20));
+        duplicate.extend(data(3, 100));
+        duplicate.extend(frame_end_sealed(4, 100, 1, 1, 0, 0));
+        assert!(scan_stream(&duplicate, &test_collection(), StreamIdentityMode::Legacy).is_err());
+
+        let mut interleaved = Vec::new();
+        interleaved.extend(data(1, 100));
+        interleaved.extend(perf(2, 999, 20));
+        interleaved.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        assert!(scan_stream(&interleaved, &test_collection(), StreamIdentityMode::Legacy).is_err());
+
+        let mut stale = Vec::new();
+        stale.extend(data(1, 100));
+        stale.extend(frame_end_sealed(2, 100, 0, 0, 0, 0));
+        stale.extend(perf(3, 100, 20));
+        stale.extend(data(4, 101));
+        stale.extend(frame_end_sealed(5, 101, 1, 1, 0, 0));
+        assert!(scan_stream(&stale, &test_collection(), StreamIdentityMode::Legacy).is_err());
+
+        let mut conflict = Vec::new();
+        conflict.extend(perf(1, 100, 20));
+        conflict.extend(perf(2, 101, 21));
+        conflict.extend(data(3, 100));
+        conflict.extend(frame_end_sealed(4, 100, 2, 2, 0, 0));
+        assert!(scan_stream(&conflict, &test_collection(), StreamIdentityMode::Legacy).is_err());
+
+        for (emitted, scheduled) in [(1u32, 1u32), (3, 3), (2, 3), (3, 2)] {
+            let mut s = Vec::new();
+            s.extend(perf(1, 100, 20));
+            s.extend(perf(2, 100, D10));
+            s.extend(data(3, 100));
+            s.extend(frame_end_sealed(4, 100, emitted, scheduled, 0, 0));
+            assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
+        }
+
+        let mut two_hours = Vec::new();
+        two_hours.extend(perf(1, 100, 20));
+        two_hours.extend(data(2, 100));
+        two_hours.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        two_hours.extend(perf(4, 101, 20));
+        two_hours.extend(data(5, 101));
+        two_hours.extend(frame_end_sealed(6, 101, 1, 1, 0, 0));
+        assert_eq!(
+            scan_stream(&two_hours, &test_collection(), StreamIdentityMode::Legacy)
+                .expect("PERF state resets")
+                .hours
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_data_record_must_open_the_hour_the_pending_perf_records_bound() {
+        let data = |seq, hour| {
+            record(
+                seq,
+                hour,
+                D10,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &d10_payload(0, &[(7, 32_768)]),
+            )
+        };
+        for (perf_hour, data_hour) in [(100i32, 101i32), (101, 100), (100, 200), (200, 100)] {
+            let mut s = Vec::new();
+            s.extend(perf(1, perf_hour, 20));
+            s.extend(data(2, data_hour));
+            s.extend(frame_end_sealed(3, data_hour, 1, 1, 0, 0));
+            assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
+        }
+        let mut agreeing = Vec::new();
+        agreeing.extend(perf(1, 100, 20));
+        agreeing.extend(data(2, 100));
+        agreeing.extend(frame_end_sealed(3, 100, 1, 1, 0, 0));
+        assert!(scan_stream(&agreeing, &test_collection(), StreamIdentityMode::Legacy).is_ok());
+    }
+
+    #[test]
+    fn an_excluded_record_is_still_checked_by_the_payload_authority() {
+        const FAILED: u32 = 1;
+        let mut bad = Vec::new();
+        bad.push(d10_payload(FAILED, &[(0, 32_768)]));
+        let mut flags = d10_payload(FAILED, &[(7, 32_768)]);
+        flags[d10::HEADER_LEN + 4..d10::HEADER_LEN + 8].copy_from_slice(&2u32.to_le_bytes());
+        bad.push(flags);
+        bad.push(d10_payload(FAILED, &[(7, -1)]));
+        let mut negative_max = d10_payload(FAILED, &[(7, 32_768)]);
+        negative_max[d10::HEADER_LEN + 16..d10::HEADER_LEN + 24]
+            .copy_from_slice(&(-1i64).to_le_bytes());
+        bad.push(negative_max);
+        for payload in bad {
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D10,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            ));
+            s.extend(frame_end(2, 100));
+            let err = scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy)
+                .err()
+                .expect("malformed excluded row must refuse");
+            assert!(err.contains("authority row"), "unexpected refusal: {err}");
+        }
+        for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
+            let payload = d10_payload(1 << bit, &[(0, 32_768)]);
+            let mut s = Vec::new();
+            s.extend(record(
+                1,
+                100,
+                D10,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            ));
+            s.extend(frame_end(2, 100));
+            let err = scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy)
+                .err()
+                .expect("authority is independent of the failure bit");
+            assert!(err.contains("authority row"), "bit {bit}: {err}");
+        }
+
+        let mut s = Vec::new();
+        s.extend(record(
+            1,
+            100,
+            D10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d10_payload(FAILED, &[]),
+        ));
+        s.extend(frame_end(2, 100));
+        s.extend(record(
+            3,
+            101,
+            D10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &d10_payload(0, &[(7, 32_768)]),
+        ));
+        s.extend(frame_end(4, 101));
+        let scan =
+            scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).expect("well-formed");
+        assert_eq!(scan.failure_records, 1);
+        assert_eq!(scan.hours.len(), 1);
+
+        // Positive magnitude bounds are outside this authority. The independent
+        // d10 status policy still refuses every row-bearing failure record, so
+        // demonstrate the authority boundary directly rather than claiming that
+        // such a record is an accepted excluded stream.
+        let outside = d10_payload(FAILED, &[(7, d10::MAX_FUEL_RAW + 1)]);
+        check_authority_payload(&outside[d10::HEADER_LEN..], 0)
+            .expect("positive upper bounds are not authority predicates");
+    }
+
+    #[test]
+    fn the_identity_protocol_is_stated_not_sniffed() {
+        use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
+
+        let decapitated = good_stream();
+        assert!(scan_stream(
+            &decapitated,
+            &test_collection(),
+            StreamIdentityMode::IdentityV1
+        )
+        .is_err());
+        assert!(scan_stream(&decapitated, &test_collection(), StreamIdentityMode::Legacy).is_ok());
+
+        let mut identity_stream = Vec::new();
+        identity_stream.extend(record(
+            0,
+            0,
+            0,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+            b"CID1-not-a-real-identity-payload",
+        ));
+        identity_stream.extend(&good_stream());
+        assert!(scan_stream(
+            &identity_stream,
+            &test_collection(),
+            StreamIdentityMode::Legacy
+        )
+        .is_err());
     }
 
     #[test]
@@ -1126,14 +1632,14 @@ mod tests {
             if len >= 4 && state & 1 == 0 {
                 bytes[..4].copy_from_slice(b"H4CR");
             }
-            let _ = scan_stream(&bytes, &test_collection());
+            let _ = scan_stream(&bytes, &test_collection(), StreamIdentityMode::Legacy);
         }
         // And corruption of a genuinely well-formed stream, byte by byte.
         let good = good_stream();
         for i in 0..good.len() {
             let mut s = good.clone();
             s[i] ^= 0xFF;
-            let _ = scan_stream(&s, &test_collection());
+            let _ = scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy);
         }
     }
 }
