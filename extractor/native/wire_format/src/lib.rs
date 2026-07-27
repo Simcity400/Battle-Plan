@@ -44,6 +44,7 @@ pub mod d63;
 pub mod d68;
 pub mod d70;
 pub mod d83;
+pub mod d92;
 pub mod derived;
 pub mod frame;
 pub mod record;
