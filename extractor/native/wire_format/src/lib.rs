@@ -38,6 +38,7 @@ pub mod d36;
 pub mod d38;
 pub mod d39;
 pub mod d40;
+pub mod d48;
 pub mod d49;
 pub mod d50;
 pub mod d52;
