@@ -405,9 +405,159 @@ pub fn production_profile_scheduled_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// One owner → dependency edge of the owned-emission graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactOwnedEmittedDependency {
+    /// The domain whose scheduling forces `dependency` to run.
+    pub owner: CompactDomainId,
+    /// The domain whose DOMAIN_PERF + DOMAIN_DATA records land on the wire as a
+    /// consequence, without ever appearing in the scheduled roster.
+    pub dependency: CompactDomainId,
+    /// Why the owner cannot be read without it.
+    pub reason: &'static str,
+    /// `collector/src/attach_log.rs` anchors: the enable site that forces the
+    /// dependency, then the emission site that proves the records reach the
+    /// wire (the `emitted_domains` increment).
+    pub collector_citation: &'static str,
+}
+
 /// Domains emitted on the wire as owned, same-hour dependencies of an
 /// explicitly scheduled parent domain.
-pub const OWNED_EMITTED_DOMAIN_DEPENDENCIES: &[(CompactDomainId, CompactDomainId)] = &[];
+///
+/// MEMBERSHIP RULE — this table is about the WIRE, not about reads. An entry
+/// belongs here only when scheduling `owner` causes `dependency` to append its
+/// own DOMAIN_PERF and DOMAIN_DATA records and to increment the collector's
+/// `emitted_domains` counter. A parent that merely runs another domain's READER
+/// to reuse its in-frame sample does NOT belong here; those couplings are
+/// recorded as excluded candidates in
+/// `extractor/native/runs/batch2/dependency_table_fix/` and in the collector's
+/// own comments. Encoding a reader-side coupling here would make the recorder
+/// host's coverage gate demand records that were never meant to exist.
+///
+/// This table is the SINGLE authority for the relation. The collector resolves
+/// its frame's dependency-forced domains through
+/// [`emitted_domain_ids_for_scheduled_ids`] (see
+/// `compact_frame_emitted_domain_closure` in `collector/src/attach_log.rs`), and
+/// the recorder host builds its per-hour coverage expectation from the same
+/// function — so neither side can hold a private copy of the graph.
+///
+/// Edges are DIRECT only; transitive reach (d82 → d47 → d14, d96 → d92 → d18)
+/// is computed by [`emitted_domain_ids_for_scheduled_ids`].
+pub const OWNED_EMITTED_DOMAIN_DEPENDENCIES: &[CompactOwnedEmittedDependency] = &[
+    CompactOwnedEmittedDependency {
+        owner: 45,
+        dependency: 12,
+        reason: "focus_research_decisions_depth_live derives its focus depth from the same-frame country focus bundle, so enabling d45 pushes the Focus country-domain spec into the frame's enabled set",
+        collector_citation: "attach_log.rs:24801-24816 (Focus spec push), :27566-27589 + :27607 (per-spec perf/data emission), :27563 (emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 45,
+        dependency: 13,
+        reason: "focus_research_decisions_depth_live derives research-slot state from the same-frame country tech bundle",
+        collector_citation: "attach_log.rs:24801-24816 (Tech spec push), :27566-27589 + :27615 (per-spec perf/data emission)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 45,
+        dependency: 16,
+        reason: "focus_research_decisions_depth_live derives decision status from the same-frame country decisions bundle",
+        collector_citation: "attach_log.rs:24801-24816 (Decisions spec push), :27566-27589 (per-spec perf/data emission)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 47,
+        dependency: 14,
+        reason: "characters_leaders_cabinet_live resolves cabinet/advisor slots against the same-frame country politics bundle",
+        collector_citation: "attach_log.rs:24817-24828 (Politics spec push), :27566-27589 + :27623 (per-spec perf/data emission)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 82,
+        dependency: 47,
+        reason: "character_presentation_live runs its d47 character-root dependency in the same frame; no prior-hour identity cache is used",
+        collector_citation: "attach_log.rs:24773-24775 (comment), :24790-24796 (enable), :29052-29076 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 82,
+        dependency: 46,
+        reason: "character_presentation_live needs the same-frame air variant archetype classification to resolve designer/variant presentation rows",
+        collector_citation: "attach_log.rs:24855-24857 (enable), :28933-28965 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 88,
+        dependency: 47,
+        reason: "active_command_abilities_live attributes abilities to characters read by the same-frame d47 cabinet walk",
+        collector_citation: "attach_log.rs:24790-24796 (enable), :29052-29076 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 88,
+        dependency: 20,
+        reason: "active_command_abilities_live binds abilities to the same-frame division roster",
+        collector_citation: "attach_log.rs:24829-24830 (enable), :28511-28548 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 54,
+        dependency: 27,
+        reason: "army_battleplans_depth_live derives generation/order rows from the same-frame army_orders read",
+        collector_citation: "attach_log.rs:24839-24842 (enable), :28598-28655 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 54,
+        dependency: 28,
+        reason: "army_battleplans_depth_live requires exact same-frame assignment and order-linkage status from oob_command",
+        collector_citation: "attach_log.rs:24839-24844 (enable), :28657-28708 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 55,
+        dependency: 21,
+        reason: "land_combat_detail_events_live derives transition events from the same in-frame domain-21 combat snapshot and its logical generation tracker",
+        collector_citation: "attach_log.rs:25027-25030 (comment + enable), :30292-30322 (perf/data emission + emitted_domains)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 96,
+        dependency: 92,
+        reason: "country_preferred_tactic_weight_live is a trailer of the d92 preferred-tactic read; the weight payload only exists when that read runs, and the d92 record is appended unconditionally alongside it",
+        collector_citation: "attach_log.rs:24962-24969 (enable), :28373-28401 (d92 perf/data emission + emitted_domains), :28402-28430 (d96 trailer emission)",
+    },
+    CompactOwnedEmittedDependency {
+        owner: 92,
+        dependency: 18,
+        reason: "country_preferred_tactic_live resolves its per-country rows against the same-frame country_identity roster",
+        collector_citation: "attach_log.rs:24970-24973 (enable), :27722-27747 (perf/data emission + emitted_domains)",
+    },
+];
+
+/// The domains a control with an EMPTY scheduled roster runs: the eight
+/// country-bundle domains, and nothing else. Every other domain's gate requires
+/// its name to be present explicitly.
+///
+/// Both the collector (predicting its own emitted-domain count) and the recorder
+/// host (building its coverage expectation) need this default; it lives here so
+/// neither keeps a private copy.
+pub const DEFAULT_SCHEDULED_DOMAIN_IDS: &[CompactDomainId] = &[10, 11, 12, 13, 14, 15, 16, 17];
+
+/// Every domain id that appears in [`OWNED_EMITTED_DOMAIN_DEPENDENCIES`], as an
+/// owner or as a dependency. Consumers that must seed the expansion (the
+/// collector's frame gate) use this to prove they handle every participant.
+pub fn owned_emitted_dependency_participant_ids() -> Vec<CompactDomainId> {
+    let mut ids = Vec::new();
+    for edge in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+        for id in [edge.owner, edge.dependency] {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids
+}
+
+/// The direct owned dependencies of one owner domain.
+pub fn owned_emitted_dependencies_for_owner(
+    owner: CompactDomainId,
+) -> Vec<&'static CompactOwnedEmittedDependency> {
+    OWNED_EMITTED_DOMAIN_DEPENDENCIES
+        .iter()
+        .filter(|edge| edge.owner == owner)
+        .collect()
+}
 
 /// Expand a scheduled domain-id set to the exact domain-id set emitted on the
 /// wire, including transitive owned dependencies. The result is canonicalized
@@ -418,9 +568,9 @@ pub fn emitted_domain_ids_for_scheduled_ids(
     let mut emitted = scheduled_ids.to_vec();
     loop {
         let before = emitted.len();
-        for &(owner, dependency) in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
-            if emitted.contains(&owner) && !emitted.contains(&dependency) {
-                emitted.push(dependency);
+        for edge in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+            if emitted.contains(&edge.owner) && !emitted.contains(&edge.dependency) {
+                emitted.push(edge.dependency);
             }
         }
         if emitted.len() == before {
@@ -1588,6 +1738,161 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_emitted_dependency_table_is_well_formed() {
+        for edge in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+            assert_ne!(
+                edge.owner, edge.dependency,
+                "domain {} cannot be its own owned dependency",
+                edge.owner
+            );
+            let owner = assigned_descriptor_by_id(edge.owner)
+                .unwrap_or_else(|| panic!("owner {} is not an assigned domain", edge.owner));
+            let dependency = assigned_descriptor_by_id(edge.dependency).unwrap_or_else(|| {
+                panic!("dependency {} is not an assigned domain", edge.dependency)
+            });
+            // A dependency that emits no DOMAIN_DATA record would make the
+            // recorder host's coverage gate demand a record the wire never
+            // carries — exactly the reader-vs-emission confusion this table
+            // must never encode.
+            assert!(
+                dependency.requires_data_record,
+                "dependency {} ({}) does not emit a DOMAIN_DATA record and therefore is not an owned EMITTED dependency",
+                dependency.id, dependency.wire_name
+            );
+            assert!(
+                owner.schedulable,
+                "owner {} ({}) is not schedulable, so it can never force a dependency",
+                owner.id, owner.wire_name
+            );
+            assert!(
+                !edge.reason.is_empty() && !edge.collector_citation.is_empty(),
+                "edge {} -> {} must carry a reason and a collector citation",
+                edge.owner,
+                edge.dependency
+            );
+        }
+        let mut seen = Vec::new();
+        for edge in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+            let key = (edge.owner, edge.dependency);
+            assert!(
+                !seen.contains(&key),
+                "duplicate owned-dependency edge {} -> {}",
+                edge.owner,
+                edge.dependency
+            );
+            seen.push(key);
+        }
+    }
+
+    /// Wire-verified expansion. `runs/batch2/deepwar_t1` scheduled 20 domains
+    /// including d45 and the capture carried 23 emitted domains: d12, d13 and
+    /// d16 each landed 146/146 DOMAIN_PERF + DOMAIN_DATA records without ever
+    /// appearing in the scheduled roster
+    /// (`collector/src/attach_log.rs:24801-24816`).
+    #[test]
+    fn d45_expands_to_its_three_country_bundle_dependencies() {
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[45]),
+            vec![12, 13, 16, 45]
+        );
+    }
+
+    #[test]
+    fn owned_dependency_expansion_matches_the_verified_collector_edges() {
+        // Direct edges, each verified at the collector's own enable + emission
+        // sites (see the citation on every table entry).
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[47]),
+            vec![14, 47],
+            "d47 pulls the politics country bundle"
+        );
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[54]),
+            vec![27, 28, 54],
+            "d54 pulls army_orders and oob_command"
+        );
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[55]),
+            vec![21, 55],
+            "d55 forces the domain-21 snapshot it derives transitions from"
+        );
+        // Transitive reach: d82 and d88 pull d47, which itself pulls d14.
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[82]),
+            vec![14, 46, 47, 82],
+            "d82 pulls d47 (which pulls d14) and d46"
+        );
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[88]),
+            vec![14, 20, 47, 88],
+            "d88 pulls d20 and d47 (which pulls d14)"
+        );
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[96]),
+            vec![18, 92, 96],
+            "d96 pulls d92, which pulls d18"
+        );
+        assert_eq!(
+            emitted_domain_ids_for_scheduled_ids(&[92]),
+            vec![18, 92],
+            "d92 alone still pulls d18"
+        );
+    }
+
+    #[test]
+    fn owned_dependency_expansion_is_idempotent_and_canonical() {
+        let once = emitted_domain_ids_for_scheduled_ids(&[88, 45, 88]);
+        let twice = emitted_domain_ids_for_scheduled_ids(&once);
+        assert_eq!(once, twice);
+        assert!(once.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// The reader-side couplings that deliberately stay OUT of the table. If
+    /// one of these ever starts emitting, the assertion below is the place that
+    /// must change together with the table.
+    #[test]
+    fn reader_only_couplings_are_not_encoded_as_emissions() {
+        // d86 sunk_ship_history_live / d90 convoy_transport_attack_live run the
+        // shared naval-combat source read for the same-hour d49/d50 member
+        // epoch (`attach_log.rs:24908-24917`), but the d49 and d50 records are
+        // emitted only under their own explicit flags
+        // (`attach_log.rs:29836`, `:29866`).
+        for owner in [86u16, 90u16] {
+            assert_eq!(
+                emitted_domain_ids_for_scheduled_ids(&[owner]),
+                vec![owner],
+                "domain {owner} runs the d49/d50 reader but emits neither"
+            );
+        }
+        for dependency in [49u16, 50u16] {
+            assert!(
+                OWNED_EMITTED_DOMAIN_DEPENDENCIES
+                    .iter()
+                    .all(|edge| edge.dependency != dependency),
+                "domain {dependency} is a reader dependency, never an owned emission"
+            );
+        }
+    }
+
+    #[test]
+    fn owned_dependency_participants_cover_the_table() {
+        let participants = owned_emitted_dependency_participant_ids();
+        for edge in OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+            assert!(participants.contains(&edge.owner));
+            assert!(participants.contains(&edge.dependency));
+        }
+        assert!(participants.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            owned_emitted_dependencies_for_owner(45)
+                .iter()
+                .map(|edge| edge.dependency)
+                .collect::<Vec<_>>(),
+            vec![12, 13, 16]
+        );
+        assert!(owned_emitted_dependencies_for_owner(34).is_empty());
+    }
 
     fn header_bytes(
         version: u16,

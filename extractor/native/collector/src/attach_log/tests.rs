@@ -23343,3 +23343,330 @@
             assert!(scheduled.contains("\"naval_factories\":0"));
             assert!(!scheduled.contains("\"construction_queue\""));
         }
+
+        // ------------------------------------------------------------------
+        // Owned-emission dependency table <-> collector agreement.
+        //
+        // `compact_contract::OWNED_EMITTED_DOMAIN_DEPENDENCIES` is the single
+        // authority for which domains a scheduled roster drags onto the wire.
+        // These tests pin the collector's frame gate to it in both directions:
+        // an edge the collector cannot honour, and a collector-side seed the
+        // table does not know about, both fail here.
+        // ------------------------------------------------------------------
+
+        fn control_scheduling(names: &[&str]) -> CollectorControl {
+            let mut control = raw_test_control();
+            control.stream_format = CollectorStreamFormat::Compact;
+            control.scheduled_domains = names.iter().map(|name| name.to_string()).collect();
+            control
+        }
+
+        fn owned_dependency_wire_name(domain: u16) -> &'static str {
+            compact_contract::wire_name_for_id(domain)
+                .unwrap_or_else(|| panic!("domain {domain} has no wire name"))
+        }
+
+        /// Every owner and dependency the contract declares must be a domain the
+        /// collector's seed function actually knows how to gate. A table edge
+        /// naming a domain outside `COMPACT_OWNED_DEPENDENCY_PARTICIPANTS` would
+        /// otherwise be expanded by the recorder host's coverage gate and
+        /// silently ignored by the collector — the drift this table exists to
+        /// stop.
+        #[test]
+        fn owned_dependency_seeds_cover_every_contract_participant() {
+            for participant in compact_contract::owned_emitted_dependency_participant_ids() {
+                assert!(
+                    COMPACT_OWNED_DEPENDENCY_PARTICIPANTS.contains(&participant),
+                    "contract domain {participant} ({}) takes part in an owned-emission edge but the collector frame gate does not seed it",
+                    owned_dependency_wire_name(participant)
+                );
+            }
+            for participant in COMPACT_OWNED_DEPENDENCY_PARTICIPANTS {
+                let control = control_scheduling(&[owned_dependency_wire_name(*participant)]);
+                assert!(
+                    compact_frame_domain_directly_enabled(&control, 0, *participant),
+                    "scheduling {} by name must directly enable domain {participant}",
+                    owned_dependency_wire_name(*participant)
+                );
+            }
+        }
+
+        /// A domain that is not scheduled and is not forced by anything must not
+        /// appear in the closure — the expansion may only ever add contract
+        /// edges.
+        #[test]
+        fn owned_dependency_closure_adds_nothing_without_an_edge() {
+            let control = control_scheduling(&["air_base_status"]);
+            let closure = compact_frame_emitted_domain_closure(&control, 0);
+            assert!(
+                closure.is_empty(),
+                "a roster with no expansion participant produced {closure:?}"
+            );
+        }
+
+        /// Direction 1: every declared edge is honoured by the frame gate.
+        #[test]
+        fn every_contract_edge_is_honoured_by_the_frame_gate() {
+            for edge in compact_contract::OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+                let control = control_scheduling(&[owned_dependency_wire_name(edge.owner)]);
+                let closure = compact_frame_emitted_domain_closure(&control, 0);
+                assert!(
+                    closure.contains(&edge.owner),
+                    "scheduling {} did not enable the owner itself",
+                    owned_dependency_wire_name(edge.owner)
+                );
+                assert!(
+                    closure.contains(&edge.dependency),
+                    "scheduling {} ({}) must force {} ({}): {}",
+                    owned_dependency_wire_name(edge.owner),
+                    edge.owner,
+                    owned_dependency_wire_name(edge.dependency),
+                    edge.dependency,
+                    edge.collector_citation
+                );
+            }
+        }
+
+        /// Direction 2: the wire-verified d45 case, end to end through the
+        /// collector's own gate. `runs/batch2/deepwar_t1` scheduled 20 domains
+        /// including d45 and emitted 23; d12, d13 and d16 carried 146/146
+        /// DOMAIN_PERF + DOMAIN_DATA records without being in the roster.
+        #[test]
+        fn d45_frame_gate_enables_its_three_country_bundle_specs() {
+            let control = control_scheduling(&["focus_research_decisions_depth_live"]);
+            let closure = compact_frame_emitted_domain_closure(&control, 0);
+            assert_eq!(closure, vec![12, 13, 16, 45]);
+            let enabled_specs = compact_country_domain_specs()
+                .into_iter()
+                .filter(|spec| closure.contains(&spec.id))
+                .map(|spec| spec.id)
+                .collect::<Vec<_>>();
+            assert_eq!(enabled_specs, vec![12, 13, 16]);
+        }
+
+        /// The frame gate's derived flags are exactly the closure, for every
+        /// dependency the table declares. This is the pin that would have caught
+        /// the empty table: with `OWNED_EMITTED_DOMAIN_DEPENDENCIES = &[]`, each
+        /// of these assertions fails because the closure loses the dependency
+        /// while the collector still emits it.
+        #[test]
+        fn owner_only_rosters_enable_each_dependency_domain() {
+            for (owner, dependency) in [
+                ("focus_research_decisions_depth_live", 12u16),
+                ("focus_research_decisions_depth_live", 13),
+                ("focus_research_decisions_depth_live", 16),
+                ("characters_leaders_cabinet_live", 14),
+                ("character_presentation_live", 46),
+                ("character_presentation_live", 47),
+                ("character_presentation_live", 14),
+                ("army_battleplans_depth_live", 27),
+                ("army_battleplans_depth_live", 28),
+                ("land_combat_detail_events_live", 21),
+                ("country_preferred_tactic_weight_live", 92),
+                ("country_preferred_tactic_weight_live", 18),
+                ("country_preferred_tactic_live", 18),
+            ] {
+                let control = control_scheduling(&[owner]);
+                let closure = compact_frame_emitted_domain_closure(&control, 0);
+                assert!(
+                    closure.contains(&dependency),
+                    "roster [{owner}] must emit domain {dependency}"
+                );
+            }
+        }
+
+        /// d88 carries lane latches on top of its control entry. The expansion
+        /// must never bypass them: if the lane is not scheduled, neither d88 nor
+        /// its d20/d47 dependencies may be forced.
+        #[test]
+        fn d88_lane_latches_gate_its_owned_dependencies() {
+            let control = control_scheduling(&["active_command_abilities_live"]);
+            let closure = compact_frame_emitted_domain_closure(&control, 0);
+            let latched = active_command_abilities_live_lane::COMPACT_DOMAIN_SCHEDULED
+                && active_command_abilities_live_lane::a729_hook::COMPACT_DOMAIN_SCHEDULED;
+            if latched {
+                assert!(closure.contains(&COMPACT_DOMAIN_ACTIVE_COMMAND_ABILITIES_LIVE));
+                assert!(closure.contains(&COMPACT_DOMAIN_DIVISIONS));
+                assert!(closure.contains(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE));
+                assert!(closure.contains(&COMPACT_DOMAIN_POLITICS));
+            } else {
+                assert!(!closure.contains(&COMPACT_DOMAIN_ACTIVE_COMMAND_ABILITIES_LIVE));
+                assert!(!closure.contains(&COMPACT_DOMAIN_DIVISIONS));
+                assert!(!closure.contains(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE));
+            }
+        }
+
+        /// d54 may not widen a frame that is already degraded. The domain itself
+        /// still runs; only the d27/d28 expansion is withheld.
+        #[test]
+        fn d54_withholds_its_dependencies_on_a_failed_frame() {
+            let control = control_scheduling(&["army_battleplans_depth_live"]);
+            let clean = compact_frame_emitted_domain_closure(&control, 0);
+            assert_eq!(clean, vec![27, 28, 54]);
+            let degraded =
+                compact_frame_emitted_domain_closure(&control, COMPACT_STATUS_SOURCE_UNAVAILABLE);
+            assert!(degraded.is_empty());
+            assert!(compact_explicit_domain_enabled(
+                &control,
+                RAW_ARMY_BATTLEPLANS_DEPTH_LIVE_DOMAIN
+            ));
+        }
+
+        /// Reader-side couplings stay off the wire. d86/d90 run the shared
+        /// naval-combat source read for the same-hour d49/d50 member epoch, but
+        /// the d49/d50 records are emitted only under their own explicit flags,
+        /// so neither may appear in the closure.
+        #[test]
+        fn naval_reader_dependencies_are_not_expanded() {
+            for owner in ["sunk_ship_history_live", "convoy_transport_attack_live"] {
+                let control = control_scheduling(&[owner]);
+                let closure = compact_frame_emitted_domain_closure(&control, 0);
+                assert!(
+                    !closure.contains(&49) && !closure.contains(&50),
+                    "roster [{owner}] must not expand to the d49/d50 reader dependency"
+                );
+            }
+        }
+
+        /// For each domain the contract can FORCE, the exact call the frame body
+        /// must gate it with.
+        ///
+        /// This list lives in the TEST file on purpose: `attach_log.rs` is
+        /// searched for these strings, so a copy of them inside that file would
+        /// match itself and the pin would pass with the call site deleted.
+        const COMPACT_FRAME_GATE_CALL_SITES: &[(u16, &str)] = &[
+            (
+                COMPACT_DOMAIN_COUNTRY_IDENTITY,
+                "frame_emits(COMPACT_DOMAIN_COUNTRY_IDENTITY)",
+            ),
+            (
+                COMPACT_DOMAIN_DIVISIONS,
+                "frame_emits(COMPACT_DOMAIN_DIVISIONS)",
+            ),
+            (
+                COMPACT_DOMAIN_LAND_COMBATS,
+                "frame_emits(COMPACT_DOMAIN_LAND_COMBATS)",
+            ),
+            (
+                COMPACT_DOMAIN_ARMY_ORDERS,
+                "frame_emits(COMPACT_DOMAIN_ARMY_ORDERS)",
+            ),
+            (
+                COMPACT_DOMAIN_OOB_COMMAND,
+                "frame_emits(COMPACT_DOMAIN_OOB_COMMAND)",
+            ),
+            (
+                COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES,
+                "frame_emits(COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES)",
+            ),
+            (
+                COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
+                "frame_emits(COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)",
+            ),
+            (
+                COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE,
+                "frame_emits(COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE)",
+            ),
+            // The four country-bundle dependencies (12, 13, 16 from d45; 14
+            // from d47) share one filter over every spec rather than four
+            // per-domain calls.
+            (COMPACT_DOMAIN_FOCUS, ".filter(|spec| frame_emits(spec.id))"),
+            (COMPACT_DOMAIN_TECH, ".filter(|spec| frame_emits(spec.id))"),
+            (
+                COMPACT_DOMAIN_POLITICS,
+                ".filter(|spec| frame_emits(spec.id))",
+            ),
+            (
+                COMPACT_DOMAIN_DECISIONS,
+                ".filter(|spec| frame_emits(spec.id))",
+            ),
+        ];
+
+        /// The closure is only half the pin: it is computed FROM the table, so
+        /// on its own it cannot tell whether the frame body still asks it. This
+        /// test reads the collector's own source and requires the gate call for
+        /// every domain the contract can force. Restoring a hand-derived
+        /// `explicit || other_enabled` gate — the exact regression that produced
+        /// the drift — deletes one of these calls and fails here.
+        ///
+        /// A source-text check is coarse, but it pins the one property no
+        /// value-level test can reach: that the frame body actually asks.
+        #[test]
+        fn frame_gate_call_sites_exist_for_every_forced_domain() {
+            const COLLECTOR_SOURCE: &str = include_str!("../attach_log.rs");
+            for (domain, call) in COMPACT_FRAME_GATE_CALL_SITES {
+                assert!(
+                    COLLECTOR_SOURCE.contains(call),
+                    "the frame body no longer gates domain {domain} ({}) through the contract closure: `{call}` is gone",
+                    owned_dependency_wire_name(*domain)
+                );
+            }
+            // Every dependency the contract declares must have a gate call
+            // listed above; a new table edge whose dependency is ungated would
+            // otherwise be expanded by the recorder host and ignored here.
+            for edge in compact_contract::OWNED_EMITTED_DOMAIN_DEPENDENCIES {
+                assert!(
+                    COMPACT_FRAME_GATE_CALL_SITES
+                        .iter()
+                        .any(|(domain, _)| *domain == edge.dependency),
+                    "contract edge {} -> {} has no frame-gate call site recorded",
+                    edge.owner,
+                    edge.dependency
+                );
+            }
+            // ...and the pin must be able to fail: a call that was never there
+            // has to be absent from the source.
+            assert!(
+                !COLLECTOR_SOURCE.contains("frame_emits(COMPACT_DOMAIN_AIR_BASE_STATUS)"),
+                "sanity: the source-text pin would pass for a domain that has no gate"
+            );
+        }
+
+        /// The predicted emitted-domain count is derived from the contract, not
+        /// hand-patched. The batch-2 shape: a roster carrying d45 predicts three
+        /// more domains than it names.
+        #[test]
+        fn scheduled_emitted_domain_count_expands_through_the_contract() {
+            // An empty roster is not "no domains": it runs the eight
+            // country-bundle domains, exactly as the recorder host's coverage
+            // expectation assumes.
+            let empty = control_scheduling(&[]);
+            assert_eq!(compact_scheduled_emitted_domain_count(&empty), 8);
+            assert_eq!(
+                compact_contract::DEFAULT_SCHEDULED_DOMAIN_IDS,
+                &[10u16, 11, 12, 13, 14, 15, 16, 17]
+            );
+            for domain in compact_contract::DEFAULT_SCHEDULED_DOMAIN_IDS {
+                assert!(
+                    compact_frame_domain_directly_enabled(&empty, 0, *domain),
+                    "an empty roster must still enable country domain {domain}"
+                );
+            }
+
+            let bare = control_scheduling(&["air_base_status", "session_header_live"]);
+            assert_eq!(compact_scheduled_emitted_domain_count(&bare), 2);
+
+            let with_d45 = control_scheduling(&[
+                "air_base_status",
+                "session_header_live",
+                "focus_research_decisions_depth_live",
+            ]);
+            assert_eq!(compact_scheduled_emitted_domain_count(&with_d45), 6);
+
+            // Already-scheduled dependencies are not double counted.
+            let with_d45_and_focus = control_scheduling(&[
+                "air_base_status",
+                "session_header_live",
+                "focus_research_decisions_depth_live",
+                "focus_live",
+            ]);
+            assert_eq!(
+                compact_scheduled_emitted_domain_count(&with_d45_and_focus),
+                6
+            );
+
+            // An unresolvable name still counts as one requested domain: a typo
+            // must never make the prediction quietly smaller.
+            let typo = control_scheduling(&["air_base_status", "air_base_statu"]);
+            assert_eq!(compact_scheduled_emitted_domain_count(&typo), 2);
+        }
