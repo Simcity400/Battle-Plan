@@ -157,6 +157,30 @@ struct ScanCounts {
     non_contiguous: usize,
     /// Measured hours whose frame replaced the accumulator rather than upserting.
     replace_frames: usize,
+
+    // --- how much of the capture the member-ordering divergence constrains ----
+    //
+    // `d28::fold_payload` refuses a command row whose member range is not
+    // strictly ascending at the moment that range becomes state: the fold
+    // enforces no ordering on it (`world_fold.rs:14470`-`:14487`) but stores it
+    // as an ordered `Vec` the recorder projects verbatim (`:8003`, `:8011`), and
+    // MEMBERS' key orders ascending, so mirroring an unsorted range would
+    // silently re-sort it. That makes every folded frame's ranked runs ascending
+    // by construction — so the number worth printing is not "how many were
+    // ascending" (the scan would have failed otherwise) but **how many rows the
+    // rule actually constrains**,
+    // which is what says the tightening is not vacuous. Counted over the rows
+    // each accepted frame SERIALIZES, not over the accumulated state, so a row
+    // is counted once per time it is emitted.
+    /// Serialized live command rows carrying two or more members — the only rows
+    /// an ordering can distinguish, and the only ones the check can refuse.
+    ranked_member_runs: usize,
+    /// Serialized live command rows carrying zero or one member: no ordering
+    /// exists, and the check is a no-op on them.
+    trivial_member_runs: usize,
+    /// Serialized rows the check skipped because they are deletes, whose ranges
+    /// never reach the accumulator.
+    deleted_member_runs: usize,
 }
 
 struct StreamScan {
@@ -350,12 +374,14 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                 counts.delta_before_baseline += 1;
             } else if tolerance_applies {
                 // d28's withhold (`:14414`). It sits AFTER the row and member
-                // loops, so the frame is still fully validated — into a
-                // throwaway accumulator, since its effect is discarded. It also
-                // does not reach `replace_or_sparse_after_first`, so it never
-                // marks a baseline seen.
-                let mut discarded = d28::State::new();
-                d28::fold_payload(&mut discarded, payload, true, commands, members)
+                // loops, so the frame is still fully validated — through
+                // `validate_withheld_payload`, which runs exactly what
+                // `fold_payload` runs minus the wire schema's own member-ordering
+                // rule, because a withheld frame's ranges never become state for
+                // that rule to protect. It also does not reach
+                // `replace_or_sparse_after_first`, so it never marks a baseline
+                // seen.
+                d28::validate_withheld_payload(payload, commands, members)
                     .map_err(|e| format!("d28 withheld payload at byte {pos}: {e}"))?;
                 counts.withheld_partial += 1;
             } else {
@@ -371,6 +397,8 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
                     counts.replace_frames += 1;
                 }
                 d28::fold_payload(&mut acc, payload, sparse, commands, members)
+                    .map_err(|e| format!("d28 payload at byte {pos}: {e}"))?;
+                census_member_order(payload, &mut counts)
                     .map_err(|e| format!("d28 payload at byte {pos}: {e}"))?;
                 // `replace_or_sparse_after_first` inserts into
                 // `delta_baselines_seen` exactly when it returned `false`.
@@ -408,6 +436,30 @@ fn scan_stream(stream: &[u8], schema: &Schema) -> Result<StreamScan, String> {
     }
 
     Ok(StreamScan { hours, counts })
+}
+
+/// Classify one accepted d28 payload's serialized member ranges by how many
+/// members they carry. See `ScanCounts`' member-run fields. Runs only on
+/// payloads `d28::fold_payload` has already accepted, so every parse below is
+/// re-doing work that cannot fail; it is still fail-closed rather than
+/// unwrapping, because the census must never be the one place that panics on a
+/// stream the fold took.
+fn census_member_order(payload: &[u8], counts: &mut ScanCounts) -> Result<(), String> {
+    let (header, row_bytes, _) = d28::split_payload(payload)?;
+    let member_count = header.member_count as usize;
+    for bytes in row_bytes.chunks_exact(d28::ROW_LEN) {
+        let row = d28::parse_command_row(bytes)?;
+        if row.deleted {
+            counts.deleted_member_runs += 1;
+            continue;
+        }
+        if d28::member_index_range(&row, member_count)?.len() < 2 {
+            counts.trivial_member_runs += 1;
+        } else {
+            counts.ranked_member_runs += 1;
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -594,6 +646,14 @@ fn main() {
         "rows avg             {:.1} commands, {:.1} membership edges",
         rows_total[0] as f64 / hours_seen as f64,
         rows_total[1] as f64 / hours_seen as f64
+    );
+    println!(
+        "member runs          {} ranked (>=2 members), {} trivial (<=1), {} on delete rows (skipped)",
+        c.ranked_member_runs, c.trivial_member_runs, c.deleted_member_runs
+    );
+    println!(
+        "                     -> the ordering divergence constrains {} serialized rows; 0 refused",
+        c.ranked_member_runs
     );
     println!("baselines            {baselines} (every {BLOCK_HOURS} h)");
     println!("delta hours          {delta_hours_with_change}   empty hours {empty_hours}");

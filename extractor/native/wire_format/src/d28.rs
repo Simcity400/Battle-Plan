@@ -57,13 +57,15 @@
 //!
 //! **Two collections, because `(member_first, member_count)` is transport.** A
 //! command addresses its members as a half-open range into one shared member
-//! array; the fold proves those ranges non-overlapping (`:14355`-`:14359`) and
-//! total (`:14406`-`:14408`), and proves each member id unique within its owning
-//! row (`:14409`-`:14411`). The ranges are re-packed by the collector on every
-//! frame from emission order (`attach_log.rs:69700`-`:69716`) and carry no state
-//! a reader could ask about; what is state is the *set* of
-//! `(kind, object_id) -> {member_id}` facts, which is what the accumulator holds
-//! (`world_fold.rs:14448`). So the ranges are flattened away here: collection
+//! array; the fold proves those ranges non-overlapping (current
+//! `:14429`-`:14432`) and total (`:14480`-`:14482`), and proves each member id
+//! unique within its owning row (`:14483`-`:14485`).
+//! The range *words* are re-packed by the collector on
+//! every frame from emission order — `compact_oob_command_data_payload` recomputes
+//! `member_first` from a running cursor over the row loop (current
+//! `attach_log.rs:70025`-`:70085`) and then appends the member ids in that same
+//! row order (`:70086`-`:70093`) — and carry no state a reader could ask about,
+//! so they are flattened away here: collection
 //! [`COMMANDS`] carries one row per command and collection [`MEMBERS`] one row
 //! per membership edge, keyed by the command's key plus the member id.
 //!
@@ -71,6 +73,81 @@
 //! fact, and the member row's only other word is a must-be-zero reserved. That is
 //! deliberate, not an oversight: adding the member id as a value beside the key
 //! would be a second copy of state the decoder must keep consistent.
+//!
+//! # The member-ordering check is this layer's, not the fold's
+//!
+//! What the fold flattens the range into is **not** a set. It slices the frame's
+//! shared member array and stores the slice as an ordered `Vec<u32>`
+//! (`OobCommandState.members`, current `world_fold.rs:23623`, filled at `:14526`),
+//! and the recorder's own projection emits that vector verbatim as an ordered
+//! JSON array — `armies[].members` (`:8011`) and `army_groups[].army_refs`
+//! (`:8003`). The fold enforces **no ordering at all** on the member rows: its
+//! member loop rejects a zero id, an unowned child and a repeat within one row,
+//! and nothing else (`:14470`-`:14487`). So the fold accepts every permutation of
+//! a row's members and stores each one as a different vector, and [`MEMBERS`]'
+//! `(kind, object_id, member_id)` key — whose own order is ascending `member_id`
+//! — cannot express the ones that are not sorted.
+//!
+//! Mirroring would mean silently re-sorting the sequence, which is the data-loss
+//! defect itself. So [`fold_payload`] **rejects** a command row whose member
+//! range is not strictly ascending *at the moment that range becomes state*, and
+//! that is a deliberate divergence: stricter than the fold, on input the fold
+//! would accept. This is d32's precedent applied unchanged (`d32.rs:146`-`:171`),
+//! and d32's rule — "tightening is justified only where mirroring would lose
+//! information" — is why the rest of this schema mirrors and this one place does
+//! not. Placing it there rather than in [`split_payload`] is what confines it to
+//! the rows a frame leaves behind: a **delete** row's range is discarded with the
+//! key (`world_fold.rs:14509`, before the slice at `:14526`) and a **withheld**
+//! tolerated-partial frame is abandoned whole (`:14488`-`:14496`), so neither can
+//! lose a sequence and neither is refused — see [`validate_withheld_payload`].
+//!
+//! **It is not stricter than the producer, and the position is transport rather
+//! than information.** An army's member list is not read from the army at all: it
+//! is built by grouping the division roots by their parent pointer
+//! (`attach_log.rs:46975`-`:47001`), so the pre-sort order is division-scan order,
+//! not an engine member vector — and all four row builders then canonicalise it,
+//! armies `sort_unstable`/`dedup` at `:47008`-`:47009`, army groups at
+//! `:47058`-`:47059`, fleets at `:47164`-`:47165`, task-force ships at `:47884`
+//! (which additionally fails the whole read on a duplicate, `:47885`-`:47887`).
+//! `compact_oob_member_ids` (`:47198`) only truncates that sorted prefix, so even
+//! the `OVERFLOW` path stays ascending. So no collector-produced frame can carry
+//! an unsorted range. **Measured**: over the 1,519 command rows the 146 d28 DATA
+//! records of `deepwar_t1` serialize, 1,000 live rows carry two or more members
+//! and every one of them is strictly ascending, 472 live rows carry one or none
+//! and have no ordering to check, and 47 are delete rows the check skips. Zero
+//! refusals. The bench prints that split every run so the tightening stays
+//! visible rather than becoming an invisible assumption.
+//!
+//! **Why not d27's ordinal, which is the same shape.** d27's `TARGET_STATES`
+//! keeps the fold's key and carries `TARGET_ORDINAL` beside it (`d27.rs:363`),
+//! and the same device would work here. The two domains split on what the
+//! position *is*. d27's producer refuses to sort and says why — "Preserve engine
+//! vector order. Rendering/replay consumers require the exact producer order;
+//! sorting here would erase redraw semantics" (`attach_log.rs:19349`-`:19351`) —
+//! so there the order is the engine's own and varies; it is information. d28 has
+//! no such comment and could not have one: its order is the collector's own
+//! canonicalisation of a scan, a total function of the member ids, re-derived
+//! every frame. That is transport, which is exactly what d32 says about its
+//! entry ordinal. The measurement agrees: carrying a range-local
+//! `member_ordinal` was built and measured against this capture, and it costs the
+//! wire arm its entire win — raw 185,749 → 218,494 B (90.2% → 106.2% of
+//! shipping), zstd-3 whole-stream 35,110 → 50,791 B (95.8% → 138.6%), 48-hour
+//! blocks 137,000 → 161,816 B, and member churn 5.54 → 28.14 changed rows/hour,
+//! because an edge added or removed mid-range renumbers every edge after it. That
+//! is a large, permanent price for a word that is redundant on every payload the
+//! producer can emit and load-bearing on none of them. The alternative reading is
+//! defensible and is recorded here with its numbers, per step 5's rule that where
+//! two readings are both defensible the choice is a decision with its evidence.
+//!
+//! **No consumer indexes the array today**, which is why refusing rather than
+//! carrying loses nothing downstream. `army_refs` has no reader anywhere in
+//! `replay_interface/` — it appears only in the projection above, in the schema
+//! documentation (`replay_interface/documents/REPLAY_SCHEMA.md:775`) and in the
+//! independent save oracle, which builds its own from the save
+//! (`extractor/save_oracle/parse_oob.py:229`, `:242`). The only reader of
+//! `order_of_battle.armies[]` is `xui17_oob_assignments`
+//! (`replay_interface/native/replay_core/src/world.rs:21664`-`:21730`), which
+//! takes `id`, `owner` and `leader` and never touches `members`.
 //!
 //! ## The four states, field by field
 //!
@@ -421,7 +498,12 @@ pub fn schema() -> Schema {
                 collection_id: MEMBERS,
                 shape: Shape::KeyedSet,
                 // Key only. The membership edge IS the fact; the member row's
-                // only other word is a must-be-zero reserved (`:14396`).
+                // only other word is a must-be-zero reserved (current
+                // `:14474`-`:14476`). The
+                // keyed set's own order is ascending `member_id`, which is the
+                // order every range this schema stores is already in — see the
+                // module docs, and [`member_range_is_ordered`], which is where
+                // the frames it does not accept are refused.
                 fields: vec![
                     Field::new(f::KIND, Kind::Unsigned).key(0),
                     Field::new(f::OBJECT_ID, Kind::Unsigned).key(1),
@@ -512,6 +594,11 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 /// and none of them depends on the frame mode. In particular the fold does
 /// **not** require `changed_rows == row_count` in any mode — d26's fold does, and
 /// copying that here would reject healthy frames.
+///
+/// **This layer's own member-ordering check is NOT here.** It is not a
+/// structural rule about the payload, it is a representability rule about the
+/// state the frame leaves behind, so it belongs where that state is built —
+/// [`fold_payload`]'s upsert loop, via [`member_range_is_ordered`].
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u8], &[u8]), String> {
     let header = peek_header(payload)?;
 
@@ -552,6 +639,58 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     let rows = &payload[HEADER_LEN..HEADER_LEN + rows_len];
     let members = &payload[HEADER_LEN + rows_len..];
     Ok((header, rows, members))
+}
+
+/// This layer's own check on one command's member ids: they must be strictly
+/// ascending, because [`MEMBERS`]' `(kind, object_id, member_id)` key orders them
+/// that way and a keyed set can express no other order.
+///
+/// The fold enforces no ordering on a member range — its member loop rejects a
+/// zero id, an unowned child and a repeat within one row, and nothing else
+/// (current `world_fold.rs:14470`-`:14487`) — and it stores the range as an
+/// ordered `Vec<u32>` (`OobCommandState.members`, current `:23623`, filled at
+/// `:14526`) that the recorder projects verbatim as an ordered JSON array
+/// (`:8003`, `:8011`). On a fold-accepted range that is *not* ascending,
+/// mirroring would silently re-sort the sequence, which is the data-loss defect
+/// itself. So this schema refuses that frame instead — d32's precedent exactly
+/// (`d32.rs:146`-`:171`): stricter than the fold, on input the fold would accept,
+/// and **not stricter than the producer**, which canonicalises every range before
+/// packing it (`attach_log.rs:47008`-`:47009`, `:47058`-`:47059`,
+/// `:47164`-`:47165`, `:47884`). Measured: 0 refusals across the 1,000 ranked
+/// ranges of `deepwar_t1`.
+///
+/// **It takes the already-sliced ids, not the payload**, so it cannot be handed
+/// a range and a member array that disagree, and it cannot index out of bounds
+/// on any input. [`fold_payload`] is the only caller, and it calls this from its
+/// upsert loop — which is what confines the rule to the rows the frame leaves
+/// behind. Two classes are therefore exempt without a special case:
+///
+///   * **delete rows**, whose range the fold validates and then discards with the
+///     key (its `continue` at `:14509`, before the slice at `:14526`);
+///   * **withheld tolerated-partial frames**, which the fold validates in full
+///     and then abandons without touching the accumulator (`:14488`-`:14496`) —
+///     see [`validate_withheld_payload`].
+///
+/// Refusing either would reject a frame whose folded state this schema
+/// represents perfectly well. Duplicate `(kind, object_id)` needs no carve-out
+/// either: unlike d32's last-writer-wins wing key, the fold rejects a repeated
+/// command identity outright (`:14411`-`:14413`), so every live row survives.
+pub fn member_range_is_ordered(
+    kind: u32,
+    object_id: u32,
+    member_ids: &[u32],
+) -> core::result::Result<(), String> {
+    for pair in member_ids.windows(2) {
+        if pair[1] <= pair[0] {
+            return Err(format!(
+                "oob_command ({kind}, {object_id}) carries member {} after {}; the wire key \
+                 (kind, object_id, member_id) orders this command's members ascending and \
+                 cannot carry the frame's sequence",
+                pair[1], pair[0]
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Parse one 80-byte command row, applying every per-row check the fold applies
@@ -853,6 +992,10 @@ pub fn record_from_row(
 /// record is empty and this exists to keep the boundary uniform: the row is
 /// still validated (`world_fold.rs:14391`-`:14405`) and a collection carrying a
 /// value field this mapper cannot fill is still refused.
+///
+/// The *order* of a command's member range is not this function's business: it
+/// is a whole-range property, checked once by [`member_range_is_ordered`] where
+/// [`fold_payload`] turns the range into state.
 pub fn record_from_member_row(
     collection: &Collection,
     row: &[u8],
@@ -871,12 +1014,16 @@ pub fn record_from_member_row(
 
 // --- The frame-level fold ----------------------------------------------------
 
-/// One command in the accumulator: its [`COMMANDS`] record and its member ids.
-/// This is `world_fold.rs:23542`'s `OobCommandState` with the fields the wire
-/// schema carries, plus the member set the child table flattens into.
+/// One command in the accumulator: its [`COMMANDS`] record and its member ids in
+/// the fold's own stored order. This is `OobCommandState` (current
+/// `world_fold.rs:23616`) with the fields the wire schema carries, plus the
+/// member vector the child table flattens into.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandEntry {
     pub record: Record,
+    /// Wire order, exactly as the fold's slice stores it (current
+    /// `world_fold.rs:14526`) — which, on every frame this schema accepts, is
+    /// ascending: see [`member_range_is_ordered`].
     pub members: Vec<u32>,
 }
 
@@ -937,7 +1084,10 @@ pub fn frame_is_sparse(delta: bool, baseline_seen: bool) -> bool {
 /// *after* every row has been decoded and validated. That ordering matters and
 /// is why this function is fail-closed on row content regardless of status: a
 /// tolerated-partial frame whose rows are malformed is a corrupt frame in the
-/// recorder too.
+/// recorder too. A caller validating a **withheld** frame must therefore use
+/// [`validate_withheld_payload`] rather than this function with a throwaway
+/// accumulator: this one additionally applies [`member_range_is_ordered`], and a
+/// withheld frame's rows never become state for that rule to protect.
 ///
 /// Fail-closed: every rejection the fold makes is an `Err` here, and a frame this
 /// rejects leaves the accumulator exactly as it was. Total: no payload of any
@@ -948,6 +1098,48 @@ pub fn fold_payload(
     sparse: bool,
     commands: &Collection,
     members: &Collection,
+) -> core::result::Result<PayloadHeader, String> {
+    fold_payload_inner(state, payload, sparse, commands, members, true)
+}
+
+/// Everything [`fold_payload`] validates, on a frame the recorder validates in
+/// full and then **withholds**: `fold_oob_command` decodes and checks every row
+/// and every member row, and only then — at `world_fold.rs:14488`-`:14496`,
+/// before the accumulator is touched — marks the domain-hour unknown and returns
+/// without folding anything. A harness must still run that validation, because a
+/// malformed tolerated-partial frame is a corrupt stream in the recorder too.
+///
+/// It differs from [`fold_payload`] in exactly one way: it does **not** apply
+/// [`member_range_is_ordered`]. That rule exists because mirroring an unsorted
+/// range into a keyed set would silently re-sort a sequence the accumulator
+/// would otherwise hold — and a withheld frame's rows never reach the
+/// accumulator, so there is no sequence to lose. Refusing one would reject a
+/// frame whose folded state (nothing) this schema represents perfectly well.
+/// This is the same reasoning that exempts a delete row's range.
+///
+/// The frame has no effect, so there is no accumulator parameter and no `sparse`:
+/// the fold's `replace_or_sparse_after_first` is never reached on this path
+/// either (`:14498`).
+pub fn validate_withheld_payload(
+    payload: &[u8],
+    commands: &Collection,
+    members: &Collection,
+) -> core::result::Result<PayloadHeader, String> {
+    let mut discarded = State::new();
+    fold_payload_inner(&mut discarded, payload, true, commands, members, false)
+}
+
+/// `tighten` is whether this layer's own [`member_range_is_ordered`] rule
+/// applies — true for a frame that is folded, false for one that is validated and
+/// withheld. Everything else is identical, so the two public entry points cannot
+/// drift apart in their reading of the fold.
+fn fold_payload_inner(
+    state: &mut State,
+    payload: &[u8],
+    sparse: bool,
+    commands: &Collection,
+    members: &Collection,
+    tighten: bool,
 ) -> core::result::Result<PayloadHeader, String> {
     let (header, row_bytes, member_bytes) = split_payload(payload)?;
     let member_count = header.member_count as usize;
@@ -1033,11 +1225,20 @@ pub fn fold_payload(
         let record =
             record_from_row(commands, bytes, 0).map_err(|e| format!("row {index}: {e}"))?;
         let range = member_index_range(row, member_count).map_err(|e| format!("row {index}: {e}"))?;
+        let row_members = &member_ids[range];
+        // This layer's own rule, applied here and nowhere else: this is the one
+        // place a member sequence becomes state, so delete rows (which `continue`
+        // above) and withheld frames (`tighten == false`) are exempt without a
+        // special case. See `member_range_is_ordered`.
+        if tighten {
+            member_range_is_ordered(row.kind, row.object_id, row_members)
+                .map_err(|e| format!("row {index}: {e}"))?;
+        }
         upserts.push((
             key,
             CommandEntry {
                 record,
-                members: member_ids[range].to_vec(),
+                members: row_members.to_vec(),
             },
         ));
     }
@@ -1943,12 +2144,21 @@ mod tests {
         }
         // Member rows.
         let m = members();
-        assert!(record_from_member_row(&m, &member_row(0), 0).is_err(), "zero member id");
+        assert!(
+            record_from_member_row(&m, &member_row(0), 0).is_err(),
+            "zero member id"
+        );
         let mut bad = member_row(5);
         bad[4..8].copy_from_slice(&1u32.to_le_bytes());
-        assert!(record_from_member_row(&m, &bad, 0).is_err(), "member reserved nonzero");
+        assert!(
+            record_from_member_row(&m, &bad, 0).is_err(),
+            "member reserved nonzero"
+        );
         for len in [0usize, 4, 7, 9] {
-            assert!(record_from_member_row(&m, &vec![0u8; len], 0).is_err(), "length {len}");
+            assert!(
+                record_from_member_row(&m, &vec![0u8; len], 0).is_err(),
+                "length {len}"
+            );
         }
     }
 
@@ -2209,6 +2419,201 @@ mod tests {
         let d = diff(&m, &b, &a);
         assert_eq!(d.changed.len(), 0);
         assert_eq!(d.tombstones.len(), 1);
+    }
+
+    // --- the member-ordering divergence -------------------------------------
+
+    #[test]
+    fn an_unsorted_member_range_is_refused_rather_than_re_sorted() {
+        // The exact payload the audit is about: descending member ids. The FOLD
+        // accepts this — its member loop checks only zero, ownership and per-row
+        // uniqueness (`world_fold.rs:14470`-`:14487`) — and stores the vector
+        // [900, 431, 12]. The MEMBERS key orders them 12 < 431 < 900, so this
+        // schema cannot carry it and must say so instead of silently re-sorting.
+        let s = schema();
+        let row = RawRow {
+            member_first: 0,
+            member_count: 3,
+            ..full_army()
+        };
+        let p = payload(&[row], &[900, 431, 12], 0);
+        let mut state = State::new();
+        let err = fold_payload(&mut state, &p, false, &s.collections[0], &s.collections[1])
+            .expect_err("refused");
+        assert!(err.contains("431") && err.contains("900"), "{err}");
+        // Nothing partial is left behind: the refusal happens while the upserts
+        // are being built, before the accumulator is touched.
+        assert!(state.commands.is_empty());
+        // And it is refused on an upsert into a populated accumulator too, not
+        // just on a replacing first frame.
+        let seed = payload(&[full_army()], &[], 0);
+        let mut state = State::new();
+        fold_payload(&mut state, &seed, false, &s.collections[0], &s.collections[1])
+            .expect("seed folds");
+        let before = state.clone();
+        assert!(fold_payload(&mut state, &p, true, &s.collections[0], &s.collections[1]).is_err());
+        assert_eq!(state, before, "a refused frame leaves the accumulator alone");
+
+        // Ascending is accepted, and is the only ordering of these three ids
+        // that is.
+        let ok = payload(&[row], &[12, 431, 900], 0);
+        let mut state = State::new();
+        fold_payload(&mut state, &ok, false, &s.collections[0], &s.collections[1]).expect("folds");
+        assert_eq!(state.commands[&(KIND_ARMY, 1001)].members, vec![12, 431, 900]);
+
+        // `split_payload` is purely structural and does NOT refuse: the rule is
+        // about the state a frame leaves behind, not about the payload's shape.
+        split_payload(&p).expect("structurally well-formed");
+    }
+
+    #[test]
+    fn a_withheld_frame_is_validated_in_full_but_not_ordering_checked() {
+        // The recorder validates a tolerated-partial frame's every row and member
+        // row and then abandons it without touching the accumulator
+        // (`world_fold.rs:14488`-`:14496`). Its member ranges never become state,
+        // so the ordering rule has nothing to protect and must not refuse it —
+        // otherwise this port rejects a frame class the recorder tolerates.
+        let s = schema();
+        let row = RawRow {
+            member_first: 0,
+            member_count: 3,
+            ..full_army()
+        };
+        let p = payload(&[row], &[900, 431, 12], 0);
+        let header = validate_withheld_payload(&p, &s.collections[0], &s.collections[1])
+            .expect("a withheld frame's order is not state");
+        assert_eq!(header.row_count, 1);
+        assert_eq!(header.member_count, 3);
+        // It is still the FULL validation: a malformed member row in a withheld
+        // frame is a corrupt stream in the recorder too.
+        let mut corrupt = p.clone();
+        let member0 = HEADER_LEN + ROW_LEN;
+        corrupt[member0..member0 + 4].copy_from_slice(&0u32.to_le_bytes()); // zero id
+        assert!(
+            validate_withheld_payload(&corrupt, &s.collections[0], &s.collections[1]).is_err(),
+            "a zero member id is rejected on the withheld path too"
+        );
+        let mut corrupt = p.clone();
+        corrupt[member0 + 4..member0 + 8].copy_from_slice(&1u32.to_le_bytes()); // reserved
+        assert!(
+            validate_withheld_payload(&corrupt, &s.collections[0], &s.collections[1]).is_err(),
+            "a non-zero member reserved word is rejected on the withheld path too"
+        );
+        // And the ONLY difference from the folding path is the ordering rule.
+        let mut state = State::new();
+        assert!(
+            fold_payload(&mut state, &p, false, &s.collections[0], &s.collections[1]).is_err(),
+            "the same payload IS refused when it would become state"
+        );
+    }
+
+    #[test]
+    fn the_refusal_sweeps_every_kind_every_position_and_every_arity() {
+        // By property, not by the one reported input: every command kind, every
+        // adjacent inversion in a range, and a range whose only defect is at its
+        // very end. A one-member range has no ordering and is always accepted.
+        let s = schema();
+        let fold = |p: &[u8]| {
+            let mut state = State::new();
+            fold_payload(&mut state, p, false, &s.collections[0], &s.collections[1]).map(|_| ())
+        };
+        for kind in [KIND_ARMY, KIND_ARMY_GROUP, KIND_FLEET, KIND_TASK_FORCE] {
+            let base = RawRow {
+                kind,
+                object_id: 7,
+                flags: FLAG_OWNER,
+                owner_tag_db_id: 3,
+                parent_status: STATUS_NONE,
+                member_status: STATUS_EXACT,
+                owner_status: STATUS_EXACT,
+                leader_status: STATUS_NONE,
+                leader_trait_status: STATUS_NONE,
+                ..RawRow::default()
+            };
+            for len in 1usize..=5 {
+                let ascending: Vec<u32> = (1..=len as u32).map(|i| i * 10).collect();
+                let row = RawRow {
+                    member_first: 0,
+                    member_count: len as u32,
+                    ..base
+                };
+                fold(&payload(&[row], &ascending, 0))
+                    .unwrap_or_else(|e| panic!("kind {kind} len {len} ascending: {e}"));
+                // Swap each adjacent pair in turn.
+                for swap in 0..len.saturating_sub(1) {
+                    let mut ids = ascending.clone();
+                    ids.swap(swap, swap + 1);
+                    assert!(
+                        fold(&payload(&[row], &ids, 0)).is_err(),
+                        "kind {kind} len {len} swap at {swap} must be refused"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_refusal_runs_per_range_not_across_the_shared_array() {
+        // Two commands sharing one frame's member array. Each range is ascending
+        // in itself, but the second starts below the first's last id — which is
+        // fine, because a member range is only ever compared with itself. A
+        // check written against the flat array would reject this healthy frame.
+        let first = RawRow {
+            object_id: 1,
+            member_first: 0,
+            member_count: 2,
+            ..full_army()
+        };
+        let second = RawRow {
+            object_id: 2,
+            member_first: 2,
+            member_count: 3,
+            ..full_army()
+        };
+        let p = payload(&[first, second], &[400, 900, 12, 431, 800], 0);
+        let s = schema();
+        let mut state = State::new();
+        fold_payload(&mut state, &p, false, &s.collections[0], &s.collections[1])
+            .expect("each range is ascending in itself");
+        assert_eq!(state.commands[&(KIND_ARMY, 1)].members, vec![400, 900]);
+        assert_eq!(state.commands[&(KIND_ARMY, 2)].members, vec![12, 431, 800]);
+    }
+
+    #[test]
+    fn a_delete_rows_range_is_not_subject_to_the_ordering_check() {
+        // The tightening runs on the rows the frame leaves behind. A delete row's
+        // range never reaches the accumulator — the fold `continue`s at
+        // `world_fold.rs:14509`, before the slice at `:14526` — so refusing it
+        // would reject a frame whose folded state this schema represents
+        // perfectly well. Same carve-out as d32's (`d32.rs:575`-`:581`).
+        let s = schema();
+        let dead = RawRow {
+            object_id: 5,
+            flags: FLAG_DELETED,
+            member_first: 0,
+            member_count: 3,
+            ..RawRow::default()
+        };
+        let p = payload(&[dead], &[900, 431, 12], 0);
+        let mut state = State::new();
+        fold_payload(&mut state, &p, false, &s.collections[0], &s.collections[1])
+            .expect("a delete row's order is not state");
+        assert!(state.commands.is_empty(), "the delete removed nothing and added nothing");
+    }
+
+    #[test]
+    fn member_range_is_ordered_is_total_on_any_slice() {
+        // The rule takes the already-sliced ids, so there is no range and no
+        // member array that can disagree and nothing to index out of bounds.
+        assert!(member_range_is_ordered(KIND_ARMY, 1, &[]).is_ok(), "empty");
+        assert!(member_range_is_ordered(KIND_ARMY, 1, &[7]).is_ok(), "single");
+        assert!(member_range_is_ordered(KIND_ARMY, 1, &[1, 2, u32::MAX]).is_ok());
+        assert!(member_range_is_ordered(KIND_ARMY, 1, &[2, 1]).is_err());
+        assert!(
+            member_range_is_ordered(KIND_ARMY, 1, &[5, 5]).is_err(),
+            "equal is not ascending either, and the fold rejects it as a duplicate"
+        );
+        assert!(member_range_is_ordered(KIND_ARMY, 1, &[u32::MAX, 0]).is_err());
     }
 
     #[test]
