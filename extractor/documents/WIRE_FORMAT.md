@@ -1132,6 +1132,53 @@ closes them on a named corpus and harness before ~80 encoders are written.
   wire against 6,415,489 B shipping — **0.4% raw**
   (`runs/batch3/d92_country_preferred_tactic/post_fix/`). Provenance for the wave:
   `extractor/native/runs/batch3/`.
+
+  **Wave 6 (2026-07-28): four more domains, an ordinal finally priced, and a stop that owns its
+  domain.** d46, d51, d54 and d96, on the 514-hour `deepwar_a`, 750-hour `deepwar_b` and 896-hour
+  `deepwar_c` captures, every measured hour reader-replayed against the fold.
+  **d54 army_battleplans_depth is the batch's genuine ordinal-device decision, and the first to
+  measure what the ordinal costs instead of arguing it.** §7.3 names its ordered-shape instances
+  by name and does not name d54, so the evidence decided: **12 of 616 path-carrying rows repeat a
+  province inside one polyline**, which a province-id key would collapse on input the producer
+  demonstrably emits, and **0 of 77 observed path changes is a pure reorder**, so d11's stop
+  condition never fires. The premium is recorded beside the decision — 186 of 401 positions
+  differ under the ordinal key against the 148 id-set changes an (impossible) id key would have
+  emitted, about **26% more churn** — and the divergence from d27, whose sibling child table
+  carries its ordinal as a value field, is grammar rather than taste: d27's fold proves per-row
+  target-state-id uniqueness and d54's decoders prove nothing of the kind. Its headline
+  **5.40% raw** measures recorder withholding, not grammar: **66 of its 72 baselines are §1.5
+  gap-forced**, because the fold withholds 241 of 514 hours.
+  **d46 air_variant_archetypes carries the most lopsided stop measured.** The `ACE1` ace roster
+  stops on two independent grounds — runtime-generated ace names no content manifest resolves,
+  and a retain-on-unavailable membership needing §8 — and it is **99.5% of the domain's shipping
+  bytes** (10,138,319 of 10,187,457 B), against 0.1% for the archetype rows the wire arm replaces
+  and 0.4% framing. Every ratio is therefore given twice: 4.4% against the whole shipping arm and
+  22.0% against a labelled cut arm, whole-stream at zstd-3. It also splits a rule stated so far as
+  one: a stopped trailer is validated at **two** positions — the fold's, behind its failure gate,
+  and the status-independent payload authority's, in front of everything — so a malformed trailer
+  refuses the stream even on a failure-status hour, through the authority and not the fold.
+  **d51 scripted_state settles what makes a §5 assignment band claimable — the key ORDER.**
+  Because §7.4 delta-chains only the first key component, a symbol at position ≥ 1 permutes rows
+  only within a run of equal leading components, and the band is then exactly computable:
+  **10,830…12,406 B** over a 4,354-key vocabulary against a 12,353 B sorted-index stand-in,
+  16.23%…18.59% of the 66,730 B one-baseline wire arm. A symbol-led key would have made it a
+  permutation optimisation over the delta chain instead, with no per-row formula. d51 also bounds
+  wave 1's "decimal sources have a cheap exact `Fixed(k)`" above: that case rests on an **i32**
+  source, and d51's fold reads an **i64** (`world_fold.rs:19000`), so `Fixed(5)` would stop
+  reproducing the raw integer above ~2^51 on input the fold accepts — the word travels raw as
+  `Signed`, and
+  the domain has no `Continuous` field at all.
+  **d96 tactic_weight is the first carried presence bool ruled to be a four-state rather than a
+  field.** PTW1 rows carry `accumulator_entry_present` beside `accumulator_raw` and the codec
+  makes a clear bit imply a zero word (`compact_contract/src/tactic_weight.rs:112`–`:113`,
+  `:328`); the collector reads a country's whole modifier accumulator, failing the row on any
+  unreadable entry, and only then binary-searches it — so a clear bit is §3's *null*,
+  "applicable, the relation genuinely points at nothing", on direct producer evidence rather than
+  the Null/Unknown tie-break, and the bit is recoverable from the four-state with nothing carried
+  twice. 896/896 hours measured: **0.4% raw, 5.0% whole-stream zstd-3, 17.7% at 48-hour blocks**,
+  with all 19 baselines at a 48-hour block start and **zero forced by a §1.5 state gap** — the
+  clean counter-case to d54's arm, where the same rule forces 66 of 72. Provenance for the wave:
+  `extractor/native/runs/batch3/`.
 - **`ticks_per_hour_log2`.** The mechanism is here; the value is set by the finest cadence any
   domain justifies, and is owned by the container format.
 - **Which domains declare a finer cadence, and how fine.** Each candidate domain carries its own

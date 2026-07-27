@@ -98,9 +98,12 @@ raw 56,600,000 — 56,600 buildings at the correct divisor and 566 at the wrong 
 plausible-looking, and no round-trip test can catch the wrong choice because the error is in
 the mapping, not the codec.
 
-**Then write down how each hour's payload relates to the state before it.** Five shapes are
+**Then write down how each hour's payload relates to the state before it.** Six shapes are
 measured, and the difference decides your harness (step 9), your `split_payload` invariants
-(step 7) and whether you need an accumulator at all:
+(step 7) and whether you need an accumulator at all. **Each shape is indexed by the question it
+answers, not only by its exemplars** — a shape recognised by its exemplar list alone gets missed
+when a new fold reaches it through a different helper, which is exactly what made d46 look like a
+sixth shape until the deciding question was asked:
 
 1. **Full replace** — every record carries the whole table; the prior state is discarded
    (d63, d18).
@@ -109,9 +112,23 @@ measured, and the difference decides your harness (step 9), your `split_payload`
    (`d26.rs:424`–`:434`), while a clean full baseline may be unequal.
 3. **Pure incremental** — every payload is a patch, there is no baseline record and no mode
    word (d10; asserting `changed_rows == row_count` on it was a round-1 finding).
-4. **Replace-or-sparse-after-first** — only the FIRST record replaces; every later record is a
+4. **Replace-or-sparse-after-first** — *does the fold replace exactly once, on a condition the
+   payload does not carry?* Only the FIRST record replaces; every later record is a
    sparse patch even though nothing in it says so (d31, d34, d36 — three separate survey
    corrections). Reading records 2..n as snapshots silently drops every row they omit.
+   **Two helpers implement this shape and they are not interchangeable.**
+   `replace_or_sparse_after_first` (`world_fold.rs:2957`–`:2970`), which d31/d34/d36 reach,
+   consults `COMPACT_STATUS_DELTA_DATA` **and** the expected-partial tolerance table, so a delta
+   bit or a tolerated partial forces the sparse arm. d46's `implicit_delta_baseline_or_sparse`
+   (`:2972`–`:2978`) takes only the domain id and consults **neither** — it returns `false` the
+   first time the domain is seen and `true` ever after, whatever the status word says. That makes
+   d46 the purest instance of shape 4 rather than a sixth shape: its lane sets `DELTA_DATA`
+   unconditionally
+   (`lanes/air_wings_variants_lifecycle_live/src/extractor.rs:105`) and the fold never reads it,
+   so the shape's own wording — "even though nothing in it says so" — is literally true, and
+   `bench_real_d46.rs::the_delta_bit_does_not_change_what_the_fold_does` pins it. Find which
+   helper YOUR fold calls before assuming the mode word matters; the payload may never say which
+   arm it is on.
 5. **Two-accumulator, mode-selected seed** — the fold keeps a *projected state* and a separate
    *delta baseline*, and the frame mode chooses which one the payload is applied to (d48).
    `fold_construction_buildings_state_damage` (`world_fold.rs:20252`) seeds its working state
@@ -133,6 +150,25 @@ measured, and the difference decides your harness (step 9), your `split_payload`
    mirror-the-fold rule, and the measurement harness asserts the tolerance is still absent so
    a later entry fails the run rather than silently invalidating the coverage caveat.
    Otherwise the next porter reads "unreachable" as "omit it".
+6. **Per-collection clear scope** — *is the clear a property of the FRAME, or of the
+   sub-collection?* d51's `fold_scripted_state` selects its mode with `DELTA_DATA`
+   (`world_fold.rs:18923`) and refuses a delta that arrives first (`:18937`,
+   `reject_delta_before_baseline`), which is shape 2 —
+   but the clear is not uniform. A **non-delta** frame clears all five accumulators (`:19067` →
+   `clear_scripted_state_accumulators`); a **delta** frame clears the opaque-badge and
+   delayed-event sub-maps and only those (`:19069`–`:19072`). So three of the five collections
+   are baseline-plus-delta with tombstones and the other two are full replace on **every** frame,
+   inside one payload. The consequence a uniform harness gets wrong is silent and wire-visible: a
+   delta frame carrying no badge row **empties** the badge collection, so "a delta leaves
+   untouched rows alone" is false for two of the five, and the wire arm must emit tombstones for
+   them.
+   This is neither of the two shapes it resembles. Shape 2 has one clear semantics for the whole
+   payload, which is what makes "apply the delta to the prior state" a domain-level statement;
+   shape 5 selects **which** of two accumulators a payload is applied to, whereas here every
+   accumulator is written on every frame and they differ only in whether the frame's clear reaches
+   them. **The unit of the shape question is therefore the collection, not the domain**: read
+   `clear_*` and the delta arm side by side and write down, per collection, which frames clear it.
+   A port whose `fold_payload` clears "the accumulator" is correct only where that is one thing.
 
 **The cue for "do I need an accumulator" is the fold, not the payload:** *does the fold ever
 leave prior state untouched?* — and a second question: **does the fold keep more than one
@@ -143,6 +179,18 @@ packer omits countries whose read failed and d34 is a tiny table that is nonethe
 sparse-after-first. A survey's row-count claim is guidance; the fold and your capture are the
 evidence, and a falsified survey line is corrected in the survey document, not worked around
 (d35's "constant 204 rows/hour" was `observed_variant_rows`, and d35 is pure incremental).
+
+**One line of arithmetic first: confirm the survey's rows/hour figure against the payload's own
+`row_count` word at `+8` on a real record, before trusting any other line of that survey row.**
+The same misread — a survey rows/hour column carrying an `observed_*` scan or census width
+instead of the emitted row count — is now measured six times, because several collectors fill
+the DOMAIN_PERF `row_count` field from their own `observed_*` diagnostic: d35's 204
+(`observed_variant_rows`); d61's 440 (`observed_rows`, i.e. the 440-slot country table the lane
+scans, against a real constant 25); d52's 1,081 (`observed_state_rows` at `+20`); and three in
+one wave — d54's 523…893 (`observed_army_rows` at `+20`, against a real 0…114), d51's "3,042
+constant" (`observed_scopes` at `+24`, against a real 16.02/hour) and d46's 207…211
+(`observed_variant_rows`, against a real 0…207 with mean 0.4). The figure feeds the survey's
+size, cadence and often its shape claim, so one wrong word propagates through the whole row.
 
 ### 2. Decide each field's four-state semantics
 
@@ -327,6 +375,34 @@ lengths.
   can still widen the varint — claim the invariance you measured, not more. Do the same, label
   the stand-in, list the field in the ContentId retrofit sweep, and note the vocabulary may
   only exist after pass 1 of the harness (step 9).
+  **Where the vocabulary is too large for that invariance claim, report a BAND — and whether the
+  band is computable at all is decided by the KEY ORDER (d51).** §7.4 delta-chains only the FIRST
+  key component and writes every later one absolute (`WIRE_FORMAT.md:675`–`:680`;
+  `body.rs::write_sorted_keys`). So a symbol at key position **≥ 1** permutes rows only within a
+  run of equal leading components and cannot change the leading-component sequence: the whole
+  assignment-sensitivity of the arm collapses to `sum(varint_len(id))` and the band is a two-line
+  computation — d51 reports 10,830…12,406 B against a 12,353 B sorted-index stand-in over a
+  4,354-key vocabulary, 16.23%…18.59% of its 66,730 B one-baseline wire arm. A symbol that
+  **leads** the key re-sorts the whole collection under a re-assignment and rewrites the
+  first-component delta chain, so best/worst becomes a permutation optimisation over that chain
+  rather than a per-row cost, and the per-row band formula silently does not apply. Prefer a key
+  that puts the symbol after a low-cardinality concrete component — d51 leads with `scope_kind`
+  for exactly this reason; it costs nothing on the wire and it is what makes the measurement's
+  band claimable. If the symbol must lead, say so and claim only the stand-in's measured cost.
+  **Two counting rules the band rests on, both of them d51 review findings.** *Count every key the
+  arm emits* — baselines and deltas alike, tombstone keys included, since a delta writes the key
+  of each changed row and each tombstone and those carry symbol ids too; take the count at the
+  encode site so an edit cannot encode one thing and count another
+  (`a_delta_key_is_counted_toward_the_symbol_band`; counting baseline-written keys only
+  understated d51's one-baseline band by 178 B). *Range the band over the FROZEN vocabulary's id
+  space, not over the symbols the arm happened to emit* — §5 assigns ids across the whole content
+  set, so an assignment is a bijection onto `0..len-1`, and a vocabulary member the arm never
+  emits (a key seen only on a tombstone, say) still occupies an id and can push an emitted symbol
+  into a wider varint; sizing by the emitted set reports a band the stand-in itself can fall
+  outside of (`the_band_ranges_over_the_frozen_vocabulary_not_the_emitted_subset`). Neither
+  finding moved a wire byte on d51's capture — 4,354 of 4,354 symbols were emitted, so the two
+  formulas agree there — which is the point: the defect was real in general and inert in the
+  measurement that would have had to catch it.
   **Two things this rule does not unblock**, and neither is an argument about kinds:
   player-authored free text (Scope), and a collection carrying a *second, independent*
   blocker. d17's war graph is the measured instance of the second: even with a symbol id, a
@@ -357,7 +433,25 @@ unrecoverable.
 **One more lossless case (d24): a decimal fixed-point source.** An int32 stored over a
 100_000 denominator is exactly `Fixed(5)` — not a precision budget but the source's own
 grid — and it also recovers the raw integer downstream consumers require, which `Exact`
-would spend 8 bytes/value to do. A `/32768` source has NO lossless `Fixed(k)` under the
+would spend 8 bytes/value to do.
+
+**That rule is conditional on the SOURCE'S WIDTH, and the precondition is load-bearing.** It
+holds for d24 and d52 because their source words are `i32`: the whole input domain is
+`-2^31 <= raw < 2^31`, so `|raw| <= 2^31` — a factor of `2^20`, about six decimal orders, inside
+the band where `Fixed(5)` reproduces the raw integer (`|raw| <= 2^51`, step 2's d36 band,
+`d36.rs:184`). d51's source word is an `i64` (`read_i64`, `world_fold.rs:19000`), and
+applying the rule verbatim — as its classification survey did — would have chosen a quantizer
+that silently stops reproducing the raw above roughly `2^51` on input the fold accepts and step 2
+forbids refusing. **Check the fold's read width, not the field's observed values**: d51's own
+capture range (`-1,073,741,821 ..= 100,000,000,000`) sits comfortably inside `Fixed(5)`'s band,
+so no measurement on that capture would ever have caught it. Where the source is wider, carry the
+raw integer in the matching integer kind and recompute the projection downstream (step 1's d61
+rule) — lossless over the whole range and cheaper than `Exact`. A domain can legitimately end up
+with **no `Continuous` field at all** (d46, d51, d54 and d96 each did), in which case step 8's
+quantization test is recorded as inapplicable with its reason rather than left silent; step 4
+otherwise reads as though a decimal source always becomes a `Continuous` field.
+
+A `/32768` source has NO lossless `Fixed(k)` under the
 current codec: the identity `r/32768 = r·5¹⁵/10¹⁵` holds mathematically, but the codec
 scales through binary64, and rounding there produces an adjacent integer that passes the
 stability check and decodes to the neighbouring float (e.g. raw 295149 → …624 instead of
@@ -375,6 +469,11 @@ sets have a delta grammar. Ordered shapes and event streams are stop conditions 
 Key fields: concrete, totally ordered, present in every row, never
 optional/nullable/unknown-capable/derived. d20's key is the `(div_id, div_type)` pair the
 fold builds its uid from.
+
+**Key component ORDER is a measurement decision as well as an identity one** wherever a §5 symbol
+is a component: §7.4 delta-chains only the first component, so where the symbol sits decides
+whether the assignment band is exactly computable or a permutation problem. Step 3's band rule
+(d51) is the statement; decide the order here.
 
 **An ordered array can still be a keyed set — the ordinal device.** The test is
 **the array's order must be a total function of the carried fields on every payload the FOLD
@@ -429,6 +528,31 @@ loadout line's identity as its variant rather than its position — the ordinal 
 transport, re-packed from emission order every frame, so a positional key would churn every row
 of every hour — and refused the frames its keyed set cannot express instead, an input its own
 producer cannot generate (`d32.rs:146`–`:170`; see step 7).
+
+**d54 is the worked example of the decision going the ordinal's way, with its price measured.**
+§7.3 does not name d54, so nothing was binding by name and the evidence decided it — and the
+evidence closed the id-key option outright: **12 of 616 path-carrying rows repeat a province
+inside one polyline** (key `(0, 10677, 2080, 1845)` carries `[9632, 11609, 9632]`), so a
+province-id key would collapse waypoints the producer demonstrably emits. **Repeated ids inside
+one container are the id key's stop condition**, and one measured instance closes it. d11's own
+stop condition was measured too and does not fire: **0 of 77 observed path changes is a pure
+reorder** of an identical multiset, so no two distinct polylines in the capture would be stored
+identically. The counter-evidence is recorded rather than discarded, including the cost: **186 of
+401 positions differ under the ordinal key against 148 id-set changes** an (impossible) province
+key would have emitted — about **26% more churn**, reported beside the decision. A measured churn
+premium is what the ordinal costs; state the number rather than waving at it.
+
+**The divergence from d27 is grammar, not taste — and the rule generalises.** d27's sibling
+`target_states` keeps the fold's key and carries its ordinal as a *value* field, which is legal
+there because `fold_army_orders` proves each target state id unique within its owning row
+(`world_fold.rs:14624`–`:14627`). **An ordinal is a value field only where the fold proves
+per-row uniqueness**; d54's decoders prove nothing of the kind about any of its three child
+tables, so step 5's second case is unavailable and the position goes in the key for all three.
+Check for that proof before copying d27's shape. A child collection nested under a keyed parent
+takes the parent's key components in parent order with the **ordinal last**, through one shared
+helper so sibling child collections cannot drift (`d54.rs::child_key_fields`, one four-component
+parent key giving three five-component child keys): only with the ordinal last is the keyed set's
+own sort order the fold's array order inside each parent run.
 
 A generated ordinal is counted at exactly one place: the mapper always takes it as a parameter
 (`record_from_line_row(collection, row, joins, ordinal, frame_tick)`, `d11.rs:1987`), and the
@@ -656,6 +780,27 @@ the stream passes.** Rules the review rounds established:
   `:330`, test `an_unassigned_status_bit_is_refused_not_classified` at `:1141`). This defect was
   present in every bench bin written before d16 and is flagged for a sweep — do not copy an
   earlier bin's status handling without checking it.
+- **Then check `lane_local_status_mask(domain)` before writing ANY status handling — a lane-local
+  badge can ALIAS an assigned bit, and stripping before classification is mandatory.** The rule
+  above rejects an *unassigned* bit; d51 is the converse hazard. Its three lane-local badges are
+  bits 11, 12 and 13 (`compact_contract/src/status_flags_base.rs:49`–`:54`), which globally are
+  `TRANSITION_BASELINE_RESET`, `CONTROL_INVALID` and `WAR_SEGMENT_ABSENT` — all *assigned*, and
+  `CONTROL_INVALID` sits inside `COMPACT_STATUS_FAILURE_MASK` (`lib.rs:155`–`:163`). Bit 11 rides
+  **514 of 514** hours of d51's capture. Two ways to get it wrong, both silent: classify the raw
+  word, and every hour with bit 12 set reads as a hard failure and is excluded, quietly measuring
+  nothing; or strip the badges in the *failure* predicate but not in the *validity* one, which
+  happens to work for d51 and is the accident that made d53's registration bug look like a
+  validity failure. The correct composition is `compact_status_unknown_flags_v1` **over**
+  `compact_status_for_global_interpretation(domain, status)` (`lib.rs:148`–`:153`), with
+  `compact_status_failure_flags_after_expected_partial_tolerance` for the classification, which
+  strips internally. Assert the composed predicate equals your fold's own expression over the
+  whole 32-bit space rather than reasoning about it —
+  `bench_real_d51.rs::the_failure_predicate_matches_the_folds_own` is the form. Registered
+  domains today are 49, 51, 53 and 60 (`lib.rs:138`–`:146`), and the enforcement that keeps that
+  registry from drifting behind the lanes' own declarations is
+  `compact_contract/tests/lane_status_bit_sweep.rs` — the sweep exists because d53 declared and
+  emitted seven badge bits the registry did not know, on 379 of 514 hours, which made every such
+  record a stream rejection under the contract's own validity rule.
 - **A third outcome exists beside "excluded hour" and "measured hour": a stream rejection.** A
   fold `Err` that says the payload is not this grammar — d83's non-failure status word forcing
   the unavailable authority, a magic or authority-hash mismatch, a trailing-byte payload
@@ -675,6 +820,20 @@ the stream passes.** Rules the review rounds established:
   consequence as a named deviation rather than absorbing it
   (`runs/batch3/d49_naval_combat_lifecycle/measurement.md`, where 72 of 514 hours are exactly
   this case).
+- **"The position production validates a trailer" is one phrase for TWO facts, and they are
+  different positions (d46).** A stopped or trailing segment must be validated at the exact
+  position production validates it — but a domain has up to **two** payload authorities: your
+  **fold**, and `validate_domain_data_payload_at`'s per-domain decoder
+  (`domain_data_authority.rs`), which production runs status-independently on every DOMAIN_DATA
+  record. For d46 they sit on opposite sides of the status gate: the fold parses the `ACE1`
+  trailer at `world_fold.rs:16493`, *behind* its failure gate at `:16342`, so on a failure-status
+  hour it never looks at it, while the authority walks the whole trailer whatever the status. A
+  malformed trailer therefore refuses the stream **even on a failure-status hour**, through the
+  authority and not the fold — d52's lesson, reached by a different route
+  (`bench_real_d46.rs::a_malformed_trailer_refuses_the_stream_even_on_a_failure_status_hour` pins
+  both halves). Find both, state where each sits relative to the status gate, and run the second
+  on every record: where they differ, the stricter one decides stream rejection and the fold
+  decides exclusion.
 - **Per-bin validation rules are NOT portable: re-derive every rule from YOUR domain's own
   authorities, never copy a sibling bin's (d65).** The same header word carries different
   rules per domain — `changed_rows` is `== row_count` where the fold reads the word (d63),
@@ -746,6 +905,51 @@ instance: d30's end-of-hour orphan prune genuinely removes rows, modelling it wo
 d30's payload grammar, and the harness instead fails on any drop (0 drops in 146 hours,
 `d32.rs:179`–`:191`, `bin/bench_real_d32.rs:60`–`:68`).
 
+**The opposite shape has its own rules: a fold that READS another domain's accumulator and
+refuses the hour without it.** The other-writer question does not cover it, because the
+dependency writes nothing of yours — it gates your hour. Four ports do it now: d92, d94 and d95
+model D18; d96 models D18 **and** D92, the second through the first port. What worked, four
+times:
+
+- **Take the dependency as a typed input** to `fold_payload` (step 7's table). Never re-derive it
+  in a caller, never assume it fresh.
+- **Mirror the dependency's FOLD, from that fold** — not from a sibling bin — and keep only what
+  your gate reads. A **key-only roster mirror** is usually the whole job: d96's D18 mirror walks
+  the whole payload as the fold does but retains only D18's roster as a key set and its
+  this-hour KNOWN flag (`bench_real_d96.rs::D18Mirror`), because the tag strings the fold stores
+  are not something the gate reads.
+- **Reproduce which dependency state persists across an hour boundary.** D18's roster map
+  deliberately PERSISTS while its this-hour KNOWN flag resets (`world_fold.rs:3008`–`:3012`,
+  where the comment says exactly that); D92's snapshot does not persist at all (`:3099`–`:3101`).
+  Getting this backwards silently changes which hours are measured.
+- **Where the dependency is itself ported, fold it THROUGH that port** rather than writing a
+  second decoder: d96 calls `d92::split_payload` for the whole decode and applies the fold's own
+  gates around it in the fold's order (`world_fold.rs:10542`–`:10560`).
+- **Bound the dependency lane per hour, on both halves — coverage AND uniqueness.** A missing
+  dependency record silently converts its hour into an exclusion rather than a failure, and a
+  duplicate one lets a success+failure pair through, so the bound is checked **per hour and not
+  only in aggregate**. Bench sweep B carries both forms and which one applies is the domain's:
+  an exactly-one-per-closed-hour bound where the domain admits one record an hour, an
+  at-least-one bound plus an all-or-nothing lane check where it admits several (d94, d95)
+  (`runs/batch3/bench_sweep_b/sweep_summary.md`).
+- **Run the dependency's status-independent payload authority on ALL of its records, failure
+  status included.** That is what production does, so a harness that skips it measures a stream
+  production refuses. d94 is the lesson's origin and d96's round 1 found it missing again: D18's
+  authority rejects `changed_rows > row_count` (`domain_data_authority.rs:1029`–`:1032`), a word
+  `fold_country_identity` never reads, so a stream carrying that pair was measured though
+  production would not certify it.
+- **When the fold and the authority disagree about ORDER, do both — separately: CLASSIFY with the
+  fold's order, REPORT with the authority's.** A dependency mirror serves two masters in one
+  function. `fold_country_identity` consults the failure status immediately after its 20-byte
+  header and returns `Ok` **without reading the body at all** (`world_fold.rs:14158`–`:14163`),
+  while the authority walks the body whatever the status (`domain_data_authority.rs:1042`).
+  Walking first — which `bench_real_d92.rs`'s mirror documents doing, for the authority's reason
+  — reclassifies a failure-status record with an unwalkable body as an unparseable one, which
+  contradicts the fold about a non-folding path. d96's round 3 resolved it by keeping both: the
+  fold's order decides the hour's classification, and the authority's extra walk becomes a
+  counted, named certification deviation (d49's rule). "Mirror the fold" and "apply every other
+  authority predicate" read as one instruction right up until they disagree about order.
+
 **Dependency ruling (already made — do not re-decide per domain):** the harness needs the
 shipping framing contract, so `wire_format` carries `compact_contract` (a leaf crate) as a
 dependency used only by measurement bins, documented as such in `Cargo.toml`. Never copy its
@@ -770,6 +974,38 @@ predicate, while d70 asserts its restated `FAILURE_STATUS_MASK` against
 `compact_contract`'s (`bench_real_d70.rs`, `assert_status_predicates_agree`) but has no
 per-constant equality test over its other restated constants — an open sweep item, not a
 license to skip the check in a new port. A drifted mirror fails the run, not the review.
+
+**Two positions where that leash is UNAVAILABLE rather than skipped, and neither is a licence to
+go quiet about it.**
+
+*(a) The original lives in a capture-lane crate.* d67's and d70's originals live in
+`compact_contract`, which measurement bins may depend on. d46's row grammar, its payload
+authority and the whole `ACE1` codec live in `lanes/air_wings_variants_lifecycle_live`, d54's
+codec in `lanes/army_battleplans_depth_live`, and d56 is in the same position — and
+`wire_format`'s library half may depend on itself only, its bins on `compact_contract` and
+nothing else. There is no second decoder to call, so the dual-decode and the per-constant
+equality checks are unavailable; say so in the module docs and in your open questions, and
+compensate with the **weaker empirical stand-in**, labelled as weaker: assert every constant that
+IS reachable (d54 asserts `STATUS_DELTA_DATA` against `compact_contract`'s, the tolerance-table
+entry, and the fold's hand-written failure mask against the shared predicate over the whole
+14-bit status space), and make **every real record reproduce its own payload length from the
+transcribed strides** — `bench_real_d54.rs::length_is_reproduced_by_the_transcribed_strides` runs
+on every record and refuses the stream on a mismatch, so a wrong stride dies on the first record
+instead of at review. That is weaker than d67's 1,033/1,033 frame agreement and d54 labels it so.
+The real fix is a dependency decision the lanes cannot make — lane codecs admitted to measurement
+bins as leaf dependencies, or `compact_contract` re-exporting the row grammars ports must mirror
+— and it is a standing sweep item.
+
+*(b) The transcription is of a payload AUTHORITY.* The exclusion rules above require running
+production's status-independent payload authority fail-closed, and where that authority lives in
+a lane crate the port hand-transcribes it. d52's and d51's `check_authority_payload` are exactly
+that and have **no machine check anywhere** — d51's runs to 328 lines (`d51.rs:1491`–`:1818`)
+raising 39 distinct complaints, including a canonical semantic row-order check and a
+duplicate-identity key over scope, owner, value kind, key bytes, token and seed. A
+drift there is invisible: the harness would accept a stream production refuses, or refuse one it
+accepts, and every test in the crate would still pass. **This is an open sweep item, not a solved
+rule** — today those transcriptions rest on citation and their own tests, and the fix is either
+of the two above.
 
 Report: raw and compressed sizes both arms, the ratio at BOTH the whole-stream and 48-h
 block shapes, the wire arm's baseline/delta raw split, real churn per hour, and hours
@@ -895,6 +1131,38 @@ Read `C:\Users\Example\.claude\CODEX_PROTOCOL.md`. Mode A, one-shot, fresh threa
 RUNDIR="extractor/native/runs/<batch>/<domain>"
 LEDGER="$RUNDIR/codex_thread_ledger.txt"
 VERDICT=""
+
+# Confirms a usage-limit CANDIDATE found by the grep below. Exit 0 = a real
+# limit (queue it; never retry). Exit 1 = a false positive — a completed turn
+# that merely READ about limits. The --json event stream carries the full text
+# of every file the reviewer reads, so only ERROR-TYPED events count there;
+# tool output is ignored. See the note after this block for the four measured
+# false positives this exists to stop.
+confirm_usage_limit() {   # $1=ERR $2=OUT $3=AJ $4=CODE
+  python - "$@" <<'PY'
+import json, re, sys
+err, out, aj, code = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+SIG = re.compile(r"usage limit|out of credits|purchase more credits", re.I)
+ERROR_EVENTS = {"error", "stream_error", "turn.failed", "thread.error"}
+def read(p):
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh: return fh.read()
+    except OSError:
+        return ""
+if SIG.search(read(out)):               sys.exit(0)   # the reply itself
+if code != 0 and SIG.search(read(err)): sys.exit(0)   # non-zero exit + stderr
+for line in read(aj).splitlines():                    # error-TYPED events only
+    try: ev = json.loads(line)
+    except ValueError: continue
+    if not isinstance(ev, dict): continue
+    kind = str(ev.get("type") or ev.get("event") or "")
+    if (kind in ERROR_EVENTS or kind.endswith((".error", ".failed"))) \
+       and SIG.search(json.dumps(ev)):
+        sys.exit(0)
+sys.exit(1)   # exit 0 with a non-empty -o file is a completed turn by definition
+PY
+}
+
 for ATTEMPT in 1 2; do
   OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl); ERR=$(mktemp /tmp/cdx_XXXXXX.err)
   printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_policy=never \
@@ -909,11 +1177,21 @@ for ATTEMPT in 1 2; do
   echo "$TID review-<domain>-round-<n>-attempt-$ATTEMPT" >> "$LEDGER"
   wait $CDX; CODE=$?
   # Usage-limit check comes FIRST — never trust exit status alone; an exit-0
-  # reply carrying the signature is a dead thread, not a verdict. The signature
-  # can arrive ONLY on the --json stdout JSONL stream ($AJ) with stderr quiet
-  # and the -o file empty — a lane that grepped only $ERR and $OUT retried
-  # straight into a limit (d49 lane, 2026-07-27). Grep all three.
-  if grep -qiE "usage limit|out of credits|purchase more credits" "$ERR" "$OUT" "$AJ" 2>/dev/null; then
+  # reply carrying the signature is a dead thread, not a verdict. Grep all
+  # three streams for a CANDIDATE — a lane that grepped only $ERR and $OUT
+  # retried straight into a limit (d49 lane, 2026-07-27) — then CONFIRM it
+  # before taking the queue path. A raw substring match anywhere in the stream
+  # is NOT evidence of a transport failure: $AJ is the --json event stream and
+  # carries the full text of every file the reviewer reads, and $ERR carries
+  # whatever the reviewer's own greps echo, so a thread that merely READS about
+  # usage limits matches. Confirmation requires ONE of — an error-TYPED JSONL
+  # event carrying the signature (parsed, not grepped: only error /
+  # stream_error / turn.failed / thread.error events are inspected and tool
+  # output is ignored), the signature in the REPLY itself, or a NON-ZERO exit
+  # with the signature on stderr. Exit 0 with a non-empty -o file is a
+  # completed turn by definition.
+  if grep -qiE "usage limit|out of credits|purchase more credits" "$ERR" "$OUT" "$AJ" 2>/dev/null \
+     && confirm_usage_limit "$ERR" "$OUT" "$AJ" "$CODE"; then
     # NEVER retry into a usage limit. Queue durably; resume later with
     #   codex exec -s danger-full-access resume "$TID"  (re-check state; continue, don't redo)
     echo "USAGE_LIMIT $TID review-<domain>-round-<n>" >> "$RUNDIR/codex_resume_queue.txt"
@@ -932,6 +1210,26 @@ fi
 Read the reply from `$OUT`, not stdout, and only after the exit-0 and non-empty checks — an
 empty `$OUT` with a nonzero exit is a failed review, not an approval. Never `--ephemeral`,
 never `resume --last`.
+
+**Why the confirmation step exists: the bare grep false-positived on COMPLETED reviews four
+times, and the more faithfully a prompt follows this recipe the likelier it is to fire.** All
+four are wave 6. d96's round 2 matched `$AJ` on this document's own grep line, quoted back in a
+file-read event, with `$ERR` and `$OUT` clean and the round finishing normally; d46 matched `$AJ`
+in round 1 because the prompt points Codex at `CODEX_PROTOCOL.md`, whose text *discusses* usage
+limits, and `$ERR` in round 2 because a Codex search over `extractor/documents/` echoed a
+matching line of this recipe onto stderr; and this documentation pass's own round 1 matched `$AJ`
+once, from the reviewer reading this file. Every one exited 0 with a non-empty `-o` file — four
+completed turns carrying real verdicts, one of them a bare APPROVE (d46's round 1, separately
+rejected under the count-pin rule for reporting no counts) — so a lane that trusts the raw match
+queues a resume for a thread that already answered, then stalls. The `$AJ` arm is **narrowed, not
+dropped**: the d49 lane hit a real limit whose signature arrived only on the JSON stream, so
+`confirm_usage_limit` still honours it — but only from the runtime's own error framing (an
+error-typed event, or a non-zero exit, or the reply itself), never from tool output. Nothing
+about the law weakens: a confirmed limit is still queued and never retried. The rule is d46's,
+stated in `runs/batch3/d46_air_variant_archetypes/recipe_gaps.md` #10; d96 records the same
+defect in its `recipe_gaps.md` #8 and retracted the bogus queue entry it produced
+(`d96_tactic_weight/codex_resume_queue.txt`). An unconfirmed `$AJ` hit needs a second look before
+the queue path is taken, exactly as a 401 does.
 
 **A 401 is NOT a usage limit** — it is a transient auth failure, invisible to
 `codex login status` (which can report "Logged in" throughout), and the single fresh-thread
