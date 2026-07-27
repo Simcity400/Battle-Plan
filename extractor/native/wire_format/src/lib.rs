@@ -38,6 +38,7 @@ pub mod d39;
 pub mod d40;
 pub mod d62;
 pub mod d63;
+pub mod d68;
 pub mod d83;
 pub mod derived;
 pub mod frame;
