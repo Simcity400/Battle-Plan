@@ -44,10 +44,12 @@
 //! as a key-only mirror of `fold_country_identity` (`:13918`-`:14158`), which is
 //! all the gate needs. The mirror reproduces, in the fold's own order:
 //!
-//! - the 20-byte header and its `compact_status_is_failure` early return — note
-//!   this is the PLAIN failure predicate, not the tolerance-aware one d92 itself
-//!   uses (`:13924`); on that path the roster map is left unchanged and the
-//!   this-hour KNOWN flag stays clear;
+//! - the 20-byte header (`:14155`) and its `compact_status_is_failure` early
+//!   return (`:14158`-`:14164`) — note this is the PLAIN failure predicate, not
+//!   the tolerance-aware one d92 itself uses; the fold consults it IMMEDIATELY
+//!   after the header and returns without reading the body at all, so on that
+//!   path the roster map is left unchanged, the this-hour KNOWN flag stays clear,
+//!   and the record is a FAILURE record however unwalkable its body is;
 //! - the variable row walk: `tag_db_id` u32, a u16-length-prefixed UTF-8 tag, and
 //!   the wave-4 cosmetic marker `0`/`1`/`2` with its optional string
 //!   (`:13930`-`:13985`), including the zero-id, empty-tag and duplicate-id
@@ -76,6 +78,21 @@
 //! measured and a reader of the measurement must be able to see that. It fires 0
 //! times on the measured capture.
 //!
+//! **The D18 payload AUTHORITY is a second, status-independent layer, and only
+//! the checks the fold does not make live there.**
+//! `decode_compact_country_identity_data_payload`
+//! (`domain_data_authority.rs:1013`) runs on every d18 DOMAIN_DATA record whatever
+//! its status, and its complaint clears the stream's decodable verdict. Its walk is
+//! the mirror's walk with exactly one addition — `changed_rows > row_count`
+//! (`:1029`-`:1033`), a header word `fold_country_identity` never reads — so
+//! [`check_d18_payload_authority`] applies that one rule fail-closed (d65's rule:
+//! the fold has no behaviour to preserve) while every other authority refusal keeps
+//! the fold's classification and is reported as a named deviation instead (d49's
+//! rule). Two of those deviations are counted: an unparseable payload the recorder
+//! tolerates, and a failure-status record whose body the authority would reject but
+//! the fold never reads. Both are 0 on the measured capture. Ported from
+//! `bench_real_d96.rs`, whose Codex rounds 1-3 established all three rulings.
+//!
 //! # The three outcomes, by name
 //!
 //! Every path on which the fold does not fold is classified, and d92's are not
@@ -90,7 +107,9 @@
 //!    payload invalidates the run rather than skipping an hour — d83's shape, not
 //!    d63's, and the reason [`d92::split_payload`] carries the WHOLE decode and
 //!    there is no cheaper header-only exit to preserve. Framing, boundary, seal,
-//!    EOF and unassigned-status-bit violations are stream rejections too.
+//!    EOF and unassigned-status-bit violations are stream rejections too, as is a
+//!    d18 record whose `changed_rows` exceeds its `row_count`
+//!    ([`check_d18_payload_authority`]).
 //! 2. **Excluded hour — failure status.** `handle_compact_failure`
 //!    (`world_fold.rs:10311`), through `compact_contract`'s own tolerance-aware
 //!    predicate rather than a copied bit mask. Position matters and is the fold's:
@@ -250,6 +269,74 @@ struct D18Mirror {
     /// and therefore excludes that hour's d92 record.
     model_failures: usize,
     first_model_failure: Option<String>,
+    /// Failure-status D18 records whose BODY the payload authority would reject.
+    ///
+    /// The fold never looks at the body of such a record (`world_fold.rs:14158`
+    /// returns before the row walk), so its classification is "failure record"
+    /// and this harness takes it — but
+    /// `decode_compact_country_identity_data_payload` walks the rows whatever the
+    /// status (`domain_data_authority.rs:1042`), so production would not certify
+    /// the stream. The recipe's d49 rule: keep the fold's classification, report
+    /// the certification consequence as a named deviation. 0 on the measured
+    /// capture.
+    failure_records_with_unwalkable_body: usize,
+    first_failure_body_deviation: Option<String>,
+}
+
+/// The D18 payload authority's status-independent checks that the FOLD does not
+/// make — applied fail-closed, as a stream rejection.
+///
+/// `validate_domain_data_payload_at` (`stream_fold.rs:593`) runs
+/// `decode_compact_country_identity_data_payload`
+/// (`domain_data_authority.rs:1013`) on EVERY d18 DOMAIN_DATA record whatever its
+/// status, and a parse error clears the stream's decodable verdict. Its checks are
+/// the same walk [`D18Mirror::walk_body`] performs — row truncation, cosmetic
+/// markers, zero/empty/duplicate tags, the whole CIM1 extension, trailing bytes —
+/// with **one exception**: `changed_rows > row_count` at offset `+12`
+/// (`domain_data_authority.rs:1029`-`:1033`), a word `fold_country_identity`
+/// never reads at all (it reads `row_count` at `+8` and `status_flags` at `+16`
+/// and nothing else from the header, `world_fold.rs:14156`-`:14157`).
+///
+/// That layering decides the treatment, and the two halves are NOT the same:
+///
+/// - Where the fold HAS a behaviour, the harness keeps the fold's classification
+///   and reports the certification consequence as a named deviation (the recipe's
+///   d49 rule). An unparseable d18 payload is that case: the recorder notes it and
+///   continues, leaving d18 unproven for the hour, so the harness tolerates it and
+///   counts it — while production's certifier would refuse the stream. 0
+///   occurrences on the measured capture; a non-zero count is a deviation the
+///   reader must weigh, not an accepted stream.
+/// - Where the fold has NO behaviour, there is no classification to preserve and
+///   the authority predicate applies fail-closed. `changed_rows` is that case:
+///   the fold folds such a record normally and adopts its roster, so measuring it
+///   would measure a stream production does not certify — d65's rule ("the same
+///   defect class is enforced at different layers"). It refuses the stream.
+///
+/// Ported from `bench_real_d96.rs`, where the rule was Codex round-1 finding
+/// `019fa530-c013-74a2-b717-31f8e89e8639` and its over-reach was round-2 finding
+/// `019fa53d-daf5-7810-a470-aeeb710e8166`. **This function applies ONLY the checks
+/// the fold does not make**, which is the whole of its licence to refuse a stream:
+/// a payload shorter than 20 bytes is the FOLD's refusal too
+/// (`world_fold.rs:14155`), the recorder tolerates that refusal, and the hour is
+/// merely excluded — so a short payload returns `Ok` here and falls through to the
+/// mirror, which fails it into the tolerated-and-reported `model_failures` bucket.
+fn check_d18_payload_authority(payload: &[u8]) -> Result<(), String> {
+    // Not a check: the authority's 20-byte minimum (`domain_data_authority.rs:1018`)
+    // is also the FOLD's (`world_fold.rs:14155`), so it is the mirror's business.
+    // The length is read here only to know whether the word below exists at all.
+    if payload.len() < 20 {
+        return Ok(());
+    }
+    let row_count = u32_at(payload, 8) as usize;
+    let changed_rows = u32_at(payload, 12) as usize;
+    // `:1029`-`:1033`. The one rule the fold never applies, because it never reads
+    // the word.
+    if changed_rows > row_count {
+        return Err(format!(
+            "country_identity data changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    Ok(())
 }
 
 impl D18Mirror {
@@ -266,22 +353,56 @@ impl D18Mirror {
     /// generic `Err` arm (`world_fold.rs:5016`) leaves the real accumulator.
     /// The caller reports the reason rather than refusing the stream.
     fn fold(&mut self, payload: &[u8]) -> Result<(), String> {
-        // `:13919`-`:13921`.
+        // `world_fold.rs:14155` — the fold's own `need(payload, 20, ...)`.
         if payload.len() < 20 {
             return Err("country_identity header truncated".into());
         }
-        let row_count = u32_at(payload, 8) as usize;
         let status_flags = u32_at(payload, 16);
-        // The row walk runs BEFORE the status check, because production's
-        // payload authority is status-independent: `validate_domain_data_payload_at`
-        // (`stream_fold.rs:593`) runs on EVERY DOMAIN_DATA record, and
-        // `decode_compact_country_identity_data_payload` never looks at the
-        // status word to decide whether to walk the rows (the d94 lesson,
-        // carried into d67's d18 arm as a round-2 finding). Only the ROSTER
-        // UPDATE below is status-gated (`world_fold.rs:13922`-`:13929`) — a
-        // failure-status record's rows are still validated, and a malformed one
-        // lands on the caller's note-and-continue arm exactly like any other
-        // malformed d18 payload.
+        // `:14158`-`:14164`. The status check comes FIRST, immediately after the
+        // header: the fold notes the failure and returns `Ok` **without reading
+        // the body at all**, leaving the roster and the KNOWN flag unchanged.
+        // This is the PLAIN failure predicate, which is what the recorder's d18
+        // fold uses — not d92's tolerance-aware one. Codex round-3 finding on the
+        // d96 port (thread 019fa548-5e33-7061-9236-5c7151f92098): walking the rows
+        // first misclassified a failure-status record with an unwalkable body as
+        // an unparseable one, contradicting the fold's own non-folding-path
+        // classification.
+        //
+        // The payload AUTHORITY does walk that body whatever the status
+        // (`domain_data_authority.rs:1042`), so a body it would reject is a
+        // certification deviation — counted and reported here, per the recipe's
+        // d49 rule, without changing the classification the fold gives the hour.
+        // That is what the ordering claim this comment replaces was really about:
+        // what the harness must REPORT, never how it classifies the fold's own
+        // outcome.
+        if compact_status_is_failure(status_flags) {
+            let deviation = self.walk_body(payload).err();
+            self.failure_records += 1;
+            if let Some(reason) = deviation {
+                self.failure_records_with_unwalkable_body += 1;
+                if self.first_failure_body_deviation.is_none() {
+                    self.first_failure_body_deviation = Some(reason);
+                }
+            }
+            return Ok(());
+        }
+        let fresh = self.walk_body(payload)?;
+        // `:14150` full replace, `:14156` KNOWN := true.
+        self.roster = fresh;
+        self.known_this_hour = true;
+        self.proven_records += 1;
+        Ok(())
+    }
+
+    /// The body walk itself: rows, the optional CIM1 extension and the
+    /// exact-length check, returning the roster key set it proves.
+    ///
+    /// Separated from [`D18Mirror::fold`] because the two callers need it for
+    /// different reasons — the clean path to ADOPT the roster, the failure path
+    /// only to see whether the payload authority would have accepted the body.
+    /// Non-mutating, so neither can leave a half-applied roster behind.
+    fn walk_body(&self, payload: &[u8]) -> Result<BTreeSet<u32>, String> {
+        let row_count = u32_at(payload, 8) as usize;
         let mut cursor = 20usize;
         let mut fresh: BTreeSet<u32> = BTreeSet::new();
         for _ in 0..row_count {
@@ -329,19 +450,7 @@ impl D18Mirror {
                 payload.len()
             ));
         }
-        // `:13922`-`:13929`: only now, with the whole payload validated, is the
-        // status word consulted. The PLAIN failure predicate, which is what the
-        // recorder's d18 fold uses — not d92's tolerance-aware one. A failure
-        // status leaves the roster and the KNOWN flag unchanged.
-        if compact_status_is_failure(status_flags) {
-            self.failure_records += 1;
-            return Ok(());
-        }
-        // `:14150` full replace, `:14156` KNOWN := true.
-        self.roster = fresh;
-        self.known_this_hour = true;
-        self.proven_records += 1;
-        Ok(())
+        Ok(fresh)
     }
 
     /// `world_fold.rs:13986`-`:14140`, walked but not retained.
@@ -709,6 +818,8 @@ struct StreamScan {
     d18_proven_records: usize,
     d18_model_failures: usize,
     d18_first_model_failure: Option<String>,
+    d18_failure_records_with_unwalkable_body: usize,
+    d18_first_failure_body_deviation: Option<String>,
 }
 
 /// Validate the whole stream against the canonical contract and fold every
@@ -908,6 +1019,13 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         if header.domain_id == D18 && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
             d18_records += 1;
             hour_saw_d18 = true;
+            // Production's status-independent payload authority, fail-closed and
+            // BEFORE the mirror: its complaint refuses the stream at seal time, so
+            // a record it rejects is not an hour to skip. Only the checks the fold
+            // does not make live there — see [`check_d18_payload_authority`] for
+            // why the two halves differ.
+            check_d18_payload_authority(payload)
+                .map_err(|e| format!("d18 payload at byte {pos}: {e}"))?;
             if let Err(reason) = d18.fold(payload) {
                 // MIRROR THE RECORDER, do not out-strict it. D18 has no special
                 // `Err` arm in `fold_domain_data`, so it lands on the generic one
@@ -1139,6 +1257,8 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     let d18_proven_records = d18.proven_records;
     let d18_model_failures = d18.model_failures;
     let d18_first_model_failure = d18.first_model_failure.clone();
+    let d18_failure_records_with_unwalkable_body = d18.failure_records_with_unwalkable_body;
+    let d18_first_failure_body_deviation = d18.first_failure_body_deviation.clone();
     Ok(StreamScan {
         hours,
         counts,
@@ -1148,6 +1268,8 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         d18_proven_records,
         d18_model_failures,
         d18_first_model_failure,
+        d18_failure_records_with_unwalkable_body,
+        d18_first_failure_body_deviation,
     })
 }
 
@@ -1315,6 +1437,15 @@ fn main() {
             .unwrap_or_default()
     );
     println!(
+        "d18 certification    {} failure-status record(s) whose body the payload authority \
+         would reject (the fold never reads it; a named deviation, not a reclassification){}",
+        scan.d18_failure_records_with_unwalkable_body,
+        scan.d18_first_failure_body_deviation
+            .as_deref()
+            .map(|first| format!(" (first: {first})"))
+            .unwrap_or_default()
+    );
+    println!(
         "shipping rows        {} folded ({} selected, {} null sentinel), {} rowless records",
         scan.counts.rows_folded,
         scan.counts.selected_rows,
@@ -1400,6 +1531,18 @@ mod tests {
             p.extend_from_slice(tag.as_bytes());
             p.push(0); // cosmetic marker: absent
         }
+        p
+    }
+
+    /// A D18 payload with `changed_rows` supplied independently of `row_count`,
+    /// for the authority rule the fold never reads.
+    fn d18_payload_with_changed_rows(
+        tags: &[(u32, &str)],
+        status_flags: u32,
+        changed_rows: u32,
+    ) -> Vec<u8> {
+        let mut p = d18_payload(tags, status_flags);
+        p[12..16].copy_from_slice(&changed_rows.to_le_bytes());
         p
     }
 
@@ -1534,7 +1677,7 @@ mod tests {
 
     #[test]
     fn a_failure_status_d18_record_leaves_the_roster_untouched() {
-        // `world_fold.rs:13922`-`:13929`: the PLAIN failure predicate, an early
+        // `world_fold.rs:14158`-`:14164`: the PLAIN failure predicate, an early
         // return, and the map left exactly as it was.
         let mut d18 = D18Mirror::default();
         d18.open_hour();
@@ -1590,6 +1733,132 @@ mod tests {
         assert!(fresh.fold(&bare).is_err());
         assert!(fresh.roster.is_empty());
         assert!(!fresh.known_this_hour, "D18 stays unproven for the hour");
+    }
+
+    #[test]
+    fn a_d18_record_whose_changed_rows_exceeds_row_count_refuses_the_stream() {
+        // Ported from `bench_real_d96.rs`, where this was Codex round-1 finding
+        // 019fa530-c013-74a2-b717-31f8e89e8639 and the same gap was then flagged
+        // here for a sweep. `fold_country_identity` never reads the word, so the
+        // mirror folded such a record normally and the hour was measured — while
+        // production's status-independent d18 authority rejects it
+        // (`domain_data_authority.rs:1029`-`:1033`) and the stream is not
+        // certified. Fixed by property, not by the reported input: the whole
+        // (row_count, changed_rows, status) space is swept below, and the
+        // authority's own predicate is applied fail-closed ahead of the mirror.
+        let p92 = |seq| ptc_payload(&[(1, 5, "shock")], seq);
+
+        // One valid row, `changed_rows = 2`, clean status, a valid d92 record.
+        let reviewer = d18_payload_with_changed_rows(&[(1, "AAA")], 0, 2);
+        let err = match scan_stream(
+            &stream_of(&[(100, reviewer, p92(1))]),
+            StreamIdentityMode::Legacy,
+        ) {
+            Err(err) => err,
+            Ok(scan) => panic!(
+                "changed_rows > row_count must refuse the stream, but {} hour(s) measured",
+                scan.hours.len()
+            ),
+        };
+        assert!(
+            err.contains("changed_rows 2 > row_count 1") && err.contains("d18 payload at byte"),
+            "{err}"
+        );
+
+        // The property, over the whole space: `changed_rows <= row_count` is the
+        // rule, on any row count, and a failure status does not exempt it (the
+        // authority is status-independent).
+        for status in [0u32, COMPACT_STATUS_FAILURE_MASK] {
+            for row_count in 0..4u32 {
+                let tags: Vec<(u32, &str)> = (0..row_count)
+                    .map(|index| (index + 1, ["AAA", "BBB", "CCC"][index as usize % 3]))
+                    .collect();
+                for changed_rows in 0..6u32 {
+                    let payload = d18_payload_with_changed_rows(&tags, status, changed_rows);
+                    assert_eq!(
+                        check_d18_payload_authority(&payload).is_ok(),
+                        changed_rows <= row_count,
+                        "status {status:#x}, row_count {row_count}, changed_rows {changed_rows}"
+                    );
+                }
+            }
+        }
+        // A payload too short to carry the word is NOT this helper's business:
+        // the fold refuses it and the recorder tolerates that refusal, so it must
+        // fall through to the mirror rather than refusing the stream (d96 round-2
+        // finding, thread 019fa53d-daf5-7810-a470-aeeb710e8166). Swept over every
+        // length the word could straddle.
+        for len in 0..20usize {
+            assert!(
+                check_d18_payload_authority(&vec![0u8; len]).is_ok(),
+                "a {len}-byte payload is the mirror's business, not the authority's"
+            );
+        }
+
+        // And the well-formed case still measures.
+        let good = d18_payload_with_changed_rows(&[(1, "AAA")], 0, 1);
+        let scan = scan_stream(
+            &stream_of(&[(100, good, p92(1))]),
+            StreamIdentityMode::Legacy,
+        )
+        .expect("changed_rows == row_count is legal");
+        assert_eq!(scan.hours.len(), 1);
+    }
+
+    #[test]
+    fn a_failure_status_d18_record_is_classified_by_the_fold_not_by_its_body() {
+        // Ported from `bench_real_d96.rs`, Codex round-3 finding
+        // 019fa548-5e33-7061-9236-5c7151f92098, whose exact input this carries: a
+        // 20-byte d18 payload claiming `row_count = 1` with no row body at all,
+        // under a failure status. `fold_country_identity` checks the status
+        // immediately after the header and returns `Ok` WITHOUT reading the body
+        // (`world_fold.rs:14158`), so the hour is a failure record — not an
+        // unparseable one. This bin's mirror walked the rows first and reported
+        // `0 failure-status / 1 unparseable` for it.
+        let p92 = |seq| ptc_payload(&[(1, 5, "shock")], seq);
+        let mut headless = vec![0u8; 20];
+        headless[8..12].copy_from_slice(&1u32.to_le_bytes()); // row_count = 1
+        headless[16..20].copy_from_slice(&1u32.to_le_bytes()); // STATE_UNAVAILABLE
+        let d18 = d18_payload(&[(1, "AAA")], 0);
+        let scan = scan_stream(
+            &stream_of(&[
+                (100, d18.clone(), p92(1)),
+                (101, headless.clone(), p92(2)),
+                (102, d18, p92(3)),
+            ]),
+            StreamIdentityMode::Legacy,
+        )
+        .expect("the recorder accepts this stream");
+        assert_eq!(scan.d18_failure_records, 1, "the fold's classification");
+        assert_eq!(scan.d18_model_failures, 0, "not an unparseable record");
+        // …and the certification consequence is still reported, because the
+        // payload authority DOES walk that body (the recipe's d49 rule).
+        assert_eq!(scan.d18_failure_records_with_unwalkable_body, 1);
+        assert!(scan.d18_first_failure_body_deviation.is_some());
+        // The roster is untouched, so hour 101 is excluded and 102 follows a gap.
+        assert_eq!(scan.hours.len(), 2, "hours 100 and 102 measure");
+        assert_eq!(scan.counts.no_roster_records, 1);
+        assert_eq!(scan.counts.roster_uncovered_records, 0);
+        assert_eq!(scan.counts.non_contiguous, 1, "so hour 102 follows a gap");
+        assert!(!scan.hours[1].follows_previous);
+
+        // A WELL-FORMED failure-status record is a failure record with no
+        // deviation at all — the two must not be conflated.
+        let clean_failure = d18_payload(&[(1, "AAA")], COMPACT_STATUS_FAILURE_MASK);
+        let mut mirror = D18Mirror::default();
+        mirror.open_hour();
+        mirror.fold(&clean_failure).expect("returns Ok");
+        assert_eq!(mirror.failure_records, 1);
+        assert_eq!(mirror.failure_records_with_unwalkable_body, 0);
+        assert!(!mirror.known_this_hour);
+        assert!(mirror.roster.is_empty(), "the failed record adopts nothing");
+
+        // And a truncated HEADER is still an unparseable record, because the
+        // fold's own `need(payload, 20, ...)` precedes the status read.
+        let mut short = D18Mirror::default();
+        short.open_hour();
+        assert!(short.fold(&[0u8; 19]).is_err());
+        assert_eq!(short.failure_records, 0);
     }
 
     /// The measured production shape, pinned. On `runs/batch3/deepwar_c` the D18
@@ -1923,25 +2192,38 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_status_d18_record_is_still_row_validated() {
-        // The d94 lesson, applied to this mirror: production's payload
-        // authority is status-independent, so a failure-status d18 record's
-        // rows are walked here too. A malformed failure-status payload lands on
-        // the note-and-continue arm exactly like a malformed clean one — and a
-        // WELL-FORMED failure-status record still leaves the roster untouched.
+    fn a_failure_status_d18_record_is_still_row_walked_but_only_to_report() {
+        // This test used to assert the defect: that a failure-status d18 record
+        // with a malformed body is an `Err` from the mirror, because "production's
+        // payload authority is status-independent". Two separate things were
+        // conflated, and the d96 port's round-3 review separated them
+        // (thread 019fa548-5e33-7061-9236-5c7151f92098). The authority's
+        // status-independence decides what the harness must REPORT; the FOLD's own
+        // order — status immediately after the header, `Ok` without reading the
+        // body (`world_fold.rs:14158`-`:14164`) — decides how the record is
+        // CLASSIFIED. So the body is still walked, and a body the authority would
+        // reject is still surfaced, but as a named certification deviation rather
+        // than as a reclassification into "unparseable".
         let mut d18 = D18Mirror::default();
         d18.open_hour();
-        // Malformed rows under a failure status: fold must return Err.
+        // Malformed rows under a failure status: a FAILURE record, with the
+        // deviation counted.
         let mut malformed = d18_payload(&[(1, "AAA")], 1 << 0);
         let len = malformed.len();
         malformed.truncate(len - 1);
-        assert!(
-            d18.fold(&malformed).is_err(),
-            "a failure-status d18 record's rows must still be validated"
-        );
-        // Well-formed failure-status: validated, counted, roster unchanged.
-        assert!(d18.fold(&d18_payload(&[(1, "AAA")], 1 << 0)).is_ok());
+        d18.fold(&malformed)
+            .expect("the fold never reads this body, so it is a failure record");
         assert_eq!(d18.failure_records, 1);
+        assert_eq!(
+            d18.failure_records_with_unwalkable_body, 1,
+            "the authority would reject the body: reported, not reclassified"
+        );
+        assert!(d18.first_failure_body_deviation.is_some());
+        // Well-formed failure-status: a failure record with NO deviation, and the
+        // roster still untouched.
+        assert!(d18.fold(&d18_payload(&[(1, "AAA")], 1 << 0)).is_ok());
+        assert_eq!(d18.failure_records, 2);
+        assert_eq!(d18.failure_records_with_unwalkable_body, 1);
         assert!(!d18.known_this_hour);
         assert!(d18.roster.is_empty());
     }

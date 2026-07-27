@@ -47,7 +47,17 @@
 //!   later;
 //! - every d18 payload through [`d18_roster`], the documented subset of
 //!   `fold_country_identity` (`world_fold.rs:13918`-`:14157`) that decides whether
-//!   a d18 record committed the roster d95 depends on.
+//!   a d18 record committed the roster d95 depends on — and, ahead of it,
+//!   [`check_d18_payload_authority`], the one rule production's status-independent
+//!   d18 payload authority makes that the fold does not
+//!   (`changed_rows > row_count`, `domain_data_authority.rs:1029`-`:1033`), applied
+//!   fail-closed as a stream rejection because the fold has no behaviour there to
+//!   preserve. Every OTHER authority refusal keeps the fold's classification and is
+//!   reported as a named deviation instead: a refused payload into
+//!   `d18_refused_records`, a failure-status record whose body the authority would
+//!   reject into `d18_failure_records_with_unwalkable_body`. Both are 0 on the
+//!   measured capture. Ported from `bench_real_d96.rs`, whose Codex rounds 1-3
+//!   established all three rulings.
 //!
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
@@ -216,6 +226,12 @@ struct StreamScan {
     /// recorder classifies and commits them anyway ([`d18_roster`]), so this is
     /// reported and nothing follows from it.
     d18_unassigned_status_records: usize,
+    /// Failure-status d18 records whose BODY the payload authority would reject.
+    /// The fold never reads it, so the record keeps the fold's classification and
+    /// this is reported as a named certification deviation instead (the recipe's
+    /// d49 rule). 0 on the measured capture.
+    d18_failure_records_with_unwalkable_body: usize,
+    d18_first_failure_body_deviation: Option<String>,
     /// The POV countries the capture observed from.
     pov_countries: BTreeSet<u32>,
     /// Peak per-hour row counts, for the report.
@@ -304,6 +320,68 @@ struct D18Fold {
     roster: Option<BTreeSet<u32>>,
     /// Status bits outside the assigned v1 vocabulary, for the report.
     unassigned_status_bits: u32,
+    /// Set on a failure-status record whose BODY the payload authority would
+    /// reject. The fold never reads that body (`world_fold.rs:14158`-`:14164`
+    /// returns before the row walk), so the record's CLASSIFICATION is "failure
+    /// record" and this harness keeps it — but
+    /// `decode_compact_country_identity_data_payload` walks the rows whatever the
+    /// status (`domain_data_authority.rs:1042`), so production would not certify
+    /// the stream. The recipe's d49 rule: keep the fold's classification, report
+    /// the certification consequence as a named deviation. `None` on every record
+    /// of the measured capture.
+    body_deviation: Option<String>,
+}
+
+/// The d18 payload authority's status-independent check that the FOLD does not
+/// make — applied fail-closed, as a stream rejection.
+///
+/// `validate_domain_data_payload_at` (`stream_fold.rs:593`) runs
+/// `decode_compact_country_identity_data_payload`
+/// (`domain_data_authority.rs:1013`) on EVERY d18 DOMAIN_DATA record whatever its
+/// status, and a parse error clears the stream's decodable verdict. Its checks are
+/// the same walk [`d18_roster`] performs — row truncation, cosmetic markers,
+/// zero/empty/duplicate tags, the whole CIM1 extension, trailing bytes — with
+/// **one exception**: `changed_rows > row_count` at offset `+12`
+/// (`domain_data_authority.rs:1029`-`:1033`), a word `fold_country_identity`
+/// never reads at all (it takes `row_count` from `+8` and `status_flags` from
+/// `+16` and nothing else out of the header, `world_fold.rs:14156`-`:14157`).
+///
+/// That layering decides the treatment, and the two halves are NOT the same
+/// (d49's rule where the fold has a behaviour, d65's where it has none):
+///
+/// - Where the fold HAS a behaviour, the harness keeps the fold's classification
+///   and reports the certification consequence. A d18 payload the fold refuses is
+///   that case: it commits nothing, the recorder notes it and continues, so this
+///   harness counts it into `d18_refused_records` rather than refusing a stream
+///   the recorder accepts.
+/// - Where the fold has NO behaviour, there is nothing to preserve and the
+///   authority applies fail-closed. `changed_rows` is that case: the fold folds
+///   such a record normally and commits its roster, so measuring it would measure
+///   a stream production does not certify.
+///
+/// Ported from `bench_real_d96.rs`, where the rule was Codex round-1 finding
+/// `019fa530-c013-74a2-b717-31f8e89e8639` and its over-reach — refusing a payload
+/// too short to carry the word, which the FOLD refuses too and the recorder
+/// tolerates — was round-2 finding `019fa53d-daf5-7810-a470-aeeb710e8166`. A
+/// short payload therefore returns `Ok` here and falls through to [`d18_roster`].
+fn check_d18_payload_authority(payload: &[u8]) -> Result<(), String> {
+    // Not a check: the authority's 20-byte minimum (`domain_data_authority.rs:1018`)
+    // is also the FOLD's (`world_fold.rs:14155`), so it is `d18_roster`'s business.
+    // The length is read here only to know whether the word below exists at all.
+    if payload.len() < 20 {
+        return Ok(());
+    }
+    let row_count = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]) as usize;
+    let changed_rows =
+        u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]) as usize;
+    // `:1029`-`:1033`. The one rule the fold never applies, because it never reads
+    // the word.
+    if changed_rows > row_count {
+        return Err(format!(
+            "country_identity data changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    Ok(())
 }
 
 fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
@@ -331,191 +409,204 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
         Ok(len)
     }
 
+    // The body walk itself, separated from the status decision below because the
+    // two callers need it for different reasons — the clean path to COMMIT the
+    // roster it proves, the failure path only to see whether the payload authority
+    // would have accepted the body. It mutates nothing, so neither can leave a
+    // half-applied roster behind.
+    fn walk_body(payload: &[u8]) -> Result<BTreeSet<u32>, String> {
+        let row_count = u32_at(payload, 8) as usize;
+        let mut cursor = 20usize;
+        let mut fresh: BTreeSet<u32> = BTreeSet::new();
+        for _ in 0..row_count {
+            need(payload, cursor + 4, "row tag_db_id")?;
+            let tag_db_id = u32_at(payload, cursor);
+            cursor += 4;
+            let tag_len = read_string(payload, &mut cursor, "tag")?;
+            if tag_db_id == 0 {
+                return Err("country_identity row with zero tag_db_id".into());
+            }
+            if tag_len == 0 {
+                return Err(format!("country_identity row {tag_db_id} with empty tag"));
+            }
+            if !fresh.insert(tag_db_id) {
+                return Err(format!(
+                    "country_identity duplicates tag_db_id {tag_db_id}"
+                ));
+            }
+            need(payload, cursor + 1, "cosmetic marker")?;
+            let marker = payload[cursor];
+            cursor += 1;
+            match marker {
+                0 | 1 => {}
+                2 => {
+                    let cosmetic_len = read_string(payload, &mut cursor, "cosmetic")?;
+                    if cosmetic_len == 0 {
+                        return Err(format!(
+                            "country_identity row {tag_db_id} present cosmetic marker with empty string"
+                        ));
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "country_identity row {tag_db_id} invalid cosmetic marker {other}"
+                    ))
+                }
+            }
+        }
+
+        // The optional CIM1 extension (`world_fold.rs:13985`-`:14141`). Walked in
+        // full: its rejections are the recorder's rejections.
+        if cursor < payload.len() {
+            const CIM1_HEADER_LEN: usize = 40;
+            need(payload, cursor + CIM1_HEADER_LEN, "CIM1 header")?;
+            if &payload[cursor..cursor + 4] != b"CIM1"
+                || u16_at(payload, cursor + 4) != 1
+                || u16_at(payload, cursor + 6) as usize != CIM1_HEADER_LEN
+                || u32_at(payload, cursor + 36) != 0
+            {
+                return Err("country_identity CIM1 header is invalid".into());
+            }
+            let claims_status = u32_at(payload, cursor + 8);
+            let cores_status = u32_at(payload, cursor + 12);
+            let major_status = u32_at(payload, cursor + 16);
+            let state_count = u32_at(payload, cursor + 20) as usize;
+            let expected_claim_memberships = u32_at(payload, cursor + 24) as usize;
+            let expected_core_memberships = u32_at(payload, cursor + 28) as usize;
+            let major_count = u32_at(payload, cursor + 32) as usize;
+            let claims_available = !compact_status_is_failure(claims_status);
+            let cores_available = !compact_status_is_failure(cores_status);
+            let major_available = !compact_status_is_failure(major_status);
+            if state_count > 100_000
+                || expected_claim_memberships > 1_000_000
+                || expected_core_memberships > 1_000_000
+                || major_count > fresh.len()
+            {
+                return Err("country_identity CIM1 count exceeds safety bound".into());
+            }
+            if (!claims_available && expected_claim_memberships != 0)
+                || (!cores_available && expected_core_memberships != 0)
+                || ((!claims_available && !cores_available) && state_count != 0)
+                || (!major_available && major_count != 0)
+                || (major_available && major_count != fresh.len())
+            {
+                return Err("country_identity CIM1 status/count contract is invalid".into());
+            }
+            let mut claim_memberships = 0usize;
+            let mut core_memberships = 0usize;
+            let mut previous_state_id = 0u32;
+            cursor += CIM1_HEADER_LEN;
+            for index in 0..state_count {
+                need(payload, cursor + 12, "CIM1 state row")?;
+                let state_id = u32_at(payload, cursor);
+                let claim_count = u32_at(payload, cursor + 4) as usize;
+                let core_count = u32_at(payload, cursor + 8) as usize;
+                cursor += 12;
+                if state_id == 0 || (index != 0 && state_id <= previous_state_id) {
+                    return Err(format!(
+                        "country_identity CIM1 state row {index} is not strictly ordered"
+                    ));
+                }
+                previous_state_id = state_id;
+                if (!claims_available && claim_count != 0) || (!cores_available && core_count != 0) {
+                    return Err(format!(
+                        "country_identity CIM1 unavailable state row {state_id} carries members"
+                    ));
+                }
+                let row_bytes = claim_count
+                    .checked_add(core_count)
+                    .and_then(|count| count.checked_mul(4))
+                    .ok_or_else(|| "country_identity CIM1 state row size overflow".to_string())?;
+                need(payload, cursor + row_bytes, "CIM1 state members")?;
+                for (label, count, total) in [
+                    ("claim", claim_count, &mut claim_memberships),
+                    ("core", core_count, &mut core_memberships),
+                ] {
+                    let mut previous_tag_id = 0u32;
+                    for member_index in 0..count {
+                        let tag_db_id = u32_at(payload, cursor);
+                        cursor += 4;
+                        if tag_db_id == 0
+                            || (member_index != 0 && tag_db_id <= previous_tag_id)
+                            || !fresh.contains(&tag_db_id)
+                        {
+                            return Err(format!(
+                                "country_identity CIM1 state {state_id} {label} member is invalid"
+                            ));
+                        }
+                        previous_tag_id = tag_db_id;
+                        *total += 1;
+                    }
+                }
+            }
+            if claim_memberships != expected_claim_memberships
+                || core_memberships != expected_core_memberships
+            {
+                return Err("country_identity CIM1 membership totals do not match header".into());
+            }
+            let mut majors: BTreeSet<u32> = BTreeSet::new();
+            let mut previous_major_id = 0u32;
+            for index in 0..major_count {
+                need(payload, cursor + 8, "CIM1 major row")?;
+                let tag_db_id = u32_at(payload, cursor);
+                let marker = payload[cursor + 4];
+                if tag_db_id == 0
+                    || (index != 0 && tag_db_id <= previous_major_id)
+                    || marker > 1
+                    || payload[cursor + 5..cursor + 8] != [0, 0, 0]
+                    || !fresh.contains(&tag_db_id)
+                {
+                    return Err(format!(
+                        "country_identity CIM1 major row {index} is invalid"
+                    ));
+                }
+                previous_major_id = tag_db_id;
+                majors.insert(tag_db_id);
+                cursor += 8;
+            }
+            if major_available && majors != fresh {
+                return Err("country_identity CIM1 major roster is incomplete".into());
+            }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "country_identity len {} != consumed {cursor}",
+                payload.len()
+            ));
+        }
+        Ok(fresh)
+    }
+
     need(payload, 20, "header")?;
-    let row_count = u32_at(payload, 8) as usize;
     let status_flags = u32_at(payload, 16);
     // Reported, never refused — see the type's docs for why mirroring the
     // recorder beats applying the stricter rule to a dependency.
     let unassigned_status_bits = compact_status_unknown_flags_v1(status_flags);
-    // The row walk below runs on EVERY record, whatever its status, because
-    // production's payload authority is status-independent:
-    // `validate_domain_data_payload_at` (`stream_fold.rs:593`) runs on every
-    // DOMAIN_DATA record and `decode_compact_country_identity_data_payload`
-    // never looks at the status word to decide whether to walk the rows (the
-    // d94 lesson, carried into d67's d18 arm as a round-2 finding). Only the
-    // COMMIT is status-gated, after the walk.
-
-    let mut cursor = 20usize;
-    let mut fresh: BTreeSet<u32> = BTreeSet::new();
-    for _ in 0..row_count {
-        need(payload, cursor + 4, "row tag_db_id")?;
-        let tag_db_id = u32_at(payload, cursor);
-        cursor += 4;
-        let tag_len = read_string(payload, &mut cursor, "tag")?;
-        if tag_db_id == 0 {
-            return Err("country_identity row with zero tag_db_id".into());
-        }
-        if tag_len == 0 {
-            return Err(format!("country_identity row {tag_db_id} with empty tag"));
-        }
-        if !fresh.insert(tag_db_id) {
-            return Err(format!(
-                "country_identity duplicates tag_db_id {tag_db_id}"
-            ));
-        }
-        need(payload, cursor + 1, "cosmetic marker")?;
-        let marker = payload[cursor];
-        cursor += 1;
-        match marker {
-            0 | 1 => {}
-            2 => {
-                let cosmetic_len = read_string(payload, &mut cursor, "cosmetic")?;
-                if cosmetic_len == 0 {
-                    return Err(format!(
-                        "country_identity row {tag_db_id} present cosmetic marker with empty string"
-                    ));
-                }
-            }
-            other => {
-                return Err(format!(
-                    "country_identity row {tag_db_id} invalid cosmetic marker {other}"
-                ))
-            }
-        }
-    }
-
-    // The optional CIM1 extension (`world_fold.rs:13985`-`:14141`). Walked in
-    // full: its rejections are the recorder's rejections.
-    if cursor < payload.len() {
-        const CIM1_HEADER_LEN: usize = 40;
-        need(payload, cursor + CIM1_HEADER_LEN, "CIM1 header")?;
-        if &payload[cursor..cursor + 4] != b"CIM1"
-            || u16_at(payload, cursor + 4) != 1
-            || u16_at(payload, cursor + 6) as usize != CIM1_HEADER_LEN
-            || u32_at(payload, cursor + 36) != 0
-        {
-            return Err("country_identity CIM1 header is invalid".into());
-        }
-        let claims_status = u32_at(payload, cursor + 8);
-        let cores_status = u32_at(payload, cursor + 12);
-        let major_status = u32_at(payload, cursor + 16);
-        let state_count = u32_at(payload, cursor + 20) as usize;
-        let expected_claim_memberships = u32_at(payload, cursor + 24) as usize;
-        let expected_core_memberships = u32_at(payload, cursor + 28) as usize;
-        let major_count = u32_at(payload, cursor + 32) as usize;
-        let claims_available = !compact_status_is_failure(claims_status);
-        let cores_available = !compact_status_is_failure(cores_status);
-        let major_available = !compact_status_is_failure(major_status);
-        if state_count > 100_000
-            || expected_claim_memberships > 1_000_000
-            || expected_core_memberships > 1_000_000
-            || major_count > fresh.len()
-        {
-            return Err("country_identity CIM1 count exceeds safety bound".into());
-        }
-        if (!claims_available && expected_claim_memberships != 0)
-            || (!cores_available && expected_core_memberships != 0)
-            || ((!claims_available && !cores_available) && state_count != 0)
-            || (!major_available && major_count != 0)
-            || (major_available && major_count != fresh.len())
-        {
-            return Err("country_identity CIM1 status/count contract is invalid".into());
-        }
-        let mut claim_memberships = 0usize;
-        let mut core_memberships = 0usize;
-        let mut previous_state_id = 0u32;
-        cursor += CIM1_HEADER_LEN;
-        for index in 0..state_count {
-            need(payload, cursor + 12, "CIM1 state row")?;
-            let state_id = u32_at(payload, cursor);
-            let claim_count = u32_at(payload, cursor + 4) as usize;
-            let core_count = u32_at(payload, cursor + 8) as usize;
-            cursor += 12;
-            if state_id == 0 || (index != 0 && state_id <= previous_state_id) {
-                return Err(format!(
-                    "country_identity CIM1 state row {index} is not strictly ordered"
-                ));
-            }
-            previous_state_id = state_id;
-            if (!claims_available && claim_count != 0) || (!cores_available && core_count != 0) {
-                return Err(format!(
-                    "country_identity CIM1 unavailable state row {state_id} carries members"
-                ));
-            }
-            let row_bytes = claim_count
-                .checked_add(core_count)
-                .and_then(|count| count.checked_mul(4))
-                .ok_or_else(|| "country_identity CIM1 state row size overflow".to_string())?;
-            need(payload, cursor + row_bytes, "CIM1 state members")?;
-            for (label, count, total) in [
-                ("claim", claim_count, &mut claim_memberships),
-                ("core", core_count, &mut core_memberships),
-            ] {
-                let mut previous_tag_id = 0u32;
-                for member_index in 0..count {
-                    let tag_db_id = u32_at(payload, cursor);
-                    cursor += 4;
-                    if tag_db_id == 0
-                        || (member_index != 0 && tag_db_id <= previous_tag_id)
-                        || !fresh.contains(&tag_db_id)
-                    {
-                        return Err(format!(
-                            "country_identity CIM1 state {state_id} {label} member is invalid"
-                        ));
-                    }
-                    previous_tag_id = tag_db_id;
-                    *total += 1;
-                }
-            }
-        }
-        if claim_memberships != expected_claim_memberships
-            || core_memberships != expected_core_memberships
-        {
-            return Err("country_identity CIM1 membership totals do not match header".into());
-        }
-        let mut majors: BTreeSet<u32> = BTreeSet::new();
-        let mut previous_major_id = 0u32;
-        for index in 0..major_count {
-            need(payload, cursor + 8, "CIM1 major row")?;
-            let tag_db_id = u32_at(payload, cursor);
-            let marker = payload[cursor + 4];
-            if tag_db_id == 0
-                || (index != 0 && tag_db_id <= previous_major_id)
-                || marker > 1
-                || payload[cursor + 5..cursor + 8] != [0, 0, 0]
-                || !fresh.contains(&tag_db_id)
-            {
-                return Err(format!(
-                    "country_identity CIM1 major row {index} is invalid"
-                ));
-            }
-            previous_major_id = tag_db_id;
-            majors.insert(tag_db_id);
-            cursor += 8;
-        }
-        if major_available && majors != fresh {
-            return Err("country_identity CIM1 major roster is incomplete".into());
-        }
-    }
-    if cursor != payload.len() {
-        return Err(format!(
-            "country_identity len {} != consumed {cursor}",
-            payload.len()
-        ));
-    }
-    // `world_fold.rs:13922`-`:13928`: only now, with the whole payload
-    // validated, is the status word consulted. A failure status leaves the map
-    // unchanged and returns Ok, so this record commits nothing — whatever an
-    // earlier record committed this hour stands.
+    // `world_fold.rs:14158`-`:14164`: the status word is consulted IMMEDIATELY
+    // after the 20-byte header, and the fold returns `Ok` **without reading the
+    // body at all** — so a failure-status record is a failure record however
+    // unwalkable its body is, and it commits nothing: whatever an earlier record
+    // committed this hour stands.
+    //
+    // The comment this replaces had the row walk running first, on the grounds
+    // that production's payload authority is status-independent. Two things were
+    // conflated there, and the d96 port's round-3 review separated them (thread
+    // 019fa548-5e33-7061-9236-5c7151f92098): the authority's status-independence
+    // decides what this harness must REPORT, while the FOLD's order decides how
+    // the record is CLASSIFIED. So the body is still walked on the failure path —
+    // only to record a body the authority (`domain_data_authority.rs:1042`) would
+    // reject as a named certification deviation, per the recipe's d49 rule.
     if compact_status_is_failure(status_flags) {
         return Ok(D18Fold {
             roster: None,
             unassigned_status_bits,
+            body_deviation: walk_body(payload).err(),
         });
     }
     Ok(D18Fold {
-        roster: Some(fresh),
+        roster: Some(walk_body(payload)?),
         unassigned_status_bits,
+        body_deviation: None,
     })
 }
 
@@ -551,6 +642,8 @@ fn scan_stream(
         d18_failure_records: 0,
         d18_refused_records: 0,
         d18_unassigned_status_records: 0,
+        d18_failure_records_with_unwalkable_body: 0,
+        d18_first_failure_body_deviation: None,
         pov_countries: BTreeSet::new(),
         land_max: 0,
         taskforce_max: 0,
@@ -743,10 +836,32 @@ fn scan_stream(
                 D18 => {
                     scan.d18_records += 1;
                     hour_saw_d18 = true;
+                    // Production's status-independent payload authority, fail-closed
+                    // and BEFORE the fold mirror: its complaint clears the stream's
+                    // decodable verdict at seal time, so a record it rejects is not
+                    // an hour to skip. Only the checks the fold does not make live
+                    // there — see [`check_d18_payload_authority`].
+                    check_d18_payload_authority(payload).map_err(|e| {
+                        format!(
+                            "d18 payload at byte {pos} (hour {}): {e}. Production's \
+                             status-independent payload authority refuses this record, and its \
+                             complaint refuses the whole stream at seal time.",
+                            header.game_hour_raw
+                        )
+                    })?;
                     match d18_roster(payload) {
                     Ok(fold) => {
                         if fold.unassigned_status_bits != 0 {
                             scan.d18_unassigned_status_records += 1;
+                        }
+                        if let Some(reason) = fold.body_deviation {
+                            scan.d18_failure_records_with_unwalkable_body += 1;
+                            if scan.d18_first_failure_body_deviation.is_none() {
+                                scan.d18_first_failure_body_deviation = Some(format!(
+                                    "hour {} at byte {pos}: {reason}",
+                                    header.game_hour_raw
+                                ));
+                            }
                         }
                         match fold.roster {
                             Some(ids) => roster.measure(ids),
@@ -1241,6 +1356,15 @@ fn main() {
          nothing; the hour is unmeasured only if no d18 record succeeded in it), {} records \
          with unassigned v1 status bits (committed by the recorder, so committed here)",
         scan.d18_failure_records, scan.d18_refused_records, scan.d18_unassigned_status_records
+    );
+    println!(
+        "d18 certification    {} failure-status record(s) whose body the payload authority \
+         would reject (the fold never reads it; a named deviation, not a reclassification){}",
+        scan.d18_failure_records_with_unwalkable_body,
+        scan.d18_first_failure_body_deviation
+            .as_deref()
+            .map(|first| format!(" (first: {first})"))
+            .unwrap_or_default()
     );
     println!(
         "perf status          {} (parsed and reported; the fold reads no status word)",
@@ -2363,17 +2487,130 @@ mod tests {
         .expect("a failure status is not a refusal");
         assert_eq!(failed.roster, None);
 
-        // The d94 lesson: production's payload authority is status-independent,
-        // so a failure-status d18 record's rows are still walked — a MALFORMED
-        // failure-status payload is a refusal, exactly like a malformed clean
-        // one, never a quiet nothing-committed.
+        assert!(failed.body_deviation.is_none(), "a well-formed body");
+
+        // This block used to assert the defect: that a MALFORMED failure-status
+        // payload is an `Err`, "because production's payload authority is
+        // status-independent". Two things were conflated, and the d96 port's
+        // round-3 review separated them (thread
+        // 019fa548-5e33-7061-9236-5c7151f92098). The authority's
+        // status-independence decides what this harness must REPORT; the FOLD's
+        // own order — status immediately after the header, `Ok` without reading
+        // the body (`world_fold.rs:14158`-`:14164`) — decides how the record is
+        // CLASSIFIED. So the body is still walked, and a body the authority would
+        // reject is still surfaced, but as a named certification deviation rather
+        // than as a reclassification into "refused".
         let mut malformed = d18_payload(COMPACT_STATUS_STATE_UNAVAILABLE, &[(368, "D04")], None);
         let len = malformed.len();
         malformed.truncate(len - 1);
+        let fold = d18_roster(&malformed)
+            .expect("the fold never reads this body, so it commits nothing and returns Ok");
+        assert_eq!(fold.roster, None, "a failure status commits nothing");
         assert!(
-            d18_roster(&malformed).is_err(),
-            "a failure-status d18 record's rows must still be validated"
+            fold.body_deviation.is_some(),
+            "the authority would reject the body: reported, not reclassified"
         );
+    }
+
+    #[test]
+    fn a_d18_record_whose_changed_rows_exceeds_row_count_refuses_the_stream() {
+        // Ported from `bench_real_d96.rs`, Codex round-1 finding
+        // 019fa530-c013-74a2-b717-31f8e89e8639. `fold_country_identity` never reads
+        // the word, so this mirror folded such a record normally and its hours were
+        // measured — while production's status-independent d18 authority rejects it
+        // (`domain_data_authority.rs:1029`-`:1033`) and the stream is not certified.
+        // Fixed by property, not by one input: the whole (row_count, changed_rows,
+        // status) space is swept below, and the authority's own predicate is applied
+        // fail-closed ahead of the fold mirror.
+        let mut bad = d18_payload(0, &[(368, "D04")], None);
+        bad[12..16].copy_from_slice(&2u32.to_le_bytes()); // changed_rows = 2, row_count = 1
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &bad));
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        let err = match run_scan(&s) {
+            Err(err) => err,
+            Ok(scan) => panic!(
+                "changed_rows > row_count must refuse the stream, but {} hour(s) measured",
+                scan.hours.len()
+            ),
+        };
+        assert!(
+            err.contains("changed_rows 2 > row_count 1") && err.contains("d18 payload at byte"),
+            "{err}"
+        );
+
+        // The property, over the whole space: `changed_rows <= row_count` is the
+        // rule on any row count, and a failure status does not exempt it (the
+        // authority is status-independent).
+        for status in [0u32, COMPACT_STATUS_STATE_UNAVAILABLE] {
+            for row_count in 0..4usize {
+                let tags: Vec<(u32, &str)> = (0..row_count)
+                    .map(|index| (index as u32 + 1, ["GER", "ENG", "FRA"][index % 3]))
+                    .collect();
+                for changed_rows in 0..6u32 {
+                    let mut payload = d18_payload(status, &tags, None);
+                    payload[12..16].copy_from_slice(&changed_rows.to_le_bytes());
+                    assert_eq!(
+                        check_d18_payload_authority(&payload).is_ok(),
+                        changed_rows as usize <= row_count,
+                        "status {status:#x}, row_count {row_count}, changed_rows {changed_rows}"
+                    );
+                }
+            }
+        }
+        // A payload too short to carry the word is NOT this helper's business: the
+        // fold refuses it and the recorder tolerates that refusal, so it must fall
+        // through to `d18_roster` rather than refusing the stream (d96 round-2
+        // finding, thread 019fa53d-daf5-7810-a470-aeeb710e8166).
+        for len in 0..20usize {
+            assert!(
+                check_d18_payload_authority(&vec![0u8; len]).is_ok(),
+                "a {len}-byte payload is the fold mirror's business, not the authority's"
+            );
+        }
+
+        // And the well-formed case still measures.
+        let mut good = d18_payload(0, &[(368, "D04")], None);
+        good[12..16].copy_from_slice(&1u32.to_le_bytes());
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &good));
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        let scan = run_scan(&s).expect("changed_rows == row_count is legal");
+        assert_eq!(scan.hours.len(), 1);
+    }
+
+    #[test]
+    fn a_failure_status_d18_record_is_classified_by_the_fold_not_by_its_body() {
+        // Ported from `bench_real_d96.rs`, Codex round-3 finding
+        // 019fa548-5e33-7061-9236-5c7151f92098, whose exact input this carries: a
+        // 20-byte d18 payload claiming `row_count = 1` with no row body at all,
+        // under a failure status. `fold_country_identity` checks the status
+        // immediately after the header and returns `Ok` WITHOUT reading the body
+        // (`world_fold.rs:14158`), so the record is a failure record — not a
+        // refused one. This bin's mirror walked the rows first and reported it as
+        // `d18_refused_records`.
+        let mut headless = vec![0u8; 20];
+        headless[8..12].copy_from_slice(&1u32.to_le_bytes()); // row_count = 1
+        headless[16..20].copy_from_slice(&COMPACT_STATUS_STATE_UNAVAILABLE.to_le_bytes());
+        let mut s = Vec::new();
+        s.extend(record(1, 100, D18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &headless));
+        s.extend(d95_record(2, 100, 10));
+        s.extend(frame_end(3, 100));
+        let scan = run_scan(&s).expect("the recorder accepts this stream");
+        assert_eq!(scan.d18_failure_records, 1, "the fold's classification");
+        assert_eq!(scan.d18_refused_records, 0, "not a refused payload");
+        // …and the certification consequence is still reported, because the payload
+        // authority DOES walk that body (the recipe's d49 rule).
+        assert_eq!(scan.d18_failure_records_with_unwalkable_body, 1);
+        assert!(scan.d18_first_failure_body_deviation.is_some());
+        // The roster committed nothing, so the hour is excluded, not measured.
+        assert_eq!(scan.hours.len(), 0);
+
+        // A truncated HEADER is still a refused payload, because the fold's own
+        // `need(payload, 20, ...)` precedes the status read.
+        assert!(d18_roster(&[0u8; 19]).is_err());
     }
 
     #[test]
