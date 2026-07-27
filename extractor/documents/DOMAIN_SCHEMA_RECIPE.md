@@ -773,7 +773,7 @@ for ATTEMPT in 1 2; do
   OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl); ERR=$(mktemp /tmp/cdx_XXXXXX.err)
   printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_policy=never \
     --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=high \
-    -c service_tier=priority -o "$OUT" - > "$AJ" 2> "$ERR" &
+    -o "$OUT" - > "$AJ" 2> "$ERR" &
   CDX=$!
   # Persist the thread id AS SOON AS the first JSONL line lands — the
   # resumability law: a hard kill skips exit-time code, so extraction after
