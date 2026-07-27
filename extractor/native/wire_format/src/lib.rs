@@ -55,6 +55,7 @@ pub mod d83;
 pub mod d92;
 pub mod d94;
 pub mod d95;
+pub mod d96;
 pub mod derived;
 pub mod frame;
 pub mod record;
