@@ -19521,3 +19521,331 @@ fn x4_pdq1_complete_empty_writes_an_exact_empty_queue() {
         json!(0)
     );
 }
+
+// --- d15 politics_residuals: unmeasured must not fold as a value ----------
+//
+// The collector packs `u32::MAX` into the `elections_allowed` word and clears
+// per-country flag bit 1 when the source byte was unreadable or out of range
+// (`collector/src/attach_log.rs:69168`-`:69185`, `:82419`-`:82428`). The fold
+// used to compute `elections_allowed != 0`, so a non-observation folded as a
+// confident `true`.
+
+/// One d15 country row: `(tag_db_id, flags, elections_allowed_word, last_election)`.
+fn politics_residuals_payload(rows: &[(u32, u32, u32, &str)]) -> Vec<u8> {
+    politics_residuals_payload_with_details(rows, &[])
+}
+
+fn politics_residuals_payload_with_details(
+    rows: &[(u32, u32, u32, &str)],
+    details: &[(u32, &str, &str, &str, &str)],
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // country_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed_rows
+    p.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+    p.extend_from_slice(&(details.len() as u32).to_le_bytes()); // advisor_detail_count
+    for (tag_db_id, flags, elections_allowed, last_election) in rows {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        p.extend_from_slice(&flags.to_le_bytes());
+        p.extend_from_slice(&elections_allowed.to_le_bytes());
+        let owned = details.iter().filter(|d| d.0 == *tag_db_id).count() as u32;
+        p.extend_from_slice(&owned.to_le_bytes()); // per-row advisor-detail count
+        push_str(&mut p, last_election);
+    }
+    for (tag_db_id, idea_token, slot, ledger, character) in details {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, idea_token);
+        push_str(&mut p, slot);
+        push_str(&mut p, ledger);
+        push_str(&mut p, character);
+    }
+    p
+}
+
+const D15_FLAG_LAST_ELECTION: u32 = 1;
+const D15_FLAG_ELECTIONS_ALLOWED: u32 = 1 << 1;
+const D15_FLAG_ADVISOR_DETAILS: u32 = 1 << 2;
+
+#[test]
+fn d15_elections_allowed_sentinel_folds_null_not_true() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "FRA"), (3, "ITA")]),
+        ),
+        (
+            15,
+            politics_residuals_payload(&[
+                // unmeasured via the sentinel alone: bit 1 is SET here, so this
+                // row pins the `u32::MAX` guard independently of the presence
+                // bit (the clear-bit case has its own test below).
+                (
+                    1,
+                    D15_FLAG_LAST_ELECTION | D15_FLAG_ELECTIONS_ALLOWED,
+                    u32::MAX,
+                    "1936.1.1.1",
+                ),
+                // measured false
+                (
+                    2,
+                    D15_FLAG_LAST_ELECTION | D15_FLAG_ELECTIONS_ALLOWED,
+                    0,
+                    "1936.1.1.1",
+                ),
+                // measured true
+                (
+                    3,
+                    D15_FLAG_LAST_ELECTION | D15_FLAG_ELECTIONS_ALLOWED,
+                    1,
+                    "1936.1.1.1",
+                ),
+            ]),
+        ),
+    ]);
+    // The defect: `u32::MAX != 0` folded as `true`.
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["elections_allowed"],
+        Value::Null,
+        "unmeasured elections_allowed must fold as null, never as a boolean"
+    );
+    assert_eq!(
+        snapshot["countries"]["FRA"]["politics"]["elections_allowed"],
+        json!(false),
+        "a measured 0 must still fold as false"
+    );
+    assert_eq!(
+        snapshot["countries"]["ITA"]["politics"]["elections_allowed"],
+        json!(true),
+        "a measured 1 must still fold as true"
+    );
+    // Measured neighbours in the same row are untouched by the fix.
+    assert_eq!(
+        snapshot["countries"]["FRA"]["politics"]["last_election"],
+        json!("1936.1.1.1")
+    );
+}
+
+#[test]
+fn d15_elections_allowed_clear_presence_bit_folds_null_even_with_zero_word() {
+    // Belt-and-braces: the presence bit, not the sentinel, is the authority. A
+    // row whose bit 1 is clear must fold null even if the word happens to be 0,
+    // which `!= 0` would have rendered as a confident `false`.
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            15,
+            politics_residuals_payload(&[(1, D15_FLAG_LAST_ELECTION, 0, "1936.1.1.1")]),
+        ),
+    ]);
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["elections_allowed"],
+        Value::Null
+    );
+}
+
+#[test]
+fn d15_last_election_and_advisor_details_unmeasured_fold_null() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "FRA")])),
+        (
+            15,
+            politics_residuals_payload_with_details(
+                &[
+                    // nothing measured at all. The date string is deliberately
+                    // NON-empty so this pins the bit-0 presence gate rather than
+                    // `string_or_null`'s empty-string rule.
+                    (1, 0, u32::MAX, "1936.1.1.1"),
+                    // advisor details measured, and non-empty
+                    (
+                        2,
+                        D15_FLAG_LAST_ELECTION
+                            | D15_FLAG_ELECTIONS_ALLOWED
+                            | D15_FLAG_ADVISOR_DETAILS,
+                        1,
+                        "1936.1.1.1",
+                    ),
+                ],
+                &[(
+                    2,
+                    "FRA_advisor",
+                    "political_advisor",
+                    "political",
+                    "FRA_char",
+                )],
+            ),
+        ),
+    ]);
+    let ger = &snapshot["countries"]["GER"]["politics"];
+    assert_eq!(ger["last_election"], Value::Null);
+    assert_eq!(ger["elections_allowed"], Value::Null);
+    assert_eq!(
+        ger["appointed_advisor_details"],
+        Value::Null,
+        "flag bit 2 clear means the advisor set was never measured, not measured-empty"
+    );
+    let fra = &snapshot["countries"]["FRA"]["politics"];
+    assert_eq!(fra["elections_allowed"], json!(true));
+    assert_eq!(
+        fra["appointed_advisor_details"][0]["idea_token"],
+        json!("FRA_advisor")
+    );
+}
+
+#[test]
+fn d15_measured_empty_advisor_details_stay_an_empty_array() {
+    // Bit 2 set with zero trailer rows is a measured-empty observation and must
+    // stay distinguishable from the unmeasured null above.
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            15,
+            politics_residuals_payload(&[(
+                1,
+                D15_FLAG_LAST_ELECTION | D15_FLAG_ELECTIONS_ALLOWED | D15_FLAG_ADVISOR_DETAILS,
+                0,
+                "1936.1.1.1",
+            )]),
+        ),
+    ]);
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["appointed_advisor_details"],
+        json!([])
+    );
+    assert_eq!(
+        snapshot["countries"]["GER"]["politics"]["elections_allowed"],
+        json!(false)
+    );
+}
+
+// --- d14 politics_live: the same class, on its four collection fields -----
+
+/// One d14 country row plus its trailers.
+fn politics_payload(
+    tag_db_id: u32,
+    flags: u32,
+    popularities: &[(&str, i32)],
+    laws: &[(&str, &str)],
+    advisors: &[(&str, &str)],
+    spirits: &[&str],
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    p.extend_from_slice(&1u32.to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    p.extend_from_slice(&100_000u32.to_le_bytes()); // scale
+    p.extend_from_slice(&(popularities.len() as u32).to_le_bytes());
+    p.extend_from_slice(&(laws.len() as u32).to_le_bytes());
+    p.extend_from_slice(&(advisors.len() as u32).to_le_bytes());
+    p.extend_from_slice(&(spirits.len() as u32).to_le_bytes());
+    p.extend_from_slice(&tag_db_id.to_le_bytes()); // +0
+    p.extend_from_slice(&flags.to_le_bytes()); // +4
+    p.extend_from_slice(&u32::MAX.to_le_bytes()); // +8  idea_count
+    p.extend_from_slice(&u32::MAX.to_le_bytes()); // +12 election_frequency
+    p.extend_from_slice(&u32::MAX.to_le_bytes()); // +16 party_count
+    p.extend_from_slice(&u32::MAX.to_le_bytes()); // +20 low_confidence
+    p.extend_from_slice(&0u32.to_le_bytes()); // +24 leader char_id
+    push_str(&mut p, "neutrality"); // ruling_party
+    push_str(&mut p, "Leader"); // leader_name
+    push_str(&mut p, "GER_leader"); // leader_token
+    push_str(&mut p, "neutrality"); // leader_ideology
+    for (ideology, raw) in popularities {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, ideology);
+        p.extend_from_slice(&raw.to_le_bytes());
+    }
+    for (group, token) in laws {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, group);
+        push_str(&mut p, token);
+    }
+    for (group, token) in advisors {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, group);
+        push_str(&mut p, token);
+    }
+    for token in spirits {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, token);
+    }
+    p
+}
+
+const D14_FLAG_POPULARITIES: u32 = 1;
+const D14_FLAG_LAWS: u32 = 1 << 3;
+const D14_FLAG_ADVISOR_IDEAS: u32 = 1 << 4;
+const D14_FLAG_NATIONAL_SPIRITS: u32 = 1 << 5;
+
+#[test]
+fn d14_unmeasured_collections_fold_null_not_measured_empty() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (14, politics_payload(1, 0, &[], &[], &[], &[])),
+    ]);
+    let politics = &snapshot["countries"]["GER"]["politics"];
+    for key in [
+        "party_popularities",
+        "laws",
+        "appointed_advisors",
+        "national_spirits",
+    ] {
+        assert_eq!(
+            politics[key],
+            Value::Null,
+            "{key}: presence bit clear means unmeasured, not measured-empty"
+        );
+    }
+}
+
+#[test]
+fn d14_measured_empty_collections_stay_empty_and_measured_values_are_unchanged() {
+    let flags =
+        D14_FLAG_POPULARITIES | D14_FLAG_LAWS | D14_FLAG_ADVISOR_IDEAS | D14_FLAG_NATIONAL_SPIRITS;
+    let empty = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (14, politics_payload(1, flags, &[], &[], &[], &[])),
+    ]);
+    let politics = &empty["countries"]["GER"]["politics"];
+    assert_eq!(politics["party_popularities"], json!({}));
+    assert_eq!(politics["laws"], json!({}));
+    assert_eq!(politics["appointed_advisors"], json!([]));
+    assert_eq!(politics["national_spirits"], json!([]));
+
+    let filled = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            14,
+            politics_payload(
+                1,
+                flags,
+                &[("fascism", 65_000)],
+                &[("economy", "war_economy")],
+                &[("political_advisor", "GER_advisor")],
+                &["german_spirit"],
+            ),
+        ),
+    ]);
+    let politics = &filled["countries"]["GER"]["politics"];
+    assert!((politics["party_popularities"]["fascism"].as_f64().unwrap() - 0.65).abs() < 1e-6);
+    assert_eq!(politics["laws"]["economy"], json!("war_economy"));
+    assert_eq!(politics["appointed_advisors"], json!(["GER_advisor"]));
+    assert_eq!(politics["national_spirits"], json!(["german_spirit"]));
+    assert_eq!(politics["ruling_party"], json!("neutrality"));
+}
+
+#[test]
+fn d14_rows_present_with_a_clear_presence_bit_are_never_dropped() {
+    // A payload that contradicts its own presence bit must keep the rows it
+    // carried; nulling is only for the "unmeasured and empty" case.
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (
+            14,
+            politics_payload(1, 0, &[], &[("economy", "war_economy")], &[], &[]),
+        ),
+    ]);
+    let politics = &snapshot["countries"]["GER"]["politics"];
+    assert_eq!(politics["laws"]["economy"], json!("war_economy"));
+    assert_eq!(politics["party_popularities"], Value::Null);
+}
