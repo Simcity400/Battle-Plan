@@ -13757,6 +13757,68 @@ fn chunk2_folds_air_sections_and_keeps_d42_out_of_events() {
     assert_eq!(snap["events"], json!([]));
 }
 
+// Fold half of the d31/d38 withheld-baseline contract (collector half:
+// `collector::attach_log::withheld_delta_baseline_tests`). d31 has no
+// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry, so a PARTIAL_DATA record is
+// discarded whole and the accumulator is retained. The collector therefore owes
+// the change again on the next clean frame, and when it delivers it the fold
+// ends stored-equal to the collector's view.
+#[test]
+fn d31_partial_record_is_discarded_and_a_later_clean_frame_restores_agreement() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (31, d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0)),
+        ],
+        vec![(
+            31,
+            d31_air_region_activity_payload(&[(88, 1, 7, 140)], COMPACT_STATUS_PARTIAL_DATA),
+        )],
+        vec![(31, d31_air_region_activity_payload(&[(88, 1, 7, 140)], 0))],
+    ]);
+
+    assert_eq!(
+        snaps[0]["naval_air"]["_r2_air_region_activity"][0]["plane_count"],
+        json!(100)
+    );
+    assert_eq!(
+        snaps[1]["naval_air"]["_r2_air_region_activity"],
+        Value::Null,
+        "an untolerated PARTIAL record leaves the domain/hour unknown; its rows never land"
+    );
+    assert_eq!(
+        snaps[2]["naval_air"]["_r2_air_region_activity"][0]["plane_count"],
+        json!(140),
+        "the re-delivered change must land once a clean frame carries it"
+    );
+}
+
+// The failure mode the collector fix prevents: if the collector advances its
+// delta baseline on the discarded PARTIAL frame, the following clean frame has
+// nothing to say and the fold stays stale for the rest of the campaign.
+#[test]
+fn d31_change_carried_only_by_a_discarded_partial_record_never_reaches_the_fold() {
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (31, d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0)),
+        ],
+        vec![(
+            31,
+            d31_air_region_activity_payload(&[(88, 1, 7, 140)], COMPACT_STATUS_PARTIAL_DATA),
+        )],
+        // An advanced baseline makes this clean frame an empty delta.
+        vec![(31, d31_air_region_activity_payload(&[], 0))],
+    ]);
+
+    assert_eq!(
+        snaps[2]["naval_air"]["_r2_air_region_activity"][0]["plane_count"],
+        json!(100),
+        "the accumulator diverges permanently, which is why the collector must \
+         withhold its baseline advance on a failure-class frame"
+    );
+}
+
 #[test]
 fn chunk2_folds_d42_exact_air_region_combat_causes() {
     let snap = chunk1_one_snapshot(vec![

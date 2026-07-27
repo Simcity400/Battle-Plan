@@ -9716,7 +9716,7 @@
 
             let mut tracker = CompactAirRegionActivityTracker::default();
             let (emitted, changed_rows, deleted_rows) =
-                compact_air_region_activity_delta_rows(&mut tracker, bucket_rows);
+                compact_air_region_activity_delta_rows(&mut tracker, bucket_rows, 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 0);
             assert_eq!(emitted.len(), 1);
@@ -9752,7 +9752,7 @@
             assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 0);
 
             let (deleted, changed_rows, deleted_rows) =
-                compact_air_region_activity_delta_rows(&mut tracker, Vec::new());
+                compact_air_region_activity_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 1);
             assert_eq!(deleted.len(), 1);
@@ -9792,7 +9792,7 @@
             ];
             let mut tracker = CompactAirSuperiorityInputTracker::default();
             let (rows, changed_rows, deleted_rows) =
-                compact_air_superiority_input_delta_rows(&mut tracker, initial);
+                compact_air_superiority_input_delta_rows(&mut tracker, initial, 0);
             assert_eq!(changed_rows, 2);
             assert_eq!(deleted_rows, 0);
 
@@ -9850,7 +9850,7 @@
             );
 
             let (deleted, changed_rows, deleted_rows) =
-                compact_air_superiority_input_delta_rows(&mut tracker, Vec::new());
+                compact_air_superiority_input_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed_rows, 2);
             assert_eq!(deleted_rows, 2);
             assert!(deleted.iter().all(|row| row.deleted));
@@ -10466,7 +10466,7 @@
                 },
             ];
             let (emitted, changed_rows, deleted_rows) =
-                compact_air_base_status_delta_rows(&mut tracker, current);
+                compact_air_base_status_delta_rows(&mut tracker, current, 0);
             assert_eq!(changed_rows, 2);
             assert_eq!(deleted_rows, 0);
             assert_eq!(emitted.len(), 2);
@@ -10504,7 +10504,7 @@
             assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 278);
 
             let (deleted, changed_rows, deleted_rows) =
-                compact_air_base_status_delta_rows(&mut tracker, Vec::new());
+                compact_air_base_status_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed_rows, 2);
             assert_eq!(deleted_rows, 2);
             assert_eq!(deleted.len(), 2);
@@ -10896,13 +10896,13 @@
             };
 
             let (rows, changed_rows, deleted_rows) =
-                compact_air_variant_reserve_delta_rows(&mut tracker, vec![initial]);
+                compact_air_variant_reserve_delta_rows(&mut tracker, vec![initial], 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 0);
             assert_eq!(rows[0], initial);
 
             let (rows, changed_rows, deleted_rows) =
-                compact_air_variant_reserve_delta_rows(&mut tracker, Vec::new());
+                compact_air_variant_reserve_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 1);
             assert!(rows[0].deleted);
@@ -11258,7 +11258,12 @@
                     count: 100,
                     mission_mask: 1,
                     mission_region: Some(154),
-                    equipment_amount_sum: 8_400_000,
+                    // Scale-consistent with `count` (100 planes at
+                    // COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE). The
+                    // previous 8_400_000 described 84 planes, so the tombstone
+                    // this test is about also tripped the scale-mismatch
+                    // fail-closed path, which now withholds the frame.
+                    equipment_amount_sum: 10_000_000,
                     air_accidents: 3,
                     experience_raw: 42_000,
                 },
@@ -11343,7 +11348,7 @@
                 air_strength_sample(HEAP_LO + 0x200, 5, 50, 0, 12_500),
             ];
             let (rows, changed, loss, reinforcement, deleted, mismatch) =
-                compact_air_strength_delta_rows(&mut tracker, samples.clone());
+                compact_air_strength_delta_rows(&mut tracker, samples.clone(), 0);
             assert_eq!(changed, 2);
             assert_eq!((loss, reinforcement, deleted, mismatch), (0, 0, 0, 0));
             assert!(rows.iter().all(|row| row.baseline && !row.deleted));
@@ -11353,7 +11358,7 @@
             assert_eq!(rows[0].old_count, rows[0].new_count);
 
             // Unchanged second frame: nothing re-emits.
-            let (rows, changed, ..) = compact_air_strength_delta_rows(&mut tracker, samples);
+            let (rows, changed, ..) = compact_air_strength_delta_rows(&mut tracker, samples, 0);
             assert!(rows.is_empty());
             assert_eq!(changed, 0);
         }
@@ -11362,12 +11367,12 @@
         fn compact_air_strength_scalar_only_change_emits_scalar_change_row() {
             let mut tracker = CompactAirStrengthDeltaTracker::default();
             let first = vec![air_strength_sample(HEAP_LO + 0x100, 4, 100, 3, 42_000)];
-            let _ = compact_air_strength_delta_rows(&mut tracker, first);
+            let _ = compact_air_strength_delta_rows(&mut tracker, first, 0);
 
             // Same count/equipment; only the cumulative scalars moved.
             let second = vec![air_strength_sample(HEAP_LO + 0x100, 4, 100, 4, 42_500)];
             let (rows, changed, loss, reinforcement, deleted, _mismatch) =
-                compact_air_strength_delta_rows(&mut tracker, second);
+                compact_air_strength_delta_rows(&mut tracker, second, 0);
             assert_eq!(changed, 1);
             assert_eq!((loss, reinforcement, deleted), (0, 0, 0));
             let row = &rows[0];
@@ -11382,9 +11387,9 @@
         fn compact_air_strength_deleted_row_carries_last_known_scalars() {
             let mut tracker = CompactAirStrengthDeltaTracker::default();
             let first = vec![air_strength_sample(HEAP_LO + 0x100, 4, 100, 7, 99_000)];
-            let _ = compact_air_strength_delta_rows(&mut tracker, first);
+            let _ = compact_air_strength_delta_rows(&mut tracker, first, 0);
             let (rows, changed, _loss, _reinforcement, deleted, _mismatch) =
-                compact_air_strength_delta_rows(&mut tracker, Vec::new());
+                compact_air_strength_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed, 1);
             assert_eq!(deleted, 1);
             let row = &rows[0];
@@ -11398,7 +11403,7 @@
             let mut tracker = CompactAirStrengthDeltaTracker::default();
             let samples = vec![air_strength_sample(HEAP_LO + 0x100, 4, 100, 3, 42_000)];
             let (rows, changed, loss, reinforcement, deleted, _mismatch) =
-                compact_air_strength_delta_rows(&mut tracker, samples);
+                compact_air_strength_delta_rows(&mut tracker, samples, 0);
             let payload = compact_air_strength_deltas_data_payload(
                 &rows,
                 &[],
@@ -12297,7 +12302,7 @@
             assert_eq!(tracker.previous.len(), 1);
 
             let (deleted, changed_rows, deleted_rows) =
-                compact_air_wing_delta_rows(&mut tracker, Vec::new());
+                compact_air_wing_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 1);
             assert!(deleted[0].deleted);
@@ -13073,14 +13078,14 @@
             };
 
             let (rows, changed_rows, deleted_rows, emitted_equipment_rows) =
-                compact_air_wing_loadout_delta_rows(&mut tracker, vec![initial]);
+                compact_air_wing_loadout_delta_rows(&mut tracker, vec![initial], 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 0);
             assert_eq!(emitted_equipment_rows, 1);
             assert_eq!(rows[0].generation, 0);
 
             let (rows, changed_rows, deleted_rows, emitted_equipment_rows) =
-                compact_air_wing_loadout_delta_rows(&mut tracker, Vec::new());
+                compact_air_wing_loadout_delta_rows(&mut tracker, Vec::new(), 0);
             assert_eq!(changed_rows, 1);
             assert_eq!(deleted_rows, 1);
             assert_eq!(emitted_equipment_rows, 0);
