@@ -742,3 +742,10 @@ localisation join (item 9).
 
 The replay layer keeps this file current; anything new the replay needs
 from memory gets added HERE (nowhere else).
+
+`REPLAY_UI_DATA_SOURCES.md`, beside this file, answers the other direction: for
+every replay-UI surface, which authoritative domain each content element comes
+from when the viewer inspects **any** country. It is where the seven POV-local
+UI capture domains (d72, d75, d79, d82, d87, d88, d89) were retired and their
+surfaces re-derived, and it carries the ranked gap list those retirements leave.
+Items 13, 14 and 15 above are the rows it refines.

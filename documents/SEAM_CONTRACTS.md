@@ -29,6 +29,15 @@ sole genuine external dependency. Historical validation wording below is not
 authority for the current worktree; changed rows require central validation and
 content-addressed refreeze.
 
+**Seven rows below are re-scoped, not closed.** A26 (d72), A31 (d89), A34 (d87),
+A36 (d88), A39 (d82), XUI21-E1 (d75) and the d79 alert rows described the replay
+as waiting on POV-local *presentation* capture. That capture is out of scope:
+panels are derived from authoritative domains at render time, the observer-mode
+way. What each of those surfaces actually needs, element by element, and which of
+the needs are genuine gaps rather than presentation, is in
+`replay_interface/documents/REPLAY_UI_DATA_SOURCES.md`. Read that page before
+treating any of the seven as a blocking extractor request.
+
 | ID | What the replay layer needs | Extractor state | Blocks (replay packet) |
 | --- | --- | --- | --- |
 | A26 | Resolved per-instance tooltip rectangle + exact final post-layout blob (d72) | Final-blob owner, TTI2 carrier, atomic selected-Present seal, fold, replay/HUD consumer, matrix assembler, and verifier are complete and centrally validated. D72 remains reserved until the autonomous H-A26 hidden/visible/lifecycle/multiline/two-resolution matrix passes, followed by its activation refreeze | XUI05 |
