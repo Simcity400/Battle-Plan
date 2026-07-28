@@ -836,26 +836,6 @@ def build(
         "--strict-mods",
         "--source-inventory", str(bindings_dir / "source_inventory.json"),
     ]
-    gfx_allowlist = None
-    failed_gfx_report = catalogs / "gfx/gfx_icon_manifest_gate_report.json"
-    if failed_gfx_report.is_file():
-        failed = SB.load_object(failed_gfx_report, "failed runtime GFX report")
-        counts = failed.get("counts") if isinstance(failed.get("counts"), dict) else {}
-        allowed = failed.get("allowed_missing_textures")
-        if (
-            failed.get("passed") is False
-            and counts.get("unresolved_textures") == 0
-            and isinstance(allowed, list)
-            and allowed
-        ):
-            base = SB.load_object(
-                HERE / "gfx_icon_missing_texture_allowlist.json",
-                "canonical GFX missing-texture allowlist",
-            )
-            gfx_allowlist = output / "runtime_gfx_missing_texture_allowlist.json"
-            gfx_allowlist.write_bytes(
-                SB.pretty_json({"schema": base.get("schema"), "entries": allowed})
-            )
     commands.extend(
         [
             (
@@ -876,8 +856,7 @@ def build(
             (
                 "gfx",
                 [sys.executable, str(HERE / "gfx_icon_manifest_gate.py"), *common,
-                 "--out-dir", str(catalogs / "gfx")]
-                + (["--missing-texture-allowlist", str(gfx_allowlist)] if gfx_allowlist else []),
+                 "--out-dir", str(catalogs / "gfx")],
             ),
             (
                 "technology_sharing",

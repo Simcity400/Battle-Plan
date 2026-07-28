@@ -80,17 +80,6 @@ param(
 
     [switch]$SkipHostFold,
 
-    # Drop --static-gfx-icon-manifest from the capture.
-    #
-    # Escape hatch for a KNOWN outstanding blocker, not a default: the recorder
-    # requires meta.unused_missing_texture_allowlist_entries == 0, and the
-    # checked-in allowlist currently leaves 72 rows unused, so finalize rejects
-    # the artifact after the whole raw stream has already been written. Use this
-    # to exercise runtime domain extraction while that is being fixed; a capture
-    # produced this way is missing that static artifact and is not promotable.
-    # See extractor/native/runs/gfx_allowlist_staleness_triage.json.
-    [switch]$SkipGfxIconManifest,
-
     [switch]$DryRun
 )
 
@@ -252,10 +241,6 @@ $staticCatalogs = [ordered]@{
 
 foreach ($path in @($Hoi4Exe, $PdxUserDir, $collectorDll, $collectorRecord, $headlessControl)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required path is missing: $path" }
-}
-if ($SkipGfxIconManifest) {
-    $staticCatalogs.Remove('--static-gfx-icon-manifest')
-    Write-Warning 'Capturing WITHOUT the GFX icon manifest static artifact (-SkipGfxIconManifest). This capture is not promotable.'
 }
 foreach ($entry in $staticCatalogs.GetEnumerator()) {
     if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
