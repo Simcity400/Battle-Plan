@@ -225,8 +225,8 @@
 //! conveyor's `name` and `role`, and each equipment row's `archetype`
 //! (`lanes/country_economy_production_stockpile_live/src/deployment_queue.rs:58`,
 //! `:63`, `:35`; encoded at `:197`-`:198` and `:230`). §4 has no string kind, and
-//! §5 carries content symbols as "manifest ids as varints, never text" under an
-//! assignment rule that **does not exist yet** (§13) — and the conveyor `name` is
+//! §5 carries content symbols as "manifest ids as varints, never text" — but the
+//! conveyor `name` is
 //! a player-authored division name, so it is not a content symbol at all and no
 //! manifest rule will ever cover it. Ordering is *not* the blocker here: every
 //! level carries a dense `ordinal` the decoder already requires to equal its

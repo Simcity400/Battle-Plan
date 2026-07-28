@@ -140,8 +140,8 @@ pub fn schema() -> Schema {
         // content-defined (§5), a manifest must resolve it for it to keep its
         // meaning under another mod set, and d20's `owner`, d62's
         // `owner_tag_db_id` and d63's `tag_db_id` are all classed this way.
-        // §13's manifest-id assignment rule is still open, so the mapper casts
-        // the raw u32; that is recorded in the deliverable, and a ContentId
+        // The §5 assignment now exists, but this mapper still casts the raw u32
+        // until its resolver retrofit; that is recorded in the deliverable, and a ContentId
         // **key** is the heavier retrofit class because key components sort and
         // delta-encode by raw value.
         Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(0),

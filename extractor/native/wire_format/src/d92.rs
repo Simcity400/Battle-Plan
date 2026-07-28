@@ -315,8 +315,10 @@ pub fn schema() -> Schema {
 /// built once from the whole content set before any record is mapped, and never
 /// grown by the mapper.
 ///
-/// **The assignment rule itself is §13-OPEN** and this crate must not invent one.
-/// [`Symbols::from_vocabulary`] therefore uses the one stand-in that is
+/// The production assignment now lives in the neutral content-manifest crate's
+/// `symbol_manifest` module; this domain-local mapper still awaits the
+/// file-global resolver retrofit. [`Symbols::from_vocabulary`] uses a
+/// measurement stand-in that is
 /// deterministic, order-independent and derived only from the content set — the
 /// 0-based index into the sorted, deduplicated list — and it is labelled as a
 /// stand-in, not as an answer. This is d29's table, taken deliberately unchanged
@@ -332,8 +334,8 @@ pub fn schema() -> Schema {
 ///   row. §5's ids are file-global, so an assignment over a whole content set can
 ///   still widen the varint; the claim made is the one measured, not more.
 ///
-/// When §5's assignment lands, this type is replaced by the container's manifest
-/// resolver and every call site changes with it.
+/// During this mapper's §5 integration, this type is replaced by the
+/// container's manifest resolver and every call site changes with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Symbols {
     /// Sorted and deduplicated; the id of a symbol is its index.
@@ -1378,7 +1380,7 @@ mod tests {
     fn the_content_id_inventory_is_asserted_for_the_retrofit_sweep() {
         // "This domain has no ContentId" is a sweep result, not a silence — and
         // so is the inventory when it is non-empty. Every one of these changes
-        // when §5's manifest-id assignment lands. `TAG_DB_ID` is the heavier
+        // during the §5 resolver retrofit. `TAG_DB_ID` is the heavier
         // class: a ContentId **key** sorts and delta-encodes by raw value, so a
         // remap reorders keys and changes the byte layout of every baseline.
         let schema = schema();

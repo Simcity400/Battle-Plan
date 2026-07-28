@@ -2520,8 +2520,8 @@ mod tests {
 
     #[test]
     fn the_content_ids_are_enumerated_for_the_section_13_retrofit_sweep() {
-        // §13's manifest-id assignment rule does not exist yet, so every one of
-        // these is a raw cast today and every one of them changes when it lands.
+        // The §5 assignment now exists, but every one of these remains a raw
+        // cast until this mapper receives the file-global resolver.
         // Asserting the list is what lets the sweep tell "checked" from "not
         // checked" (d35's `no_field_is_a_content_id`, inverted).
         let mut value_ids = Vec::new();

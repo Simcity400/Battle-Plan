@@ -17,13 +17,13 @@ depends on.
 **This is not yet the byte-final fan-out contract, but the record grammar is settled.** The
 largest §13 item — row-major versus column-major — was closed by decision on 2026-07-26: the
 row-major grammar is retained, on the evidence recorded in §13 (not on a direct columnar-delta
-comparison, which nothing exists to run). What §13 still holds open (symbol assignment, golden
-cross-implementation vectors, per-domain cadence) can still move bytes — a cadence change even
+comparison, which nothing exists to run). What §13 still holds open (golden
+cross-implementation vectors and per-domain cadence) can still move bytes — a cadence change even
 re-hashes the schema, since `cadence_log2` is part of its canonical serialization (§11) — but
 it does not change how the fan-out's deliverables are made: field ids, kinds and four-state
 decisions survive those items outright, and boundary mappers survive structurally — with one
-recorded exception: mappers that emit `ContentId` today cast raw source ids and will gain a
-manifest-resolver input when §5's assignment rule lands, a planned cross-domain retrofit.
+recorded exception: older mappers that emit `ContentId` by casting raw source ids must gain the
+§5 manifest-resolver input, a separately tracked cross-domain retrofit.
 That is why `DOMAIN_SCHEMA_RECIPE.md` scopes the fan-out to schemas, mappings and
 measurements rather than shipped bytes.
 
@@ -348,21 +348,68 @@ corpus evidence.
 Country tags, equipment names, province and state ids are content-defined. The stream carries
 **manifest ids as varints**, never text.
 
-This format requires that id assignment be **deterministic for a given content set** — two
-recorders on the same content must mint the same id for the same symbol, or no two files are
-comparable and no golden vector is stable. **That assignment rule does not exist yet and is listed
-OPEN in §13.** `PORTABLE_CONTENT_MANIFEST.md` defines content and VFS identity, which is a
-different thing and does not supply it.
+The portable assignment artifact is
+`portable_replay/native/content_manifest/src/symbol_manifest.rs`'s `SymbolManifest`, schema
+`hoi4.portable-symbol-manifest.v1`. Ids are implicit zero-based array positions: first every
+`base_symbols` entry, then every `overflow_symbols` entry. A stored explicit id is forbidden; it
+would create a second representation and make collisions possible.
 
-**Symbol ids are file-global.** Symbols first seen mid-campaign are appended to a single
-**append-only overflow table** in the container, each entry recording the `(branch, tick)` at which
-it became available — the global tick of §1.1, which is why that unit is file-wide rather than
-per-domain. A per-branch id space would store the same string once per branch at identical
-fidelity, which the size rule forbids.
+**The base band is a function of the content set.** Take every symbol supplied by the admitted
+content catalogs, reject empty/control-bearing tokens, compare their exact UTF-8 bytes unsigned
+and bytewise, sort ascending, deduplicate exact matches, and assign `0..N-1` in that order.
+Recorder discovery order, VFS walk order and hash-map order do not participate. The same content
+set therefore mints the same id for the same symbol.
 
-A reader seeking to tick `T` on branch `B` needs the overflow table's entries whose first-seen tick
-is `≤ T` on `B` or an ancestor branch. That is a container read, not a stream scan. **In-stream
-interning is forbidden** — it must be fully read before any seek.
+**Symbol ids are file-global.** A symbol first observed mid-campaign is appended once to a single
+**append-only overflow table**. Its availability is a separate history: the same file-global id
+may have independent availability events on divergent branches. A per-branch id space would store
+the same string once per branch at identical fidelity, which the size rule forbids.
+
+**The container's append ordinal is the only global batch order.** One complete observation batch
+is submitted for each append ordinal and `(branch, tick)`. Ordinals are zero-based and contiguous;
+`branch` is the container's `u32` branch id. Branch-local ticks strictly increase, but ticks on
+different branches are not globally ordered: a branch forked from the past can be appended after
+the main branch has advanced. The serialized batch ledger retains every batch, including one
+whose observations create no new availability event.
+
+Symbols already present in either band keep their ids. New strings in a batch are deduplicated,
+sorted by exact UTF-8 bytes, and appended in that order. The batch's availability events are
+sorted by the referenced strings in that same order. A repeat observation on the same branch, or
+on a descendant where an ancestor event is visible, creates no redundant availability event. An
+observation on a divergent branch creates an availability event referencing the existing id.
+Splitting one `(branch, tick)` across batches is invalid: otherwise domain scheduling would decide
+which symbol receives the lower id. A reader rejects non-contiguous or repeated ordinals,
+duplicate `(branch, tick)` events, non-increasing ticks within one branch, out-of-range ids,
+noncanonical event ordering, duplicate symbols or events, and overflow strings that are skipped
+or never introduced.
+
+Runtime database ids are not manifest ids. The recorder binds each numeric source through a
+namespaced key `(namespace, source_id)` to an observed symbol, then resolves that binding before
+constructing either a `ContentId` value **or a `ContentId` key**. Namespacing keeps an engine word
+used for a country distinct from the same word used for a province or equipment definition. One
+source key naming two different symbols is an ambiguity and fails the whole batch transactionally;
+an unbound source or absent symbol is an error, never `Unknown`, a raw cast, or a fabricated
+string.
+
+**d18 `country_identity` is a symbol feed, not a domain block and not a string invention.** Its
+authenticated `tag_db_id → TAG` rows (and present cosmetic-tag tokens) establish the runtime
+source bindings above. The exact observed token is resolved or appended; the resolver never
+synthesizes a tag from the numeric id.
+
+A reader seeking to tick `T` on branch `B` needs the ids with an availability event visible at
+that branch/tick. That is a container read, not a stream scan. **In-stream interning is forbidden**
+— the manifest and batch ledger must be fully read before any seek.
+
+The symbol artifact does not infer branch ancestry or fork points. Its availability resolver
+handles same-branch tick and append-ordinal comparisons itself and passes both complete append
+points to the container's authenticated visibility callback for another branch. A missing
+branch-table answer is an error; it never makes the symbol visible by default.
+
+The JSON artifact is canonical compact UTF-8. Top-level fields are `schema`, `base_symbols`,
+`overflow_symbols`, `batches`; batch fields are `ordinal`, `branch`, `tick`, `available_symbols`.
+Decoders validate the schema, conservative size/count caps, all assignment/history invariants, and
+require byte-for-byte canonical re-encoding. Runtime source bindings are recorder-local and
+therefore rehydrated separately from the serialized batch ledger after reload.
 
 ## 6. Continuous values, quantization, derived fields
 
@@ -1344,12 +1391,13 @@ closes them on a named corpus and harness before ~80 encoders are written.
   values.
 - **Tick origin and branch id assignment.** Both are consumed here and owned by the container
   format, which specifies them.
-- **Symbol id assignment (§5).** The rule that makes base and overflow ids deterministic for a
-  given content set, and that orders symbols first seen at the same tick, is unwritten. Golden
-  vectors are not stable until it exists; it belongs with the content manifest, which does not
-  currently carry it.
+- **Symbol id assignment (§5) is closed.** The content-manifest crate owns the deterministic
+  base/overflow artifact, batch-local ordering, namespaced runtime resolver and literal golden
+  vector. The remaining work is integration, not a format decision: older `dNN` mappers that
+  still cast raw source ids must be routed through the resolver, and the container must store the
+  companion artifact before those ports ship.
 
-  **It is the highest-value unwritten rule for the fan-out.** The four formal stop reports in
+  **It was the highest-value unwritten rule for the fan-out.** The four formal stop reports in
   `extractor/native/runs/batch1/stop_reports/` (d12 `focus_live`, d14 `politics_live`, d15
   `politics_residuals`, d18 `country_identity`) establish that nearly every string in those
   domains is a content-defined token — focus and focus-tree ids, ideology and law-group names,

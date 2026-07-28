@@ -607,8 +607,10 @@ pub fn schema() -> Schema {
 /// the table is an **input** to this boundary, built once before any record is
 /// mapped; it is never grown by the mapper.
 ///
-/// **The assignment rule itself is §13-OPEN** and this crate must not invent one.
-/// [`Symbols::from_vocabulary`] uses the one stand-in that is deterministic,
+/// The production assignment now lives in
+/// `portable_content_manifest::symbol_manifest`; this domain-local mapper still
+/// awaits the file-global resolver retrofit. [`Symbols::from_vocabulary`] uses a
+/// measurement stand-in that is deterministic,
 /// order-independent and derived only from the content set — the 0-based index
 /// into the sorted, deduplicated list — and it is labelled as a stand-in, not as
 /// an answer. Two properties make that safe here, the same two d29 states:

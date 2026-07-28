@@ -3007,8 +3007,8 @@ mod tests {
 
     #[test]
     fn every_content_id_field_is_listed_for_the_manifest_retrofit() {
-        // §13's manifest-id assignment rule does not exist yet; listing the
-        // fields is what lets the retrofit sweep find them, and asserting the
+        // The §5 assignment exists; listing the fields is what lets the
+        // pending mapper-retrofit sweep find them, and asserting the
         // list is what tells "checked" from "not checked" (d35's rule).
         let s = schema();
         let mut found = Vec::new();

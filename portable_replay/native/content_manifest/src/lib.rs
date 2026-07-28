@@ -8,6 +8,7 @@ pub mod gui;
 pub mod hud_emitter;
 pub mod hud_role;
 pub mod paradox_text;
+pub mod symbol_manifest;
 
 use crate::hud_role::validate_sha256;
 use serde::{Deserialize, Serialize};

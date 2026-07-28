@@ -51,7 +51,7 @@
 //!   d20 country-id precedent. `event_id` is also `ContentId`: its meaning is a
 //!   mod-defined event definition and needs the content manifest across mod
 //!   sets, unlike a runtime instance id. All three currently use the shipping
-//!   raw numeric id as the §5 stand-in; the manifest assignment rule is open.
+//!   raw numeric id as the §5 stand-in; their resolver retrofit remains open.
 //! - `scope_random` is the full `u64` seed as `Unsigned`; no precision or bit is
 //!   lost. It is neither a quantity nor a content-manifest identity.
 //! - `game_hour_raw` is a signed `i32`; `i32::MIN` is refused (`:9734`,

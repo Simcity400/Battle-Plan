@@ -300,8 +300,10 @@ pub const KNOWN_FLAGS: u16 = FLAG_ENABLED | FLAG_REMAINING_DAYS;
 /// one with no new shape. **This is d29's rule and d29's implementation**
 /// (`d29.rs:205`); see that module for the full argument.
 ///
-/// **The assignment rule itself is §13-OPEN** and this crate must not invent
-/// one. [`Symbols::from_vocabulary`] uses the one stand-in that is
+/// The production assignment now lives in
+/// `portable_content_manifest::symbol_manifest`; this domain-local mapper still
+/// awaits the file-global resolver retrofit. [`Symbols::from_vocabulary`] uses a
+/// measurement stand-in that is
 /// deterministic, order-independent and derived only from the content set — the
 /// 0-based index into the sorted, deduplicated list — and it is labelled a
 /// stand-in, not an answer.

@@ -9,10 +9,11 @@
 //!
 //! **Scope.** The crate implements the frame, record and schema codec surfaces
 //! through §11, including every state collection shape in §7.3, gap records and
-//! normalisation in §8, and event bodies plus frontier continuity in §9. §5
-//! symbol assignment, container integration, domain ports and measurements
-//! remain independently gated; codec availability is not evidence that a
-//! particular source domain has been migrated.
+//! normalisation in §8, and event bodies plus frontier continuity in §9. The §5
+//! assignment lives in the content-manifest crate; its container integration,
+//! older domain-mapper resolver retrofits, domain ports and measurements remain
+//! independently gated. Codec availability is not evidence that a particular
+//! source domain has been migrated.
 
 pub mod bitmap;
 pub mod body;

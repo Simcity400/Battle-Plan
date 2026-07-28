@@ -25,6 +25,61 @@ The neutral schema is owned by
 `portable_replay/native/content_manifest`. The extractor adapter is
 `extractor/native/recorder_host/src/portable_content_manifest.rs`.
 
+### Symbol-assignment companion
+
+The same neutral crate owns `symbol_manifest::SymbolManifest`
+(`hoi4.portable-symbol-manifest.v1`), the deterministic symbol-id artifact required by
+`WIRE_FORMAT.md` §5. It is a companion to content/VFS identity, not an optional reinterpretation
+of it:
+
+- the base band is the exact UTF-8-bytewise sorted, deduplicated vocabulary of the admitted
+  content set and receives zero-based ids;
+- genuinely new campaign strings enter one append-only overflow band, while a complete serialized
+  batch ledger records availability events for every container append ordinal and `(u32 branch,
+  tick)`, including existing-symbol-only and no-new-event batches;
+- the container's contiguous append ordinal is the global order. Branch-local ticks increase, but
+  there is no false global `(tick, branch)` order, so a fork from the past remains representable;
+- each batch is bytewise canonical. A divergent branch can add availability for an existing
+  file-global id, while repeat observations already visible on the same or an ancestor branch add
+  no redundant event;
+- recorder-local numeric references are bound as namespaced `(namespace, source_id)` keys to
+  authenticated observed symbols, and ambiguity or an unresolved reference fails closed;
+- d18 `country_identity` supplies country and cosmetic-tag bindings. It is a container
+  symbol-table feed, not a reason to invent a string scalar or repeat the static roster as a
+  domain block;
+- a mapper resolves both `ContentId` values and `ContentId` key components before record/key
+  construction. Runtime database words are never cast directly into portable manifest ids.
+
+Cross-branch lookup is container-authoritative. The symbol artifact resolves same-branch
+availability from the event tick and append ordinal, but gives the authenticated container branch
+table both full append points when asking whether an event is visible from another branch
+(including the fork-point rule). If that answer is unavailable, lookup fails closed.
+
+The compact JSON byte representation is canonical and reader-capped. Its top-level field order is
+`schema`, `base_symbols`, `overflow_symbols`, `batches`; each batch is `ordinal`, `branch`, `tick`,
+`available_symbols`. Decode requires byte-identical canonical re-encoding and rejects reordered or
+whitespace-varied JSON, invalid ids, and malformed assignment or availability history. The
+conservative safety caps are 256 MiB of encoded JSON, 1,000,000 symbols, 65,536 bytes per symbol,
+128 MiB of total symbol bytes, 10,000,000 batches, and 10,000,000 availability events. Before
+serde, decode rejects any raw JSON string token longer than 393,216 bytes (six times the decoded
+symbol-byte cap, preserving every legal JSON escape spelling). During serde, it checks each decoded
+string before retaining it, bounds base plus overflow symbols as one aggregate, bounds their decoded
+bytes as one aggregate, and passes the remaining availability-event capacity into each next batch
+before that batch's id vector is allocated. Once any vector reaches its limit, the reader probes an
+excess element as ignored JSON rather than deserializing the element type. Semantic validation still
+performs the corresponding aggregate symbol/count checks after decode and before canonical
+acceptance.
+
+Runtime numeric bindings are intentionally not serialized: after reload, an authenticated feed
+rehydrates bindings only to symbols already in the manifest, in a separate transactional operation
+that cannot mint ids or append a batch.
+
+The companion is a separate serializable type because the deployed
+`hoi4.portable-content-manifest.v2` JSON body and digest are already a compatibility boundary.
+Adding a required field to that struct would rewrite every existing manifest and every
+independent replay consumer. Container storage and the older dNN-mapper resolver retrofit remain
+separate integration gates; they do not reopen the assignment rule.
+
 ## Recorder flow
 
 1. The launcher-equivalent resolver supplies the effective VFS digest, ordered

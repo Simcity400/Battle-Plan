@@ -48,8 +48,8 @@
 //! * §5 says, of exactly this datum: "Country tags, equipment names, province and
 //!   state ids are content-defined. The stream carries **manifest ids as
 //!   varints, never text**." So the conformant field is a `ContentId` holding a
-//!   manifest symbol id — and §5 continues: "That assignment rule **does not
-//!   exist yet** and is listed OPEN in §13."
+//!   manifest symbol id. This older mapper has not yet received the file-global
+//!   resolver that now owns that assignment.
 //! * Packing the token's bytes into a numeric word is reversible and lossless,
 //!   but it is still text on the wire. Declaring that word a `ContentId` would
 //!   assert it is a resolved manifest symbol id, which is false and would make
@@ -66,7 +66,7 @@
 //! at-war row it cannot store and prints the count, and the fact each row
 //! contributes to — *how many* countries this country is at war with — is stored
 //! in full, on the country row's `at_war_count` field. What the stop costs is
-//! the enemies' identities, and what it needs is §5's symbol assignment rule.
+//! the enemies' identities, and what it needs is its §5 resolver retrofit.
 //! Field ids `5` and `6` are reserved for that collection so a later port does
 //! not reuse them for something else (§11 is append-only).
 //!
@@ -743,8 +743,8 @@ mod tests {
     fn the_war_graph_collection_is_stopped_not_encoded() {
         // Round-2 review input, kept as a regression. The at-war table's enemy
         // identity is an 8-byte ASCII country TAG. §4 has no string kind and §5
-        // requires a manifest symbol id, "never text", while §5 itself records
-        // that the assignment rule does not exist. Packing the token into a
+        // requires a manifest symbol id, "never text", while this mapper has not
+        // yet been retrofitted with the file-global §5 resolver. Packing the token into a
         // numeric word — under `ContentId` (which would claim it IS a symbol id)
         // or under `Unsigned` (which would still ship embedded text) — is not
         // conformant either way, so no collection is declared and the rows are

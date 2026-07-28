@@ -348,11 +348,12 @@ lengths.
   their read path, and stay `Unsigned` on d20's `div_type` precedent. The rule's scope is a
   content-defined string actually hashed on the field's read path — not any id that merely
   looks hash-like.
-- **The manifest-id assignment rule does not exist yet** (`WIRE_FORMAT.md` §13). Where the
-  source already carries a numeric id, today's boundary mappers cast the source `u32` straight
-  into `Value::ContentId` (`bench_real_dynamics.rs:114`). Do the same, and record it once in
-  your open questions; do not invent a per-domain mapping. Where the source carries **text**
-  there is no raw id to cast — that is the next bullet.
+- **Resolve every `ContentId` through the §5 manifest resolver.** A numeric engine/database id
+  is not itself a portable id: bind the namespaced `(namespace, source_id)` to its authenticated
+  symbol feed, then resolve it before constructing either the value or the key. An unbound id or
+  a source id observed with two symbols fails closed. Older boundary mappers that still cast a
+  source `u32` directly are retrofit debt, not precedent. Where the source carries **text**, use
+  the same resolver directly — that is the next bullet.
 - **Content-defined text is a `ContentId` resolved through a symbol table — not a stop
   condition.** §4 declares no string kind and `Kind::legal_as_key` admits only `Unsigned`,
   `Signed` and `ContentId` (`schema.rs:29`–`:31`), but §5 already answers the question for the
@@ -363,14 +364,14 @@ lengths.
   and cosmetic tags — is therefore a `ContentId` carried through a **symbol resolver the
   caller supplies**, and because `ContentId` is a legal key kind the same rule turns a
   text-KEYED collection into a `ContentId`-keyed one with no new shape.
-  **d29 is the worked example:** a `Symbols` table (`d29.rs:205`) taken as a typed mapper
-  parameter (`d29.rs:604`–`:609`), holding a sorted-vocabulary stand-in labelled as a stand-in,
-  with the two properties that make it safe stated exactly: nothing downstream computes from
-  the id's value, and the measurement is invariant under any assignment over **this domain's
-  own vocabulary** of fewer than 128 symbols, which is a one-byte varint either way
-  (`d29.rs:190`–`:199`). §5's ids are file-global, so an assignment over the whole content set
-  can still widen the varint — claim the invariance you measured, not more. Do the same, label
-  the stand-in, list the field in the ContentId retrofit sweep, and note the vocabulary may
+  The neutral content-manifest crate's `symbol_manifest::SymbolManifestBuilder` is the production
+  resolver (source:
+  `portable_replay/native/content_manifest/src/symbol_manifest.rs`). Domain-local
+  `Symbols::from_vocabulary` tables such as d29's remain measurement
+  stand-ins until their mapper signatures are retrofitted; do not copy that stand-in into new
+  production code. §5's ids are file-global, so an assignment over a whole content set can widen
+  the varint beyond a domain-local vocabulary — claim the invariance you measured, not more.
+  List every field in the ContentId retrofit sweep, and note the vocabulary may
   only exist after pass 1 of the harness (step 9).
   **Where the vocabulary is too large for that invariance claim, report a BAND — and whether the
   band is computable at all is decided by the KEY ORDER (d51).** §7.4 delta-chains only the FIRST
@@ -1104,19 +1105,18 @@ accumulator it writes and the domain's name in its error strings.
 `WIRE_FORMAT.md` §13 states the spec "is not yet the fan-out contract" and lists what is
 open. The items that touch this recipe:
 
-- **Symbol/manifest-id assignment** is unspecified. Handled above: cast raw ids, record the
-  open item. Schemas survive it outright (field ids are append-only), and mappers survive
-  *structurally* — but **every mapper that emits `ContentId` will change** when §5's
-  assignment rule lands: today's raw cast becomes a manifest-resolver lookup, and the
-  signature gains a resolver input. That is a planned cross-domain retrofit; listing each
+- **Symbol/manifest-id assignment is specified and implemented in the content-manifest crate.**
+  Schemas survive it outright (field ids are append-only), and mappers survive structurally —
+  but **every older mapper that emits `ContentId` by raw cast must change**: the cast becomes a
+  manifest-resolver lookup and the signature gains a resolver input. Listing each
   `ContentId` field in your open questions is what lets the retrofit sweep find them.
   **ContentId *keys* are a heavier retrofit class than ContentId values:** key components
   sort and delta-encode by raw value (`body.rs`), so a manifest remap reorders keys and
   changes the byte layout of every baseline and key list, not just one field's value.
   d63's `tag_db_id` key is the first instance; flag any ContentId key separately.
   **A domain whose source carries content-defined text already pays part of that retrofit**:
-  its mapper takes the symbol resolver today (step 3), so what the rule lands on is the
-  stand-in table's assignment, not the mapper's shape. And **"this domain has no `ContentId`"
+  its mapper takes a resolver today (step 3), though a domain-local stand-in must still be
+  replaced by the file-global resolver. And **"this domain has no `ContentId`"
   is a sweep result, not a silence** — assert it, as d35 does with
   `no_field_is_a_content_id`, so the retrofit sweep can tell "checked, none" from "not
   checked".

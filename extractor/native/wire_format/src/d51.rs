@@ -314,8 +314,10 @@ pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_stat
 /// from content files, never from a text box, and the capture's whole 4,354-symbol
 /// vocabulary is `[a-z0-9_^]` — the `^` being the game's array-element syntax.
 ///
-/// **The assignment rule itself is §13-OPEN** and this crate must not invent one.
-/// [`Symbols::from_vocabulary`] uses the one stand-in that is deterministic,
+/// The production assignment now lives in
+/// `portable_content_manifest::symbol_manifest`; this domain-local mapper still
+/// awaits the file-global resolver retrofit. [`Symbols::from_vocabulary`] uses a
+/// measurement stand-in that is deterministic,
 /// order-independent and derived only from the content set — the 0-based index
 /// into the sorted, deduplicated list — and it is labelled a stand-in, not an
 /// answer.

@@ -248,11 +248,12 @@ its precision in the wire format, and the declared precision is part of the doma
 
 **Symbol space belongs to the content, not the stream.** Country tags, equipment names and province
 ids are defined by game and mod content; carry integer ids, never text. **The rule that makes those
-ids deterministic for a given content set does not exist yet** and is listed OPEN in
-`WIRE_FORMAT.md` §13 — the portable content manifest defines content and VFS identity, which is a
-different thing. Mod symbols first seen mid-campaign go to an append-only overflow table. File-wide
-interning inside the stream is incompatible with independent decoding unless dictionary
-availability, ordering and recovery are all specified — prefer not to need it.
+ids deterministic for a given content set is the companion symbol manifest specified in
+`WIRE_FORMAT.md` §5 and implemented by the neutral content-manifest crate. Content/VFS identity is
+still a different artifact. Mod symbols first seen mid-campaign go to its append-only overflow
+band, while a container-ordered batch ledger records branch-visible availability. File-wide
+interning inside the stream remains forbidden: the complete manifest and availability history are
+read before independent decoding or seek.
 
 **The wire format is `extractor/documents/WIRE_FORMAT.md`.** Section 4 states requirements; that
 document specifies the bytes. Per-domain record layouts are reviewed against it, and it carries the

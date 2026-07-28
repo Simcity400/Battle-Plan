@@ -184,10 +184,11 @@ pub const FIXED_SCALE_DIGITS: u8 = 5;
 /// So the table is an **input** to this boundary, built once from the whole
 /// content set before any record is mapped; it is never grown by the mapper.
 ///
-/// **The assignment rule itself is §13-OPEN**, and this crate must not invent
-/// one: `WIRE_FORMAT.md` §5 says outright that a deterministic assignment rule
-/// "does not exist yet". [`Symbols::from_vocabulary`] therefore uses the one
-/// stand-in that is deterministic, order-independent and derived only from the
+/// The production assignment now lives in the neutral content-manifest crate's
+/// `symbol_manifest` module; this domain-local mapper has not yet been
+/// retrofitted with that file-global resolver.
+/// [`Symbols::from_vocabulary`] therefore remains a measurement stand-in that is
+/// deterministic, order-independent and derived only from the
 /// content set — the 0-based index into the sorted, deduplicated symbol list —
 /// and it is labelled as a stand-in, not as an answer. Two properties make that
 /// safe for this deliverable:
@@ -197,11 +198,11 @@ pub const FIXED_SCALE_DIGITS: u8 = 5;
 ///   ordering or delta layout depends on the choice.
 /// - The measurement is invariant to it. Any assignment over a vocabulary of
 ///   fewer than 128 symbols yields a one-byte varint for every row, so the byte
-///   sizes reported for this domain are the same under §13's eventual rule.
+///   sizes reported for this domain are the same under the production rule.
 ///
-/// When §5's assignment lands, this type is replaced by the container's manifest
-/// resolver and every call site changes with it — the retrofit the recipe
-/// predicts for every `ContentId`-emitting mapper.
+/// When this mapper is integrated with §5, this type is replaced by the
+/// container's manifest resolver and every call site changes with it — the
+/// retrofit the recipe predicts for every `ContentId`-emitting mapper.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Symbols {
     /// Sorted and deduplicated; the id of a symbol is its index.
@@ -273,7 +274,7 @@ pub fn schema() -> Schema {
         // measured capture.
         Field::new(f::TASK_FORCE_ID, Kind::Unsigned).unknown_capable(),
         // §5: an equipment/hull name is content-defined, so it travels as a
-        // symbol id. See `Symbols` for the §13-open assignment.
+        // symbol id. See `Symbols` for this mapper's pending §5 retrofit.
         Field::new(f::DEFINITION, Kind::ContentId).unknown_capable(),
         // The engine's ship-category discriminator. `Unsigned`, not `Enum`:
         // `fold_ships` applies **no** bound to it (`:14604` reads the word and
@@ -590,8 +591,8 @@ pub fn ship_key(instance_id: u32) -> Key {
 /// no string kind because §5 makes text a symbol id, and this domain is the first
 /// ported one whose source carries a symbol as *text* rather than as a `u32` a
 /// mapper can pun into a `ContentId`. The recipe already records that every
-/// `ContentId`-emitting mapper gains a resolver input when §5's assignment rule
-/// lands; d29 cannot defer it, so it takes the input now. Dropping the field
+/// `ContentId`-emitting mapper gains the production resolver input during its
+/// §5 retrofit; d29 cannot defer the abstraction, so it takes the input now. Dropping the field
 /// instead would lose captured data, and minting an id inside the mapper would be
 /// the in-stream interning §5 forbids.
 ///

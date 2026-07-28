@@ -159,8 +159,8 @@
 //! (`schema.rs:12`-`:20`). Dropping it is data loss — it is the row's only
 //! distinguishing content, since `(tag, days, state)` repeats across different
 //! decisions — and hashing it into a `ContentId` would invent the manifest-id
-//! assignment §13 leaves open. Until a string kind or a real symbol-assignment
-//! rule exists, the collection remains stopped regardless of its implemented
+//! id unless this mapper receives the file-global §5 resolver. Until that
+//! resolver is wired here, the collection remains stopped regardless of its implemented
 //! shape.
 //!
 //! The full stop-report is the deliverable's, not this file's; this module parses

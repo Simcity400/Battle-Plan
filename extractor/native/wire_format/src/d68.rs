@@ -890,8 +890,8 @@ mod tests {
     #[test]
     fn exactly_one_field_is_a_content_id() {
         // The §13 retrofit sweep needs "checked, this one" rather than silence:
-        // when §5's manifest-id assignment rule lands, this mapper's raw cast
-        // becomes a resolver lookup. It is a ContentId VALUE, not a key, so the
+        // now that §5's manifest-id assignment exists, this mapper's raw cast
+        // must become a resolver lookup. It is a ContentId VALUE, not a key, so the
         // retrofit does not reorder any key or change a baseline's byte layout.
         let c = collection();
         let content: Vec<u32> = c
