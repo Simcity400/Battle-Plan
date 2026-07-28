@@ -1,8 +1,9 @@
 //! d56 `naval_missions_status_live` — per-task-force naval mission status, plus
 //! the per-strategic-region naval-supremacy sidecar.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:22119`-`:22226`
+//! Derived from `world_fold.rs:22511`-`:22618`
 //! (`fold_naval_missions_status`, dispatched at `:4723`), the row grammar in
+// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=22511-22618 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58
 //! `extractor/native/lanes/naval_missions_status_live/src/domain56_compact.rs`
 //! (authority #2 for offsets, bounds and scales), and the collector read that
 //! produces the presence flags,
@@ -114,32 +115,31 @@
 //! fold accepts. They are Booleans here. (Only a value the grammar *hard-enforces*
 //! as a function of carried state is not a field — that is the retired trio above.)
 //!
-//! **The naval-supremacy sidecar is STOP-REPORTED, not ported.** `WIRE_FORMAT.md`
+//! **The naval-supremacy sidecar is an ordered occurrence list.** `WIRE_FORMAT.md`
 //! §7.3 classifies it by name — "ordered occurrence list — meaningful physical
 //! order, duplicates legitimate, no unique key. **d56 naval supremacy is this**" —
-//! and §13 lists it as one of the four measured `OrderedOccurrenceList` instances,
-//! each of which "stops a collection today". The fold agrees: it calls the array an
+//! and §13 records its measured port. The fold agrees: it calls the array an
 //! "ORDER-PRESERVING occurrence list, not a keyed map", full-replaces it on every
 //! successful frame regardless of the delta flag, and pushes every decoded row in
-//! emit order into a `Vec` (`world_fold.rs:22197`-`:22218`), and the decoder states
+//! emit order into a `Vec` (`world_fold.rs:22589`-`:22609`), and the decoder states
 //! that `(region, controller)` is explicitly NOT a uniqueness key, with live RE
 //! evidence of repeats (`domain56_compact.rs:438`-`:449`).
 //!
-//! `Shape::OrderedOccurrenceList` is unimplemented on both sides of this crate
-//! (`body.rs` hard-rejects any non-`KeyedSet` shape), so this schema carries the
-//! task-force table only. **Collection id 2 is reserved** for the sidecar so the
-//! id is not reused when §7.3 lands.
+//! `Shape::OrderedOccurrenceList` now carries that state directly: all eight
+//! fields are values, every occurrence survives, source order is canonical, and
+//! a changed list is a full replacement. Collection id 2 is the sidecar.
 //!
 //! An ordinal-keyed set was measured as an alternative and **rejected**: the
 //! recipe's step-5 test is about "every payload the FOLD accepts", not the payloads
 //! one capture contains, and the fold accepts both duplicates and any order. That
 //! this capture happens to be sorted and duplicate-free is a property of the stream
-//! (`runs/batch3/d56_naval_missions_status/measurement.md` records the numbers, so
-//! whoever implements §7.3 has them), and keying by position would publish false
-//! continuity across an insertion — the shift is real in this capture, once.
+//! (`runs/batch3/d56_naval_missions_status/measurement.md` records the numbers),
+//! and keying by position would publish false continuity across an insertion —
+//! the shift is real in this capture, once. That counter-evidence remains part of
+//! the implemented reading rather than disappearing once the shape exists.
 //!
 //! The trailer is still fully **validated** here, because the fold decodes it before
-//! it folds anything (`world_fold.rs:22120`-`:22122`): a malformed trailer is a
+//! it folds anything (`world_fold.rs:22511`-`:22513`): a malformed trailer is a
 //! refused stream, and a harness that skipped the walk would measure payloads
 //! production rejects. [`split_payload`] does the walk and [`check_supremacy_row`]
 //! the per-row bounds; nothing maps them into records.
@@ -148,16 +148,13 @@
 //! clock; the mappers take `frame_tick` and ignore it so every domain's boundary
 //! has one shape.
 
-use crate::body::{key, Key, KeyedState};
+use crate::body::{key, CollectionState, Key, KeyedState};
 use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
 use crate::value::Value;
 
 pub const DOMAIN: u32 = 56;
 pub const TASK_FORCES: u32 = 1;
-/// Reserved for the stop-reported naval-supremacy occurrence list (§7.3). No
-/// collection carries this id today; it exists so the id is not reused for
-/// something else before the shape is implemented.
 pub const NAVAL_SUPREMACY: u32 = 2;
 
 /// Task-force field ids. Stable and append-only; §11 forbids reuse.
@@ -177,12 +174,21 @@ pub mod field {
     pub const SOURCE_UNAVAILABLE: u32 = 13;
     pub const SOURCE_PARTIAL_DATA: u32 = 14;
     pub const SOURCE_DELTA_DATA: u32 = 15;
+
+    // `naval_supremacy`. All are values because an occurrence list has no key
+    // (§3); `(region, controller)` is explicitly non-unique in the game array.
+    pub const SUPREMACY_REGION_ID: u32 = 20;
+    pub const SUPREMACY_CONTROLLER_TAG_DB_ID: u32 = 21;
+    pub const SUPREMACY_CURRENT: u32 = 22;
+    pub const SUPREMACY_TARGET: u32 = 23;
+    pub const SUPREMACY_BASE_TARGET: u32 = 24;
+    pub const SUPREMACY_PREVIOUS: u32 = 25;
+    pub const SUPREMACY_DECLINE_FROM: u32 = 26;
+    pub const SUPREMACY_INDIVIDUAL_RATIO: u32 = 27;
 }
 
-/// Byte offsets of the stop-reported supremacy row's eight words
-/// (`domain56_compact.rs:453`-`:462`), kept beside the validator that enforces
-/// their bounds. Not a field list: the collection is stop-reported, so it has no
-/// field ids yet — whoever implements §7.3 assigns them.
+/// Byte offsets of the supremacy row's eight words
+/// (`domain56_compact.rs:453`-`:462`), kept beside the validator and mapper.
 pub mod supremacy_offset {
     pub const REGION_ID: usize = 0;
     pub const CONTROLLER_TAG_DB_ID: usize = 4;
@@ -246,11 +252,10 @@ pub const FIXED_SCALE_RAW: u32 = 100_000;
 /// `FIXED_SCALE` is `10^5`, so `Quant::Fixed(5)` is exactly the source's own
 /// grid — see `fixed_five_is_lossless_over_every_u32_raw`.
 pub const SCALE_DIGITS: u8 = 5;
-/// The quantization the six supremacy channels should carry when §7.3's
-/// `OrderedOccurrenceList` is implemented and this collection is ported. Recorded
-/// here rather than lost with the stop report: `Fixed(5)` is not a precision budget
-/// but the source's own grid, and it reproduces the raw integer exactly over the
-/// whole `u32` range (proved by `fixed_five_is_lossless_over_every_u32_raw`).
+/// The quantization carried by the six ported supremacy channels. `Fixed(5)` is
+/// not a precision budget but the source's own grid, and it reproduces the raw
+/// integer exactly over the whole `u32` range (proved by
+/// `fixed_five_is_lossless_over_every_u32_raw`).
 pub const SUPREMACY_QUANT: Quant = Quant::Fixed(SCALE_DIGITS);
 
 /// `COMPACT_STATUS_DELTA_DATA`. Named here rather than imported, as above; the
@@ -375,17 +380,32 @@ pub fn schema() -> Schema {
         ],
     };
 
+    let naval_supremacy = Collection {
+        collection_id: NAVAL_SUPREMACY,
+        // The fold clears and pushes every decoded row in emit order on every
+        // successful frame (`world_fold.rs:22589`-`:22609`). Duplicate
+        // `(region, controller)` pairs are legitimate, so there is no key.
+        shape: Shape::OrderedOccurrenceList,
+        fields: vec![
+            Field::new(f::SUPREMACY_REGION_ID, Kind::ContentId),
+            Field::new(f::SUPREMACY_CONTROLLER_TAG_DB_ID, Kind::ContentId),
+            Field::new(f::SUPREMACY_CURRENT, Kind::Continuous).quant(SUPREMACY_QUANT),
+            Field::new(f::SUPREMACY_TARGET, Kind::Continuous).quant(SUPREMACY_QUANT),
+            Field::new(f::SUPREMACY_BASE_TARGET, Kind::Continuous).quant(SUPREMACY_QUANT),
+            Field::new(f::SUPREMACY_PREVIOUS, Kind::Continuous).quant(SUPREMACY_QUANT),
+            Field::new(f::SUPREMACY_DECLINE_FROM, Kind::Continuous).quant(SUPREMACY_QUANT),
+            Field::new(f::SUPREMACY_INDIVIDUAL_RATIO, Kind::Continuous)
+                .quant(SUPREMACY_QUANT),
+        ],
+    };
+
     Schema {
         domain: DOMAIN,
         // Hourly, like every other compact lane: one DATA record per game hour.
         cadence_log2: 0,
-        // One collection. The naval-supremacy sidecar is stop-reported — see the
-        // module docs and `WIRE_FORMAT.md` §7.3 — and collection id 2 is reserved
-        // for it. A mixed-shape domain is what §7 anticipates here ("d56's
-        // task-force map contributes a delta while its supremacy list contributes
-        // a replacement"), and that is exactly the shape this crate cannot encode
-        // yet.
-        collections: vec![task_forces],
+        // The mixed-shape case §7 names: task forces use keyed deltas while the
+        // occurrence list contributes a replacement only when its content moves.
+        collections: vec![task_forces, naval_supremacy],
         event_part: None,
     }
 }
@@ -784,18 +804,15 @@ pub fn record_from_task_force_row(
     Ok(Record::new(values))
 }
 
-// --- The stop-reported naval-supremacy trailer -------------------------------
+// --- The naval-supremacy occurrence list -------------------------------------
 
 /// Validate one row of the `NSUP` trailer, mirroring
 /// `validate_naval_supremacy_row` (`domain56_compact.rs:1009`-`:1025`).
 ///
-/// **There is no mapper for this row and no collection for it in the schema** —
-/// the sidecar is `WIRE_FORMAT.md` §7.3's `OrderedOccurrenceList`, which is
-/// unimplemented, so it is stop-reported (see the module docs). What remains
-/// necessary is the *validation*: the fold decodes the whole payload, trailer
-/// included, before it folds anything (`world_fold.rs:22120`-`:22122`), so a row
-/// this rejects is a refused stream. A harness that skipped it would measure
-/// payloads production refuses.
+/// Validation remains separate from mapping because the fold decodes the whole
+/// payload, trailer included, before it folds anything
+/// (`world_fold.rs:22511`-`:22513`): a row this rejects is a refused stream even
+/// on a non-folding status path.
 ///
 /// `ordinal` names the row's position in the trailer for the error message only.
 /// Nothing in this function can panic on any input.
@@ -833,6 +850,46 @@ pub fn check_supremacy_row(row: &[u8], ordinal: u32) -> core::result::Result<(),
     Ok(())
 }
 
+/// One `NSUP` row onto its ordered-occurrence record. Every field is carried:
+/// §3 gives an occurrence list no key prefix, and dropping either id would make
+/// distinct game rows indistinguishable.
+pub fn record_from_supremacy_row(
+    collection: &Collection,
+    row: &[u8],
+    frame_tick: u64,
+) -> core::result::Result<Record, String> {
+    let _ = frame_tick;
+    check_supremacy_row(row, 0)?;
+    if collection.shape != Shape::OrderedOccurrenceList {
+        return Err("naval_supremacy collection is not an ordered occurrence list".into());
+    }
+    let scaled = |offset| Value::Continuous(u32_at(row, offset) as f64 / FIXED_SCALE);
+    let mut values = Vec::with_capacity(collection.fields.len());
+    for field in collection.value_fields() {
+        let value = match field.field_id {
+            field::SUPREMACY_REGION_ID => {
+                Value::ContentId(u32_at(row, supremacy_offset::REGION_ID) as u64)
+            }
+            field::SUPREMACY_CONTROLLER_TAG_DB_ID => {
+                Value::ContentId(u32_at(row, supremacy_offset::CONTROLLER_TAG_DB_ID) as u64)
+            }
+            field::SUPREMACY_CURRENT => scaled(supremacy_offset::CURRENT),
+            field::SUPREMACY_TARGET => scaled(supremacy_offset::TARGET),
+            field::SUPREMACY_BASE_TARGET => scaled(supremacy_offset::BASE_TARGET),
+            field::SUPREMACY_PREVIOUS => scaled(supremacy_offset::PREVIOUS),
+            field::SUPREMACY_DECLINE_FROM => scaled(supremacy_offset::DECLINE_FROM),
+            field::SUPREMACY_INDIVIDUAL_RATIO => scaled(supremacy_offset::INDIVIDUAL_RATIO),
+            other => {
+                return Err(format!(
+                    "naval_supremacy has no mapping for field id {other}"
+                ))
+            }
+        };
+        values.push(value);
+    }
+    Ok(Record::new(values))
+}
+
 // --- The frame boundary ------------------------------------------------------
 
 /// One payload, fully decoded and validated: everything the fold does before it
@@ -841,9 +898,9 @@ pub fn check_supremacy_row(row: &[u8], ordinal: u32) -> core::result::Result<(),
 pub struct DecodedPayload {
     pub header: PayloadHeader,
     pub task_forces: Vec<(Key, Record)>,
-    /// The stop-reported sidecar's row count. Every row was validated; none was
-    /// mapped, because §7.3's shape for it is unimplemented (module docs).
-    pub supremacy_rows: u32,
+    /// Every sidecar row in emit order. A `Vec` is intentional: duplicates and
+    /// position are both fold state (`world_fold.rs:22589`-`:22609`).
+    pub naval_supremacy: Vec<Record>,
 }
 
 /// Decode and validate a whole d56 DATA payload — `naval56::decode_status_payload`
@@ -860,13 +917,22 @@ pub fn decode_payload(
     payload: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<DecodedPayload, String> {
-    if schema.collections.len() != 1 {
+    if schema.collections.len() != 2 {
         return Err(format!(
-            "naval_missions_status schema has {} collections, expected 1",
+            "naval_missions_status schema has {} collections, expected 2",
             schema.collections.len()
         ));
     }
-    let task_forces_collection = &schema.collections[0];
+    let task_forces_collection = schema
+        .collections
+        .iter()
+        .find(|c| c.collection_id == TASK_FORCES)
+        .ok_or("naval_missions_status schema has no task_forces collection")?;
+    let supremacy_collection = schema
+        .collections
+        .iter()
+        .find(|c| c.collection_id == NAVAL_SUPREMACY)
+        .ok_or("naval_missions_status schema has no naval_supremacy collection")?;
 
     let split = split_payload(payload)?;
     let mut task_forces: Vec<(Key, Record)> = Vec::new();
@@ -886,14 +952,18 @@ pub fn decode_payload(
         }
         task_forces.push((key, record));
     }
-    // The stop-reported trailer: validated row by row, never mapped.
+    let mut naval_supremacy = Vec::with_capacity(split.header.supremacy_row_count as usize);
     for (index, row) in split.supremacy_rows.chunks_exact(TRAILER_ROW_LEN).enumerate() {
         check_supremacy_row(row, index.min(u32::MAX as usize) as u32)?;
+        naval_supremacy.push(
+            record_from_supremacy_row(supremacy_collection, row, frame_tick)
+                .map_err(|e| format!("naval supremacy row {index}: {e}"))?,
+        );
     }
     Ok(DecodedPayload {
         header: split.header,
         task_forces,
-        supremacy_rows: split.header.supremacy_row_count,
+        naval_supremacy,
     })
 }
 
@@ -909,12 +979,7 @@ pub fn decode_payload(
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub task_forces: KeyedState,
-    /// The stop-reported sidecar's length after this frame. The fold's own
-    /// accumulator is a `Vec` of rows (`world_fold.rs:1726`, `:22203`-`:22218`);
-    /// this schema carries no collection for it, so only its length is tracked —
-    /// enough to mirror the fold's full replacement and to report the segment's
-    /// size in the shipping arm, and nothing more.
-    pub supremacy_rows: u32,
+    pub naval_supremacy: Vec<Record>,
     pub baseline_seen: bool,
 }
 
@@ -981,10 +1046,9 @@ impl State {
         for (key, record) in decoded.task_forces {
             self.task_forces.insert(key, record);
         }
-        // 5. `:22197`-`:22218`: the sidecar is full-replaced on EVERY successful
-        // frame regardless of the delta flag, deliberately. Stop-reported, so only
-        // its length is mirrored here.
-        self.supremacy_rows = decoded.supremacy_rows;
+        // 5. `:22589`-`:22609`: the sidecar is full-replaced on EVERY successful
+        // frame regardless of the task-force delta flag, in emit order.
+        self.naval_supremacy = decoded.naval_supremacy;
         // 6. `:22220`-`:22223`.
         if !delta {
             self.baseline_seen = true;
@@ -992,11 +1056,12 @@ impl State {
         Ok(FoldOutcome::Folded)
     }
 
-    /// The collection states in schema order, which is the arity
-    /// `encode_baseline`/`encode_delta` require. One entry: the sidecar is
-    /// stop-reported and contributes no collection.
-    pub fn states(&self) -> [KeyedState; 1] {
-        [self.task_forces.clone()]
+    /// The collection states in schema order, preserving each declared shape.
+    pub fn states(&self) -> [CollectionState; 2] {
+        [
+            CollectionState::Keyed(self.task_forces.clone()),
+            CollectionState::OrderedOccurrence(self.naval_supremacy.clone()),
+        ]
     }
 }
 
@@ -1283,6 +1348,26 @@ mod tests {
             .expect("d56 schema is well-formed");
     }
 
+    #[test]
+    fn the_supremacy_wire_ids_scale_and_zero_quant_code_are_literal_pinned() {
+        assert_eq!(NAVAL_SUPREMACY, 2);
+        assert_eq!(field::SUPREMACY_REGION_ID, 20);
+        assert_eq!(field::SUPREMACY_CONTROLLER_TAG_DB_ID, 21);
+        assert_eq!(field::SUPREMACY_CURRENT, 22);
+        assert_eq!(field::SUPREMACY_TARGET, 23);
+        assert_eq!(field::SUPREMACY_BASE_TARGET, 24);
+        assert_eq!(field::SUPREMACY_PREVIOUS, 25);
+        assert_eq!(field::SUPREMACY_DECLINE_FROM, 26);
+        assert_eq!(field::SUPREMACY_INDIVIDUAL_RATIO, 27);
+        assert_eq!(FIXED_SCALE, 100_000.0);
+        assert_eq!(FIXED_SCALE_RAW, 100_000);
+        assert_eq!(SUPREMACY_QUANT, Quant::Fixed(5));
+        assert_eq!(Quant::None.code(), 0);
+        assert_eq!(Quant::Exact.code(), 0);
+        assert_eq!(Quant::None.param(), None);
+        assert_eq!(Quant::Exact.param(), None);
+    }
+
     // --- Step 8.5: shape and key ---------------------------------------------
 
     #[test]
@@ -1302,36 +1387,70 @@ mod tests {
     }
 
     #[test]
-    fn the_supremacy_sidecar_is_stop_reported_and_its_id_is_reserved() {
-        // `WIRE_FORMAT.md` §7.3 names this array an ordered occurrence list and
-        // §13 lists it among the four measured instances that "stop a collection
-        // today". The schema therefore carries the task-force table alone, and the
-        // sidecar's collection id is reserved rather than used.
+    fn the_supremacy_sidecar_is_an_ordered_occurrence_collection() {
+        // `WIRE_FORMAT.md` §7.3 names this array an ordered occurrence list; the
+        // schema now carries exactly that shape with no fabricated key.
         let s = schema();
-        assert_eq!(s.collections.len(), 1, "the sidecar is not a collection");
+        assert_eq!(s.collections.len(), 2);
         assert_eq!(s.collections[0].collection_id, TASK_FORCES);
-        assert!(
-            s.collections.iter().all(|c| c.collection_id != NAVAL_SUPREMACY),
-            "collection id {NAVAL_SUPREMACY} is reserved, not used"
-        );
-        // And the shape it would need is rejected by this crate on both sides, so
-        // there is nothing to fall back to.
-        let mut forced = s.clone();
-        forced.collections[0].shape = Shape::OrderedOccurrenceList;
-        let mut out = Vec::new();
-        assert!(
-            crate::body::encode_baseline(&forced, &[KeyedState::new()], &mut out).is_err(),
-            "an ordered shape has no baseline grammar in this crate"
+        assert_eq!(s.collections[1].collection_id, NAVAL_SUPREMACY);
+        assert_eq!(s.collections[1].shape, Shape::OrderedOccurrenceList);
+        assert!(s.collections[1].key_fields().is_empty());
+        assert_eq!(
+            s.collections[1]
+                .fields
+                .iter()
+                .map(|field| (field.field_id, field.kind, field.quant))
+                .collect::<Vec<_>>(),
+            vec![
+                (field::SUPREMACY_REGION_ID, Kind::ContentId, Quant::None),
+                (
+                    field::SUPREMACY_CONTROLLER_TAG_DB_ID,
+                    Kind::ContentId,
+                    Quant::None
+                ),
+                (
+                    field::SUPREMACY_CURRENT,
+                    Kind::Continuous,
+                    SUPREMACY_QUANT
+                ),
+                (
+                    field::SUPREMACY_TARGET,
+                    Kind::Continuous,
+                    SUPREMACY_QUANT
+                ),
+                (
+                    field::SUPREMACY_BASE_TARGET,
+                    Kind::Continuous,
+                    SUPREMACY_QUANT
+                ),
+                (
+                    field::SUPREMACY_PREVIOUS,
+                    Kind::Continuous,
+                    SUPREMACY_QUANT
+                ),
+                (
+                    field::SUPREMACY_DECLINE_FROM,
+                    Kind::Continuous,
+                    SUPREMACY_QUANT
+                ),
+                (
+                    field::SUPREMACY_INDIVIDUAL_RATIO,
+                    Kind::Continuous,
+                    SUPREMACY_QUANT
+                ),
+            ],
+            "both ids and all six source-grid values are byte-shape decisions"
         );
     }
 
     #[test]
-    fn a_duplicated_supremacy_row_is_valid_input_which_is_why_the_shape_stops() {
-        // The premise of the stop, tested rather than asserted: two entries with
+    fn a_duplicated_supremacy_row_is_valid_input_which_requires_the_occurrence_shape() {
+        // The premise of the shape, tested rather than asserted: two entries with
         // the same `(region, controller)` and different values are accepted by the
         // decoder (`domain56_compact.rs:438`-`:449`), so any keyed reading of this
         // array must either lose one of them or key by position — and §7.3 says
-        // position is not an identity here. Both rows validate; neither is mapped.
+        // position is not an identity here. Both rows validate and both are mapped.
         let a = supremacy_row([29, 22, 100_000, 0, 0, 0, 0, 1]);
         let b = supremacy_row([29, 22, 200_000, 0, 0, 0, 0, 2]);
         assert_ne!(a, b, "the value payloads differ");
@@ -1342,7 +1461,7 @@ mod tests {
         state
             .fold_payload(&schema(), &payload(0, 0, &[], &[a, b]), false, 0)
             .expect("folds");
-        assert_eq!(state.supremacy_rows, 2);
+        assert_eq!(state.naval_supremacy.len(), 2);
     }
 
     // --- Step 8.3: the four states, through the mapper ------------------------
@@ -1376,9 +1495,9 @@ mod tests {
             ],
             "exactly the six flag-gated fields"
         );
-        // The stop-reported sidecar would declare no capability at all — every one
-        // of its words is present on every row the decoder accepts — so the port
-        // has exactly one collection with capabilities, and this is it.
+        // The occurrence collection declares no capability at all — every one of
+        // its words is present on every row the decoder accepts — so this remains
+        // the port's only collection with capabilities.
     }
 
     #[test]
@@ -1617,11 +1736,10 @@ mod tests {
     }
 
     #[test]
-    fn the_supremacy_offsets_and_the_hundred_thousand_scale_are_pinned_for_the_stop() {
-        // Nothing maps these words today (the collection is stop-reported), but the
-        // offsets and the divisor are what the stop report hands to whoever
-        // implements §7.3, so they are pinned rather than left in prose. Known
-        // fixed-point words against their exact readings at the fold's own divisor
+    fn the_supremacy_offsets_and_the_hundred_thousand_scale_are_pinned() {
+        // The mapper depends on these offsets and the divisor, so pin them rather
+        // than trusting the schema prose. Known fixed-point words are checked
+        // against their exact readings at the fold's own divisor
         // (`world_fold.rs:9019`-`:9024`) — the check that would catch a
         // 100000-vs-32768 error.
         let row = supremacy_row([16, 2, 100_000, 150_000, 1, 67_962_800, 250_000, 87_173]);
@@ -1700,15 +1818,12 @@ mod tests {
     // --- Step 8.4: quantization ------------------------------------------------
 
     #[test]
-    fn the_ported_collection_has_no_continuous_field_so_nothing_is_quantized() {
-        // Step 8.4's byte-saving test does not apply to this port: the task-force
+    fn the_task_force_collection_has_no_continuous_field_so_nothing_is_quantized() {
+        // Step 8.4's byte-saving test does not apply to the task-force table: it
         // table declares no continuous field at all — every one of its words is an
-        // id, an enum, a count or a flag — so there is no quantization decision to
-        // measure. The domain's only continuous channels are the six supremacy
-        // values, and that collection is stop-reported; the quantization they
-        // should carry when §7.3 lands is recorded as `SUPREMACY_QUANT` and proved
-        // lossless by `fixed_five_is_lossless_over_every_u32_raw` below, so the
-        // decision survives the stop instead of being lost with it.
+        // id, an enum, a count or a flag. The domain's six continuous channels are
+        // all in the supremacy occurrence collection; its `SUPREMACY_QUANT` is
+        // proved lossless by `fixed_five_is_lossless_over_every_u32_raw` below.
         let c = task_force_collection();
         assert_eq!(
             c.value_fields()
@@ -1779,11 +1894,8 @@ mod tests {
             .iter()
             .map(|c| c.value_fields().filter(|f| f.kind == Kind::ContentId).count())
             .sum();
-        // Five in the ported collection. The stop-reported sidecar's `region_id`
-        // and `controller_tag_db_id` are two more the retrofit will meet when
-        // §7.3 lands; they are named in the measurement's open questions rather
-        // than counted here, because no schema carries them today.
-        assert_eq!(content_ids, 5, "the ContentId values the retrofit must sweep");
+        // Five in the task-force collection and two in naval supremacy.
+        assert_eq!(content_ids, 7, "the ContentId values the retrofit must sweep");
     }
 
     // --- Refusals: everything the decoder refuses ------------------------------
@@ -1975,9 +2087,9 @@ mod tests {
 
     #[test]
     fn the_supremacy_validator_rejects_every_row_the_decoder_rejects() {
-        // The trailer is stop-reported but still validated, because the fold
-        // decodes it before it folds anything: a row this accepts that the decoder
-        // rejects would let the harness measure a payload production refuses.
+        // The fold decodes the trailer before it folds anything: a row this accepts
+        // that the decoder rejects would let the harness measure a payload
+        // production refuses.
         for len in [0usize, 1, TRAILER_ROW_LEN - 1, TRAILER_ROW_LEN + 1] {
             assert!(check_supremacy_row(&vec![0u8; len], 0).is_err(), "length {len}");
         }
@@ -2170,7 +2282,7 @@ mod tests {
             FoldOutcome::Folded
         );
         assert_eq!(state.task_forces.len(), 1);
-        assert_eq!(state.supremacy_rows, 2, "the stop-reported sidecar is counted");
+        assert_eq!(state.naval_supremacy.len(), 2);
         assert!(state.baseline_seen);
 
         // A non-delta frame clears stale rows (`world_fold.rs:22142`).
@@ -2194,7 +2306,7 @@ mod tests {
             "the previous task force is gone"
         );
         assert_eq!(
-            state.supremacy_rows, 0,
+            state.naval_supremacy.len(), 0,
             "the sidecar is full-replaced even by an empty trailer"
         );
 
@@ -2214,7 +2326,7 @@ mod tests {
             .fold_payload(&schema, &third, false, 0)
             .expect("folds");
         assert_eq!(state.task_forces.len(), 2, "a delta frame never clears");
-        assert_eq!(state.supremacy_rows, 1);
+        assert_eq!(state.naval_supremacy.len(), 1);
     }
 
     #[test]
@@ -2264,7 +2376,7 @@ mod tests {
         );
         assert!(fresh.task_forces.is_empty());
         assert_eq!(
-            fresh.supremacy_rows, 0,
+            fresh.naval_supremacy.len(), 0,
             "the sidecar is not replaced on a non-folding exit either"
         );
         assert!(!fresh.baseline_seen);
@@ -2294,14 +2406,13 @@ mod tests {
     }
 
     #[test]
-    fn the_stopped_sidecar_is_counted_not_collapsed() {
+    fn duplicate_supremacy_occurrences_are_retained_in_source_order() {
         // Three rows, two of them byte-identical: the fold keeps all three in its
-        // `Vec` (`world_fold.rs:22204`-`:22218`), and the decoder says a
+        // `Vec` (`world_fold.rs:22595`-`:22609`), and the decoder says a
         // byte-identical repeat "can legitimately occur for zero/steady-state
         // entries" (`domain56_compact.rs:446`-`:449`). Any map keyed by the row's
         // own words would hold one. The count this port tracks holds three, which
-        // is all a stop-reported collection can claim — the rows themselves need
-        // §7.3's shape.
+        // §7.3's shape retains the rows themselves, not merely their count.
         let schema = schema();
         let rows = [
             supremacy_row([9, 1, 5, 0, 0, 0, 0, 0]),
@@ -2312,8 +2423,29 @@ mod tests {
         state
             .fold_payload(&schema, &payload(0, 0, &[], &rows), false, 0)
             .expect("folds");
-        assert_eq!(state.supremacy_rows, 3, "a repeated row is not collapsed");
-        // And the port's own state carries no supremacy collection to hold them.
-        assert_eq!(state.states().len(), 1);
+        assert_eq!(state.naval_supremacy.len(), 3, "a repeated row is not collapsed");
+        assert_eq!(state.naval_supremacy[0], state.naval_supremacy[2]);
+        assert_ne!(state.naval_supremacy[0], state.naval_supremacy[1]);
+        assert_eq!(state.states().len(), 2);
+    }
+
+    #[test]
+    fn the_supremacy_mapper_carries_all_eight_words_on_the_source_grid() {
+        let collection = schema().collections[1].clone();
+        let row = supremacy_row([16, 2, 100_000, 150_000, 1, 67_962_800, 250_000, 87_173]);
+        let mapped = record_from_supremacy_row(&collection, &row, 0).expect("maps");
+        assert_eq!(
+            mapped.values,
+            vec![
+                Value::ContentId(16),
+                Value::ContentId(2),
+                Value::Continuous(1.0),
+                Value::Continuous(1.5),
+                Value::Continuous(0.000_01),
+                Value::Continuous(679.628),
+                Value::Continuous(2.5),
+                Value::Continuous(0.871_73),
+            ]
+        );
     }
 }

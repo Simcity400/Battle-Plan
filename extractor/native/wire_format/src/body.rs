@@ -9,7 +9,7 @@ use crate::record::Record;
 use crate::schema::{Collection, Kind, Schema, Shape};
 use crate::value::Value;
 use crate::varint::{read_varint, read_zigzag, write_varint, write_zigzag, Result, WireError};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A key tuple. §7.4 restricts components to kinds `0`, `1` and `5`, the three
 /// that encode as a self-delimiting varint or zigzag on their own.
@@ -31,6 +31,37 @@ pub struct Row {
 
 /// The reconstructed content of one keyed collection.
 pub type KeyedState = BTreeMap<Key, Record>;
+
+/// The reconstructed content of one collection, preserving the semantics its
+/// §7.3 shape declares. A map is correct only for a keyed set: either ordered
+/// variant would lose source order, and an occurrence list would additionally
+/// collapse legitimate duplicates.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CollectionState {
+    Keyed(KeyedState),
+    OrderedKeyed(Vec<Row>),
+    OrderedOccurrence(Vec<Record>),
+}
+
+impl CollectionState {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Keyed(rows) => rows.len(),
+            Self::OrderedKeyed(rows) => rows.len(),
+            Self::OrderedOccurrence(rows) => rows.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl From<KeyedState> for CollectionState {
+    fn from(value: KeyedState) -> Self {
+        Self::Keyed(value)
+    }
+}
 
 /// §7.4 key components are `varint` or `zigzag`, so each has a representable
 /// range. `Key` holds `i128` to carry both without a per-kind enum, which means
@@ -82,6 +113,40 @@ fn read_key_component(buf: &[u8], pos: usize, kind: Kind) -> Result<(i128, usize
             (v as i128, p)
         }
     })
+}
+
+/// §7.4 ordered-keyed rows carry every component absolute. There is no previous
+/// key because source order need not be monotone in any component.
+fn write_absolute_key(out: &mut Vec<u8>, collection: &Collection, key: &Key) -> Result<()> {
+    let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
+    check_key(&kinds, key)?;
+    for (kind, component) in kinds.iter().zip(&key.0) {
+        write_key_component(out, *kind, *component);
+    }
+    Ok(())
+}
+
+fn read_absolute_key(
+    buf: &[u8],
+    mut pos: usize,
+    collection: &Collection,
+) -> Result<(Key, usize)> {
+    let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
+    if kinds.is_empty() {
+        return Err(WireError::Corrupt("keyed collection has no key fields"));
+    }
+    let mut components = Vec::with_capacity(kinds.len());
+    for kind in &kinds {
+        let (component, p) = read_key_component(buf, pos, *kind)?;
+        components.push(component);
+        pos = p;
+    }
+    let key = Key(components);
+    // An absolute component is decoded by its kind, but this check is kept on
+    // the read side deliberately: §7.4's range rule is a property of every key
+    // path, not an assumption tied to today's varint implementation.
+    check_key(&kinds, &key)?;
+    Ok((key, pos))
 }
 
 /// §7.4. In a sorted list the first component is non-decreasing, so its
@@ -152,88 +217,192 @@ fn read_sorted_key(
     Ok((out, pos))
 }
 
-/// `BASELINE` body: every collection in schema order, each a row count then its
-/// rows in canonical order (§2).
-pub fn encode_baseline(schema: &Schema, states: &[KeyedState], out: &mut Vec<u8>) -> Result<()> {
-    if states.len() != schema.collections.len() {
-        return Err(WireError::Corrupt("baseline arity does not match schema"));
-    }
-    for (collection, state) in schema.collections.iter().zip(states) {
-        // §7.3: ordered shapes carry source order, which a key-sorted map has
-        // already destroyed, and an occurrence list has no key to index at all.
-        // Encoding one through this path would silently reorder or panic.
-        if !matches!(collection.shape, Shape::KeyedSet) {
-            return Err(WireError::Corrupt(
-                "ordered collections are not representable as a keyed state",
-            ));
-        }
-        let kinds_check: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
-        if kinds_check.is_empty() {
-            return Err(WireError::Corrupt("keyed collection has no key fields"));
-        }
-        write_varint(out, state.len() as u64);
-        let keys: Vec<Key> = state.keys().cloned().collect();
-        // Keys and records interleave, so the key delta chain is written inline.
-        let mut previous_first: Option<i128> = None;
-        let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
-        for key in &keys {
-            // A `BTreeMap` guarantees ascending unique keys, but not that they
-            // have the schema's arity — and the component loop below indexes
-            // `kinds` directly, so a long key panics and a short one emits bytes
-            // no reader can parse.
-            check_key(&kinds, key)?;
-            match previous_first {
-                None => write_key_component(out, kinds[0], key.first()),
-                Some(prev) => write_varint(out, (key.first() - prev) as u64),
+/// Encode one collection's complete contribution. This is deliberately shared
+/// by `BASELINE` and ordered `DELTA`: §7 requires the replacement bytes to be
+/// identical, so a second ordered-row encoder would itself violate §2.
+fn encode_complete_collection(
+    collection: &Collection,
+    state: &CollectionState,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    match (collection.shape, state) {
+        (Shape::KeyedSet, CollectionState::Keyed(rows)) => {
+            write_varint(out, rows.len() as u64);
+            let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
+            if kinds.is_empty() {
+                return Err(WireError::Corrupt("keyed collection has no key fields"));
             }
-            previous_first = Some(key.first());
-            for (i, component) in key.0.iter().enumerate().skip(1) {
-                write_key_component(out, kinds[i], *component);
+            let mut previous_first: Option<i128> = None;
+            for (key, record) in rows {
+                check_key(&kinds, key)?;
+                match previous_first {
+                    None => write_key_component(out, kinds[0], key.first()),
+                    Some(prev) => write_varint(out, (key.first() - prev) as u64),
+                }
+                previous_first = Some(key.first());
+                for (i, component) in key.0.iter().enumerate().skip(1) {
+                    write_key_component(out, kinds[i], *component);
+                }
+                record.encode(collection, out)?;
             }
-            state[key].encode(collection, out)?;
         }
+        (Shape::OrderedKeyedList, CollectionState::OrderedKeyed(rows)) => {
+            write_varint(out, rows.len() as u64);
+            let mut seen = BTreeSet::new();
+            for row in rows {
+                if !seen.insert(row.key.clone()) {
+                    return Err(WireError::Corrupt("ordered-keyed list contains a duplicate key"));
+                }
+                write_absolute_key(out, collection, &row.key)?;
+                row.record.encode(collection, out)?;
+            }
+        }
+        (Shape::OrderedOccurrenceList, CollectionState::OrderedOccurrence(rows)) => {
+            write_varint(out, rows.len() as u64);
+            for record in rows {
+                record.encode(collection, out)?;
+            }
+        }
+        _ => return Err(WireError::Corrupt("collection state shape does not match schema")),
     }
     Ok(())
 }
 
-pub fn decode_baseline(schema: &Schema, buf: &[u8], mut pos: usize) -> Result<(Vec<KeyedState>, usize)> {
-    let mut out = Vec::new();
-    for collection in &schema.collections {
-        // The encoder rejects ordered shapes; the decoder must too, or it reads
-        // them with keyed-set rules. §7.4's ordered-keyed keys are absolute, so a
-        // delta-decoded key list comes back wrong (5, 6 reads as 5, 11), and an
-        // occurrence list has no key fields at all, so the key reader indexes an
-        // empty list and panics.
-        if !matches!(collection.shape, Shape::KeyedSet) {
-            return Err(WireError::Corrupt(
-                "ordered collections have no keyed-set baseline grammar",
-            ));
-        }
-        let (count, p) = read_varint(buf, pos)?;
-        pos = p;
-        let mut state = KeyedState::new();
-        let mut previous_first: Option<i128> = None;
-        // §2 orders a baseline's rows by the full key tuple. Tracking only the
-        // first component would accept (1,5) before (1,3) and let the map
-        // silently reorder them, and a repeated key would overwrite a row —
-        // three byte sequences decoding to two different states.
-        let mut previous_key: Option<Key> = None;
-        for _ in 0..count {
-            let (key, p) = read_sorted_key(buf, pos, collection, previous_first)?;
-            if let Some(prev) = &previous_key {
-                if key <= *prev {
-                    return Err(WireError::Corrupt("baseline rows are not ascending by key"));
+fn decode_complete_collection(
+    collection: &Collection,
+    buf: &[u8],
+    mut pos: usize,
+) -> Result<(CollectionState, usize)> {
+    let (count, p) = read_varint(buf, pos)?;
+    pos = p;
+    // `Schema::validate` refuses a fieldless collection, so every legal row
+    // consumes at least one byte. Bound the untrusted count by ground truth
+    // before allocating or looping. In a multi-collection body `remaining`
+    // deliberately includes later collections, so this is a loose upper bound;
+    // that is sound because a guard needs an upper bound, not a collection extent
+    // the wire does not carry. Keeping this structural bound as well means even a
+    // caller that hands this public decoder an invalid future schema cannot turn
+    // a wire count into unbounded work.
+    let remaining = buf.len() - pos;
+    if count > remaining as u64 {
+        return Err(WireError::Corrupt(
+            "collection row count exceeds remaining body bytes",
+        ));
+    }
+    match collection.shape {
+        Shape::KeyedSet => {
+            let mut state = KeyedState::new();
+            let mut previous_first: Option<i128> = None;
+            let mut previous_key: Option<Key> = None;
+            for _ in 0..count {
+                let (key, p) = read_sorted_key(buf, pos, collection, previous_first)?;
+                if let Some(prev) = &previous_key {
+                    if key <= *prev {
+                        return Err(WireError::Corrupt("baseline rows are not ascending by key"));
+                    }
                 }
+                previous_key = Some(key.clone());
+                previous_first = Some(key.first());
+                let (record, p2) = Record::decode(collection, buf, p)?;
+                pos = p2;
+                state.insert(key, record);
             }
-            previous_key = Some(key.clone());
-            previous_first = Some(key.first());
-            let (record, p2) = Record::decode(collection, buf, p)?;
-            pos = p2;
-            state.insert(key, record);
+            Ok((CollectionState::Keyed(state), pos))
         }
+        Shape::OrderedKeyedList => {
+            // The count is untrusted. Reserving it up front would let a tiny
+            // hostile body request a host-sized allocation before the first row
+            // had even been proved present.
+            let mut rows = Vec::new();
+            let mut seen = BTreeSet::new();
+            for _ in 0..count {
+                let (key, p) = read_absolute_key(buf, pos, collection)?;
+                if !seen.insert(key.clone()) {
+                    return Err(WireError::Corrupt(
+                        "ordered-keyed list contains a duplicate key",
+                    ));
+                }
+                let (record, p2) = Record::decode(collection, buf, p)?;
+                pos = p2;
+                rows.push(Row { key, record });
+            }
+            Ok((CollectionState::OrderedKeyed(rows), pos))
+        }
+        Shape::OrderedOccurrenceList => {
+            let mut rows = Vec::new();
+            for _ in 0..count {
+                let (record, p) = Record::decode(collection, buf, pos)?;
+                pos = p;
+                rows.push(record);
+            }
+            Ok((CollectionState::OrderedOccurrence(rows), pos))
+        }
+    }
+}
+
+fn complete_collection_bytes(
+    collection: &Collection,
+    state: &CollectionState,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    encode_complete_collection(collection, state, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// `BASELINE` body for all §7.3 shapes.
+pub fn encode_shaped_baseline(
+    schema: &Schema,
+    states: &[CollectionState],
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    if states.len() != schema.collections.len() {
+        return Err(WireError::Corrupt("baseline arity does not match schema"));
+    }
+    for (collection, state) in schema.collections.iter().zip(states) {
+        encode_complete_collection(collection, state, out)?;
+    }
+    Ok(())
+}
+
+pub fn decode_shaped_baseline(
+    schema: &Schema,
+    buf: &[u8],
+    mut pos: usize,
+) -> Result<(Vec<CollectionState>, usize)> {
+    let mut out = Vec::with_capacity(schema.collections.len());
+    for collection in &schema.collections {
+        let (state, p) = decode_complete_collection(collection, buf, pos)?;
+        pos = p;
         out.push(state);
     }
     Ok((out, pos))
+}
+
+/// Keyed-only compatibility entry point. The other domain modules keep their
+/// existing call sites; the bytes still come from the single shaped grammar.
+pub fn encode_baseline(schema: &Schema, states: &[KeyedState], out: &mut Vec<u8>) -> Result<()> {
+    let shaped: Vec<CollectionState> = states.iter().cloned().map(CollectionState::Keyed).collect();
+    encode_shaped_baseline(schema, &shaped, out)
+}
+
+pub fn decode_baseline(
+    schema: &Schema,
+    buf: &[u8],
+    pos: usize,
+) -> Result<(Vec<KeyedState>, usize)> {
+    let (states, pos) = decode_shaped_baseline(schema, buf, pos)?;
+    let mut keyed = Vec::with_capacity(states.len());
+    for state in states {
+        match state {
+            CollectionState::Keyed(state) => keyed.push(state),
+            _ => {
+                return Err(WireError::Corrupt(
+                    "ordered collection is not representable as a keyed state",
+                ))
+            }
+        }
+    }
+    Ok((keyed, pos))
 }
 
 /// What one collection contributes to a `DELTA` (§7).
@@ -249,6 +418,16 @@ impl KeyedDelta {
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.tombstones.is_empty()
     }
+}
+
+/// What one collection contributes to a shaped `DELTA`. Ordered variants are
+/// complete replacement content; they deliberately have no changed-row or
+/// tombstone form (§7.3).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CollectionDelta {
+    Keyed(KeyedDelta),
+    OrderedKeyed(Vec<Row>),
+    OrderedOccurrence(Vec<Record>),
 }
 
 /// §7.1 violations. Each admits a second encoding of the same state.
@@ -279,8 +458,10 @@ pub enum MinimalityError {
     UnchangedRowEmitted { collection_id: u32 },
     /// A row that changed but was not emitted.
     MissingChangedRow { collection_id: u32 },
-    /// §7: only a keyed set has a delta grammar.
-    UnsupportedShape { collection_id: u32 },
+    /// The typed state or contribution does not match the schema's shape.
+    ShapeMismatch { collection_id: u32 },
+    /// An ordered set bit re-emits the reconstructed prior content (§7.1).
+    ReplacementMatchesPrior { collection_id: u32 },
     /// A changed row for a key that is not in the next state.
     RowNotInNextState { collection_id: u32 },
     /// A changed row whose record is not the next state's record for that key.
@@ -366,117 +547,362 @@ pub fn check_minimal(
     Ok(())
 }
 
-/// `DELTA` body: a collection change bitmap, then a contribution per set bit.
+fn encode_keyed_contribution(
+    collection: &Collection,
+    prior: &KeyedState,
+    delta: &KeyedDelta,
+    out: &mut Vec<u8>,
+) -> core::result::Result<(), MinimalityError> {
+    let collection_id = collection.collection_id;
+    if delta.is_empty() {
+        return Err(MinimalityError::EmptyContribution { collection_id });
+    }
+    for row in &delta.changed {
+        if delta.tombstones.contains(&row.key) {
+            return Err(MinimalityError::KeyBothChangedAndTombstoned { collection_id });
+        }
+    }
+    for key in &delta.tombstones {
+        if !prior.contains_key(key) {
+            return Err(MinimalityError::TombstoneForAbsentKey { collection_id });
+        }
+    }
+    write_varint(out, delta.changed.len() as u64);
+    let mut previous_first: Option<i128> = None;
+    let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
+    let mut previous_key: Option<&Key> = None;
+    for row in &delta.changed {
+        check_key(&kinds, &row.key).map_err(|cause| match cause {
+            WireError::Corrupt("key arity does not match schema") => {
+                MinimalityError::KeyArityMismatch { collection_id }
+            }
+            cause => MinimalityError::RowEncodingFailed {
+                collection_id,
+                cause,
+            },
+        })?;
+        if let Some(prev) = previous_key {
+            if &row.key <= prev {
+                return Err(MinimalityError::KeysNotSorted { collection_id });
+            }
+        }
+        previous_key = Some(&row.key);
+        match previous_first {
+            None => write_key_component(out, kinds[0], row.key.first()),
+            Some(prev) => write_varint(out, (row.key.first() - prev) as u64),
+        }
+        previous_first = Some(row.key.first());
+        for (i, component) in row.key.0.iter().enumerate().skip(1) {
+            write_key_component(out, kinds[i], *component);
+        }
+        let encoded = match prior.get(&row.key) {
+            None => row.record.encode(collection, out),
+            Some(previous) => crate::update::encode(collection, previous, &row.record, out),
+        };
+        encoded.map_err(|cause| MinimalityError::RowEncodingFailed { collection_id, cause })?;
+    }
+    write_varint(out, delta.tombstones.len() as u64);
+    write_sorted_keys(out, collection, &delta.tombstones).map_err(|cause| match cause {
+        WireError::Corrupt("key arity does not match schema") => {
+            MinimalityError::KeyArityMismatch { collection_id }
+        }
+        _ => MinimalityError::KeysNotSorted { collection_id },
+    })?;
+    Ok(())
+}
+
+fn decode_keyed_contribution(
+    collection: &Collection,
+    prior: &KeyedState,
+    buf: &[u8],
+    mut pos: usize,
+) -> Result<(KeyedDelta, usize)> {
+    let (changed_count, p) = read_varint(buf, pos)?;
+    pos = p;
+    let mut changed = Vec::new();
+    let mut previous_first: Option<i128> = None;
+    let mut previous_key: Option<Key> = None;
+    for _ in 0..changed_count {
+        let (key, p) = read_sorted_key(buf, pos, collection, previous_first)?;
+        if let Some(prev) = &previous_key {
+            if key <= *prev {
+                return Err(WireError::Corrupt("changed rows are not ascending by key"));
+            }
+        }
+        previous_key = Some(key.clone());
+        previous_first = Some(key.first());
+        let (record, p2) = match prior.get(&key) {
+            None => Record::decode(collection, buf, p)?,
+            Some(previous) => crate::update::decode(collection, previous, buf, p)?,
+        };
+        pos = p2;
+        changed.push(Row { key, record });
+    }
+    let (tomb_count, p) = read_varint(buf, pos)?;
+    pos = p;
+    let mut tombstones = Vec::new();
+    let mut previous_first: Option<i128> = None;
+    let mut previous_key: Option<Key> = None;
+    for _ in 0..tomb_count {
+        let (key, p) = read_sorted_key(buf, pos, collection, previous_first)?;
+        if let Some(prev) = &previous_key {
+            if key <= *prev {
+                return Err(WireError::Corrupt("tombstones are not ascending by key"));
+            }
+        }
+        if changed.iter().any(|r: &Row| r.key == key) {
+            return Err(WireError::Corrupt("key is both changed and tombstoned"));
+        }
+        if !prior.contains_key(&key) {
+            return Err(WireError::Corrupt("tombstone for a key that was already absent"));
+        }
+        previous_key = Some(key.clone());
+        previous_first = Some(key.first());
+        pos = p;
+        tombstones.push(key);
+    }
+    let delta = KeyedDelta { changed, tombstones };
+    if delta.is_empty() {
+        return Err(WireError::Corrupt("collection bit set with an empty contribution"));
+    }
+    Ok((delta, pos))
+}
+
+/// Shared `DELTA` framing: arity, change bitmap and contribution walk. The
+/// compatibility API supplies borrowed keyed states to this same walk, avoiding
+/// a deep clone of the reconstructed world without creating a second keyed
+/// grammar.
+fn encode_delta_frame(
+    schema: &Schema,
+    prior_len: usize,
+    delta_len: usize,
+    out: &mut Vec<u8>,
+    is_changed: impl Fn(usize) -> bool,
+    mut encode_contribution: impl FnMut(
+        usize,
+        &Collection,
+        &mut Vec<u8>,
+    ) -> core::result::Result<(), MinimalityError>,
+) -> core::result::Result<(), MinimalityError> {
+    if delta_len != schema.collections.len() || prior_len != schema.collections.len() {
+        return Err(MinimalityError::ArityMismatch);
+    }
+    let mut bitmap = Bitmap::with_len(schema.collections.len());
+    for i in 0..schema.collections.len() {
+        bitmap.set(i, is_changed(i));
+    }
+    if bitmap.count_set() == 0 {
+        return Err(MinimalityError::NoCollectionChanged);
+    }
+    bitmap.encode(out);
+    for (i, collection) in schema.collections.iter().enumerate() {
+        if bitmap.get(i) {
+            encode_contribution(i, collection, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_delta_frame<T>(
+    schema: &Schema,
+    prior_len: usize,
+    buf: &[u8],
+    pos: usize,
+    mut decode_contribution: impl FnMut(
+        usize,
+        &Collection,
+        usize,
+    ) -> Result<(T, usize)>,
+) -> Result<(Vec<Option<T>>, usize)> {
+    if prior_len != schema.collections.len() {
+        return Err(WireError::Corrupt("prior state list does not match the schema"));
+    }
+    let (bitmap, mut pos) = Bitmap::decode(buf, pos, schema.collections.len())?;
+    if bitmap.count_set() == 0 {
+        return Err(WireError::Corrupt("DELTA change bitmap is all zero"));
+    }
+    let mut out = Vec::with_capacity(schema.collections.len());
+    for (i, collection) in schema.collections.iter().enumerate() {
+        if bitmap.get(i) {
+            let (delta, p) = decode_contribution(i, collection, pos)?;
+            pos = p;
+            out.push(Some(delta));
+        } else {
+            out.push(None);
+        }
+    }
+    Ok((out, pos))
+}
+
+/// Stored equality for any collection shape. Comparing the one canonical
+/// complete contribution makes record quantization and source order part of the
+/// answer without reimplementing either rule here.
+pub fn collection_stored_eq(
+    collection: &Collection,
+    left: &CollectionState,
+    right: &CollectionState,
+) -> Result<bool> {
+    Ok(complete_collection_bytes(collection, left)?
+        == complete_collection_bytes(collection, right)?)
+}
+
+/// Build the sole legal contribution for a transition. Keyed sets use §7.2;
+/// ordered shapes replace their complete content when (and only when) it differs.
+pub fn diff_shaped(
+    collection: &Collection,
+    prior: &CollectionState,
+    next: &CollectionState,
+) -> Result<Option<CollectionDelta>> {
+    match (collection.shape, prior, next) {
+        (Shape::KeyedSet, CollectionState::Keyed(prior), CollectionState::Keyed(next)) => {
+            let delta = diff(collection, prior, next);
+            Ok((!delta.is_empty()).then_some(CollectionDelta::Keyed(delta)))
+        }
+        (
+            Shape::OrderedKeyedList,
+            CollectionState::OrderedKeyed(_),
+            CollectionState::OrderedKeyed(rows),
+        ) => Ok((!collection_stored_eq(collection, prior, next)?)
+            .then(|| CollectionDelta::OrderedKeyed(rows.clone()))),
+        (
+            Shape::OrderedOccurrenceList,
+            CollectionState::OrderedOccurrence(_),
+            CollectionState::OrderedOccurrence(rows),
+        ) => Ok((!collection_stored_eq(collection, prior, next)?)
+            .then(|| CollectionDelta::OrderedOccurrence(rows.clone()))),
+        _ => Err(WireError::Corrupt("collection state shape does not match schema")),
+    }
+}
+
+/// `DELTA` body for all §7.3 shapes.
+pub fn encode_shaped_delta(
+    schema: &Schema,
+    priors: &[CollectionState],
+    deltas: &[Option<CollectionDelta>],
+    out: &mut Vec<u8>,
+) -> core::result::Result<(), MinimalityError> {
+    encode_delta_frame(
+        schema,
+        priors.len(),
+        deltas.len(),
+        out,
+        |i| deltas[i].is_some(),
+        |i, collection, out| {
+            let delta = deltas[i]
+                .as_ref()
+                .expect("the shared bitmap walk calls only set contributions");
+            let prior = &priors[i];
+            let collection_id = collection.collection_id;
+            match (collection.shape, prior, delta) {
+                (
+                    Shape::KeyedSet,
+                    CollectionState::Keyed(prior),
+                    CollectionDelta::Keyed(delta),
+                ) => encode_keyed_contribution(collection, prior, delta, out)?,
+                (
+                    Shape::OrderedKeyedList,
+                    CollectionState::OrderedKeyed(_),
+                    CollectionDelta::OrderedKeyed(rows),
+                ) => {
+                    let replacement = CollectionState::OrderedKeyed(rows.clone());
+                    if collection_stored_eq(collection, prior, &replacement).map_err(|cause| {
+                        MinimalityError::RowEncodingFailed { collection_id, cause }
+                    })? {
+                        return Err(MinimalityError::ReplacementMatchesPrior { collection_id });
+                    }
+                    encode_complete_collection(collection, &replacement, out).map_err(|cause| {
+                        MinimalityError::RowEncodingFailed { collection_id, cause }
+                    })?;
+                }
+                (
+                    Shape::OrderedOccurrenceList,
+                    CollectionState::OrderedOccurrence(_),
+                    CollectionDelta::OrderedOccurrence(rows),
+                ) => {
+                    let replacement = CollectionState::OrderedOccurrence(rows.clone());
+                    if collection_stored_eq(collection, prior, &replacement).map_err(|cause| {
+                        MinimalityError::RowEncodingFailed { collection_id, cause }
+                    })? {
+                        return Err(MinimalityError::ReplacementMatchesPrior { collection_id });
+                    }
+                    encode_complete_collection(collection, &replacement, out).map_err(|cause| {
+                        MinimalityError::RowEncodingFailed { collection_id, cause }
+                    })?;
+                }
+                _ => return Err(MinimalityError::ShapeMismatch { collection_id }),
+            }
+            Ok(())
+        },
+    )
+}
+
+pub fn decode_shaped_delta(
+    schema: &Schema,
+    priors: &[CollectionState],
+    buf: &[u8],
+    pos: usize,
+) -> Result<(Vec<Option<CollectionDelta>>, usize)> {
+    decode_delta_frame(schema, priors.len(), buf, pos, |i, collection, pos| {
+        let prior = &priors[i];
+        match (collection.shape, prior) {
+            (Shape::KeyedSet, CollectionState::Keyed(prior)) => {
+                let (delta, p) = decode_keyed_contribution(collection, prior, buf, pos)?;
+                Ok((CollectionDelta::Keyed(delta), p))
+            }
+            (Shape::OrderedKeyedList, CollectionState::OrderedKeyed(_))
+            | (Shape::OrderedOccurrenceList, CollectionState::OrderedOccurrence(_)) => {
+                let (replacement, p) = decode_complete_collection(collection, buf, pos)?;
+                if collection_stored_eq(collection, prior, &replacement)? {
+                    return Err(WireError::Corrupt(
+                        "ordered collection bit set with unchanged replacement",
+                    ));
+                }
+                let delta = match replacement {
+                    CollectionState::OrderedKeyed(rows) => CollectionDelta::OrderedKeyed(rows),
+                    CollectionState::OrderedOccurrence(rows) => {
+                        CollectionDelta::OrderedOccurrence(rows)
+                    }
+                    CollectionState::Keyed(_) => unreachable!("shape selected the decoder"),
+                };
+                Ok((delta, p))
+            }
+            _ => Err(WireError::Corrupt(
+                "prior collection state shape does not match schema",
+            )),
+        }
+    })
+}
+
+/// Keyed-only compatibility entry point. It uses the shaped path's shared
+/// framing walk and sole keyed contribution codec without cloning prior state.
 pub fn encode_delta(
     schema: &Schema,
     priors: &[KeyedState],
     deltas: &[Option<KeyedDelta>],
     out: &mut Vec<u8>,
 ) -> core::result::Result<(), MinimalityError> {
-    // The bitmap is built from every delta, but the contributions are written by
-    // a three-way `zip` that stops at the shortest input. A `priors` shorter than
-    // the schema would therefore set a bit and then write no bytes for it — the
-    // exact "set bit, empty contribution" state §7.1 forbids, produced by an
-    // arity mismatch rather than by a bad delta.
-    if deltas.len() != schema.collections.len() || priors.len() != schema.collections.len() {
-        return Err(MinimalityError::ArityMismatch);
-    }
-    let mut bitmap = Bitmap::with_len(schema.collections.len());
-    for (i, delta) in deltas.iter().enumerate() {
-        bitmap.set(i, delta.is_some());
-    }
-    if bitmap.count_set() == 0 {
-        return Err(MinimalityError::NoCollectionChanged);
-    }
-    bitmap.encode(out);
-
-    for ((collection, delta), prior) in schema.collections.iter().zip(deltas).zip(priors) {
-        let Some(delta) = delta else { continue };
-        if delta.is_empty() {
-            return Err(MinimalityError::EmptyContribution {
-                collection_id: collection.collection_id,
-            });
-        }
-        if !matches!(collection.shape, Shape::KeyedSet) {
-            // §7: ordered shapes are full replacement and have no delta grammar.
-            // Emitting a set bit with no bytes would leave the reader parsing the
-            // next collection as this one, so this is a hard error rather than a
-            // silent skip.
-            return Err(MinimalityError::UnsupportedShape {
-                collection_id: collection.collection_id,
-            });
-        }
-        // §7.1: a key cannot be both updated and deleted in the same tick. The
-        // decoder rejects it, so an encoder that does not is an encoder that
-        // emits a stream its own decoder refuses. `check_minimal` also catches
-        // this, but it is a separate call a caller can skip.
-        for row in &delta.changed {
-            if delta.tombstones.contains(&row.key) {
-                return Err(MinimalityError::KeyBothChangedAndTombstoned {
+    encode_delta_frame(
+        schema,
+        priors.len(),
+        deltas.len(),
+        out,
+        |i| deltas[i].is_some(),
+        |i, collection, out| {
+            if collection.shape != Shape::KeyedSet {
+                return Err(MinimalityError::ShapeMismatch {
                     collection_id: collection.collection_id,
                 });
             }
-        }
-        // §7.1's other prior-dependent rule, for the same reason: the decoder
-        // holds the reconstructed prior state and rejects a tombstone for a key
-        // that was already absent, so the encoder must refuse to emit one.
-        for key in &delta.tombstones {
-            if !prior.contains_key(key) {
-                return Err(MinimalityError::TombstoneForAbsentKey {
-                    collection_id: collection.collection_id,
-                });
-            }
-        }
-        write_varint(out, delta.changed.len() as u64);
-        let mut previous_first: Option<i128> = None;
-        let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
-        let mut previous_key: Option<&Key> = None;
-        for row in &delta.changed {
-            // The tombstone list gets these two checks from `write_sorted_keys`;
-            // the changed list interleaves keys with records so it writes its own
-            // key chain, and has to repeat them or it silently emits bytes no
-            // reader can parse.
-            check_key(&kinds, &row.key).map_err(|_| MinimalityError::KeyArityMismatch {
-                collection_id: collection.collection_id,
-            })?;
-            if let Some(prev) = previous_key {
-                if &row.key <= prev {
-                    return Err(MinimalityError::KeysNotSorted {
-                        collection_id: collection.collection_id,
-                    });
-                }
-            }
-            previous_key = Some(&row.key);
-            match previous_first {
-                None => write_key_component(out, kinds[0], row.key.first()),
-                Some(prev) => write_varint(out, (row.key.first() - prev) as u64),
-            }
-            previous_first = Some(row.key.first());
-            for (i, component) in row.key.0.iter().enumerate().skip(1) {
-                write_key_component(out, kinds[i], *component);
-            }
-            // §7.2: key absent in the reconstructed prior state is an insert and
-            // carries a full record; key present is an update and carries only
-            // what moved. The reader makes the same lookup, so no discriminator
-            // byte is needed.
-            let encoded = match prior.get(&row.key) {
-                None => row.record.encode(collection, out),
-                Some(previous) => crate::update::encode(collection, previous, &row.record, out),
-            };
-            encoded.map_err(|cause| MinimalityError::RowEncodingFailed {
-                collection_id: collection.collection_id,
-                cause,
-            })?;
-        }
-        write_varint(out, delta.tombstones.len() as u64);
-        write_sorted_keys(out, collection, &delta.tombstones).map_err(|cause| match cause {
-            WireError::Corrupt("key arity does not match schema") => {
-                MinimalityError::KeyArityMismatch { collection_id: collection.collection_id }
-            }
-            _ => MinimalityError::KeysNotSorted { collection_id: collection.collection_id },
-        })?;
-    }
-    Ok(())
+            encode_keyed_contribution(
+                collection,
+                &priors[i],
+                deltas[i]
+                    .as_ref()
+                    .expect("the shared bitmap walk calls only set contributions"),
+                out,
+            )
+        },
+    )
 }
 
 pub fn decode_delta(
@@ -485,88 +911,14 @@ pub fn decode_delta(
     buf: &[u8],
     pos: usize,
 ) -> Result<(Vec<Option<KeyedDelta>>, usize)> {
-    // Mirrors the encoder's arity check. Looking a prior up only when its bit is
-    // set means a short `priors` decodes fine right up until the bit that needs
-    // it, which makes the failure depend on the bytes rather than on the caller.
-    if priors.len() != schema.collections.len() {
-        return Err(WireError::Corrupt("prior state list does not match the schema"));
-    }
-    let (bitmap, mut pos) = Bitmap::decode(buf, pos, schema.collections.len())?;
-    if bitmap.count_set() == 0 {
-        return Err(WireError::Corrupt("DELTA change bitmap is all zero"));
-    }
-    let mut out = Vec::new();
-    for (i, collection) in schema.collections.iter().enumerate() {
-        if !bitmap.get(i) {
-            out.push(None);
-            continue;
+    decode_delta_frame(schema, priors.len(), buf, pos, |i, collection, pos| {
+        if collection.shape != Shape::KeyedSet {
+            return Err(WireError::Corrupt(
+                "ordered contribution is not representable as a keyed delta",
+            ));
         }
-        if !matches!(collection.shape, Shape::KeyedSet) {
-            return Err(WireError::Corrupt("ordered collection has no delta grammar"));
-        }
-        let prior = priors
-            .get(i)
-            .ok_or(WireError::Corrupt("prior state missing for a collection"))?;
-        let (changed_count, p) = read_varint(buf, pos)?;
-        pos = p;
-        let mut changed = Vec::new();
-        let mut previous_first: Option<i128> = None;
-        // §7.1 and §2 constrain both lists to be strictly ascending by the full
-        // key tuple. The encoder enforces it; a reader that does not gives a
-        // hostile writer a second encoding of every delta — a zero first-component
-        // difference repeats a key outright, and later components are absolute so
-        // nothing else stops (1,5) preceding (1,3).
-        let mut previous_key: Option<Key> = None;
-        for _ in 0..changed_count {
-            let (key, p) = read_sorted_key(buf, pos, collection, previous_first)?;
-            if let Some(prev) = &previous_key {
-                if key <= *prev {
-                    return Err(WireError::Corrupt("changed rows are not ascending by key"));
-                }
-            }
-            previous_key = Some(key.clone());
-            previous_first = Some(key.first());
-            let (record, p2) = match prior.get(&key) {
-                None => Record::decode(collection, buf, p)?,
-                Some(previous) => crate::update::decode(collection, previous, buf, p)?,
-            };
-            pos = p2;
-            changed.push(Row { key, record });
-        }
-        let (tomb_count, p) = read_varint(buf, pos)?;
-        pos = p;
-        let mut tombstones = Vec::new();
-        let mut previous_first: Option<i128> = None;
-        let mut previous_key: Option<Key> = None;
-        for _ in 0..tomb_count {
-            let (key, p) = read_sorted_key(buf, pos, collection, previous_first)?;
-            if let Some(prev) = &previous_key {
-                if key <= *prev {
-                    return Err(WireError::Corrupt("tombstones are not ascending by key"));
-                }
-            }
-            // §7.1: a key cannot be both updated and deleted in the same tick,
-            // and a tombstone for an already-absent key is a second encoding of
-            // the same delta. Both are decidable here because the reader holds
-            // the same reconstructed prior state the writer did.
-            if changed.iter().any(|r: &Row| r.key == key) {
-                return Err(WireError::Corrupt("key is both changed and tombstoned"));
-            }
-            if !prior.contains_key(&key) {
-                return Err(WireError::Corrupt("tombstone for a key that was already absent"));
-            }
-            previous_key = Some(key.clone());
-            previous_first = Some(key.first());
-            pos = p;
-            tombstones.push(key);
-        }
-        let delta = KeyedDelta { changed, tombstones };
-        if delta.is_empty() {
-            return Err(WireError::Corrupt("collection bit set with an empty contribution"));
-        }
-        out.push(Some(delta));
-    }
-    Ok((out, pos))
+        decode_keyed_contribution(collection, &priors[i], buf, pos)
+    })
 }
 
 /// Replay a delta onto reconstructed state.
@@ -576,6 +928,30 @@ pub fn apply(state: &mut KeyedState, delta: &KeyedDelta) {
     }
     for key in &delta.tombstones {
         state.remove(key);
+    }
+}
+
+/// Replay one shaped contribution onto reconstructed state.
+pub fn apply_shaped(state: &mut CollectionState, delta: &CollectionDelta) -> Result<()> {
+    match (state, delta) {
+        (CollectionState::Keyed(state), CollectionDelta::Keyed(delta)) => {
+            apply(state, delta);
+            Ok(())
+        }
+        (CollectionState::OrderedKeyed(state), CollectionDelta::OrderedKeyed(replacement)) => {
+            *state = replacement.clone();
+            Ok(())
+        }
+        (
+            CollectionState::OrderedOccurrence(state),
+            CollectionDelta::OrderedOccurrence(replacement),
+        ) => {
+            *state = replacement.clone();
+            Ok(())
+        }
+        _ => Err(WireError::Corrupt(
+            "collection delta shape does not match reconstructed state",
+        )),
     }
 }
 

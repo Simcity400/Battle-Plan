@@ -97,6 +97,136 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Get-SettingsGuardBaseException {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    return $Exception.GetBaseException()
+}
+
+function Get-SettingsGuardExceptionKind {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    $baseException = Get-SettingsGuardBaseException -Exception $Exception
+    if ($baseException -is [System.IO.FileNotFoundException]) {
+        return 'not_found'
+    }
+    if ($baseException -is [System.IO.DirectoryNotFoundException]) {
+        return 'not_found'
+    }
+    if ($baseException -is [System.UnauthorizedAccessException]) {
+        return 'access_denied'
+    }
+    if ($baseException -is [System.IO.IOException]) {
+        $win32Code = [int]$baseException.HResult -band 0xFFFF
+        if ($win32Code -eq 32 -or $win32Code -eq 33) {
+            return 'sharing_violation'
+        }
+    }
+    return 'other'
+}
+
+if ($null -eq ('Hoi4MpStats.SettingsGuardNativeMethods' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace Hoi4MpStats {
+    public static class SettingsGuardNativeMethods {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle file,
+            StringBuilder path,
+            uint pathLength,
+            uint flags);
+    }
+}
+'@
+}
+
+function Get-SettingsGuardCanonicalPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = $null
+    try {
+        $share = [System.IO.FileShare](
+            [int][System.IO.FileShare]::ReadWrite -bor
+            [int][System.IO.FileShare]::Delete
+        )
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            $share
+        )
+
+        # A volume-GUID final path gives junctions, symbolic links and SUBST
+        # spellings one stable identity. Fall back only for providers that do
+        # not expose a volume GUID (for example some network redirectors).
+        $lastWin32Error = 0
+        foreach ($flags in @(1, 2, 0)) {
+            $capacity = 1024
+            while ($capacity -le 32768) {
+                $buffer = [System.Text.StringBuilder]::new($capacity)
+                $length = [Hoi4MpStats.SettingsGuardNativeMethods]::GetFinalPathNameByHandle(
+                    $stream.SafeFileHandle,
+                    $buffer,
+                    [uint32]$buffer.Capacity,
+                    [uint32]$flags
+                )
+                if ($length -eq 0) {
+                    $lastWin32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                    break
+                }
+                if ($length -lt [uint32]$buffer.Capacity) {
+                    return $buffer.ToString()
+                }
+                $capacity = [int]$length + 1
+            }
+        }
+        throw [ComponentModel.Win32Exception]::new(
+            $lastWin32Error,
+            "GetFinalPathNameByHandle failed for '$Path'"
+        )
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Get-SettingsGuardKey {
+    param([Parameter(Mandatory = $true)][string]$Identity)
+
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $keyBytes = [System.Text.Encoding]::UTF8.GetBytes(
+            $Identity.ToUpperInvariant()
+        )
+        return ([System.BitConverter]::ToString(
+            $hash.ComputeHash($keyBytes)
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $hash.Dispose()
+    }
+}
+
+function Write-SettingsGuardNonThrowingWarning {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    try {
+        Write-Warning $Message -WarningAction Continue
+    } catch {
+        # A restore/cleanup diagnostic must never replace the capture error or
+        # exit code already unwinding through the outer finally.
+        try {
+            [Console]::Error.WriteLine("WARNING: $Message")
+        } catch {
+        }
+    }
+}
+
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..\..\..')).Path
@@ -177,6 +307,353 @@ if (Test-Path -LiteralPath $OutDir) {
 } else {
     New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 }
+
+$settingsPath = Join-Path $PdxUserDir 'settings.txt'
+$settingsPath = [System.IO.Path]::GetFullPath($settingsPath)
+if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+    throw "Required settings.txt is missing: '$settingsPath' (derived from PdxUserDir '$PdxUserDir'). The capture harness requires this launch-settings evidence to resolve the running process modset."
+}
+$settingsGuardCanonicalPath = Get-SettingsGuardCanonicalPath -Path $settingsPath
+$settingsGuardKey = Get-SettingsGuardKey -Identity $settingsGuardCanonicalPath
+$settingsGuardLegacyKey = Get-SettingsGuardKey -Identity $settingsPath
+$settingsGuardLocalAppData = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::LocalApplicationData
+)
+if ([string]::IsNullOrWhiteSpace($settingsGuardLocalAppData)) {
+    throw "Settings guard cannot create checkout-independent kill-safe recovery evidence because the machine-global LocalApplicationData folder resolved empty for '$settingsPath'."
+}
+$settingsGuardRoot = Join-Path (
+    Join-Path $settingsGuardLocalAppData 'battle-plan'
+) 'settings_guard'
+$settingsGuardCanonicalSentinel = Join-Path $settingsGuardRoot "$settingsGuardKey.json"
+$settingsGuardLegacySentinel = Join-Path $settingsGuardRoot "$settingsGuardLegacyKey.json"
+$settingsGuardSentinel = $settingsGuardCanonicalSentinel
+$settingsGuardPriorReadOnly = $false
+$settingsGuardRestoreRequired = $false
+$settingsGuardOwnerStream = $null
+
+try {
+    if ($DryRun) {
+        if ($UseRunningGame) {
+            Write-Host "phase=settings_guard action=skip reason=use_running_game dry_run=True path=$settingsPath sentinel=$settingsGuardSentinel"
+            Write-Warning 'The settings guard cannot protect -UseRunningGame because the boot-time settings.txt rewrite has already happened; modset resolution may be unresolved for this attach.'
+        } else {
+            Write-Host "phase=settings_guard action=skip reason=dry_run would_apply=True path=$settingsPath sentinel=$settingsGuardSentinel"
+        }
+    } else {
+        $canonicalSentinelExists = Test-Path `
+            -LiteralPath $settingsGuardCanonicalSentinel `
+            -PathType Leaf
+        $legacySentinelIsDistinct = -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+            $settingsGuardLegacySentinel,
+            $settingsGuardCanonicalSentinel
+        )
+        $legacySentinelExists = (
+            $legacySentinelIsDistinct -and
+            (Test-Path -LiteralPath $settingsGuardLegacySentinel -PathType Leaf)
+        )
+        if ($canonicalSentinelExists -and $legacySentinelExists) {
+            throw "Settings guard found both canonical and legacy sentinels for '$settingsPath': '$settingsGuardCanonicalSentinel' and '$settingsGuardLegacySentinel'. Refusing to choose between concurrent recovery records; verify all holders and restore the attribute manually."
+        }
+        if ($legacySentinelExists) {
+            $settingsGuardSentinel = $settingsGuardLegacySentinel
+            Write-Warning "Settings guard found a legacy DOS-path sentinel at '$settingsGuardSentinel'; it will be recovered before this run publishes the canonical guard at '$settingsGuardCanonicalSentinel'."
+        }
+        if (Test-Path -LiteralPath $settingsGuardSentinel -PathType Leaf) {
+            $settingsGuardReadStream = $null
+            $settingsGuardReader = $null
+            $settingsGuardSentinelVanishedDuringRead = $false
+            try {
+                $settingsGuardReadStream = [System.IO.File]::Open(
+                    $settingsGuardSentinel,
+                    [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read,
+                    [System.IO.FileShare]::ReadWrite
+                )
+                $settingsGuardReader = [System.IO.StreamReader]::new(
+                    $settingsGuardReadStream,
+                    [System.Text.UTF8Encoding]::new($false),
+                    $true,
+                    1024,
+                    $true
+                )
+                $settingsGuardRecordJson = $settingsGuardReader.ReadToEnd()
+                $settingsGuardRecord = $settingsGuardRecordJson | ConvertFrom-Json
+            } catch {
+                $sentinelReadException = Get-SettingsGuardBaseException -Exception $_.Exception
+                $sentinelReadExceptionKind = Get-SettingsGuardExceptionKind -Exception $_.Exception
+                if ($sentinelReadExceptionKind -eq 'not_found') {
+                    $settingsGuardSentinelVanishedDuringRead = $true
+                } elseif ($sentinelReadExceptionKind -eq 'sharing_violation') {
+                    throw "Settings guard sentinel '$settingsGuardSentinel' has an incompatible live holder before its recovery record can be read; this may be the capture writer or an exclusive reader. Refusing to touch '$settingsPath' or the sentinel. Wait for all holders to close, then retry. $($sentinelReadException.Message)"
+                } else {
+                    throw "Settings guard sentinel is unreadable: $settingsGuardSentinel. Inspect it and manually restore the read-only state of '$settingsPath' before removing it. $($_.Exception.Message)"
+                }
+            } finally {
+                if ($null -ne $settingsGuardReader) {
+                    $settingsGuardReader.Dispose()
+                }
+                if ($null -ne $settingsGuardReadStream) {
+                    $settingsGuardReadStream.Dispose()
+                }
+            }
+            if ($settingsGuardSentinelVanishedDuringRead) {
+                Write-Warning "Settings guard sentinel '$settingsGuardSentinel' vanished before its recovery record could be read; another run already recovered it. Continuing without touching '$settingsPath'."
+                Write-Host "phase=settings_guard action=skip reason=sentinel_vanished path=$settingsPath sentinel=$settingsGuardSentinel"
+            } else {
+                if ($null -eq $settingsGuardRecord) {
+                    throw "Settings guard sentinel is invalid: $settingsGuardSentinel. It must be a schema-version 2 JSON object. Inspect it and manually restore '$settingsPath' before removing it."
+                }
+                $schemaProperty = $settingsGuardRecord.PSObject.Properties['schema_version']
+                $recordedPathProperty = $settingsGuardRecord.PSObject.Properties['settings_path']
+                $recordedPriorProperty = $settingsGuardRecord.PSObject.Properties['prior_read_only']
+                $recordedOwnerPidProperty = $settingsGuardRecord.PSObject.Properties['owner_pid']
+                $recordedOwnerStartProperty = $settingsGuardRecord.PSObject.Properties['owner_start_utc']
+                if ($null -eq $schemaProperty -or $schemaProperty.Value -isnot [int] -or
+                    [int]$schemaProperty.Value -ne 2 -or
+                    $null -eq $recordedPathProperty -or
+                    $null -eq $recordedPriorProperty -or
+                    $recordedPriorProperty.Value -isnot [bool] -or
+                    $null -eq $recordedOwnerPidProperty -or
+                    $recordedOwnerPidProperty.Value -isnot [int] -or
+                    [int]$recordedOwnerPidProperty.Value -le 0 -or
+                    $null -eq $recordedOwnerStartProperty -or
+                    $recordedOwnerStartProperty.Value -isnot [string] -or
+                    [string]::IsNullOrWhiteSpace([string]$recordedOwnerStartProperty.Value)) {
+                    throw "Settings guard sentinel is invalid or from an unsupported schema: $settingsGuardSentinel. It must contain schema_version=2, settings_path, a Boolean prior_read_only, a positive integer owner_pid, and owner_start_utc. Inspect it and manually restore '$settingsPath' before removing it."
+                }
+                $recordedSettingsPathRaw = [string]$recordedPathProperty.Value
+                if ([string]::IsNullOrWhiteSpace($recordedSettingsPathRaw)) {
+                    throw "Settings guard sentinel contains an empty settings_path: $settingsGuardSentinel. Inspect it and manually restore '$settingsPath' before removing it."
+                }
+                if ([System.StringComparer]::OrdinalIgnoreCase.Equals(
+                    $recordedSettingsPathRaw,
+                    $settingsGuardCanonicalPath
+                ) -or [System.StringComparer]::OrdinalIgnoreCase.Equals(
+                    $recordedSettingsPathRaw,
+                    $settingsPath
+                )) {
+                    $recordedSettingsPath = $recordedSettingsPathRaw
+                } else {
+                    try {
+                        $recordedSettingsPath = [System.IO.Path]::GetFullPath(
+                            $recordedSettingsPathRaw
+                        )
+                    } catch {
+                        throw "Settings guard sentinel contains an invalid settings_path: $settingsGuardSentinel. Inspect it and manually restore '$settingsPath' before removing it. $($_.Exception.Message)"
+                    }
+                }
+                if ([System.StringComparer]::OrdinalIgnoreCase.Equals(
+                    $recordedSettingsPath,
+                    $settingsGuardCanonicalPath
+                ) -or [System.StringComparer]::OrdinalIgnoreCase.Equals(
+                    $recordedSettingsPath,
+                    $settingsPath
+                )) {
+                    # The second arm accepts schema-2 sentinels written before
+                    # canonical final paths were introduced.
+                    $recordedSettingsCanonicalPath = $settingsGuardCanonicalPath
+                } elseif (Test-Path -LiteralPath $recordedSettingsPath -PathType Leaf) {
+                    try {
+                        $recordedSettingsCanonicalPath = Get-SettingsGuardCanonicalPath -Path $recordedSettingsPath
+                    } catch {
+                        throw "Settings guard sentinel settings_path could not be canonicalized: '$recordedSettingsPath' ($settingsGuardSentinel). Refusing to touch '$settingsPath'. $($_.Exception.Message)"
+                    }
+                } else {
+                    $recordedSettingsCanonicalPath = $recordedSettingsPath
+                }
+                if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+                    $recordedSettingsCanonicalPath,
+                    $settingsGuardCanonicalPath
+                )) {
+                    throw "Settings guard sentinel path mismatch: '$recordedSettingsPath' does not identify '$settingsPath' (canonical '$settingsGuardCanonicalPath'; $settingsGuardSentinel). Refusing to overwrite recovery evidence."
+                }
+                try {
+                    $recordedOwnerStart = [DateTimeOffset]::ParseExact(
+                        [string]$recordedOwnerStartProperty.Value,
+                        'o',
+                        [Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::RoundtripKind
+                    ).ToUniversalTime()
+                } catch {
+                    throw "Settings guard sentinel contains an invalid owner_start_utc: $settingsGuardSentinel. Inspect it and manually restore '$settingsPath' before removing it. $($_.Exception.Message)"
+                }
+
+                $recordedPriorReadOnly = [bool]$recordedPriorProperty.Value
+                $recordedOwnerPid = [int]$recordedOwnerPidProperty.Value
+                $settingsGuardRecoveryClaim = $null
+                $settingsGuardRecoveryClaimStatus = ''
+                $settingsGuardSentinelVanished = $false
+                $settingsGuardClaimAttempts = 3
+                for ($claimAttempt = 1; $claimAttempt -le $settingsGuardClaimAttempts; $claimAttempt++) {
+                    try {
+                        $settingsGuardRecoveryClaim = [System.IO.File]::Open(
+                            $settingsGuardSentinel,
+                            [System.IO.FileMode]::Open,
+                            [System.IO.FileAccess]::ReadWrite,
+                            [System.IO.FileShare]::None
+                        )
+                        $settingsGuardRecoveryClaimStatus = 'exclusive'
+                        break
+                    } catch {
+                        $claimException = Get-SettingsGuardBaseException -Exception $_.Exception
+                        $claimExceptionKind = Get-SettingsGuardExceptionKind -Exception $_.Exception
+                        if ($claimExceptionKind -eq 'not_found') {
+                            $settingsGuardSentinelVanished = $true
+                            break
+                        }
+                        if ($claimExceptionKind -eq 'access_denied') {
+                            throw "Settings guard cannot take a recovery claim on sentinel '$settingsGuardSentinel' because access was denied. Refusing to touch '$settingsPath' or the sentinel; this is not evidence that a live capture run holds the guard. $($claimException.Message)"
+                        }
+                        if ($claimExceptionKind -ne 'sharing_violation') {
+                            $claimHResult = '0x{0:X8}' -f ([int]$claimException.HResult)
+                            throw "Settings guard recovery claim failed unexpectedly for sentinel '$settingsGuardSentinel' ($($claimException.GetType().FullName), HResult=$claimHResult). Refusing to touch '$settingsPath' or the sentinel; this is not evidence that a live capture run holds the guard. $($claimException.Message)"
+                        }
+
+                        # An exclusive claim also conflicts with an ordinary reader. A
+                        # read-only probe whose share excludes writers distinguishes that
+                        # benign case from the guard owner's live write handle.
+                        $settingsGuardReaderOnlyProbe = $null
+                        try {
+                            $settingsGuardReaderOnlyProbe = [System.IO.File]::Open(
+                                $settingsGuardSentinel,
+                                [System.IO.FileMode]::Open,
+                                [System.IO.FileAccess]::Read,
+                                [System.IO.FileShare]::Read
+                            )
+                            $settingsGuardRecoveryClaimStatus = 'readers_only'
+                            break
+                        } catch {
+                            $readerProbeException = Get-SettingsGuardBaseException -Exception $_.Exception
+                            $readerProbeExceptionKind = Get-SettingsGuardExceptionKind -Exception $_.Exception
+                            if ($readerProbeExceptionKind -eq 'not_found') {
+                                $settingsGuardSentinelVanished = $true
+                                break
+                            }
+                            if ($readerProbeExceptionKind -eq 'access_denied') {
+                                throw "Settings guard cannot inspect the holders of sentinel '$settingsGuardSentinel' because read access was denied. Refusing to touch '$settingsPath' or the sentinel; this is not evidence that a live capture run holds the guard. $($readerProbeException.Message)"
+                            }
+                            if ($readerProbeExceptionKind -ne 'sharing_violation') {
+                                $readerProbeHResult = '0x{0:X8}' -f ([int]$readerProbeException.HResult)
+                                throw "Settings guard holder inspection failed unexpectedly for sentinel '$settingsGuardSentinel' ($($readerProbeException.GetType().FullName), HResult=$readerProbeHResult). Refusing to touch '$settingsPath' or the sentinel; this is not evidence that a live capture run holds the guard. $($readerProbeException.Message)"
+                            }
+                        } finally {
+                            if ($null -ne $settingsGuardReaderOnlyProbe) {
+                                $settingsGuardReaderOnlyProbe.Dispose()
+                            }
+                        }
+
+                        if ($claimAttempt -lt $settingsGuardClaimAttempts) {
+                            Start-Sleep -Milliseconds 200
+                        }
+                    }
+                }
+
+                if ($settingsGuardSentinelVanished) {
+                    Write-Warning "Settings guard sentinel '$settingsGuardSentinel' vanished before its recovery claim could be taken; another run already recovered it. Continuing without touching '$settingsPath'."
+                    Write-Host "phase=settings_guard action=skip reason=sentinel_vanished path=$settingsPath sentinel=$settingsGuardSentinel"
+                } elseif ([string]::IsNullOrWhiteSpace($settingsGuardRecoveryClaimStatus)) {
+                    throw "Settings guard sentinel '$settingsGuardSentinel' still has an incompatible live holder after $settingsGuardClaimAttempts recovery-claim attempts; this may be the capture writer or an exclusive reader (recorded writer PID $recordedOwnerPid at $($recordedOwnerStart.ToString('o'))). Refusing to touch '$settingsPath' or the sentinel. Wait for all holders to close, or remove the sentinel deliberately only after verifying no run holds the guard."
+                } else {
+                    try {
+                        Write-Warning "Interrupted settings guard detected at '$settingsGuardSentinel' (no live holder; written by PID $recordedOwnerPid at $($recordedOwnerStart.ToString('o'))); restoring IsReadOnly=$recordedPriorReadOnly on '$settingsPath' before this run."
+                        $recoveryItem = Get-Item -LiteralPath $settingsPath -Force
+                        $recoveryItem.IsReadOnly = $recordedPriorReadOnly
+                        $recoveryItem.Refresh()
+                        if ([bool]$recoveryItem.IsReadOnly -ne $recordedPriorReadOnly) {
+                            throw "Interrupted settings guard recovery did not restore IsReadOnly=$recordedPriorReadOnly on '$settingsPath'. Sentinel retained at '$settingsGuardSentinel'."
+                        }
+                    } finally {
+                        if ($null -ne $settingsGuardRecoveryClaim) {
+                            try {
+                                $settingsGuardRecoveryClaim.Dispose()
+                            } finally {
+                                $settingsGuardRecoveryClaim = $null
+                            }
+                        }
+                    }
+                    $settingsGuardRecoverySentinelRemoved = $false
+                    try {
+                        Remove-Item -LiteralPath $settingsGuardSentinel -Force
+                        $settingsGuardRecoverySentinelRemoved = $true
+                    } catch {
+                        if (-not (Test-Path -LiteralPath $settingsGuardSentinel -PathType Leaf)) {
+                            $settingsGuardRecoverySentinelRemoved = $true
+                        } else {
+                            Write-Warning "Settings guard restored IsReadOnly=$recordedPriorReadOnly on '$settingsPath', but could not remove recovered sentinel '$settingsGuardSentinel'. The recovery is complete and the sentinel was retained for the next run. Error: $($_.Exception.Message)"
+                        }
+                    }
+                    Write-Host "phase=settings_guard action=recover owner_status=no_live_holder claim_status=$settingsGuardRecoveryClaimStatus writer_pid=$recordedOwnerPid writer_start_utc=$($recordedOwnerStart.ToString('o')) restored_read_only=$recordedPriorReadOnly sentinel_removed=$settingsGuardRecoverySentinelRemoved path=$settingsPath sentinel=$settingsGuardSentinel"
+                    if (-not $settingsGuardRecoverySentinelRemoved) {
+                        throw "Settings guard recovery restored IsReadOnly=$recordedPriorReadOnly on '$settingsPath', but retained sentinel '$settingsGuardSentinel' prevents a new guard from being applied. Retry after the process reading the sentinel releases it."
+                    }
+                }
+            }
+        }
+
+        $settingsGuardSentinel = $settingsGuardCanonicalSentinel
+        if ($UseRunningGame) {
+            Write-Host "phase=settings_guard action=skip reason=use_running_game path=$settingsPath sentinel=$settingsGuardSentinel"
+            Write-Warning 'The settings guard cannot protect -UseRunningGame because the boot-time settings.txt rewrite has already happened; modset resolution may be unresolved for this attach.'
+        } else {
+            $settingsItem = Get-Item -LiteralPath $settingsPath -Force
+            $settingsGuardPriorReadOnly = [bool]$settingsItem.IsReadOnly
+            $settingsGuardOwnerProcess = Get-Process -Id $PID -ErrorAction Stop
+            try {
+                $settingsGuardOwnerStartUtc = ([DateTimeOffset]$settingsGuardOwnerProcess.StartTime).ToUniversalTime().ToString('o')
+            } catch {
+                throw "Settings guard cannot read its own process start time for PID $PID, so it cannot create kill-safe ownership evidence for '$settingsPath'. $($_.Exception.Message)"
+            }
+            New-Item -ItemType Directory -Path $settingsGuardRoot -Force | Out-Null
+            $settingsGuardRecord = [ordered]@{
+                schema_version  = 2
+                settings_path   = $settingsGuardCanonicalPath
+                prior_read_only = $settingsGuardPriorReadOnly
+                created_utc     = [DateTime]::UtcNow.ToString('o')
+                owner_pid       = $PID
+                owner_start_utc = $settingsGuardOwnerStartUtc
+            }
+            $settingsGuardJson = $settingsGuardRecord | ConvertTo-Json -Compress
+            $settingsGuardEncoding = [System.Text.UTF8Encoding]::new($false)
+            $settingsGuardBytes = $settingsGuardEncoding.GetBytes($settingsGuardJson)
+            $settingsGuardOwnerStream = [System.IO.File]::Open(
+                $settingsGuardSentinel,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::ReadWrite
+            )
+            try {
+                $settingsGuardOwnerStream.Write(
+                    $settingsGuardBytes,
+                    0,
+                    $settingsGuardBytes.Length
+                )
+                $settingsGuardOwnerStream.Flush($true)
+            } catch {
+                $settingsGuardWriteFailure = $_
+                try {
+                    $settingsGuardOwnerStream.Dispose()
+                } catch {
+                    # Preserve the original write/flush failure below.
+                } finally {
+                    $settingsGuardOwnerStream = $null
+                }
+                # A hard kill between CreateNew and Flush can still strand an
+                # incomplete sentinel because no finally can run. In-process I/O
+                # failures are cleaned here before settings.txt is made read-only.
+                Remove-Item -LiteralPath $settingsGuardSentinel -Force -ErrorAction SilentlyContinue
+                throw $settingsGuardWriteFailure
+            }
+            $settingsGuardRestoreRequired = $true
+
+            $settingsItem.IsReadOnly = $true
+            $settingsItem.Refresh()
+            if (-not [bool]$settingsItem.IsReadOnly) {
+                throw "Settings guard could not set IsReadOnly=True on '$settingsPath'. Sentinel retained at '$settingsGuardSentinel'."
+            }
+            Write-Host "phase=settings_guard action=apply prior_read_only=$settingsGuardPriorReadOnly path=$settingsPath sentinel=$settingsGuardSentinel"
+        }
+    }
 
 function ConvertTo-NativeArgumentLine {
     param([Parameter(Mandatory = $true)][object[]]$Arguments)
@@ -437,3 +914,41 @@ Write-Host "recorder_exit=$recorderExit"
 Write-Host "game_died=$gameDied"
 if ($null -eq $recorderExit) { exit 1 }
 exit [int]$recorderExit
+} finally {
+    $settingsGuardRestoreSucceeded = $false
+    if ($settingsGuardRestoreRequired) {
+        try {
+            $settingsRestoreItem = Get-Item -LiteralPath $settingsPath -Force
+            $settingsRestoreItem.IsReadOnly = $settingsGuardPriorReadOnly
+            $settingsRestoreItem.Refresh()
+            if ([bool]$settingsRestoreItem.IsReadOnly -ne $settingsGuardPriorReadOnly) {
+                throw "IsReadOnly remained $($settingsRestoreItem.IsReadOnly)"
+            }
+            $settingsGuardRestoreSucceeded = $true
+        } catch {
+            Write-SettingsGuardNonThrowingWarning -Message "SETTINGS GUARD RESTORE FAILED for '$settingsPath'. Manually set IsReadOnly=$settingsGuardPriorReadOnly, then remove sentinel '$settingsGuardSentinel'. The sentinel was retained for recovery. Error: $($_.Exception.Message)"
+        }
+    }
+
+    $settingsGuardOwnerStreamClosed = $true
+    if ($null -ne $settingsGuardOwnerStream) {
+        try {
+            $settingsGuardOwnerStream.Dispose()
+            $settingsGuardOwnerStream = $null
+        } catch {
+            $settingsGuardOwnerStreamClosed = $false
+            Write-SettingsGuardNonThrowingWarning -Message "Settings guard restored=$settingsGuardRestoreSucceeded for '$settingsPath', but could not close its live-owner handle for sentinel '$settingsGuardSentinel'. The sentinel was retained. Error: $($_.Exception.Message)"
+        }
+    }
+
+    if ($settingsGuardRestoreRequired -and
+        $settingsGuardRestoreSucceeded -and
+        $settingsGuardOwnerStreamClosed) {
+        Write-Host "phase=settings_guard action=release prior_read_only=$settingsGuardPriorReadOnly restored_read_only=$settingsGuardPriorReadOnly path=$settingsPath sentinel=$settingsGuardSentinel"
+        try {
+            Remove-Item -LiteralPath $settingsGuardSentinel -Force
+        } catch {
+            Write-SettingsGuardNonThrowingWarning -Message "Settings guard restored IsReadOnly=$settingsGuardPriorReadOnly on '$settingsPath', but could not remove sentinel '$settingsGuardSentinel'. Remove it manually after verifying the attribute. Error: $($_.Exception.Message)"
+        }
+    }
+}

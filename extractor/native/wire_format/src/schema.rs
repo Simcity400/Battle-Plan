@@ -106,7 +106,10 @@ impl Field {
             key_position: None,
             derived: None,
             enum_card: None,
-            quant: if matches!(kind, Kind::Continuous) { Quant::Exact } else { Quant::None },
+            // Omission must not silently select a different continuous encoding.
+            // `Schema::validate_fields` requires every Continuous field to replace
+            // this sentinel with an explicit Exact, Fixed or Ratio decision.
+            quant: Quant::None,
         }
     }
 
@@ -212,8 +215,17 @@ pub struct Schema {
 pub enum SchemaError {
     CadenceExceedsTicks { cadence_log2: u8, ticks_per_hour_log2: u8 },
     DuplicateCollectionId(u32),
+    /// A collection row must carry information. Besides being semantically
+    /// empty, a fieldless occurrence row would consume zero bytes and make its
+    /// wire row count incapable of bounding decoder work.
+    CollectionHasNoFields { collection_id: u32 },
     DuplicateFieldId { collection_id: u32, field_id: u32 },
     EventFieldMarkedKey { field_id: u32 },
+    /// §9 event records have an observation tick but may contain occurrences
+    /// from different ticks, so §6's single-frame-tick transform is undefined.
+    EventFieldMarkedDerived { field_id: u32 },
+    EventHasNoFields { collection_id: u32 },
+    DuplicateFrontierComponentId { component_id: u32 },
     OccurrenceListHasKey { collection_id: u32 },
     KeyedCollectionHasNoKey { collection_id: u32 },
     KeyPositionsNotContiguous { collection_id: u32 },
@@ -223,6 +235,11 @@ pub enum SchemaError {
     DerivedShiftTooLarge { field_id: u32, u: u8 },
     EnumCardinalityMissing { field_id: u32 },
     QuantOutOfRange { field_id: u32 },
+    /// A continuous field must state its encoding decision explicitly. A builder
+    /// default that silently selects valid-but-different behaviour cannot be
+    /// detected at the omitted call site, so validation makes that state
+    /// unrepresentable whether `None` was defaulted or assigned explicitly.
+    ContinuousQuantizationMissing { field_id: u32 },
     /// Quantization is serialized only for continuous fields, so setting it
     /// elsewhere changes record bytes without changing `schema_hash`.
     QuantOnNonContinuousField { field_id: u32 },
@@ -263,6 +280,11 @@ impl Schema {
                 == core::cmp::Ordering::Equal
             {
                 return Err(SchemaError::DuplicateCollectionId(collection.collection_id));
+            }
+            if collection.fields.is_empty() {
+                return Err(SchemaError::CollectionHasNoFields {
+                    collection_id: collection.collection_id,
+                });
             }
             self.validate_fields(&collection.fields, collection.collection_id, ticks_per_hour_log2)?;
 
@@ -313,9 +335,19 @@ impl Schema {
             if check_ids(event.collection_id, &mut seen_collections) == core::cmp::Ordering::Equal {
                 return Err(SchemaError::DuplicateCollectionId(event.collection_id));
             }
+            if event.fields.is_empty() {
+                return Err(SchemaError::EventHasNoFields {
+                    collection_id: event.collection_id,
+                });
+            }
             for field in &event.fields {
                 if field.is_key() {
                     return Err(SchemaError::EventFieldMarkedKey { field_id: field.field_id });
+                }
+                if field.derived.is_some() {
+                    return Err(SchemaError::EventFieldMarkedDerived {
+                        field_id: field.field_id,
+                    });
                 }
             }
             // §9: the frontier designates exactly one of its components as the
@@ -326,6 +358,15 @@ impl Schema {
                     sequence_index: event.sequence_index,
                     components: event.frontier_component_ids.len(),
                 });
+            }
+            let mut seen_frontier_components = Vec::new();
+            for component_id in &event.frontier_component_ids {
+                if seen_frontier_components.contains(component_id) {
+                    return Err(SchemaError::DuplicateFrontierComponentId {
+                        component_id: *component_id,
+                    });
+                }
+                seen_frontier_components.push(*component_id);
             }
             self.validate_fields(&event.fields, event.collection_id, ticks_per_hour_log2)?;
         }
@@ -348,6 +389,12 @@ impl Schema {
                 });
             }
             seen.push(field.field_id);
+
+            if matches!(field.kind, Kind::Continuous) && matches!(field.quant, Quant::None) {
+                return Err(SchemaError::ContinuousQuantizationMissing {
+                    field_id: field.field_id,
+                });
+            }
 
             if let Some(derived) = field.derived {
                 if !field.kind.legal_as_derived() {
@@ -565,10 +612,101 @@ mod tests {
     #[test]
     fn validation_rejects_derived_on_a_continuous_field() {
         let mut s = schema_with(vec![keyed(1)]);
-        let mut f = Field::new(3, Kind::Continuous);
+        let mut f = Field::new(3, Kind::Continuous).quant(Quant::Exact);
         f.derived = Some(Derived { c: 1, u: 0 });
         s.collections[0].fields.push(f);
-        assert!(matches!(s.validate(3), Err(SchemaError::IllegalDerivedKind { .. })));
+        assert_eq!(
+            s.validate(3),
+            Err(SchemaError::IllegalDerivedKind {
+                field_id: 3,
+                kind: Kind::Continuous
+            })
+        );
+    }
+
+    #[test]
+    fn validation_reports_a_fieldless_collection_without_entering_field_rules() {
+        let s = schema_with(vec![Collection {
+            collection_id: 7,
+            shape: Shape::OrderedOccurrenceList,
+            fields: Vec::new(),
+        }]);
+        assert_eq!(
+            s.validate(3),
+            Err(SchemaError::CollectionHasNoFields { collection_id: 7 })
+        );
+    }
+
+    #[test]
+    fn validation_rejects_a_continuous_field_without_a_quantization_decision() {
+        for field in [
+            Field::new(9, Kind::Continuous),
+            Field::new(9, Kind::Continuous).quant(Quant::None),
+        ] {
+            let s = schema_with(vec![Collection {
+                collection_id: 8,
+                shape: Shape::OrderedOccurrenceList,
+                fields: vec![field],
+            }]);
+            assert_eq!(
+                s.validate(3),
+                Err(SchemaError::ContinuousQuantizationMissing { field_id: 9 }),
+                "defaulted and explicitly assigned None are the same invalid state"
+            );
+        }
+    }
+
+    #[test]
+    fn a_leading_fieldless_collection_precedes_a_later_missing_quantization_decision() {
+        let missing_quant = Collection {
+            collection_id: 8,
+            shape: Shape::OrderedOccurrenceList,
+            fields: vec![Field::new(9, Kind::Continuous)],
+        };
+        let only_missing_quant = schema_with(vec![missing_quant.clone()]);
+        assert_eq!(
+            only_missing_quant.validate(3),
+            Err(SchemaError::ContinuousQuantizationMissing { field_id: 9 })
+        );
+
+        let with_fieldless_first = schema_with(vec![
+            Collection {
+                collection_id: 7,
+                shape: Shape::OrderedOccurrenceList,
+                fields: Vec::new(),
+            },
+            missing_quant,
+        ]);
+        assert_eq!(
+            with_fieldless_first.validate(3),
+            Err(SchemaError::CollectionHasNoFields { collection_id: 7 })
+        );
+    }
+
+    #[test]
+    fn validation_rejects_fieldless_events_and_duplicate_frontier_component_ids() {
+        let mut schema = schema_with(Vec::new());
+        schema.event_part = Some(EventPart {
+            collection_id: 9,
+            fields: Vec::new(),
+            frontier_component_ids: vec![10],
+            sequence_index: 0,
+        });
+        assert_eq!(
+            schema.validate(3),
+            Err(SchemaError::EventHasNoFields { collection_id: 9 })
+        );
+
+        schema.event_part = Some(EventPart {
+            collection_id: 9,
+            fields: vec![Field::new(1, Kind::Unsigned)],
+            frontier_component_ids: vec![10, 10],
+            sequence_index: 1,
+        });
+        assert_eq!(
+            schema.validate(3),
+            Err(SchemaError::DuplicateFrontierComponentId { component_id: 10 })
+        );
     }
 
     #[test]

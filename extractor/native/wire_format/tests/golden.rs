@@ -10,14 +10,19 @@
 //! because a round-trip test passes just as happily against a wrong encoding.
 
 use wire_format::body::{
-    apply, blank_record, check_minimal, decode_baseline, decode_delta, diff, encode_baseline,
-    encode_delta, key, KeyedDelta, KeyedState, MinimalityError, Row,
+    apply, apply_shaped, blank_record, check_minimal, decode_baseline, decode_delta,
+    decode_shaped_baseline, decode_shaped_delta, diff, encode_baseline, encode_delta,
+    encode_shaped_baseline, encode_shaped_delta, key, CollectionDelta, CollectionState,
+    KeyedDelta, KeyedState, MinimalityError, Row,
 };
 use wire_format::frame::{pack_tag, read_block, BlockHeader, BlockWriter, Frame, Kind};
 use wire_format::record::Record;
-use wire_format::schema::{Collection, Field, Quant, Schema, Shape};
+use wire_format::schema::{Collection, EventPart, Field, Quant, Schema, SchemaError, Shape};
 use wire_format::value::Value;
-use wire_format::{Kind as FieldKind, TickGrid};
+use wire_format::{
+    check_frontier, check_frontier_transition, decode_event_body, encode_event_body, EventBatch,
+    FrontierDiscontinuity, FrontierOutcome, Kind as FieldKind, TickGrid,
+};
 
 /// Pinned d20 schema hash. See `d20_schema_hash_is_pinned`.
 const D20_SCHEMA_HASH: u64 = 8669914881139233020;
@@ -161,6 +166,202 @@ fn vector_delta_body_with_change_bitmap() {
     let mut replayed = prior.clone();
     apply(&mut replayed, back[0].as_ref().unwrap());
     assert_eq!(replayed, next, "the delta reconstructs the next state exactly");
+}
+
+#[test]
+fn vector_ordered_keyed_baseline_and_delta_replacement() {
+    let schema = Schema {
+        domain: 1,
+        cadence_log2: 0,
+        collections: vec![Collection {
+            collection_id: 1,
+            shape: Shape::OrderedKeyedList,
+            fields: vec![
+                Field::new(1, FieldKind::Unsigned).key(0),
+                Field::new(2, FieldKind::Unsigned),
+            ],
+        }],
+        event_part: None,
+    };
+    let next = CollectionState::OrderedKeyed(vec![
+        Row { key: key(&[5]), record: Record::new(vec![Value::Unsigned(7)]) },
+        Row { key: key(&[2]), record: Record::new(vec![Value::Unsigned(8)]) },
+    ]);
+    let expected_baseline = vec![
+        2, // row count
+        5, 7, // absolute key 5, full non-key record
+        2, 8, // absolute key 2 (not a difference), full non-key record
+    ];
+    let mut baseline = Vec::new();
+    encode_shaped_baseline(&schema, std::slice::from_ref(&next), &mut baseline).unwrap();
+    assert_eq!(baseline, expected_baseline);
+    assert_eq!(decode_shaped_baseline(&schema, &expected_baseline, 0).unwrap().0[0], next);
+
+    let prior = CollectionState::OrderedKeyed(vec![Row {
+        key: key(&[1]),
+        record: Record::new(vec![Value::Unsigned(1)]),
+    }]);
+    let expected_delta = vec![
+        0x01, // collection-change bitmap
+        2, 5, 7, 2, 8, // byte-identical baseline contribution
+    ];
+    let mut delta = Vec::new();
+    encode_shaped_delta(
+        &schema,
+        std::slice::from_ref(&prior),
+        &[Some(CollectionDelta::OrderedKeyed(match &next {
+            CollectionState::OrderedKeyed(rows) => rows.clone(),
+            _ => unreachable!(),
+        }))],
+        &mut delta,
+    )
+    .unwrap();
+    assert_eq!(delta, expected_delta);
+    let expected_replacement = CollectionDelta::OrderedKeyed(match &next {
+        CollectionState::OrderedKeyed(rows) => rows.clone(),
+        _ => unreachable!(),
+    });
+    let (decoded, pos) =
+        decode_shaped_delta(&schema, std::slice::from_ref(&prior), &expected_delta, 0).unwrap();
+    assert_eq!(pos, expected_delta.len());
+    assert_eq!(
+        decoded,
+        vec![Some(expected_replacement)],
+        "absolute keys and source order survive decoding"
+    );
+    let mut replayed = prior;
+    apply_shaped(&mut replayed, decoded[0].as_ref().unwrap()).unwrap();
+    assert_eq!(replayed, next, "the replacement reconstructs the next list");
+}
+
+#[test]
+fn vector_ordered_occurrence_baseline_and_delta_replacement() {
+    let schema = Schema {
+        domain: 1,
+        cadence_log2: 0,
+        collections: vec![Collection {
+            collection_id: 1,
+            shape: Shape::OrderedOccurrenceList,
+            fields: vec![Field::new(1, FieldKind::Unsigned)],
+        }],
+        event_part: None,
+    };
+    let rows = vec![
+        Record::new(vec![Value::Unsigned(9)]),
+        Record::new(vec![Value::Unsigned(3)]),
+        Record::new(vec![Value::Unsigned(9)]),
+    ];
+    let next = CollectionState::OrderedOccurrence(rows.clone());
+    let expected_baseline = vec![
+        3, // row count
+        9, 3, 9, // all fields of each occurrence, source order, duplicate retained
+    ];
+    let mut baseline = Vec::new();
+    encode_shaped_baseline(&schema, std::slice::from_ref(&next), &mut baseline).unwrap();
+    assert_eq!(baseline, expected_baseline);
+    assert_eq!(decode_shaped_baseline(&schema, &expected_baseline, 0).unwrap().0[0], next);
+
+    let prior = CollectionState::OrderedOccurrence(vec![Record::new(vec![Value::Unsigned(1)])]);
+    let expected_delta = vec![
+        0x01, // collection-change bitmap
+        3, 9, 3, 9, // byte-identical baseline contribution
+    ];
+    let mut delta = Vec::new();
+    encode_shaped_delta(
+        &schema,
+        std::slice::from_ref(&prior),
+        &[Some(CollectionDelta::OrderedOccurrence(rows))],
+        &mut delta,
+    )
+    .unwrap();
+    assert_eq!(delta, expected_delta);
+    let expected_replacement = CollectionDelta::OrderedOccurrence(match &next {
+        CollectionState::OrderedOccurrence(rows) => rows.clone(),
+        _ => unreachable!(),
+    });
+    let (decoded, pos) =
+        decode_shaped_delta(&schema, std::slice::from_ref(&prior), &expected_delta, 0).unwrap();
+    assert_eq!(pos, expected_delta.len());
+    assert_eq!(
+        decoded,
+        vec![Some(expected_replacement)],
+        "all three rows, including the duplicate 9, survive in source order"
+    );
+    let mut replayed = prior;
+    apply_shaped(&mut replayed, decoded[0].as_ref().unwrap()).unwrap();
+    assert_eq!(replayed, next, "the replacement reconstructs the next list");
+}
+
+#[test]
+fn vector_mixed_keyed_delta_and_ordered_replacement() {
+    let schema = Schema {
+        domain: 1,
+        cadence_log2: 0,
+        collections: vec![
+            Collection {
+                collection_id: 1,
+                shape: Shape::KeyedSet,
+                fields: vec![
+                    Field::new(1, FieldKind::Unsigned).key(0),
+                    Field::new(2, FieldKind::Unsigned),
+                ],
+            },
+            Collection {
+                collection_id: 2,
+                shape: Shape::OrderedOccurrenceList,
+                fields: vec![Field::new(1, FieldKind::Unsigned)],
+            },
+        ],
+        event_part: None,
+    };
+    let mut keyed_prior = KeyedState::new();
+    keyed_prior.insert(key(&[1]), Record::new(vec![Value::Unsigned(10)]));
+    let priors = vec![
+        CollectionState::Keyed(keyed_prior.clone()),
+        CollectionState::OrderedOccurrence(vec![Record::new(vec![Value::Unsigned(3)])]),
+    ];
+    let keyed_delta = KeyedDelta {
+        changed: vec![Row {
+            key: key(&[1]),
+            record: Record::new(vec![Value::Unsigned(11)]),
+        }],
+        tombstones: Vec::new(),
+    };
+    let deltas = vec![
+        Some(CollectionDelta::Keyed(keyed_delta)),
+        Some(CollectionDelta::OrderedOccurrence(vec![
+            Record::new(vec![Value::Unsigned(9)]),
+            Record::new(vec![Value::Unsigned(8)]),
+        ])),
+    ];
+    let expected = vec![
+        0b0000_0011, // both collection bits
+        1, 1, 0x01, 11, 0, // keyed update: count, key, mask, value, zero tombstones
+        2, 9, 8, // ordered replacement: count and complete records
+    ];
+    let mut bytes = Vec::new();
+    encode_shaped_delta(&schema, &priors, &deltas, &mut bytes).unwrap();
+    assert_eq!(bytes, expected);
+    let (decoded, pos) = decode_shaped_delta(&schema, &priors, &expected, 0).unwrap();
+    assert_eq!(pos, expected.len());
+    assert_eq!(
+        decoded, deltas,
+        "both the keyed delta and ordered replacement decode exactly"
+    );
+    let mut replayed = priors.clone();
+    for (state, delta) in replayed.iter_mut().zip(&decoded) {
+        apply_shaped(state, delta.as_ref().unwrap()).unwrap();
+    }
+    let mut keyed_next = keyed_prior;
+    keyed_next.insert(key(&[1]), Record::new(vec![Value::Unsigned(11)]));
+    assert_eq!(replayed[0], CollectionState::Keyed(keyed_next));
+    assert_eq!(
+        replayed[1],
+        CollectionState::OrderedOccurrence(vec![
+            Record::new(vec![Value::Unsigned(9)]),
+            Record::new(vec![Value::Unsigned(8)]),
+        ])
+    );
 }
 
 #[test]
@@ -492,5 +693,179 @@ fn vector_two_time_chains_in_one_block() {
     assert_eq!(
         frames[3].tick, 11,
         "the state chain resumes from the run's LAST covered tick, unaffected by the event"
+    );
+}
+
+#[test]
+fn vector_event_body_preserves_occurrence_order_and_derives_identity() {
+    let part = EventPart {
+        collection_id: 2,
+        fields: vec![
+            Field::new(1, FieldKind::Unsigned),
+            Field::new(2, FieldKind::Boolean),
+        ],
+        frontier_component_ids: vec![1, 2],
+        sequence_index: 1,
+    };
+    let batch = EventBatch::new(
+        vec![
+            Record::new(vec![Value::Unsigned(7), Value::Bool(true)]),
+            Record::new(vec![Value::Unsigned(0), Value::Bool(false)]),
+        ],
+        vec![9, 12],
+    );
+    let bytes = encode_event_body(&part, &batch).unwrap();
+    assert_eq!(
+        bytes,
+        vec![
+            2, // event count
+            1, 7, // event 0: true bit-packed byte, unsigned 7
+            0, 0, // event 1: false bit-packed byte, unsigned zero
+            9, 12, // after-frontier: epoch, sequence
+        ]
+    );
+    let decoded = decode_event_body(&part, &bytes).unwrap();
+    assert_eq!(decoded, batch);
+    assert_eq!(decoded.sequence_at(&part, 0).unwrap(), 11);
+    assert_eq!(decoded.sequence_at(&part, 1).unwrap(), 12);
+}
+
+#[test]
+fn vector_event_body_preserves_byte_identical_duplicate_occurrences() {
+    let part = EventPart {
+        collection_id: 2,
+        fields: vec![
+            Field::new(1, FieldKind::Unsigned),
+            Field::new(2, FieldKind::Boolean),
+        ],
+        frontier_component_ids: vec![1, 2],
+        sequence_index: 1,
+    };
+    // Unlike the preceding order vector, this catches an implementation that
+    // deduplicates by record content: both occurrences must survive and their
+    // positions must derive distinct identities.
+    let duplicate = Record::new(vec![Value::Unsigned(7), Value::Bool(true)]);
+    let batch = EventBatch::new(
+        vec![duplicate.clone(), duplicate.clone()],
+        vec![9, 12],
+    );
+    let bytes = encode_event_body(&part, &batch).unwrap();
+    assert_eq!(
+        bytes,
+        vec![
+            2, // event count: duplicate occurrences are not collapsed
+            1, 7, // event 0
+            1, 7, // event 1, byte-identical content
+            9, 12, // after-frontier
+        ]
+    );
+    let decoded = decode_event_body(&part, &bytes).unwrap();
+    assert_eq!(decoded.records, vec![duplicate.clone(), duplicate]);
+    assert_eq!(decoded.sequence_at(&part, 0).unwrap(), 11);
+    assert_eq!(decoded.sequence_at(&part, 1).unwrap(), 12);
+    assert_eq!(encode_event_body(&part, &decoded).unwrap(), bytes);
+}
+
+#[test]
+fn vector_frontier_discontinuities_and_post_gap_establishment() {
+    let part = EventPart {
+        collection_id: 2,
+        fields: vec![Field::new(1, FieldKind::Unsigned)],
+        frontier_component_ids: vec![1, 2],
+        sequence_index: 1,
+    };
+    assert_eq!(
+        check_frontier(&part, Some(&[4, 10]), &[5, 12], 2).unwrap(),
+        FrontierOutcome::Discontinuous(FrontierDiscontinuity::EpochChanged {
+            component_index: 0,
+            previous: 4,
+            next: 5,
+        })
+    );
+    assert_eq!(
+        check_frontier(&part, Some(&[4, 10]), &[4, 13], 2).unwrap(),
+        FrontierOutcome::Discontinuous(FrontierDiscontinuity::SequenceMismatch {
+            previous: 10,
+            count: 2,
+            expected: 12,
+            next: 13,
+        })
+    );
+    assert_eq!(
+        check_frontier(&part, None, &[99, 500], 2).unwrap(),
+        FrontierOutcome::Established,
+        "dropping the prior after recording the gap makes the next batch establish"
+    );
+}
+
+#[test]
+fn vector_frontier_schema_transitions_and_invalid_declarations() {
+    let previous = EventPart {
+        collection_id: 2,
+        fields: vec![Field::new(1, FieldKind::Unsigned)],
+        frontier_component_ids: vec![1, 2],
+        sequence_index: 1,
+    };
+    let reordered = EventPart {
+        frontier_component_ids: vec![2, 1],
+        sequence_index: 0,
+        ..previous.clone()
+    };
+    assert_eq!(
+        check_frontier_transition(
+            Some((&previous, &[4, 10])),
+            &reordered,
+            &[12, 4],
+            2,
+        )
+        .unwrap(),
+        FrontierOutcome::Continuous,
+        "component ids, not tuple positions, join frontiers across schema changes"
+    );
+
+    let changed = EventPart {
+        frontier_component_ids: vec![2, 3],
+        sequence_index: 0,
+        ..previous.clone()
+    };
+    assert_eq!(
+        check_frontier_transition(
+            Some((&previous, &[4, 10])),
+            &changed,
+            &[12, 4],
+            2,
+        )
+        .unwrap(),
+        FrontierOutcome::Discontinuous(FrontierDiscontinuity::SchemaChanged)
+    );
+    assert_eq!(
+        check_frontier(&previous, Some(&[4, u64::MAX]), &[4, u64::MAX], 1).unwrap(),
+        FrontierOutcome::Discontinuous(FrontierDiscontinuity::SequenceOverflow {
+            previous: u64::MAX,
+            count: 1,
+        })
+    );
+
+    let mut invalid = Schema {
+        domain: 1,
+        cadence_log2: 0,
+        collections: Vec::new(),
+        event_part: Some(EventPart {
+            collection_id: 2,
+            fields: Vec::new(),
+            frontier_component_ids: vec![1],
+            sequence_index: 0,
+        }),
+    };
+    assert_eq!(
+        invalid.validate(TickGrid::HOURLY.log2()),
+        Err(SchemaError::EventHasNoFields { collection_id: 2 })
+    );
+    invalid.event_part.as_mut().unwrap().fields =
+        vec![Field::new(1, FieldKind::Unsigned)];
+    invalid.event_part.as_mut().unwrap().frontier_component_ids = vec![1, 1];
+    assert_eq!(
+        invalid.validate(TickGrid::HOURLY.log2()),
+        Err(SchemaError::DuplicateFrontierComponentId { component_id: 1 })
     );
 }

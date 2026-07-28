@@ -2,10 +2,12 @@
 //! the frame-level fold mirror.
 //!
 //! Authority, in the recipe's precedence order:
-//! `recorder_host/src/world_fold.rs`'s `fold_scripted_state` (`:18911`, dispatched
+//! `world_fold.rs:18972`-`:19154`'s `fold_scripted_state` (dispatched
 //! at `:4726`), its row validator `validate_scripted_state_row` (`:30173`), its
 //! accumulator writer `apply_scripted_state_row` (`:19110`) and its clear
 //! `clear_scripted_state_accumulators` (`:19095`). There is no dossier for this
+// @world-fold-authority domain=51 functions=fold_scripted_state lines=18972-19154 sha256=82071a58072d303dafd6ef8cfc8d9b0423c94452e89d99c21ef372f6a06d48bb
+// @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=209-641 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
 //! domain; the fold is sufficient. The lane's own payload decoder
 //! (`lanes/scripted_state_flags_variables_live/scripted_state_compact.rs`,
 //! reached from `recorder_host::domain_data_authority:8081`) is production's
@@ -133,12 +135,13 @@
 //! The badge accumulator is a `Vec` the fold PUSHes to (`:19280`), so two rows
 //! sharing `(scope_kind, owner_id, value_kind)` coexist there; a keyed set cannot
 //! express that, and mirroring would silently keep one and drop the other — the
-//! data-loss defect itself. The alternatives were an unimplemented ordered shape
-//! (a stop) or a positional key, which here is transport re-packed from emission
-//! order every frame and would churn every badge row whenever the badge set
-//! changes shape (d32's ruling). So [`fold_input`] REFUSES a payload carrying two
-//! badge rows with the same identity. Producer evidence that the input is
-//! unreachable: the payload authority's own duplicate-identity check covers
+//! data-loss defect itself. An ordered occurrence shape is now available, but a
+//! d51 migration to it would need its own reachable-input evidence; a positional
+//! key would still be transport re-packed from emission order every frame and
+//! churn every badge row whenever the badge set changes shape (d32's ruling).
+//! [`fold_input`] therefore still REFUSES two badge rows with the same identity.
+//! This is bounded by producer evidence that the input is unreachable: the
+//! payload authority's own duplicate-identity check covers
 //! `(scope_kind, owner_id, value_kind, key_bytes, token_id, seed)`
 //! (`scripted_state_compact.rs:533`-`:546`) **status-independently**, and it also
 //! forces every badge row's key to the one constant its kind allows

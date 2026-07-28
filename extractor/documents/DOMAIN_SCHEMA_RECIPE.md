@@ -21,24 +21,21 @@ size measurement against a real capture stream.
 **Out:** collector changes, hook work, acquisition redesign, cadence changes, replay-layer
 work, anything in `world_fold.rs` other than *reading* it.
 
-**Stop conditions — report instead of building:**
+**Stop conditions — report instead of fabricating:**
 
-- **Ordered shapes.** `Shape::OrderedKeyedList` and `Shape::OrderedOccurrenceList` are full
-  replacement and **are not implemented** — every encoder and decoder in `body.rs`
-  hard-rejects a non-`KeyedSet` shape. If the domain needs one, stop and report; do not force
-  a keyed set. **Read step 5's ordinal device first**: an ordered array whose order is a total
-  function of the carried fields stays a keyed set — the position rides in the key or beside
-  it — and only the arrays that fail that test fall through to this stop (d11's convoy
-  priority reservations, d16's `timed_live`).
-- **Player-authored free text.** Text no content manifest can ever resolve stops the
+- **Unresolved strings.** Player-authored free text that no content manifest can ever resolve stops the
   collection carrying it: d11's conveyor `name` is a player-typed division name, so §5's
   symbol rule will never reach it whatever assignment rule lands (`d11.rs:224`–`:231`).
-  Content-defined text is **not** this case and is not a stop — see step 3.
-- **Event streams and hybrids.** If the domain's data is a happened-at-tick history rather
-  than a state photographed on a cadence — or both at once, like d64's delayed-events chains
-  (`WIRE_FORMAT.md` §9) — the event side has **no implementation** (`wire_format/src/lib.rs`
-  says so explicitly: §8 gaps and §9 events have no code). Stop and report the domain's
-  shape; do not force events into state records and do not invent an event encoding.
+  Content-defined text is not player free text, but it still requires §5's deterministic symbol
+  assignment before it can be ported. d16's `timed_live` remains stopped for that string-valued
+  decision token even though its `OrderedOccurrenceList` shape is implemented (`d16.rs:135`–`:162`).
+
+Ordered shapes and event streams are **not stop conditions**. `OrderedKeyedList` and
+`OrderedOccurrenceList` use §7.3 full replacement, and §9 event parts use non-empty full-record
+batches plus a composite frontier. d11 convoy reservations and d56 naval supremacy are the
+reference ordered ports; d64 lifecycle is the reference event port. A domain can still stop for a
+domain-specific missing symbol, incomplete producer witness, or absent fold-faithful mapper, but
+must not be forced into a keyed set or state frame merely because it is ordered or append-only.
 
 A stopped domain with a clear report of what it needs is a completed assignment.
 
@@ -417,9 +414,10 @@ lengths.
 
 ### 4. Choose quantization — the standing policy
 
-Continuous fields only. **Default `Quant::Fixed(2)`** (d20's `BAR_PRECISION`) for
+Continuous fields only. The policy default is **`Quant::Fixed(2)`** (d20's `BAR_PRECISION`) for
 bar-like, percentage-like or gauge-like values that the viewer *draws* rather than
-interpolates.
+interpolates, but the schema declaration is never implicit: every `Continuous` field must call
+`.quant(Quant::Exact | Quant::Fixed(k) | Quant::Ratio(d))`, and validation rejects `Quant::None`.
 
 **Ship `Quant::Exact`** for any field that is: interpolated between samples (d20:
 `move_progress`, from which the viewer derives on-map position), a position or coordinate, an
@@ -463,8 +461,11 @@ power-of-two quantizer), a `WIRE_FORMAT.md` §13 item, not a schema-side choice.
 
 ### 5. Declare key and shape
 
-`Shape::KeyedSet` when rows have a stable identity that persists across hours — only keyed
-sets have a delta grammar. Ordered shapes and event streams are stop conditions (see Scope).
+Use `Shape::KeyedSet` when rows have a stable identity that persists across hours. It has a
+row-delta grammar. Use `OrderedKeyedList` when identity and source order both matter, and
+`OrderedOccurrenceList` when duplicates are legitimate or no stable key exists; both encode a
+complete replacement whenever the collection changes. Event streams are declared in
+`Schema::event_part`, not as a state collection.
 
 Key fields: concrete, totally ordered, present in every row, never
 optional/nullable/unknown-capable/derived. d20's key is the `(div_id, div_type)` pair the
@@ -507,7 +508,8 @@ an identity:
 
 **The question that decides a positional key is whether the position persists across hours as
 the same thing** — step 5's own requirement, applied to the ordinal. A queue slot and a
-variant's upgrade slot do. Two measured cases where it does not, and both stop:
+variant's upgrade slot do. Two measured cases where it does not, so neither may use a positional
+key:
 
 - d11's `convoy_priority_reservations`. The order is a function of no carried field — 2,633
   consecutive samples are a *pure reorder* of an identical `{priority, count}` multiset — and
@@ -517,13 +519,15 @@ variant's upgrade slot do. Two measured cases where it does not, and both stop:
   every reorder rewrites, and a positional index is not the "stable identity that persists
   across hours" a keyed set requires (`d11.rs:191`–`:216`). It is an ordered list either way —
   `OrderedKeyedList` if that uniqueness holds in general, `OrderedOccurrenceList` if duplicate
-  priorities are legitimate — and both are unimplemented, so the stop is the same.
+  priorities are legitimate. The implemented d11 port conservatively uses the occurrence shape,
+  preserves each country's source order and groups countries by their stable tag identity.
 - d16's `timed_live`. Duplicates are legitimate, there is no key at all, and an entry's index
   shifts as neighbours expire, so no position persists — §7.3's `OrderedOccurrenceList`
-  (`d16.rs:142`–`:153`), which §7.4 says carries no key.
+  (`d16.rs:142`–`:153`), which §7.4 says carries no key. Its shape is encodable; its
+  string-valued decision token remains the independent §5 blocker named in Scope.
 
-Both shapes are unimplemented, so both are reported. Where the two readings are both
-defensible, the choice is a recorded decision with its evidence, not a default: d32 read a
+Where the two readings are both defensible, the choice is a recorded decision with its evidence,
+not a default: d32 read a
 loadout line's identity as its variant rather than its position — the ordinal there is
 transport, re-packed from emission order every frame, so a positional key would churn every row
 of every hour — and refused the frames its keyed set cannot express instead, an input its own
@@ -658,10 +662,11 @@ Two measured shapes of legitimate divergence, each named by the loss it prevents
 - **The target shape cannot represent the input.** d32's fold stores a `Vec` in which two
   same-variant loadout lines coexist; the keyed set's `(owner, wing, generation, variant_id)`
   cannot express that, so mirroring would silently keep one line and drop the other — the
-  data-loss defect itself. The alternatives were an unimplemented `OrderedOccurrenceList` (a
-  stop) or an ordinal key component, which here is transport re-packed from emission order
-  every frame and would churn every row of every hour. So `split_payload` **rejects** a frame
-  carrying a duplicated variant inside one wing's range (`d32.rs:146`–`:170`).
+  data-loss defect itself. `OrderedOccurrenceList` is now available, but changing d32's existing
+  keyed schema would be a separate migration that needs a new schema identity, mapper parity and
+  measurement; an ordinal key remains wrong because transport order is re-packed every frame and
+  would churn every row of every hour. Until that migration is made, `split_payload` **rejects** a
+  frame carrying a duplicated variant inside one wing's range (`d32.rs:146`–`:170`).
 - **The input contradicts the invariant your four-state mapping rests on.** d17's
   Unknown-on-a-clear-gate mapping is lossless only because the emitter packs a zero under a
   clear gate; a clear-gate row carrying a non-zero word would have its captured value replaced
@@ -726,10 +731,23 @@ in `dNN.rs` so the measurement bin, the tests, and any future caller share one m
    (d62's `owner`/`actor` are adjacent in the row and separated in the key). **The header is
    covered by the same test**: every word `peek_header`/`parse_header` reads gets its own
    known-bytes case (`d31.rs:1054`), because a transposed header word mis-slices every row
-   behind it and no round-trip or replay assertion can see that — both arms agree on the
-   wrong slice.
+    behind it and no round-trip or replay assertion can see that — both arms agree on the
+    wrong slice.
 
-Run `cargo test -p wire_format` — the whole suite, not just yours.
+For an event or hybrid port, add the canonical §9 checks as well: a non-empty event field list;
+no key or derived field; unique frontier component ids; a sequence index in range; component-id
+continuity across tuple reorder; typed schema-change and sequence-overflow outcomes; and an
+incomplete observation producing an event-part §8 gap with **no** batch. d64 pins the concrete
+reference declaration: reserved state collection id 1 remains absent, lifecycle event collection
+id 2 carries field ids 1–7 in order (`Signed`, `Enum(4)`, three `ContentId`, two `Unsigned`),
+frontier ids `[1 /* hook_epoch */, 2 /* sequence */]`, and sequence index 1. A zero hook epoch,
+fieldless or empty batch, duplicate frontier id, out-of-range sequence index, or incomplete
+producer witness must fail closed rather than acquire an alternative encoding.
+
+The primary agent runs the repository's centralized Rust validation; do not invoke Cargo directly
+or from a subagent. For a wire-only iteration use
+`Invoke-CentralRustValidation.ps1 -Mode Check -Workspace Extractor` with the narrow selectors the
+script supports, then run the proportionate extractor final mode centrally before integration.
 
 ### 9. Measure against a real capture
 
@@ -866,8 +884,8 @@ the stream passes.** Rules the review rounds established:
   fresh baseline after ANY such gap, mid-block if that is where it lands (§1.5 permits it),
   and the reader replay restarts its chain there. The rule decides the ENCODING only, not the
   churn accounting: d50's regression test pins that the churn counters are unaffected by a
-  gap-forced baseline (`bench_real_d50.rs:1743` — "the gap rule decides the ENCODING, not
-  what changed"), and both bins count a transition between every pair of consecutive measured
+  gap-forced baseline (`bench_real_d50.rs:1866`–`:1869` — "the gap rule decides the ENCODING,
+  not what changed"), and both bins count a transition between every pair of consecutive measured
   states, across an excluded hour included (`bench_real_d50.rs:733`, `bench_real_d95.rs:983`)
   — churn stays "changed rows over measured-hour transitions" exactly as defined above.
   `bench_real_d50.rs` and `bench_real_d95.rs` enforce the baseline rule; bins written before
@@ -1042,12 +1060,12 @@ are acceptable:
   size-accounting artifact, not a valid record, and labelled as one
   (`bin/bench_real_d11.rs:26`–`:34`, `:411`–`:415`, `:602`–`:611`).
 
-Where the segment is interleaved rather than cuttable, the byte split is the only option:
-cutting it would fabricate a stream the recorder never wrote. d11's `PCV1` reservation rows sit
-inside their trailer at 8 bytes a row, so they stay charged to the shipping arm and are
-reported as a named count, byte total and share (`bin/bench_real_d11.rs:591`–`:596`). Either
-way the number is stated, not absorbed; and where you do cut an arm, say what the cut arm *is*
-where you report it.
+Where the segment is interleaved rather than cuttable, cutting it would fabricate a stream the
+recorder never wrote. d11's `PCV1` reservation rows sit inside their trailer at 8 bytes a row;
+they are now ported as ordered occurrences and remain in the shipping comparison arm rather than
+being excised. The corrected harness reports their named row count, byte total and share, but its
+new ordered-port ratio remains pending regeneration. Either way the number is stated, not
+absorbed; and where you do cut an arm, say what the cut arm *is* where you report it.
 
 **State what the capture never exercised.** A coverage caveat is mandatory, not a courtesy, and
 it names the path precisely. d83 encoded and replayed 19 baselines of 1,317 rows an hour, so
@@ -1245,8 +1263,9 @@ Prompt rules that make the loop converge:
   silently wrong data on input a real capture produces; a wrong scale factor; a panic
   reachable through a public entry point; an encoder emitting bytes its own decoder rejects;
   a four-state or kind decision that contradicts the fold function or §3. Out of scope: the
-  collector, hooks, budgets, benchmark realism, unimplemented ordered shapes and events,
-  cosmetics.
+  collector, hooks, budgets, benchmark realism and cosmetics unless the assigned review
+  explicitly includes them. Ordered shapes and events are implemented codec surfaces and are
+  reviewed whenever the port under review uses them.
 - State that **a clean APPROVE is the expected outcome** if nothing in the class exists.
 - Codex has **no memory of this project**. Every prompt carries the full context: what the
   domain is, what the fold function says, what you built, and where the files are.

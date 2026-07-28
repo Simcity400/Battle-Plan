@@ -704,6 +704,18 @@ one domain still sees every gap.
 | `witness_kind` | `u8` |
 | `witness` | per kind |
 
+**`branch` and every `domain` are bounded at `2^32 - 1`.** Both are unbounded varints on the
+wire; accepting a larger value would let one reader truncate it onto a different valid identity
+while another refuses it. **`domain count` is at least one.** Unlike the retired `H4GP` record,
+§8 has no empty-list-means-every-domain sentinel: an empty list is corrupt rather than a gap over
+every domain. The domain list is strictly increasing, so every delta after the first is nonzero;
+a zero delta repeats a domain and is corrupt.
+
+**`reason` is one of `0..=8`, `part` is one of `0..=2`, and `witness_kind` is one of `0..=4`.**
+An unassigned value is corrupt rather than a future cause that cannot participate in step 2's
+total order. A witness payload must have exactly its kind's declared shape: a short payload and
+trailing bytes are both corrupt.
+
 `part` is what lets a gap in a hybrid domain's event stream leave its reconstructed state valid
 (§10).
 
@@ -713,11 +725,16 @@ per-domain records and the three slices `{A}`, `{A,B}`, `{B}` are all maximal in
 
 Stored ranges are **inclusive** — `tick_end_delta = 0` is one tick — so normalisation first
 converts each to the half-open interval `[tick_start, tick_start + tick_end_delta + 1)` and
-converts back on emit.
+converts back on emit. If either checked addition overflows `u64`, the record is corrupt; wrapping
+would move a gap at the end of the timeline to its beginning.
 
 Normalisation is **per `(domain, part-component)`**, and only then grouped. Slicing the whole
 timeline at every domain's endpoints would fragment one long outage at every unrelated domain's
 boundary, which is size waste at identical fidelity.
+
+Partition the observations by `branch`, normalise each partition independently, then combine the
+partitions into the one sorted output stream. A branch is a partition key, not a filter: records
+from distinct branches never merge and none is discarded.
 
 Within one `branch`:
 
@@ -781,46 +798,161 @@ records sharing all five would have to overlap in a component, which step 2 and 
 
 ```
   event count       varint, ≥ 1
-  [ event record ]           §3, in occurrence order
-  frontier                   the schema's frontier tuple, AFTER this batch
+  [ event record ]           count full §3 records, in occurrence order
+  frontier                   one varint per schema frontier component, AFTER this batch
 ```
 
-Events are written in **occurrence order** and never reordered. **One `EVENTS` frame per tick per
-`(domain, branch)`, carrying every event for that tick.** Empty batches are invalid and a second
-batch at the same tick is invalid, so a given set of events has exactly one legal framing.
+The body contains exactly `count` records and exactly the schema's frontier arity; a decoder
+rejects a zero count, a short frontier or any trailing byte. Every event record is a **full** §3
+record. Events have no key, tombstone, insert/update distinction, change mask or
+minimality-against-prior: those are state operations over a reconstructed prior (§7), while an
+event is an append-only occurrence. Two byte-identical records in one batch are two events and
+collapsing them is data loss.
+
+Every event field uses §3's **absolute full-record** encoding. There is no prior event record
+against which a field can be differenced:
+
+| Declaration | Event-record rule |
+|---|---|
+| `unsigned` | absolute `varint` |
+| `signed` | absolute `zigzag` |
+| `monotone` | absolute unsigned `varint`; §4's prior-relative `DELTA` form never applies |
+| `enum(n)` | §3 bit-packed code, with `n` declared and the code in `0..n-1` |
+| `boolean` | one §3 bit |
+| `content id` | absolute manifest-id `varint` |
+| `continuous` | §6 `exact`, `fixed(k)` or `ratio(d)`, including the escape rule |
+| `optional`, `nullable`, `unknown-capable` | the §3 presence/null/unknown bitmaps, unchanged |
+| key | forbidden: event identity comes only from position plus frontier |
+| `derived` | forbidden on an event field |
+
+The `derived` prohibition is semantic, not an implementation shortcut. §6 transforms one record
+against `frame_tick`; an `EVENTS` frame has one observation tick but may contain occurrences from
+different occurrence ticks. Choosing the observation tick, an event field's occurrence clock, or
+some other clock would produce different stored values from the same batch. A producer instead
+materialises the concrete event value under its ordinary kind and, where needed, carries the
+occurrence clock as another ordinary field. Schema validation and the event-body codec both reject
+a derived event field.
+
+Events are written in **producer occurrence order** and never reordered. One `EVENTS` frame per
+observation tick per `(domain, branch)` carries every event the producer observed for the interval
+ending at that tick. The frame tick is the **observation/drain tick, not necessarily the event's
+occurrence tick**. A domain whose source carries an occurrence clock declares it as an ordinary
+event field. d64 does: DEL2 reads each event's `game_hour_raw` at row `+8`
+(`extractor/native/recorder_host/src/world_fold.rs:9733`–`:9735`). The earlier d64 event
+measurement is invalid and its counts are not evidence; the corrected run must retain this field
+and account for incomplete observations through §8 before promoting any corpus figure. Empty
+batches are invalid and a second batch at the same tick is invalid, so a given non-empty
+observation has exactly one legal framing.
 
 **The frontier is composite and schema-defined**, not a single scalar. The schema declares an
 ordered list of frontier components, each with a `component_id`, and designates exactly one as the
 **sequence**; the rest are **epoch** components. The frame carries one `varint` per component.
 
 d64's continuity is `(hook_epoch, sequence)`:
-`extractor/native/recorder_host/src/world_fold.rs:9551`–`:9553` reads `hook_epoch`,
-`first_sequence` and `last_sequence`, and the epoch check at `:9500`–`:9510` refuses continuity
-across an epoch change — the `Some(_) => false` arm — even when the sequence numbers look
+`extractor/native/recorder_host/src/world_fold.rs:9707`–`:9710` reads `hook_epoch`,
+`first_sequence` and `last_sequence`, and the epoch check at `:9655`–`:9669` refuses continuity
+across an epoch change — the `Some(_) => false` arm at `:9668` — even when the sequence numbers look
 contiguous. A single high-water mark cannot express that: after a reattachment the epoch changes
 while sequences may restart or appear to continue, so a scalar mark would let d64 silently
 duplicate or skip lifecycle events.
 
+**Event identity is derived, never carried.** For record position `i` in a batch of `count`, the
+identity sequence is
+
+```
+  frontier_after.sequence - count + i + 1
+```
+
+and the frontier sequence must be at least `count`. Thus one batch is a dense contiguous sequence
+run ending at the after-frontier, in producer occurrence order. d64's shipping row carries a
+sequence word at `+0`, but its fold requires that word to equal `first_sequence + index`
+(`extractor/native/recorder_host/src/world_fold.rs:9733`, `:9743`–`:9747`), so carrying it again
+would encode the same fact twice and admit contradictory bytes. Content is never identity:
+duplicate records remain distinct because their positions derive distinct sequences.
+
+This frontier is what a state frame cannot express. A `BASELINE` is self-contained and repairs any
+amount of lost state history. An append-only history has no baseline: a lost event is permanently
+lost, and whether the interval since the preceding batch was complete cannot be decided from the
+new records alone. The producer's after-frontier turns that interval claim into a checkable
+counter. Event frames are therefore not “state frames with another tag”: §7 repairs state by
+resynchronisation, while §9 preserves occurrences and detects history loss.
+
 Continuity rules:
 
+- Frontier components join across schema definitions by `component_id`, never by tuple position.
+  Reordering an unchanged set of ids is continuous. Adding, removing or duplicating a component,
+  or changing which id is the designated sequence, produces `SchemaChanged` and an event-part gap.
 - A batch whose **epoch components differ** from the previous batch's is a discontinuity: the
   reader emits a gap for that domain's event part rather than assuming the streams join.
 - Within one epoch, the batch's frontier sequence must equal the previous frontier's sequence plus
-  `event count`. Any other value is a discontinuity and a gap.
+  `event count`. Checked-add overflow produces `SequenceOverflow`; any other value produces a
+  sequence mismatch. Both are discontinuities and event-part gaps.
 - **The first batch of a `(domain, branch)`, and the first batch after a recorded event-part gap,
   establish the frontier rather than being checked against one.** Continuity across a gap is
   exactly what the gap says was lost; re-checking it would turn one recorded gap into a permanent
   refusal of everything after it.
 
+**Completeness is a producer precondition.** An `EVENTS` frame may be emitted only for an
+observation interval whose producer-specific witness proves that every event in the interval was
+admitted. An unproven interval emits an event-part gap and no event batch; a subset must not be
+presented as “every event observed at this tick”. d64's DEL2 `COMPLETE` bit is exactly this witness:
+it requires a non-zero hook epoch, a registered dispatch observer, no sticky completeness poison
+and zero reentrant, unreadable, correlation, overflow and lock-busy drops
+(`extractor/native/collector/src/attach_log.rs:61057`–`:61065`); its fold refuses publication when
+the bit is clear (`extractor/native/recorder_host/src/world_fold.rs:9655`–`:9672`).
+
+d64 assigns `sequence` when it constructs the observed event, before trying to retain it in the
+queue (`extractor/native/lanes/scripted_state_flags_variables_live/src/a729_delayed_event_lifecycle.rs:476`–`:503`).
+Consequently a queue overflow or lock-busy loss normally leaves a sequence jump for the next
+frontier to expose. Specifically, the retain transforms construct their events before calling
+`retain_all` (`:416`–`:473`), whose unreadable, overflow and lock-busy refusals are at
+`:495`–`:506`. That arithmetic is not sufficient on its own: the hourly and
+definition-cancellation hooks have unreadable, reentrant and correlation returns before their
+`retain_*` calls can reach `event_from` (`:335`–`:373`, `:376`–`:413`), so those losses burn no
+sequence and are invisible to the frontier. A final post-assignment drop also has no later batch
+whose frontier can reveal the jump. The poison operation makes either class sticky
+(`:719`–`:721`). The completeness witness is therefore normative, not belt-and-braces.
+
+An ordinary proven-complete observation with zero events emits no `EVENTS` frame and no gap;
+silence is represented by no event frame, never by a zero-count body. An incomplete observation,
+including one that retained zero events, emits an event-part gap and no batch.
+
+An epoch-only observation does **not** make an empty `EVENTS` frame legal. If the producer observes
+an epoch change while draining zero events, it records an event-part gap at that observation tick;
+if it cannot report that producer-side fact, the reader detects the epoch change at the next
+non-empty batch. A frontier-only empty frame would be a second encoding of silence and would make
+`event count ≥ 1` false. d64 takes the immediate producer-side path even on a zero-count trailer
+(`extractor/native/recorder_host/src/world_fold.rs:9655`–`:9669`).
+
 The frontier is recorded **after** the batch, so a restart resumes from it without re-reading or
 skipping. No baselines, no tombstones. A gap here means "events between A and B were not
 captured", carried with its own reason so the viewer says that rather than "state unknown".
+
+The recovery rule above deliberately differs from d64's current production fold. The fold sets
+`delayed_event_lifecycle_history_failed` on the first incomplete or discontinuous observation and
+never clears it, so every later hour remains null. The flag is declared and initialized false at
+`extractor/native/recorder_host/src/world_fold.rs:1702`, `:2403`; its parse-failure and settlement
+assignments only set it true (`:9524`, `:9655`–`:9682`). §9 instead records one gap and
+lets the next proven-complete batch establish a new frontier: events before the gap remain
+incomplete, but permanently discarding all later known events would not repair them. Ports that
+measure the production fold must name this divergence rather than quietly substituting either
+policy.
 
 ## 10. Hybrid domains
 
 A domain may declare **both** parts — d64 is mutable pending state *plus* an append-only lifecycle
 trailer. Its block carries state frames and `EVENTS` frames under one `domain`, on the two
 independent time chains of §1.4, and each part follows its own rules.
+
+Migration may stop one part without stopping the other. A stopped part declares no collection in
+the migrated schema and emits no frames; its collection ids remain reserved and the stop is
+reported in the migration ledger rather than fabricated as state or charged to the implemented
+part. The other part remains independently framable. d64 is the concrete case: its pending table
+is an ordered occurrence list. The reference port currently reserves state collection id 1 and
+declares only lifecycle event collection id 2. This is a migration state, not a claim that the
+source domain ceased to be hybrid. The ordered-state codec is available, but d64's pending-state
+port remains unimplemented and unevidenced; it is added only after its mapper, schema, fold-parity
+tests and real-corpus measurement pass their own gates.
 
 Every rule is scoped:
 
@@ -899,7 +1031,10 @@ bit. Key order is `key_position`, which §2 and §7.4 sort by.
 **A schema is invalid — a hard writer and CI error — if:**
 
 - `cadence_log2` exceeds the container's `ticks_per_hour_log2`;
-- an event field list marks a key member (event records have no key prefix);
+- a state collection or event part has no fields;
+- an event field list marks a key member (event records have no key prefix) or a `derived` field
+  (an event batch has no unambiguous single occurrence clock);
+- the frontier repeats a `component_id`, or `sequence_index` is outside the frontier;
 - a shape-2 collection marks a key member, or a shape-0 or shape-1 collection declares none;
 - `collection_id` repeats within the domain — counting the event part's — or `field_id` repeats
   within any one collection or within the event field list;
@@ -907,7 +1042,9 @@ bit. Key order is `key_position`, which §2 and §7.4 sort by.
 - a key member is optional, nullable, unknown-capable, derived, or of a kind other than `0`, `1`
   or `5` (§7.4);
 - a `derived` field is not of kind `0`, `1` or `2`, or its `derived_u` exceeds
-  `ticks_per_hour_log2`.
+  `ticks_per_hour_log2`;
+- a continuous field omits an explicit `exact`, `fixed(k)` or `ratio(d)` declaration, or its
+  parameter is outside §6's legal range; or a non-continuous field carries a quantizer.
 
 **`schema_hash` is the first 8 bytes of the BLAKE3 digest of those bytes.** Collisions are handled
 by detection, not by hope: the container stores hash → definition, a reader verifies that a stored
@@ -924,7 +1061,8 @@ find its definition refuses that domain and reports a gap; with the definition p
 A schema change — game build, mod set, cadence, field added or retired — starts a new block under
 the new hash. **The state part forces a `BASELINE` in that block. The event part does not**: it has
 no baselines, and its continuity is carried by the frontier, which crosses a schema change unbroken
-so long as its epoch components do.
+so long as the same component ids remain, the designated sequence id is unchanged, and their values
+join under §9. Tuple order may change because `component_id`, not position, is the identity.
 
 Each frame decodes against the definition its block names, so a retired field costs nothing: the
 rule that matters is that **`field_id` is never reused for a different field**.
@@ -939,6 +1077,13 @@ redundancy that dominates this workload.
 
 These are why this document is not yet the fan-out contract. The reference domain (pattern §10)
 closes them on a named corpus and harness before ~80 encoders are written.
+
+- **Wave-A measurement status.** The §7.3, §8 and §9 codecs and their literal golden vectors are
+  implemented, but codec proof is not corpus proof. d11 and d56 ordered-port figures await
+  regeneration; §8 rounds 1–4 are invalid and the next publishable run is round 5; and the d64
+  lifecycle-event measurement is invalid pending a corrected run that charges every incomplete
+  observation to an event-part gap under §8. Historical ratios below describe the older stated
+  arms only and must not be relabelled as measurements of these new ports.
 
 - **Column-major blocks — CLOSED BY DECISION 2026-07-26: the row-major grammar is retained.**
   The synthetic month said columnar wins on baselines: **columnar compresses to 79.8% of
@@ -1046,8 +1191,10 @@ closes them on a named corpus and harness before ~80 encoders are written.
   integer that passes the stability check and decodes to the neighbouring float — so d10's
   `/32768` fields ship as `Exact` f64 at +10.5% zstd vs the shipping i64 words, and closing
   the gap needs a codec-level exact path (integer-domain `Fixed` or a declared power-of-two
-  quantizer), while decimal sources have a cheap exact `Fixed(k)` (d24); (2) §8 gap normalisation needs an implementation — d26's
-  `sparse_partial` marks a *domain-hour* unknown, which a keyed set has no way to say.
+  quantizer), while decimal sources have a cheap exact `Fixed(k)` (d24); (2) §8 gap normalisation
+  is now implemented — d26's `sparse_partial` marks a *domain-hour* unknown, which §8's
+  `(domain, part)` scope can express. The earlier §8 benchmark rounds are invalid; no gap-size
+  figure is promoted until the corrected measurement is regenerated.
   Separately, the wave-1 survey stopped d12/d14/d15/d18 on the absence of a string kind; the
   formal stop reports since then locate the real mechanism in §5's symbol-id assignment rule,
   under the symbol bullet below. Provenance in `extractor/native/runs/batch1/`.
@@ -1230,7 +1377,14 @@ closes them on a named corpus and harness before ~80 encoders are written.
   block every reader of every other domain must decode first, which is the objection §8
   already makes about gaps.
 
-- **Unimplemented collection shapes now have measured demand (§7.3).**
+- **d21 land combats is ported but corpus-blocked.** The reference port preserves the shipping
+  fold's structural/status ordering and its distinction between measured-empty and unknown
+  participant sides. The only scheduled d21 corpus contains 32-byte, zero-row `0x300` failure
+  records, so it provides no authoritative size or dynamics measurement. A ratio remains
+  withheld until the rebuilt collector produces the requested mixed-manager capture; failure
+  hours must be charged as unknown rather than decoded as empty snapshots.
+
+- **Ordered collection shapes have measured demand and an implemented codec (§7.3).**
   `OrderedOccurrenceList` has **four measured instances** — d16's `timed_live`, whose fold
   pushes identical timed rows onto a country's array in source order without upsert, dedup or
   sort; d56 naval supremacy; d64 delayed events; and d12's completed-focus set, where
@@ -1238,14 +1392,16 @@ closes them on a named corpus and harness before ~80 encoders are written.
   and stops: d11's `convoy_priority_reservations`, where 2,633 consecutive samples are pure
   reorders of an identical `{priority, count}` multiset, so no carried field recovers the
   order — an `OrderedKeyedList` if `priority`'s observed per-country uniqueness holds in
-  general, an `OrderedOccurrenceList` if not, since the fold checks neither. All of these
-  shapes are full-replacement-only and none is implemented, so each instance stops a
-  collection today.
+  general, an `OrderedOccurrenceList` if not, since the fold checks neither. Both shapes use
+  full replacement. d11 convoy reservations and d56 naval supremacy now have reference ports;
+  their prior size figures remain withheld pending regenerated measurements. d16, d12 and d64
+  pending state remain separate domain-port work rather than codec stops; d64's lifecycle
+  event part is independently ported under §9.
 
-- **Gaps below the whole domain: three measured instances, and two of them need a scope §8
-  does not have.** d26's `sparse_partial` marks a *domain-hour* unknown, which §8's
-  `(domain, part)` record already expresses — it needs the implementation and nothing more
-  (wave 1, above). The other two need a narrower scope as well: d17's war graph needs "this
+- **Gaps below the whole domain: three measured instances; d26 is unblocked, and two still need
+  a scope §8 does not have.** d26's `sparse_partial` marks a *domain-hour* unknown, which the
+  implemented §8 `(domain, part)` record expresses (wave 1, above). The other two
+  need a narrower scope as well: d17's war graph needs "this
   collection's membership was not measured this hour", the state of **903 of 903** captured
   hours, and gapping it under §8 as written would gap d17's countries collection too, which
   measured fine; and d18's CIM1 extension carries three independent per-family availability
@@ -1267,8 +1423,9 @@ closes them on a named corpus and harness before ~80 encoders are written.
 - **Golden vectors.** Byte-exact round-trip fixtures written with the reference domain are what
   turn "two implementers produce identical bytes" from a claim into a gate. The set covers every
   state in §3, the escape branches in §6, insert-versus-update and the minimality rules in §7.1,
-  and the two time chains in §1.4. Still missing: the ordered shapes in §7.3, and the frontier
-  discontinuities in §9. Those two sections remain unproven by construction.
+  the two time chains in §1.4, both ordered replacement shapes in §7.3, and the event body plus
+  epoch/sequence/schema-change/overflow/post-gap frontier outcomes in §9. Domain-specific corpus
+  evidence remains separate from these codec vectors.
 
 ## 14. What this format retires
 

@@ -17,21 +17,21 @@
 //! **The accumulator is the state, not the frame.** In `deepwar_t1` a frame
 //! touches a median of two countries out of a roster of 356, so a per-frame
 //! snapshot would measure a fraction of the domain. The wire arm encodes the
-//! accumulated seven collections; a country dropping a row is a wire tombstone.
+//! accumulated eight collections; a country dropping a keyed row is a wire
+//! tombstone.
 //!
-//! **Two parts of the domain are stop-reported, not measured.** The `PDQ1`
-//! trailer carries variable-length UTF-8 strings that §4 has no kind for, and
+//! **`PDQ1` remains stop-reported, while the PCV1 reservation list is ported.**
+//! `PDQ1` carries variable-length UTF-8 strings that §4 has no kind for.
 //! `PCV1`'s convoy priority reservations are an ordered list whose order is not
-//! a function of any carried field (see `d11.rs`'s module docs for both, with
-//! the capture evidence). This harness parses both — every gate the fold
-//! enforces, so a payload the recorder refuses is refused here too — and
-//! accounts for them, but maps neither. Because the shipping arm would otherwise
+//! a function of any carried field, so the harness maps them to the implemented
+//! occurrence-list shape (see `d11.rs`'s module docs for both decisions and the
+//! capture evidence). Because the shipping arm would otherwise
 //! be charged for data the wire arm never carries, a second shipping artifact is
 //! written with the `PDQ1` suffix removed, and both ratios are reported.
 //! `ship_d11_no_pdq1.bin` is a size accounting only: it is a shipping record
 //! with its final trailer cut, not a valid record. The reservation run is not
-//! excised — it is interleaved inside `PCV1` rather than a suffix — so its
-//! 8 bytes/row stay charged to the shipping arm and are reported separately.
+//! excised — it is interleaved inside `PCV1` rather than a suffix — and its
+//! 8 bytes/row are now carried by the wire arm and reported separately.
 //!
 //! **Nothing here re-derives a contract it can call.** Payload, trailer and row
 //! decoding go through `wire_format::d11`'s public boundary; H4CR framing, record
@@ -110,7 +110,8 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK,
 };
 use wire_format::body::{
-    apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedState,
+    apply_shaped, collection_stored_eq, decode_shaped_baseline, decode_shaped_delta, diff_shaped,
+    encode_shaped_baseline, encode_shaped_delta, CollectionDelta, CollectionState,
 };
 use wire_format::d11::{self, Collections, State, StatusPredicates};
 use wire_format::Collection;
@@ -315,8 +316,8 @@ struct StreamScan {
     touched_countries: usize,
     /// `PDQ1` segment bytes over the measured hours.
     pdq1_bytes: usize,
-    /// `PCV1` reservation rows over the measured hours — parsed, checked and
-    /// stop-reported. Each is 8 bytes of the shipping arm.
+    /// Ported `PCV1` reservation rows over the measured hours. Each is 8 bytes of
+    /// the shipping arm.
     reservation_rows: usize,
     /// `PCV1` variant runs that were not ascending by `variant_id` — the runs
     /// whose order `convoy_variant_ordinal` is load-bearing for rather than
@@ -653,7 +654,7 @@ fn scan_stream(
 }
 
 /// The schema's own collection names, so the report cannot drift from it.
-const COLLECTION_NAMES: [&str; 7] = Collections::NAMES;
+const COLLECTION_NAMES: [&str; 8] = Collections::NAMES;
 
 fn main() {
     const USAGE: &str =
@@ -690,8 +691,8 @@ fn main() {
     let mut wire_offsets = vec![0usize];
 
     let mut state = State::new();
-    let mut prior: Option<Vec<KeyedState>> = None;
-    let mut reader: Option<Vec<KeyedState>> = None;
+    let mut prior: Option<Vec<CollectionState>> = None;
+    let mut reader: Option<Vec<CollectionState>> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
     // Baselines the §1.5 gap rule forced outside a scheduled block start.
@@ -699,9 +700,14 @@ fn main() {
     let mut previous_measured_hour: Option<i32> = None;
     let mut empty_hours = 0usize;
     let mut baseline_bytes = 0usize;
-    let mut changed_rows = [0usize; 7];
-    let mut tombstones = [0usize; 7];
-    let mut state_rows_total = [0usize; 7];
+    let mut changed_rows = [0usize; 8];
+    let mut tombstones = [0usize; 8];
+    let mut ordered_transition_rows = [0usize; 8];
+    let mut ordered_transition_events = [0usize; 8];
+    let mut ordered_delta_rows = [0usize; 8];
+    let mut ordered_delta_events = [0usize; 8];
+    let mut transitions = 0usize;
+    let mut state_rows_total = [0usize; 8];
 
     let collection_list: Vec<&Collection> = collections.as_slice().to_vec();
 
@@ -720,9 +726,30 @@ fn main() {
         let payload = &stream[hour.ship_span.start + COMPACT_RECORD_HEADER_LEN..hour.ship_span.end];
         d11::fold_payload(&mut state, &collections, payload, STATUS)
             .expect("pass 1 accepted this payload");
-        let current = state.to_vec();
+        let current = state.states();
         for (i, rows) in current.iter().enumerate() {
             state_rows_total[i] += rows.len();
+        }
+
+        // Cadence-independent ordered replacement cost. Baseline boundaries hide
+        // deltas on the wire, so count every measured transition separately.
+        if let Some(prev) = prior.as_ref() {
+            transitions += 1;
+            for (i, collection) in collection_list.iter().enumerate() {
+                match diff_shaped(collection, &prev[i], &current[i])
+                    .expect("fold state matches schema")
+                {
+                    Some(CollectionDelta::OrderedKeyed(rows)) => {
+                        ordered_transition_rows[i] += rows.len();
+                        ordered_transition_events[i] += 1;
+                    }
+                    Some(CollectionDelta::OrderedOccurrence(rows)) => {
+                        ordered_transition_rows[i] += rows.len();
+                        ordered_transition_events[i] += 1;
+                    }
+                    Some(CollectionDelta::Keyed(_)) | None => {}
+                }
+            }
         }
 
         // New arm: BASELINE at each block start, stored-minimal DELTA between.
@@ -733,7 +760,7 @@ fn main() {
         }
         let mut emitted = true;
         if baseline_here || prior.is_none() {
-            encode_baseline(&schema, &current, &mut wire).expect("baseline encodes");
+            encode_shaped_baseline(&schema, &current, &mut wire).expect("baseline encodes");
             baselines += 1;
             baseline_bytes += wire.len() - hour_start;
         } else {
@@ -742,12 +769,8 @@ fn main() {
                 .iter()
                 .enumerate()
                 .map(|(i, collection)| {
-                    let d = diff(collection, &prev[i], &current[i]);
-                    if d.is_empty() {
-                        None
-                    } else {
-                        Some(d)
-                    }
+                    diff_shaped(collection, &prev[i], &current[i])
+                        .expect("fold state matches schema")
                 })
                 .collect();
             if deltas.iter().all(Option::is_none) {
@@ -756,11 +779,23 @@ fn main() {
             } else {
                 for (i, delta) in deltas.iter().enumerate() {
                     if let Some(delta) = delta {
-                        changed_rows[i] += delta.changed.len();
-                        tombstones[i] += delta.tombstones.len();
+                        match delta {
+                            CollectionDelta::Keyed(delta) => {
+                                changed_rows[i] += delta.changed.len();
+                                tombstones[i] += delta.tombstones.len();
+                            }
+                            CollectionDelta::OrderedKeyed(rows) => {
+                                ordered_delta_rows[i] += rows.len();
+                                ordered_delta_events[i] += 1;
+                            }
+                            CollectionDelta::OrderedOccurrence(rows) => {
+                                ordered_delta_rows[i] += rows.len();
+                                ordered_delta_events[i] += 1;
+                            }
+                        }
                     }
                 }
-                encode_delta(&schema, prev, &deltas, &mut wire).expect("delta encodes");
+                encode_shaped_delta(&schema, prev, &deltas, &mut wire).expect("delta encodes");
             }
         }
         wire_offsets.push(wire.len());
@@ -773,19 +808,20 @@ fn main() {
             let hour_bytes = &wire[hour_start..];
             if baseline_here || reader.is_none() {
                 let (decoded, consumed) =
-                    decode_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
+                    decode_shaped_baseline(&schema, hour_bytes, 0).expect("baseline decodes");
                 assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
-                assert_eq!(decoded.len(), 7, "seven collections in the body");
+                assert_eq!(decoded.len(), 8, "eight collections in the body");
                 reader = Some(decoded);
             } else {
                 let reader_prior = reader.take().expect("reader prior");
                 let (deltas, consumed) =
-                    decode_delta(&schema, &reader_prior, hour_bytes, 0).expect("delta decodes");
+                    decode_shaped_delta(&schema, &reader_prior, hour_bytes, 0)
+                        .expect("delta decodes");
                 assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
                 let mut next = reader_prior;
                 for (i, delta) in deltas.iter().enumerate() {
                     if let Some(delta) = delta {
-                        apply(&mut next[i], delta);
+                        apply_shaped(&mut next[i], delta).expect("delta shape matches state");
                     }
                 }
                 reader = Some(next);
@@ -801,7 +837,8 @@ fn main() {
                 COLLECTION_NAMES[i]
             );
             assert!(
-                diff(collection, &replayed[i], &current[i]).is_empty(),
+                collection_stored_eq(collection, &replayed[i], &current[i])
+                    .expect("states encode"),
                 "game hour {}: reader collection {} is not stored-equal to the fold",
                 hour.game_hour,
                 COLLECTION_NAMES[i]
@@ -884,13 +921,23 @@ fn main() {
         100.0 * (wire.len() - baseline_bytes) as f64 / wire.len() as f64
     );
     println!("real churn per delta hour (stored precision):");
-    for (i, name) in COLLECTION_NAMES.iter().enumerate() {
+    for (i, name) in COLLECTION_NAMES.iter().take(7).enumerate() {
         println!(
             "  {name:<20} {:>8.3} changed, {:>8.3} tombstones",
             changed_rows[i] as f64 / delta_hours.max(1) as f64,
             tombstones[i] as f64 / delta_hours.max(1) as f64
         );
     }
+    let reservations = 7;
+    println!(
+        "ordered replacements convoy_priority_reservations {} events / {transitions} measured \
+         transitions, {} events / {delta_hours} delta hours; {:.3} rows per measured \
+         transition, {:.3} rows per delta hour",
+        ordered_transition_events[reservations],
+        ordered_delta_events[reservations],
+        ordered_transition_rows[reservations] as f64 / transitions.max(1) as f64,
+        ordered_delta_rows[reservations] as f64 / delta_hours.max(1) as f64,
+    );
     println!(
         "PDQ1 bytes            {} of {} shipping bytes ({:.1}%) — stop-reported, not measured",
         scan.pdq1_bytes,
@@ -898,7 +945,7 @@ fn main() {
         100.0 * scan.pdq1_bytes as f64 / ship.len() as f64
     );
     println!(
-        "PCV1 reservation rows {} ({} bytes, {:.2}% of shipping) — stop-reported, not measured",
+        "PCV1 reservation rows {} ({} bytes, {:.2}% of shipping) — ported as ordered occurrences",
         scan.reservation_rows,
         scan.reservation_rows * 8,
         100.0 * (scan.reservation_rows * 8) as f64 / ship.len() as f64

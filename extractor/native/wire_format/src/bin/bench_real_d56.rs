@@ -81,26 +81,22 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
 };
 use wire_format::body::{
-    apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta, KeyedDelta,
-    KeyedState,
+    apply_shaped, collection_stored_eq, decode_shaped_baseline, decode_shaped_delta, diff_shaped,
+    encode_shaped_baseline, encode_shaped_delta, CollectionDelta, CollectionState,
 };
 use wire_format::d56;
 use wire_format::Schema;
 
 const D56: u16 = 56;
 const BLOCK_HOURS: usize = 48;
-/// The ported collections, in schema order: the task-force table alone. The
-/// naval-supremacy sidecar is stop-reported (`d56.rs` module docs,
-/// `WIRE_FORMAT.md` §7.3), so it contributes no collection here and its bytes are
-/// accounted for in the shipping arm instead — see the two shipping arms below.
-const COLLECTIONS: usize = 1;
+const COLLECTIONS: usize = 2;
 
 /// One usable d56 hour: its game hour, the folded state of both collections, and
 /// its byte span in the source stream (the shipping arm is those bytes verbatim,
 /// header included).
 struct D56Hour {
     game_hour: i32,
-    states: Vec<KeyedState>,
+    states: Vec<CollectionState>,
     ship_span: Range<usize>,
     /// True when this measured hour is exactly one game hour after the previous
     /// MEASURED hour. False on the first measured hour and after any gap — an
@@ -110,7 +106,7 @@ struct D56Hour {
     follows_previous: bool,
     /// Payload composition, for the shipping-arm byte split in the report.
     row_bytes: usize,
-    /// The stop-reported `NSUP` trailer's bytes in this record, and its row count.
+    /// The ported `NSUP` trailer's bytes in this record, and its row count.
     /// The trailer is the payload's suffix, so it is also what the cut shipping
     /// arm removes.
     trailer_bytes: usize,
@@ -157,14 +153,15 @@ struct WireHourOutcome {
     bytes: usize,
     changed_by_collection: Vec<usize>,
     tombstones_by_collection: Vec<usize>,
+    replaced_by_collection: Vec<bool>,
 }
 
 fn encode_wire_hour(
     schema: &wire_format::Schema,
     hours_seen: usize,
     hour: &D56Hour,
-    prior: Option<&[KeyedState]>,
-    reader: &mut Option<Vec<KeyedState>>,
+    prior: Option<&[CollectionState]>,
+    reader: &mut Option<Vec<CollectionState>>,
     wire: &mut Vec<u8>,
 ) -> WireHourOutcome {
     let states = &hour.states;
@@ -176,22 +173,18 @@ fn encode_wire_hour(
     let mut emitted = true;
     let mut changed_by_collection = vec![0usize; schema.collections.len()];
     let mut tombstones_by_collection = vec![0usize; schema.collections.len()];
+    let mut replaced_by_collection = vec![false; schema.collections.len()];
     let opened_baseline = block_start || prior.is_none();
     if opened_baseline {
-        encode_baseline(schema, states, wire).expect("baseline encodes");
+        encode_shaped_baseline(schema, states, wire).expect("baseline encodes");
     } else {
         let prev = prior.unwrap();
-        let deltas: Vec<Option<KeyedDelta>> = schema
+        let deltas: Vec<Option<CollectionDelta>> = schema
             .collections
             .iter()
             .enumerate()
             .map(|(i, collection)| {
-                let d = diff(collection, &prev[i], &states[i]);
-                if d.is_empty() {
-                    None
-                } else {
-                    Some(d)
-                }
+                diff_shaped(collection, &prev[i], &states[i]).expect("fold state matches schema")
             })
             .collect();
         if deltas.iter().all(Option::is_none) {
@@ -199,11 +192,23 @@ fn encode_wire_hour(
         } else {
             for (i, d) in deltas.iter().enumerate() {
                 if let Some(d) = d {
-                    changed_by_collection[i] = d.changed.len();
-                    tombstones_by_collection[i] = d.tombstones.len();
+                    match d {
+                        CollectionDelta::Keyed(d) => {
+                            changed_by_collection[i] = d.changed.len();
+                            tombstones_by_collection[i] = d.tombstones.len();
+                        }
+                        CollectionDelta::OrderedKeyed(rows) => {
+                            changed_by_collection[i] = rows.len();
+                            replaced_by_collection[i] = true;
+                        }
+                        CollectionDelta::OrderedOccurrence(rows) => {
+                            changed_by_collection[i] = rows.len();
+                            replaced_by_collection[i] = true;
+                        }
+                    }
                 }
             }
-            encode_delta(schema, prev, &deltas, wire).expect("delta encodes");
+            encode_shaped_delta(schema, prev, &deltas, wire).expect("delta encodes");
         }
     }
     let bytes = wire.len() - hour_start;
@@ -218,18 +223,18 @@ fn encode_wire_hour(
         let hour_bytes = &wire[hour_start..];
         if block_start || reader.is_none() {
             let (decoded, consumed) =
-                decode_baseline(schema, hour_bytes, 0).expect("baseline decodes");
+                decode_shaped_baseline(schema, hour_bytes, 0).expect("baseline decodes");
             assert_eq!(consumed, hour_bytes.len(), "baseline consumed exactly");
             *reader = Some(decoded);
         } else {
             let reader_prior = reader.take().unwrap();
             let (deltas, consumed) =
-                decode_delta(schema, &reader_prior, hour_bytes, 0).expect("delta decodes");
+                decode_shaped_delta(schema, &reader_prior, hour_bytes, 0).expect("delta decodes");
             assert_eq!(consumed, hour_bytes.len(), "delta consumed exactly");
             let mut next = reader_prior;
             for (i, d) in deltas.iter().enumerate() {
                 if let Some(d) = d {
-                    apply(&mut next[i], d);
+                    apply_shaped(&mut next[i], d).expect("delta shape matches state");
                 }
             }
             *reader = Some(next);
@@ -245,7 +250,8 @@ fn encode_wire_hour(
             collection.collection_id
         );
         assert!(
-            diff(collection, &replayed[i], &states[i]).is_empty(),
+            collection_stored_eq(collection, &replayed[i], &states[i])
+                .expect("states encode"),
             "game hour {}: collection {} reader state is not stored-equal to the fold",
             hour.game_hour,
             collection.collection_id
@@ -258,6 +264,7 @@ fn encode_wire_hour(
         bytes,
         changed_by_collection,
         tombstones_by_collection,
+        replaced_by_collection,
     }
 }
 
@@ -634,7 +641,7 @@ fn scan_stream(
                         follows_previous,
                         row_bytes: split.rows.len(),
                         trailer_bytes: payload.len() - d56::HEADER_LEN - split.rows.len(),
-                        supremacy_rows: fold_state.supremacy_rows,
+                        supremacy_rows: fold_state.naval_supremacy.len() as u32,
                     });
                 }
             }
@@ -715,21 +722,21 @@ fn main() {
 
     let mut ship = Vec::new();
     let mut ship_offsets = vec![0usize];
-    // The second, CUT shipping arm. The stop-reported `NSUP` trailer is a suffix
+    // The second, CUT shipping arm. The formerly stopped `NSUP` trailer is a suffix
     // of each payload (the decoder's walk rejects anything after it,
     // `domain56_compact.rs:370`-`:388`), so it is cuttable, and d11's `PDQ1`
     // accounting applies: each record with the trailer removed and its payload
     // length left as written. **That is a size-accounting artifact, not a valid
     // record** — a decoder handed this arm would read a length past the bytes —
-    // and it exists so the wire arm is compared against a shipping arm carrying
-    // only what the wire arm is allowed to encode.
+    // and it is retained only to compare against the previously published cut-arm
+    // numbers. The complete shipping arm is now the honest headline.
     let mut ship_cut = Vec::new();
     let mut ship_cut_offsets = vec![0usize];
     let mut wire = Vec::new();
     let mut wire_offsets = vec![0usize];
 
-    let mut prior: Option<Vec<KeyedState>> = None;
-    let mut reader: Option<Vec<KeyedState>> = None;
+    let mut prior: Option<Vec<CollectionState>> = None;
+    let mut reader: Option<Vec<CollectionState>> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
     let mut gap_forced_baselines = 0usize;
@@ -741,11 +748,13 @@ fn main() {
     // still counts.
     let mut transition_changed = [0usize; COLLECTIONS];
     let mut transition_tombstones = [0usize; COLLECTIONS];
+    let mut transition_replacements = [0usize; COLLECTIONS];
     let mut transitions = 0usize;
     // Delta-path churn: the same counts over the hours that actually emitted a
     // delta. The denominators are different questions and cannot share a number.
     let mut delta_changed = [0usize; COLLECTIONS];
     let mut delta_tombstones = [0usize; COLLECTIONS];
+    let mut delta_replacements = [0usize; COLLECTIONS];
     let mut rows_total = [0usize; COLLECTIONS];
     let mut ship_row_bytes = 0usize;
     let mut ship_trailer_bytes = 0usize;
@@ -770,9 +779,24 @@ fn main() {
         if let Some(prev) = &prior {
             transitions += 1;
             for (i, collection) in schema.collections.iter().enumerate() {
-                let d = diff(collection, &prev[i], &states[i]);
-                transition_changed[i] += d.changed.len();
-                transition_tombstones[i] += d.tombstones.len();
+                if let Some(delta) =
+                    diff_shaped(collection, &prev[i], &states[i]).expect("states encode")
+                {
+                    match delta {
+                        CollectionDelta::Keyed(delta) => {
+                            transition_changed[i] += delta.changed.len();
+                            transition_tombstones[i] += delta.tombstones.len();
+                        }
+                        CollectionDelta::OrderedKeyed(rows) => {
+                            transition_changed[i] += rows.len();
+                            transition_replacements[i] += 1;
+                        }
+                        CollectionDelta::OrderedOccurrence(rows) => {
+                            transition_changed[i] += rows.len();
+                            transition_replacements[i] += 1;
+                        }
+                    }
+                }
             }
         }
 
@@ -796,6 +820,7 @@ fn main() {
             for i in 0..schema.collections.len() {
                 delta_changed[i] += outcome.changed_by_collection[i];
                 delta_tombstones[i] += outcome.tombstones_by_collection[i];
+                delta_replacements[i] += usize::from(outcome.replaced_by_collection[i]);
             }
             delta_bytes += outcome.bytes;
         } else {
@@ -836,9 +861,10 @@ fn main() {
         scan.failure_records, scan.delta_before_baseline_records
     );
     println!(
-        "task forces avg      {:.1}   stopped supremacy rows avg {:.1}",
+        "task forces avg      {:.1}   supremacy occurrence rows avg {:.1}, total {}",
         rows_total[0] as f64 / hours_seen as f64,
-        supremacy_rows_total as f64 / hours_seen as f64
+        supremacy_rows_total as f64 / hours_seen as f64,
+        supremacy_rows_total
     );
     println!(
         "baselines            {baselines} ({} at a {BLOCK_HOURS}-h block start, \
@@ -860,10 +886,19 @@ fn main() {
         delta_changed[0] as f64 / delta_hours.max(1) as f64,
         delta_tombstones[0] as f64 / delta_hours.max(1) as f64,
     );
-    // The stop-reported segment, accounted for both ways the recipe allows: a byte
-    // split of the shipping arm, and a second cut arm with the segment removed.
     println!(
-        "ship_d56.bin         {} bytes ({} B task-force rows {:.1}%, {} B stopped NSUP trailer {:.1}%, {} B payload header + H4CR framing {:.1}%)",
+        "ordered replacements naval_supremacy {} events / {transitions} measured transitions, \
+         {} events / {delta_hours} delta hours; {:.2} rows per measured transition, {:.2} rows \
+         per delta hour",
+        transition_replacements[1],
+        delta_replacements[1],
+        transition_changed[1] as f64 / transitions.max(1) as f64,
+        delta_changed[1] as f64 / delta_hours.max(1) as f64,
+    );
+    // The newly ported segment, accounted for both ways so the old cut-arm
+    // measurement remains directly comparable.
+    println!(
+        "ship_d56.bin         {} bytes ({} B task-force rows {:.1}%, {} B ported NSUP trailer {:.1}%, {} B payload header + H4CR framing {:.1}%)",
         ship.len(),
         ship_row_bytes,
         100.0 * ship_row_bytes as f64 / ship.len() as f64,
@@ -873,7 +908,7 @@ fn main() {
         100.0 * (ship.len() - ship_row_bytes - ship_trailer_bytes) as f64 / ship.len() as f64,
     );
     println!(
-        "ship_d56_no_nsup.bin {} bytes (the same records with the stop-reported trailer cut; a size-accounting artifact, not a valid record stream)",
+        "ship_d56_no_nsup.bin {} bytes (retired headline arm: retained only for before/after comparability; not a valid record stream)",
         ship_cut.len()
     );
     println!(
@@ -1045,11 +1080,12 @@ mod tests {
         assert_eq!(scan.failure_records, 0);
         assert_eq!(scan.delta_before_baseline_records, 0);
         assert_eq!(scan.non_contiguous, 0);
-        assert_eq!(scan.hours[0].states.len(), 1, "one ported collection");
+        assert_eq!(scan.hours[0].states.len(), 2, "both ported collections");
         assert_eq!(scan.hours[0].states[0].len(), 1);
+        assert_eq!(scan.hours[0].states[1].len(), 1);
         assert_eq!(
             scan.hours[0].supremacy_rows, 1,
-            "the stop-reported trailer is counted, not folded into a collection"
+            "the ported trailer row is counted and folded into its collection"
         );
     }
 
@@ -1255,7 +1291,7 @@ mod tests {
         assert!(opens_baseline(1, scan.hours[1].follows_previous));
         let full_schema = schema();
         let mut wire = Vec::new();
-        let mut reader: Option<Vec<KeyedState>> = None;
+        let mut reader: Option<Vec<CollectionState>> = None;
         let o0 = encode_wire_hour(&full_schema, 0, &scan.hours[0], None, &mut reader, &mut wire);
         assert!(o0.opened_baseline && !o0.gap_forced);
         let o1 = encode_wire_hour(
@@ -1318,7 +1354,7 @@ mod tests {
         assert!(scan.hours[1].follows_previous);
         assert!(!opens_baseline(1, scan.hours[1].follows_previous));
         let mut wire = Vec::new();
-        let mut reader: Option<Vec<KeyedState>> = None;
+        let mut reader: Option<Vec<CollectionState>> = None;
         encode_wire_hour(&full_schema, 0, &scan.hours[0], None, &mut reader, &mut wire);
         let o1 = encode_wire_hour(
             &full_schema,

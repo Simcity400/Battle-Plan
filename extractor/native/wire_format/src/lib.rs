@@ -7,12 +7,12 @@
 //!
 //! Section numbers in comments refer to that document.
 //!
-//! **Scope.** §0–§6 and §10–§11 are implemented, and §7 for **keyed-set state
-//! bodies only** — the ordered shapes of §7.3 are rejected rather than encoded
-//! on both the write and the read side.
-//! §8 gap normalisation and §9 event bodies and the event frontier have no code
-//! here at all. Nothing in this crate should be read as evidence that any of
-//! those three work.
+//! **Scope.** The crate implements the frame, record and schema codec surfaces
+//! through §11, including every state collection shape in §7.3, gap records and
+//! normalisation in §8, and event bodies plus frontier continuity in §9. §5
+//! symbol assignment, container integration, domain ports and measurements
+//! remain independently gated; codec availability is not evidence that a
+//! particular source domain has been migrated.
 
 pub mod bitmap;
 pub mod body;
@@ -23,6 +23,7 @@ pub mod d13;
 pub mod d16;
 pub mod d17;
 pub mod d20;
+pub mod d21;
 pub mod d22;
 pub mod d23;
 pub mod d24;
@@ -49,6 +50,7 @@ pub mod d56;
 pub mod d61;
 pub mod d62;
 pub mod d63;
+pub mod d64;
 pub mod d65;
 pub mod d67;
 pub mod d68;
@@ -59,7 +61,9 @@ pub mod d94;
 pub mod d95;
 pub mod d96;
 pub mod derived;
+pub mod events;
 pub mod frame;
+pub mod gap;
 pub mod record;
 pub mod schema;
 pub mod update;
@@ -70,6 +74,10 @@ pub mod varint;
 pub use bitmap::Bitmap;
 pub use schema::{
     Collection, Derived, EventPart, Field, Kind, Quant, Schema, SchemaError, Shape,
+};
+pub use events::{
+    check_frontier, check_frontier_transition, decode_event_body, encode_event_body, EventBatch,
+    FrontierDiscontinuity, FrontierOutcome,
 };
 pub use frame::{BlockError, BlockHeader, BlockWriter, Frame, Part};
 pub use record::Record;

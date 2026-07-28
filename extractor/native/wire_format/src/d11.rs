@@ -1,8 +1,9 @@
 //! d11 `production_live` — per-country stockpiles, production lines, the civil
 //! construction queue, production licences and the convoy bank.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:12501`-`:13142`
+//! Derived from `world_fold.rs:12798`-`:13439`
 //! (`fold_production`), its trailer chain parser at `:27419`-`:27524` and the ten
+// @world-fold-authority domain=11 functions=fold_production lines=12798-13439 sha256=038ef1164017e78b3493c03fea9fefd8bb78eafc64e6859348b18ed38d8dd0eb
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).
 //! `extractor/documents/domains/d11_production_live.md` supplies the native
@@ -188,28 +189,31 @@
 //! `stockpile` is a JSON **map** in the fold (`:12567`), so it has no order to
 //! lose, and `countries` / `convoy_bank` are one row per country.
 //!
-//! # STOP: `convoy_priority_reservations` is not portable
+//! # `convoy_priority_reservations`: ordered occurrence list
 //!
 //! `PCV1`'s reservation run is a pointer vector the fold emits as an ordered
-//! array of `{priority, count}` (`world_fold.rs:13033`-`:13042`). Its rows have
-//! a stable identity — `priority` is unique within a country in every
-//! country-hour of the capture — but **its order is load-bearing and is not a
-//! function of any carried field**: across `deepwar_t1`, 2,633 consecutive
+//! array of `{priority, count}` (`world_fold.rs:13330`-`:13339`). Its only identity
+//! candidate, `priority`, happens to be unique within each captured country-hour
+//! but is not required unique by the parser. **Its order is load-bearing and is
+//! not a function of any carried field**: across `deepwar_t1`, 2,633 consecutive
 //! samples of a country's reservation list are a *pure reorder* of the identical
 //! `{priority, count}` multiset (e.g. tag 29 at hour 60832407 carries
 //! `[(2,0),(4,7),(5,0),(3,0)]` and at 60832417 `[(2,0),(3,0),(4,7),(5,0)]`).
 //! A keyed set stores those two hours identically and emits no delta, which is
-//! exactly the fidelity loss `Shape::OrderedKeyedList` exists for — and that
-//! shape has no implementation (`lib.rs`, `WIRE_FORMAT.md` §7.3), so the recipe's
-//! stop condition applies: report, do not force a keyed set. Keying by source
-//! index instead would make the identity positional, which every reorder then
-//! rewrites, and a positional index is not the "stable identity that persists
-//! across hours" a keyed set requires.
+//! exactly the fidelity loss §7.3's ordered shapes prevent. `priority` is not
+//! fold-enforced unique — `PCV1` enforces uniqueness for variants and checks only
+//! `count >= 0` for reservations — so this is an `OrderedOccurrenceList`, not an
+//! `OrderedKeyedList`. Keying by source index would make identity positional,
+//! which every reorder then rewrites, and a positional index is not the "stable
+//! identity that persists across hours" a keyed set requires.
 //!
 //! This module still **parses** the reservation run — the fold's exact total law
-//! checks every `count` against `owned_raw / 100_000` (`:27744`), so refusing to
+//! checks every `count` against `owned_raw / 100_000`
+//! (`world_fold.rs:28128`-`:28140`), so refusing to
 //! parse it would accept payloads the recorder refuses — and
-//! [`FoldOutcome::reservation_rows`] accounts for it. It maps none of it. The
+//! [`FoldOutcome::reservation_rows`] accounts for it. The port maps every row,
+//! including `tag_db_id`, retaining source order within each country and
+//! flattening country groups in the fold's `BTreeMap` tag order. The
 //! convoy *variant* run has no such problem: it is sorted by `variant_id` in
 //! every country-hour of the capture and shows **zero** pure reorders, so its
 //! order is recoverable from its own key.
@@ -238,7 +242,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::body::{Key, KeyedState};
+use crate::body::{CollectionState, Key, KeyedState};
 use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
 use crate::value::Value;
@@ -252,10 +256,10 @@ pub const CONSTRUCTION_QUEUE: u32 = 4;
 pub const PRODUCTION_LICENSES: u32 = 5;
 pub const CONVOY_BANK: u32 = 6;
 pub const CONVOY_VARIANTS: u32 = 7;
-/// Collection id `8` is **reserved and unused**: it was the convoy priority
-/// reservations, which are stop-reported (see the module docs). It is burnt
-/// rather than reused so a later ordered-shape implementation can take it.
-pub const RESERVED_CONVOY_RESERVATIONS: u32 = 8;
+pub const CONVOY_PRIORITY_RESERVATIONS: u32 = 8;
+/// Historical name retained for callers that knew id 8 while it was reserved.
+/// The id now names the implemented collection.
+pub const RESERVED_CONVOY_RESERVATIONS: u32 = CONVOY_PRIORITY_RESERVATIONS;
 
 /// Field ids are stable and append-only; §11 forbids reusing an id for a
 /// different field. The same id names the same concept in every collection that
@@ -328,9 +332,12 @@ pub mod field {
     pub const CACHE_VALID: u32 = 72;
     pub const ASSIGNED: u32 = 73;
 
-    /// Field id `80` is **reserved and unused**: it was the stop-reported
-    /// reservation count.
-    pub const RESERVED_RESERVATION_COUNT: u32 = 80;
+    /// Id 80 was reserved for this field before the collection could be ported;
+    /// §11 makes that assignment permanent.
+    pub const RESERVATION_COUNT: u32 = 80;
+    pub const RESERVATION_PRIORITY: u32 = 81;
+    /// Historical name retained now that the reserved field is implemented.
+    pub const RESERVED_RESERVATION_COUNT: u32 = RESERVATION_COUNT;
 }
 
 // --- Payload constants, from `world_fold.rs:12502`-`:12689` -------------------
@@ -648,12 +655,31 @@ pub fn schema() -> Schema {
                     Field::new(f::CONVOY_VARIANT_ORDINAL, Kind::Unsigned),
                 ],
             },
+            Collection {
+                collection_id: CONVOY_PRIORITY_RESERVATIONS,
+                // The fold stores each country's pointer-vector order
+                // (`world_fold.rs:13330`-`:13339`). `priority` is not proven
+                // unique by `PCV1`, so all three words are values and duplicate
+                // rows remain legitimate occurrences.
+                shape: Shape::OrderedOccurrenceList,
+                fields: vec![
+                    Field::new(f::TAG_DB_ID, Kind::ContentId),
+                    // `PCV1` reads an i32 and places no range constraint on it
+                    // (`world_fold.rs:28049`-`:28059`).
+                    Field::new(f::RESERVATION_PRIORITY, Kind::Signed),
+                    // Production rejects `count < 0` before the row reaches the
+                    // fold (`world_fold.rs:28052`-`:28058`; mirrored by this
+                    // module's `parse_convoy_bank_segment`), so the complete
+                    // accepted range is exactly `0..=i32::MAX`.
+                    Field::new(f::RESERVATION_COUNT, Kind::Unsigned),
+                ],
+            },
         ],
         event_part: None,
     }
 }
 
-/// The seven collections, resolved once so no caller re-derives the order.
+/// The eight collections, resolved once so no caller re-derives the order.
 #[derive(Clone, Debug)]
 pub struct Collections {
     pub countries: Collection,
@@ -663,6 +689,7 @@ pub struct Collections {
     pub licenses: Collection,
     pub convoy_bank: Collection,
     pub convoy_variants: Collection,
+    pub convoy_reservations: Collection,
 }
 
 impl Collections {
@@ -684,11 +711,12 @@ impl Collections {
             licenses: find(PRODUCTION_LICENSES)?,
             convoy_bank: find(CONVOY_BANK)?,
             convoy_variants: find(CONVOY_VARIANTS)?,
+            convoy_reservations: find(CONVOY_PRIORITY_RESERVATIONS)?,
         })
     }
 
     /// In `schema()` order, for the block encoders.
-    pub fn as_slice(&self) -> [&Collection; 7] {
+    pub fn as_slice(&self) -> [&Collection; 8] {
         [
             &self.countries,
             &self.stockpile,
@@ -697,11 +725,12 @@ impl Collections {
             &self.licenses,
             &self.convoy_bank,
             &self.convoy_variants,
+            &self.convoy_reservations,
         ]
     }
 
     /// The collection name of each slot, in the same order.
-    pub const NAMES: [&'static str; 7] = [
+    pub const NAMES: [&'static str; 8] = [
         "countries",
         "stockpile",
         "production_lines",
@@ -709,12 +738,13 @@ impl Collections {
         "production_licenses",
         "convoy_bank",
         "convoy_variants",
+        "convoy_priority_reservations",
     ];
 }
 
 impl Default for Collections {
     fn default() -> Self {
-        Self::from_schema(&schema()).expect("the built-in schema has all seven collections")
+        Self::from_schema(&schema()).expect("the built-in schema has all eight collections")
     }
 }
 
@@ -2260,6 +2290,44 @@ pub fn record_from_convoy_variant(
     Ok(Record::new(values))
 }
 
+/// One `PCV1` priority reservation in the source order the fold preserves
+/// (`world_fold.rs:13330`-`:13339`).
+pub fn record_from_convoy_reservation(
+    collection: &Collection,
+    tag_db_id: u32,
+    reservation: &ConvoyReservation,
+    frame_tick: u64,
+) -> core::result::Result<Record, String> {
+    let _ = frame_tick;
+    if collection.shape != Shape::OrderedOccurrenceList {
+        return Err("convoy reservations collection is not an ordered occurrence list".into());
+    }
+    if tag_db_id == 0 {
+        return Err("convoy reservation tag_db_id is zero".into());
+    }
+    if reservation.count < 0 {
+        return Err(format!(
+            "convoy reservation count {} is negative",
+            reservation.count
+        ));
+    }
+    let mut values = Vec::with_capacity(collection.fields.len());
+    for field in collection.value_fields() {
+        let value = match field.field_id {
+            field::TAG_DB_ID => Value::ContentId(tag_db_id as u64),
+            field::RESERVATION_PRIORITY => Value::Signed(reservation.priority as i64),
+            field::RESERVATION_COUNT => Value::Unsigned(reservation.count as u64),
+            other => {
+                return Err(format!(
+                    "convoy_priority_reservations has no mapping for field id {other}"
+                ))
+            }
+        };
+        values.push(value);
+    }
+    Ok(Record::new(values))
+}
+
 /// The fold's `amount` projection of a carried convoy variant raw
 /// (`world_fold.rs:13027`). Recomputed rather than carried — it is a function of
 /// state the record already holds.
@@ -2269,7 +2337,7 @@ pub fn convoy_amount(amount_raw: i64) -> f64 {
 
 // --- The running state -------------------------------------------------------
 
-/// The seven reconstructed collections.
+/// The eight reconstructed collections.
 ///
 /// d11 is **full-replace per country, not per frame**: `fold_production` rebuilds
 /// `per_tag` from scratch each frame (`world_fold.rs:12533`) but writes it into
@@ -2286,6 +2354,10 @@ pub struct State {
     pub licenses: KeyedState,
     pub convoy_bank: KeyedState,
     pub convoy_variants: KeyedState,
+    /// The fold owns one ordered reservation array per country. The map fixes the
+    /// inter-country traversal to the fold's tag order; each value retains that
+    /// country's source order and legitimate duplicates.
+    pub convoy_reservations: BTreeMap<u32, Vec<Record>>,
 }
 
 impl State {
@@ -2311,7 +2383,29 @@ impl State {
     }
 
     pub fn rows(&self) -> usize {
-        self.as_slice().into_iter().map(|c| c.len()).sum()
+        self.as_slice().into_iter().map(|c| c.len()).sum::<usize>()
+            + self
+                .convoy_reservations
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+    }
+
+    /// All collection states in schema order, preserving the ordered shape.
+    pub fn states(&self) -> Vec<CollectionState> {
+        let mut states: Vec<CollectionState> = self
+            .as_slice()
+            .into_iter()
+            .cloned()
+            .map(CollectionState::Keyed)
+            .collect();
+        states.push(CollectionState::OrderedOccurrence(
+            self.convoy_reservations
+                .values()
+                .flat_map(|rows| rows.iter().cloned())
+                .collect(),
+        ));
+        states
     }
 }
 
@@ -2329,8 +2423,8 @@ pub struct FoldOutcome {
     pub uncovered_countries: u32,
     /// Bytes the `PDQ1` segment occupied, for the stop-report's accounting.
     pub deployment_segment_len: usize,
-    /// `PCV1` reservation rows the frame carried. Parsed and checked (the exact
-    /// total law needs them), stop-reported, never mapped — see the module docs.
+    /// `PCV1` reservation rows the frame carried. Parsed, checked and mapped; the
+    /// count remains useful for shipping-byte accounting.
     pub reservation_rows: usize,
     /// `PCV1` variant runs whose `variant_id`s are not ascending — that is, runs
     /// whose order the `convoy_variant_ordinal` field is *load-bearing* for
@@ -2608,6 +2702,9 @@ pub fn fold_payload(
         touched_convoy_countries = convoy_tags.len();
         retain_untouched(&mut state.convoy_bank, &convoy_tags);
         retain_untouched(&mut state.convoy_variants, &convoy_tags);
+        state
+            .convoy_reservations
+            .retain(|tag, _| !convoy_tags.contains(tag));
         for (&tag, bank) in banks {
             state.convoy_bank.insert(
                 Key(vec![tag as i128]),
@@ -2628,9 +2725,22 @@ pub fn fold_payload(
                     record_from_convoy_variant(&collections.convoy_variants, variant, ordinal, 0)?,
                 );
             }
-            // The reservation run is stop-reported: parsed and checked above,
-            // counted here, and mapped into no collection.
             reservation_rows += bank.reservations.len();
+            let reservations = bank
+                .reservations
+                .iter()
+                .map(|reservation| {
+                    record_from_convoy_reservation(
+                        &collections.convoy_reservations,
+                        tag,
+                        reservation,
+                        0,
+                    )
+                })
+                .collect::<core::result::Result<Vec<_>, _>>()?;
+            if !reservations.is_empty() {
+                state.convoy_reservations.insert(tag, reservations);
+            }
         }
     }
 
@@ -2706,7 +2816,10 @@ fn i64_at(b: &[u8], off: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::body::{apply, decode_baseline, decode_delta, diff, encode_baseline, encode_delta};
+    use crate::body::{
+        apply_shaped, collection_stored_eq, decode_shaped_baseline, decode_shaped_delta, diff,
+        diff_shaped, encode_shaped_baseline, encode_shaped_delta,
+    };
     use crate::TickGrid;
 
     fn grid() -> TickGrid {
@@ -3144,6 +3257,13 @@ mod tests {
             .expect("the frame folds")
     }
 
+    fn reservation_rows(state: &State) -> Vec<Record> {
+        match state.states().pop().expect("the reservation collection exists") {
+            CollectionState::OrderedOccurrence(rows) => rows,
+            _ => panic!("the reservation collection is ordered-occurrence state"),
+        }
+    }
+
     // --- step 8.1: the schema validates -------------------------------------
 
     #[test]
@@ -3151,6 +3271,15 @@ mod tests {
         schema()
             .validate(grid().log2())
             .expect("d11 schema is well-formed");
+    }
+
+    #[test]
+    fn the_reservation_collection_and_field_ids_are_literal_pinned() {
+        assert_eq!(CONVOY_PRIORITY_RESERVATIONS, 8);
+        assert_eq!(RESERVED_CONVOY_RESERVATIONS, 8);
+        assert_eq!(field::RESERVATION_COUNT, 80);
+        assert_eq!(field::RESERVED_RESERVATION_COUNT, 80);
+        assert_eq!(field::RESERVATION_PRIORITY, 81);
     }
 
     #[test]
@@ -3164,17 +3293,11 @@ mod tests {
         assert_eq!(c.convoy_bank.collection_id, CONVOY_BANK);
         assert_eq!(c.convoy_variants.collection_id, CONVOY_VARIANTS);
         assert_eq!(
-            schema().collections.len(),
-            7,
-            "seven collections; the convoy reservations are stop-reported"
+            c.convoy_reservations.collection_id,
+            CONVOY_PRIORITY_RESERVATIONS
         );
-        assert!(
-            schema()
-                .collections
-                .iter()
-                .all(|c| c.collection_id != RESERVED_CONVOY_RESERVATIONS),
-            "collection id 8 is burnt, not reused"
-        );
+        assert_eq!(c.convoy_reservations.shape, Shape::OrderedOccurrenceList);
+        assert_eq!(schema().collections.len(), 8);
         let mut shuffled = schema();
         shuffled.collections.reverse();
         let c = Collections::from_schema(&shuffled).expect("resolves");
@@ -3188,9 +3311,9 @@ mod tests {
     // --- step 8.5: shape and key --------------------------------------------
 
     #[test]
-    fn every_collection_is_a_keyed_set_with_the_folds_own_key() {
+    fn every_collection_has_the_shape_and_key_the_fold_requires() {
         let c = cols();
-        for collection in c.as_slice() {
+        for collection in c.as_slice().into_iter().take(7) {
             assert_eq!(
                 collection.shape,
                 Shape::KeyedSet,
@@ -3202,6 +3325,24 @@ mod tests {
                 assert!(!k.optional && !k.nullable && !k.unknown_capable);
             }
         }
+        assert_eq!(
+            c.convoy_reservations.shape,
+            Shape::OrderedOccurrenceList
+        );
+        assert!(c.convoy_reservations.key_fields().is_empty());
+        assert_eq!(
+            c.convoy_reservations
+                .fields
+                .iter()
+                .map(|field| (field.field_id, field.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (field::TAG_DB_ID, Kind::ContentId),
+                (field::RESERVATION_PRIORITY, Kind::Signed),
+                (field::RESERVATION_COUNT, Kind::Unsigned),
+            ],
+            "the occurrence row's full field list pins the signedness decisions"
+        );
         let keys = |collection: &Collection| -> Vec<(u32, Kind)> {
             collection
                 .key_fields()
@@ -4372,35 +4513,38 @@ mod tests {
             "1. Infanterie-Division".len() + "role_infantry".len() + "infantry_equipment".len(),
             "the bytes §4 has no kind for, which is why this collection stops"
         );
-        // And nothing in the schema can hold any of it.
+        // And nothing in the schema can hold any deployment-queue string.
         assert!(
             schema()
                 .collections
                 .iter()
-                .all(|c| c.collection_id <= CONVOY_VARIANTS),
+                .all(|c| c.collection_id <= CONVOY_PRIORITY_RESERVATIONS),
             "no deployment-queue collection exists"
         );
     }
 
     #[test]
-    fn the_convoy_reservation_run_is_parsed_checked_and_mapped_nowhere() {
-        // The stop-report's boundary. The reservation run is parsed (the exact
+    fn the_convoy_reservation_run_is_parsed_checked_and_mapped_in_order() {
+        // The reservation run is parsed (the exact
         // total law checks every `count` against `owned_raw / 100_000`, so
-        // skipping it would accept payloads the recorder refuses) and counted,
-        // and no collection holds it.
+        // skipping it would accept payloads the recorder refuses), counted, and
+        // retained by the ordered collection.
         let c = cols();
         let mut state = State::new();
         let outcome = fold_one(&mut state, &full_frame());
         assert_eq!(outcome.reservation_rows, 2);
-        assert!(
-            c.as_slice().into_iter().all(|collection| {
-                collection
-                    .fields
-                    .iter()
-                    .all(|f| f.field_id != field::RESERVED_RESERVATION_COUNT)
-            }),
-            "no collection carries a reservation count"
+        assert_eq!(state.convoy_reservations.len(), 1, "one country group");
+        let reservations = &state.convoy_reservations[&7];
+        assert_eq!(reservations.len(), 2);
+        assert_eq!(
+            reservations[0].values,
+            vec![Value::ContentId(7), Value::Signed(1), Value::Unsigned(3)]
         );
+        assert_eq!(
+            reservations[1].values,
+            vec![Value::ContentId(7), Value::Signed(2), Value::Unsigned(1)]
+        );
+        assert_eq!(c.convoy_reservations.fields.len(), 3);
         // A reservation whose count exceeds the country's convoy total is still
         // refused, which is what parsing it buys.
         let chain = pcv1(&[ConvoyCountry {
@@ -4411,6 +4555,90 @@ mod tests {
             reservations: vec![(1, 2)],
         }]);
         assert!(parse_trailers(&chain, StatusPredicates::PERMISSIVE).is_err());
+    }
+
+    #[test]
+    fn inter_country_physical_order_is_not_part_of_reservation_state() {
+        let mut frame = Frame::new();
+        frame.trailers = pcv1(&[
+            ConvoyCountry {
+                tag: 29,
+                flags: PCV1_KNOWN_FLAGS,
+                assigned: 0,
+                variants: vec![(60, 1_000_000)],
+                reservations: vec![(4, 2), (3, 1)],
+            },
+            ConvoyCountry {
+                tag: 7,
+                flags: PCV1_KNOWN_FLAGS,
+                assigned: 0,
+                variants: vec![(61, 1_000_000)],
+                reservations: vec![(2, 3), (1, 4)],
+            },
+        ]);
+        let mut state = State::new();
+        fold_one(&mut state, &frame);
+
+        let rows = reservation_rows(&state);
+        assert_eq!(
+            rows.iter()
+                .map(|record| record.values.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                vec![Value::ContentId(7), Value::Signed(2), Value::Unsigned(3)],
+                vec![Value::ContentId(7), Value::Signed(1), Value::Unsigned(4)],
+                vec![Value::ContentId(29), Value::Signed(4), Value::Unsigned(2)],
+                vec![Value::ContentId(29), Value::Signed(3), Value::Unsigned(1)],
+            ],
+            "country groups flatten by tag while each country's source order survives"
+        );
+    }
+
+    #[test]
+    fn a_byte_identical_single_country_update_does_not_move_its_group() {
+        let country_7 = ConvoyCountry {
+            tag: 7,
+            flags: PCV1_KNOWN_FLAGS,
+            assigned: 0,
+            variants: vec![(60, 1_000_000)],
+            reservations: vec![(2, 3), (1, 4)],
+        };
+        let country_29 = ConvoyCountry {
+            tag: 29,
+            flags: PCV1_KNOWN_FLAGS,
+            assigned: 0,
+            variants: vec![(61, 1_000_000)],
+            reservations: vec![(4, 2), (3, 1)],
+        };
+        let mut initial = Frame::new();
+        initial.trailers = pcv1(&[country_7, country_29]);
+        let mut state = State::new();
+        fold_one(&mut state, &initial);
+        let before = reservation_rows(&state);
+
+        let mut update = Frame::new();
+        update.trailers = pcv1(&[ConvoyCountry {
+            tag: 7,
+            flags: PCV1_KNOWN_FLAGS,
+            assigned: 0,
+            variants: vec![(60, 1_000_000)],
+            reservations: vec![(2, 3), (1, 4)],
+        }]);
+        fold_one(&mut state, &update);
+
+        assert_eq!(
+            state
+                .convoy_reservations
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![7, 29]
+        );
+        assert_eq!(
+            reservation_rows(&state),
+            before,
+            "replacing tag 7 must not move it behind untouched tag 29"
+        );
     }
 
     #[test]
@@ -4566,9 +4794,17 @@ mod tests {
         fold_one(&mut state, &full_frame());
         let encoded = {
             let mut bytes = Vec::new();
-            encode_baseline(&schema, &state.to_vec(), &mut bytes).expect("encodes");
-            let (decoded, _) = decode_baseline(&schema, &bytes, 0).expect("decodes");
+            encode_shaped_baseline(&schema, &state.states(), &mut bytes).expect("encodes");
+            let (decoded, _) =
+                decode_shaped_baseline(&schema, &bytes, 0).expect("decodes");
             decoded
+                .into_iter()
+                .take(7)
+                .map(|state| match state {
+                    CollectionState::Keyed(state) => state,
+                    _ => panic!("the first seven d11 collections are keyed"),
+                })
+                .collect::<Vec<_>>()
         };
         let variants = &encoded[6];
         let bank = &encoded[5];
@@ -4629,14 +4865,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pure_reservation_reorder_is_why_that_collection_stops() {
+    fn a_pure_reservation_reorder_changes_the_ordered_collection() {
         // The reviewer's own input, from `deepwar_t1` tag 29 at hours 60832407
         // and 60832417: the same `{priority, count}` multiset in a different
         // source order. `fold_production` stores an ordered array and those two
         // hours differ; any keyed set over `(tag, priority)` stores them
-        // identically. That is `Shape::OrderedKeyedList`, which is not
-        // implemented — so the run is stop-reported rather than forced, and
-        // this test pins the property that forced the decision.
+        // identically. This test retains the counter-evidence that forced an
+        // ordered occurrence list rather than allowing the implementation to
+        // drift back to a keyed projection.
         let first = [(2i32, 0i32), (4, 7), (5, 0), (3, 0)];
         let second = [(2i32, 0i32), (3, 0), (4, 7), (5, 0)];
         assert_ne!(first, second, "the fold's arrays differ");
@@ -4645,9 +4881,8 @@ mod tests {
         a.sort_unstable();
         b.sort_unstable();
         assert_eq!(a, b, "but every keyed projection of them is identical");
-        // Both parse, and the parser hands them back in wire order, so the
-        // information reaches the boundary and is refused there rather than
-        // silently flattened.
+        let mut folded = Vec::new();
+        let mut state = State::new();
         for order in [first, second] {
             let chain = pcv1(&[ConvoyCountry {
                 tag: 29,
@@ -4664,9 +4899,45 @@ mod tests {
                     .map(|r| (r.priority, r.count))
                     .collect::<Vec<_>>(),
                 order.to_vec(),
-                "the parser preserves the source order it cannot encode"
+                "the parser preserves source order"
             );
+            let mut frame = Frame::new();
+            frame.trailers = chain;
+            fold_payload(&mut state, &cols(), &frame.bytes(), StatusPredicates::PERMISSIVE)
+                .expect("folds");
+            folded.push(state.states());
         }
+        assert_ne!(
+            folded[0][7], folded[1][7],
+            "the two within-country orders remain distinct"
+        );
+
+        let schema = schema();
+        let collection = &schema.collections[7];
+        let delta = diff_shaped(collection, &folded[0][7], &folded[1][7])
+            .expect("both states match the schema")
+            .expect("a pure reorder is a change");
+        let expected_rows = match &folded[1][7] {
+            CollectionState::OrderedOccurrence(rows) => rows,
+            _ => panic!("collection 8 is ordered-occurrence state"),
+        };
+        match &delta {
+            crate::body::CollectionDelta::OrderedOccurrence(rows) => {
+                assert_eq!(rows, expected_rows, "the replacement carries the second order")
+            }
+            other => panic!("pure reorder produced the wrong contribution: {other:?}"),
+        }
+
+        let mut deltas = vec![None; schema.collections.len()];
+        deltas[7] = Some(delta.clone());
+        let mut wire = Vec::new();
+        encode_shaped_delta(&schema, &folded[0], &deltas, &mut wire)
+            .expect("the pure reorder encodes");
+        assert_eq!(wire[0], 0x80, "only collection 8's bitmap bit is set");
+        let (decoded, end) =
+            decode_shaped_delta(&schema, &folded[0], &wire, 0).expect("the delta decodes");
+        assert_eq!(end, wire.len());
+        assert_eq!(decoded[7].as_ref(), Some(&delta));
     }
 
     #[test]
@@ -5241,11 +5512,12 @@ mod tests {
         let c = cols();
         let mut state = State::new();
         fold_one(&mut state, &full_frame());
-        let first = state.to_vec();
+        let first = state.states();
 
         let mut bytes = Vec::new();
-        encode_baseline(&schema, &first, &mut bytes).expect("baseline encodes");
-        let (decoded, consumed) = decode_baseline(&schema, &bytes, 0).expect("decodes");
+        encode_shaped_baseline(&schema, &first, &mut bytes).expect("baseline encodes");
+        let (decoded, consumed) =
+            decode_shaped_baseline(&schema, &bytes, 0).expect("decodes");
         assert_eq!(consumed, bytes.len());
         assert_eq!(decoded, first);
 
@@ -5261,19 +5533,14 @@ mod tests {
         );
         fold_payload(&mut state, &c, &second.bytes(), StatusPredicates::PERMISSIVE)
             .expect("folds");
-        let next = state.to_vec();
+        let next = state.states();
 
         let collections: Vec<&Collection> = c.as_slice().to_vec();
         let deltas: Vec<_> = collections
             .iter()
             .enumerate()
             .map(|(i, collection)| {
-                let d = diff(collection, &first[i], &next[i]);
-                if d.is_empty() {
-                    None
-                } else {
-                    Some(d)
-                }
+                diff_shaped(collection, &first[i], &next[i]).expect("states encode")
             })
             .collect();
         assert!(
@@ -5281,19 +5548,21 @@ mod tests {
             "the second frame moved something"
         );
         let mut delta_bytes = Vec::new();
-        encode_delta(&schema, &first, &deltas, &mut delta_bytes).expect("delta encodes");
+        encode_shaped_delta(&schema, &first, &deltas, &mut delta_bytes)
+            .expect("delta encodes");
         let (decoded_deltas, consumed) =
-            decode_delta(&schema, &first, &delta_bytes, 0).expect("delta decodes");
+            decode_shaped_delta(&schema, &first, &delta_bytes, 0).expect("delta decodes");
         assert_eq!(consumed, delta_bytes.len());
         let mut replayed = first.clone();
         for (i, delta) in decoded_deltas.iter().enumerate() {
             if let Some(delta) = delta {
-                apply(&mut replayed[i], delta);
+                apply_shaped(&mut replayed[i], delta).expect("matching shape");
             }
         }
         for (i, collection) in collections.iter().enumerate() {
             assert!(
-                diff(collection, &replayed[i], &next[i]).is_empty(),
+                collection_stored_eq(collection, &replayed[i], &next[i])
+                    .expect("states encode"),
                 "collection {} is not stored-equal to the fold after replay",
                 collection.collection_id
             );
@@ -5304,7 +5573,7 @@ mod tests {
             decoded_deltas
                 .iter()
                 .flatten()
-                .any(|d| !d.tombstones.is_empty()),
+                .any(|d| matches!(d, crate::body::CollectionDelta::Keyed(d) if !d.tombstones.is_empty())),
             "a replaced country's dropped rows must be tombstoned"
         );
     }
@@ -5390,5 +5659,35 @@ mod tests {
             let mut state = State::new();
             let _ = fold_payload(&mut state, &c, &good[..cut], StatusPredicates::PERMISSIVE);
         }
+    }
+
+    #[test]
+    fn reservation_count_uses_the_parsers_complete_nonnegative_i32_range() {
+        let collection = cols().convoy_reservations;
+        let at_max = record_from_convoy_reservation(
+            &collection,
+            7,
+            &ConvoyReservation { priority: i32::MIN, count: i32::MAX },
+            0,
+        )
+        .expect("the parser accepts i32::MAX");
+        assert_eq!(
+            at_max.values,
+            vec![
+                Value::ContentId(7),
+                Value::Signed(i32::MIN as i64),
+                Value::Unsigned(i32::MAX as u64),
+            ]
+        );
+        assert!(
+            record_from_convoy_reservation(
+                &collection,
+                7,
+                &ConvoyReservation { priority: 0, count: -1 },
+                0,
+            )
+            .is_err(),
+            "the mapper keeps the parser's count >= 0 boundary"
+        );
     }
 }

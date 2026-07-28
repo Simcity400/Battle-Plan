@@ -68,7 +68,7 @@ fn a_persistent_nan_diffs_as_unchanged() {
     // `exact`, so the NaN reaches the bytes rather than being quantized away.
     let s = keyed(vec![
         Field::new(1, Kind::Unsigned).key(0),
-        Field::new(2, Kind::Continuous),
+        Field::new(2, Kind::Continuous).quant(Quant::Exact),
     ]);
     let c = &s.collections[0];
     let mut state = KeyedState::new();
@@ -94,7 +94,7 @@ fn a_persistent_nan_diffs_as_unchanged() {
 fn a_negative_zero_transition_is_a_change() {
     let s = keyed(vec![
         Field::new(1, Kind::Unsigned).key(0),
-        Field::new(2, Kind::Continuous), // exact — the sign of zero survives
+        Field::new(2, Kind::Continuous).quant(Quant::Exact), // the sign of zero survives
     ]);
     let c = &s.collections[0];
     let row = |x: f64| Record::new(vec![Value::Continuous(x)]);

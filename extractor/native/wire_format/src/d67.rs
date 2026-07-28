@@ -1,9 +1,10 @@
 //! d67 `country_dynamic_modifiers_live` — the per-country active
 //! dynamic-modifier **instance** set, schema-v2 (`DMI2`) grammar only.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:9674`-`:10029`
+//! Derived from `world_fold.rs:9811`-`:10260`
 //! (`fold_country_dynamic_modifiers` and the
 //! `fold_country_dynamic_modifier_instances` it delegates to), the payload codec
+// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=9811-10260 sha256=496c86021e2ecfca9c3b703206a2aca389e6b033d1ac02d20c3b433f8e131a6b
 //! `extractor/native/compact_contract/src/dynamic_modifiers.rs`, the collector
 //! read at `extractor/native/collector/src/attach_log.rs:61148`-`:61371`, and the
 //! entry decoder `extractor/native/lanes/country_dynamic_modifiers_live/timed_instance_exact.rs`.
@@ -165,9 +166,10 @@
 //!   happened-at-tick history — a synchronous zero observed inside the engine's
 //!   erase path before the row is destroyed (`dynamic_modifiers.rs:60`-`:63`) —
 //!   admitted only against the frame's own hour and against a lifecycle prior
-//!   (`world_fold.rs:9894`-`:9917`). `wire_format`'s own scope note says §9
-//!   events have no code at all (`lib.rs:13`-`:15`). [`fold_payload`] therefore
-//!   **refuses** a frame carrying one instead of dropping the events silently:
+//!   (`world_fold.rs:9894`-`:9917`). The §9 event codec is available, but this
+//!   d67 event sub-stream remains independently unported and unevidenced.
+//!   [`fold_payload`] therefore **refuses** a frame carrying one instead of
+//!   dropping the events silently:
 //!   dropping them would measure a shipping arm whose bytes include an event
 //!   stream this arm never encoded. The capture carries **0** zero-removal rows
 //!   in 1033 hours, so no measured hour is lost to the refusal.
@@ -177,7 +179,8 @@
 //!   are the recipe's "value the fold hard-enforces as a function of carried
 //!   state": a reader recomputes them from this schema's own instance sequence.
 //!   The one input they need that state does not carry is the *continuity* flag,
-//!   which is a stream-level gap signal (§8, unimplemented) — recorded as a
+//!   which is a stream-level gap signal. The §8 codec exists, but d67's reader
+//!   integration has not yet wired that continuity input — recorded as a
 //!   caveat, not encoded.
 //! - **`elapsed_wall_ms`** is frame timing, not state.
 //!
@@ -1132,13 +1135,13 @@ pub fn fold_payload(
                 );
             }
         }
-        // The §9 stop. See the module docs: this crate has no event grammar
-        // (`lib.rs:13`-`:15`), and mapping the frame while dropping its events
-        // would charge this arm's size against a shipping arm that carries them.
+        // The d67 event-port stop. The generic §9 grammar exists, but mapping
+        // this frame while dropping its still-unported synchronous events would
+        // charge this arm's size against a shipping arm that carries them.
         return Err(format!(
             "country_dynamic_modifiers DMI2 frame carries {} synchronous zero-removal event(s); \
-             §9 event bodies are unimplemented in this crate and this port stop-reports that \
-             sub-stream",
+             the d67 §9 event sub-stream is unported and unevidenced, so this port \
+             stop-reports it",
             frame.zero_removals.len()
         ));
     }

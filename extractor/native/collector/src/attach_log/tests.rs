@@ -7,6 +7,108 @@
         use std::fs;
 
         #[test]
+        fn domain53_rejection_cause_names_are_unique_and_do_not_collide() {
+            use diplomacy53::extractor::{
+                IntelMapFailureCause, IntelNetworkFailureCause, OperationSemanticCause,
+            };
+            use std::collections::BTreeSet;
+
+            let reserved = [
+                "domain53_operation_candidates",
+                "domain53_operation_emitted",
+                "domain53_operation_filtered",
+                "domain53_strategic_operative_candidates",
+                "domain53_intel_network_candidates",
+                "domain53_phase_intel_networks_us",
+            ];
+            let mut names = reserved.into_iter().collect::<BTreeSet<_>>();
+            let production_source = include_str!("../attach_log.rs");
+
+            for cause in OperationSemanticCause::ALL {
+                let name = domain53_operation_cause_name(cause);
+                assert!(name.starts_with("domain53_operation_reject_"));
+                assert!(names.insert(name), "duplicate diagnostic unit name: {name}");
+                assert_eq!(
+                    production_source.matches(name).count(),
+                    1,
+                    "diagnostic unit collides with another attach_log unit: {name}"
+                );
+            }
+            for cause in IntelMapFailureCause::ALL {
+                let name = domain53_intel_map_cause_name(cause);
+                assert!(name.starts_with("domain53_intel_map_reject_"));
+                assert!(names.insert(name), "duplicate diagnostic unit name: {name}");
+                assert_eq!(
+                    production_source.matches(name).count(),
+                    1,
+                    "diagnostic unit collides with another attach_log unit: {name}"
+                );
+            }
+            for cause in IntelNetworkFailureCause::ALL {
+                let name = domain53_intel_network_cause_name(cause);
+                assert!(name.starts_with("domain53_intel_network_reject_"));
+                assert!(names.insert(name), "duplicate diagnostic unit name: {name}");
+                assert_eq!(
+                    production_source.matches(name).count(),
+                    1,
+                    "diagnostic unit collides with another attach_log unit: {name}"
+                );
+            }
+
+            assert_eq!(
+                names.len(),
+                reserved.len()
+                    + OperationSemanticCause::ALL.len()
+                    + IntelMapFailureCause::ALL.len()
+                    + IntelNetworkFailureCause::ALL.len()
+            );
+        }
+
+        #[test]
+        fn domain53_typed_rejections_reach_perf_diagnostics_end_to_end() {
+            use diplomacy53::extractor::{
+                Domain53RejectionCounts, IntelMapFailureCause, IntelNetworkFailureCause,
+                OperationSemanticCause,
+            };
+
+            let mut rejection_counts = Domain53RejectionCounts::default();
+            rejection_counts.record_operation(OperationSemanticCause::DefinitionObjectInvalid);
+            rejection_counts.record_operation(OperationSemanticCause::DefinitionObjectInvalid);
+            rejection_counts.record_intel_map(IntelMapFailureCause::IntelLaneValueInvalid);
+            rejection_counts
+                .record_intel_network(IntelNetworkFailureCause::NetworkOwnerEqualsTarget);
+
+            let units = domain53_diag_units(&Domain53Diag {
+                rejection_counts,
+                ..Domain53Diag::default()
+            });
+            let value = |name: &str| {
+                units
+                    .iter()
+                    .find(|unit| unit.name == name)
+                    .map(|unit| unit.value)
+            };
+
+            assert_eq!(
+                value("domain53_operation_reject_definition_object_invalid"),
+                Some(2)
+            );
+            assert_eq!(
+                value("domain53_intel_map_reject_intel_lane_value_invalid"),
+                Some(1)
+            );
+            assert_eq!(
+                value("domain53_intel_network_reject_network_owner_equals_target"),
+                Some(1)
+            );
+            assert_eq!(
+                value("domain53_operation_reject_definition_pointer_unreadable"),
+                None,
+                "zero-valued causes must stay absent from the PERF trailer"
+            );
+        }
+
+        #[test]
         fn collector_host_image_filter_is_ascii_case_insensitive_and_exact() {
             assert!(utf16_ascii_eq_ignore_case(
                 &"hoi4.exe".encode_utf16().collect::<Vec<_>>(),
@@ -2212,6 +2314,63 @@
             assert_eq!(value("domain53_cryptology_skipped"), Some(3));
             assert_eq!(value("domain53_operative_skipped"), Some(4));
             assert_eq!(value("domain53_war_skipped"), Some(5));
+            assert_eq!(
+                value("domain53_partial_cause_mask"),
+                Some(
+                    D53_PARTIAL_RELATION_ROOT
+                        | D53_PARTIAL_RELATION_SLOT
+                        | D53_PARTIAL_RELATION_OPINION
+                        | D53_PARTIAL_RELATION_SUBJECT
+                        | D53_PARTIAL_RELATION_CONTAINER
+                        | D53_PARTIAL_INCOMING_ACTION
+                        | D53_PARTIAL_AGENCY
+                        | D53_PARTIAL_CRYPTOLOGY
+                        | D53_PARTIAL_OPERATIVE
+                        | D53_PARTIAL_WAR
+                )
+            );
+            assert_eq!(value("domain53_partial_skip_count_mismatch"), None);
+
+            let non_row_units = domain53_diag_units(&Domain53Diag {
+                relation_shadow_mismatches: 2,
+                subject_autonomy_subject_rows_without_witness: 3,
+                subject_autonomy_status_rows_withheld: 4,
+                ..Domain53Diag::default()
+            });
+            assert_eq!(
+                non_row_units
+                    .iter()
+                    .find(|unit| unit.name == "domain53_partial_cause_mask")
+                    .map(|unit| unit.value),
+                Some(
+                    D53_PARTIAL_RELATION_SHADOW_MISMATCH
+                        | D53_PARTIAL_SUBJECT_AUTONOMY_SUBJECT_WITHOUT_WITNESS
+                        | D53_PARTIAL_SUBJECT_AUTONOMY_STATUS_WITHHELD
+                )
+            );
+
+            let mismatch_units = domain53_diag_units(&Domain53Diag {
+                skipped_rows: 2,
+                skip_counts: diplomacy53::extractor::Domain53SkipCounts {
+                    operative: 1,
+                    ..diplomacy53::extractor::Domain53SkipCounts::default()
+                },
+                ..Domain53Diag::default()
+            });
+            assert_eq!(
+                mismatch_units
+                    .iter()
+                    .find(|unit| unit.name == "domain53_partial_cause_mask")
+                    .map(|unit| unit.value),
+                Some(D53_PARTIAL_OPERATIVE | D53_PARTIAL_SKIP_COUNT_MISMATCH)
+            );
+            assert_eq!(
+                mismatch_units
+                    .iter()
+                    .find(|unit| unit.name == "domain53_partial_skip_count_mismatch")
+                    .map(|unit| unit.value),
+                Some(1)
+            );
         }
 
         /// W1 instrument (perf_rearch_20260706 T4): the per-family phase units are
@@ -12127,34 +12286,465 @@
         }
 
         #[test]
-        fn domain47_manager_identity_set_requires_exact_unique_index_parity() {
-            let exact = [(11u32, 0x1100usize), (22u32, 0x2200usize)];
-            let lookup = |char_id| match char_id {
-                11 => Some(0x1100),
-                22 => Some(0x2200),
-                _ => None,
+        fn domain47_re_constants_and_name_token_dataflow_are_pinned() {
+            assert_eq!(DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF, 0x18);
+            assert_eq!(DOMAIN47_MANAGER_NAME_INDEX_EMPTY_BUCKETS_RVA, 0x306_F1C8);
+            assert_eq!(DOMAIN47_MANAGER_NAME_INDEX_BUCKET_STRIDE, 0x18);
+            assert_eq!(DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF, 0x04);
+            assert_eq!(DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF, 0x08);
+            assert_eq!(DOMAIN47_MANAGER_NAME_INDEX_BUCKET_VALUE_OFF, 0x10);
+
+            let character_addr = 0x4000usize;
+            assert_eq!(
+                domain47_character_name_token_addr(character_addr),
+                Some(character_addr + 0x18)
+            );
+            // The manager cache key is the independently read +0x18 token, not
+            // CharacterRawFields::char_id at +0x0C.
+            assert_eq!(
+                domain47_stable_name_identity(0x1234, 0x1234, character_addr),
+                Some((0x1234, character_addr))
+            );
+            assert_eq!(
+                domain47_stable_name_identity(0x1234, 0x5678, character_addr),
+                None
+            );
+        }
+
+        #[test]
+        fn domain47_manager_index_header_reports_every_exact_failure() {
+            use std::collections::BTreeMap;
+
+            let manager = 0x2000usize;
+            let index = manager + DOMAIN47_MANAGER_NAME_INDEX_OFF;
+            let empty_buckets =
+                0x1400_0000_0usize + DOMAIN47_MANAGER_NAME_INDEX_EMPTY_BUCKETS_RVA;
+            let mut words64 = BTreeMap::from([(
+                index + DOMAIN47_MANAGER_NAME_INDEX_BUCKETS_OFF,
+                empty_buckets as u64,
+            )]);
+            let mut words32 = BTreeMap::from([
+                (index + DOMAIN47_MANAGER_NAME_INDEX_COUNT_OFF, 0u32),
+                (index + DOMAIN47_MANAGER_NAME_INDEX_MASK_OFF, 0u32),
+            ]);
+            let mut bytes = BTreeMap::from([(
+                index + DOMAIN47_MANAGER_NAME_INDEX_MAX_PROBE_OFF,
+                0u8,
+            )]);
+            let read = |
+                manager: usize,
+                words64: &BTreeMap<usize, u64>,
+                words32: &BTreeMap<usize, u32>,
+                bytes: &BTreeMap<usize, u8>,
+            | {
+                domain47_read_manager_index_header_with(
+                    manager,
+                    empty_buckets,
+                    |addr| words64.get(&addr).copied(),
+                    |addr| words32.get(&addr).copied(),
+                    |addr| bytes.get(&addr).copied(),
+                )
             };
-            assert!(domain47_manager_identity_set_is_exact(&exact, 2, lookup));
-            assert!(!domain47_manager_identity_set_is_exact(&exact, 1, lookup));
-            assert!(!domain47_manager_identity_set_is_exact(
-                &[(11, 0x1100), (11, 0x2200)],
-                2,
-                lookup,
-            ));
-            assert!(!domain47_manager_identity_set_is_exact(
-                &[(11, 0x1100), (22, 0x1100)],
-                2,
-                lookup,
-            ));
-            assert!(!domain47_manager_identity_set_is_exact(
-                &exact,
-                2,
-                |char_id| match char_id {
-                    11 => Some(0x1100),
-                    22 => Some(0x3300),
-                    _ => None,
-                },
-            ));
+
+            assert_eq!(
+                read(manager, &words64, &words32, &bytes),
+                Ok(Domain47ManagerIndexHeader {
+                    buckets: empty_buckets,
+                    count: 0,
+                    mask: 0,
+                    max_probe: 0,
+                })
+            );
+            assert_eq!(
+                read(usize::MAX, &words64, &words32, &bytes),
+                Err(Domain47ManagerRosterFailureKind::IndexAddressOverflow)
+            );
+            assert_eq!(
+                read(
+                    usize::MAX
+                        - DOMAIN47_MANAGER_NAME_INDEX_OFF
+                        - DOMAIN47_MANAGER_NAME_INDEX_BUCKETS_OFF
+                        + 1,
+                    &words64,
+                    &words32,
+                    &bytes,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexAddressOverflow)
+            );
+
+            let saved_buckets = words64
+                .remove(&(index + DOMAIN47_MANAGER_NAME_INDEX_BUCKETS_OFF))
+                .unwrap();
+            assert_eq!(
+                read(manager, &words64, &words32, &bytes),
+                Err(Domain47ManagerRosterFailureKind::IndexBucketsUnreadable)
+            );
+            words64.insert(
+                index + DOMAIN47_MANAGER_NAME_INDEX_BUCKETS_OFF,
+                saved_buckets,
+            );
+            let saved_count = words32
+                .remove(&(index + DOMAIN47_MANAGER_NAME_INDEX_COUNT_OFF))
+                .unwrap();
+            assert_eq!(
+                read(manager, &words64, &words32, &bytes),
+                Err(Domain47ManagerRosterFailureKind::IndexCountUnreadable)
+            );
+            words32.insert(
+                index + DOMAIN47_MANAGER_NAME_INDEX_COUNT_OFF,
+                saved_count,
+            );
+            let saved_mask = words32
+                .remove(&(index + DOMAIN47_MANAGER_NAME_INDEX_MASK_OFF))
+                .unwrap();
+            assert_eq!(
+                read(manager, &words64, &words32, &bytes),
+                Err(Domain47ManagerRosterFailureKind::IndexMaskUnreadable)
+            );
+            words32.insert(index + DOMAIN47_MANAGER_NAME_INDEX_MASK_OFF, saved_mask);
+            let saved_probe = bytes
+                .remove(&(index + DOMAIN47_MANAGER_NAME_INDEX_MAX_PROBE_OFF))
+                .unwrap();
+            assert_eq!(
+                read(manager, &words64, &words32, &bytes),
+                Err(Domain47ManagerRosterFailureKind::IndexMaxProbeUnreadable)
+            );
+            bytes.insert(
+                index + DOMAIN47_MANAGER_NAME_INDEX_MAX_PROBE_OFF,
+                saved_probe,
+            );
+
+            assert_eq!(
+                domain47_validate_manager_index_header(
+                    Domain47ManagerIndexHeader {
+                        buckets: empty_buckets,
+                        count: 1,
+                        mask: u32::MAX,
+                        max_probe: 0,
+                    },
+                    empty_buckets,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexSlotCountOverflow)
+            );
+            assert_eq!(
+                domain47_validate_manager_index_header(
+                    Domain47ManagerIndexHeader {
+                        buckets: empty_buckets,
+                        count: 0,
+                        mask: 1,
+                        max_probe: 0,
+                    },
+                    empty_buckets,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexEmptyStateInvalid)
+            );
+            assert_eq!(
+                domain47_validate_manager_index_header(
+                    Domain47ManagerIndexHeader {
+                        buckets: empty_buckets,
+                        count: DOMAIN47_MANAGER_ROSTER_MAX + 1,
+                        mask: 7,
+                        max_probe: 0,
+                    },
+                    empty_buckets,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexCountTooLarge)
+            );
+            assert_eq!(
+                domain47_validate_manager_index_header(
+                    Domain47ManagerIndexHeader {
+                        buckets: empty_buckets,
+                        count: 1,
+                        mask: 2,
+                        max_probe: 0,
+                    },
+                    empty_buckets,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexMaskInvalid)
+            );
+            assert_eq!(
+                domain47_validate_manager_index_header(
+                    Domain47ManagerIndexHeader {
+                        buckets: empty_buckets,
+                        count: 1,
+                        mask: (DOMAIN47_MANAGER_ROSTER_MAX * 4) - 1,
+                        max_probe: 1,
+                    },
+                    empty_buckets,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexSlotCountTooLarge)
+            );
+            assert_eq!(
+                domain47_validate_manager_index_header(
+                    Domain47ManagerIndexHeader {
+                        buckets: 0,
+                        count: 1,
+                        mask: 7,
+                        max_probe: 0,
+                    },
+                    empty_buckets,
+                ),
+                Err(Domain47ManagerRosterFailureKind::IndexBucketsInvalid)
+            );
+        }
+
+        #[test]
+        fn domain47_manager_index_lookup_covers_populated_bucket_states() {
+            use std::collections::BTreeMap;
+
+            let base = 0x1000usize;
+            let token = 0x1234u32;
+            let stored_pointer = 0x5678usize;
+            let header = Domain47ManagerIndexHeader {
+                buckets: base,
+                count: 1,
+                mask: 0,
+                max_probe: 1,
+            };
+            fn lookup<PointerValid>(
+                header: Domain47ManagerIndexHeader,
+                controls: &BTreeMap<usize, u8>,
+                keys: &BTreeMap<usize, u32>,
+                values: &BTreeMap<usize, u64>,
+                pointer_is_valid: PointerValid,
+            ) -> Domain47ManagerIndexLookup
+            where
+                PointerValid: FnMut(usize) -> bool,
+            {
+                domain47_manager_index_lookup_with(
+                    header,
+                    0x1234,
+                    |addr| controls.get(&addr).copied(),
+                    |addr| keys.get(&addr).copied(),
+                    |addr| values.get(&addr).copied(),
+                    pointer_is_valid,
+                )
+            }
+            let controls =
+                BTreeMap::from([(base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF, 1)]);
+            let keys =
+                BTreeMap::from([(base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF, token)]);
+            let values = BTreeMap::from([(
+                base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_VALUE_OFF,
+                stored_pointer as u64,
+            )]);
+            assert_eq!(
+                lookup(header, &controls, &keys, &values, |addr| addr
+                    == stored_pointer),
+                Domain47ManagerIndexLookup::Found(stored_pointer)
+            );
+
+            let empty_control =
+                BTreeMap::from([(base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF, 0)]);
+            assert_eq!(
+                lookup(header, &empty_control, &keys, &values, |_| true),
+                Domain47ManagerIndexLookup::Absent
+            );
+
+            let second = base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_STRIDE;
+            let control_distance = BTreeMap::from([
+                (base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF, 1),
+                (
+                    second + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF,
+                    1,
+                ),
+            ]);
+            let first_key_miss = BTreeMap::from([(
+                base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF,
+                token + 1,
+            )]);
+            assert_eq!(
+                lookup(
+                    header,
+                    &control_distance,
+                    &first_key_miss,
+                    &BTreeMap::new(),
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Absent
+            );
+
+            let sentinel_header = Domain47ManagerIndexHeader {
+                max_probe: 0,
+                ..header
+            };
+            let sentinel_controls = BTreeMap::from([
+                (base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF, 1),
+                (
+                    second + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_CONTROL_OFF,
+                    u8::MAX,
+                ),
+            ]);
+            let sentinel_match = BTreeMap::from([
+                (
+                    base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF,
+                    token + 1,
+                ),
+                (
+                    second + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF,
+                    token,
+                ),
+            ]);
+            assert_eq!(
+                lookup(
+                    sentinel_header,
+                    &sentinel_controls,
+                    &sentinel_match,
+                    &BTreeMap::new(),
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Absent
+            );
+            let sentinel_miss = BTreeMap::from([
+                (
+                    base + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF,
+                    token + 1,
+                ),
+                (
+                    second + DOMAIN47_MANAGER_NAME_INDEX_BUCKET_KEY_OFF,
+                    token + 2,
+                ),
+            ]);
+            assert_eq!(
+                lookup(
+                    sentinel_header,
+                    &sentinel_controls,
+                    &sentinel_miss,
+                    &BTreeMap::new(),
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Invalid
+            );
+
+            assert_eq!(
+                lookup(
+                    header,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Invalid
+            );
+            assert_eq!(
+                lookup(
+                    header,
+                    &controls,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Invalid
+            );
+            assert_eq!(
+                lookup(
+                    header,
+                    &controls,
+                    &keys,
+                    &BTreeMap::new(),
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Invalid
+            );
+            assert_eq!(
+                lookup(header, &controls, &keys, &values, |_| false),
+                Domain47ManagerIndexLookup::Invalid
+            );
+            assert_eq!(
+                lookup(
+                    Domain47ManagerIndexHeader {
+                        mask: u32::MAX,
+                        ..header
+                    },
+                    &controls,
+                    &keys,
+                    &values,
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Invalid
+            );
+            assert_eq!(
+                lookup(
+                    Domain47ManagerIndexHeader {
+                        buckets: usize::MAX,
+                        ..header
+                    },
+                    &controls,
+                    &keys,
+                    &values,
+                    |_| true,
+                ),
+                Domain47ManagerIndexLookup::Invalid
+            );
+            assert_eq!(
+                domain47_manager_index_lookup_with(
+                    Domain47ManagerIndexHeader {
+                        count: 0,
+                        ..header
+                    },
+                    token,
+                    |_| None,
+                    |_| None,
+                    |_| None,
+                    |_| false,
+                ),
+                Domain47ManagerIndexLookup::Absent
+            );
+        }
+
+        #[test]
+        fn domain47_manager_name_index_only_rejects_foreign_found_pointers() {
+            let exact = [(11u32, 0x1100usize), (22u32, 0x2200usize)];
+            let lookup = |name_token_id| match name_token_id {
+                11 => Domain47ManagerIndexLookup::Found(0x1100),
+                22 => Domain47ManagerIndexLookup::Found(0x2200),
+                _ => Domain47ManagerIndexLookup::Absent,
+            };
+            assert_eq!(
+                domain47_manager_name_index_check(&exact, lookup),
+                Domain47ManagerNameIndexCheck {
+                    distinct_name_token_count: 2,
+                    all_found_pointers_in_roster: true,
+                }
+            );
+            assert!(
+                domain47_manager_name_index_check(&exact, |_| {
+                    Domain47ManagerIndexLookup::Absent
+                })
+                .roster_is_safe(),
+                "an empty derived cache must not reject stable authoritative vectors"
+            );
+            assert_eq!(
+                domain47_manager_name_index_check(&[(11, 0x1100), (11, 0x2200)], lookup),
+                Domain47ManagerNameIndexCheck {
+                    distinct_name_token_count: 1,
+                    all_found_pointers_in_roster: true,
+                }
+            );
+            assert_eq!(
+                domain47_manager_name_index_check(&[(u32::MAX, 0x3300)], |_| {
+                    Domain47ManagerIndexLookup::Absent
+                })
+                .distinct_name_token_count,
+                0
+            );
+            assert!(
+                !domain47_manager_name_index_check(&exact, |name_token_id| {
+                    match name_token_id {
+                        11 => Domain47ManagerIndexLookup::Found(0x1100),
+                        22 => Domain47ManagerIndexLookup::Found(0x3300),
+                        _ => Domain47ManagerIndexLookup::Absent,
+                    }
+                })
+                .roster_is_safe()
+            );
+            assert!(
+                !domain47_manager_name_index_check(&exact, |_| {
+                    Domain47ManagerIndexLookup::Invalid
+                })
+                .roster_is_safe(),
+                "a torn lookup or out-of-window stored pointer must remain fail-closed"
+            );
         }
 
         #[test]
@@ -12184,7 +12774,10 @@
                     trait_token_count: 23,
                     manager_historical_count: 61,
                     manager_dynamic_count: 67,
-                    manager_id_index_count: 128,
+                    manager_name_index_count: 128,
+                    manager_name_index_count_observed: true,
+                    manager_distinct_name_token_count: 127,
+                    manager_distinct_name_token_count_observed: true,
                     manager_failure_kind: 0,
                 },
                 Domain47CountryBridgeSummary {
@@ -12222,7 +12815,23 @@
             assert_eq!(value("domain47_prewarm_trait_token_count"), Some(23));
             assert_eq!(value("domain47_manager_historical_count"), Some(61));
             assert_eq!(value("domain47_manager_dynamic_count"), Some(67));
-            assert_eq!(value("domain47_manager_id_index_count"), Some(128));
+            assert_eq!(value("domain47_manager_name_index_count"), Some(128));
+            assert_eq!(
+                value("domain47_manager_name_index_count_observed"),
+                Some(1)
+            );
+            assert_eq!(
+                value("domain47_manager_distinct_name_token_count"),
+                Some(127)
+            );
+            assert_eq!(
+                value("domain47_manager_distinct_name_token_count_observed"),
+                Some(1)
+            );
+            assert_eq!(
+                value("domain47_manager_name_index_count_matches_distinct_tokens"),
+                Some(0)
+            );
             assert_eq!(value("domain47_manager_failure_kind"), Some(0));
             assert_eq!(value("domain47_adapter_rejected_roots"), Some(29));
             assert_eq!(value("domain47_adapter_missing_trait_tokens"), Some(31));
@@ -12239,7 +12848,40 @@
             assert_eq!(value("domain47_prewarm_refresh_held_roots"), Some(1));
             assert_eq!(value("domain47_adapter_dead_roots"), Some(43));
             assert_eq!(value("domain47_prewarm_ambiguous_root_rows"), Some(47));
-            assert_eq!(units.len(), 35);
+            assert_eq!(units.len(), 39);
+
+            let unobserved = domain47_diagnostic_units(
+                Domain47PrewarmSummary {
+                    manager_name_index_count: 0,
+                    manager_name_index_count_observed: false,
+                    manager_distinct_name_token_count: 0,
+                    manager_distinct_name_token_count_observed: false,
+                    ..Domain47PrewarmSummary::default()
+                },
+                Domain47CountryBridgeSummary::default(),
+                &domain47::adapter::AdapterBuildStats::default(),
+                0,
+            );
+            let unobserved_value = |name: &str| {
+                unobserved
+                    .iter()
+                    .find(|unit| unit.name == name)
+                    .map(|unit| unit.value)
+            };
+            assert_eq!(
+                unobserved_value("domain47_manager_name_index_count_observed"),
+                Some(0)
+            );
+            assert_eq!(
+                unobserved_value("domain47_manager_distinct_name_token_count_observed"),
+                Some(0)
+            );
+            assert_eq!(
+                unobserved_value(
+                    "domain47_manager_name_index_count_matches_distinct_tokens"
+                ),
+                Some(0)
+            );
         }
 
         /// Blocker-1 acceptance test 1 (Codex tid 019f5387): a large valid
@@ -19864,12 +20506,105 @@
             assert!(!delete_frame.contains("0x"));
         }
 
+        // Independent exact-a729 authority. These literals come from the RTTI/constructor
+        // evidence, not from the production constants used by the classifier or fixtures.
+        // Keeping the golden values on the test side prevents a swapped class label or a
+        // moved field offset from changing both the producer fixture and reader together.
+        const D21_A729_LAND_PRIMARY_VTABLE_RVA: usize = 0x29914D8;
+        const D21_A729_LAND_BODY_VTABLE_RVA: usize = 0x29915B8;
+        const D21_A729_NAVAL_PRIMARY_VTABLE_RVA: usize = 0x29C6F18;
+        const D21_A729_BORDER_PRIMARY_VTABLE_RVA: usize = 0x29A56E0;
+        const D21_A729_BORDER_BODY_VTABLE_RVA: usize = 0x29A57C0;
+
         #[test]
-        fn land_combat_manager_fails_closed_when_any_slot_is_unreadable() {
-            let sample = LandCombatSample {
-                combat_id: 271,
+        fn d21_exact_a729_vtable_and_layout_authority_is_independently_pinned() {
+            assert_eq!(LAND_COMBAT_MANAGER_OFFSET, 0x260);
+            assert_eq!(LAND_COMBAT_MANAGER_DATA, 0x08);
+            assert_eq!(LAND_COMBAT_MANAGER_COUNT, 0x14);
+            assert_eq!(LAND_COMBAT_MANAGER_BODY_DELTA, 0x10);
+            assert_eq!(
+                LAND_COMBAT_PRIMARY_VTABLE_RVA,
+                D21_A729_LAND_PRIMARY_VTABLE_RVA
+            );
+            assert_eq!(
+                LAND_COMBAT_BODY_VTABLE_RVA,
+                D21_A729_LAND_BODY_VTABLE_RVA
+            );
+            assert_eq!(
+                NAVAL_COMBAT_VTABLE_RVA,
+                D21_A729_NAVAL_PRIMARY_VTABLE_RVA
+            );
+            assert_eq!(
+                LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA,
+                D21_A729_BORDER_PRIMARY_VTABLE_RVA
+            );
+            assert_eq!(
+                LAND_BORDER_WAR_COMBAT_BODY_VTABLE_RVA,
+                D21_A729_BORDER_BODY_VTABLE_RVA
+            );
+            assert_eq!(LAND_COMBAT_OFF_TYPE, 0x08);
+            assert_eq!(LAND_COMBAT_OFF_ID, 0x0C);
+            assert_eq!(LAND_COMBAT_OFF_ATTACKER_SIDE, 0x18);
+            assert_eq!(LAND_COMBAT_OFF_FRONT, 0x28);
+            assert_eq!(LAND_COMBAT_OFF_DURATION, 0x30);
+            assert_eq!(LAND_COMBAT_OFF_DAY, 0x34);
+            assert_eq!(LAND_COMBAT_REGISTRY_OFF_HANDLE, 0x18);
+            assert_eq!(LAND_COMBAT_REGISTRY_OFF_ATTACKER_SIDE, 0x28);
+            assert_eq!(LAND_COMBAT_REGISTRY_OFF_DEFENDER_SIDE, 0x30);
+            assert_eq!(LAND_COMBAT_REGISTRY_OFF_FRONT, 0x38);
+
+            let module_base = HEAP_LO + 0x50_0000;
+            let mut land = AlignedBytes::<0x20>::new();
+            land.write_u64(
+                0x00,
+                (module_base + D21_A729_LAND_PRIMARY_VTABLE_RVA) as u64,
+            );
+            land.write_u64(
+                0x10,
+                (module_base + D21_A729_LAND_BODY_VTABLE_RVA) as u64,
+            );
+            let mut naval = AlignedBytes::<0x20>::new();
+            naval.write_u64(
+                0x00,
+                (module_base + D21_A729_NAVAL_PRIMARY_VTABLE_RVA) as u64,
+            );
+            let mut border = AlignedBytes::<0x20>::new();
+            border.write_u64(
+                0x00,
+                (module_base + D21_A729_BORDER_PRIMARY_VTABLE_RVA) as u64,
+            );
+            border.write_u64(
+                0x10,
+                (module_base + D21_A729_BORDER_BODY_VTABLE_RVA) as u64,
+            );
+
+            let land_class =
+                classify_land_combat_manager_entry(module_base, land.addr(), 0).unwrap();
+            let naval_class =
+                classify_land_combat_manager_entry(module_base, naval.addr(), 1).unwrap();
+            let border_class =
+                classify_land_combat_manager_entry(module_base, border.addr(), 2).unwrap();
+            assert_eq!(land_class.class, LandCombatManagerEntryClass::OrdinaryLand);
+            assert_eq!(naval_class.class, LandCombatManagerEntryClass::Naval);
+            assert_eq!(
+                border_class.class,
+                LandCombatManagerEntryClass::LandBorderWar
+            );
+            assert_eq!(
+                read_u64(land.addr() + 0x10),
+                Some((module_base + D21_A729_LAND_BODY_VTABLE_RVA) as u64)
+            );
+            assert_eq!(
+                read_u64(border.addr() + 0x10),
+                Some((module_base + D21_A729_BORDER_BODY_VTABLE_RVA) as u64)
+            );
+        }
+
+        fn d21_manager_test_sample(combat_id: u32, body_addr: usize) -> LandCombatSample {
+            LandCombatSample {
+                combat_id,
                 generation: 0,
-                body_addr: HEAP_LO + 0x12000,
+                body_addr,
                 attacker_side_addr: 0,
                 defender_side_addr: 0,
                 location: Some(3986),
@@ -19885,7 +20620,599 @@
                 defender_attribution: Vec::new(),
                 attacker_reserve_divisions: None,
                 defender_reserve_divisions: None,
-            };
+            }
+        }
+
+        fn d21_manager_slot_bytes(entries: &[usize]) -> Vec<u8> {
+            entries
+                .iter()
+                .flat_map(|entry| (*entry as u64).to_le_bytes())
+                .collect()
+        }
+
+        struct D21LandFixture {
+            combat: Box<AlignedBytes<0xD8>>,
+            _front: Box<AlignedBytes<0xB0>>,
+            _attacker: Box<AlignedBytes<0x430>>,
+            _defender: Box<AlignedBytes<0x430>>,
+            _attacker_elements: Box<AlignedBytes<0x08>>,
+            _defender_elements: Box<AlignedBytes<0x08>>,
+            _attacker_wrapper: Box<AlignedBytes<0x30>>,
+            _defender_wrapper: Box<AlignedBytes<0x30>>,
+            _registry_override: Option<Box<AlignedBytes<0x40>>>,
+        }
+
+        impl D21LandFixture {
+            fn new(
+                module_base: usize,
+                combat_id: u32,
+                province_id: u32,
+                attacker_division_id: u32,
+                defender_division_id: u32,
+            ) -> Self {
+                Self::new_with_vtables(
+                    module_base,
+                    combat_id,
+                    province_id,
+                    attacker_division_id,
+                    defender_division_id,
+                    LAND_COMBAT_PRIMARY_VTABLE_RVA,
+                    LAND_COMBAT_BODY_VTABLE_RVA,
+                    LAND_COMBAT_TYPE,
+                )
+            }
+
+            fn new_border_war(
+                module_base: usize,
+                combat_id: u32,
+                province_id: u32,
+                attacker_division_id: u32,
+                defender_division_id: u32,
+                runtime_type_word: u32,
+            ) -> Self {
+                Self::new_with_vtables(
+                    module_base,
+                    combat_id,
+                    province_id,
+                    attacker_division_id,
+                    defender_division_id,
+                    LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA,
+                    LAND_BORDER_WAR_COMBAT_BODY_VTABLE_RVA,
+                    runtime_type_word,
+                )
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn new_with_vtables(
+                module_base: usize,
+                combat_id: u32,
+                province_id: u32,
+                attacker_division_id: u32,
+                defender_division_id: u32,
+                primary_vtable_rva: usize,
+                body_vtable_rva: usize,
+                combat_type: u32,
+            ) -> Self {
+                let mut front = AlignedBytes::<0xB0>::new();
+                front.write_u64(0, (module_base + LAND_COMBAT_FRONT_VTABLE_RVA) as u64);
+                front.write_u32(LAND_COMBAT_FRONT_OFF_PROVINCE, province_id);
+
+                let mut attacker_wrapper = AlignedBytes::<0x30>::new();
+                attacker_wrapper.write_u64(0, (module_base + DIVISION_WRAPPER_VTABLE_RVA) as u64);
+                attacker_wrapper.write_u64(
+                    DIVISION_WRAPPER_TO_BODY,
+                    (module_base + DIVISION_VTABLE_RVA) as u64,
+                );
+                attacker_wrapper.write_u32(
+                    DIVISION_WRAPPER_TO_BODY + DIVISION_OFF_ID_TYPE,
+                    DIVISION_TYPE,
+                );
+                attacker_wrapper.write_u32(
+                    DIVISION_WRAPPER_TO_BODY + DIVISION_OFF_ID_ID,
+                    attacker_division_id,
+                );
+
+                let mut defender_wrapper = AlignedBytes::<0x30>::new();
+                defender_wrapper.write_u64(0, (module_base + DIVISION_WRAPPER_VTABLE_RVA) as u64);
+                defender_wrapper.write_u64(
+                    DIVISION_WRAPPER_TO_BODY,
+                    (module_base + DIVISION_VTABLE_RVA) as u64,
+                );
+                defender_wrapper.write_u32(
+                    DIVISION_WRAPPER_TO_BODY + DIVISION_OFF_ID_TYPE,
+                    DIVISION_TYPE,
+                );
+                defender_wrapper.write_u32(
+                    DIVISION_WRAPPER_TO_BODY + DIVISION_OFF_ID_ID,
+                    defender_division_id,
+                );
+
+                let mut attacker_elements = AlignedBytes::<0x08>::new();
+                attacker_elements.write_u64(0, attacker_wrapper.addr() as u64);
+                let mut defender_elements = AlignedBytes::<0x08>::new();
+                defender_elements.write_u64(0, defender_wrapper.addr() as u64);
+
+                let mut attacker = AlignedBytes::<0x430>::new();
+                attacker.write_u64(0, (module_base + LAND_COMBAT_SIDE_VTABLE_RVA) as u64);
+                attacker.write_u64(LAND_COMBAT_SIDE_OFF_DATA, attacker_elements.addr() as u64);
+                attacker.write_u32(LAND_COMBAT_SIDE_OFF_CAPACITY, 1);
+                attacker.write_u32(LAND_COMBAT_SIDE_OFF_SIZE, 1);
+                attacker.write_u32(LAND_COMBAT_SIDE_OFF_COMMITTED, 1);
+                attacker.write_u64(
+                    LAND_COMBAT_SIDE_OFF_STATS_OBSERVER,
+                    (module_base + COMBAT_STATS_OBSERVER_VTABLE_RVA) as u64,
+                );
+
+                let mut defender = AlignedBytes::<0x430>::new();
+                defender.write_u64(0, (module_base + LAND_COMBAT_SIDE_VTABLE_RVA) as u64);
+                defender.write_u64(LAND_COMBAT_SIDE_OFF_DATA, defender_elements.addr() as u64);
+                defender.write_u32(LAND_COMBAT_SIDE_OFF_CAPACITY, 1);
+                defender.write_u32(LAND_COMBAT_SIDE_OFF_SIZE, 1);
+                defender.write_u32(LAND_COMBAT_SIDE_OFF_COMMITTED, 1);
+                defender.write_u64(
+                    LAND_COMBAT_SIDE_OFF_STATS_OBSERVER,
+                    (module_base + COMBAT_STATS_OBSERVER_VTABLE_RVA) as u64,
+                );
+
+                let mut combat = AlignedBytes::<0xD8>::new();
+                combat.write_u64(0, (module_base + primary_vtable_rva) as u64);
+                combat.write_u64(
+                    LAND_COMBAT_MANAGER_BODY_DELTA,
+                    (module_base + body_vtable_rva) as u64,
+                );
+                combat.write_u32(
+                    LAND_COMBAT_MANAGER_BODY_DELTA + LAND_COMBAT_OFF_TYPE,
+                    combat_type,
+                );
+                combat.write_u32(
+                    LAND_COMBAT_MANAGER_BODY_DELTA + LAND_COMBAT_OFF_ID,
+                    combat_id,
+                );
+                combat.write_u64(
+                    LAND_COMBAT_MANAGER_BODY_DELTA + LAND_COMBAT_OFF_ATTACKER_SIDE,
+                    attacker.addr() as u64,
+                );
+                combat.write_u64(
+                    LAND_COMBAT_MANAGER_BODY_DELTA + LAND_COMBAT_OFF_FRONT,
+                    front.addr() as u64,
+                );
+                combat.write_u32(
+                    LAND_COMBAT_MANAGER_BODY_DELTA + LAND_COMBAT_OFF_DURATION,
+                    17,
+                );
+                combat.write_u32(LAND_COMBAT_MANAGER_BODY_DELTA + LAND_COMBAT_OFF_DAY, 4618);
+                combat.write_u64(
+                    LAND_COMBAT_REGISTRY_OFF_DEFENDER_SIDE,
+                    defender.addr() as u64,
+                );
+                attacker.write_u64(LAND_COMBAT_SIDE_OFF_REGISTRY, combat.addr() as u64);
+                defender.write_u64(LAND_COMBAT_SIDE_OFF_REGISTRY, combat.addr() as u64);
+
+                Self {
+                    combat,
+                    _front: front,
+                    _attacker: attacker,
+                    _defender: defender,
+                    _attacker_elements: attacker_elements,
+                    _defender_elements: defender_elements,
+                    _attacker_wrapper: attacker_wrapper,
+                    _defender_wrapper: defender_wrapper,
+                    _registry_override: None,
+                }
+            }
+
+            fn with_registry_override(
+                mut self,
+                module_base: usize,
+                primary_vtable_rva: usize,
+                combat_id: u32,
+                type_word: u32,
+            ) -> Self {
+                let mut registry = AlignedBytes::<0x40>::new();
+                registry.write_u64(0, (module_base + primary_vtable_rva) as u64);
+                registry.write_u32(LAND_COMBAT_REGISTRY_OFF_HANDLE, type_word);
+                registry.write_u32(LAND_COMBAT_REGISTRY_OFF_HANDLE + 4, combat_id);
+                registry.write_u64(
+                    LAND_COMBAT_REGISTRY_OFF_ATTACKER_SIDE,
+                    self._attacker.addr() as u64,
+                );
+                registry.write_u64(
+                    LAND_COMBAT_REGISTRY_OFF_DEFENDER_SIDE,
+                    self._defender.addr() as u64,
+                );
+                registry.write_u64(LAND_COMBAT_REGISTRY_OFF_FRONT, self._front.addr() as u64);
+                self._attacker
+                    .write_u64(LAND_COMBAT_SIDE_OFF_REGISTRY, registry.addr() as u64);
+                self._defender
+                    .write_u64(LAND_COMBAT_SIDE_OFF_REGISTRY, registry.addr() as u64);
+                self._registry_override = Some(registry);
+                self
+            }
+
+            fn entry(&self) -> usize {
+                self.combat.addr()
+            }
+        }
+
+        #[test]
+        fn land_combat_manager_all_land_entries_resolve() {
+            let module_base = HEAP_LO + 0x60_0000;
+            let first = D21LandFixture::new(module_base, 271, 3986, 1053, 465);
+            let second = D21LandFixture::new(module_base, 272, 3987, 2837, 4661);
+            let raw = d21_manager_slot_bytes(&[first.entry(), second.entry()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 2, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+
+            assert_eq!(walk.first_failure, None);
+            assert_eq!(walk.samples.len(), 2);
+            assert_eq!(walk.skipped_naval_combat_entries, 0);
+            let samples = land_combat_manager_samples_result(walk.samples, walk.first_failure).unwrap();
+            assert_eq!(samples[0].combat_id, 271);
+            assert_eq!(samples[0].location, Some(3986));
+            assert_eq!(samples[0].day, Some(4618));
+            assert_eq!(samples[0].duration, Some(17));
+            assert_eq!(samples[0].attacker_divisions, Some(vec![1053]));
+            assert_eq!(samples[0].defender_divisions, Some(vec![465]));
+            assert_eq!(samples[1].combat_id, 272);
+            assert_eq!(samples[1].location, Some(3987));
+            assert_eq!(samples[1].attacker_divisions, Some(vec![2837]));
+            assert_eq!(samples[1].defender_divisions, Some(vec![4661]));
+        }
+
+        #[test]
+        fn land_combat_manager_emits_land_subclasses_and_skips_exact_naval() {
+            let module_base = HEAP_LO + 0x70_0000;
+            let border_runtime_type_word = 0x5A17;
+            let land = D21LandFixture::new(module_base, 271, 3986, 1053, 465);
+            let border_war = D21LandFixture::new_border_war(
+                module_base,
+                272,
+                3987,
+                2837,
+                4661,
+                border_runtime_type_word,
+            );
+            let mut naval = AlignedBytes::<0x20>::new();
+            naval.write_u64(0, (module_base + NAVAL_COMBAT_VTABLE_RVA) as u64);
+            let raw = d21_manager_slot_bytes(&[land.entry(), naval.addr(), border_war.entry()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 3, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+
+            assert_eq!(walk.first_failure, None);
+            assert_eq!(walk.samples.len(), 2);
+            assert_eq!(walk.skipped_naval_combat_entries, 1);
+            let diagnostics = LandCombatCensus {
+                samples: Vec::new(),
+                skipped_naval_combat_entries: walk.skipped_naval_combat_entries,
+                first_border_war_type_word: walk.first_border_war_type_word,
+            }
+            .diagnostic_units();
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .map(|unit| (unit.name, unit.value))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("d21_skipped_naval_combat_entries", 1),
+                    ("d21_border_war_type_word_observed", 1),
+                    (
+                        "d21_border_war_observed_type_word",
+                        u64::from(border_runtime_type_word),
+                    ),
+                ]
+            );
+            let samples = land_combat_manager_samples_result(walk.samples, walk.first_failure).unwrap();
+            assert_eq!(samples[0].combat_id, 271);
+            assert_eq!(samples[0].location, Some(3986));
+            assert_eq!(samples[0].attacker_divisions, Some(vec![1053]));
+            assert_eq!(samples[0].defender_divisions, Some(vec![465]));
+            assert_eq!(samples[1].combat_id, 272);
+            assert_eq!(samples[1].location, Some(3987));
+            assert_eq!(samples[1].day, Some(4618));
+            assert_eq!(samples[1].duration, Some(17));
+            assert_eq!(samples[1].attacker_divisions, Some(vec![2837]));
+            assert_eq!(samples[1].defender_divisions, Some(vec![4661]));
+        }
+
+        #[test]
+        fn land_combat_manager_unknown_vtable_fails_closed_with_rva_diagnostic() {
+            let module_base = HEAP_LO + 0x80_0000;
+            let unknown_rva = 0x29A_6000usize;
+            let mut naval = AlignedBytes::<0x20>::new();
+            let mut unknown = AlignedBytes::<0x20>::new();
+            naval.write_u64(0, (module_base + NAVAL_COMBAT_VTABLE_RVA) as u64);
+            unknown.write_u64(0, (module_base + unknown_rva) as u64);
+            let raw = d21_manager_slot_bytes(&[naval.addr(), unknown.addr()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 2, |_entry, _index, _class| {
+                panic!("an unclassified manager entry must never reach the land sampler")
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_ENTRY_VTABLE);
+            assert_eq!(failure.manager_index_plus_one, 2);
+            assert_eq!(failure.failing_vtable_word_observed, 1);
+            assert_eq!(failure.failing_vtable_rva_valid, 1);
+            assert_eq!(failure.failing_vtable_rva, unknown_rva as u64);
+            assert_eq!(failure.classified_primary_vtable_word_observed, 0);
+            assert_eq!(failure.skipped_naval_combat_entries, 1);
+            let diagnostics = failure.diagnostic_units();
+            assert!(diagnostics
+                .iter()
+                .any(|unit| { unit.name == "d21_failure_manager_index_plus_one" && unit.value == 2 }));
+            assert!(diagnostics.iter().any(|unit| {
+                unit.name == "d21_failure_failing_vtable_rva"
+                    && unit.value == unknown_rva as u64
+            }));
+            assert!(diagnostics
+                .iter()
+                .any(|unit| { unit.name == "d21_skipped_naval_combat_entries" && unit.value == 1 }));
+            let propagated =
+                land_combat_manager_samples_result(walk.samples, Some(failure)).unwrap_err();
+            assert_eq!(propagated, failure);
+        }
+
+        #[test]
+        fn land_combat_manager_unreadable_vtable_fails_closed() {
+            let module_base = HEAP_LO + 0x90_0000;
+            let raw = d21_manager_slot_bytes(&[HEAP_LO]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 1, |_entry, _index, _class| {
+                panic!("an unreadable manager entry must never reach the land sampler")
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_ENTRY_VTABLE);
+            assert_eq!(failure.manager_index_plus_one, 1);
+            assert_eq!(failure.failing_vtable_word_observed, 0);
+            let propagated =
+                land_combat_manager_samples_result(walk.samples, Some(failure)).unwrap_err();
+            assert_eq!(propagated, failure);
+        }
+
+        #[test]
+        fn land_combat_manager_known_land_with_bad_body_fails_closed() {
+            let module_base = HEAP_LO + 0x98_0000;
+            let bad_body_rva = LAND_COMBAT_BODY_VTABLE_RVA + 0x10;
+            let mut land = AlignedBytes::<0x20>::new();
+            land.write_u64(0, (module_base + LAND_COMBAT_PRIMARY_VTABLE_RVA) as u64);
+            land.write_u64(
+                LAND_COMBAT_MANAGER_BODY_DELTA,
+                (module_base + bad_body_rva) as u64,
+            );
+            let raw = d21_manager_slot_bytes(&[land.addr()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 1, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_BODY_VTABLE);
+            assert_eq!(failure.manager_index_plus_one, 1);
+            assert_eq!(failure.failing_vtable_word_observed, 1);
+            assert_eq!(failure.failing_vtable_rva_valid, 1);
+            assert_eq!(
+                failure.failing_vtable_rva,
+                bad_body_rva as u64
+            );
+            assert_eq!(failure.classified_primary_vtable_word_observed, 1);
+            assert_eq!(
+                failure.classified_primary_vtable_rva,
+                LAND_COMBAT_PRIMARY_VTABLE_RVA as u64
+            );
+            let propagated =
+                land_combat_manager_samples_result(walk.samples, Some(failure)).unwrap_err();
+            assert_eq!(propagated, failure);
+        }
+
+        #[test]
+        fn land_combat_manager_border_war_with_ordinary_secondary_vptr_fails_closed() {
+            let module_base = HEAP_LO + 0x99_0000;
+            let fixture = D21LandFixture::new_with_vtables(
+                module_base,
+                381,
+                4101,
+                1101,
+                2101,
+                LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA,
+                LAND_COMBAT_BODY_VTABLE_RVA,
+                0x5A18,
+            );
+            let raw = d21_manager_slot_bytes(&[fixture.entry()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 1, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_BODY_VTABLE);
+            assert_eq!(
+                failure.failing_vtable_rva,
+                LAND_COMBAT_BODY_VTABLE_RVA as u64
+            );
+            assert_eq!(
+                failure.classified_primary_vtable_rva,
+                LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA as u64
+            );
+        }
+
+        #[test]
+        fn land_combat_manager_ordinary_land_with_border_war_secondary_vptr_fails_closed() {
+            let module_base = HEAP_LO + 0x9A_0000;
+            let fixture = D21LandFixture::new_with_vtables(
+                module_base,
+                382,
+                4102,
+                1102,
+                2102,
+                LAND_COMBAT_PRIMARY_VTABLE_RVA,
+                LAND_BORDER_WAR_COMBAT_BODY_VTABLE_RVA,
+                LAND_COMBAT_TYPE,
+            );
+            let raw = d21_manager_slot_bytes(&[fixture.entry()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 1, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_BODY_VTABLE);
+            assert_eq!(
+                failure.failing_vtable_rva,
+                LAND_BORDER_WAR_COMBAT_BODY_VTABLE_RVA as u64
+            );
+            assert_eq!(
+                failure.classified_primary_vtable_rva,
+                LAND_COMBAT_PRIMARY_VTABLE_RVA as u64
+            );
+        }
+
+        #[test]
+        fn land_combat_manager_border_war_with_ordinary_registry_vptr_fails_closed() {
+            let module_base = HEAP_LO + 0x9B_0000;
+            let border_runtime_type_word = 0x5A19;
+            let fixture = D21LandFixture::new_border_war(
+                module_base,
+                383,
+                4103,
+                1103,
+                2103,
+                border_runtime_type_word,
+            )
+            .with_registry_override(
+                module_base,
+                LAND_COMBAT_PRIMARY_VTABLE_RVA,
+                383,
+                border_runtime_type_word,
+            );
+            let raw = d21_manager_slot_bytes(&[fixture.entry()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 1, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_SIDES);
+            assert_eq!(failure.border_war_type_word_observed, 1);
+            assert_eq!(failure.failing_vtable_word_observed, 0);
+            assert_eq!(
+                failure.classified_primary_vtable_rva,
+                LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA as u64
+            );
+            assert_eq!(
+                failure.border_war_observed_type_word,
+                u64::from(border_runtime_type_word)
+            );
+        }
+
+        #[test]
+        fn land_combat_manager_ordinary_land_with_border_war_registry_vptr_fails_closed() {
+            let module_base = HEAP_LO + 0x9C_0000;
+            let fixture = D21LandFixture::new(module_base, 384, 4104, 1104, 2104).with_registry_override(
+                module_base,
+                LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA,
+                384,
+                LAND_COMBAT_TYPE,
+            );
+            let raw = d21_manager_slot_bytes(&[fixture.entry()]);
+
+            let walk = walk_land_combat_manager_entries(module_base, &raw, 1, |entry, index, class| {
+                sample_land_combat_from_manager_entry(module_base, entry, index, class)
+            });
+            let failure = walk.first_failure.unwrap();
+            assert_eq!(failure.code, D21_FAILURE_SIDES);
+            assert_eq!(failure.failing_vtable_word_observed, 0);
+            assert_eq!(failure.classified_primary_vtable_rva_valid, 1);
+            assert_eq!(
+                failure.classified_primary_vtable_rva,
+                LAND_COMBAT_PRIMARY_VTABLE_RVA as u64
+            );
+        }
+
+        #[test]
+        fn land_combat_manager_snapshot_mutation_fails_closed() {
+            let module_base = HEAP_LO + 0xA0_0000;
+            let first = D21LandFixture::new(module_base, 271, 3986, 1053, 465);
+            let second = D21LandFixture::new(module_base, 272, 3987, 2837, 4661);
+            let mut manager_slots = AlignedBytes::<0x08>::new();
+            manager_slots.write_u64(0, first.entry() as u64);
+            let mut game_state = AlignedBytes::<0x280>::new();
+            game_state.write_u64(
+                LAND_COMBAT_MANAGER_OFFSET + LAND_COMBAT_MANAGER_DATA,
+                manager_slots.addr() as u64,
+            );
+            game_state.write_u32(LAND_COMBAT_MANAGER_OFFSET + LAND_COMBAT_MANAGER_COUNT, 1);
+            let mut state = empty_collector_state();
+            state.base = module_base;
+            state.daily_match = true;
+            state.long_string_match = true;
+            state.date_ptr = game_state.addr() as u64;
+            page_cache_new_frame();
+
+            let error = sample_land_combats_with_after_walk(&state, || {
+                manager_slots.write_u64(0, second.entry() as u64);
+            })
+            .err()
+            .expect("mutating the manager between its two reads must fail closed");
+            assert_eq!(error.code, D21_FAILURE_MANAGER_CHANGED);
+            assert_eq!(error.kind, "manager_changed_during_read");
+        }
+
+        fn assert_skipped_naval_reclassification_fails_closed(replacement_primary_rva: usize) {
+            let module_base = HEAP_LO + 0xA8_0000;
+            let mut naval = AlignedBytes::<0x20>::new();
+            naval.write_u64(
+                0,
+                (module_base + D21_A729_NAVAL_PRIMARY_VTABLE_RVA) as u64,
+            );
+            let mut manager_slots = AlignedBytes::<0x08>::new();
+            manager_slots.write_u64(0, naval.addr() as u64);
+            let mut game_state = AlignedBytes::<0x280>::new();
+            game_state.write_u64(
+                LAND_COMBAT_MANAGER_OFFSET + LAND_COMBAT_MANAGER_DATA,
+                manager_slots.addr() as u64,
+            );
+            game_state.write_u32(LAND_COMBAT_MANAGER_OFFSET + LAND_COMBAT_MANAGER_COUNT, 1);
+            let mut state = empty_collector_state();
+            state.base = module_base;
+            state.daily_match = true;
+            state.long_string_match = true;
+            state.date_ptr = game_state.addr() as u64;
+            page_cache_new_frame();
+
+            let error = sample_land_combats_with_after_walk(&state, || {
+                // Keep the manager slot byte-for-byte identical. Only the skipped
+                // pointee's class changes, reproducing the false-ended snapshot risk.
+                naval.write_u64(0, (module_base + replacement_primary_rva) as u64);
+            })
+            .err()
+            .expect("a skipped entry whose primary vptr changes must fail closed");
+
+            assert_eq!(error.code, D21_FAILURE_MANAGER_CHANGED);
+            assert_eq!(error.kind, "manager_entry_class_changed_during_read");
+            assert_eq!(error.manager_index_plus_one, 1);
+            assert_eq!(
+                error.classified_primary_vtable_rva,
+                D21_A729_NAVAL_PRIMARY_VTABLE_RVA as u64
+            );
+            assert_eq!(error.failing_vtable_rva, replacement_primary_rva as u64);
+        }
+
+        #[test]
+        fn skipped_naval_reclassified_as_ordinary_land_fails_closed() {
+            assert_skipped_naval_reclassification_fails_closed(
+                D21_A729_LAND_PRIMARY_VTABLE_RVA,
+            );
+        }
+
+        #[test]
+        fn skipped_naval_reclassified_as_border_war_fails_closed() {
+            assert_skipped_naval_reclassification_fails_closed(
+                D21_A729_BORDER_PRIMARY_VTABLE_RVA,
+            );
+        }
+
+        #[test]
+        fn land_combat_manager_fails_closed_when_any_slot_is_unreadable() {
+            let sample = d21_manager_test_sample(271, HEAP_LO + 0x12000);
             let mut samples = BTreeMap::new();
             samples.insert(sample.combat_id, sample);
 

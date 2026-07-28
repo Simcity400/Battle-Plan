@@ -3806,6 +3806,39 @@ fn chunk3_d53_partial_frame_fails_closed() {
             && problem["problem"] == json!("compact_status_failure")));
 }
 
+// Production boundary pin for batch-3a. This deliberately reaches the private
+// fold entrypoint so it proves both the returned error and the unknown-hour
+// state transition, rather than inferring them from the projected JSON.
+//
+// A one-line `domain_id: 53` entry in
+// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` breaks this test by clearing the
+// measured word's only residual failure bit.
+#[test]
+fn d53_measured_production_status_word_is_rejected_and_marks_hour_unknown() {
+    let measured = 0x0053_0200;
+    let payload = diplomacy53::compact::encode_payload(
+        &diplomacy53::compact::DiplomacyIntelSnapshot {
+            status_flags: measured,
+            ..Default::default()
+        },
+    );
+    let mut fold = WorldFold::new("d53_measured_production_status_word");
+    fold.domain53_known_this_hour = true;
+
+    assert_eq!(
+        fold.fold_diplomacy_intel_operatives(&payload),
+        Err("compact_status_failure".to_string())
+    );
+    assert!(
+        fold.fold_domain_unknown(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID),
+        "the rejected measured frame must mark domain 53 unknown this hour"
+    );
+    assert!(
+        !fold.domain53_known_this_hour,
+        "the rejected measured frame must not publish retained d53 rows"
+    );
+}
+
 #[test]
 fn chunk3_d53_partial_frame_masks_prior_same_hour_rows() {
     // A clean frame followed by a PARTIAL frame in the same hour must not

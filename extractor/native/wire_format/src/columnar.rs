@@ -37,6 +37,9 @@ pub fn encode_baseline_columnar(
     // which has no key fields, so the key reader indexes an empty list — and
     // silently encoded an ordered keyed list with the sorted-delta key grammar,
     // whose components §7.4 requires to be absolute and in source order.
+    // This is a deliberate section 13 measurement-arm boundary: no columnar
+    // delta or ordered-collection grammar was specified, so extending it would
+    // invent a new wire format rather than measure the closed row/column question.
     if !matches!(collection.shape, Shape::KeyedSet) {
         return Err(crate::varint::WireError::Corrupt(
             "ordered collections are not representable as a keyed state",

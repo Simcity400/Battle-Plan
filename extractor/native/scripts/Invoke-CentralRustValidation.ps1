@@ -38,6 +38,8 @@ $portablePackageVerifier = Join-Path $PSScriptRoot "Test-PortableProductPackageR
 $portableStaticCrtTest = Join-Path $PSScriptRoot "Test-PortableProductStaticCrt.ps1"
 $portablePackageSelfTest = Join-Path $PSScriptRoot "Test-PortableProductPackageSelfTest.ps1"
 $portablePackageReceiptPath = Join-Path $targetDir "release\hoi4-portable-package-receipt.json"
+$worldFoldCitationVerifier = Join-Path $PSScriptRoot "verify_world_fold_citations.py"
+$worldFoldCitationTests = Join-Path $PSScriptRoot "test_verify_world_fold_citations.py"
 $expectedRustVersion = "1.96.0"
 $expectedNextestVersion = "0.9.140"
 . $artifactAttestationHelper
@@ -239,6 +241,19 @@ try {
     $ownsMutex = $mutex.WaitOne(0)
     if (-not $ownsMutex) {
         throw "Another centralized Rust validation process is already active."
+    }
+
+    if ($Workspace -in @("All", "Extractor") -and
+        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {
+        # These source checks run before Cargo and, for Release, before stale
+        # promotion authority is removed. A changed shipping fold must first
+        # force an explicit review of every wire-format transcription it backs.
+        Invoke-Checked -Program "python" -Arguments @($worldFoldCitationTests)
+        Invoke-Checked -Program "python" -Arguments @(
+            $worldFoldCitationVerifier,
+            "--repo-root",
+            $repoRoot
+        )
     }
 
     $extractorReleaseRequested = $Mode -eq "Release" -and $Workspace -in @("All", "Extractor")

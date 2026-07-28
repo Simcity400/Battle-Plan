@@ -1,7 +1,8 @@
 //! d16 `decisions_live` — per-country decision-status counters.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:13800`-`:13852`
+//! Derived from `world_fold.rs:14098`-`:14149`
 //! (`fold_decisions`), the collector write that produces the payload
+// @world-fold-authority domain=16 functions=fold_decisions lines=14098-14149 sha256=839ee181eaf10527871d39b087381a2068a1b505fd1bf508fa0133094bf90858
 //! (`extractor/native/collector/src/attach_log.rs:69581`-`:69648`), and the read
 //! that produces the counters (`attach_log.rs:83141`-`:83235`).
 //! `extractor/documents/domains/d16_decisions_live.md` carries real field-level
@@ -136,32 +137,35 @@
 //!
 //! The second table's rows are 12 fixed bytes (`tag_db_id`, `days` i32, `state`
 //! i32) plus a length-prefixed UTF-8 `decision` token
-//! (`world_fold.rs:13829`-`:13833`, written at `attach_log.rs:69640`-`:69643`).
-//! **Two independent stop conditions apply, and the first is the shape.**
+//! (`world_fold.rs:14124`-`:14131`, written at `attach_log.rs:69654`-`:69659`).
+//! **The shape blocker is closed; the token blocker remains fatal.**
 //!
 //! *Shape — settled, not open.* The fold `push`es each row onto the country's
-//! array (`:13837`). It does not upsert, does not dedup and does not sort, so a
+//! array (`world_fold.rs:14132`-`:14136`). It does not upsert, does not dedup and
+//! does not sort, so a
 //! payload with one country row for tag 7 and two identical timed rows
 //! `(7, 30, 0, "x")` folds to two entries in source order, and any shape with a
 //! key would collapse them into one. That is §7.3's third shape word for word —
 //! "meaningful physical order, duplicates legitimate, no unique key" — beside d56
 //! and d64, and §7.4 states outright that ordered occurrence lists have **no key**,
 //! so no key question arises for this table at all. `Shape` declares the variant
-//! (`Shape::OrderedOccurrenceList`, `schema.rs:163`) and nothing implements it: the
-//! recipe's Scope section makes the ordered shapes a stop condition in their own
-//! right, and every encoder and decoder in `body.rs` hard-rejects a non-`KeyedSet`
-//! shape. That alone stops the collection.
+//! (`Shape::OrderedOccurrenceList`, `schema.rs:163`), and `body.rs` now implements
+//! its full-replacement baseline and delta grammar. The former shape blocker is
+//! therefore closed.
 //!
-//! *The token, independent of the shape.* Every shape must still carry `decision`
+//! *The token is what still stops the collection.* Every shape must carry `decision`
 //! as a value, and §4 has nothing to carry a string in: `Kind` is
 //! `Unsigned | Signed | Monotone | Enum | Boolean | ContentId | Continuous`
 //! (`schema.rs:12`-`:20`). Dropping it is data loss — it is the row's only
 //! distinguishing content, since `(tag, days, state)` repeats across different
 //! decisions — and hashing it into a `ContentId` would invent the manifest-id
-//! assignment §13 leaves open.
+//! assignment §13 leaves open. Until a string kind or a real symbol-assignment
+//! rule exists, the collection remains stopped regardless of its implemented
+//! shape.
 //!
 //! The full stop-report is the deliverable's, not this file's; this module parses
-//! the table because the fold's trailing-byte rule (`:13841`) makes the whole
+//! the table because the fold's trailing-byte rule
+//! (`world_fold.rs:14138`-`:14142`) makes the whole
 //! payload invalid if it is malformed, and because the deliverable reports its
 //! byte share.
 //!
@@ -1202,10 +1206,10 @@ mod tests {
     #[test]
     fn identical_timed_rows_are_two_occurrences_not_one() {
         // The stop report's shape claim, pinned as behaviour. `fold_decisions`
-        // `push`es (`world_fold.rs:13837`), so two byte-identical timed rows fold
+        // `push`es (`world_fold.rs:14132`-`:14136`), so two byte-identical timed rows fold
         // to two entries in source order. Any keyed collection would collapse them
-        // into one, which is why `Shape::OrderedOccurrenceList` — unimplemented,
-        // and a stop condition in its own right — is the collection's real shape.
+        // into one, which is why `Shape::OrderedOccurrenceList` is the collection's
+        // real shape even though its separate string blocker keeps it unported.
         // Round-5 review finding: the report previously treated
         // `(tag_db_id, decision)` as a stable key without checking this.
         let region = {

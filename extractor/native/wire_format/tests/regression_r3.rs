@@ -22,8 +22,7 @@ fn a_quantization_that_is_not_a_fixed_point_escapes() {
     assert!(escapes(x, q), "must escape rather than store an unstable integer");
     assert_eq!(quantize(x, q), None);
 
-    let mut f = Field::new(1, Kind::Continuous);
-    f.quant = q;
+    let f = Field::new(1, Kind::Continuous).quant(q);
     // Escaped, so the reader reconstructs the exact f64 and the comparison holds.
     assert!(stored_eq(&f, Value::Continuous(x), Value::Continuous(x)));
 }
@@ -115,11 +114,13 @@ fn an_out_of_range_enum_is_rejected_on_every_path() {
     assert_eq!(back.values, vec![Value::Enum(2)]);
 }
 
-/// The encoder rejects ordered shapes as out of scope; the decoder read them
-/// with keyed-set rules, misdecoding §7.4's absolute keys and panicking on an
-/// occurrence list that has no key fields at all.
+/// §7.4's ordered-keyed keys are absolute, and an occurrence list has no key
+/// prefix at all. The shaped decoder must choose those grammars without
+/// misreading 5,6 as the keyed-set delta chain 5,11 or indexing an empty key.
 #[test]
-fn the_baseline_decoder_rejects_shapes_the_encoder_will_not_write() {
+fn the_baseline_decoder_uses_each_ordered_shapes_own_grammar() {
+    use wire_format::body::{decode_shaped_baseline, CollectionState};
+
     let of = |shape| Schema {
         domain: 1,
         cadence_log2: 0,
@@ -130,12 +131,15 @@ fn the_baseline_decoder_rejects_shapes_the_encoder_will_not_write() {
             fields: vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)],
         }],
     };
-    // Absolute keys 5 and 6 were read as 5 and 11.
-    assert_eq!(
-        wire_format::body::decode_baseline(&of(Shape::OrderedKeyedList), &[2, 5, 1, 6, 2], 0),
-        Err(WireError::Corrupt("ordered collections have no keyed-set baseline grammar"))
-    );
-    // No key fields, so the key reader indexed an empty list and panicked.
+    let (keyed, used) =
+        decode_shaped_baseline(&of(Shape::OrderedKeyedList), &[2, 5, 1, 6, 2], 0).unwrap();
+    assert_eq!(used, 5);
+    let CollectionState::OrderedKeyed(rows) = &keyed[0] else {
+        panic!("ordered keyed state");
+    };
+    assert_eq!(rows[0].key.0, vec![5]);
+    assert_eq!(rows[1].key.0, vec![6], "the second key is absolute, not 5 + 6");
+
     let occurrence = Schema {
         domain: 1,
         cadence_log2: 0,
@@ -146,10 +150,12 @@ fn the_baseline_decoder_rejects_shapes_the_encoder_will_not_write() {
             fields: vec![Field::new(2, Kind::Unsigned)],
         }],
     };
-    assert_eq!(
-        wire_format::body::decode_baseline(&occurrence, &[1, 7], 0),
-        Err(WireError::Corrupt("ordered collections have no keyed-set baseline grammar"))
-    );
+    let (occurrence, used) = decode_shaped_baseline(&occurrence, &[1, 7], 0).unwrap();
+    assert_eq!(used, 2);
+    let CollectionState::OrderedOccurrence(rows) = &occurrence[0] else {
+        panic!("occurrence state");
+    };
+    assert_eq!(rows[0].values, vec![Value::Unsigned(7)]);
 }
 
 /// `domain` and `branch` are varints on the wire and `u32` in the header, so an

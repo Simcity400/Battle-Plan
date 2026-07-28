@@ -1,7 +1,8 @@
 //! d32 `air_wing_loadouts` — per-air-wing air-base placement and equipment banks.
 //!
-//! Derived from `extractor/native/recorder_host/src/world_fold.rs:14855`-`:14995`
+//! Derived from `world_fold.rs:15245`-`:15386`
 //! (`fold_air_wing_loadouts`), its payload constants at `:979`-`:981`, its
+// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=15245-15386 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4
 //! accumulator's JSON projection (`:8168`-`:8223`), the end-of-hour orphan prune
 //! that also writes that accumulator (`:5122`-`:5147`), and the collector read
 //! and packer that produce the rows
@@ -156,12 +157,13 @@
 //! stores an ordered list in which two same-variant lines coexist, and
 //! `(owner, wing, generation, variant_id)` cannot express that. Mirroring would
 //! mean silently keeping one line and dropping the other, which is the data-loss
-//! defect itself. The alternatives are a `Shape::OrderedOccurrenceList` (an
-//! unimplemented shape, a stop condition) or an ordinal key component — and the
-//! ordinal is transport, re-packed from emission order every frame, which would
-//! churn every row of every hour. So [`split_payload`] **rejects** a frame with a
-//! duplicated variant inside one wing's range, and that is a deliberate
-//! divergence: stricter than the fold, on input the fold would accept.
+//! defect itself. `Shape::OrderedOccurrenceList` is now available, but adopting
+//! it here would be a separate d32 schema migration requiring corpus evidence;
+//! the other alternative is an ordinal key component re-packed from emission
+//! order every frame, which would churn every row of every hour. This reference
+//! port therefore still **rejects** a duplicated variant inside one wing's
+//! range. That is a deliberate divergence from the fold, bounded by the
+//! producer-side rejection below rather than by a missing codec primitive.
 //!
 //! It is not stricter than the **producer**. The collector's
 //! `read_air_wing_equipment_bank_refs` rejects a duplicate variant outright —
