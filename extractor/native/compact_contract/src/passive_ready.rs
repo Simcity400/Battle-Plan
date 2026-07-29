@@ -80,6 +80,21 @@ const MINHOOK_NORMAL_REL5: &str = "minhook-0.9.0.normal-jmp-rel5";
 const D75_PRODUCTION_INLINE: &str = "fired_event_popups.a729_inline_hook.production_semantic.v1";
 const D90_CONVOY_REL32_CALLSITE: &str = "naval_combat.convoy_terminal.rel32_callsite.v1";
 
+/// Primitive the bootstrap provider actually installs at the two pinned
+/// import sites. It writes no code bytes: the whole admitted mutation is one
+/// aligned pointer-width store into hoi4.exe's own import address table, so
+/// the imported export's prologue stays pristine and no thread is suspended.
+///
+/// This literal must stay equal to
+/// `production_render_submit_live_lane::a729_hook::PRODUCTION_BOOTSTRAP_HOOK_PRIMITIVE_ID`;
+/// `compact_contract` sits below that lane in the dependency graph and cannot
+/// import it, so the equality is asserted by the collector-side cross-check
+/// `pinned_bootstrap_import_specs_match_installed_provider_primitive`.
+pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS: &str = "pe64.import-address-slot.atomic-cas.v1";
+
+/// Width of that single admitted mutation: one 64-bit import slot.
+pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH: u16 = 8;
+
 macro_rules! pinned_import {
     ($name:literal, $module:literal, $symbol:literal, $proof:literal) => {
         PinnedProductionHookSpecV1 {
@@ -87,8 +102,8 @@ macro_rules! pinned_import {
             target: PinnedHookTargetSpecV1::ImportExport {
                 module_name: $module,
                 symbol_name: $symbol,
-                patch_len: 5,
-                primitive_id: MINHOOK_NORMAL_REL5,
+                patch_len: PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH,
+                primitive_id: PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS,
             },
             proof_sha256: digest_from_hex($proof),
             mandatory: true,
@@ -388,7 +403,13 @@ pub const PINNED_PRODUCTION_HOOK_COUNT_V1: u16 = PINNED_PRODUCTION_HOOK_SPECS_V1
 /// reimplementing the Rust encoding. Any roster edit must update the literal
 /// and pass the equality test below.
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
-    digest_from_hex("1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6");
+    // Recomputed by this crate's own `hook_allowlist_sha256` encoder after the
+    // two bootstrap import entries were corrected from the retired inline
+    // primitive (patch_len 5, minhook-0.9.0.normal-jmp-rel5) to the primitive
+    // the provider actually installs (patch_len 8,
+    // pe64.import-address-slot.atomic-cas.v1). Prior value for this roster:
+    // 1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6.
+    digest_from_hex("a260ad650825273f860d7e181627411e6004d480ef19ccfaafde77d54daaeb91");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
@@ -1421,5 +1442,73 @@ mod tests {
             );
         }
         assert_ne!(zero_mutation_policy_sha256(), [0; 32]);
+    }
+}
+
+#[cfg(test)]
+mod pinned_bootstrap_import_primitive {
+    use super::{
+        pinned_production_hook_allowlist_v1, PinnedHookTargetSpecV1,
+        PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS, PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH,
+        PINNED_PRODUCTION_HOOK_SPECS_V1,
+    };
+
+    /// The two pinned bootstrap sites are import-address-slot stores, not
+    /// inline code patches. The retired inline primitive id and its 5-byte
+    /// patch width must not reappear on either of them: the collector compares
+    /// these two fields against the provider's live receipt and fails closed on
+    /// any difference.
+    ///
+    /// Fails if either bootstrap entry is moved back to
+    /// `minhook-0.9.0.normal-jmp-rel5`/`patch_len: 5`, or if the width constant
+    /// stops being pointer-width.
+    #[test]
+    fn bootstrap_import_specs_name_the_import_slot_primitive() {
+        assert_eq!(PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH, 8);
+        let bootstrap: Vec<_> = PINNED_PRODUCTION_HOOK_SPECS_V1
+            .iter()
+            .filter(|spec| {
+                matches!(spec.target, PinnedHookTargetSpecV1::ImportExport { .. })
+            })
+            .collect();
+        assert_eq!(bootstrap.len(), 2);
+        for spec in bootstrap {
+            let PinnedHookTargetSpecV1::ImportExport {
+                patch_len,
+                primitive_id,
+                ..
+            } = spec.target
+            else {
+                unreachable!("filtered to ImportExport targets");
+            };
+            assert_eq!(
+                primitive_id, PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS,
+                "{} must name the installed import-slot primitive",
+                spec.logical_name
+            );
+            assert_ne!(
+                primitive_id, super::MINHOOK_NORMAL_REL5,
+                "{} must not name the retired suspending inline primitive",
+                spec.logical_name
+            );
+            assert_eq!(
+                patch_len, PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH,
+                "{} admits exactly one pointer-width slot store",
+                spec.logical_name
+            );
+        }
+    }
+
+    /// The pinned literal must be the digest this crate's own encoder produces
+    /// for the current roster. Fails if any roster field changes without the
+    /// literal being recomputed, and vice versa.
+    #[test]
+    fn pinned_allowlist_literal_matches_the_encoder() {
+        let entries = pinned_production_hook_allowlist_v1().unwrap();
+        assert_eq!(
+            super::hook_allowlist_sha256(&entries).unwrap(),
+            super::PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1
+        );
+        assert!(super::pinned_production_hook_allowlist_sha256_v1().is_ok());
     }
 }
