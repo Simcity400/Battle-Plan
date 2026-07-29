@@ -428,12 +428,20 @@ pub fn status_in_production_profile(status: CompactDomainStatus) -> bool {
 /// could publish a ready receipt. Anything that builds a passive-product roster
 /// must filter through `passive_production_admits`.
 ///
+/// Every entry is refused because its producer needs an owner the shipped
+/// passive product does not install, not because the domain is unfinished.
+///
 /// - D71 `dynamic_collection_trace_live`: its only current source is the
 ///   noncanonical A28 auxiliary hook owner, which the passive product does not
 ///   install.
 /// - D82 `character_presentation_live`: presentation observation, which is
 ///   excluded from capture.
-pub const PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS: &[CompactDomainId] = &[71, 82];
+/// - D87 `decision_panel_live`: its A34 producer requires the authenticated
+///   early-render selected-Present owner, and the passive product runs with
+///   `early_render_capture_v1` false. Scheduling it also made the host attach an
+///   A34 decision catalog, which passive capture then refuses outright as an
+///   evidence control, so the domain took the whole capture down with it.
+pub const PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS: &[CompactDomainId] = &[71, 82, 87];
 
 /// Whether the shipped passive product can admit this domain. A domain in the
 /// production profile is not automatically admissible; see
