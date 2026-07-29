@@ -88,20 +88,37 @@ exception address:
 | Full — 79 scheduled domains | 6 | **6** | 0 |
 | Minimal — 1 scheduled domain | 6 | 0 | **6** |
 
-Reducing instrumentation is therefore a real fix and not a guess. Two qualifications bound that
-claim, and both matter:
+The authoritative ledger is `extractor/native/runs/crashrate/trials.jsonl`. Read the outcomes from
+that file, not from this table: `trials_20260726_invalid_minimal_arm.jsonl` sits beside it and is
+an earlier, invalidated run whose numbers differ.
+
+Reducing instrumentation is therefore a real fix and not a guess. Three qualifications bound that
+claim, and all three matter:
 
 - **The comparison was 79 domains against 1, not against zero.** The floor is two hooks, not zero
   — `d3d11!D3D11CreateDevice` and `d3dcompiler_47!D3DCompile` must stay installed or the device
   cannot be discovered. Whether crashes reach zero or merely become rare is still unmeasured.
-- **Two distinct crash modes exist, roughly evenly split**, and both are instrumentation-driven.
-  Three of the six full-instrumentation crashes were a call through a null pointer — the
-  half-written-detour signature. The other three faulted at `hoi4.exe+0xC66F46`, in the game's own
-  code rather than in `collector.dll`, with the collector confirmed loaded. Both modes occurred
-  zero times in the minimal arm. So heavy instrumentation destabilises the game in more than one
-  way, and there is no separate defect in our own surviving code to carry into the rebuild.
+- **Three distinct crash modes exist, and they are not evenly split.** Of the six
+  full-instrumentation crashes: **four** were a call through a null pointer (the
+  half-written-detour signature), **one** faulted at `hoi4.exe+0xC66F46` in the game's own code
+  with the collector confirmed loaded, and **one** faulted at `0x3F800000`. That last address is
+  the IEEE-754 bit pattern for `1.0f`, so it is a call through a pointer read out of float data —
+  a distinct mode, not a variant of the other two. All three occurred zero times in the minimal
+  arm.
+- **The per-mode counts do not carry the same weight as the arm totals.** Six-versus-zero across
+  arms is a strong result; a 4/1/1 split within one arm of six is not a distribution anyone should
+  reason from. Treat the mode list as a catalogue of what has been seen, not as frequencies.
 
-Never measure this by counting crash-folder entries: that scores both modes identically, and the
+The `+0xC66F46` offset is stable across runs under ASLR — absolute `0x7FF6BC5C6F46` in the valid
+run and `0x7FF79B7D6F46` in the invalidated one both reduce to that same image offset — so the
+site itself is reproducible even though its frequency is not.
+
+What remains unestablished is the mechanism. Nothing here identifies *how* volume produces these
+faults, and the two non-null modes fault in the game's own code. Whether any of them involves our
+detours is a claim the trial ledger cannot support either way; settling it needs the crash dumps
+themselves, captured with full memory.
+
+Never measure this by counting crash-folder entries: that scores every mode identically, and the
 folder also collects ordinary play-session crashes.
 
 ## What is not yet known
