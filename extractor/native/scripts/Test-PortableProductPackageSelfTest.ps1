@@ -198,11 +198,31 @@ try {
         [Text.UTF8Encoding]::new($false)
     )
     try {
+        $dependencyAliasInline = @(
+            Get-TomlProductionDependencyRecords -Toml @'
+[dependencies]
+dependencies = { package = "active_command_abilities_live_lane", path = "../lanes/active_command_abilities_live" }
+'@
+        )
+        $dependencyAliasDotted = @(
+            Get-TomlProductionDependencyRecords -Toml @'
+[dependencies]
+dependencies.path = "../lanes/active_command_abilities_live"
+'@
+        )
         Assert-Case 'dotted dependency path remains in production lane closure' (
             @(
                 Get-CollectorProductionLaneRoots -RepoRoot $root |
                     ForEach-Object { Split-Path -Leaf $_ }
-            ) -ccontains 'active_command_abilities_live'
+            ) -ccontains 'active_command_abilities_live' -and
+            $dependencyAliasInline.Count -eq 1 -and
+            [string]$dependencyAliasInline[0].name -ceq 'dependencies' -and
+            [string]$dependencyAliasInline[0].path -ceq
+                '../lanes/active_command_abilities_live' -and
+            $dependencyAliasDotted.Count -eq 1 -and
+            [string]$dependencyAliasDotted[0].name -ceq 'dependencies' -and
+            [string]$dependencyAliasDotted[0].path -ceq
+                '../lanes/active_command_abilities_live'
         )
     }
     finally {
@@ -966,7 +986,7 @@ workspace_additive_alias = {
         $fixtureProductionLaneRoots |
             Where-Object { (Split-Path -Leaf $_) -ceq 'active_command_abilities_live' } |
             Select-Object -First 1
-    ) 'src\early_render_launch.rs'
+    ) 'src\early_render_launch.RS'
     [IO.File]::WriteAllText(
         $fixtureShadowEarlyRender,
         @'

@@ -748,6 +748,7 @@ function Get-TomlProductionDependencyRecords {
         for ($index = 0; $index -lt $logicalParts.Count; $index++) {
             if ([string]$logicalParts[$index] -ceq 'dependencies') {
                 $dependenciesIndex = $index
+                break
             }
         }
         if ($dependenciesIndex -lt 0 -or
@@ -1012,7 +1013,7 @@ function Get-ProductionInteractionSourceTreeAuthority {
             }
             $entries |
                 Where-Object { -not $_.PSIsContainer } |
-                Where-Object { $sourceExtensions -ccontains $_.Extension }
+                Where-Object { $sourceExtensions -contains $_.Extension }
         }
     ) | Sort-Object {
         Get-ProductionInteractionRelativePath -Root $repo -Path $_.FullName
