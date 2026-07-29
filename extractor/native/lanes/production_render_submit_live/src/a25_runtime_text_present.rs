@@ -26,10 +26,23 @@ use runtime_text_inputs_live_lane::RuntimeTextLayout;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A captured-runtime text command cannot be scheduled until every producer
-/// feeding the already-authenticated materializer has a production callback.
-/// This is an integration gate, not a request for another visual fixture.
-pub const A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED: bool = true;
+/// Whether the production roster may own the A25 captured-runtime text path.
+///
+/// It may not. A25 observes drawing — the exact `CBitmapFont::Draw` post-emit
+/// and derived inline-icon detours, and the common-GUI paint scope above them —
+/// and drawing is client presentation, not authoritative host-visible state.
+/// A25 emits no domain of its own, and its only consumers
+/// (`character_presentation_live`, `runtime_text_inputs_live`) are reached only
+/// behind evidence flags. So the latch is false and the production early-render
+/// transaction installs neither the instant-text detour nor the owner-glyph
+/// automation that feeds off it.
+///
+/// This is a reachability gate, not a claim that the producer graph is
+/// complete: the gaps in [`A25_RUNTIME_TEXT_UNAVAILABLE_REASONS`] are still
+/// real and are still what a future evidence run would have to close. Turning
+/// this latch back on re-exposes an inline drawing detour to every ordinary
+/// recording, which is the specific thing that is not allowed.
+pub const A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED: bool = false;
 /// Keep the shared A25 command binding in one global scope instead of
 /// accepting caller entropy.
 pub const A25_RUNTIME_TEXT_POV_SCOPE: &str = "global";
@@ -85,6 +98,13 @@ pub fn common_gui_operation_identity(
 /// set for measured-empty text paint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum A25RuntimeTextUnavailableReason {
+    /// The A25 drawing substrate is gated out of the production path by
+    /// product ruling: it observes drawing rather than authoritative
+    /// host-visible state. This is the reason that holds regardless of how
+    /// many of the callback gaps below are later closed, and it is why a
+    /// production recording carries no A25 text observation at all — not an
+    /// observation that happened to be empty.
+    DrawingObservationGatedOutOfProduction,
     /// No live producer calls `begin_gui_paint_candidate_scope`, and the exact
     /// later final-draw callback can capture draw payload, selected target, and
     /// pipeline/scissor state only after `CInstantTextObject::Render` RVA
@@ -93,8 +113,16 @@ pub enum A25RuntimeTextUnavailableReason {
     /// must therefore remain unavailable instead of borrowing later draw state
     /// or promoting the pointer-bearing diagnostic rectangle candidates.
     CommonGuiPaintOwnerEntryAuthorityUnavailable,
-    /// The exact font and sprite pointers observed by the bitmap-font hooks do
-    /// not yet have a mechanical pointer-to-authenticated-VFS receipt producer.
+    /// The authenticated font/inline-icon indexes the bitmap-font hooks resolve
+    /// their pointers against are never bound on the production path. The
+    /// producer itself is mechanical and does exist —
+    /// `a25_gui_bridge::bind_effective_vfs_winner_index` builds both receipt
+    /// sets and hands them to `a25_post_emit_hook::bind_authenticated_font_assets`
+    /// / `bind_authenticated_inline_icon_content` — but its sole caller,
+    /// `bind_a25_gui_effective_vfs_winner_index`, is skipped while
+    /// `A25_GUI_DRAW_SUBSTRATE_INSTALLED` is false. So the receipt indexes stay
+    /// empty and no observed pointer could be resolved to authenticated content.
+    /// This is a missing binding, not a missing producer.
     AuthenticatedFontAndIconAssetBindingNotInstalled,
     /// The post-emit/cache hook owners are not yet installed by the early
     /// render lifecycle. Their static insertion points are exact, but dormant.
@@ -105,7 +133,20 @@ pub enum A25RuntimeTextUnavailableReason {
     DerivedInlineIconHookLifecycleNotInstalled,
 }
 
-pub const A25_RUNTIME_TEXT_UNAVAILABLE_REASONS: &[A25RuntimeTextUnavailableReason] = &[];
+/// Every reason a production selected Present carries no A25 text observation.
+///
+/// This list must never be empty while
+/// [`A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED`] is false. An empty list
+/// would let a reader take `SourceUnavailable(vec![])` for "the substrate ran
+/// and saw nothing", which is exactly the measured-empty reading this typed
+/// state exists to prevent.
+pub const A25_RUNTIME_TEXT_UNAVAILABLE_REASONS: &[A25RuntimeTextUnavailableReason] = &[
+    A25RuntimeTextUnavailableReason::DrawingObservationGatedOutOfProduction,
+    A25RuntimeTextUnavailableReason::CommonGuiPaintOwnerEntryAuthorityUnavailable,
+    A25RuntimeTextUnavailableReason::AuthenticatedFontAndIconAssetBindingNotInstalled,
+    A25RuntimeTextUnavailableReason::OrdinaryGlyphHookLifecycleNotInstalled,
+    A25RuntimeTextUnavailableReason::DerivedInlineIconHookLifecycleNotInstalled,
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum A25SelectedOwnerCaptureDrain {
@@ -1266,23 +1307,42 @@ fn push_exact_content(
 mod production_reachability_tests {
     use super::*;
 
+    /// Red if the production latch is turned back on (the drain then demands an
+    /// installed owner-glyph automation and returns `Err`), and red if the
+    /// unavailable reason list is emptied so the gated-off state degrades into
+    /// something a reader could take for measured-empty paint.
     #[test]
-    fn dormant_product_returns_typed_unavailable_not_empty_capture() {
-        let error = drain_selected_a25_owner_captures(OwnerGlyphPresentCandidate {
+    fn gated_production_returns_typed_unavailable_not_empty_capture() {
+        let drain = drain_selected_a25_owner_captures(OwnerGlyphPresentCandidate {
             process_start_nonce: 1,
             hook_epoch_nonce: 1,
             submit_index: 1,
             frame_sequence: 1,
             frame_hour: 1,
         })
-        .unwrap_err();
-        assert!(error.contains("without an installed production owner-glyph automation"));
-        assert!(A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED);
+        .expect("a gated-off A25 must not fail the production render loop");
+        let reasons = match drain {
+            A25SelectedOwnerCaptureDrain::SourceUnavailable(reasons) => reasons,
+            other => panic!("gated A25 must yield no captures at all, got {other:?}"),
+        };
+        assert!(
+            !reasons.is_empty(),
+            "unavailable must name a reason; an empty list reads as measured-empty"
+        );
+        assert!(reasons.contains(
+            &A25RuntimeTextUnavailableReason::DrawingObservationGatedOutOfProduction
+        ));
     }
 
+    /// Red if either latch is flipped on. These are the only two switches that
+    /// can admit an A25 owner-glyph capture, and neither may be reachable from
+    /// an ordinary production build.
     #[test]
-    fn production_gap_list_names_only_missing_callback_owners() {
-        assert!(A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.is_empty());
-        assert!(A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED);
+    fn neither_latch_admits_a25_owner_glyphs_in_a_shipped_build() {
+        assert!(!A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED);
+        assert!(
+            !runtime_text_inputs_live_lane::owner_glyph_probe::A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED
+        );
+        assert!(!A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.is_empty());
     }
 }
