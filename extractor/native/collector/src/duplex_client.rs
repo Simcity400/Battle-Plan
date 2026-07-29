@@ -2462,6 +2462,14 @@ mod win32 {
             wait: Bool,
         ) -> Bool;
         fn CancelIoEx(handle: Handle, overlapped: *mut Overlapped) -> Bool;
+        fn PeekNamedPipe(
+            handle: Handle,
+            buffer: *mut c_void,
+            buffer_size: Dword,
+            bytes_read: *mut Dword,
+            total_bytes_available: *mut Dword,
+            bytes_left_this_message: *mut Dword,
+        ) -> Bool;
         #[cfg(test)]
         fn SetEvent(event: Handle) -> Bool;
         fn WaitForSingleObject(handle: Handle, timeout_ms: Dword) -> Dword;
@@ -2669,6 +2677,114 @@ mod win32 {
         }
     }
 
+    /// Dedicated bounded READY/ACK exchange for the direct recorder's startup
+    /// barrier. This is deliberately not a general control-client constructor:
+    /// it opens only the recorder-authored capture-ready pipe, transfers one
+    /// length-prefixed READY document, receives one bounded ACK document, and
+    /// closes. Authentication remains in the typed payload and the recorder's
+    /// peer PID/creation-time + mapped-DLL admission.
+    pub struct CaptureReadyControlSession {
+        io: Win32OverlappedControlIo,
+    }
+
+    impl CaptureReadyControlSession {
+        /// The recorder requests cooperative stop by closing its retained
+        /// duplex endpoint. Any unexpected queued byte is a protocol error:
+        /// H4RD/H4RA is the complete startup exchange and no untyped command may
+        /// be smuggled into the capture loop.
+        pub fn stop_requested(&self) -> Result<bool, DuplexIoError> {
+            let mut available = 0u32;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    self.io.handle.0,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    &mut available,
+                    ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                return if available == 0 {
+                    Ok(false)
+                } else {
+                    Err(DuplexIoError::Disconnected)
+                };
+            }
+            match unsafe { GetLastError() } {
+                ERROR_BROKEN_PIPE | ERROR_NO_DATA => Ok(true),
+                _ => Err(DuplexIoError::Disconnected),
+            }
+        }
+    }
+
+    pub struct CaptureReadyExchange {
+        pub ack: Vec<u8>,
+        pub session: CaptureReadyControlSession,
+    }
+
+    pub fn exchange_capture_ready_pipe(
+        pipe_name: &str,
+        ready: &[u8],
+        budget: std::time::Duration,
+    ) -> Result<CaptureReadyExchange, DuplexIoError> {
+        const MAX_DOCUMENT: usize = 16 * 1024;
+        if ready.is_empty()
+            || ready.len() > MAX_DOCUMENT
+            || !pipe_name.starts_with(r"\\.\pipe\battle-plan_control_")
+            || pipe_name.contains('\0')
+        {
+            return Err(DuplexIoError::Disconnected);
+        }
+        let clock = super::SystemClock::new();
+        let deadline = MonotonicDeadline::from_now(&clock, budget);
+        let name = to_wide(pipe_name);
+        let handle = loop {
+            let handle = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                    ptr::null_mut(),
+                )
+            };
+            if handle as isize != INVALID_HANDLE_VALUE {
+                break SendHandle(handle);
+            }
+            match unsafe { GetLastError() } {
+                ERROR_FILE_NOT_FOUND | ERROR_PIPE_BUSY => {
+                    let timeout_ms = deadline
+                        .wait_named_pipe_timeout_ms(clock.now())
+                        .ok_or(DuplexIoError::TimedOut)?;
+                    unsafe {
+                        let _ = WaitNamedPipeW(name.as_ptr(), timeout_ms);
+                    }
+                }
+                _ => return Err(DuplexIoError::Disconnected),
+            }
+        };
+        let mut io = Win32OverlappedControlIo { handle };
+        let mut frame = Vec::with_capacity(4 + ready.len());
+        frame.extend_from_slice(&(ready.len() as u32).to_le_bytes());
+        frame.extend_from_slice(ready);
+        io.send_all(&frame, deadline)?;
+        let mut ack_len = [0u8; 4];
+        io.recv_exact(&mut ack_len, deadline)?;
+        let ack_len = u32::from_le_bytes(ack_len) as usize;
+        if ack_len == 0 || ack_len > MAX_DOCUMENT {
+            return Err(DuplexIoError::Disconnected);
+        }
+        let mut ack = vec![0u8; ack_len];
+        io.recv_exact(&mut ack, deadline)?;
+        Ok(CaptureReadyExchange {
+            ack,
+            session: CaptureReadyControlSession { io },
+        })
+    }
+
     /// Heap-owned state for one in-flight overlapped operation: the `OVERLAPPED`,
     /// its one-shot completion event, and the data buffer the kernel reads from
     /// (write) or writes into (read).
@@ -2842,7 +2958,10 @@ mod win32 {
 }
 
 #[cfg(windows)]
-pub use win32::{SendHandle, Win32OverlappedControlIo, Win32PipeConnector};
+pub use win32::{
+    exchange_capture_ready_pipe, CaptureReadyControlSession, CaptureReadyExchange, SendHandle,
+    Win32OverlappedControlIo, Win32PipeConnector,
+};
 
 #[cfg(test)]
 mod tests;

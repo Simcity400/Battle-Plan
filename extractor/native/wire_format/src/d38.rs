@@ -288,9 +288,9 @@ pub const EXACT_AMOUNT_RAW_BAND: i64 = 1 << 51;
 /// carried; the capture's maximum is `134_400_000`.
 pub const FIRST_KNOWN_INEXACT_AMOUNT_RAW: i64 = 3_435_973_836_800_005;
 
-/// `COMPACT_STATUS_DELTA_DATA`, `compact_contract/src/lib.rs`. Named here rather
-/// than imported so the library keeps no dependency on `compact_contract`; the
-/// measurement bin, which does depend on it, asserts the two agree.
+/// `COMPACT_STATUS_DELTA_DATA`, `compact_contract/src/lib.rs`. Named here because
+/// d38 is not admitted to the production-codec dependency surface; the
+/// measurement bin asserts the local value and shipping contract agree.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 
 /// `COMPACT_STATUS_FAILURE_MASK`. d38 has no lane-local status bits and no
@@ -795,10 +795,9 @@ impl Accumulator {
     ///
     /// `is_delta` is the caller's reading of `COMPACT_STATUS_DELTA_DATA` in
     /// `header.status_flags`. It is a parameter rather than a bit tested here
-    /// because that constant belongs to `compact_contract`, which the reference
-    /// library deliberately does not depend on (only the measurement bins do) — and
-    /// copying the literal into this crate is exactly the drift the shared-contract
-    /// rule forbids.
+    /// because that constant belongs to `compact_contract` and d38 is not
+    /// admitted to the production-codec dependency surface. Copying the literal
+    /// into this module is exactly the drift the shared-contract rule forbids.
     ///
     /// **The caller must already have excluded failure-status records.** The fold
     /// returns at `:15433` before reaching any of this, retaining the accumulator;

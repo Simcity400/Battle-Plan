@@ -6,8 +6,14 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+test-support = ["production_hook_receipt/test-support"]
+
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+production_hook_receipt = { path = "../production_hook_receipt" }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 minhook = "0.9.0"

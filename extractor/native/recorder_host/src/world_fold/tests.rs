@@ -27,6 +27,98 @@ use session_multiplayer_metadata_live as session57_lane;
 use sunk_ship_history_live_lane as sunk86_lane;
 
 #[test]
+fn d81_v3_fold_keeps_raw_simulation_inputs_and_rejects_presentation_era_v2() {
+    let row = compact_contract::rail_replay::RailHubSimulationState {
+        pov_country_id: 7,
+        province_id: 42,
+        province_owner_country_id: 9,
+        subtype: 1,
+        route_class: 2,
+        node_kind: 5,
+        node_flag: 1,
+        available_raw: 1_250_000,
+        consumed_raw: 375_000,
+        foreign_max_raw: 2_000_000,
+        foreign_route: true,
+        fallback_record: false,
+    };
+    let payload = compact_contract::rail_replay::encode_payload_with_hub_simulation(
+        &[],
+        &[row],
+        11,
+        0,
+        0,
+        0,
+    )
+    .unwrap();
+    let mut fold = WorldFold::new("d81_v3_raw_simulation");
+    fold.fold_rail_replay_state(&payload).unwrap();
+    let state = fold.rail_replay_state.as_ref().unwrap();
+    assert_eq!(
+        state.payload_version,
+        compact_contract::rail_replay::PAYLOAD_VERSION_V3
+    );
+    assert!(state.hub_simulation_complete);
+    assert_eq!(state.hub_simulation_rows, vec![row]);
+
+    let hour = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        hour,
+        compact_contract::rail_replay::DOMAIN_ID,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &payload,
+    );
+    push_record(
+        &mut stream,
+        2,
+        hour,
+        compact_contract::COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let mut projected = WorldFold::new("d81_v3_projection");
+    projected.ingest_stream(&stream);
+    let snapshots = projected
+        .finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect::<Vec<_>>();
+    let rail = &snapshots[0]["map"]["rail_replay_state_live"];
+    assert_eq!(rail["authority"], json!("exact_a729_supply_simulation_tables"));
+    assert_eq!(rail["hub_simulation"][0]["pov_country_id"], json!(7));
+    assert_eq!(rail["hub_simulation"][0]["available_raw"], json!(1_250_000));
+    assert_eq!(rail["viewer_state_captured"], json!(false));
+    assert_eq!(rail["derived_visual_frames_captured"], json!(false));
+    assert!(rail.get("hub_frames").is_none());
+
+    let legacy = compact_contract::rail_replay::encode_payload_with_hub_frames(
+        &[],
+        &[compact_contract::rail_replay::RailHubFrameState {
+            province_id: 42,
+            subtype: 1,
+            background_button_frame: 5,
+            common_icon_frame: 4,
+            naval_overlay_visible: true,
+        }],
+        11,
+        0,
+        0,
+        0,
+    )
+    .unwrap();
+    let error = fold
+        .fold_rail_replay_state(&legacy)
+        .expect_err("legacy presentation cache must not enter production fold");
+    assert!(
+        error.contains("requires v3 raw supply-simulation authority"),
+        "{error}"
+    );
+}
+
+#[test]
 fn snapshot_spill_never_truncates_a_preexisting_destination() {
     let root = std::env::temp_dir().join(format!(
         "world_fold_create_new_{}_{}",

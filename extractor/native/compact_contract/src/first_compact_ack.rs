@@ -9,7 +9,7 @@ use crate::campaign_identity::{COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE
 use crate::stream_validator::StreamIdentityMode;
 use crate::{
     COMPACT_MAX_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
 };
 
 pub const FIRST_COMPACT_FRAME_ACK_MAGIC: &[u8; 4] = b"CFA1";
@@ -80,6 +80,7 @@ impl FirstCompactFrameAckV1 {
                         COMPACT_RECORD_TYPE_DOMAIN_PERF
                             | COMPACT_RECORD_TYPE_FRAME_END
                             | COMPACT_RECORD_TYPE_DOMAIN_DATA
+                            | COMPACT_RECORD_TYPE_DOMAIN_GAP
                     )
             }
         };
@@ -243,6 +244,18 @@ mod tests {
         assert!(decode_first_compact_frame_ack(&identity, StreamIdentityMode::Legacy).is_err());
         let legacy = encode_first_compact_frame_ack(value(StreamIdentityMode::Legacy)).unwrap();
         assert!(decode_first_compact_frame_ack(&legacy, StreamIdentityMode::IdentityV1).is_err());
+    }
+
+    #[test]
+    fn legacy_first_outcome_may_be_a_domain_gap() {
+        let mut gap = value(StreamIdentityMode::Legacy);
+        gap.domain_id = 81;
+        gap.record_type = COMPACT_RECORD_TYPE_DOMAIN_GAP;
+        let wire = encode_first_compact_frame_ack(gap).unwrap();
+        assert_eq!(
+            decode_first_compact_frame_ack(&wire, StreamIdentityMode::Legacy).unwrap(),
+            gap
+        );
     }
 
     #[test]

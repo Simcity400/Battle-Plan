@@ -510,10 +510,9 @@ impl Accumulator {
     ///
     /// `is_delta` is the caller's reading of `COMPACT_STATUS_DELTA_DATA` in
     /// `header.status_flags`. It is a parameter rather than a bit tested here
-    /// because that constant belongs to `compact_contract`, which the reference
-    /// library deliberately does not depend on (only the measurement bins do) —
-    /// and copying the literal into this crate is exactly the drift the shared-
-    /// contract rule forbids.
+    /// because that constant belongs to `compact_contract` and d31 is not
+    /// admitted to the production-codec dependency surface. Copying the literal
+    /// into this module is exactly the drift the shared-contract rule forbids.
     ///
     /// **The caller must already have excluded failure-status records.** The fold
     /// returns at `:14789` before reaching any of this, retaining the accumulator;

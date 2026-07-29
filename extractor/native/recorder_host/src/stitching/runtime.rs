@@ -8,7 +8,7 @@
 //! * [`SegmentRuntime`] stages one complete logical frame, calls
 //!   [`SegmentCutter::route_checked`], seals the old fold before constructing a
 //!   fresh fold, and is the production call site for
-//!   [`publish_product_stitch_retained`].
+//!   [`publish_product_stitch_retained_with_rebuilt_wire`].
 //!
 //! A failure poisons the runtime.  There is no retry on partly-mutated fold
 //! state, no guessed ticket, and no publication while a fold remains open.
@@ -22,9 +22,13 @@ use sha2::{Digest, Sha256};
 use super::formation::{
     FormationInputError, FrameFacts, FrameRouting, SealedSegment, SegmentCutter,
 };
-use super::product::{publish_product_stitch_retained, ProductStitchOutcome};
-use super::publish::RetainedStitchedPayloadSource;
-use super::{AppendTicket, SegmentInput, StitchRequiredInputs};
+use super::product::{
+    publish_product_stitch_retained_with_rebuilt_wire, ProductStitchOutcome,
+};
+use super::publish::{
+    RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
+};
+use super::{AppendTicket, SegmentInput, StitchRequiredInputs, StitchedPlan};
 
 const LEDGER_MAGIC: &[u8; 8] = b"AOLT1\0\0\0";
 const MAX_TICKET_FIELD_BYTES: usize = 4096;
@@ -593,15 +597,26 @@ impl<P, F: SegmentFoldFactory<P>> SegmentRuntime<P, F> {
 
     /// The sole live-driver composition call from staged folds to the atomic
     /// stitched publisher.
-    pub fn finish_and_publish<S: RetainedStitchedPayloadSource>(
+    pub fn finish_and_publish<S: RetainedStitchedPayloadSource, Prepare>(
         self,
         game_id: &str,
         required_inputs: StitchRequiredInputs,
         source: &S,
         destination: &Path,
-    ) -> Result<ProductStitchOutcome, String> {
+        prepare: Prepare,
+    ) -> Result<ProductStitchOutcome, String>
+    where
+        Prepare: FnOnce(&StitchedPlan) -> Result<StitchedRebuiltWireProduct, String>,
+    {
         let segments = self.finish().map_err(|error| error.to_string())?;
-        publish_product_stitch_retained(game_id, required_inputs, segments, source, destination)
+        publish_product_stitch_retained_with_rebuilt_wire(
+            game_id,
+            required_inputs,
+            segments,
+            source,
+            destination,
+            prepare,
+        )
     }
 }
 

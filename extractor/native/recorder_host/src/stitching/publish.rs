@@ -28,14 +28,11 @@
 //! `main.rs` finalize path calls this once the sealed [`SegmentInput`](super::SegmentInput)
 //! set and its spilled payloads exist.
 
-use std::fs::{self, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-#[cfg(test)]
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use snapshot::container::{Container, ExpectedIdentity};
-#[cfg(test)]
 use snapshot::sha256::Sha256;
 use snapshot::{
     pack_ordered_streaming_to_writer_with_options, BorrowedPackEntry,
@@ -45,6 +42,68 @@ use snapshot::{
 use snapshot::{pack_with, PackEntry};
 
 use super::{CoverageDisposition, PlannedSegment, RawSourceStorage, StitchedPlan};
+
+pub struct StitchedRebuiltWireSource {
+    /// Exact normalized `RawSourceDescriptor::source_path`.
+    pub source_path: String,
+    /// Diagnostic-only path for the already retained raw/zstd handle.
+    file_path: PathBuf,
+    file: File,
+    pub identity_mode: compact_contract::stream_validator::StreamIdentityMode,
+}
+
+impl StitchedRebuiltWireSource {
+    pub fn open(
+        source_path: String,
+        file_path: PathBuf,
+        identity_mode: compact_contract::stream_validator::StreamIdentityMode,
+    ) -> Result<Self, String> {
+        let file = File::open(&file_path).map_err(|error| {
+            format!(
+                "retain stitched rebuilt-wire source {}: {error}",
+                file_path.display()
+            )
+        })?;
+        Ok(Self {
+            source_path,
+            file_path,
+            file,
+            identity_mode,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StitchedRebuiltWireRoute {
+    branch: u32,
+    segment_id: u32,
+}
+
+/// Complete typed authority for one stitched rebuilt-wire publication. Callers
+/// cannot supply an arbitrary bundle or verifier: construction derives branch
+/// and segment selections from the final plan and builds from the retained
+/// H4CR sources; retained-temp reopen independently refolds those sources.
+pub struct StitchedRebuiltWireProduct {
+    stitch_input_digest: String,
+    bundle: wire_product::PreparedBundle,
+    config: wire_product::BundleBuildConfig,
+    branches: Vec<wire_product::BranchSpec>,
+    catalog: wire_product::AuthenticatedProvinceCatalog,
+    sessions: Vec<OwnedStitchedWireSession>,
+    leading_gaps: Vec<wire_product::D81LeadingGap>,
+    content_manifest: portable_content_manifest::ContentManifest,
+    routes: Vec<StitchedRebuiltWireRoute>,
+}
+
+struct OwnedStitchedWireSession {
+    branch: u32,
+    source_path: String,
+    identity_mode: compact_contract::stream_validator::StreamIdentityMode,
+    file_path: PathBuf,
+    file: File,
+    stored_sha256: [u8; 32],
+    selection: wire_product::H4crSelection,
+}
 
 /// Supplies the exact retained payload bytes a stitched plan references. During live
 /// finalize the snapshots are the per-segment fold's spilled files and the raw
@@ -114,7 +173,10 @@ fn stitched_pack_options() -> PackOptions {
 /// The pack identity a stitched publication records. `created_utc` and the schema /
 /// mod bindings come from the plan's immutable required-inputs, never sampled at
 /// pack time (§8: `created_utc` is an input).
-fn pack_identity(plan: &StitchedPlan) -> PackIdentity {
+fn pack_identity(
+    plan: &StitchedPlan,
+    content_manifest: Option<portable_content_manifest::ContentManifest>,
+) -> PackIdentity {
     let mod_identity = plan
         .segments
         .iter()
@@ -129,8 +191,505 @@ fn pack_identity(plan: &StitchedPlan) -> PackIdentity {
         build_pinned: false,
         mod_identity,
         created_utc: Some(plan.required_inputs.created_utc.clone()),
-        content_manifest: None,
+        content_manifest,
     }
+}
+
+/// Derive the planner-side rebuilt-wire branch candidates for a sealed stitch.
+///
+/// Data-bearing segments receive dense branch ids in planned order. Empty
+/// recovery segments remain in `segments.json` but cannot create holes or
+/// displace the wire root. Every later branch uses the exact planner-selected
+/// data-bearing parent. Transition coverage moves the branch origin to its
+/// first explicit transition hour; otherwise the origin is the cutover. The
+/// production builder then joins this candidate with the retained H4CR
+/// inspection so an initial coalesced H4DG can move the final origin earlier.
+/// The decoded H4CR digest comes from the validated raw-source ledger.
+pub fn derive_rebuilt_wire_branches(
+    plan: &StitchedPlan,
+) -> Result<Vec<wire_product::BranchSpec>, String> {
+    derive_rebuilt_wire_plan(plan).map(|(branches, _)| branches)
+}
+
+fn derive_rebuilt_wire_plan(
+    plan: &StitchedPlan,
+) -> Result<
+    (
+        Vec<wire_product::BranchSpec>,
+        Vec<StitchedRebuiltWireRoute>,
+    ),
+    String,
+> {
+    let data_segments = plan
+        .segments
+        .iter()
+        .filter(|segment| !segment.input.is_empty_recovery())
+        .collect::<Vec<_>>();
+    if data_segments.is_empty() {
+        return Err("rebuilt-wire branch table has no data-bearing root".to_string());
+    }
+    let branch_by_segment = data_segments
+        .iter()
+        .enumerate()
+        .map(|(branch, segment)| {
+            u32::try_from(branch)
+                .map(|branch| (segment.segment_id, branch))
+                .map_err(|_| "rebuilt-wire branch count exceeds u32".to_string())
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
+    let mut branches = Vec::new();
+    let mut routes = Vec::new();
+    for segment in data_segments {
+        let branch = branch_by_segment[&segment.segment_id];
+        let cutover = segment
+            .input
+            .cutover()
+            .ok_or_else(|| format!("wire branch {} has no cutover", segment.segment_id))?;
+        let first_hour = segment
+            .input
+            .transition_coverage
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(cutover);
+        let first_tick = u64::try_from(first_hour).map_err(|_| {
+            format!(
+                "wire branch {branch} has negative origin hour {first_hour}"
+            )
+        })?;
+        let source = segment.input.raw_source.as_ref().ok_or_else(|| {
+            format!(
+                "wire branch {} has no authenticated raw source",
+                segment.segment_id
+            )
+        })?;
+        let provenance_digest = segment
+            .input
+            .provenance
+            .source_decoded_digest
+            .as_deref()
+            .ok_or_else(|| {
+                format!(
+                    "wire branch {} has no decoded-source provenance digest",
+                    segment.segment_id
+                )
+            })?;
+        if provenance_digest != source.decoded_digest {
+            return Err(format!(
+                "wire branch {} decoded-source digest disagrees with raw-source ledger",
+                segment.segment_id
+            ));
+        }
+        let session_fingerprint = decode_sha256_hex(provenance_digest).map_err(|reason| {
+            format!(
+                "wire branch {} has invalid decoded-source digest: {reason}",
+                segment.segment_id
+            )
+        })?;
+        let parent = if branch == 0 {
+            if segment.parent_segment.is_some() {
+                return Err("wire root branch 0 unexpectedly has a parent".to_string());
+            }
+            None
+        } else {
+            let parent_segment = segment.parent_segment.ok_or_else(|| {
+                format!(
+                    "wire branch {branch} has no planner-selected parent"
+                )
+            })?;
+            let parent_branch = branch_by_segment.get(&parent_segment).copied().ok_or_else(|| {
+                format!("wire branch {branch} parent segment {parent_segment} is not data-bearing")
+            })?;
+            if parent_branch >= branch {
+                return Err(format!("wire branch {branch} has non-prior parent {parent_branch}"));
+            }
+            let through_tick = first_tick.checked_sub(1).ok_or_else(|| {
+                format!(
+                    "wire branch {branch} forks at tick zero and cannot name an inclusive parent point"
+                )
+            })?;
+            Some(wire_product::BranchParent {
+                branch: parent_branch,
+                through_tick,
+            })
+        };
+        branches.push(wire_product::BranchSpec {
+            branch,
+            parent,
+            first_tick,
+            session_fingerprint,
+        });
+        routes.push(StitchedRebuiltWireRoute {
+            branch,
+            segment_id: segment.segment_id,
+        });
+    }
+    Ok((branches, routes))
+}
+
+fn decode_sha256_hex(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("expected exactly 64 hexadecimal characters".to_string());
+    }
+    let mut out = [0u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(chunk)
+            .map_err(|_| "SHA-256 digest is not ASCII".to_string())?;
+        out[index] = u8::from_str_radix(text, 16)
+            .map_err(|_| "SHA-256 digest contains invalid hexadecimal".to_string())?;
+    }
+    Ok(out)
+}
+
+fn hash_retained_file_sha256(file: &File, path: &Path) -> Result<(u64, [u8; 32]), String> {
+    let mut file = file
+        .try_clone()
+        .map_err(|error| format!("clone stitched wire source {}: {error}", path.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind stitched wire source {}: {error}", path.display()))?;
+    let mut sha256 = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("hash stitched wire source {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        bytes = bytes
+            .checked_add(
+                u64::try_from(read)
+                    .map_err(|_| "stitched wire source read length does not fit u64".to_string())?,
+            )
+            .ok_or_else(|| "stitched wire source length overflows u64".to_string())?;
+        sha256.update(&buffer[..read]);
+    }
+    Ok((bytes, sha256.finalize().into()))
+}
+
+/// Bind every retained H4CR handle to the exact stored-byte authority in
+/// the stitched plan. The wire scan separately proves the decoded SHA-256, so
+/// these two checks make compressed and uncompressed sources transitively
+/// identical to the raw payload admitted by retained publication.
+fn verify_rebuilt_wire_source_receipts(
+    sessions: &[OwnedStitchedWireSession],
+) -> Result<(), String> {
+    for session in sessions {
+        let (_, actual) = hash_retained_file_sha256(&session.file, &session.file_path)?;
+        if actual != session.stored_sha256 {
+            return Err(format!(
+                "stitched wire source {} ({}) stored SHA-256 differs from the final plan",
+                session.source_path,
+                session.file_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn inspect_rebuilt_wire_session_first_ticks(
+    sessions: &[OwnedStitchedWireSession],
+) -> Result<std::collections::BTreeMap<u32, u64>, String> {
+    let mut first_ticks = std::collections::BTreeMap::new();
+    for session in sessions {
+        let inspection = wire_product::inspect_d81_session(wire_product::H4crSession {
+            branch: session.branch,
+            identity_mode: session.identity_mode,
+            source: wire_product::H4crSource::RetainedFileSelection(
+                &session.file,
+                session.selection,
+            ),
+        })
+        .map_err(|error| {
+            format!(
+                "inspect retained stitched H4CR branch {} coverage: {error}",
+                session.branch
+            )
+        })?;
+        if first_ticks
+            .insert(session.branch, inspection.first_tick)
+            .is_some()
+        {
+            return Err(format!(
+                "retained stitched H4CR repeats branch {}",
+                session.branch
+            ));
+        }
+    }
+    Ok(first_ticks)
+}
+
+fn derive_rebuilt_wire_plan_from_sessions(
+    plan: &StitchedPlan,
+    sessions: &[OwnedStitchedWireSession],
+) -> Result<
+    (
+        Vec<wire_product::BranchSpec>,
+        Vec<StitchedRebuiltWireRoute>,
+        std::collections::BTreeMap<u32, u64>,
+    ),
+    String,
+> {
+    let (mut branches, routes) = derive_rebuilt_wire_plan(plan)?;
+    let first_ticks = inspect_rebuilt_wire_session_first_ticks(sessions)?;
+    if first_ticks.len() != branches.len() {
+        return Err(
+            "retained stitched H4CR session count differs from rebuilt-wire branches".to_string(),
+        );
+    }
+    for branch in &mut branches {
+        let source_first_tick = first_ticks.get(&branch.branch).copied().ok_or_else(|| {
+            format!(
+                "rebuilt-wire branch {} has no retained H4CR coverage inspection",
+                branch.branch
+            )
+        })?;
+        // The branch must begin at the earliest authenticated coverage from
+        // either the stitch transition ledger or the selected H4CR. At speed 5
+        // an initial coalesced H4DG can begin hours before the first FRAME_END.
+        branch.first_tick = branch.first_tick.min(source_first_tick);
+        if let Some(parent) = branch.parent.as_mut() {
+            parent.through_tick = branch.first_tick.checked_sub(1).ok_or_else(|| {
+                format!(
+                    "wire branch {} authenticated coverage begins at tick zero and cannot name an inclusive parent point",
+                    branch.branch
+                )
+            })?;
+        }
+    }
+    Ok((branches, routes, first_ticks))
+}
+
+fn derive_rebuilt_wire_leading_gaps(
+    plan: &StitchedPlan,
+    routes: &[StitchedRebuiltWireRoute],
+    source_first_ticks: &std::collections::BTreeMap<u32, u64>,
+) -> Result<Vec<wire_product::D81LeadingGap>, String> {
+    let mut gaps = Vec::new();
+    for route in routes {
+        let segment = plan
+            .segments
+            .iter()
+            .find(|segment| segment.segment_id == route.segment_id)
+            .ok_or_else(|| format!("wire gap route lost segment {}", route.segment_id))?;
+        let mut open: Option<(u64, u64, wire_product::D81LeadingGapKind)> = None;
+        for (hour, disposition) in &segment.input.transition_coverage {
+            let tick = u64::try_from(*hour).map_err(|_| {
+                format!("wire transition gap for segment {} is negative", route.segment_id)
+            })?;
+            let source_first_tick =
+                source_first_ticks.get(&route.branch).copied().ok_or_else(|| {
+                    format!(
+                        "wire transition gap branch {} has no retained H4CR coverage inspection",
+                        route.branch
+                    )
+                })?;
+            // Never duplicate or override authenticated source coverage. H4DG
+            // records at and after this tick are emitted directly by the H4CR
+            // scan; transition gaps only fill the prefix before that source.
+            if tick >= source_first_tick {
+                continue;
+            }
+            let kind = match disposition {
+                CoverageDisposition::CaptureFailed { .. } => {
+                    wire_product::D81LeadingGapKind::CaptureFailed
+                }
+                CoverageDisposition::Coalesced { .. } => {
+                    wire_product::D81LeadingGapKind::Coalesced
+                }
+                CoverageDisposition::Gap { .. } => {
+                    wire_product::D81LeadingGapKind::ExplicitGap
+                }
+                CoverageDisposition::Snapshot { .. } => {
+                    return Err(format!(
+                        "wire transition coverage for segment {} contains a snapshot",
+                        route.segment_id
+                    ))
+                }
+            };
+            match open {
+                Some((start, end, prior_kind)) if end == tick && prior_kind == kind => {
+                    open = Some((start, tick + 1, kind));
+                }
+                Some((start, end, prior_kind)) => {
+                    gaps.push(
+                        wire_product::D81LeadingGap::new(
+                            route.branch,
+                            start,
+                            end,
+                            prior_kind,
+                        )
+                        .map_err(|error| format!("build wire transition gap failed: {error}"))?,
+                    );
+                    open = Some((tick, tick + 1, kind));
+                }
+                None => open = Some((tick, tick + 1, kind)),
+            }
+        }
+        if let Some((start, end, kind)) = open {
+            gaps.push(
+                wire_product::D81LeadingGap::new(route.branch, start, end, kind)
+                    .map_err(|error| format!("build wire transition gap failed: {error}"))?,
+            );
+        }
+    }
+    Ok(gaps)
+}
+
+impl StitchedRebuiltWireProduct {
+    pub fn build(
+        plan: &StitchedPlan,
+        config: wire_product::BundleBuildConfig,
+        content_manifest: portable_content_manifest::ContentManifest,
+        catalog: wire_product::AuthenticatedProvinceCatalog,
+        sources: Vec<StitchedRebuiltWireSource>,
+    ) -> Result<Self, String> {
+        let manifest_sha256 = content_manifest
+            .sha256()
+            .map_err(|error| format!("hash stitched content manifest failed: {error}"))
+            .and_then(|digest| decode_sha256_hex(&digest))?;
+        if manifest_sha256 != catalog.content_manifest_sha256() {
+            return Err(
+                "stitched province catalog belongs to a different content manifest".to_string(),
+            );
+        }
+        for segment in &plan.segments {
+            if segment.input.is_empty_recovery() {
+                continue;
+            }
+            let declared = segment
+                .input
+                .provenance
+                .static_catalog_digest
+                .as_deref()
+                .ok_or_else(|| {
+                    format!(
+                        "segment {} has no static catalog digest",
+                        segment.segment_id
+                    )
+                })?;
+            if decode_sha256_hex(declared)? != manifest_sha256 {
+                return Err(format!(
+                    "segment {} static catalog differs from rebuilt-wire catalog",
+                    segment.segment_id
+                ));
+            }
+        }
+        let (_, routes) = derive_rebuilt_wire_plan(plan)?;
+        let source_count = sources.len();
+        let source_by_path = sources
+            .into_iter()
+            .map(|source| (source.source_path.clone(), source))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if source_by_path.len() != source_count {
+            return Err("stitched rebuilt-wire sources repeat a source path".to_string());
+        }
+        let mut used_paths = std::collections::BTreeSet::new();
+        let mut sessions = Vec::with_capacity(routes.len());
+        for route in &routes {
+            let segment = plan
+                .segments
+                .iter()
+                .find(|segment| segment.segment_id == route.segment_id)
+                .ok_or_else(|| format!("wire route lost segment {}", route.segment_id))?;
+            let raw = segment.input.raw_source.as_ref().ok_or_else(|| {
+                format!("wire segment {} has no raw source", route.segment_id)
+            })?;
+            let source = source_by_path.get(&raw.source_path).ok_or_else(|| {
+                format!(
+                    "wire segment {} has no retained source for {}",
+                    route.segment_id, raw.source_path
+                )
+            })?;
+            used_paths.insert(raw.source_path.as_str());
+            let (first_sequence, last_sequence) = segment
+                .input
+                .provenance
+                .record_seq_bounds
+                .ok_or_else(|| {
+                    format!("wire segment {} has no record bounds", route.segment_id)
+                })?;
+            let (start_byte, end_byte) =
+                segment.input.provenance.byte_bounds.ok_or_else(|| {
+                    format!("wire segment {} has no byte bounds", route.segment_id)
+                })?;
+            sessions.push(OwnedStitchedWireSession {
+                branch: route.branch,
+                source_path: raw.source_path.clone(),
+                identity_mode: source.identity_mode,
+                file_path: source.file_path.clone(),
+                file: source.file.try_clone().map_err(|error| {
+                    format!(
+                        "clone retained wire source {} for branch {}: {error}",
+                        source.file_path.display(),
+                        route.branch
+                    )
+                })?,
+                stored_sha256: decode_sha256_hex(&raw.stored_digest).map_err(|error| {
+                    format!(
+                        "wire segment {} stored source digest is invalid: {error}",
+                        route.segment_id
+                    )
+                })?,
+                selection: wire_product::H4crSelection {
+                    first_sequence,
+                    last_sequence,
+                    start_byte,
+                    end_byte,
+                },
+            });
+        }
+        if used_paths.len() != source_by_path.len() {
+            return Err("stitched rebuilt-wire sources include an unreferenced path".to_string());
+        }
+        verify_rebuilt_wire_source_receipts(&sessions)?;
+        let (branches, inspected_routes, source_first_ticks) =
+            derive_rebuilt_wire_plan_from_sessions(plan, &sessions)?;
+        if inspected_routes != routes {
+            return Err(
+                "retained H4CR inspection changed the rebuilt-wire route table".to_string(),
+            );
+        }
+        let leading_gaps =
+            derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
+        let borrowed = borrowed_wire_sessions(&sessions);
+        let bundle = wire_product::build_d81_bundle_with_leading_gaps(
+            config,
+            &branches,
+            &catalog,
+            &borrowed,
+            &leading_gaps,
+        )
+        .map_err(|error| format!("build stitched rebuilt-wire product failed: {error}"))?;
+        Ok(Self {
+            stitch_input_digest: plan.stitch_input_digest.clone(),
+            bundle,
+            config,
+            branches,
+            catalog,
+            sessions,
+            leading_gaps,
+            content_manifest,
+            routes,
+        })
+    }
+}
+
+fn borrowed_wire_sessions(
+    sessions: &[OwnedStitchedWireSession],
+) -> Vec<wire_product::H4crSession<'_>> {
+    sessions
+        .iter()
+        .map(|session| wire_product::H4crSession {
+            branch: session.branch,
+            identity_mode: session.identity_mode,
+            source: wire_product::H4crSource::RetainedFileSelection(
+                &session.file,
+                session.selection,
+            ),
+        })
+        .collect()
 }
 
 /// Assemble the full, deterministic container payload set for a plan, pulling bytes
@@ -265,7 +824,7 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
     let bytes = pack_with(
         &plan.game_id,
         &entries,
-        &pack_identity(plan),
+        &pack_identity(plan, None),
         false, // STORE, not deflate — §8 rule 7
         &stitched_pack_options(),
     )
@@ -321,6 +880,11 @@ enum RetainedSourceKey {
     Raw { source_path: String },
 }
 
+enum PackRetainedSource {
+    Payload(RetainedSourceKey),
+    File { file_path: PathBuf, file: File },
+}
+
 enum PreparedRetainedEntry {
     Memory {
         path: String,
@@ -335,12 +899,22 @@ enum PreparedRetainedEntry {
         role: &'static str,
         hour_index: Option<i64>,
     },
+    File {
+        path: String,
+        file_path: PathBuf,
+        file: File,
+        receipt: VerifiedPayloadReceipt,
+        role: &'static str,
+        hour_index: Option<i64>,
+    },
 }
 
 impl PreparedRetainedEntry {
     fn path(&self) -> &str {
         match self {
-            Self::Memory { path, .. } | Self::Source { path, .. } => path,
+            Self::Memory { path, .. }
+            | Self::Source { path, .. }
+            | Self::File { path, .. } => path,
         }
     }
 }
@@ -348,10 +922,18 @@ impl PreparedRetainedEntry {
 fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
+    rebuilt_wire: Option<&StitchedRebuiltWireProduct>,
 ) -> Result<Vec<PreparedRetainedEntry>, String> {
     let game = plan.game_id.as_str();
-    let mut entries = plan
-        .to_container_files()
+    let mut container_files = plan.to_container_files();
+    if let Some(product) = rebuilt_wire {
+        let index = container_files
+            .iter_mut()
+            .find(|file| file.rel_path == "index.json")
+            .ok_or_else(|| "stitched plan has no index.json for rebuilt-wire discovery".to_string())?;
+        index.bytes = rebuilt_wire_index_bytes(plan, product)?;
+    }
+    let mut entries = container_files
         .into_iter()
         .map(|file| PreparedRetainedEntry::Memory {
             path: format!("payload/{game}/{}", file.rel_path),
@@ -434,8 +1016,90 @@ fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
             });
         }
     }
+    if let Some(product) = rebuilt_wire {
+        wire_product::verify_prepared_bundle(&product.bundle)
+            .map_err(|error| format!("prepared rebuilt-wire bundle is invalid: {error}"))?;
+        for artifact in product.bundle.entries() {
+            let file = File::open(&artifact.file_path).map_err(|error| {
+                format!(
+                    "retain prepared rebuilt-wire artifact {}: {error}",
+                    artifact.file_path.display()
+                )
+            })?;
+            let (bytes, sha256) =
+                hash_retained_file_sha256(&file, &artifact.file_path)?;
+            if bytes != artifact.len {
+                return Err(format!(
+                    "prepared rebuilt-wire artifact {} length changed after verification",
+                    artifact.path
+                ));
+            }
+            entries.push(PreparedRetainedEntry::File {
+                path: format!("payload/{game}/{}", artifact.path),
+                file_path: artifact.file_path.clone(),
+                file,
+                receipt: VerifiedPayloadReceipt {
+                    bytes,
+                    sha256: hex32(&sha256),
+                },
+                role: artifact.role.as_str(),
+                hour_index: None,
+            });
+        }
+    }
     entries.sort_by(|left, right| left.path().cmp(right.path()));
+    for pair in entries.windows(2) {
+        if pair[0].path() == pair[1].path() {
+            return Err(format!(
+                "duplicate stitched container entry path {}",
+                pair[0].path()
+            ));
+        }
+    }
     Ok(entries)
+}
+
+fn rebuilt_wire_index_bytes(
+    plan: &StitchedPlan,
+    product: &StitchedRebuiltWireProduct,
+) -> Result<Vec<u8>, String> {
+    let verified = wire_product::verify_prepared_bundle(&product.bundle)
+        .map_err(|error| format!("prepare rebuilt-wire discovery index failed: {error}"))?;
+    let mut index = plan.main_index_value();
+    let object = index
+        .as_object_mut()
+        .ok_or_else(|| "stitched main index is not an object".to_string())?;
+    object.insert(
+        "rebuilt_wire".to_string(),
+        serde_json::json!({
+            "root": "rebuilt_wire",
+            "stitch_input_digest": plan.stitch_input_digest,
+            "content_manifest_sha256": hex32(&verified.content_manifest_sha256),
+            "definition_csv_sha256": hex32(&verified.definition_csv_sha256),
+            "branches": product.routes.iter().map(|route| serde_json::json!({
+                "branch": route.branch,
+                "segment_id": route.segment_id,
+            })).collect::<Vec<_>>(),
+            "entries": product.bundle.entries().iter().map(|entry| serde_json::json!({
+                "path": entry.path,
+                "role": entry.role.as_str(),
+                "bytes": entry.len,
+                "blake3": hex32(&entry.blake3),
+            })).collect::<Vec<_>>(),
+        }),
+    );
+    let mut text = String::new();
+    snapshot::canon::write_canonical(&index, &mut text);
+    Ok(text.into_bytes())
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn validate_stitched_container(
@@ -466,16 +1130,181 @@ fn validate_stitched_container(
     Ok(graph.segments.len())
 }
 
+fn verify_reopened_rebuilt_wire_bundle(
+    plan: &StitchedPlan,
+    product: &StitchedRebuiltWireProduct,
+    container: &Container,
+) -> Result<(), String> {
+    verify_rebuilt_wire_source_receipts(&product.sessions)?;
+    let index_path = format!("payload/{}/index.json", plan.game_id);
+    let reopened_index = container
+        .read_entry_bytes(&index_path)
+        .map_err(|error| format!("read stitched rebuilt-wire discovery index failed: {error}"))?;
+    let expected_index = rebuilt_wire_index_bytes(plan, product)?;
+    if reopened_index != expected_index {
+        return Err(
+            "stitched rebuilt-wire discovery index differs from the final plan/product"
+                .to_string(),
+        );
+    }
+    let opened_manifest = container
+        .content_manifest()
+        .ok_or_else(|| "stitched rebuilt-wire container has no content manifest".to_string())?;
+    let opened_manifest_sha = opened_manifest
+        .sha256()
+        .map_err(|error| format!("hash reopened stitched content manifest failed: {error}"))
+        .and_then(|digest| decode_sha256_hex(&digest))?;
+    if opened_manifest_sha != product.catalog.content_manifest_sha256() {
+        return Err(
+            "stitched container content manifest differs from rebuilt-wire catalog".to_string(),
+        );
+    }
+    let prefix = format!("payload/{}/rebuilt_wire/", plan.game_id);
+    let mut descriptors = product
+        .bundle
+        .entries()
+        .iter()
+        .map(wire_product::BundleEntryDescriptor::from)
+        .collect::<Vec<_>>();
+    descriptors.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+    let mut packed_entries = std::collections::BTreeMap::new();
+    for entry in container.entries() {
+        let role = entry.role.as_deref();
+        let parsed_role = role.and_then(|value| wire_product::ArtifactRole::from_str(value).ok());
+        if !entry.path.starts_with(&prefix) {
+            if parsed_role.is_some() {
+                return Err(format!(
+                    "rebuilt-wire role {:?} appears outside canonical prefix {prefix}",
+                    role.unwrap_or_default()
+                ));
+            }
+            continue;
+        }
+        let role = role
+            .ok_or_else(|| {
+            format!(
+                "rebuilt-wire container entry {} has no manifest role",
+                entry.path
+            )
+        })
+            .and_then(|role| {
+                wire_product::ArtifactRole::from_str(role).map_err(|error| {
+            format!(
+                "rebuilt-wire container entry {} has invalid role: {error}",
+                entry.path
+            )
+                })
+            })?;
+        let relative = entry
+            .path
+            .strip_prefix(&format!("payload/{}/", plan.game_id))
+            .ok_or_else(|| format!("rebuilt-wire entry {} lost its game prefix", entry.path))?;
+        if packed_entries
+            .insert(relative.to_string(), (role, entry.bytes))
+            .is_some()
+        {
+            return Err(format!("rebuilt-wire container repeats entry {relative}"));
+        }
+    }
+    if packed_entries.len() != descriptors.len() {
+        return Err(
+            "reopened rebuilt-wire entry cardinality differs from the exact prepared bundle"
+                .to_string(),
+        );
+    }
+    for descriptor in &descriptors {
+        let (role, bytes) = packed_entries.get(&descriptor.path).ok_or_else(|| {
+            format!(
+                "reopened stitched container is missing rebuilt-wire entry {}",
+                descriptor.path
+            )
+        })?;
+        if *role != descriptor.role || *bytes != descriptor.len {
+            return Err(format!(
+                "reopened rebuilt-wire metadata differs for {}",
+                descriptor.path
+            ));
+        }
+    }
+    let sessions = borrowed_wire_sessions(&product.sessions);
+    wire_product::verify_entry_source_against_h4cr(
+        &descriptors,
+        |path| {
+            let packed_path = format!("payload/{}/{path}", plan.game_id);
+            container.read_entry_bytes(&packed_path).map_err(|error| {
+                format!("read stitched rebuilt-wire entry {packed_path}: {error}")
+            })
+        },
+        product.config,
+        &product.branches,
+        &product.catalog,
+        &sessions,
+        &product.leading_gaps,
+    )
+    .map_err(|error| format!("stitched rebuilt-wire H4CR parity failed: {error}"))?;
+    Ok(())
+}
+
 /// Bounded-memory production publication. Payloads are copied from retained
 /// sources directly into the unpublished sibling temp. The exact temp object is
 /// retained file-backed for semantic and all-entry streaming verification
 /// before that same handle is atomically promoted.
+#[cfg(test)]
 pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
     dest: &Path,
 ) -> Result<PublishReport, String> {
-    let entries = prepare_retained_entries(plan, source)?;
+    publish_stitched_container_retained_impl(plan, source, None, dest)
+}
+
+/// Publish a stitched container with one file-global rebuilt-wire bundle.
+///
+/// The product was constructed from this exact final plan and retained H4CR
+/// authority. Publication cannot reach atomic rename until it independently
+/// refolds those sources and obtains exact artifact equality.
+pub fn publish_stitched_container_retained_with_rebuilt_wire<
+    S: RetainedStitchedPayloadSource,
+>(
+    plan: &StitchedPlan,
+    source: &S,
+    rebuilt_wire: StitchedRebuiltWireProduct,
+    dest: &Path,
+) -> Result<PublishReport, String> {
+    publish_stitched_container_retained_impl(plan, source, Some(&rebuilt_wire), dest)
+}
+
+fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
+    plan: &StitchedPlan,
+    source: &S,
+    rebuilt_wire: Option<&StitchedRebuiltWireProduct>,
+    dest: &Path,
+) -> Result<PublishReport, String> {
+    if let Some(product) = rebuilt_wire {
+        if product.stitch_input_digest != plan.stitch_input_digest {
+            return Err(
+                "rebuilt-wire product belongs to a different stitched plan".to_string(),
+            );
+        }
+        let (branches, routes, source_first_ticks) =
+            derive_rebuilt_wire_plan_from_sessions(plan, &product.sessions)?;
+        if branches != product.branches || routes != product.routes {
+            return Err(
+                "rebuilt-wire product branch join differs from the final stitched plan"
+                    .to_string(),
+            );
+        }
+        let leading_gaps =
+            derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
+        if leading_gaps != product.leading_gaps {
+            return Err(
+                "rebuilt-wire product leading gaps differ from the final stitched plan"
+                    .to_string(),
+            );
+        }
+        verify_rebuilt_wire_source_receipts(&product.sessions)?;
+    }
+    let entries = prepare_retained_entries(plan, source, rebuilt_wire)?;
     let parent = dest.parent().filter(|path| !path.as_os_str().is_empty());
     if let Some(parent) = parent {
         fs::create_dir_all(parent)
@@ -492,45 +1321,83 @@ pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
     let (temp, mut file) = create_unique_sibling_temp(&anchored_dest)?;
 
     let publish_result = (|| -> Result<PublishReport, String> {
-        let mut source_keys: Vec<(RetainedSourceKey, VerifiedPayloadReceipt)> = Vec::new();
+        let mut source_keys: Vec<(PackRetainedSource, VerifiedPayloadReceipt)> = Vec::new();
         let ordered = entries
             .iter()
-            .map(|entry| match entry {
-                PreparedRetainedEntry::Memory {
-                    path,
-                    bytes,
-                    role,
-                    hour_index,
-                } => OrderedStreamingPackEntry::Borrowed(BorrowedPackEntry {
-                    path: path.clone(),
-                    bytes,
-                    role: *role,
-                    hour_index: *hour_index,
-                }),
-                PreparedRetainedEntry::Source {
-                    path,
-                    source,
-                    receipt,
-                    role,
-                    hour_index,
-                } => {
-                    let source_id = source_keys.len();
-                    source_keys.push((source.clone(), receipt.clone()));
-                    OrderedStreamingPackEntry::Verified(VerifiedPackEntry {
+            .map(|entry| -> Result<OrderedStreamingPackEntry<'_>, String> {
+                Ok(match entry {
+                    PreparedRetainedEntry::Memory {
+                        path,
+                        bytes,
+                        role,
+                        hour_index,
+                    } => OrderedStreamingPackEntry::Borrowed(BorrowedPackEntry {
                         path: path.clone(),
-                        source_id,
-                        expected_len: receipt.bytes,
-                        expected_sha256: receipt.sha256.clone(),
+                        bytes,
                         role: *role,
                         hour_index: *hour_index,
-                    })
-                }
+                    }),
+                    PreparedRetainedEntry::Source {
+                        path,
+                        source,
+                        receipt,
+                        role,
+                        hour_index,
+                    } => {
+                        let source_id = source_keys.len();
+                        source_keys.push((
+                            PackRetainedSource::Payload(source.clone()),
+                            receipt.clone(),
+                        ));
+                        OrderedStreamingPackEntry::Verified(VerifiedPackEntry {
+                            path: path.clone(),
+                            source_id,
+                            expected_len: receipt.bytes,
+                            expected_sha256: receipt.sha256.clone(),
+                            role: *role,
+                            hour_index: *hour_index,
+                        })
+                    }
+                    PreparedRetainedEntry::File {
+                        path,
+                        file_path,
+                        file,
+                        receipt,
+                        role,
+                        hour_index,
+                    } => {
+                        let source_id = source_keys.len();
+                        source_keys.push((
+                            PackRetainedSource::File {
+                                file_path: file_path.clone(),
+                                file: file.try_clone().map_err(|error| {
+                                    format!(
+                                        "clone prepared rebuilt-wire artifact {}: {error}",
+                                        file_path.display()
+                                    )
+                                })?,
+                            },
+                            receipt.clone(),
+                        ));
+                        OrderedStreamingPackEntry::Verified(VerifiedPackEntry {
+                            path: path.clone(),
+                            source_id,
+                            expected_len: receipt.bytes,
+                            expected_sha256: receipt.sha256.clone(),
+                            role: *role,
+                            hour_index: *hour_index,
+                        })
+                    }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, String>>()?;
         pack_ordered_streaming_to_writer_with_options(
             &plan.game_id,
             &ordered,
-            &pack_identity(plan),
+            &pack_identity(
+                plan,
+                rebuilt_wire.map(|product| product.content_manifest.clone()),
+            ),
             false,
             &stitched_pack_options(),
             &mut file,
@@ -542,19 +1409,55 @@ pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
                     )
                 })?;
                 let actual = match key {
-                    RetainedSourceKey::Snapshot {
+                    PackRetainedSource::Payload(RetainedSourceKey::Snapshot {
                         segment_id,
                         hour_index,
-                    } => source.copy_snapshot_to_unpublished(
-                        *segment_id,
-                        *hour_index,
-                        writer,
-                    ),
-                    RetainedSourceKey::Raw { source_path } => {
-                        source.copy_raw_source_to_unpublished(source_path, writer)
+                    }) => source
+                        .copy_snapshot_to_unpublished(*segment_id, *hour_index, writer)
+                        .map_err(|error| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                        }),
+                    PackRetainedSource::Payload(RetainedSourceKey::Raw { source_path }) => {
+                        source
+                            .copy_raw_source_to_unpublished(source_path, writer)
+                            .map_err(|error| {
+                                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                            })
                     }
-                }
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                    PackRetainedSource::File { file_path, file } => {
+                        let mut read = file.try_clone().map_err(|error| {
+                            std::io::Error::new(
+                                error.kind(),
+                                format!(
+                                    "clone rebuilt-wire artifact {}: {error}",
+                                    file_path.display()
+                                ),
+                            )
+                        })?;
+                        read.seek(SeekFrom::Start(0)).map_err(|error| {
+                            std::io::Error::new(
+                                error.kind(),
+                                format!(
+                                    "rewind rebuilt-wire artifact {}: {error}",
+                                    file_path.display()
+                                ),
+                            )
+                        })?;
+                        let bytes = std::io::copy(&mut read, writer).map_err(|error| {
+                            std::io::Error::new(
+                                error.kind(),
+                                format!(
+                                    "copy rebuilt-wire artifact {}: {error}",
+                                    file_path.display()
+                                ),
+                            )
+                        })?;
+                        Ok(VerifiedPayloadReceipt {
+                            bytes,
+                            sha256: expected.sha256.clone(),
+                        })
+                    }
+                }?;
                 if &actual != expected {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -587,6 +1490,20 @@ pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
             return Err("stitched temp changed during bounded verification".to_string());
         }
         let segments = validate_stitched_container(plan, &container)?;
+        if let Some(product) = rebuilt_wire {
+            verify_reopened_rebuilt_wire_bundle(plan, product, &container)?;
+        }
+        if container
+            .retained_file_receipt()
+            .map_err(|error| {
+                format!("receipt stitched temp after semantic verification failed: {error}")
+            })?
+            != (container_bytes, container_sha256.clone())
+        {
+            return Err(
+                "stitched temp changed during rebuilt-wire semantic verification".to_string(),
+            );
+        }
         Ok(PublishReport {
             published_path: dest.to_path_buf(),
             container_bytes: usize::try_from(container_bytes)
@@ -1101,6 +2018,248 @@ mod tests {
         vec![(play_order as u8).wrapping_add(1); len]
     }
 
+    fn stitched_wire_test_catalog() -> wire_product::AuthenticatedProvinceCatalog {
+        use portable_content_manifest::{
+            ContentLayerKind, ContentManifest, LayerStorageKind, RecordedContentLayer,
+            RequiredContent, RequiredContentKind, SourceGameIdentity, SourceProfileIdentity,
+            UsedContentKey,
+        };
+
+        let definition = b"1;1;2;3;land;false;plains;1\n".to_vec();
+        let definition_sha = Sha256::hex(&definition);
+        let vfs_sha = "f".repeat(64);
+        let mut manifest = ContentManifest {
+            schema: portable_content_manifest::SCHEMA.to_string(),
+            product_modset_sha256: "9".repeat(64),
+            source_game: SourceGameIdentity {
+                version: "1.19.2".into(),
+                build: "a729".into(),
+                executable_sha256: "a".repeat(64),
+                build_profile: "a729-test".into(),
+            },
+            source_profile: SourceProfileIdentity {
+                profile_id: "test-profile".into(),
+                playset_id: "test-playset".into(),
+                selection_sha256: "0".repeat(64),
+            },
+            effective_vfs_manifest_sha256: vfs_sha.clone(),
+            ordered_layers: vec![RecordedContentLayer {
+                ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                display_name: "base".into(),
+                descriptor_sha256: None,
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: Vec::new(),
+                required_for_playback: true,
+            }],
+            dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(),
+            required_settings: BTreeMap::new(),
+            required_content: Vec::new(),
+            manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 =
+            manifest.computed_selection_sha256().unwrap();
+        manifest.required_content.push(RequiredContent {
+            content_key: "map/definition.csv".into(),
+            kind: RequiredContentKind::Definition,
+            content: UsedContentKey {
+                effective_vfs_manifest_sha256: vfs_sha,
+                normalized_game_relative_path: "map/definition.csv".into(),
+                winning_layer_ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                source_sha256: definition_sha.clone(),
+                payload_sha256: definition_sha,
+                payload_bytes: definition.len() as u64,
+            },
+            observation_count: 1,
+            consumers: vec!["wire_product.d81".into()],
+        });
+        manifest = manifest.with_computed_digest().unwrap();
+        wire_product::AuthenticatedProvinceCatalog::from_content_manifest(
+            &manifest.encode_json().unwrap(),
+            &definition,
+        )
+        .unwrap()
+    }
+
+    fn push_stitched_wire_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        tick: i32,
+        domain: u16,
+        record_type: u16,
+        payload: &[u8],
+    ) -> (u64, u64) {
+        let start = out.len() as u64;
+        out.extend_from_slice(compact_contract::COMPACT_RECORD_MAGIC);
+        out.extend_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
+        out.extend_from_slice(&(compact_contract::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&tick.to_le_bytes());
+        out.extend_from_slice(&domain.to_le_bytes());
+        out.extend_from_slice(&record_type.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(payload);
+        (start, out.len() as u64)
+    }
+
+    fn stitched_wire_frame_end_payload(emitted: u32, status: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&emitted.to_le_bytes());
+        payload.extend_from_slice(&emitted.to_le_bytes());
+        payload.extend_from_slice(&status.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn append_stitched_d81_hour(
+        out: &mut Vec<u8>,
+        sequence: &mut u64,
+        tick: i32,
+    ) -> ((u64, u64), (u64, u64)) {
+        let mut perf = vec![0u8; 40];
+        perf[32..36].copy_from_slice(&0u32.to_le_bytes());
+        let first = push_stitched_wire_record(
+            out,
+            *sequence,
+            tick,
+            compact_contract::rail_replay::DOMAIN_ID,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf,
+        );
+        *sequence += 1;
+        let province = compact_contract::rail_replay::RailProvinceState {
+            province_id: 1,
+            active_terminal: true,
+            anchor_variant: 0,
+            anchor_bits: [1.0f32.to_bits(), 2.0f32.to_bits(), 3.0f32.to_bits()],
+            neighbors: Vec::new(),
+        };
+        let data = compact_contract::rail_replay::encode_payload_with_hub_simulation(
+            &[province],
+            &[compact_contract::rail_replay::RailHubSimulationState {
+                pov_country_id: 1,
+                province_id: 1,
+                province_owner_country_id: 1,
+                subtype: 0,
+                route_class: 2,
+                node_kind: 1,
+                node_flag: 0,
+                available_raw: 1_000_000,
+                consumed_raw: 250_000,
+                foreign_max_raw: 1_000_000,
+                foreign_route: false,
+                fallback_record: false,
+            }],
+            1_000,
+            0,
+            1,
+            0,
+        )
+        .unwrap();
+        push_stitched_wire_record(
+            out,
+            *sequence,
+            tick,
+            compact_contract::rail_replay::DOMAIN_ID,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &data,
+        );
+        *sequence += 1;
+        let last = push_stitched_wire_record(
+            out,
+            *sequence,
+            tick,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            &stitched_wire_frame_end_payload(1, 0),
+        );
+        *sequence += 1;
+        (first, last)
+    }
+
+    fn append_stitched_no_d81_hour(
+        out: &mut Vec<u8>,
+        sequence: &mut u64,
+        tick: i32,
+    ) -> ((u64, u64), (u64, u64)) {
+        let mut perf = vec![0u8; 40];
+        perf[32..36].copy_from_slice(&0u32.to_le_bytes());
+        let first = push_stitched_wire_record(
+            out,
+            *sequence,
+            tick,
+            18,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf,
+        );
+        *sequence += 1;
+        push_stitched_wire_record(
+            out,
+            *sequence,
+            tick,
+            18,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &[],
+        );
+        *sequence += 1;
+        let last = push_stitched_wire_record(
+            out,
+            *sequence,
+            tick,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            &stitched_wire_frame_end_payload(1, 0),
+        );
+        *sequence += 1;
+        (first, last)
+    }
+
+    fn append_stitched_d81_coalesced_gap(
+        out: &mut Vec<u8>,
+        sequence: &mut u64,
+        first_tick: i32,
+        closed_tick: i32,
+    ) -> ((u64, u64), (u64, u64)) {
+        let observed = u64::try_from(closed_tick - first_tick + 1).unwrap();
+        let gap = compact_contract::GapRecord {
+            hour_start: first_tick,
+            hour_end: closed_tick,
+            reason: compact_contract::GapReason::Coalesced,
+            domains: vec![compact_contract::rail_replay::DOMAIN_ID],
+            witness: compact_contract::GapWitness::Counter {
+                counter: compact_contract::GapCounter::CoalescedHours,
+                observed,
+            },
+        };
+        let first = push_stitched_wire_record(
+            out,
+            *sequence,
+            closed_tick,
+            compact_contract::rail_replay::DOMAIN_ID,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            &compact_contract::encode_gap_record(&gap).unwrap(),
+        );
+        *sequence += 1;
+        let last = push_stitched_wire_record(
+            out,
+            *sequence,
+            closed_tick,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
+            &stitched_wire_frame_end_payload(1, 0),
+        );
+        *sequence += 1;
+        (first, last)
+    }
+
     fn stitch_inputs() -> StitchRequiredInputs {
         StitchRequiredInputs {
             schema_version: "1".into(),
@@ -1219,6 +2378,84 @@ mod tests {
             StitchOutcome::Stitched(plan) => plan,
             StitchOutcome::Separate { reason } => panic!("expected Stitched: {reason}"),
         }
+    }
+
+    #[test]
+    fn rebuilt_wire_branches_come_only_from_final_plan_evidence() {
+        let plan = rollback_plan();
+        let branches = derive_rebuilt_wire_branches(&plan).unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].branch, 0);
+        assert_eq!(branches[0].first_tick, 0);
+        assert_eq!(branches[0].parent, None);
+        assert_eq!(
+            branches[0].session_fingerprint,
+            decode_sha256_hex(
+                plan.segments[0]
+                    .input
+                    .raw_source
+                    .as_ref()
+                    .unwrap()
+                    .decoded_digest
+                    .as_str()
+            )
+            .unwrap()
+        );
+        assert_eq!(branches[1].branch, 1);
+        assert_eq!(branches[1].first_tick, 2);
+        assert_eq!(
+            branches[1].parent,
+            Some(wire_product::BranchParent {
+                branch: 0,
+                through_tick: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn rebuilt_wire_branch_derivation_skips_empty_ordinals_and_rejects_digest_drift() {
+        let mut leading_empty = rollback_plan();
+        leading_empty.segments[0].input.coverage.clear();
+        leading_empty.segments[0].input.observations.clear();
+        leading_empty.segments[1].parent_segment = None;
+        let (branches, routes) = derive_rebuilt_wire_plan(&leading_empty).unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].branch, 0);
+        assert_eq!(routes[0].segment_id, 1);
+
+        let mut drifted = rollback_plan();
+        drifted.segments[1].input.provenance.source_decoded_digest =
+            Some("00".repeat(32));
+        let error = derive_rebuilt_wire_branches(&drifted)
+            .err()
+            .expect("source digest disagreement must fail");
+        assert!(error.contains("disagrees"), "{error}");
+    }
+
+    #[test]
+    fn rebuilt_wire_branch_origin_includes_transition_coverage() {
+        let first = snap_seg(0, 0..=0);
+        let mut second = snap_seg(1, 2..=2);
+        second.transition_coverage.insert(
+            1,
+            CoverageDisposition::Gap {
+                reason: "cross-session forward hour unavailable".into(),
+                evidence_id: "transition-gap-1".into(),
+            },
+        );
+        let plan = match plan_stitch(GAME, stitch_inputs(), vec![first, second]) {
+            StitchOutcome::Stitched(plan) => plan,
+            StitchOutcome::Separate { reason } => panic!("expected Stitched: {reason}"),
+        };
+        let branches = derive_rebuilt_wire_branches(&plan).unwrap();
+        assert_eq!(branches[1].first_tick, 1);
+        assert_eq!(
+            branches[1].parent,
+            Some(wire_product::BranchParent {
+                branch: 0,
+                through_tick: 0,
+            })
+        );
     }
 
     /// In-memory payload source keyed exactly as the plan references payloads.
@@ -1381,6 +2618,208 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn rebuilt_wire_source_receipt_rejects_path_drift() {
+        let dir = TempDir::new("wire_source_receipt");
+        let path = dir.0.join("collector_stream.bin");
+        let original = b"exact retained stored bytes";
+        fs::write(&path, original).unwrap();
+        let session = OwnedStitchedWireSession {
+            branch: 0,
+            source_path: "raw/session.h4cr".to_string(),
+            identity_mode:
+                compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            file_path: path.clone(),
+            file: File::open(&path).unwrap(),
+            stored_sha256: decode_sha256_hex(&Sha256::hex(original)).unwrap(),
+            selection: wire_product::H4crSelection {
+                first_sequence: 0,
+                last_sequence: 0,
+                start_byte: 0,
+                end_byte: 0,
+            },
+        };
+        verify_rebuilt_wire_source_receipts(std::slice::from_ref(&session)).unwrap();
+
+        fs::write(&path, b"different stored bytes").unwrap();
+        assert!(verify_rebuilt_wire_source_receipts(&[session])
+            .unwrap_err()
+            .contains("stored SHA-256 differs"));
+    }
+
+    #[test]
+    fn stitched_branch_origin_uses_initial_coalesced_h4dg_coverage() {
+        let mut stream = Vec::new();
+        let mut sequence = 1u64;
+        append_stitched_d81_coalesced_gap(&mut stream, &mut sequence, 0, 2);
+        append_stitched_d81_hour(&mut stream, &mut sequence, 3);
+        let digest = Sha256::hex(&stream);
+
+        let mut segment = snap_seg(0, 2..=3);
+        segment.provenance.source_stored_digest = Some(digest.clone());
+        segment.provenance.source_decoded_digest = Some(digest.clone());
+        segment.provenance.record_seq_bounds = Some((1, sequence - 1));
+        segment.provenance.byte_bounds = Some((0, stream.len() as u64));
+        let raw = segment.raw_source.as_mut().unwrap();
+        raw.stored_digest = digest.clone();
+        raw.decoded_digest = digest;
+        raw.record_seq_bounds = (1, sequence - 1);
+        raw.byte_bounds = (0, stream.len() as u64);
+        raw.participations[0].record_seq_bounds = raw.record_seq_bounds;
+        raw.participations[0].byte_bounds = raw.byte_bounds;
+        let plan = match plan_stitch(GAME, stitch_inputs(), vec![segment]) {
+            StitchOutcome::Stitched(plan) => plan,
+            StitchOutcome::Separate { reason } => panic!("expected Stitched: {reason}"),
+        };
+
+        let dir = TempDir::new("wire_initial_coalesced_gap");
+        let path = dir.0.join("initial-gap.h4cr");
+        fs::write(&path, &stream).unwrap();
+        let session = OwnedStitchedWireSession {
+            branch: 0,
+            source_path: plan.segments[0]
+                .input
+                .raw_source
+                .as_ref()
+                .unwrap()
+                .source_path
+                .clone(),
+            identity_mode: compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            file_path: path.clone(),
+            file: File::open(&path).unwrap(),
+            stored_sha256: decode_sha256_hex(&Sha256::hex(&stream)).unwrap(),
+            selection: wire_product::H4crSelection {
+                first_sequence: 1,
+                last_sequence: sequence - 1,
+                start_byte: 0,
+                end_byte: stream.len() as u64,
+            },
+        };
+        let (branches, routes, first_ticks) =
+            derive_rebuilt_wire_plan_from_sessions(&plan, &[session]).unwrap();
+        assert_eq!(branches[0].first_tick, 0);
+        assert_eq!(first_ticks.get(&0), Some(&0));
+        assert!(
+            derive_rebuilt_wire_leading_gaps(&plan, &routes, &first_ticks)
+                .unwrap()
+                .is_empty(),
+            "authenticated H4DG coverage must not be duplicated as a transition gap"
+        );
+    }
+
+    #[test]
+    fn stitched_retained_selection_directly_refolds_exact_descriptors_and_gaps() {
+        let mut stream = Vec::new();
+        let mut sequence = 1u64;
+        append_stitched_d81_hour(&mut stream, &mut sequence, 9);
+        let (first, _) = append_stitched_d81_hour(&mut stream, &mut sequence, 10);
+        append_stitched_no_d81_hour(&mut stream, &mut sequence, 11);
+        let (_, last) = append_stitched_no_d81_hour(&mut stream, &mut sequence, 12);
+        let selection = wire_product::H4crSelection {
+            first_sequence: 4,
+            last_sequence: sequence - 1,
+            start_byte: first.0,
+            end_byte: last.1,
+        };
+        assert_eq!((selection.first_sequence, selection.last_sequence), (4, 12));
+        assert!(selection.start_byte < selection.end_byte);
+        let dir = TempDir::new("wire_selected_refold");
+        let source_path = dir.0.join("selected.h4cr");
+        fs::write(&source_path, &stream).unwrap();
+        let session = OwnedStitchedWireSession {
+            branch: 0,
+            source_path: "raw/selected.h4cr".into(),
+            identity_mode:
+                compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            file_path: source_path.clone(),
+            file: File::open(&source_path).unwrap(),
+            stored_sha256: decode_sha256_hex(&Sha256::hex(&stream)).unwrap(),
+            selection,
+        };
+        let branches = [wire_product::BranchSpec {
+            branch: 0,
+            parent: None,
+            first_tick: 9,
+            session_fingerprint: session.stored_sha256,
+        }];
+        let leading = [wire_product::D81LeadingGap::new(
+            0,
+            9,
+            10,
+            wire_product::D81LeadingGapKind::ExplicitGap,
+        )
+        .unwrap()];
+        let catalog = stitched_wire_test_catalog();
+        let sessions = borrowed_wire_sessions(std::slice::from_ref(&session));
+        let bundle = wire_product::build_d81_bundle_with_leading_gaps(
+            wire_product::BundleBuildConfig::default(),
+            &branches,
+            &catalog,
+            &sessions,
+            &leading,
+        )
+        .unwrap();
+        let mut descriptors = bundle
+            .entries()
+            .iter()
+            .map(wire_product::BundleEntryDescriptor::from)
+            .collect::<Vec<_>>();
+        descriptors.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+        let artifacts = bundle
+            .entries()
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.file_path.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let verified = wire_product::verify_entry_source_against_h4cr(
+            &descriptors,
+            |path| {
+                fs::read(
+                    artifacts
+                        .get(path)
+                        .ok_or_else(|| format!("missing stitched artifact {path}"))?,
+                )
+                .map_err(|error| error.to_string())
+            },
+            wire_product::BundleBuildConfig::default(),
+            &branches,
+            &catalog,
+            &sessions,
+            &leading,
+        )
+        .unwrap();
+        assert_eq!(verified.branches[0].state_observations, 1);
+        assert_eq!(verified.branches[0].gap_hours, 3);
+        assert_eq!(verified.branches[0].last_tick, 12);
+
+        let bad_session = OwnedStitchedWireSession {
+            selection: wire_product::H4crSelection {
+                last_sequence: selection.last_sequence - 1,
+                ..selection
+            },
+            file: session.file.try_clone().unwrap(),
+            branch: session.branch,
+            source_path: session.source_path.clone(),
+            identity_mode: session.identity_mode,
+            file_path: session.file_path.clone(),
+            stored_sha256: session.stored_sha256,
+        };
+        let bad_sessions = borrowed_wire_sessions(std::slice::from_ref(&bad_session));
+        assert!(wire_product::verify_entry_source_against_h4cr(
+            &descriptors,
+            |path| {
+                fs::read(artifacts.get(path).unwrap()).map_err(|error| error.to_string())
+            },
+            wire_product::BundleBuildConfig::default(),
+            &branches,
+            &catalog,
+            &bad_sessions,
+            &leading,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("byte end disagrees with last sequence"));
     }
 
     /// The plan -> pack -> read round-trip on a multi-segment synthetic session:

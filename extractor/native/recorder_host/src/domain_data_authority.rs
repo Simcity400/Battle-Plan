@@ -13384,32 +13384,30 @@ fn decode_compact_rail_replay_state_data_payload(
             return;
         }
     };
-    let admitted_hub_frames = if decoded.hub_frames_complete
-        && compact_contract::rail_replay::HUB_FRAME_V2_AUTHORITY_PROMOTED
+    if decoded.payload_version != compact_contract::rail_replay::PAYLOAD_VERSION_V3
+        || !decoded.hub_simulation_complete
     {
-        decoded.hub_frames.len()
-    } else {
-        0
-    };
+        summary.parse_errors.push(format!(
+            "offset {offset}: rail_replay_state RRL1 production authority requires v3 raw supply-simulation rows"
+        ));
+        return;
+    }
+    let admitted_hub_simulation_rows = decoded.hub_simulation_rows.len();
     if let Some(domain) = summary.per_domain.get_mut(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE) {
         domain.data_rows_total = domain
             .data_rows_total
             .saturating_add(decoded.provinces.len() as u64)
-            .saturating_add(admitted_hub_frames as u64);
+            .saturating_add(admitted_hub_simulation_rows as u64);
         domain.status_flags_or |= decoded.status_flags;
     }
     add_compact_domain_data_unit(summary, COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE, "rail_replay_provinces", decoded.provinces.len());
     add_compact_domain_data_unit(summary, COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE, "rail_replay_directed_neighbors", decoded.observed_neighbors as usize);
-    if decoded.hub_frames_complete
-        && compact_contract::rail_replay::HUB_FRAME_V2_AUTHORITY_PROMOTED
-    {
-        add_compact_domain_data_unit(
-            summary,
-            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
-            "rail_replay_hub_frames",
-            admitted_hub_frames,
-        );
-    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        "rail_replay_hub_simulation_rows",
+        admitted_hub_simulation_rows,
+    );
 }
 
 fn decode_compact_fired_event_popups_data_payload(

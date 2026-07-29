@@ -12,6 +12,13 @@
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
+use production_hook_receipt::{
+    next_teardown_owner_token, observe_enabled_rel32_callsite, observe_released, ExpectedRvaHook,
+    HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    D90_REL32_CALLSITE_PRIMITIVE_ID,
+};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::io::Read;
@@ -20,16 +27,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 
+use crate::convoy_route_source::{
+    read_exact_a729_client_route, ExactA729RouteRead, RouteSourceError,
+};
 use crate::convoy_terminal_attribution::{
     activation_blockers, capture_candidate, prepare_a729_hook, A729PreCollapseRegisters,
     ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory, A729_CALL_BYTES,
     A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
-};
-use crate::convoy_route_source::{
-    read_exact_a729_client_route, ExactA729RouteRead, RouteSourceError,
 };
 use crate::convoy_terminal_runtime::{
     clear_convoy_terminal_resolver_snapshot, current_convoy_terminal_publication_receipt,
@@ -70,6 +75,13 @@ const GS_D70_BEGIN_OFF: usize = 0x5A8;
 const GS_D70_CAPACITY_OFF: usize = 0x5B0;
 const GS_D70_COUNT_OFF: usize = 0x5B4;
 const SUNK_CONVOY_INFO_VTABLE_RVA: usize = 0x295_D008;
+const D90_HOOK_EXPECTATION: ExpectedRvaHook = ExpectedRvaHook {
+    logical_name: "gameplay.d90.convoy_terminal_route_callsite",
+    requested_rva: A729_HOOK_RVA as u64,
+    target_patch_len: A729_CALL_BYTES.len() as u16,
+    primitive_id: D90_REL32_CALLSITE_PRIMITIVE_ID,
+    original_prefix: &A729_CALL_BYTES,
+};
 
 #[repr(C)]
 struct ThreadEntry32 {
@@ -166,10 +178,24 @@ pub struct ConvoyTerminalDrain {
     pub events: Vec<ConvoyTerminalValidatedEvent>,
     pub cumulative_telemetry: ConvoyTerminalHookTelemetry,
     pub queue_drain_complete: bool,
+    pub correlation_poisoned: bool,
     pub remaining_events: u32,
     pub active_callbacks: u32,
     pub producer_sequence_next: u64,
+    pub queue_mutation_generation: u64,
     pub resolver: ResolverPublicationReceipt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConvoyTerminalDrainReservation {
+    pub reservation_id: u64,
+    pub drain: ConvoyTerminalDrain,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConvoyTerminalPayloadReservation {
+    pub reservation_id: u64,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -194,6 +220,8 @@ pub enum ConvoyTerminalInstallError {
     RelayAllocation,
     RelayProtect,
     RelayFlush,
+    RelayFree,
+    RelayDrift,
     Rel32OutOfRange,
     ThreadSnapshot,
     ThreadEnumeration,
@@ -203,6 +231,15 @@ pub enum ConvoyTerminalInstallError {
     PatchProtect,
     PatchFlush,
     PatchedBytesDrift,
+    HookReceipt(String),
+    UntakenReleaseReceipt,
+    RecoveryPending,
+    ReservationPending,
+    SealedTeardownRequired,
+    InstallRollbackFailed {
+        install_error: String,
+        rollback_error: String,
+    },
     QuiesceTimeout,
     ResolverClear(String),
 }
@@ -222,6 +259,7 @@ pub fn convoy_terminal_evidence_activation_enabled() -> bool {
 pub enum ConvoyTerminalSealError {
     Hook(ConvoyTerminalInstallError),
     Batch(BatchDecodeError),
+    Reservation(String),
 }
 
 impl From<ConvoyTerminalInstallError> for ConvoyTerminalSealError {
@@ -236,12 +274,63 @@ impl From<BatchDecodeError> for ConvoyTerminalSealError {
     }
 }
 
+impl From<String> for ConvoyTerminalSealError {
+    fn from(value: String) -> Self {
+        Self::Reservation(value)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HookInstallMode {
+    Production,
+    Evidence,
+}
+
+impl HookInstallMode {
+    fn is_production(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct InstalledState {
+    mode: HookInstallMode,
     callsite: usize,
     relay: usize,
+    original_call: [u8; 5],
     patched_call: [u8; 5],
+    owned_mutation: Option<[u8; 5]>,
+    install_admitted: bool,
+    patch_enabled: bool,
     patch_restored: bool,
+    relay_freed: bool,
+    relay_verified_before_removal: bool,
+    recovery_pending: bool,
+    teardown_owner_token: Option<u64>,
+    installed_receipt: Option<InstalledRvaHookReceipt>,
+    released_receipt: Option<ReleasedRvaHookReceipt>,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveDrainReservation {
+    reservation_id: u64,
+    drain: ConvoyTerminalDrain,
+}
+
+struct DrainReservationState {
+    next_reservation_id: u64,
+    active: Option<ActiveDrainReservation>,
+    sealed_snapshot: Option<ConvoyTerminalDrain>,
+}
+
+impl Default for DrainReservationState {
+    fn default() -> Self {
+        Self {
+            next_reservation_id: 1,
+            active: None,
+            sealed_snapshot: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -373,17 +462,16 @@ fn capture_route_raw(
     };
     let route_slot_bytes = read_exact_bytes(memory, read.reference_slot, 24)?;
     let route_object_bytes = read_exact_bytes(memory, read.route_object, route_object_len)?;
-    let (source_endpoint_bytes, destination_endpoint_bytes) =
-        if read.resolution.producer_kind
-            == crate::convoy_terminal_attribution::RouteProducerKind::LendLease
-        {
-            (
-                read_exact_bytes(memory, read.source_endpoint_object, 0x5C)?,
-                read_exact_bytes(memory, read.destination_endpoint_object, 0x5C)?,
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
+    let (source_endpoint_bytes, destination_endpoint_bytes) = if read.resolution.producer_kind
+        == crate::convoy_terminal_attribution::RouteProducerKind::LendLease
+    {
+        (
+            read_exact_bytes(memory, read.source_endpoint_object, 0x5C)?,
+            read_exact_bytes(memory, read.destination_endpoint_object, 0x5C)?,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Some(HConvoyRouteRawObservation {
         client_id: client.id,
         client_type_tag: client.type_tag,
@@ -438,8 +526,13 @@ pub fn capture_h_convoy_control_raw(
         .ok_or("H-CONVOY route raw window is unavailable")?;
     let mut selected = None;
     for (member, epoch) in snapshot.evidence_member_epochs() {
-        let Some(observed) = memory.handle(member.checked_add(crate::convoy_terminal_attribution::CFEX_MEMBER_CLIENT_HANDLE_OFF)
-            .ok_or("H-CONVOY member address overflow")?) else { continue; };
+        let Some(observed) = memory.handle(
+            member
+                .checked_add(crate::convoy_terminal_attribution::CFEX_MEMBER_CLIENT_HANDLE_OFF)
+                .ok_or("H-CONVOY member address overflow")?,
+        ) else {
+            continue;
+        };
         if observed == client {
             if selected.is_some() {
                 return Err("H-CONVOY client maps to multiple active combat members".into());
@@ -447,11 +540,12 @@ pub fn capture_h_convoy_control_raw(
             selected = Some((member, epoch));
         }
     }
-    let (member_address, epoch) = selected.ok_or("H-CONVOY client lacks an active combat member")?;
+    let (member_address, epoch) =
+        selected.ok_or("H-CONVOY client lacks an active combat member")?;
     let member_bytes = read_exact_bytes(&memory, member_address, 0x124)
         .ok_or("H-CONVOY member raw window is unreadable")?;
-    let d70 = read_d70(&memory, module_base, game_state)
-        .ok_or("H-CONVOY D70 vector is unreadable")?;
+    let d70 =
+        read_d70(&memory, module_base, game_state).ok_or("H-CONVOY D70 vector is unreadable")?;
     Ok(HConvoyControlRawObservation {
         game_hour_raw: hour,
         member_address,
@@ -498,14 +592,20 @@ counters!(
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static TEARDOWN: AtomicBool = AtomicBool::new(false);
+static SEALED_PUBLICATION_PENDING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static CAPTURE_BUSY: AtomicBool = AtomicBool::new(false);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_TARGET: AtomicUsize = AtomicUsize::new(0);
 static PRODUCER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static QUEUE_MUTATION_GENERATION: AtomicU64 = AtomicU64::new(1);
+static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 static INSTALL_STATE: Mutex<Option<InstalledState>> = Mutex::new(None);
+static RELEASED_HOOK_RECEIPT: Mutex<Option<ReleasedRvaHookReceipt>> = Mutex::new(None);
 static EVENT_QUEUE: OnceLock<Mutex<VecDeque<ConvoyTerminalValidatedEvent>>> = OnceLock::new();
-static POSITIVE_RAW_OBSERVATION: OnceLock<Mutex<Option<HConvoyPositiveRawObservation>>> = OnceLock::new();
+static DRAIN_RESERVATION: OnceLock<Mutex<DrainReservationState>> = OnceLock::new();
+static POSITIVE_RAW_OBSERVATION: OnceLock<Mutex<Option<HConvoyPositiveRawObservation>>> =
+    OnceLock::new();
 static EVIDENCE_GAME_STATE: AtomicUsize = AtomicUsize::new(0);
 static EVIDENCE_GAME_HOUR: AtomicU64 = AtomicU64::new(0);
 static EVIDENCE_HEARTBEAT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -530,13 +630,7 @@ impl Drop for ActiveCallback {
 struct CallbackNesting;
 impl CallbackNesting {
     fn try_enter() -> Option<Self> {
-        IN_CALLBACK.with(|flag| {
-            if flag.replace(true) {
-                None
-            } else {
-                Some(Self)
-            }
-        })
+        IN_CALLBACK.with(|flag| if flag.replace(true) { None } else { Some(Self) })
     }
 }
 impl Drop for CallbackNesting {
@@ -564,6 +658,91 @@ pub fn convoy_terminal_hook_installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+/// Report lifecycle custody that still requires an explicit retry, commit,
+/// rollback, or receipt handoff even when the live callsite is no longer
+/// installed.
+pub fn convoy_terminal_hook_lifecycle_pending() -> bool {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let install_state_pending = INSTALL_STATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+        .is_some_and(|installed| {
+            installed.recovery_pending
+                || installed.patch_restored
+                || !installed.patch_enabled
+                || TEARDOWN.load(Ordering::Acquire)
+        });
+    if install_state_pending || SEALED_PUBLICATION_PENDING.load(Ordering::Acquire) {
+        return true;
+    }
+    if DRAIN_RESERVATION.get().is_some_and(|reservation| {
+        reservation
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active
+            .is_some()
+    }) {
+        return true;
+    }
+    RELEASED_HOOK_RECEIPT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .is_some()
+}
+
+/// Return the exact production receipt only while the authenticated D90
+/// callsite patch remains installed and enabled.
+pub fn installed_hook_receipt() -> Option<InstalledRvaHookReceipt> {
+    if !convoy_terminal_hook_installed() {
+        return None;
+    }
+    let state = INSTALL_STATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let installed = state.as_ref().filter(|installed| {
+        installed.mode.is_production()
+            && installed.patch_enabled
+            && !installed.patch_restored
+            && !installed.recovery_pending
+    })?;
+    let stored = installed.installed_receipt?;
+    if installed.teardown_owner_token != Some(stored.teardown_owner_token) {
+        return None;
+    }
+    let memory = ProcessMemory;
+    let mut exact_patch = [0u8; A729_CALL_BYTES.len()];
+    if !memory.read_exact(installed.callsite, &mut exact_patch)
+        || exact_patch != installed.patched_call
+        || !relay_targets_convoy_terminal_hook(&memory, installed.relay)
+    {
+        return None;
+    }
+    let observed = observe_enabled_rel32_callsite(
+        D90_HOOK_EXPECTATION,
+        installed.callsite,
+        installed.relay,
+        stored.teardown_owner_token,
+    )
+    .ok()?;
+    (observed == stored).then_some(stored)
+}
+
+/// Consume the exact release receipt minted only after D90's original CALL
+/// bytes, callback quiescence, callsite removal, and relay release are all
+/// attested.
+pub fn take_released_hook_receipt() -> Option<ReleasedRvaHookReceipt> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    RELEASED_HOOK_RECEIPT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .take()
+}
+
 pub fn convoy_terminal_hook_heartbeat() -> ConvoyTerminalHookHeartbeat {
     let resolver = try_current_convoy_terminal_resolver_snapshot()
         .map(|snapshot| snapshot.receipt())
@@ -578,49 +757,215 @@ pub fn convoy_terminal_hook_heartbeat() -> ConvoyTerminalHookHeartbeat {
     }
 }
 
-pub fn drain_convoy_terminal_events(max_events: usize) -> ConvoyTerminalDrain {
-    let mut events = Vec::new();
-    let mut queue_drain_complete = false;
-    let mut remaining_events = 0u32;
-    if max_events != 0 {
-        let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
-        if let Ok(mut queue) = queue.try_lock() {
-            let take = max_events.min(queue.len());
-            events.reserve(take);
-            for _ in 0..take {
-                if let Some(event) = queue.pop_front() {
-                    events.push(event);
-                }
-            }
-            remaining_events = u32::try_from(queue.len()).unwrap_or(u32::MAX);
-            queue_drain_complete = remaining_events == 0;
-        }
+/// Reserve one immutable bounded prefix without consuming it. Only one
+/// reservation may exist; callbacks can continue appending behind the prefix.
+pub fn peek_convoy_terminal_events(
+    max_events: usize,
+) -> Result<ConvoyTerminalDrainReservation, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D90 hook lifecycle state poisoned during reservation".to_string())?;
+    let state = INSTALL_STATE
+        .lock()
+        .map_err(|_| "D90 install state poisoned during reservation".to_string())?;
+    if !INSTALLED.load(Ordering::Acquire) && !SEALED_PUBLICATION_PENDING.load(Ordering::Acquire) {
+        return Err("D90 event reservation requires an installed or sealed hook epoch".into());
     }
-    ConvoyTerminalDrain {
+    if INSTALLED.load(Ordering::Acquire)
+        && !state
+            .as_ref()
+            .is_some_and(|installed| installed.patch_enabled && !installed.patch_restored)
+    {
+        return Err("D90 event reservation requires an installed hook".into());
+    }
+    peek_convoy_terminal_events_inner(max_events, false)
+}
+
+fn peek_convoy_terminal_events_inner(
+    max_events: usize,
+    allow_quiesced_teardown: bool,
+) -> Result<ConvoyTerminalDrainReservation, String> {
+    if allow_quiesced_teardown
+        && (ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 || !TEARDOWN.load(Ordering::Acquire))
+    {
+        return Err("D90 sealed reservation boundary is not quiescent".into());
+    }
+    let mut reservation = DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .map_err(|_| "D90 drain reservation state poisoned".to_string())?;
+    if let Some(active) = &reservation.active {
+        return Err(format!(
+            "D90 drain reservation {} is already active",
+            active.reservation_id
+        ));
+    }
+    if SEALED_PUBLICATION_PENDING.load(Ordering::Acquire) {
+        let drain = reservation
+            .sealed_snapshot
+            .clone()
+            .ok_or("D90 sealed publication snapshot is unavailable")?;
+        if max_events < drain.events.len() {
+            return Err(format!(
+                "D90 sealed publication requires capacity for {} events",
+                drain.events.len()
+            ));
+        }
+        let reservation_id = reservation.next_reservation_id;
+        reservation.next_reservation_id = reservation
+            .next_reservation_id
+            .checked_add(1)
+            .ok_or("D90 drain reservation ID exhausted")?;
+        reservation.active = Some(ActiveDrainReservation {
+            reservation_id,
+            drain: drain.clone(),
+        });
+        return Ok(ConvoyTerminalDrainReservation {
+            reservation_id,
+            drain,
+        });
+    }
+
+    let telemetry_before = telemetry();
+    let active_before = ACTIVE_CALLBACKS.load(Ordering::Acquire);
+    let producer_before = PRODUCER_SEQUENCE.load(Ordering::Acquire);
+    let resolver_before = current_convoy_terminal_publication_receipt();
+    let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+    let queue = queue
+        .lock()
+        .map_err(|_| "D90 event queue poisoned during reservation".to_string())?;
+    let take = max_events.min(EVENT_QUEUE_CAPACITY).min(queue.len());
+    let events = queue.iter().take(take).copied().collect::<Vec<_>>();
+    let remaining_events = u32::try_from(queue.len().saturating_sub(take)).unwrap_or(u32::MAX);
+    let queue_mutation_generation = QUEUE_MUTATION_GENERATION.load(Ordering::Acquire);
+    let telemetry_after = telemetry();
+    let active_after = ACTIVE_CALLBACKS.load(Ordering::Acquire);
+    let producer_after = PRODUCER_SEQUENCE.load(Ordering::Acquire);
+    let resolver_after = current_convoy_terminal_publication_receipt();
+    drop(queue);
+
+    let correlation_poisoned = telemetry_before != telemetry_after
+        || active_before != active_after
+        || producer_before != producer_after
+        || resolver_before.is_err()
+        || resolver_after.is_err()
+        || resolver_before != resolver_after;
+    let drain = ConvoyTerminalDrain {
         events,
-        cumulative_telemetry: telemetry(),
-        queue_drain_complete,
+        cumulative_telemetry: telemetry_after,
+        queue_drain_complete: remaining_events == 0 && !correlation_poisoned,
+        correlation_poisoned,
         remaining_events,
-        active_callbacks: u32::try_from(ACTIVE_CALLBACKS.load(Ordering::Acquire))
-            .unwrap_or(u32::MAX),
-        producer_sequence_next: PRODUCER_SEQUENCE.load(Ordering::Acquire),
-        resolver: current_convoy_terminal_publication_receipt().unwrap_or_default(),
+        active_callbacks: u32::try_from(active_after).unwrap_or(u32::MAX),
+        producer_sequence_next: producer_after,
+        queue_mutation_generation,
+        resolver: resolver_after.unwrap_or_default(),
+    };
+    let reservation_id = reservation.next_reservation_id;
+    reservation.next_reservation_id = reservation
+        .next_reservation_id
+        .checked_add(1)
+        .ok_or("D90 drain reservation ID exhausted")?;
+    reservation.active = Some(ActiveDrainReservation {
+        reservation_id,
+        drain: drain.clone(),
+    });
+    Ok(ConvoyTerminalDrainReservation {
+        reservation_id,
+        drain,
+    })
+}
+
+pub fn commit_convoy_terminal_events(reservation_id: u64) -> Result<(), String> {
+    let mut reservation = DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .map_err(|_| "D90 drain reservation state poisoned".to_string())?;
+    let active = reservation
+        .active
+        .as_ref()
+        .ok_or("D90 has no active drain reservation")?;
+    if active.reservation_id != reservation_id {
+        return Err(format!(
+            "D90 drain reservation mismatch: active {}, supplied {reservation_id}",
+            active.reservation_id
+        ));
+    }
+    let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+    let mut queue = queue
+        .lock()
+        .map_err(|_| "D90 event queue poisoned during reservation commit".to_string())?;
+    if queue.len() < active.drain.events.len()
+        || !queue
+            .iter()
+            .take(active.drain.events.len())
+            .copied()
+            .eq(active.drain.events.iter().copied())
+    {
+        return Err("D90 reserved event prefix changed before commit".into());
+    }
+    if !active.drain.events.is_empty() {
+        advance_queue_mutation_generation()?;
+    }
+    queue.drain(..active.drain.events.len());
+    let sealed_complete =
+        active.drain.remaining_events == 0 && SEALED_PUBLICATION_PENDING.load(Ordering::Acquire);
+    drop(queue);
+    reservation.active = None;
+    if sealed_complete {
+        SEALED_PUBLICATION_PENDING.store(false, Ordering::Release);
+        reservation.sealed_snapshot = None;
+    }
+    Ok(())
+}
+
+pub fn rollback_convoy_terminal_events(reservation_id: u64) -> Result<(), String> {
+    let mut reservation = DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .map_err(|_| "D90 drain reservation state poisoned".to_string())?;
+    let active = reservation
+        .active
+        .as_ref()
+        .ok_or("D90 has no active drain reservation")?;
+    if active.reservation_id != reservation_id {
+        return Err(format!(
+            "D90 drain reservation mismatch: active {}, supplied {reservation_id}",
+            active.reservation_id
+        ));
+    }
+    reservation.active = None;
+    Ok(())
+}
+
+/// Encode one reserved prefix. Encoding failure releases the reservation;
+/// successful encoding leaves it owned by the caller until sink publication
+/// is explicitly committed or rolled back.
+pub fn peek_convoy_transport_attack_payload(
+    max_events: usize,
+) -> Result<Option<ConvoyTerminalPayloadReservation>, ConvoyTerminalSealError> {
+    if !INSTALLED.load(Ordering::Acquire) && !SEALED_PUBLICATION_PENDING.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let reservation = peek_convoy_terminal_events(max_events)?;
+    match encode_convoy_transport_attack_drain(reservation.drain, true) {
+        Ok(payload) => Ok(Some(ConvoyTerminalPayloadReservation {
+            reservation_id: reservation.reservation_id,
+            payload,
+        })),
+        Err(error) => {
+            rollback_convoy_terminal_events(reservation.reservation_id)?;
+            Err(error.into())
+        }
     }
 }
 
-/// Drain the callback queue into one strict domain-90 CTA2 payload.
-///
-/// `None` means the hook is not installed. An installed empty drain retains
-/// its cumulative heartbeat witness and is exact only when every counter,
-/// queue and resolver-publication invariant proves completeness.
-pub fn drain_convoy_transport_attack_payload(
-    max_events: usize,
-) -> Result<Option<Vec<u8>>, BatchDecodeError> {
-    let drain = drain_convoy_terminal_events(max_events);
-    if !INSTALLED.load(Ordering::Acquire) {
-        return Ok(None);
-    }
-    encode_convoy_transport_attack_drain(drain, true).map(Some)
+pub fn commit_convoy_transport_attack_payload(reservation_id: u64) -> Result<(), String> {
+    commit_convoy_terminal_events(reservation_id)
+}
+
+pub fn rollback_convoy_transport_attack_payload(reservation_id: u64) -> Result<(), String> {
+    rollback_convoy_terminal_events(reservation_id)
 }
 
 fn encode_convoy_transport_attack_drain(
@@ -634,12 +979,8 @@ fn encode_convoy_transport_attack_drain(
             carrier: event.carrier,
             d70: ConvoyD70MutationProof {
                 kind: match event.d70.kind {
-                    D70MutationKind::IncrementExisting => {
-                        ConvoyD70MutationKind::IncrementExisting
-                    }
-                    D70MutationKind::AppendFirstSeen => {
-                        ConvoyD70MutationKind::AppendFirstSeen
-                    }
+                    D70MutationKind::IncrementExisting => ConvoyD70MutationKind::IncrementExisting,
+                    D70MutationKind::AppendFirstSeen => ConvoyD70MutationKind::AppendFirstSeen,
                 },
                 ordinal: event.d70.ordinal,
                 before_rows: event.d70.before_rows,
@@ -652,7 +993,7 @@ fn encode_convoy_transport_attack_drain(
     let telemetry = drain.cumulative_telemetry;
     let witness = ConvoyTransportAttackWitness {
         hook_installed: observed_hook_installed,
-        queue_drain_complete: drain.queue_drain_complete,
+        queue_drain_complete: drain.queue_drain_complete && !drain.correlation_poisoned,
         producer_sequence_next: drain.producer_sequence_next,
         drained_rows: u32::try_from(rows.len()).unwrap_or(u32::MAX),
         remaining_events: drain.remaining_events,
@@ -724,8 +1065,19 @@ fn reset_observer_state_for_install() {
         counter.store(0, Ordering::Release);
     }
     PRODUCER_SEQUENCE.store(1, Ordering::Release);
+    QUEUE_MUTATION_GENERATION.store(1, Ordering::Release);
+    SEALED_PUBLICATION_PENDING.store(false, Ordering::Release);
+    if let Some(reservation) = DRAIN_RESERVATION.get() {
+        reservation
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .sealed_snapshot = None;
+    }
     if let Some(queue) = EVENT_QUEUE.get() {
-        queue.lock().unwrap_or_else(|poison| poison.into_inner()).clear();
+        queue
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
     }
     if let Some(slot) = POSITIVE_RAW_OBSERVATION.get() {
         *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
@@ -851,7 +1203,10 @@ fn prepare_observation(
                 && route.source_kind == carrier.route.source.kind as u8
                 && route.destination_kind == carrier.route.destination.kind as u8
                 && route.source_id == carrier.route.source.id
-                && route.destination_id == carrier.route.destination.id => route,
+                && route.destination_id == carrier.route.destination.id =>
+        {
+            route
+        }
         _ => {
             DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
             return None;
@@ -887,7 +1242,10 @@ fn prepare_observation(
 
 fn complete_observation(game_state: usize, pre: PreObservation) {
     let memory = ProcessMemory;
-    let Some(hour) = read_stable_i32(&memory, game_state.checked_add(GS_CURRENT_HOUR_OFF).unwrap_or(0)) else {
+    let Some(hour) = read_stable_i32(
+        &memory,
+        game_state.checked_add(GS_CURRENT_HOUR_OFF).unwrap_or(0),
+    ) else {
         DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
         return;
     };
@@ -940,11 +1298,28 @@ fn enqueue(event: ConvoyTerminalValidatedEvent) {
         DROP_QUEUE_FULL.fetch_add(1, Ordering::Relaxed);
         return;
     }
+    if advance_queue_mutation_generation().is_err() {
+        DROP_QUEUE_FULL.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     queue.push_back(event);
     EVENTS_EMITTED.fetch_add(1, Ordering::Relaxed);
 }
 
-fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Option<Vec<HConvoyD70Row>> {
+fn advance_queue_mutation_generation() -> Result<u64, String> {
+    QUEUE_MUTATION_GENERATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            generation.checked_add(1)
+        })
+        .map(|generation| generation + 1)
+        .map_err(|_| "D90 queue mutation generation exhausted".into())
+}
+
+fn read_d70(
+    memory: &ProcessMemory,
+    module_base: usize,
+    game_state: usize,
+) -> Option<Vec<HConvoyD70Row>> {
     if module_base == 0 || game_state == 0 {
         return None;
     }
@@ -1028,13 +1403,14 @@ fn prove_d70_mutation(
             after_count,
         });
     }
-    if after.len() != before.len().checked_add(1)?
-        || after.get(..before.len())? != before
-    {
+    if after.len() != before.len().checked_add(1)? || after.get(..before.len())? != before {
         return None;
     }
     let appended = after.last()?;
-    if appended.identity.owner_tag_db_id != owner || appended.identity.killer_tag_db_id != killer || appended.count != 1 {
+    if appended.identity.owner_tag_db_id != owner
+        || appended.identity.killer_tag_db_id != killer
+        || appended.count != 1
+    {
         return None;
     }
     Some(D70MutationProof {
@@ -1048,7 +1424,9 @@ fn prove_d70_mutation(
 }
 
 fn read_i32(memory: &ProcessMemory, address: usize) -> Option<i32> {
-    memory.u32(address).map(|value| i32::from_le_bytes(value.to_le_bytes()))
+    memory
+        .u32(address)
+        .map(|value| i32::from_le_bytes(value.to_le_bytes()))
 }
 
 fn read_stable_i32(memory: &ProcessMemory, address: usize) -> Option<i32> {
@@ -1066,7 +1444,7 @@ pub fn install_convoy_terminal_hook(
     if !blockers.is_empty() {
         return Err(ConvoyTerminalInstallError::PromotionBlocked(blockers));
     }
-    install_convoy_terminal_hook_inner(executable_sha256, true)
+    install_convoy_terminal_hook_inner(executable_sha256, HookInstallMode::Production)
 }
 
 /// Install the exact hook only for the isolated H-CONVOY loss/no-loss capture.
@@ -1077,13 +1455,16 @@ pub fn install_convoy_terminal_evidence_hook(
     if !convoy_terminal_evidence_activation_enabled() {
         return Err(ConvoyTerminalInstallError::EvidenceActivationDisabled);
     }
-    install_convoy_terminal_hook_inner(executable_sha256, false)
+    install_convoy_terminal_hook_inner(executable_sha256, HookInstallMode::Evidence)
 }
 
 fn install_convoy_terminal_hook_inner(
     executable_sha256: &str,
-    enforce_production_activation: bool,
+    mode: HookInstallMode,
 ) -> Result<(), ConvoyTerminalInstallError> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     if !executable_sha256.eq_ignore_ascii_case(A729_EXE_SHA256) {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
@@ -1094,13 +1475,36 @@ fn install_convoy_terminal_hook_inner(
     if current_process_executable_sha256()?.as_str() != A729_EXE_SHA256 {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
-    let mut state = INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut state = INSTALL_STATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     if let Some(existing) = *state {
-        return Err(if existing.patch_restored {
+        return Err(if existing.recovery_pending {
+            ConvoyTerminalInstallError::RecoveryPending
+        } else if existing.patch_restored {
             ConvoyTerminalInstallError::TeardownPending
         } else {
             ConvoyTerminalInstallError::AlreadyInstalled
         });
+    }
+    if RELEASED_HOOK_RECEIPT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .is_some()
+    {
+        return Err(ConvoyTerminalInstallError::UntakenReleaseReceipt);
+    }
+    if DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .active
+        .is_some()
+    {
+        return Err(ConvoyTerminalInstallError::ReservationPending);
+    }
+    if SEALED_PUBLICATION_PENDING.load(Ordering::Acquire) {
+        return Err(ConvoyTerminalInstallError::ReservationPending);
     }
     let module_base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if module_base == 0 {
@@ -1109,11 +1513,16 @@ fn install_convoy_terminal_hook_inner(
     let memory = ProcessMemory;
     let prepared = prepare_a729_hook(&memory, module_base, executable_sha256)
         .map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
-    if enforce_production_activation && !prepared.activation_blockers.is_empty() {
+    if mode.is_production() && !prepared.activation_blockers.is_empty() {
         return Err(ConvoyTerminalInstallError::PromotionBlocked(
             prepared.activation_blockers,
         ));
     }
+    let teardown_owner_token = mode
+        .is_production()
+        .then(next_teardown_owner_token)
+        .transpose()
+        .map_err(ConvoyTerminalInstallError::HookReceipt)?;
     let relay = unsafe { allocate_near_relay(prepared.hook_address)? };
     let patched_call = match make_rel32_call(prepared.hook_address, relay as usize) {
         Some(bytes) => bytes,
@@ -1128,37 +1537,106 @@ fn install_convoy_terminal_hook_inner(
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(ConvoyTerminalInstallError::ByteGateDrift);
     }
+    let mut original_call = [0u8; A729_CALL_BYTES.len()];
+    if !memory.read_exact(prepared.hook_address, &mut original_call)
+        || original_call != A729_CALL_BYTES
+    {
+        drop(suspended);
+        unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+        return Err(ConvoyTerminalInstallError::ByteGateDrift);
+    }
     reset_observer_state_for_install();
     MODULE_BASE.store(module_base, Ordering::Release);
     ORIGINAL_TARGET.store(prepared.original_target_address, Ordering::Release);
     TEARDOWN.store(false, Ordering::Release);
     if let Err(error) = unsafe { write_code(prepared.hook_address, &patched_call) } {
-        let mut observed = [0u8; 5];
-        if memory.read_exact(prepared.hook_address, &mut observed) && observed != A729_CALL_BYTES {
-            // A failed cache flush or protection restore may still have made
-            // the call live. Preserve every dependency and expose the state so
-            // teardown can restore it; freeing the relay here would be unsafe.
-            *state = Some(InstalledState {
-                callsite: prepared.hook_address,
-                relay: relay as usize,
-                patched_call,
-                patch_restored: false,
-            });
-            INSTALLED.store(true, Ordering::Release);
-            drop(suspended);
-            return Err(error);
-        }
-        ORIGINAL_TARGET.store(0, Ordering::Release);
-        MODULE_BASE.store(0, Ordering::Release);
+        let error = rollback_failed_install(
+            &mut state,
+            &memory,
+            mode,
+            teardown_owner_token,
+            prepared.hook_address,
+            relay as usize,
+            original_call,
+            patched_call,
+            error,
+        );
         drop(suspended);
-        unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(error);
     }
+    let mut exact_patch = [0u8; A729_CALL_BYTES.len()];
+    if !memory.read_exact(prepared.hook_address, &mut exact_patch) || exact_patch != patched_call {
+        let error = rollback_failed_install(
+            &mut state,
+            &memory,
+            mode,
+            teardown_owner_token,
+            prepared.hook_address,
+            relay as usize,
+            original_call,
+            patched_call,
+            ConvoyTerminalInstallError::PatchedBytesDrift,
+        );
+        drop(suspended);
+        return Err(error);
+    }
+    if !relay_targets_convoy_terminal_hook(&memory, relay as usize) {
+        let error = rollback_failed_install(
+            &mut state,
+            &memory,
+            mode,
+            teardown_owner_token,
+            prepared.hook_address,
+            relay as usize,
+            original_call,
+            patched_call,
+            ConvoyTerminalInstallError::RelayDrift,
+        );
+        drop(suspended);
+        return Err(error);
+    }
+    let installed_receipt = match teardown_owner_token {
+        Some(token) => match observe_enabled_rel32_callsite(
+            D90_HOOK_EXPECTATION,
+            prepared.hook_address,
+            relay as usize,
+            token,
+        ) {
+            Ok(receipt) => Some(receipt),
+            Err(error) => {
+                let error = rollback_failed_install(
+                    &mut state,
+                    &memory,
+                    mode,
+                    teardown_owner_token,
+                    prepared.hook_address,
+                    relay as usize,
+                    original_call,
+                    patched_call,
+                    ConvoyTerminalInstallError::HookReceipt(error),
+                );
+                drop(suspended);
+                return Err(error);
+            }
+        },
+        None => None,
+    };
     *state = Some(InstalledState {
+        mode,
         callsite: prepared.hook_address,
         relay: relay as usize,
+        original_call,
         patched_call,
+        owned_mutation: Some(patched_call),
+        install_admitted: true,
+        patch_enabled: true,
         patch_restored: false,
+        relay_freed: false,
+        relay_verified_before_removal: false,
+        recovery_pending: false,
+        teardown_owner_token,
+        installed_receipt,
+        released_receipt: None,
     });
     INSTALLED.store(true, Ordering::Release);
     drop(suspended);
@@ -1167,19 +1645,13 @@ fn install_convoy_terminal_hook_inner(
 
 fn current_process_executable_sha256() -> Result<String, ConvoyTerminalInstallError> {
     let mut path = [0u16; 32_768];
-    let len = unsafe {
-        GetModuleFileNameW(
-            ptr::null_mut(),
-            path.as_mut_ptr(),
-            path.len() as Dword,
-        )
-    } as usize;
+    let len = unsafe { GetModuleFileNameW(ptr::null_mut(), path.as_mut_ptr(), path.len() as Dword) }
+        as usize;
     if len == 0 || len >= path.len() {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
     let path = PathBuf::from(OsString::from_wide(&path[..len]));
-    let mut file = std::fs::File::open(path)
-        .map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
+    let mut file = std::fs::File::open(path).map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 1024 * 1024];
     loop {
@@ -1194,9 +1666,95 @@ fn current_process_executable_sha256() -> Result<String, ConvoyTerminalInstallEr
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn rollback_failed_install(
+    state: &mut Option<InstalledState>,
+    memory: &ProcessMemory,
+    mode: HookInstallMode,
+    teardown_owner_token: Option<u64>,
+    callsite: usize,
+    relay: usize,
+    original_call: [u8; 5],
+    patched_call: [u8; 5],
+    install_error: ConvoyTerminalInstallError,
+) -> ConvoyTerminalInstallError {
+    let install_error_text = format!("{install_error:?}");
+    let mut observed = [0u8; A729_CALL_BYTES.len()];
+    let observed_before = memory
+        .read_exact(callsite, &mut observed)
+        .then_some(observed);
+
+    let (patch_restored, owned_mutation, rollback_error) = match observed_before {
+        Some(bytes) if bytes == original_call => (true, Some(bytes), None),
+        Some(_bytes) => {
+            let write_result = unsafe { write_code(callsite, &original_call) };
+            let mut after = [0u8; A729_CALL_BYTES.len()];
+            let observed_after = memory.read_exact(callsite, &mut after).then_some(after);
+            match (write_result, observed_after) {
+                (Ok(()), Some(restored)) if restored == original_call => {
+                    (true, Some(restored), None)
+                }
+                (write_result, observed_after) => {
+                    let error = match write_result {
+                        Err(error) => format!("{error:?}"),
+                        Ok(()) => "exact original bytes were not observed after rollback".into(),
+                    };
+                    (false, observed_after, Some(error))
+                }
+            }
+        }
+        None => (
+            false,
+            None,
+            Some("failed to observe D90 bytes before guarded rollback".into()),
+        ),
+    };
+
+    if patch_restored && rollback_error.is_none() {
+        if unsafe { VirtualFree(relay as *mut c_void, 0, MEM_RELEASE) } != 0 {
+            ORIGINAL_TARGET.store(0, Ordering::Release);
+            MODULE_BASE.store(0, Ordering::Release);
+            EVIDENCE_GAME_STATE.store(0, Ordering::Release);
+            EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
+            TEARDOWN.store(false, Ordering::Release);
+            INSTALLED.store(false, Ordering::Release);
+            reset_observer_state_for_install();
+            *state = None;
+            return install_error;
+        }
+    }
+
+    let rollback_error = rollback_error.unwrap_or_else(|| "D90 relay release failed".into());
+    *state = Some(InstalledState {
+        mode,
+        callsite,
+        relay,
+        original_call,
+        patched_call,
+        owned_mutation,
+        install_admitted: false,
+        patch_enabled: false,
+        patch_restored,
+        relay_freed: false,
+        relay_verified_before_removal: false,
+        recovery_pending: true,
+        teardown_owner_token,
+        installed_receipt: None,
+        released_receipt: None,
+    });
+    INSTALLED.store(false, Ordering::Release);
+    TEARDOWN.store(true, Ordering::Release);
+    ConvoyTerminalInstallError::InstallRollbackFailed {
+        install_error: install_error_text,
+        rollback_error,
+    }
+}
+
 fn restore_and_quiesce_convoy_terminal_hook(
 ) -> Result<Option<InstalledState>, ConvoyTerminalInstallError> {
-    let mut state = INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut state = INSTALL_STATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let Some(mut installed) = *state else {
         return Ok(None);
     };
@@ -1205,21 +1763,61 @@ fn restore_and_quiesce_convoy_terminal_hook(
         let suspended = unsafe { SuspendedProcessThreads::suspend_all_other_threads()? };
         let memory = ProcessMemory;
         let mut current = [0u8; 5];
-        if !memory.read_exact(installed.callsite, &mut current) || current != installed.patched_call {
+        if !memory.read_exact(installed.callsite, &mut current) {
             drop(suspended);
             return Err(ConvoyTerminalInstallError::PatchedBytesDrift);
         }
-        if let Err(error) = unsafe { write_code(installed.callsite, &A729_CALL_BYTES) } {
-            let mut observed = [0u8; 5];
-            if memory.read_exact(installed.callsite, &mut observed) && observed == A729_CALL_BYTES {
-                installed.patch_restored = true;
-                *state = Some(installed);
-                INSTALLED.store(false, Ordering::Release);
+        let guard_matches = match installed.owned_mutation {
+            Some(owned) => current == owned,
+            None if installed.recovery_pending => {
+                current == installed.original_call || current == installed.patched_call
             }
+            None => false,
+        };
+        if !guard_matches
+            || (!installed.recovery_pending
+                && (!installed.patch_enabled || current != installed.patched_call))
+        {
             drop(suspended);
-            return Err(error);
+            return Err(ConvoyTerminalInstallError::PatchedBytesDrift);
         }
+        if installed.install_admitted {
+            installed.relay_verified_before_removal =
+                relay_targets_convoy_terminal_hook(&memory, installed.relay);
+        }
+        if let Err(error) = unsafe { write_code(installed.callsite, &installed.original_call) } {
+            let mut observed = [0u8; 5];
+            installed.owned_mutation = memory
+                .read_exact(installed.callsite, &mut observed)
+                .then_some(observed);
+            installed.patch_enabled = false;
+            installed.recovery_pending = true;
+            *state = Some(installed);
+            INSTALLED.store(false, Ordering::Release);
+            drop(suspended);
+            return Err(ConvoyTerminalInstallError::InstallRollbackFailed {
+                install_error: "D90 teardown restoration failed".into(),
+                rollback_error: format!("{error:?}"),
+            });
+        }
+        let mut restored = [0u8; A729_CALL_BYTES.len()];
+        let restored_observed = memory.read_exact(installed.callsite, &mut restored);
+        if !restored_observed || restored != installed.original_call {
+            installed.owned_mutation = restored_observed.then_some(restored);
+            installed.patch_enabled = false;
+            installed.recovery_pending = true;
+            *state = Some(installed);
+            INSTALLED.store(false, Ordering::Release);
+            drop(suspended);
+            return Err(ConvoyTerminalInstallError::InstallRollbackFailed {
+                install_error: "D90 teardown restoration was not exact".into(),
+                rollback_error: "exact original bytes were not observed after write".into(),
+            });
+        }
+        installed.owned_mutation = Some(restored);
+        installed.patch_enabled = false;
         installed.patch_restored = true;
+        installed.recovery_pending = false;
         *state = Some(installed);
         INSTALLED.store(false, Ordering::Release);
         drop(suspended);
@@ -1244,49 +1842,179 @@ fn restore_and_quiesce_convoy_terminal_hook(
         }
         std::thread::yield_now();
     }
+    if installed.install_admitted && !installed.relay_verified_before_removal {
+        return Err(ConvoyTerminalInstallError::RelayDrift);
+    }
     Ok(Some(installed))
 }
 
 fn finalize_convoy_terminal_uninstall(
-    installed: Option<InstalledState>,
+    restored: Option<InstalledState>,
 ) -> Result<(), ConvoyTerminalInstallError> {
-    clear_convoy_terminal_resolver_snapshot().map_err(ConvoyTerminalInstallError::ResolverClear)?;
-    if let Some(installed) = installed {
-        unsafe { VirtualFree(installed.relay as *mut c_void, 0, MEM_RELEASE) };
+    let mut state = INSTALL_STATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let Some(mut installed) = *state else {
+        if restored.is_some() {
+            return Err(ConvoyTerminalInstallError::RecoveryPending);
+        }
+        clear_convoy_terminal_resolver_snapshot()
+            .map_err(ConvoyTerminalInstallError::ResolverClear)?;
+        ORIGINAL_TARGET.store(0, Ordering::Release);
+        MODULE_BASE.store(0, Ordering::Release);
+        EVIDENCE_GAME_STATE.store(0, Ordering::Release);
+        EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
+        TEARDOWN.store(false, Ordering::Release);
+        return Ok(());
+    };
+    if !installed.patch_restored || ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        return Err(ConvoyTerminalInstallError::RecoveryPending);
     }
+    if !installed.relay_freed {
+        if unsafe { VirtualFree(installed.relay as *mut c_void, 0, MEM_RELEASE) } == 0 {
+            return Err(ConvoyTerminalInstallError::RelayFree);
+        }
+        installed.relay_freed = true;
+        *state = Some(installed);
+    }
+    if installed.mode.is_production() && installed.install_admitted {
+        let receipt = installed.installed_receipt.ok_or_else(|| {
+            ConvoyTerminalInstallError::HookReceipt(
+                "D90 admitted production install lost its receipt".into(),
+            )
+        })?;
+        if installed.teardown_owner_token != Some(receipt.teardown_owner_token) {
+            return Err(ConvoyTerminalInstallError::HookReceipt(
+                "D90 teardown owner token custody changed".into(),
+            ));
+        }
+        if installed.released_receipt.is_none() {
+            installed.released_receipt = Some(
+                observe_released(
+                    D90_HOOK_EXPECTATION,
+                    receipt,
+                    HookTeardownAttestation {
+                        callbacks_quiesced: ACTIVE_CALLBACKS.load(Ordering::Acquire) == 0,
+                        hook_removed: installed.patch_restored && !installed.patch_enabled,
+                        relay_freed: installed.relay_freed,
+                    },
+                )
+                .map_err(ConvoyTerminalInstallError::HookReceipt)?,
+            );
+            *state = Some(installed);
+        }
+    } else if installed.mode.is_production() {
+        if installed.installed_receipt.is_some() || installed.released_receipt.is_some() {
+            return Err(ConvoyTerminalInstallError::HookReceipt(
+                "D90 failed production install retained receipt authority".into(),
+            ));
+        }
+    } else if installed.teardown_owner_token.is_some()
+        || installed.installed_receipt.is_some()
+        || installed.released_receipt.is_some()
+    {
+        return Err(ConvoyTerminalInstallError::HookReceipt(
+            "D90 evidence lifecycle acquired production receipt custody".into(),
+        ));
+    }
+    clear_convoy_terminal_resolver_snapshot().map_err(ConvoyTerminalInstallError::ResolverClear)?;
+    let released_receipt = installed.released_receipt;
     ORIGINAL_TARGET.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
     EVIDENCE_GAME_STATE.store(0, Ordering::Release);
     EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
-    *INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+    let mut released_slot = RELEASED_HOOK_RECEIPT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if released_receipt.is_some() && released_slot.is_some() {
+        return Err(ConvoyTerminalInstallError::UntakenReleaseReceipt);
+    }
+    if let Some(receipt) = released_receipt {
+        *released_slot = Some(receipt);
+    }
+    *state = None;
     TEARDOWN.store(false, Ordering::Release);
     Ok(())
 }
 
-/// Restore the callsite, wait for every in-flight callback, and only then
-/// encode the final queue drain while the resolver receipt is still resident.
-/// This is the evidence-mode terminal boundary: a concurrent callback is
-/// reflected by a drop counter and therefore produces an explicitly
-/// incomplete CTA2 witness rather than a silently truncated ledger.
+/// Restore the callsite, wait for every in-flight callback, and reserve the
+/// final queue prefix while the resolver receipt is still resident.
+/// The returned token remains rollbackable until the caller confirms sink
+/// publication; teardown never commits the queue on the caller's behalf.
 pub fn seal_and_drain_convoy_transport_attack_payload(
     max_events: usize,
-) -> Result<Option<Vec<u8>>, ConvoyTerminalSealError> {
+) -> Result<Option<ConvoyTerminalPayloadReservation>, ConvoyTerminalSealError> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D90 hook lifecycle state poisoned during sealed teardown".to_string())?;
+    if DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .map_err(|_| "D90 drain reservation state poisoned".to_string())?
+        .active
+        .is_some()
+    {
+        return Err(ConvoyTerminalSealError::Reservation(
+            "D90 sealed teardown refused an active reservation".into(),
+        ));
+    }
     let installed = restore_and_quiesce_convoy_terminal_hook()?;
     let Some(installed) = installed else {
         finalize_convoy_terminal_uninstall(None)?;
         return Ok(None);
     };
-    let drain = drain_convoy_terminal_events(max_events);
-    let payload = encode_convoy_transport_attack_drain(drain, true);
-    let finalized = finalize_convoy_terminal_uninstall(Some(installed));
-    match (payload, finalized) {
-        (Ok(payload), Ok(())) => Ok(Some(payload)),
-        (Err(error), _) => Err(error.into()),
-        (Ok(_), Err(error)) => Err(error.into()),
+    let reservation = peek_convoy_terminal_events_inner(max_events, true)?;
+    if reservation.drain.remaining_events != 0 {
+        rollback_convoy_terminal_events(reservation.reservation_id)?;
+        return Err(ConvoyTerminalSealError::Reservation(format!(
+            "D90 sealed reservation capacity left {} event(s) behind",
+            reservation.drain.remaining_events
+        )));
     }
+    let payload = match encode_convoy_transport_attack_drain(reservation.drain.clone(), true) {
+        Ok(payload) => payload,
+        Err(error) => {
+            rollback_convoy_terminal_events(reservation.reservation_id)?;
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = finalize_convoy_terminal_uninstall(Some(installed)) {
+        rollback_convoy_terminal_events(reservation.reservation_id)?;
+        return Err(error.into());
+    }
+    DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .map_err(|_| "D90 drain reservation state poisoned".to_string())?
+        .sealed_snapshot = Some(reservation.drain.clone());
+    SEALED_PUBLICATION_PENDING.store(true, Ordering::Release);
+    Ok(Some(ConvoyTerminalPayloadReservation {
+        reservation_id: reservation.reservation_id,
+        payload,
+    }))
 }
 
 pub fn uninstall_convoy_terminal_hook() -> Result<(), ConvoyTerminalInstallError> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if DRAIN_RESERVATION
+        .get_or_init(|| Mutex::new(DrainReservationState::default()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .active
+        .is_some()
+    {
+        return Err(ConvoyTerminalInstallError::ReservationPending);
+    }
+    if INSTALL_STATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+        .is_some_and(|installed| installed.mode.is_production() && installed.install_admitted)
+    {
+        return Err(ConvoyTerminalInstallError::SealedTeardownRequired);
+    }
     let installed = restore_and_quiesce_convoy_terminal_hook()?;
     finalize_convoy_terminal_uninstall(installed)
 }
@@ -1317,7 +2045,8 @@ unsafe fn allocate_near_relay(callsite: usize) -> Result<*mut u8, ConvoyTerminal
             bytes[6..].copy_from_slice(&(hook as usize as u64).to_le_bytes());
             unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), relay, bytes.len()) };
             let mut old = 0;
-            if unsafe { VirtualProtect(relay.cast(), RELAY_LEN, PAGE_EXECUTE_READ, &mut old) } == 0 {
+            if unsafe { VirtualProtect(relay.cast(), RELAY_LEN, PAGE_EXECUTE_READ, &mut old) } == 0
+            {
                 unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
                 return Err(ConvoyTerminalInstallError::RelayProtect);
             }
@@ -1343,6 +2072,14 @@ fn make_rel32_call(callsite: usize, destination: usize) -> Option<[u8; 5]> {
     bytes[0] = 0xE8;
     bytes[1..].copy_from_slice(&displacement.to_le_bytes());
     Some(bytes)
+}
+
+fn relay_targets_convoy_terminal_hook(memory: &ProcessMemory, relay: usize) -> bool {
+    let mut bytes = [0u8; RELAY_LEN];
+    memory.read_exact(relay, &mut bytes)
+        && bytes[..6] == [0xFF, 0x25, 0, 0, 0, 0]
+        && u64::from_le_bytes(bytes[6..14].try_into().unwrap())
+            == convoy_terminal_hook as usize as u64
 }
 
 unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), ConvoyTerminalInstallError> {

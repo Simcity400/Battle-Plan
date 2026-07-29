@@ -9,6 +9,7 @@ path = "src/lib.rs"
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
 naval_combat_live_lane = { path = "../naval_combat_live" }
+production_hook_receipt = { path = "../production_hook_receipt" }
 
 [target.'cfg(windows)'.dependencies]
 minhook = "0.9.0"

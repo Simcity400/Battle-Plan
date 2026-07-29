@@ -11,7 +11,8 @@ use crate::{
 use core::fmt;
 
 pub const GAP_RECORD_MAGIC: [u8; 4] = *b"H4GP";
-pub const GAP_RECORD_VERSION: u16 = 1;
+pub const GAP_RECORD_LEGACY_VERSION: u16 = 1;
+pub const GAP_RECORD_VERSION: u16 = 2;
 pub const MAX_GAP_DOMAIN_COUNT: usize = u16::MAX as usize;
 const GAP_RECORD_HEADER_LEN: usize = 64;
 const GAP_STATUS_MASK: u32 = COMPACT_STATUS_SOURCE_UNAVAILABLE
@@ -29,9 +30,34 @@ pub enum GapReason {
     WorkerPanic,
     TornSweep,
     CoverageShortfall,
+    Backpressure,
 }
 
+pub const GAP_REASON_CODE_COALESCED: u8 = 1;
+pub const GAP_REASON_CODE_SKIPPED_HOUR: u8 = 2;
+pub const GAP_REASON_CODE_SOURCE_UNAVAILABLE: u8 = 3;
+pub const GAP_REASON_CODE_PARTIAL_DATA: u8 = 4;
+pub const GAP_REASON_CODE_BRIDGE_UNAVAILABLE: u8 = 5;
+pub const GAP_REASON_CODE_WORKER_PANIC: u8 = 6;
+pub const GAP_REASON_CODE_TORN_SWEEP: u8 = 7;
+pub const GAP_REASON_CODE_COVERAGE_SHORTFALL: u8 = 8;
+pub const GAP_REASON_CODE_BACKPRESSURE: u8 = 9;
+
 impl GapReason {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Coalesced => GAP_REASON_CODE_COALESCED,
+            Self::SkippedHour => GAP_REASON_CODE_SKIPPED_HOUR,
+            Self::SourceUnavailable => GAP_REASON_CODE_SOURCE_UNAVAILABLE,
+            Self::PartialData => GAP_REASON_CODE_PARTIAL_DATA,
+            Self::BridgeUnavailable => GAP_REASON_CODE_BRIDGE_UNAVAILABLE,
+            Self::WorkerPanic => GAP_REASON_CODE_WORKER_PANIC,
+            Self::TornSweep => GAP_REASON_CODE_TORN_SWEEP,
+            Self::CoverageShortfall => GAP_REASON_CODE_COVERAGE_SHORTFALL,
+            Self::Backpressure => GAP_REASON_CODE_BACKPRESSURE,
+        }
+    }
+
     /// Return the deterministic dominant reason for a status-bit observation.
     ///
     /// The witness retains every observed gap-status bit; the reason is only
@@ -56,6 +82,22 @@ impl GapReason {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum GapCounter {
     CoalescedHours,
+    QueueOverrunHours,
+    SinkBackpressureHours,
+}
+
+pub const GAP_COUNTER_CODE_COALESCED_HOURS: u8 = 1;
+pub const GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS: u8 = 2;
+pub const GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS: u8 = 3;
+
+impl GapCounter {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::CoalescedHours => GAP_COUNTER_CODE_COALESCED_HOURS,
+            Self::QueueOverrunHours => GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS,
+            Self::SinkBackpressureHours => GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,6 +145,45 @@ pub struct GapRecord {
 }
 
 impl GapRecord {
+    /// Build the single canonical gap for a forward FRAME_END jump.
+    ///
+    /// The logical skipped interval is half-open
+    /// `[previous_hour + 1, next_hour)`. H4GP v2 retains inclusive endpoints,
+    /// so the wire stores `hour_end = next_hour - 1`; it must not be expanded
+    /// into one record per skipped hour. The `HourDiscontinuity` wire witness is
+    /// the v2 spelling of the TickDiscontinuity authority.
+    pub fn skipped_tick_discontinuity_half_open(
+        previous_hour: i32,
+        next_hour: i32,
+        domains: Vec<CompactDomainId>,
+    ) -> Result<Self, GapRecordValidationError> {
+        let hour_start = previous_hour.checked_add(1).ok_or(
+            GapRecordValidationError::InvalidInclusiveRange {
+                hour_start: previous_hour,
+                hour_end: next_hour,
+            },
+        )?;
+        let hour_end =
+            next_hour
+                .checked_sub(1)
+                .ok_or(GapRecordValidationError::InvalidInclusiveRange {
+                    hour_start,
+                    hour_end: next_hour,
+                })?;
+        let record = Self {
+            hour_start,
+            hour_end,
+            reason: GapReason::SkippedHour,
+            domains,
+            witness: GapWitness::HourDiscontinuity {
+                previous_hour,
+                next_hour,
+            },
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     pub fn inclusive_hour_count(&self) -> Option<u64> {
         let width = i64::from(self.hour_end)
             .checked_sub(i64::from(self.hour_start))?
@@ -119,12 +200,12 @@ impl GapRecord {
     }
 
     pub fn validate(&self) -> Result<(), GapRecordValidationError> {
-        let hour_count = self
-            .inclusive_hour_count()
-            .ok_or(GapRecordValidationError::InvalidInclusiveRange {
-                hour_start: self.hour_start,
-                hour_end: self.hour_end,
-            })?;
+        let hour_count =
+            self.inclusive_hour_count()
+                .ok_or(GapRecordValidationError::InvalidInclusiveRange {
+                    hour_start: self.hour_start,
+                    hour_end: self.hour_end,
+                })?;
         if self.domains.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(GapRecordValidationError::DomainsNotStrictlyIncreasing);
         }
@@ -136,6 +217,13 @@ impl GapRecord {
                 GapReason::Coalesced,
                 GapWitness::Counter {
                     counter: GapCounter::CoalescedHours,
+                    observed,
+                },
+            ) if *observed == hour_count => Ok(()),
+            (
+                GapReason::Backpressure,
+                GapWitness::Counter {
+                    counter: GapCounter::QueueOverrunHours | GapCounter::SinkBackpressureHours,
                     observed,
                 },
             ) if *observed == hour_count => Ok(()),
@@ -298,19 +386,13 @@ pub enum GapRecordCodecError {
     InvalidMagic,
     UnsupportedVersion(u16),
     InvalidHeaderLength(u16),
-    LengthMismatch {
-        declared: usize,
-        actual: usize,
-    },
+    LengthMismatch { declared: usize, actual: usize },
     NonZeroReserved,
     UnknownReason(u8),
     UnknownWitness(u8),
     UnknownCounter(u8),
     DomainCountOverflow,
-    DomainCountTooLarge {
-        count: usize,
-        max: usize,
-    },
+    DomainCountTooLarge { count: usize, max: usize },
     Validation(GapRecordValidationError),
 }
 
@@ -329,28 +411,20 @@ impl From<GapRecordValidationError> for GapRecordCodecError {
 }
 
 fn gap_reason_code(reason: GapReason) -> u8 {
-    match reason {
-        GapReason::Coalesced => 1,
-        GapReason::SkippedHour => 2,
-        GapReason::SourceUnavailable => 3,
-        GapReason::PartialData => 4,
-        GapReason::BridgeUnavailable => 5,
-        GapReason::WorkerPanic => 6,
-        GapReason::TornSweep => 7,
-        GapReason::CoverageShortfall => 8,
-    }
+    reason.code()
 }
 
 fn gap_reason_from_code(code: u8) -> Result<GapReason, GapRecordCodecError> {
     match code {
-        1 => Ok(GapReason::Coalesced),
-        2 => Ok(GapReason::SkippedHour),
-        3 => Ok(GapReason::SourceUnavailable),
-        4 => Ok(GapReason::PartialData),
-        5 => Ok(GapReason::BridgeUnavailable),
-        6 => Ok(GapReason::WorkerPanic),
-        7 => Ok(GapReason::TornSweep),
-        8 => Ok(GapReason::CoverageShortfall),
+        GAP_REASON_CODE_COALESCED => Ok(GapReason::Coalesced),
+        GAP_REASON_CODE_SKIPPED_HOUR => Ok(GapReason::SkippedHour),
+        GAP_REASON_CODE_SOURCE_UNAVAILABLE => Ok(GapReason::SourceUnavailable),
+        GAP_REASON_CODE_PARTIAL_DATA => Ok(GapReason::PartialData),
+        GAP_REASON_CODE_BRIDGE_UNAVAILABLE => Ok(GapReason::BridgeUnavailable),
+        GAP_REASON_CODE_WORKER_PANIC => Ok(GapReason::WorkerPanic),
+        GAP_REASON_CODE_TORN_SWEEP => Ok(GapReason::TornSweep),
+        GAP_REASON_CODE_COVERAGE_SHORTFALL => Ok(GapReason::CoverageShortfall),
+        GAP_REASON_CODE_BACKPRESSURE => Ok(GapReason::Backpressure),
         other => Err(GapRecordCodecError::UnknownReason(other)),
     }
 }
@@ -406,7 +480,7 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-/// Encode one canonical gap record in the dependency-free H4GP v1 envelope.
+/// Encode one canonical gap record in the dependency-free H4GP v2 envelope.
 ///
 /// This is a ledger encoding, not an H4CR record type. It deliberately does
 /// not alter compact-stream framing or capture production.
@@ -426,8 +500,8 @@ pub fn encode_gap_record(record: &GapRecord) -> Result<Vec<u8>, GapRecordCodecEr
     let total_len = GAP_RECORD_HEADER_LEN
         .checked_add(domain_bytes)
         .ok_or(GapRecordCodecError::DomainCountOverflow)?;
-    let domain_count =
-        u32::try_from(record.domains.len()).map_err(|_| GapRecordCodecError::DomainCountOverflow)?;
+    let domain_count = u32::try_from(record.domains.len())
+        .map_err(|_| GapRecordCodecError::DomainCountOverflow)?;
     let total_len_u32 =
         u32::try_from(total_len).map_err(|_| GapRecordCodecError::DomainCountOverflow)?;
     let mut bytes = vec![0u8; total_len];
@@ -442,9 +516,7 @@ pub fn encode_gap_record(record: &GapRecord) -> Result<Vec<u8>, GapRecordCodecEr
     match &record.witness {
         GapWitness::Counter { counter, observed } => {
             bytes[21] = 1;
-            bytes[28] = match counter {
-                GapCounter::CoalescedHours => 1,
-            };
+            bytes[28] = counter.code();
             write_u64(&mut bytes, 32, *observed);
         }
         GapWitness::HourDiscontinuity {
@@ -500,7 +572,7 @@ pub fn encode_gap_record(record: &GapRecord) -> Result<Vec<u8>, GapRecordCodecEr
     Ok(bytes)
 }
 
-/// Decode one canonical H4GP v1 ledger entry and re-run semantic validation.
+/// Decode one canonical H4GP v1/v2 ledger entry and re-run semantic validation.
 pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError> {
     if bytes.len() < GAP_RECORD_HEADER_LEN {
         return Err(GapRecordCodecError::TooShort);
@@ -509,7 +581,7 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
         return Err(GapRecordCodecError::InvalidMagic);
     }
     let version = read_u16(bytes, 4);
-    if version != GAP_RECORD_VERSION {
+    if !matches!(version, GAP_RECORD_LEGACY_VERSION | GAP_RECORD_VERSION) {
         return Err(GapRecordCodecError::UnsupportedVersion(version));
     }
     let header_len = read_u16(bytes, 6);
@@ -530,8 +602,8 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
     if bytes[22] != 0 || bytes[23] != 0 {
         return Err(GapRecordCodecError::NonZeroReserved);
     }
-    let domain_count =
-        usize::try_from(read_u32(bytes, 24)).map_err(|_| GapRecordCodecError::DomainCountOverflow)?;
+    let domain_count = usize::try_from(read_u32(bytes, 24))
+        .map_err(|_| GapRecordCodecError::DomainCountOverflow)?;
     if domain_count > MAX_GAP_DOMAIN_COUNT {
         return Err(GapRecordCodecError::DomainCountTooLarge {
             count: domain_count,
@@ -551,6 +623,9 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
             actual: bytes.len(),
         });
     }
+    if version == GAP_RECORD_LEGACY_VERSION && bytes[20] == GAP_REASON_CODE_BACKPRESSURE {
+        return Err(GapRecordCodecError::UnknownReason(bytes[20]));
+    }
     let reason = gap_reason_from_code(bytes[20])?;
     let witness = match bytes[21] {
         1 => {
@@ -562,7 +637,13 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
                 return Err(GapRecordCodecError::NonZeroReserved);
             }
             let counter = match bytes[28] {
-                1 => GapCounter::CoalescedHours,
+                GAP_COUNTER_CODE_COALESCED_HOURS => GapCounter::CoalescedHours,
+                GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS if version == GAP_RECORD_VERSION => {
+                    GapCounter::QueueOverrunHours
+                }
+                GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS if version == GAP_RECORD_VERSION => {
+                    GapCounter::SinkBackpressureHours
+                }
                 other => return Err(GapRecordCodecError::UnknownCounter(other)),
             };
             GapWitness::Counter {
@@ -655,6 +736,72 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
 mod tests {
     use super::*;
 
+    #[test]
+    fn counter_and_backpressure_reason_codes_are_exact_and_round_trip() {
+        assert_eq!(GapCounter::CoalescedHours.code(), 1);
+        assert_eq!(GapCounter::QueueOverrunHours.code(), 2);
+        assert_eq!(GapCounter::SinkBackpressureHours.code(), 3);
+        assert_eq!(GapReason::Backpressure.code(), 9);
+
+        for counter in [
+            GapCounter::QueueOverrunHours,
+            GapCounter::SinkBackpressureHours,
+        ] {
+            let record = GapRecord {
+                hour_start: 20,
+                hour_end: 22,
+                reason: GapReason::Backpressure,
+                domains: vec![81],
+                witness: GapWitness::Counter {
+                    counter,
+                    observed: 3,
+                },
+            };
+            let wire = encode_gap_record(&record).unwrap();
+            assert_eq!(wire[20], GAP_REASON_CODE_BACKPRESSURE);
+            assert_eq!(wire[28], counter.code());
+            assert_eq!(decode_gap_record(&wire).unwrap(), record);
+        }
+    }
+
+    #[test]
+    fn v2_extends_backpressure_while_legacy_v1_remains_decodable_and_closed() {
+        let legacy = GapRecord {
+            hour_start: 20,
+            hour_end: 20,
+            reason: GapReason::Coalesced,
+            domains: vec![81],
+            witness: GapWitness::Counter {
+                counter: GapCounter::CoalescedHours,
+                observed: 1,
+            },
+        };
+        let mut legacy_wire = encode_gap_record(&legacy).unwrap();
+        legacy_wire[4..6].copy_from_slice(&GAP_RECORD_LEGACY_VERSION.to_le_bytes());
+        assert_eq!(decode_gap_record(&legacy_wire).unwrap(), legacy);
+
+        let extended = GapRecord {
+            reason: GapReason::Backpressure,
+            witness: GapWitness::Counter {
+                counter: GapCounter::QueueOverrunHours,
+                observed: 1,
+            },
+            ..legacy
+        };
+        let mut extended_wire = encode_gap_record(&extended).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(extended_wire[4..6].try_into().unwrap()),
+            GAP_RECORD_VERSION
+        );
+        extended_wire[4..6].copy_from_slice(&GAP_RECORD_LEGACY_VERSION.to_le_bytes());
+        assert_eq!(
+            decode_gap_record(&extended_wire),
+            Err(GapRecordCodecError::UnknownReason(
+                GAP_REASON_CODE_BACKPRESSURE
+            ))
+        );
+    }
+
     fn coverage(hour: i32, domains: Vec<u16>) -> GapRecord {
         GapRecord {
             hour_start: hour,
@@ -719,8 +866,9 @@ mod tests {
 
     #[test]
     fn disjoint_domains_may_share_an_hour_but_ranges_must_stay_observed() {
-        assert!(validate_gap_records(&[coverage(12, vec![10]), coverage(12, vec![11])], 12, 12)
-            .is_ok());
+        assert!(
+            validate_gap_records(&[coverage(12, vec![10]), coverage(12, vec![11])], 12, 12).is_ok()
+        );
         assert!(matches!(
             validate_gap_records(&[coverage(11, vec![10])], 12, 13),
             Err(GapRecordValidationError::OutsideObservedRange { .. })
@@ -784,8 +932,7 @@ mod tests {
 
     #[test]
     fn multi_bit_status_uses_one_exact_dominant_reason() {
-        let source_and_partial =
-            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA;
+        let source_and_partial = COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA;
         let record = GapRecord {
             hour_start: 3,
             hour_end: 3,
@@ -860,8 +1007,7 @@ mod tests {
                 reason: GapReason::SourceUnavailable,
                 domains: vec![11],
                 witness: GapWitness::StatusBits {
-                    status_bits: COMPACT_STATUS_SOURCE_UNAVAILABLE
-                        | COMPACT_STATUS_PARTIAL_DATA,
+                    status_bits: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
                 },
             },
             coverage(4, vec![12]),
@@ -885,8 +1031,7 @@ mod tests {
                     observed_perf_records: 0,
                     expected_data_records: 1,
                     observed_data_records: 0,
-                    status_bits: COMPACT_STATUS_WORKER_PANIC
-                        | COMPACT_STATUS_PARTIAL_DATA,
+                    status_bits: COMPACT_STATUS_WORKER_PANIC | COMPACT_STATUS_PARTIAL_DATA,
                 },
             },
         ];
@@ -897,6 +1042,23 @@ mod tests {
                 record
             );
         }
+    }
+
+    #[test]
+    fn forward_jump_is_one_half_open_skipped_range_and_requires_a_real_jump() {
+        let gap = GapRecord::skipped_tick_discontinuity_half_open(10, 14, vec![81]).unwrap();
+        assert_eq!(gap.hour_start, 11);
+        assert_eq!(gap.hour_end, 13);
+        assert_eq!(gap.inclusive_hour_count(), Some(3));
+        assert_eq!(gap.reason, GapReason::SkippedHour);
+        assert_eq!(
+            gap.witness,
+            GapWitness::HourDiscontinuity {
+                previous_hour: 10,
+                next_hour: 14,
+            }
+        );
+        assert!(GapRecord::skipped_tick_discontinuity_half_open(10, 11, vec![81]).is_err());
     }
 
     #[test]

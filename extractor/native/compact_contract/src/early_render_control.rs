@@ -80,8 +80,7 @@ impl EarlyStagedHookSelection {
                     || group_mask & 1 == 0
                     || com_selector & !EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK != 0
                     || com_selector == EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK
-                    || (group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
-                        && com_selector == 0)
+                    || (group_mask == EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK && com_selector == 0)
                 {
                     return None;
                 }
@@ -490,9 +489,7 @@ fn string_at(
     let end = (*at)
         .checked_add(length)
         .ok_or(EarlyRenderCodecError::Length)?;
-    let value = bytes
-        .get(*at..end)
-        .ok_or(EarlyRenderCodecError::Length)?;
+    let value = bytes.get(*at..end).ok_or(EarlyRenderCodecError::Length)?;
     *at += length;
     let value = std::str::from_utf8(value).map_err(|_| EarlyRenderCodecError::InvalidField)?;
     if value.as_bytes().contains(&0) || value.chars().any(char::is_control) {
@@ -559,16 +556,8 @@ pub fn encode_early_g2_capture_arm(
     }
     out.extend_from_slice(&value.expected_selected_hour.to_le_bytes());
     put_string(&mut out, &value.observation_id, G2_MAX_TOKEN_BYTES)?;
-    put_string(
-        &mut out,
-        &value.localisation_language,
-        G2_MAX_TOKEN_BYTES,
-    )?;
-    put_string(
-        &mut out,
-        &value.pov_country_or_global,
-        G2_MAX_TOKEN_BYTES,
-    )?;
+    put_string(&mut out, &value.localisation_language, G2_MAX_TOKEN_BYTES)?;
+    put_string(&mut out, &value.pov_country_or_global, G2_MAX_TOKEN_BYTES)?;
     put_string(&mut out, &value.capture_context_path, G2_MAX_PATH_BYTES)?;
     put_string(&mut out, &value.output_directory, G2_MAX_PATH_BYTES)?;
     Ok(out)
@@ -718,8 +707,7 @@ pub fn encode_early_first_game_d3d(
         || (!value.diagnostic_stage_probe
             && (selection != EarlyStagedHookSelection::Production
                 || value.staged_hook_count != EARLY_STAGED_HOOK_COUNT))
-        || (value.diagnostic_stage_probe
-            && selection == EarlyStagedHookSelection::Production)
+        || (value.diagnostic_stage_probe && selection == EarlyStagedHookSelection::Production)
         || !nonzero_hash(&value.staged_hook_set_sha256)
         || value.game_device_ptr == 0
         || value.immediate_context_ptr == 0
@@ -871,8 +859,7 @@ pub fn encode_early_diagnostic_liveness_request(
 pub fn decode_early_diagnostic_liveness_request(
     bytes: &[u8],
 ) -> Result<EarlyDiagnosticLivenessRequestV1, EarlyRenderCodecError> {
-    let (mut at, version) =
-        validate_staged_header(bytes, DIAGNOSTIC_LIVENESS_REQUEST_MAGIC, 190)?;
+    let (mut at, version) = validate_staged_header(bytes, DIAGNOSTIC_LIVENESS_REQUEST_MAGIC, 190)?;
     let value = EarlyDiagnosticLivenessRequestV1 {
         session_id: bytes16_at(bytes, &mut at)?,
         launch_manifest_sha256: hash_at(bytes, &mut at)?,
@@ -966,8 +953,7 @@ pub fn encode_early_diagnostic_liveness_response(
 pub fn decode_early_diagnostic_liveness_response(
     bytes: &[u8],
 ) -> Result<EarlyDiagnosticLivenessResponseV1, EarlyRenderCodecError> {
-    let (mut at, version) =
-        validate_staged_header(bytes, DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC, 214)?;
+    let (mut at, version) = validate_staged_header(bytes, DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC, 214)?;
     let value = EarlyDiagnosticLivenessResponseV1 {
         session_id: bytes16_at(bytes, &mut at)?,
         process_id: u32_at(bytes, &mut at)?,
@@ -1197,37 +1183,27 @@ mod tests {
         assert!(verifier.contains(&format!(
             "EARLY_STAGED_HOOK_COUNT = {EARLY_STAGED_HOOK_COUNT}"
         )));
-        assert!(verifier.contains(
-            "receipt.get(\"staged_hook_count\") == EARLY_STAGED_HOOK_COUNT"
-        ));
+        assert!(verifier.contains("receipt.get(\"staged_hook_count\") == EARLY_STAGED_HOOK_COUNT"));
     }
 
     #[test]
     fn diagnostic_com_selector_is_canonical_and_counts_exact_ordinals() {
         let one_com = 0x01 | (1u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
         let two_com = 0x01 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
-        let two_com_plus_vfs =
-            0x03 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
+        let two_com_plus_vfs = 0x03 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT);
         assert_eq!(staged_hook_selection_masks(0x01), Some((0x01, 0)));
-        assert_eq!(
-            staged_hook_selection_masks(one_com),
-            Some((0x01, 0b001))
-        );
+        assert_eq!(staged_hook_selection_masks(one_com), Some((0x01, 0b001)));
         assert_eq!(staged_hook_count_for_group_mask(one_com), Some(1));
         assert_eq!(staged_hook_count_for_group_mask(two_com), Some(2));
-        assert_eq!(
-            staged_hook_count_for_group_mask(two_com_plus_vfs),
-            Some(4)
-        );
+        assert_eq!(staged_hook_count_for_group_mask(two_com_plus_vfs), Some(4));
         assert_eq!(
             staged_hook_count_for_group_mask(EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK),
             Some(EARLY_STAGED_HOOK_COUNT)
         );
         assert_eq!(
             staged_hook_count_for_group_mask(
-                0x01
-                    | (EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK
-                        << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT)
+                0x01 | (EARLY_DIAGNOSTIC_COM_SELECTOR_VALUE_MASK
+                    << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT)
             ),
             None,
             "the explicit all-COM selector must not alias the canonical zero selector"
@@ -1239,8 +1215,7 @@ mod tests {
         );
         assert_eq!(
             staged_hook_count_for_group_mask(
-                1u64 << (EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT
-                    + EARLY_DIAGNOSTIC_COM_HOOK_COUNT)
+                1u64 << (EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT + EARLY_DIAGNOSTIC_COM_HOOK_COUNT)
             ),
             None,
             "selector bits outside the nineteen-hook inventory are invalid"
@@ -1259,9 +1234,7 @@ mod tests {
             assert_eq!(selection.to_wire_mask(), Some(wire_mask));
         }
         assert_eq!(
-            EarlyStagedHookSelection::from_wire_mask(
-                EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK
-            ),
+            EarlyStagedHookSelection::from_wire_mask(EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK),
             Some(EarlyStagedHookSelection::Production)
         );
         assert_eq!(
@@ -1378,10 +1351,7 @@ mod tests {
         for (mask, count) in [
             (0x01, 19),
             (0x1ff, 68),
-            (
-                0x01 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT),
-                2,
-            ),
+            (0x01 | (0b101u64 << EARLY_DIAGNOSTIC_COM_SELECTOR_SHIFT), 2),
         ] {
             let mut diagnostic = representative_first();
             diagnostic.diagnostic_stage_probe = true;
@@ -1405,7 +1375,10 @@ mod tests {
         empty.staged_hook_count = 0;
         let bytes = encode_early_first_game_d3d(&empty).unwrap();
         assert_eq!(&bytes[..4], FIRST_MAGIC);
-        assert_eq!(u16::from_le_bytes(bytes[4..6].try_into().unwrap()), VERSION_V2);
+        assert_eq!(
+            u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
+            VERSION_V2
+        );
         assert_eq!(decode_early_first_game_d3d(&bytes).unwrap(), empty);
         assert_eq!(staged_hook_count_for_group_mask(0), Some(0));
         assert_eq!(

@@ -973,9 +973,9 @@ impl Trailers {
 /// (`world_fold.rs:27574`, `:27580`).
 ///
 /// They are function pointers rather than calls because they live in
-/// `compact_contract`, which the reference library deliberately does not depend
-/// on — only the measurement bins do. Copying the bit masks in here is exactly
-/// the drift the recipe forbids.
+/// `compact_contract` and d11 is not admitted to the production-codec
+/// dependency surface. Copying the bit masks in here is exactly the drift the
+/// recipe forbids.
 #[derive(Clone, Copy)]
 pub struct StatusPredicates {
     pub unknown_flags: fn(u32) -> u32,

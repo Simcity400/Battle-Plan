@@ -344,9 +344,9 @@ pub const KNOWN_SOURCE_MASK: u32 = SOURCE_LIVE_STATS
 /// (`world_fold.rs:16435`-`:16443`).
 pub const FABRICATED_TOKEN_PREFIX: &str = "equipment_token_raw_";
 
-/// `COMPACT_STATUS_DELTA_DATA`. Named here rather than imported so the library
-/// keeps no dependency on `compact_contract`; the measurement bin, which does
-/// depend on it, asserts the two agree (the d24/d32/d56 pattern). **This fold
+/// `COMPACT_STATUS_DELTA_DATA`. Named here because d46 is not admitted to the
+/// production-codec dependency surface; the measurement bin asserts the local
+/// value and shipping contract agree (the d24/d32/d56 pattern). **This fold
 /// never reads it** — see the shape section of the module docs; it is defined
 /// only so the bin can report the word and pin that irrelevance with a test.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;

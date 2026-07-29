@@ -46,9 +46,9 @@
 //! `compact_contract`'s own predicates rather than a copied bit mask.
 //!
 //! **And the one contract d67 has to duplicate is machine-checked, not trusted.**
-//! `wire_format`'s library half deliberately does not depend on
-//! `compact_contract` (`Cargo.toml`, `d22.rs:470`), so `d67::decode_payload`
-//! transcribes the `DMI2` grammar with per-constant citations. This binary *does*
+//! d67 is not admitted to the production-codec dependency surface
+//! (`Cargo.toml`, `d22.rs:470`), so `d67::decode_payload` transcribes the `DMI2`
+//! grammar with per-constant citations. This binary *does*
 //! depend on `compact_contract`, so it checks the transcription two ways:
 //! [`check_authority_payload`] decodes **every** d67 DATA record with both
 //! decoders and requires identical frames, and the unit test
@@ -397,9 +397,9 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 /// `compact_contract::dynamic_modifiers::decode_payload` plus the magic check
 /// (`:12516`-`:12523`), so this calls it directly.
 ///
-/// It then requires `d67::decode_payload` — the transcription the library half
-/// carries because it must not depend on `compact_contract` — to have produced
-/// the identical frame. That equality is the whole reason the duplication is
+/// It then requires `d67::decode_payload` — the transcription retained because
+/// d67 is not admitted to the production-codec dependency surface — to have
+/// produced the identical frame. That equality is the whole reason the duplication is
 /// safe, and it is checked on every real record rather than argued.
 fn check_authority_payload(
     frame: &d67::Frame,

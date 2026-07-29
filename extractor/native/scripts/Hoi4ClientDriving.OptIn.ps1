@@ -34,14 +34,18 @@ function Test-Hoi4ClientDrivingInputPath {
         return $false
     }
     $relative = $full.Substring($repo.Length + 1).Replace('\', '/')
-    # The UI-driving acquisition helpers this list used to name are gone. Two
-    # game-controlling inputs remain. Control-Hoi4Game.ps1 is the sharper one:
-    # it writes game speed and the engine pause byte through
-    # WriteProcessMemory, and Invoke-HeadlessRawCapture.ps1 calls it. Note that
-    # Assert-Hoi4ClientDrivingOptIn above is currently invoked by nothing, so
-    # this list is the only isolation these helpers actually get.
+    # This is the complete source-input closure for the unshipped evidence
+    # workflows that can transitively launch, stop, or write the game state.
+    # Control-Hoi4Game.ps1 is the sharp boundary: it can write game speed and
+    # the engine pause byte through WriteProcessMemory. Every controlling entry
+    # point must also call Assert-Hoi4ClientDrivingOptIn before it crosses a
+    # driving boundary; this roster keeps those inputs out of production
+    # packaging even if a caller later omits that runtime check.
     $legacyClientDrivingInputs = @(
         'extractor/native/scripts/Start-Hoi4EarlyLaunchCaptureSafe.ps1',
+        'extractor/native/scripts/Invoke-HeadlessRawCapture.ps1',
+        'extractor/native/scripts/Invoke-HeadlessRawCaptureUntilClean.ps1',
+        'extractor/native/scripts/Measure-InjectionCrashRate.ps1',
         'extractor/native/scripts/Control-Hoi4Game.ps1'
     )
     return $legacyClientDrivingInputs -ccontains $relative

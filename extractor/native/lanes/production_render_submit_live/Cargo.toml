@@ -7,10 +7,17 @@ edition = "2021"
 name = "production_render_submit_live_lane"
 path = "src/lib.rs"
 
+[features]
+default = []
+# Explicitly unshipped access to the historical staged render-observation
+# graph. Canonical collector builds do not enable this feature.
+unshipped-render-evidence = ["dep:minhook"]
+
 [dependencies]
 portable_render_stream = { path = "../../../../portable_replay/native/render_stream" }
 portable_content_manifest = { path = "../../../../portable_replay/native/content_manifest" }
 production_render_catalog_capture_contract = { path = "../production_render_catalog_capture_contract" }
+production_hook_receipt = { path = "../production_hook_receipt" }
 compact_contract = { path = "../../compact_contract" }
 runtime_text_inputs_live_lane = { path = "../runtime_text_inputs_live" }
 sha2 = "0.10"
@@ -22,13 +29,14 @@ png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
-minhook = "0.9.0"
+minhook = { version = "0.9.0", optional = true }
 winapi = { version = "0.3.9", features = ["d3d11", "d3d11shader", "d3dcommon", "d3dcompiler", "minwindef", "winerror"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Performance",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

@@ -68,19 +68,20 @@ pub use convoy_transport_attack::{
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub use convoy_terminal_hook_windows::{
-    convoy_terminal_evidence_activation_enabled, convoy_terminal_hook_heartbeat,
-    convoy_terminal_hook_installed,
-    capture_h_convoy_control_raw, publish_h_convoy_evidence_game_state,
-    take_h_convoy_positive_raw,
-    drain_convoy_terminal_events, drain_convoy_transport_attack_payload,
-    install_convoy_terminal_evidence_hook, install_convoy_terminal_hook,
-    read_live_a729_client_route,
-    seal_and_drain_convoy_transport_attack_payload, uninstall_convoy_terminal_hook,
-    ConvoyTerminalDrain, ConvoyTerminalHookHeartbeat,
-    ConvoyTerminalHookTelemetry, ConvoyTerminalInstallError, ConvoyTerminalValidatedEvent,
-    ConvoyTerminalSealError, D70MutationKind, D70MutationProof,
-    HConvoyControlRawObservation, HConvoyD70Identity, HConvoyD70Row,
-    HConvoyPositiveRawObservation, HConvoyRouteRawObservation,
+    capture_h_convoy_control_raw, convoy_terminal_evidence_activation_enabled,
+    commit_convoy_terminal_events, commit_convoy_transport_attack_payload,
+    convoy_terminal_hook_heartbeat, convoy_terminal_hook_installed,
+    convoy_terminal_hook_lifecycle_pending, install_convoy_terminal_evidence_hook,
+    install_convoy_terminal_hook, installed_hook_receipt, peek_convoy_terminal_events,
+    peek_convoy_transport_attack_payload, publish_h_convoy_evidence_game_state,
+    read_live_a729_client_route, rollback_convoy_terminal_events,
+    rollback_convoy_transport_attack_payload,
+    seal_and_drain_convoy_transport_attack_payload, take_h_convoy_positive_raw,
+    take_released_hook_receipt, uninstall_convoy_terminal_hook, ConvoyTerminalDrain,
+    ConvoyTerminalDrainReservation, ConvoyTerminalHookHeartbeat, ConvoyTerminalHookTelemetry,
+    ConvoyTerminalInstallError, ConvoyTerminalPayloadReservation, ConvoyTerminalSealError,
+    ConvoyTerminalValidatedEvent, D70MutationKind, D70MutationProof, HConvoyControlRawObservation,
+    HConvoyD70Identity, HConvoyD70Row, HConvoyPositiveRawObservation, HConvoyRouteRawObservation,
     H_CONVOY_EVIDENCE_ACTIVATION_ENV,
 };
 

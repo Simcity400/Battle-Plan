@@ -12,6 +12,7 @@ path = "src/bin/proof.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+production_hook_receipt = { path = "../production_hook_receipt" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }
 

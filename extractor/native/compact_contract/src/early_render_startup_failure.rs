@@ -105,10 +105,7 @@ pub enum EarlyRenderStartupFailureCodecError {
     ZeroLaunchBind,
     EmptyDetail,
     DetailTooLarge(usize),
-    DetailLengthMismatch {
-        declared: usize,
-        actual: usize,
-    },
+    DetailLengthMismatch { declared: usize, actual: usize },
     InvalidUtf8,
     DetailDigestMismatch,
 }
@@ -185,9 +182,8 @@ pub fn encode_early_render_startup_failure(
             total_len,
         ));
     }
-    let detail_len = u32::try_from(detail.len()).map_err(|_| {
-        EarlyRenderStartupFailureCodecError::DetailTooLarge(detail.len())
-    })?;
+    let detail_len = u32::try_from(detail.len())
+        .map_err(|_| EarlyRenderStartupFailureCodecError::DetailTooLarge(detail.len()))?;
     let flags = if report.launch_bind_sha256.is_some() {
         FLAG_LAUNCH_BIND_PRESENT
     } else {
@@ -259,12 +255,10 @@ pub fn decode_early_render_startup_failure(
     let detail_len = read_u32(payload, 104) as usize;
     let actual_detail_len = payload.len() - EARLY_RENDER_STARTUP_FAILURE_FIXED_LEN;
     if detail_len != actual_detail_len {
-        return Err(
-            EarlyRenderStartupFailureCodecError::DetailLengthMismatch {
-                declared: detail_len,
-                actual: actual_detail_len,
-            },
-        );
+        return Err(EarlyRenderStartupFailureCodecError::DetailLengthMismatch {
+            declared: detail_len,
+            actual: actual_detail_len,
+        });
     }
     let detail_bytes = &payload[EARLY_RENDER_STARTUP_FAILURE_FIXED_LEN..];
     let detail = std::str::from_utf8(detail_bytes)
@@ -295,11 +289,12 @@ fn validate(
     if report.session_id == [0; 16] {
         return Err(EarlyRenderStartupFailureCodecError::ZeroSessionId);
     }
-    match (report.phase.requires_launch_bind(), report.launch_bind_sha256) {
+    match (
+        report.phase.requires_launch_bind(),
+        report.launch_bind_sha256,
+    ) {
         (true, None) => return Err(EarlyRenderStartupFailureCodecError::MissingLaunchBind),
-        (false, Some(_)) => {
-            return Err(EarlyRenderStartupFailureCodecError::UnexpectedLaunchBind)
-        }
+        (false, Some(_)) => return Err(EarlyRenderStartupFailureCodecError::UnexpectedLaunchBind),
         (_, Some(hash)) if hash == [0; 32] => {
             return Err(EarlyRenderStartupFailureCodecError::ZeroLaunchBind)
         }

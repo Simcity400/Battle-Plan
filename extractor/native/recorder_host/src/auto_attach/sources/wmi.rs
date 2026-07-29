@@ -1189,8 +1189,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        child.kill().expect("terminate WMI lifecycle fixture");
-        child.wait().expect("reap WMI lifecycle fixture");
+        child.wait().expect("await WMI lifecycle fixture");
 
         let stop_deadline = std::time::Instant::now() + Duration::from_secs(8);
         let mut saw_stop = false;

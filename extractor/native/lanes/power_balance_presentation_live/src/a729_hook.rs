@@ -6,15 +6,14 @@
 //! detour while production activation remains false. Pointer-bearing owner
 //! fields are consumed only by the guard and are never returned or serialized.
 
+use crate::a729_decision_grid::DecisionGridMaterialization;
 use crate::{
-    encode_payload, normalize_a729_controller_state, A729ControllerStateObservation, CarrierError,
-    normalize_engine_range_indicator_frame, ChangeCadence, DecisionAvailability, DecisionInput,
-    NormalizedControllerState, PowerBalanceInput, PowerBalancePresentationFrame, ResolvedTextRefs,
-    SelectedPresentStamp, TrendInput,
-    A729_CONTROLLER_EXACT20_AUTHORITY_BOUND,
+    encode_payload, normalize_a729_controller_state, normalize_engine_range_indicator_frame,
+    A729ControllerStateObservation, CarrierError, ChangeCadence, DecisionAvailability,
+    DecisionInput, NormalizedControllerState, PowerBalanceInput, PowerBalancePresentationFrame,
+    ResolvedTextRefs, SelectedPresentStamp, TrendInput, A729_CONTROLLER_EXACT20_AUTHORITY_BOUND,
     A729_CONTROLLER_EXACT20_MANIFEST_SHA256, A729_CONTROLLER_OBSERVER_ACTIVATED,
 };
-use crate::a729_decision_grid::DecisionGridMaterialization;
 use std::collections::BTreeSet;
 
 /// Independent authority receipt for the country-politics launcher and
@@ -41,6 +40,11 @@ pub const COUNTRY_POLITICS_VIEW_VTABLE_RVA: u32 = 0x029c_2a58;
 pub const COUNTRY_POLITICS_POWER_BALANCE_CONTROLLER_OFFSET: usize = 0x7a50;
 pub const COUNTRY_POLITICS_POWER_BALANCE_LAUNCHER_OFFSET: usize = 0x7ba0;
 pub const COUNTRY_POLITICS_REFRESH_RVA: u32 = 0x0157_0510;
+/// Exact `CCountryPoliticsView` vtable slot for
+/// `COUNTRY_POLITICS_REFRESH_RVA`. The non-suspending observer redirects this
+/// pointer word atomically and reads the owned power-balance controller only
+/// after the original refresh returns.
+pub const COUNTRY_POLITICS_REFRESH_VTABLE_SLOT_RVA: u32 = 0x029C_2B38;
 pub const COUNTRY_POLITICS_LAUNCHER_CLICK_RVA: u32 = 0x0157_0450;
 pub const CONTROLLER_OPEN_OFFSET: usize = 0x30;
 pub const CONTROLLER_GUI_ROOT_OFFSET: usize = 0x48;
@@ -64,6 +68,12 @@ pub const A729_SEMANTIC_LEAF_SHARD: &str = "shard-03";
 pub const A729_SEMANTIC_LEAF_MANIFEST_SHA256: [u8; 32] = [
     0x6d, 0x53, 0xa5, 0xde, 0xea, 0xb2, 0xdb, 0x5d, 0x6e, 0x28, 0xbc, 0x88, 0xc4, 0xc6, 0xc8, 0xe6,
     0x30, 0x11, 0xa6, 0xf2, 0x36, 0xce, 0xb8, 0xb7, 0xfd, 0xaa, 0xc1, 0x80, 0x92, 0x28, 0x65, 0x77,
+];
+/// Fresh exact-a729 source-closure export for the country-politics refresh
+/// owner and its power-balance controller call chain.
+pub const A729_NONSUSPENDING_SOURCE_MANIFEST_SHA256: [u8; 32] = [
+    0x75, 0xe5, 0xad, 0x66, 0x87, 0x79, 0xf9, 0xed, 0x64, 0xa4, 0xdd, 0x4b, 0x22, 0xbe, 0x71, 0xa5,
+    0xd4, 0x65, 0x1a, 0x1d, 0x61, 0xa3, 0xd1, 0xff, 0xe2, 0x83, 0x97, 0x9e, 0xc5, 0xd0, 0x95, 0x98,
 ];
 /// Instruction-aligned receipt bytes through `PUSH R13`.
 pub const POST_REFRESH_ENTRY_SENTINEL: [u8; 17] = [
@@ -324,9 +334,7 @@ pub fn validate_receipted_sample(
     if sample.entry_sentinel != POST_REFRESH_ENTRY_SENTINEL {
         return Err(HookAdmissionError::SentinelMismatch);
     }
-    if sample.current_thread_id == 0
-        || sample.current_thread_id != sample.owner_thread_id
-    {
+    if sample.current_thread_id == 0 || sample.current_thread_id != sample.owner_thread_id {
         return Err(HookAdmissionError::ThreadMismatch);
     }
     if sample.view_ptr == 0
@@ -420,11 +428,20 @@ pub fn materialize_receipted_semantics(
         || semantic.trending_side_definition_ptr == 0
         || semantic.left_side_definition_ptr == semantic.right_side_definition_ptr
         || semantic.balance_id_token_object_ptr
-            != semantic.balance_definition_ptr.checked_add(0x10).unwrap_or(0)
+            != semantic
+                .balance_definition_ptr
+                .checked_add(0x10)
+                .unwrap_or(0)
         || semantic.left_side_id_token_object_ptr
-            != semantic.left_side_definition_ptr.checked_add(0x10).unwrap_or(0)
+            != semantic
+                .left_side_definition_ptr
+                .checked_add(0x10)
+                .unwrap_or(0)
         || semantic.right_side_id_token_object_ptr
-            != semantic.right_side_definition_ptr.checked_add(0x10).unwrap_or(0)
+            != semantic
+                .right_side_definition_ptr
+                .checked_add(0x10)
+                .unwrap_or(0)
         || semantic.trending_side_id_token_object_ptr
             != semantic
                 .trending_side_definition_ptr
@@ -493,8 +510,7 @@ pub fn materialize_receipted_semantics(
     if envelope.status_flags != 0
         || envelope.frame_hour != envelope.selected_present.frame_hour
         || envelope.selected_present.qpc_frequency_hz != sample.qpc_frequency_hz
-        || semantic.materialization_qpc_ticks
-            > envelope.selected_present.selected_present_qpc_ticks
+        || semantic.materialization_qpc_ticks > envelope.selected_present.selected_present_qpc_ticks
         || envelope.completeness_record_identity.trim().is_empty()
     {
         return Err(HookAdmissionError::FrameJoinMismatch);
@@ -530,8 +546,7 @@ pub fn materialize_receipted_semantics(
 
     if semantic.finalized_decision_presenter_ptrs.len() != semantic.decision_grid.slots.len()
         || semantic.decisions.len() != semantic.decision_grid.slots.len()
-        || semantic.decision_grid.ordered_decision_ids.len()
-            != semantic.decision_grid.slots.len()
+        || semantic.decision_grid.ordered_decision_ids.len() != semantic.decision_grid.slots.len()
     {
         return Err(semantic_error(
             "A37 finalized decision grid/presenter/semantic counts differ",
@@ -566,10 +581,7 @@ pub fn materialize_receipted_semantics(
         }
         decisions.push(DecisionInput {
             decision_id: observed.decision_id.clone(),
-            source_record_id: format!(
-                "a729:{}:{}",
-                semantic.balance_id, slot.slot_id
-            ),
+            source_record_id: format!("a729:{}:{}", semantic.balance_id, slot.slot_id),
             availability: observed.availability.clone(),
             resolved_name_text_ref: validate_observed_text_ref(
                 &observed.resolved_name,
@@ -626,10 +638,7 @@ pub fn materialize_receipted_semantics(
         decisions,
         resolved_text_refs: ResolvedTextRefs {
             balance_name: validate_observed_text_ref(&semantic.balance_name, "balance name")?,
-            left_side_name: validate_observed_text_ref(
-                &semantic.left_side_name,
-                "left side name",
-            )?,
+            left_side_name: validate_observed_text_ref(&semantic.left_side_name, "left side name")?,
             right_side_name: validate_observed_text_ref(
                 &semantic.right_side_name,
                 "right side name",
@@ -717,8 +726,7 @@ pub fn validate_launcher_visibility_refresh(
     if sample.country_politics_active_raw == 0 {
         return Err(HookAdmissionError::LifecycleMismatch);
     }
-    let launcher_visible =
-        sample.launcher_visibility_flags & GUI_CONTAINER_VISIBLE_MASK != 0;
+    let launcher_visible = sample.launcher_visibility_flags & GUI_CONTAINER_VISIBLE_MASK != 0;
     let selected_balance_present = sample.selected_record_ptr != 0;
     let panel_open = sample.controller_open_raw != 0;
     let panel_gui_visible =
@@ -850,7 +858,7 @@ mod installed_owner {
     use super::*;
     use crate::{validate_frame, ExactPowerBalancePresentationSource};
     use core::ffi::c_void;
-    use minhook::{MH_STATUS, MinHook};
+    use minhook::{MinHook, MH_STATUS};
     use std::collections::BTreeMap;
     use std::mem;
     use std::ptr;
@@ -969,7 +977,9 @@ mod installed_owner {
 
     impl A729PowerBalanceHookSource {
         fn frame(&self, frame_hour: u64) -> Result<PowerBalancePresentationFrame, String> {
-            let state = state().lock().map_err(|_| "A37 hook state mutex poisoned")?;
+            let state = state()
+                .lock()
+                .map_err(|_| "A37 hook state mutex poisoned")?;
             state
                 .sealed_frames
                 .get(&frame_hour)
@@ -984,14 +994,12 @@ mod installed_owner {
 
     fn qpc() -> Option<u64> {
         let mut value = 0i64;
-        (unsafe { QueryPerformanceCounter(&mut value) } != 0 && value > 0)
-            .then_some(value as u64)
+        (unsafe { QueryPerformanceCounter(&mut value) } != 0 && value > 0).then_some(value as u64)
     }
 
     fn frequency() -> Option<u64> {
         let mut value = 0i64;
-        (unsafe { QueryPerformanceFrequency(&mut value) } != 0 && value > 0)
-            .then_some(value as u64)
+        (unsafe { QueryPerformanceFrequency(&mut value) } != 0 && value > 0).then_some(value as u64)
     }
 
     fn rpm(address: usize, length: usize) -> Option<Vec<u8>> {
@@ -1082,15 +1090,14 @@ mod installed_owner {
             let qpc_frequency_hz = frequency()?;
             let vtable = read_usize(view)?;
             let view_vtable_rva = u32::try_from(vtable.checked_sub(base)?).ok()?;
-            let controller_gui_root_ptr = read_usize(view.checked_add(CONTROLLER_GUI_ROOT_OFFSET)?)?;
+            let controller_gui_root_ptr =
+                read_usize(view.checked_add(CONTROLLER_GUI_ROOT_OFFSET)?)?;
             let selected_record_ptr = read_usize(view.checked_add(VIEW_SELECTED_RECORD_OFFSET)?)?;
-            let current_value_raw = read_i64(
-                selected_record_ptr.checked_add(RECORD_CURRENT_VALUE_OFFSET)?,
-            )?;
+            let current_value_raw =
+                read_i64(selected_record_ptr.checked_add(RECORD_CURRENT_VALUE_OFFSET)?)?;
             type GetChangeFn = unsafe extern "system" fn(usize) -> i64;
-            let get_change: GetChangeFn = unsafe {
-                mem::transmute(base.checked_add(GET_CHANGE_RVA as usize)?)
-            };
+            let get_change: GetChangeFn =
+                unsafe { mem::transmute(base.checked_add(GET_CHANGE_RVA as usize)?) };
             let change_raw = unsafe { get_change(selected_record_ptr) };
             Some(PostRefreshBoundaryReceipt {
                 sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -1142,11 +1149,10 @@ mod installed_owner {
                 post_refresh: MODULE_BASE.load(Ordering::Acquire) + POST_REFRESH_RVA as usize,
             });
         }
-        let evidence = std::env::var_os("BATTLE_PLAN_A37_EVIDENCE").or_else(|| std::env::var_os("HOI4_A37_EVIDENCE")).as_deref()
-            == Some(std::ffi::OsStr::new("1"));
+        let evidence =
+            std::env::var_os("BATTLE_PLAN_A37_EVIDENCE").or_else(|| std::env::var_os("HOI4_A37_EVIDENCE")).as_deref() == Some(std::ffi::OsStr::new("1"));
         if !evidence
-            && !(A729_CONTROLLER_OBSERVER_ACTIVATED
-                && A729_PANEL_VISIBILITY_OBSERVER_ACTIVATED)
+            && !(A729_CONTROLLER_OBSERVER_ACTIVATED && A729_PANEL_VISIBILITY_OBSERVER_ACTIVATED)
         {
             return Err("A37 hook install is disabled until the live fixture is accepted".into());
         }
@@ -1169,7 +1175,9 @@ mod installed_owner {
             return Err(format!("A37 hook enable failed: {status}"));
         }
         INSTALLED.store(true, Ordering::Release);
-        Ok(InstalledHookAddress { post_refresh: target })
+        Ok(InstalledHookAddress {
+            post_refresh: target,
+        })
     }
 
     /// Materialize and seal raw exact-epoch semantics against the latest hook
@@ -1189,9 +1197,9 @@ mod installed_owner {
         }
         let frame = materialize_receipted_semantics(sample, &semantic, &envelope)?;
         validate_frame(&frame).map_err(HookAdmissionError::Carrier)?;
-        let mut state = state()
-            .lock()
-            .map_err(|_| HookAdmissionError::Materialization("A37 hook state mutex poisoned".into()))?;
+        let mut state = state().lock().map_err(|_| {
+            HookAdmissionError::Materialization("A37 hook state mutex poisoned".into())
+        })?;
         let Some(boundary) = state.latest_boundary.as_ref() else {
             state.rejected_frames = state.rejected_frames.saturating_add(1);
             return Err(HookAdmissionError::FrameJoinMismatch);
@@ -1203,8 +1211,7 @@ mod installed_owner {
             || boundary.selected_range_ptr != sample.selected_range_ptr
             || boundary.controller_open_raw != sample.controller_open_raw
             || boundary.controller_gui_root_ptr != sample.controller_gui_root_ptr
-            || boundary.controller_gui_visibility_flags
-                != sample.controller_gui_visibility_flags
+            || boundary.controller_gui_visibility_flags != sample.controller_gui_visibility_flags
             || boundary.full_refresh_raw != sample.full_refresh_raw
             || boundary.range_refresh_raw != sample.range_refresh_raw
             || boundary.materialization_qpc_ticks != sample.materialization_qpc_ticks
@@ -1215,7 +1222,11 @@ mod installed_owner {
             state.rejected_frames = state.rejected_frames.saturating_add(1);
             return Err(HookAdmissionError::FrameJoinMismatch);
         }
-        if state.sealed_frames.insert(frame.frame_hour, frame.clone()).is_some() {
+        if state
+            .sealed_frames
+            .insert(frame.frame_hour, frame.clone())
+            .is_some()
+        {
             state.rejected_frames = state.rejected_frames.saturating_add(1);
             return Err(HookAdmissionError::FrameJoinMismatch);
         }
@@ -1248,9 +1259,7 @@ mod installed_owner {
         }
         let target = MODULE_BASE.load(Ordering::Acquire) + POST_REFRESH_RVA as usize;
         match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(())
-            | Err(MH_STATUS::MH_ERROR_DISABLED)
-            | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
             Err(status) => return Err(format!("A37 hook disable failed: {status}")),
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1274,9 +1283,8 @@ mod installed_owner {
 #[cfg(windows)]
 pub use installed_owner::{
     diagnostics, install_a729_power_balance_hook, latest_raw_controller_evidence,
-    seal_receipted_semantics,
-    uninstall_a729_power_balance_hook, A729PowerBalanceHookSource, HookDiagnostics,
-    InstalledHookAddress, PostRefreshBoundaryReceipt, RawControllerEvidence,
+    seal_receipted_semantics, uninstall_a729_power_balance_hook, A729PowerBalanceHookSource,
+    HookDiagnostics, InstalledHookAddress, PostRefreshBoundaryReceipt, RawControllerEvidence,
 };
 
 #[cfg(test)]
@@ -1364,13 +1372,19 @@ mod tests {
         assert!(admitted.panel_open);
         assert_eq!(admitted.controller_state.active_side_id, "right");
         assert_eq!(admitted.controller_state.trending_side_id, "right");
-        assert_eq!(admitted.controller_state.bar_state, crate::BarState::MovingLeft);
+        assert_eq!(
+            admitted.controller_state.bar_state,
+            crate::BarState::MovingLeft
+        );
         assert_eq!(admitted.controller_state.range_indicator_frame, 1);
     }
 
     #[test]
     fn live_admission_remains_inert() {
-        assert_eq!(admit_live_sample(&sample()), Err(HookAdmissionError::Inactive));
+        assert_eq!(
+            admit_live_sample(&sample()),
+            Err(HookAdmissionError::Inactive)
+        );
         assert_eq!(
             after_live_admission::<()>(&sample(), || {
                 panic!("inactive hook must not materialize")

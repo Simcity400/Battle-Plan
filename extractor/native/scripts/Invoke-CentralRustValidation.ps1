@@ -21,7 +21,12 @@ param(
     [ValidateSet("Iterative", "Reusable")]
     [string]$CacheMode = "Iterative",
 
-    [switch]$Timings
+    [switch]$Timings,
+
+    # A full Release without this path emits only fresh candidate artifacts for
+    # a real capture. Supplying the resulting production receipt on a second
+    # full Release is the only route to a portable package/production receipt.
+    [string]$ProductionCaptureReceiptPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -37,6 +42,28 @@ $portablePackageScript = Join-Path $PSScriptRoot "New-PortableProductPackage.ps1
 $portablePackageVerifier = Join-Path $PSScriptRoot "Test-PortableProductPackageReceipt.ps1"
 $portableStaticCrtTest = Join-Path $PSScriptRoot "Test-PortableProductStaticCrt.ps1"
 $portablePackageSelfTest = Join-Path $PSScriptRoot "Test-PortableProductPackageSelfTest.ps1"
+$productionInteractionClosureTest = Join-Path $PSScriptRoot "Test-ProductionInteractionClosure.ps1"
+$passiveCapturePolicyTest = Join-Path $PSScriptRoot "Test-PassiveCapturePolicy.ps1"
+$readOnlyGameStateWitness = Join-Path $PSScriptRoot "Read-Hoi4GameState.ps1"
+$passiveCaptureLifecycle = Join-Path $PSScriptRoot "PassiveCapture.Lifecycle.ps1"
+$interactionClosureHelper = Join-Path $PSScriptRoot "PortableProduct.InteractionClosure.ps1"
+$productionCapturePromotionHelper = Join-Path $PSScriptRoot "ProductionCapture.Promotion.ps1"
+. $interactionClosureHelper
+. $productionCapturePromotionHelper
+$productionSourceCapabilityPaths = [ordered]@{
+    recorder_host_cargo_sha256 = Join-Path $repoRoot 'extractor\native\recorder_host\Cargo.toml'
+    recorder_host_main_sha256 = Join-Path $repoRoot 'extractor\native\recorder_host\src\main.rs'
+    recorder_host_early_render_launch_sha256 = Join-Path $repoRoot 'extractor\native\recorder_host\src\early_render_launch.rs'
+    recorder_host_auto_attach_sha256 = Join-Path $repoRoot 'extractor\native\recorder_host\src\auto_attach.rs'
+    extractor_workspace_cargo_sha256 = Join-Path $repoRoot 'extractor\native\Cargo.toml'
+    collector_cargo_sha256 = Join-Path $repoRoot 'extractor\native\collector\Cargo.toml'
+    character_lane_cargo_sha256 = Join-Path $repoRoot 'extractor\native\lanes\character_presentation_live\Cargo.toml'
+    focus_lane_cargo_sha256 = Join-Path $repoRoot 'extractor\native\lanes\focus_research_decisions_depth_live\Cargo.toml'
+    collector_lib_sha256 = Join-Path $repoRoot 'extractor\native\collector\src\lib.rs'
+    passive_ready_contract_sha256 = Join-Path $repoRoot 'extractor\native\compact_contract\src\passive_ready.rs'
+    interaction_closure_helper_sha256 = $interactionClosureHelper
+    production_capture_promotion_helper_sha256 = $productionCapturePromotionHelper
+}
 $portablePackageReceiptPath = Join-Path $targetDir "release\hoi4-portable-package-receipt.json"
 $worldFoldCitationVerifier = Join-Path $PSScriptRoot "verify_world_fold_citations.py"
 $worldFoldCitationTests = Join-Path $PSScriptRoot "test_verify_world_fold_citations.py"
@@ -71,6 +98,62 @@ $ownsMutex = $false
 $releaseInputDigestBefore = $null
 $releaseBuildEnvironmentBefore = $null
 $releaseArtifactFreshness = $null
+
+function Get-CurrentInteractionPolicyInputs {
+    $inputs = [ordered]@{
+        read_only_game_state_witness_sha256 = (Get-FileHash -LiteralPath $readOnlyGameStateWitness -Algorithm SHA256).Hash.ToLowerInvariant()
+        passive_capture_policy_test_sha256 = (Get-FileHash -LiteralPath $passiveCapturePolicyTest -Algorithm SHA256).Hash.ToLowerInvariant()
+        passive_capture_lifecycle_sha256 = (Get-FileHash -LiteralPath $passiveCaptureLifecycle -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    foreach ($entry in $productionSourceCapabilityPaths.GetEnumerator()) {
+        $inputs[$entry.Key] = (Get-FileHash -LiteralPath $entry.Value -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $sourceTree = Get-ProductionInteractionSourceTreeAuthority -RepoRoot $repoRoot
+    $inputs['production_interaction_source_tree_file_count'] = [int]$sourceTree.file_count
+    $inputs['production_interaction_source_tree_sha256'] = [string]$sourceTree.sha256
+    return $inputs
+}
+
+function Get-CurrentProductionCaptureEvidence {
+    if ([string]::IsNullOrWhiteSpace($ProductionCaptureReceiptPath)) {
+        throw 'production capture evidence was not supplied'
+    }
+    return Get-ProductionCapturePromotionEvidence `
+        -RepoRoot $repoRoot `
+        -CaptureReceiptPath $ProductionCaptureReceiptPath `
+        -CurrentArtifactAttestationPath $artifactAttestationPath
+}
+
+function Get-CurrentPinnedHookSourceAuthority {
+    $path = [string]$productionSourceCapabilityPaths.passive_ready_contract_sha256
+    $source = Get-Content -LiteralPath $path -Raw
+    $rosterDeclaration =
+        'pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &['
+    $countDeclaration =
+        'pub const PINNED_PRODUCTION_HOOK_COUNT_V1: u16 = PINNED_PRODUCTION_HOOK_SPECS_V1.len() as u16;'
+    $rosterStart = $source.IndexOf($rosterDeclaration, [StringComparison]::Ordinal)
+    $rosterBodyStart = $rosterStart + $rosterDeclaration.Length
+    $rosterEnd = if ($rosterStart -ge 0) {
+        $source.IndexOf('];', $rosterBodyStart, [StringComparison]::Ordinal)
+    }
+    else { -1 }
+    if ($rosterStart -lt 0 -or -not $source.Contains($countDeclaration) -or
+        $rosterEnd -le $rosterBodyStart) {
+        throw 'passive-ready source lacks a bounded slice roster and derived count declaration'
+    }
+    $rosterBody = $source.Substring($rosterBodyStart, $rosterEnd - $rosterBodyStart)
+    $count = [regex]::Matches(
+        $rosterBody,
+        '(?m)^\s*pinned_(?:import|rva)!\('
+    ).Count
+    if ($count -le 0 -or $count -gt [uint16]::MaxValue) {
+        throw 'passive-ready source has an invalid mechanically counted pinned hook roster'
+    }
+    return [ordered]@{
+        count = [int][uint16]$count
+        source_sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
 
 function Invoke-Checked {
     param(
@@ -258,6 +341,10 @@ try {
 
     $extractorReleaseRequested = $Mode -eq "Release" -and $Workspace -in @("All", "Extractor")
     $fullExtractorRelease = $Mode -eq "Release" -and $Workspace -eq "All" -and $Package.Count -eq 0 -and [string]::IsNullOrWhiteSpace($FilterExpression)
+    if (-not [string]::IsNullOrWhiteSpace($ProductionCaptureReceiptPath) -and
+        -not $fullExtractorRelease) {
+        throw 'production capture evidence is accepted only by an unfiltered All-workspace Release'
+    }
     if ($extractorReleaseRequested) {
         # Remove authority before any toolchain or release preflight can fail.
         # A ZIP without both canonical receipts is deliberately non-promotable.
@@ -317,6 +404,28 @@ try {
     }
 
     if ($Mode -in @('Final', 'Release')) {
+        $interactionClosureOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $productionInteractionClosureTest)
+        if ($LASTEXITCODE -ne 0) {
+            throw "production interaction-closure source tests exited with code $LASTEXITCODE"
+        }
+        $interactionClosureResult = (($interactionClosureOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        if ([string]$interactionClosureResult.schema -cne 'battle-plan.production_interaction_closure_test.v1' -or
+            [string]$interactionClosureResult.status -cne 'PASS' -or
+            [int]$interactionClosureResult.cases -ne 28 -or
+            [string]$interactionClosureResult.policy -cne 'passive_injected_observer') {
+            throw "production interaction-closure source tests returned no authority"
+        }
+
+        $passivePolicyOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $passiveCapturePolicyTest)
+        if ($LASTEXITCODE -ne 0) {
+            throw "passive capture-policy source tests exited with code $LASTEXITCODE"
+        }
+        $passivePolicyResult = (($passivePolicyOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        if ([string]$passivePolicyResult.Schema -cne 'hoi4-passive-capture-policy-test-v1' -or
+            [string]$passivePolicyResult.Status -cne 'pass') {
+            throw "passive capture-policy source tests returned no authority"
+        }
+
         $staticCrtTestOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portableStaticCrtTest)
         if ($LASTEXITCODE -ne 0) {
             throw "portable-product static-CRT admission tests exited with code $LASTEXITCODE"
@@ -335,7 +444,7 @@ try {
         $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
             [string]$packageSelfTestResult.status -cne 'PASS' -or
-            [int]$packageSelfTestResult.cases -ne 11) {
+            [int]$packageSelfTestResult.cases -ne 61) {
             throw "portable-product package builder/verifier self-tests returned no authority"
         }
     }
@@ -395,6 +504,18 @@ try {
     $timingSelection = @()
     if ($Timings) {
         $timingSelection += "--timings"
+    }
+    $featureSelection = @()
+    $evidenceClientDrivingRequested = $Bin -ccontains 'collector_record_evidence'
+    if ($evidenceClientDrivingRequested) {
+        if ($Mode -cne 'Evidence' -or $Workspace -cne 'Extractor' -or
+            $Package.Count -ne 1 -or $Package[0] -cne 'recorder_host') {
+            throw "collector_record_evidence is isolated to explicit Evidence -Workspace Extractor -Package recorder_host"
+        }
+        $featureSelection = @('--features', 'recorder_host/evidence-client-driving')
+    }
+    elseif ($Mode -cne 'Evidence' -and ($Bin | Where-Object { $_ -like '*evidence*' }).Count -gt 0) {
+        throw "evidence binaries are accepted only by the explicit Evidence tier"
     }
 
     $workspaceRoots = switch ($Workspace) {
@@ -482,7 +603,7 @@ try {
                     $evidenceProfileSelection = if ($workspaceName -eq "Replay") { @("--profile", "evidence") } else { @() }
                     $arguments = @("nextest", "run", "--no-fail-fast", "--run-ignored", "all") +
                         $nextestConfigSelection + $evidenceProfileSelection +
-                        $timingSelection + $targetSelection + $selection
+                        $timingSelection + $featureSelection + $targetSelection + $selection
                     if ($FilterExpression) {
                         $arguments += @("-E", $FilterExpression)
                     }
@@ -514,6 +635,27 @@ try {
                     }
                     Invoke-Checked -Program "cargo" -Arguments $arguments
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "release-test"
+                    if ($workspaceName -ceq 'Extractor') {
+                        # Rebuild both shipped injection components after every
+                        # all-target Release build/test. The canonical recorder
+                        # has an explicit empty feature set; the collector cdylib
+                        # is rebuilt last with both default and unshipped
+                        # evidence features disabled. Target-cache ordering can
+                        # therefore never select an all-target/evidence variant
+                        # as a package input.
+                        Invoke-Checked -Program "cargo" -Arguments @(
+                            "build", "--locked", "--release",
+                            "--package", "recorder_host",
+                            "--bin", "collector_record",
+                            "--no-default-features"
+                        )
+                        Invoke-Checked -Program "cargo" -Arguments @(
+                            "build", "--locked", "--release",
+                            "--package", "collector",
+                            "--lib",
+                            "--no-default-features"
+                        )
+                    }
                 }
             }
         }
@@ -595,6 +737,14 @@ try {
                 -ExpectedBuildEnvironment $releaseBuildEnvironmentAfter `
                 -CurrentSourceDigest $releaseInputDigestAfter
 
+            if ([string]::IsNullOrWhiteSpace($ProductionCaptureReceiptPath)) {
+                Write-Host "Candidate production artifacts: $artifactAttestationPath"
+                Write-Host "No portable package was emitted: rerun this exact full Release with -ProductionCaptureReceiptPath after a production capture passes."
+                return
+            }
+
+            $productionCaptureEvidence = Get-CurrentProductionCaptureEvidence
+
             $packageBuilderHash = (Get-FileHash -LiteralPath $portablePackageScript -Algorithm SHA256).Hash.ToLowerInvariant()
             $packageStdout = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
                 -File $portablePackageScript `
@@ -602,11 +752,15 @@ try {
                 -ReplayExe ([string]$attested.artifacts['replay_app']) `
                 -CollectorDll ([string]$attested.artifacts['collector_dll']) `
                 -OutputZip $portablePackagePath `
-                -Version $recorderVersion)
+                -Version $recorderVersion `
+                -ProductionCaptureReceiptPath $ProductionCaptureReceiptPath `
+                -ProductionArtifactAttestationPath $artifactAttestationPath)
             if ($LASTEXITCODE -ne 0) {
                 throw "portable product package builder exited with code $LASTEXITCODE"
             }
             $packageResult = (($packageStdout -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+            $currentInteractionPolicyInputs = Get-CurrentInteractionPolicyInputs
+            $currentPinnedHookAuthority = Get-CurrentPinnedHookSourceAuthority
             $actualPackagePath = [System.IO.Path]::GetFullPath([string]$packageResult.path)
             $expectedPackagePath = [System.IO.Path]::GetFullPath($portablePackagePath)
             if ([string]$packageResult.schema -cne 'hoi4-portable-package.v1' -or
@@ -616,6 +770,73 @@ try {
                 [string]$packageResult.input_sha256.recorder_host -cne [string]$attested.artifact_sha256['recorder_host'] -or
                 [string]$packageResult.input_sha256.replay_app -cne [string]$attested.artifact_sha256['replay_app'] -or
                 [string]$packageResult.input_sha256.collector_dll -cne [string]$attested.artifact_sha256['collector_dll'] -or
+                $packageResult.admissible_for_production -isnot [bool] -or
+                -not $packageResult.admissible_for_production -or
+                (($packageResult.production_capture_evidence | ConvertTo-Json -Depth 12 -Compress) -cne
+                    ($productionCaptureEvidence | ConvertTo-Json -Depth 12 -Compress)) -or
+                [string]$packageResult.interaction_closure.policy -cne 'passive_injected_observer' -or
+                $packageResult.interaction_closure.zip_entry_bytes_reverified -isnot [bool] -or
+                -not $packageResult.interaction_closure.zip_entry_bytes_reverified -or
+                ($packageResult.interaction_closure.policy_inputs | ConvertTo-Json -Compress) -cne
+                    ($currentInteractionPolicyInputs | ConvertTo-Json -Compress) -or
+                [string]$packageResult.interaction_closure.source_capability.schema -cne
+                    'hoi4.production-source-capability-closure.v1' -or
+                -not $packageResult.interaction_closure.source_capability.canonical_observer_feature_isolated -or
+                -not $packageResult.interaction_closure.source_capability.target_lifecycle_actuators_evidence_only -or
+                -not $packageResult.interaction_closure.source_capability.production_auto_attach_target_control_absent -or
+                -not $packageResult.interaction_closure.source_capability.collector_fixture_hooks_default_off -or
+                -not $packageResult.interaction_closure.source_capability.collector_cdylib_explicit_empty_features -or
+                -not $packageResult.interaction_closure.source_capability.structural_dependency_feature_parse -or
+                -not $packageResult.interaction_closure.source_capability.production_source_tree_closed -or
+                -not $packageResult.interaction_closure.source_capability.canonical_hook_name_families_closed -or
+                [int]$packageResult.interaction_closure.source_capability.exact_pinned_hook_count -ne
+                    [int]$currentPinnedHookAuthority.count -or
+                [string]$packageResult.interaction_closure.source_capability.pinned_hook_contract_source_sha256 -cne
+                    [string]$currentPinnedHookAuthority.source_sha256 -or
+                [string]$packageResult.interaction_closure.source_capability.exact_target_executable_sha256 -cne
+                    '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad' -or
+                [string]$packageResult.interaction_closure.recorder_host.schema -cne 'hoi4.interaction-closure.v1' -or
+                [string]$packageResult.interaction_closure.replay_app.schema -cne 'hoi4.interaction-closure.v1' -or
+                [string]$packageResult.interaction_closure.collector_dll.schema -cne 'hoi4.interaction-closure.v1' -or
+                [int]$packageResult.interaction_closure.recorder_host.exact_pinned_hook_count -ne
+                    [int]$currentPinnedHookAuthority.count -or
+                [int]$packageResult.interaction_closure.collector_dll.exact_pinned_hook_count -ne
+                    [int]$currentPinnedHookAuthority.count -or
+                [int]$packageResult.interaction_closure.replay_app.exact_pinned_hook_count -ne
+                    [int]$currentPinnedHookAuthority.count -or
+                [string]$packageResult.interaction_closure.recorder_host.exact_pinned_hook_contract -cne
+                    'a729.passive_ready.pinned_production_hook_specs.v1' -or
+                [string]$packageResult.interaction_closure.collector_dll.exact_pinned_hook_contract -cne
+                    'a729.passive_ready.pinned_production_hook_specs.v1' -or
+                [string]$packageResult.interaction_closure.recorder_host.pinned_hook_contract_source_sha256 -cne
+                    [string]$currentPinnedHookAuthority.source_sha256 -or
+                [string]$packageResult.interaction_closure.collector_dll.pinned_hook_contract_source_sha256 -cne
+                    [string]$currentPinnedHookAuthority.source_sha256 -or
+                (@($packageResult.interaction_closure.recorder_host.permitted_injection_capabilities) -join '|') -cne
+                    'OpenProcess|VirtualAllocEx|VirtualFreeEx|WriteProcessMemory|CreateRemoteThread|LoadLibraryW|FreeLibrary' -or
+                (@($packageResult.interaction_closure.recorder_host.permitted_self_ui_capabilities) -join '|') -cne
+                    'SendMessageW|ShellExecuteW|EnableWindow|SetWindowTextW|ShowWindow|DestroyWindow' -or
+                (@($packageResult.interaction_closure.replay_app.permitted_self_ui_capabilities) -join '|') -cne
+                    'SetWindowTextW|DestroyWindow' -or
+                @($packageResult.interaction_closure.collector_dll.permitted_self_ui_capabilities).Count -ne 0 -or
+                (@($packageResult.interaction_closure.replay_app.permitted_self_worker_capabilities) -join '|') -cne
+                    'CreateProcessW|TerminateProcess|CreateJobObjectW|AssignProcessToJobObject|SetInformationJobObject' -or
+                @($packageResult.interaction_closure.recorder_host.permitted_self_worker_capabilities).Count -ne 0 -or
+                @($packageResult.interaction_closure.collector_dll.permitted_self_worker_capabilities).Count -ne 0 -or
+                @($packageResult.interaction_closure.replay_app.permitted_injection_capabilities).Count -ne 0 -or
+                @($packageResult.interaction_closure.collector_dll.permitted_injection_capabilities).Count -ne 0 -or
+                -not $packageResult.interaction_closure.recorder_host.forbidden_symbols_absent -or
+                -not $packageResult.interaction_closure.replay_app.forbidden_symbols_absent -or
+                -not $packageResult.interaction_closure.collector_dll.forbidden_symbols_absent -or
+                $packageResult.interaction_closure.recorder_host.semantic_engine_state_writes -or
+                $packageResult.interaction_closure.replay_app.semantic_engine_state_writes -or
+                $packageResult.interaction_closure.collector_dll.semantic_engine_state_writes -or
+                $packageResult.interaction_closure.recorder_host.game_process_lifecycle_control -or
+                $packageResult.interaction_closure.replay_app.game_process_lifecycle_control -or
+                $packageResult.interaction_closure.collector_dll.game_process_lifecycle_control -or
+                $packageResult.interaction_closure.recorder_host.game_ui_control -or
+                $packageResult.interaction_closure.replay_app.game_ui_control -or
+                $packageResult.interaction_closure.collector_dll.game_ui_control -or
                 $packageResult.static_vcruntime_admission -isnot [bool] -or
                 -not $packageResult.static_vcruntime_admission -or
                 [int]$packageResult.executable_count -ne 2 -or
@@ -648,6 +869,38 @@ try {
                     mode = 'Release'
                     requested_workspace = 'All'
                     release_runtime_linkage = $releaseRuntimeLinkage
+                    production_feature_closure = [ordered]@{
+                        schema = 'battle-plan.production_feature_closure.v1'
+                        rebuild_order = @('recorder_host', 'collector_dll')
+                        recorder_host = [ordered]@{
+                            package = 'recorder_host'
+                            target = 'collector_record'
+                            default_features = $false
+                            enabled_features = @()
+                            artifact_sha256 = [string]$attested.artifact_sha256['recorder_host']
+                        }
+                        collector_dll = [ordered]@{
+                            package = 'collector'
+                            target = 'lib'
+                            crate_types = @('cdylib', 'rlib')
+                            default_features = $false
+                            enabled_features = @()
+                            all_non_default_features_disabled = $true
+                            forbidden_features = @(
+                                'test-support',
+                                'unshipped-a25-runtime-text-evidence',
+                                'unshipped-a39-character-presentation-evidence',
+                                'unshipped-a31-focus-presentation-evidence'
+                            )
+                            built_last = $true
+                            collector_cargo_sha256 =
+                                [string]$packageResult.interaction_closure.policy_inputs.collector_cargo_sha256
+                            pinned_hook_count = [int]$currentPinnedHookAuthority.count
+                            pinned_hook_contract_source_sha256 =
+                                [string]$currentPinnedHookAuthority.source_sha256
+                            artifact_sha256 = [string]$attested.artifact_sha256['collector_dll']
+                        }
+                    }
                 }
                 artifact_attestation = [ordered]@{
                     path = [string]$attested.receipt_path
@@ -675,7 +928,12 @@ try {
                     [System.IO.FileShare]::None
                 )
                 try { $packageReceiptStream.Flush($true) } finally { $packageReceiptStream.Dispose() }
-                if ((Get-FileHash -LiteralPath $expectedPackagePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$packageResult.sha256 -or
+                $preVerificationSourceDigest = Get-ProductionRustInputDigest -RepoRoot $repoRoot
+                if ([string]$preVerificationSourceDigest.sha256 -cne [string]$releaseInputDigestAfter.sha256 -or
+                    [int]$preVerificationSourceDigest.file_count -ne [int]$releaseInputDigestAfter.file_count -or
+                    ((Get-CurrentInteractionPolicyInputs) | ConvertTo-Json -Compress) -cne
+                        ($packageResult.interaction_closure.policy_inputs | ConvertTo-Json -Compress) -or
+                    (Get-FileHash -LiteralPath $expectedPackagePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$packageResult.sha256 -or
                     (Get-FileHash -LiteralPath $artifactAttestationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$attested.receipt_sha256 -or
                     (Get-FileHash -LiteralPath $portablePackageScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne $packageBuilderHash) {
                     throw "portable package promotion inputs changed before receipt publication"
@@ -695,15 +953,35 @@ try {
                     $verificationResult.canonical_receipt -isnot [bool] -or $verificationResult.canonical_receipt -or
                     $verificationResult.static_vcruntime_admission -isnot [bool] -or
                     -not $verificationResult.static_vcruntime_admission -or
+                    [string]$verificationResult.interaction_closure.policy -cne 'passive_injected_observer' -or
+                    $verificationResult.interaction_closure.zip_entry_bytes_reverified -isnot [bool] -or
+                    -not $verificationResult.interaction_closure.zip_entry_bytes_reverified -or
+                    ($verificationResult.interaction_closure.policy_inputs | ConvertTo-Json -Compress) -cne
+                        ((Get-CurrentInteractionPolicyInputs) | ConvertTo-Json -Compress) -or
+                    ($verificationResult.interaction_closure.source_capability | ConvertTo-Json -Compress) -cne
+                        ($packageResult.interaction_closure.source_capability | ConvertTo-Json -Compress) -or
+                    -not $verificationResult.interaction_closure.recorder_host.forbidden_symbols_absent -or
+                    -not $verificationResult.interaction_closure.replay_app.forbidden_symbols_absent -or
+                    -not $verificationResult.interaction_closure.collector_dll.forbidden_symbols_absent -or
                     [string]$verificationResult.receipt_sha256 -cne $candidateReceiptHash -or
                     [string]$verificationResult.package_sha256 -cne [string]$packageResult.sha256 -or
+                    (($verificationResult.production_capture_evidence | ConvertTo-Json -Depth 12 -Compress) -cne
+                        ($productionCaptureEvidence | ConvertTo-Json -Depth 12 -Compress)) -or
                     [string]$verificationResult.build_environment_sha256 -cne [string]$releaseBuildEnvironmentAfter.sha256) {
                     throw "portable package receipt verifier returned no promotion authority"
                 }
-                if ((Get-FileHash -LiteralPath $packageReceiptCandidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidateReceiptHash -or
+                $postVerificationSourceDigest = Get-ProductionRustInputDigest -RepoRoot $repoRoot
+                $postVerificationCaptureEvidence = Get-CurrentProductionCaptureEvidence
+                if ([string]$postVerificationSourceDigest.sha256 -cne [string]$releaseInputDigestAfter.sha256 -or
+                    [int]$postVerificationSourceDigest.file_count -ne [int]$releaseInputDigestAfter.file_count -or
+                    ((Get-CurrentInteractionPolicyInputs) | ConvertTo-Json -Compress) -cne
+                        ($packageResult.interaction_closure.policy_inputs | ConvertTo-Json -Compress) -or
+                    (Get-FileHash -LiteralPath $packageReceiptCandidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidateReceiptHash -or
                     (Get-FileHash -LiteralPath $expectedPackagePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$packageResult.sha256 -or
                     (Get-FileHash -LiteralPath $artifactAttestationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$attested.receipt_sha256 -or
-                    (Get-FileHash -LiteralPath $portablePackageScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne $packageBuilderHash) {
+                    (Get-FileHash -LiteralPath $portablePackageScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne $packageBuilderHash -or
+                    (($postVerificationCaptureEvidence | ConvertTo-Json -Depth 12 -Compress) -cne
+                        ($productionCaptureEvidence | ConvertTo-Json -Depth 12 -Compress))) {
                     throw "portable package promotion inputs changed after independent receipt verification"
                 }
                 Write-Host "Production artifact attestation: $artifactAttestationPath"
@@ -716,6 +994,65 @@ try {
                     $packageReceiptCandidate,
                     $portablePackageReceiptPath
                 )
+
+                # Publication is not success authority by itself. Re-open the
+                # canonical receipt, package, and attestation through the
+                # independent verifier, then repeat every mutable source/hash
+                # check. Any mismatch flows to the outer fail-closed cleanup,
+                # which removes all three published promotion artifacts.
+                $publishedReceiptHash =
+                    (Get-FileHash -LiteralPath $portablePackageReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($publishedReceiptHash -cne $candidateReceiptHash) {
+                    throw 'published portable package receipt differs from the verified candidate'
+                }
+                $canonicalVerificationStdout = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File $portablePackageVerifier `
+                    -RepoRoot $repoRoot `
+                    -ReceiptPath $portablePackageReceiptPath)
+                if ($LASTEXITCODE -ne 0) {
+                    throw "canonical portable package receipt verifier exited with code $LASTEXITCODE"
+                }
+                $canonicalVerification =
+                    (($canonicalVerificationStdout -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+                if ([string]$canonicalVerification.schema -cne
+                        'battle-plan.central_portable_package_verification.v1' -or
+                    [string]$canonicalVerification.status -cne
+                        'PASS_CENTRAL_RELEASE_PORTABLE_PACKAGE' -or
+                    $canonicalVerification.canonical_receipt -isnot [bool] -or
+                    -not $canonicalVerification.canonical_receipt -or
+                    [string]$canonicalVerification.receipt_sha256 -cne $publishedReceiptHash -or
+                    [string]$canonicalVerification.package_sha256 -cne [string]$packageResult.sha256 -or
+                    (($canonicalVerification.production_capture_evidence | ConvertTo-Json -Depth 12 -Compress) -cne
+                        ($productionCaptureEvidence | ConvertTo-Json -Depth 12 -Compress)) -or
+                    [string]$canonicalVerification.build_environment_sha256 -cne
+                        [string]$releaseBuildEnvironmentAfter.sha256 -or
+                    [string]$canonicalVerification.interaction_closure.policy -cne
+                        'passive_injected_observer' -or
+                    -not $canonicalVerification.interaction_closure.zip_entry_bytes_reverified -or
+                    ($canonicalVerification.interaction_closure.source_capability | ConvertTo-Json -Compress) -cne
+                        ($packageResult.interaction_closure.source_capability | ConvertTo-Json -Compress)) {
+                    throw 'published portable package receipt has no canonical verification authority'
+                }
+                $finalPublishedSourceDigest = Get-ProductionRustInputDigest -RepoRoot $repoRoot
+                $finalPublishedCaptureEvidence = Get-CurrentProductionCaptureEvidence
+                if ([string]$finalPublishedSourceDigest.sha256 -cne
+                        [string]$releaseInputDigestAfter.sha256 -or
+                    [int]$finalPublishedSourceDigest.file_count -ne
+                        [int]$releaseInputDigestAfter.file_count -or
+                    ((Get-CurrentInteractionPolicyInputs) | ConvertTo-Json -Compress) -cne
+                        ($packageResult.interaction_closure.policy_inputs | ConvertTo-Json -Compress) -or
+                    (Get-FileHash -LiteralPath $portablePackageReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                        $publishedReceiptHash -or
+                    (Get-FileHash -LiteralPath $expectedPackagePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                        [string]$packageResult.sha256 -or
+                    (Get-FileHash -LiteralPath $artifactAttestationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                        [string]$attested.receipt_sha256 -or
+                    (Get-FileHash -LiteralPath $portablePackageScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                        $packageBuilderHash -or
+                    (($finalPublishedCaptureEvidence | ConvertTo-Json -Depth 12 -Compress) -cne
+                        ($productionCaptureEvidence | ConvertTo-Json -Depth 12 -Compress))) {
+                    throw 'published portable package promotion inputs changed during canonical re-verification'
+                }
             }
             catch {
                 $candidateFailure = $_

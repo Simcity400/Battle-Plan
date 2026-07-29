@@ -3,6 +3,8 @@
 pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
 pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+/// Ordinary control record reporting one acquisition outcome with no data.
+pub const COMPACT_RECORD_TYPE_DOMAIN_GAP: u16 = 5;
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -10,8 +12,35 @@ pub const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = 1 << 30;
 
 pub const COMPACT_DOMAIN_PERF_BASE_LEN: usize = 40;
 pub const COMPACT_FRAME_END_PAYLOAD_LEN: usize = 32;
+pub const COMPACT_DOMAIN_GAP_PAYLOAD_LEN: usize = 72;
+pub const COMPACT_DOMAIN_GAP_MAGIC: &[u8; 4] = b"H4DG";
+pub const COMPACT_DOMAIN_GAP_VERSION: u16 = 1;
+pub const DOMAIN_GAP_REASON_TORN: u16 = 1;
+pub const DOMAIN_GAP_REASON_OVERRUN: u16 = 2;
+pub const DOMAIN_GAP_REASON_BACKPRESSURE: u16 = 3;
+pub const DOMAIN_GAP_REASON_CLOCK_UNREADABLE: u16 = 4;
+pub const DOMAIN_GAP_REASON_WORKER_PANIC: u16 = 5;
+pub const DOMAIN_GAP_PART_STATE: u16 = 0;
+pub const DOMAIN_GAP_PART_EVENT: u16 = 1;
+pub const DOMAIN_GAP_PART_BOTH: u16 = 2;
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
+
+/// Whether one ordinary record is the terminal outcome for a scheduled domain.
+///
+/// Exactly one PERF or DOMAIN_GAP exhausts each scheduled domain. DATA records
+/// are subordinate payloads and never occupy a second outcome slot.
+pub const fn compact_record_counts_toward_terminal_outcome(record_type: u16) -> bool {
+    matches!(
+        record_type,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF | COMPACT_RECORD_TYPE_DOMAIN_GAP
+    )
+}
+
+/// Whether one ordinary record occupies the exact per-domain PERF cardinality.
+pub const fn compact_record_counts_toward_perf_cardinality(record_type: u16) -> bool {
+    record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
+}
 
 /// Canonical record-header flag mask for one record envelope.
 pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u32 {
@@ -19,9 +48,7 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     if record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF {
         allowed |= COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER;
     }
-    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
-        && matches!(domain_id, 45 | 67)
-    {
+    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA && matches!(domain_id, 45 | 67) {
         allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
     }
     allowed
@@ -71,8 +98,170 @@ pub fn validate_compact_record_semantics(
             Ok(())
         }
         COMPACT_RECORD_TYPE_DOMAIN_DATA => Ok(()),
+        COMPACT_RECORD_TYPE_DOMAIN_GAP => {
+            if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "DOMAIN_GAP envelope affected domain {domain_id} is invalid"
+                ));
+            }
+            validate_domain_gap_payload(payload)
+        }
         other => Err(format!("unknown compact record type {other}")),
     }
+}
+
+/// Validate the dependency-free, authenticated H4DG payload grammar.
+///
+/// This proves the complete payload layout and witness semantics. Authentication
+/// belongs to the enclosing retained H4CR sequence/campaign/session digest,
+/// which also binds the affected domain carried by the H4CR header.
+pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
+    if payload.len() != COMPACT_DOMAIN_GAP_PAYLOAD_LEN {
+        return Err(format!(
+            "DOMAIN_GAP payload length {} is not {COMPACT_DOMAIN_GAP_PAYLOAD_LEN}",
+            payload.len()
+        ));
+    }
+    if &payload[..4] != COMPACT_DOMAIN_GAP_MAGIC {
+        return Err("DOMAIN_GAP payload magic is invalid".to_string());
+    }
+    let version = u16::from_le_bytes([payload[4], payload[5]]);
+    if version != COMPACT_DOMAIN_GAP_VERSION {
+        return Err(format!(
+            "DOMAIN_GAP payload version {version} is not {COMPACT_DOMAIN_GAP_VERSION}"
+        ));
+    }
+    let declared_len = usize::from(u16::from_le_bytes([payload[6], payload[7]]));
+    if declared_len != COMPACT_DOMAIN_GAP_PAYLOAD_LEN {
+        return Err(format!(
+            "DOMAIN_GAP declared length {declared_len} is not {COMPACT_DOMAIN_GAP_PAYLOAD_LEN}"
+        ));
+    }
+    let reason = u16::from_le_bytes([payload[8], payload[9]]);
+    if !matches!(
+        reason,
+        DOMAIN_GAP_REASON_TORN
+            | DOMAIN_GAP_REASON_OVERRUN
+            | DOMAIN_GAP_REASON_BACKPRESSURE
+            | DOMAIN_GAP_REASON_CLOCK_UNREADABLE
+            | DOMAIN_GAP_REASON_WORKER_PANIC
+    ) {
+        return Err(format!("DOMAIN_GAP reason {reason} is unknown"));
+    }
+    let part = u16::from_le_bytes([payload[10], payload[11]]);
+    if !matches!(
+        part,
+        DOMAIN_GAP_PART_STATE | DOMAIN_GAP_PART_EVENT | DOMAIN_GAP_PART_BOTH
+    ) {
+        return Err(format!("DOMAIN_GAP part {part} is unknown"));
+    }
+    if u32::from_le_bytes(payload[12..16].try_into().expect("fixed reserved slice")) != 0
+        || u32::from_le_bytes(payload[28..32].try_into().expect("fixed reserved slice")) != 0
+    {
+        return Err("DOMAIN_GAP reserved field is nonzero".to_string());
+    }
+    let target_hour = i32::from_le_bytes(payload[16..20].try_into().expect("fixed target slice"));
+    let range_start =
+        i32::from_le_bytes(payload[20..24].try_into().expect("fixed range-start slice"));
+    let range_end = i32::from_le_bytes(payload[24..28].try_into().expect("fixed range-end slice"));
+    for (name, hour) in [
+        ("target", target_hour),
+        ("range_start", range_start),
+        ("range_end", range_end),
+    ] {
+        if crate::calendar::hour_index_from_raw(hour).is_none() {
+            return Err(format!("DOMAIN_GAP {name} hour {hour} is invalid"));
+        }
+    }
+    if range_start > range_end || target_hour < range_start || target_hour > range_end {
+        return Err(format!(
+            "DOMAIN_GAP target/range witness {target_hour} not within {range_start}..={range_end}"
+        ));
+    }
+    let inclusive_range_width = u64::try_from(
+        i64::from(range_end)
+            .checked_sub(i64::from(range_start))
+            .and_then(|width| width.checked_add(1))
+            .ok_or_else(|| "DOMAIN_GAP inclusive range width overflows".to_string())?,
+    )
+    .map_err(|_| "DOMAIN_GAP inclusive range width is negative".to_string())?;
+    let tick_before =
+        u64::from_le_bytes(payload[32..40].try_into().expect("fixed tick-before slice"));
+    let tick_after =
+        u64::from_le_bytes(payload[40..48].try_into().expect("fixed tick-after slice"));
+    let queue_capacity = u32::from_le_bytes(
+        payload[48..52]
+            .try_into()
+            .expect("fixed queue-capacity slice"),
+    );
+    let queue_depth =
+        u32::from_le_bytes(payload[52..56].try_into().expect("fixed queue-depth slice"));
+    let queue_dropped = u64::from_le_bytes(
+        payload[56..64]
+            .try_into()
+            .expect("fixed queue-dropped slice"),
+    );
+    let outcome_ordinal = u64::from_le_bytes(
+        payload[64..72]
+            .try_into()
+            .expect("fixed outcome-ordinal slice"),
+    );
+    if outcome_ordinal == u64::MAX {
+        return Err("DOMAIN_GAP outcome ordinal is exhausted".to_string());
+    }
+    match reason {
+        DOMAIN_GAP_REASON_TORN
+            if range_start == range_end
+                && target_hour == range_start
+                && tick_before != tick_after
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        DOMAIN_GAP_REASON_OVERRUN
+            if target_hour == range_end
+                && range_start < range_end
+                && tick_after.checked_sub(tick_before) == Some(inclusive_range_width)
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        DOMAIN_GAP_REASON_BACKPRESSURE
+            if target_hour == range_end
+                && tick_before == tick_after
+                && queue_capacity > 0
+                && queue_depth == queue_capacity
+                && queue_dropped == inclusive_range_width => {}
+        DOMAIN_GAP_REASON_CLOCK_UNREADABLE
+            if range_start == range_end
+                && target_hour == range_start
+                && tick_before == 0
+                && tick_after == 0
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        DOMAIN_GAP_REASON_WORKER_PANIC
+            if range_start == range_end
+                && target_hour == range_start
+                && tick_before == tick_after
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        _ => {
+            return Err(format!(
+                "DOMAIN_GAP witnesses do not prove closed reason {reason}"
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// Read the target-hour witness after validating the complete H4DG grammar.
+pub fn domain_gap_target_hour_raw(payload: &[u8]) -> Result<i32, String> {
+    validate_domain_gap_payload(payload)?;
+    Ok(i32::from_le_bytes(
+        payload[16..20]
+            .try_into()
+            .expect("validated DOMAIN_GAP target slice"),
+    ))
 }
 
 fn validate_domain_perf(record_flags: u32, payload: &[u8]) -> Result<(), String> {
@@ -175,6 +364,7 @@ fn validate_domain_perf(record_flags: u32, payload: &[u8]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calendar::DATE_EPOCH_CONST;
 
     fn base_perf() -> Vec<u8> {
         vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN]
@@ -196,6 +386,21 @@ mod tests {
 
     fn perf_result(flags: u32, payload: &[u8]) -> Result<(), String> {
         validate_compact_record_semantics(18, COMPACT_RECORD_TYPE_DOMAIN_PERF, flags, payload)
+    }
+
+    fn gap_payload(reason: u16) -> Vec<u8> {
+        let mut payload = vec![0u8; COMPACT_DOMAIN_GAP_PAYLOAD_LEN];
+        payload[..4].copy_from_slice(COMPACT_DOMAIN_GAP_MAGIC);
+        payload[4..6].copy_from_slice(&COMPACT_DOMAIN_GAP_VERSION.to_le_bytes());
+        payload[6..8].copy_from_slice(&(COMPACT_DOMAIN_GAP_PAYLOAD_LEN as u16).to_le_bytes());
+        payload[8..10].copy_from_slice(&reason.to_le_bytes());
+        let hour = DATE_EPOCH_CONST + 1936 * 365 * 24;
+        payload[16..20].copy_from_slice(&hour.to_le_bytes());
+        payload[20..24].copy_from_slice(&hour.to_le_bytes());
+        payload[24..28].copy_from_slice(&hour.to_le_bytes());
+        payload[32..40].copy_from_slice(&10u64.to_le_bytes());
+        payload[40..48].copy_from_slice(&11u64.to_le_bytes());
+        payload
     }
 
     #[test]
@@ -232,6 +437,62 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn domain_gap_is_terminal_outcome_but_not_perf_or_data_cardinality() {
+        assert!(compact_record_counts_toward_terminal_outcome(
+            COMPACT_RECORD_TYPE_DOMAIN_GAP
+        ));
+        assert!(!compact_record_counts_toward_perf_cardinality(
+            COMPACT_RECORD_TYPE_DOMAIN_GAP
+        ));
+        assert!(compact_record_counts_toward_terminal_outcome(
+            COMPACT_RECORD_TYPE_DOMAIN_PERF
+        ));
+        assert!(compact_record_counts_toward_perf_cardinality(
+            COMPACT_RECORD_TYPE_DOMAIN_PERF
+        ));
+        assert!(!compact_record_counts_toward_terminal_outcome(
+            COMPACT_RECORD_TYPE_DOMAIN_DATA
+        ));
+    }
+
+    #[test]
+    fn domain_gap_header_owns_affected_domain_and_witnesses_are_closed() {
+        let torn = gap_payload(DOMAIN_GAP_REASON_TORN);
+        validate_compact_record_semantics(81, COMPACT_RECORD_TYPE_DOMAIN_GAP, 0, &torn).unwrap();
+        for invalid_domain in [0, COMPACT_DOMAIN_FRAME] {
+            assert!(validate_compact_record_semantics(
+                invalid_domain,
+                COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                0,
+                &torn
+            )
+            .is_err());
+        }
+        assert!(
+            validate_compact_record_semantics(81, COMPACT_RECORD_TYPE_DOMAIN_GAP, 1, &torn)
+                .is_err()
+        );
+
+        let mut queue_on_torn = torn.clone();
+        queue_on_torn[48..52].copy_from_slice(&1u32.to_le_bytes());
+        assert!(validate_compact_record_semantics(
+            81,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            0,
+            &queue_on_torn
+        )
+        .is_err());
+
+        let mut backpressure = gap_payload(DOMAIN_GAP_REASON_BACKPRESSURE);
+        backpressure[40..48].copy_from_slice(&10u64.to_le_bytes());
+        backpressure[48..52].copy_from_slice(&8u32.to_le_bytes());
+        backpressure[52..56].copy_from_slice(&8u32.to_le_bytes());
+        backpressure[56..64].copy_from_slice(&1u64.to_le_bytes());
+        validate_compact_record_semantics(81, COMPACT_RECORD_TYPE_DOMAIN_GAP, 0, &backpressure)
+            .unwrap();
     }
 
     #[test]

@@ -4,9 +4,12 @@
 //! explicit constructor.  This module never sniffs the first payload and never
 //! falls back between those protocols.
 
+use std::collections::BTreeMap;
+
 use crate::campaign_identity::{parse_cid1_record, Cid1Error, ValidatedCid1};
+use crate::domain_gap::DomainGapRecordV1;
 use crate::record_header::CompactRecordHeader;
-use crate::record_semantics::validate_compact_record_semantics;
+use crate::record_semantics::{validate_compact_record_semantics, COMPACT_RECORD_TYPE_DOMAIN_GAP};
 
 /// Protocol selected before any bytes from a stream are accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +87,16 @@ enum StreamPhase {
 
 enum PendingCommit {
     Identity(ValidatedCid1),
-    Ordinary { next_sequence: u64 },
+    Ordinary {
+        next_sequence: u64,
+        gap_outcome: Option<((u16, u16), GapOutcomeState)>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GapOutcomeState {
+    next_ordinal: u64,
+    last_range_end: i32,
 }
 
 /// Stateful authority for one stream. Any rejected record makes the instance
@@ -95,6 +107,7 @@ pub struct StatefulStreamValidator {
     phase: StreamPhase,
     identity: Option<ValidatedCid1>,
     ordinary_record_count: u64,
+    gap_outcomes: BTreeMap<(u16, u16), GapOutcomeState>,
     failure: Option<StreamValidationError>,
 }
 
@@ -107,6 +120,7 @@ impl StatefulStreamValidator {
             phase: StreamPhase::AwaitingIdentity,
             identity: None,
             ordinary_record_count: 0,
+            gap_outcomes: BTreeMap::new(),
             failure: None,
         }
     }
@@ -119,6 +133,7 @@ impl StatefulStreamValidator {
             phase: StreamPhase::AwaitingOrdinary { next_sequence: 1 },
             identity: None,
             ordinary_record_count: 0,
+            gap_outcomes: BTreeMap::new(),
             failure: None,
         }
     }
@@ -181,9 +196,15 @@ impl StatefulStreamValidator {
                 self.phase = StreamPhase::AwaitingOrdinary { next_sequence: 1 };
                 Ok(AcceptedRecordKind::CampaignIdentity)
             }
-            PendingCommit::Ordinary { next_sequence } => {
+            PendingCommit::Ordinary {
+                next_sequence,
+                gap_outcome,
+            } => {
                 self.phase = StreamPhase::AwaitingOrdinary { next_sequence };
                 self.ordinary_record_count += 1;
+                if let Some((key, state)) = gap_outcome {
+                    self.gap_outcomes.insert(key, state);
+                }
                 Ok(AcceptedRecordKind::Ordinary)
             }
         }
@@ -225,8 +246,56 @@ impl StatefulStreamValidator {
                     payload,
                 )
                 .map_err(StreamValidationError::InvalidRecordSemantics)?;
+                let gap_outcome = if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_GAP {
+                    let gap = DomainGapRecordV1::decode(payload).map_err(|error| {
+                        StreamValidationError::InvalidRecordSemantics(error.to_string())
+                    })?;
+                    if header.game_hour_raw != gap.target_hour_raw {
+                        return Err(StreamValidationError::InvalidRecordSemantics(format!(
+                            "DOMAIN_GAP H4CR hour {} does not equal target witness {}",
+                            header.game_hour_raw, gap.target_hour_raw
+                        )));
+                    }
+                    let key = (header.domain_id, gap.part.code());
+                    let prior = self.gap_outcomes.get(&key);
+                    let expected_ordinal = prior.map_or(0, |state| state.next_ordinal);
+                    if gap.outcome_ordinal != expected_ordinal {
+                        return Err(StreamValidationError::InvalidRecordSemantics(format!(
+                            "DOMAIN_GAP outcome ordinal {} for domain {} part {} does not equal next required {expected_ordinal}",
+                            gap.outcome_ordinal,
+                            header.domain_id,
+                            gap.part.code()
+                        )));
+                    }
+                    if let Some(state) = prior {
+                        if gap.range_start_hour_raw <= state.last_range_end {
+                            return Err(StreamValidationError::InvalidRecordSemantics(format!(
+                                "DOMAIN_GAP range starts at {} at or before prior end {} for domain {} part {}; ranges must be strictly monotonic and nonoverlapping",
+                                gap.range_start_hour_raw,
+                                state.last_range_end,
+                                header.domain_id,
+                                gap.part.code()
+                            )));
+                        }
+                    }
+                    let next_ordinal = gap.outcome_ordinal.checked_add(1).ok_or_else(|| {
+                        StreamValidationError::InvalidRecordSemantics(
+                            "DOMAIN_GAP outcome ordinal is exhausted".to_string(),
+                        )
+                    })?;
+                    Some((
+                        key,
+                        GapOutcomeState {
+                            next_ordinal,
+                            last_range_end: gap.range_end_hour_raw,
+                        },
+                    ))
+                } else {
+                    None
+                };
                 Ok(PendingCommit::Ordinary {
                     next_sequence: following_sequence,
+                    gap_outcome,
                 })
             }
         }
@@ -241,6 +310,7 @@ mod tests {
         encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
         COMPACT_RECORD_TYPE_STREAM_HEADER,
     };
+    use crate::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
     use crate::record_semantics::{
         COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     };
@@ -466,6 +536,7 @@ mod tests {
             },
             identity: None,
             ordinary_record_count: 7,
+            gap_outcomes: BTreeMap::new(),
             failure: None,
         };
         let error = validator
@@ -487,6 +558,147 @@ mod tests {
         );
         assert_eq!(validator.next_sequence(), 1);
         assert_eq!(validator.ordinary_record_count(), 0);
+    }
+
+    #[test]
+    fn domain_gap_is_ordinary_and_binds_header_hour_to_target_witness() {
+        let gap_value = DomainGapRecordV1 {
+            part: DomainGapPart::State,
+            reason: DomainGapReason::Torn,
+            target_hour_raw: game_hour(),
+            range_start_hour_raw: game_hour(),
+            range_end_hour_raw: game_hour(),
+            tick_before: 41,
+            tick_after: 42,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        };
+        let gap = gap_value.encode().unwrap();
+        let mut header = header(1, 81, COMPACT_RECORD_TYPE_DOMAIN_GAP, &gap);
+        let mut validator = StatefulStreamValidator::legacy();
+        assert_eq!(
+            validator.validate_record(&header, &gap),
+            Ok(AcceptedRecordKind::Ordinary)
+        );
+        assert_eq!(validator.next_sequence(), 2);
+        assert_eq!(validator.ordinary_record_count(), 1);
+
+        header.sequence = 1;
+        header.game_hour_raw += 1;
+        let mut wrong_hour = StatefulStreamValidator::legacy();
+        assert!(matches!(
+            wrong_hour.validate_record(&header, &gap),
+            Err(StreamValidationError::InvalidRecordSemantics(_))
+        ));
+        assert_eq!(wrong_hour.next_sequence(), 1);
+        assert_eq!(wrong_hour.ordinary_record_count(), 0);
+    }
+
+    #[test]
+    fn domain_gap_ordinals_and_ranges_are_per_domain_part_contiguous() {
+        let make = |target: i32, ordinal: u64, part: DomainGapPart| {
+            DomainGapRecordV1 {
+                part,
+                reason: DomainGapReason::Torn,
+                target_hour_raw: target,
+                range_start_hour_raw: target,
+                range_end_hour_raw: target,
+                tick_before: 41 + ordinal,
+                tick_after: 42 + ordinal,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: ordinal,
+            }
+            .encode()
+            .unwrap()
+        };
+        let gap_header = |sequence, domain_id, payload: &[u8], target_hour| {
+            let mut value = header(sequence, domain_id, COMPACT_RECORD_TYPE_DOMAIN_GAP, payload);
+            value.game_hour_raw = target_hour;
+            value
+        };
+
+        let first = make(game_hour(), 0, DomainGapPart::State);
+        let second = make(game_hour() + 1, 1, DomainGapPart::State);
+        let mut validator = StatefulStreamValidator::legacy();
+        validator
+            .validate_record(&gap_header(1, 81, &first, game_hour()), &first)
+            .unwrap();
+        validator
+            .validate_record(&gap_header(2, 81, &second, game_hour() + 1), &second)
+            .unwrap();
+
+        let other_domain = make(game_hour(), 0, DomainGapPart::State);
+        validator
+            .validate_record(
+                &gap_header(3, 82, &other_domain, game_hour()),
+                &other_domain,
+            )
+            .unwrap();
+        let other_part = make(game_hour(), 0, DomainGapPart::Event);
+        validator
+            .validate_record(&gap_header(4, 81, &other_part, game_hour()), &other_part)
+            .unwrap();
+
+        for bad in [
+            make(game_hour() + 1, 0, DomainGapPart::State),
+            make(game_hour(), 1, DomainGapPart::State),
+            make(game_hour() + 2, 3, DomainGapPart::State),
+        ] {
+            let mut rejected = StatefulStreamValidator::legacy();
+            rejected
+                .validate_record(&gap_header(1, 81, &first, game_hour()), &first)
+                .unwrap();
+            let decoded_bad = DomainGapRecordV1::decode(&bad).unwrap();
+            assert!(matches!(
+                rejected
+                    .validate_record(&gap_header(2, 81, &bad, decoded_bad.target_hour_raw), &bad),
+                Err(StreamValidationError::InvalidRecordSemantics(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn domain_gap_ranges_may_have_accepted_hours_between_contiguous_ordinals() {
+        let make_gap = |target: i32, ordinal: u64| {
+            DomainGapRecordV1 {
+                part: DomainGapPart::State,
+                reason: DomainGapReason::Torn,
+                target_hour_raw: target,
+                range_start_hour_raw: target,
+                range_end_hour_raw: target,
+                tick_before: 41 + ordinal,
+                tick_after: 42 + ordinal,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: ordinal,
+            }
+            .encode()
+            .unwrap()
+        };
+        let first = make_gap(game_hour(), 0);
+        let accepted = vec![0u8; 40];
+        let second = make_gap(game_hour() + 2, 1);
+        let mut validator = StatefulStreamValidator::legacy();
+
+        validator
+            .validate_record(
+                &header(1, 81, COMPACT_RECORD_TYPE_DOMAIN_GAP, &first),
+                &first,
+            )
+            .unwrap();
+        let mut accepted_header = header(2, 81, COMPACT_RECORD_TYPE_DOMAIN_PERF, &accepted);
+        accepted_header.game_hour_raw = game_hour() + 1;
+        validator
+            .validate_record(&accepted_header, &accepted)
+            .unwrap();
+        let mut second_header = header(3, 81, COMPACT_RECORD_TYPE_DOMAIN_GAP, &second);
+        second_header.game_hour_raw = game_hour() + 2;
+        validator.validate_record(&second_header, &second).unwrap();
     }
 
     #[test]

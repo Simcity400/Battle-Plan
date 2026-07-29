@@ -1,10 +1,10 @@
-use compact_contract::{
-    compact_status_for_global_interpretation, parse_compact_record_header,
-    COMPACT_STATUS_FAILURE_MASK,
-};
 use compact_contract::campaign_identity::ValidatedCid1;
 use compact_contract::stream_validator::{
     AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
+};
+use compact_contract::{
+    compact_status_for_global_interpretation, parse_compact_record_header,
+    COMPACT_STATUS_FAILURE_MASK,
 };
 use serde_json::{json, Value};
 use snapshot::sha256::Sha256;
@@ -23,6 +23,7 @@ const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 const RC_PROBE_DOMAIN_ID: u16 = 250;
 const RECORD_TYPE_FRAME_END: u16 = 2;
 const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+const RECORD_TYPE_DOMAIN_GAP: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP;
 #[cfg(test)]
 const DOMAIN_FRAME: u16 = 1000;
 
@@ -66,7 +67,25 @@ pub struct GateOptions {
     pub allow_bridge_roots: bool,
     pub allow_partial_or_source_failure: bool,
     pub strict_semantic_units: bool,
+    /// Typed acquisition gaps are valid production truth.  A zero-loss claim
+    /// is a separate, explicitly selected promotion profile.
+    pub gap_acceptance: GapAcceptanceProfile,
     pub write_report: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapAcceptanceProfile {
+    TypedGapsAllowed,
+    ZeroLossRequired,
+}
+
+impl GapAcceptanceProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TypedGapsAllowed => "typed_gaps_allowed",
+            Self::ZeroLossRequired => "require_zero_loss",
+        }
+    }
 }
 
 impl Default for GateOptions {
@@ -82,6 +101,7 @@ impl Default for GateOptions {
             allow_bridge_roots: false,
             allow_partial_or_source_failure: false,
             strict_semantic_units: true,
+            gap_acceptance: GapAcceptanceProfile::TypedGapsAllowed,
             write_report: None,
         }
     }
@@ -643,6 +663,9 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
         json!({
             "authoritative": options.require_replay_verify && weakenings.is_empty(),
             "replay_verify_required": options.require_replay_verify,
+            "gap_acceptance": options.gap_acceptance.as_str(),
+            "typed_h4dg_is_format_valid": true,
+            "zero_loss_claimed": options.gap_acceptance == GapAcceptanceProfile::ZeroLossRequired,
             "weakenings": weakenings,
         }),
     );
@@ -704,7 +727,9 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
     let mut scheduled_descriptors = production_descriptors.clone();
     for domain in &required_domains {
         let Some(descriptor) = compact_contract::assigned_descriptor_by_name(domain) else {
-            errors.push(format!("required compact domain {domain:?} is not assigned"));
+            errors.push(format!(
+                "required compact domain {domain:?} is not assigned"
+            ));
             continue;
         };
         if !descriptor.schedulable
@@ -737,8 +762,7 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
         .iter()
         .map(|descriptor| descriptor.id)
         .collect::<Vec<_>>();
-    let expected_contracts =
-        compact_contract::emitted_domain_ids_for_scheduled_ids(&scheduled_ids)
+    let expected_contracts = compact_contract::emitted_domain_ids_for_scheduled_ids(&scheduled_ids)
         .into_iter()
         .filter_map(compact_contract::assigned_descriptor_by_id)
         .map(contract_for_descriptor)
@@ -772,7 +796,12 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
     };
     details.insert("min_game_hours".to_string(), json!(min_game_hours));
 
-    validate_hourly_manifest(&manifest, min_game_hours, &mut errors);
+    validate_hourly_manifest(
+        &manifest,
+        min_game_hours,
+        options.gap_acceptance,
+        &mut errors,
+    );
     validate_compact_manifest(
         &manifest,
         &expected_contracts,
@@ -815,6 +844,13 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
             &mut errors,
         );
         if let Some(authority) = replay_authority.as_ref() {
+            let independently_scanned_sha256 = Sha256::hex(&artifact.decoded);
+            if independently_scanned_sha256 != authority.container_stream_sha256 {
+                errors.push(format!(
+                    "independently hashed decoded H4CR stream {independently_scanned_sha256} is not bound to verified container entry digest {}",
+                    authority.container_stream_sha256
+                ));
+            }
             if authority.container_stream != artifact.decoded {
                 errors.push(format!(
                     "replay container decoded collector stream differs from decoded run stream (container sha256 {}, run sha256 {})",
@@ -852,7 +888,12 @@ fn read_json_document(path: &Path) -> Result<(Vec<u8>, Value), String> {
     Ok((bytes, value))
 }
 
-fn validate_hourly_manifest(manifest: &Value, min_game_hours: i64, errors: &mut Vec<String>) {
+fn validate_hourly_manifest(
+    manifest: &Value,
+    min_game_hours: i64,
+    gap_acceptance: GapAcceptanceProfile,
+    errors: &mut Vec<String>,
+) {
     let hourly = manifest.get("hourly_requirement").unwrap_or(&Value::Null);
     if hourly.get("required").and_then(Value::as_bool) != Some(true) {
         errors.push("hourly_requirement.required is not true".to_string());
@@ -884,15 +925,18 @@ fn validate_hourly_manifest(manifest: &Value, min_game_hours: i64, errors: &mut 
             "game_hours_advanced {advanced} is below required {min_game_hours}"
         ));
     }
-    if manifest
+    let skipped_hours = manifest
         .get("skipped_game_hours")
         .and_then(Value::as_i64)
-        .unwrap_or(-1)
-        != 0
-    {
+        .unwrap_or(-1);
+    if skipped_hours < 0 {
         errors.push(format!(
-            "skipped_game_hours is {:?}, expected 0",
+            "skipped_game_hours is {:?}, expected a nonnegative integer",
             manifest.get("skipped_game_hours")
+        ));
+    } else if gap_acceptance == GapAcceptanceProfile::ZeroLossRequired && skipped_hours != 0 {
+        errors.push(format!(
+            "skipped_game_hours is {skipped_hours}, but the explicit zero-loss profile requires 0"
         ));
     }
     let unique_hours = manifest
@@ -901,9 +945,12 @@ fn validate_hourly_manifest(manifest: &Value, min_game_hours: i64, errors: &mut 
         .unwrap_or(-1);
     if advanced >= 0 && unique_hours >= 0 {
         match advanced.checked_add(1) {
-            Some(inclusive) if unique_hours == inclusive => {}
+            Some(inclusive)
+                if unique_hours
+                    .checked_add(skipped_hours)
+                    .is_some_and(|observed_span| observed_span == inclusive) => {}
             Some(inclusive) => errors.push(format!(
-                "unique_game_hour_count {unique_hours} != game_hours_advanced + 1 ({inclusive})"
+                "unique_game_hour_count {unique_hours} + skipped_game_hours {skipped_hours} != game_hours_advanced + 1 ({inclusive})"
             )),
             None => errors.push("game_hours_advanced cannot form an inclusive span".to_string()),
         }
@@ -955,22 +1002,48 @@ fn validate_compact_manifest(
     }
     let expected_count = expected_contracts.len() as u64;
     require_u64_eq(coverage, "expected_domain_count", expected_count, errors);
-    require_u64_eq(
-        compact,
-        "domain_perf_record_count",
-        frame_count.saturating_mul(expected_count),
-        errors,
+    let perf_count = compact
+        .get("domain_perf_record_count")
+        .and_then(Value::as_u64);
+    let gap_count = compact
+        .get("domain_gap_record_count")
+        .and_then(Value::as_u64);
+    match perf_count.zip(gap_count) {
+        Some((perf, gaps))
+            if perf
+                .checked_add(gaps)
+                .is_some_and(|terminals| {
+                    terminals == frame_count.saturating_mul(expected_count)
+                }) => {}
+        Some((perf, gaps)) => errors.push(format!(
+            "compact_stream DOMAIN_PERF {perf} + H4DG {gaps} does not equal exact scheduled terminal cardinality {}",
+            frame_count.saturating_mul(expected_count)
+        )),
+        None => errors.push(
+            "compact_stream.domain_perf_record_count and domain_gap_record_count must both be unsigned integers"
+                .to_string(),
+        ),
+    }
+    if options.gap_acceptance == GapAcceptanceProfile::ZeroLossRequired && gap_count != Some(0) {
+        errors.push(format!(
+            "compact_stream.domain_gap_record_count is {gap_count:?}, but the explicit zero-loss profile requires 0"
+        ));
+    }
+    let data_count = compact
+        .get("domain_data_record_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX);
+    let maximum_data_count = frame_count.saturating_mul(
+        expected_contracts
+            .iter()
+            .filter(|contract| contract.requires_data)
+            .count() as u64,
     );
-    let expected_data_count = expected_contracts
-        .iter()
-        .filter(|contract| contract.requires_data)
-        .count() as u64;
-    require_u64_eq(
-        compact,
-        "domain_data_record_count",
-        frame_count.saturating_mul(expected_data_count),
-        errors,
-    );
+    if data_count > maximum_data_count {
+        errors.push(format!(
+            "compact_stream.domain_data_record_count {data_count} exceeds maximum accepted-frame cardinality {maximum_data_count}"
+        ));
+    }
 
     let expected_domain_names = string_array(compact.get("expected_domains"));
     let expected_from_gate: BTreeSet<&str> = expected_contracts
@@ -986,14 +1059,6 @@ fn validate_compact_manifest(
         ));
     }
     let domains_seen = string_array(compact.get("domains_seen"));
-    for contract in expected_contracts {
-        if !domains_seen.iter().any(|domain| domain == contract.name) {
-            errors.push(format!(
-                "compact_stream.domains_seen is missing {}",
-                contract.name
-            ));
-        }
-    }
     if !domains_seen.iter().any(|domain| domain == "frame") {
         errors.push("compact_stream.domains_seen is missing frame".to_string());
     }
@@ -1041,10 +1106,9 @@ fn validate_compact_manifest(
     };
     for contract in expected_contracts {
         let Some(domain) = per_domain.get(contract.name) else {
-            errors.push(format!(
-                "compact_stream.per_domain.{} missing",
-                contract.name
-            ));
+            // A gap-only domain has no PERF/DATA aggregate row in the recorder
+            // manifest. Exact presence is proved later from scanned terminal
+            // outcomes, not inferred from the mutable aggregate.
             continue;
         };
         validate_domain_manifest(domain, *contract, frame_count, options, errors);
@@ -1059,9 +1123,18 @@ fn validate_domain_manifest(
     errors: &mut Vec<String>,
 ) {
     require_u64_eq(domain, "domain_id", contract.id as u64, errors);
-    require_u64_eq(domain, "record_count", frame_count, errors);
+    let record_count = domain
+        .get("record_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX);
+    if record_count > frame_count {
+        errors.push(format!(
+            "domain {} record_count {record_count} exceeds frame_end_record_count {frame_count}",
+            contract.name
+        ));
+    }
     if contract.requires_data {
-        require_u64_eq(domain, "data_record_count", frame_count, errors);
+        require_u64_eq(domain, "data_record_count", record_count, errors);
     }
     let status_value = domain.get("status_flags_or");
     let Some(status) = status_value.and_then(Value::as_u64) else {
@@ -1094,9 +1167,9 @@ fn validate_domain_manifest(
         .and_then(|value| value.get("count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if read_count != frame_count {
+    if read_count != record_count {
         errors.push(format!(
-            "domain {} read_time_us.count {read_count} != frame_end_record_count {frame_count}",
+            "domain {} read_time_us.count {read_count} != accepted DOMAIN_PERF record_count {record_count}",
             contract.name
         ));
     }
@@ -1105,7 +1178,7 @@ fn validate_domain_manifest(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if options.strict_semantic_units {
+    if options.strict_semantic_units && record_count != 0 {
         for key in contract.required_units {
             if !units.contains_key(*key) {
                 errors.push(format!(
@@ -1313,10 +1386,12 @@ fn validate_stream_file_against_manifest(
             summary.ordering_errors
         ));
     }
-    if summary.skipped_hours != 0 {
+    if options.gap_acceptance == GapAcceptanceProfile::ZeroLossRequired
+        && summary.domain_gap_record_count != 0
+    {
         errors.push(format!(
-            "independent stream scan found {} skipped game hours",
-            summary.skipped_hours
+            "explicit zero-loss profile rejected {} independently decoded H4DG record(s)",
+            summary.domain_gap_record_count
         ));
     }
     let rejected = summary.per_domain_status_flags_or.iter().fold(
@@ -1363,6 +1438,12 @@ fn validate_stream_file_against_manifest(
         errors,
     );
     compare_u64(
+        "domain_gap_record_count",
+        summary.domain_gap_record_count,
+        compact,
+        errors,
+    );
+    compare_u64(
         "frame_end_record_count",
         summary.frame_end_record_count,
         compact,
@@ -1376,6 +1457,7 @@ fn validate_stream_file_against_manifest(
     );
     compare_u64("max_payload_len", summary.max_payload_len, compact, errors);
     compare_u64("max_record_len", summary.max_record_len, compact, errors);
+    validate_scanned_domains_seen(&summary, compact, errors);
     validate_scanned_domain_authority(&summary, compact, expected_contracts, errors);
     validate_domain57_stream_authority(&summary, compact, errors);
     validate_campaign_identity_stream_authority(&summary, manifest, identity_mode, errors);
@@ -1399,6 +1481,49 @@ fn validate_stream_file_against_manifest(
     }
 }
 
+fn validate_scanned_domains_seen(
+    summary: &HeaderScanSummary,
+    compact: &Value,
+    errors: &mut Vec<String>,
+) {
+    let scanned_domains_seen = summary
+        .domains_seen
+        .iter()
+        .map(|domain_id| {
+            if *domain_id == compact_contract::COMPACT_DOMAIN_FRAME {
+                "frame".to_string()
+            } else {
+                compact_contract::assigned_descriptor_by_id(*domain_id)
+                    .map(|descriptor| descriptor.wire_name.to_string())
+                    .unwrap_or_else(|| format!("unknown_domain_{domain_id}"))
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    let Some(manifest_rows) = compact.get("domains_seen").and_then(Value::as_array) else {
+        errors.push("manifest compact_stream.domains_seen is not an array".to_string());
+        return;
+    };
+    let mut manifest_domains_seen = BTreeSet::new();
+    for (index, row) in manifest_rows.iter().enumerate() {
+        let Some(name) = row.as_str() else {
+            errors.push(format!(
+                "manifest compact_stream.domains_seen[{index}] is not a string"
+            ));
+            continue;
+        };
+        if !manifest_domains_seen.insert(name.to_string()) {
+            errors.push(format!(
+                "manifest compact_stream.domains_seen contains duplicate {name:?}"
+            ));
+        }
+    }
+    if manifest_domains_seen != scanned_domains_seen {
+        errors.push(format!(
+            "independent stream domains_seen {scanned_domains_seen:?} != manifest compact_stream.domains_seen {manifest_domains_seen:?}"
+        ));
+    }
+}
+
 fn validate_scanned_domain_authority(
     summary: &HeaderScanSummary,
     compact: &Value,
@@ -1409,8 +1534,70 @@ fn validate_scanned_domain_authority(
     for contract in expected_contracts {
         let Some(manifest_domain) = per_domain.and_then(|domains| domains.get(contract.name))
         else {
+            if summary.per_domain_perf_authority.contains_key(&contract.id) {
+                errors.push(format!(
+                    "domain {} has independently scanned accepted PERF authority but is missing from manifest compact_stream.per_domain",
+                    contract.name
+                ));
+            }
             continue;
         };
+        let scanned_perf_count = summary
+            .per_hour_perf_domain_counts
+            .values()
+            .map(|domains| domains.get(&contract.id).copied().unwrap_or(0))
+            .sum::<u64>();
+        let scanned_data_count = summary
+            .per_hour_data_domain_counts
+            .values()
+            .map(|domains| domains.get(&contract.id).copied().unwrap_or(0))
+            .sum::<u64>();
+        compare_manifest_authority_field(
+            contract.name,
+            "PERF cardinality",
+            "record_count",
+            scanned_perf_count,
+            manifest_domain,
+            errors,
+        );
+        compare_manifest_authority_field(
+            contract.name,
+            "DATA cardinality",
+            "data_record_count",
+            scanned_data_count,
+            manifest_domain,
+            errors,
+        );
+        match manifest_domain
+            .get("read_time_us")
+            .and_then(|value| value.get("count"))
+            .and_then(Value::as_u64)
+        {
+            Some(declared) if declared == scanned_perf_count => {}
+            Some(declared) => errors.push(format!(
+                "domain {} independently scanned PERF timing cardinality {scanned_perf_count} != manifest read_time_us.count {declared}",
+                contract.name
+            )),
+            None => errors.push(format!(
+                "domain {} manifest read_time_us.count is missing or not an unsigned integer",
+                contract.name
+            )),
+        }
+        if scanned_perf_count != 0 {
+            let scanned_units = summary
+                .per_domain_combined_units
+                .get(&contract.id)
+                .cloned()
+                .unwrap_or_default();
+            for required in contract.required_units {
+                if !scanned_units.contains_key(*required) {
+                    errors.push(format!(
+                        "domain {} independently scanned accepted outcomes are missing required semantic counter {}",
+                        contract.name, required
+                    ));
+                }
+            }
+        }
         let perf = summary
             .per_domain_perf_authority
             .get(&contract.id)
@@ -1666,20 +1853,21 @@ fn validate_domain57_stream_authority(
     for record in &summary.domain57_frames {
         *records_by_hour.entry(record.header_hour_raw).or_default() += 1;
     }
-    let exact_one_record_per_closed_frame = summary.frame_end_hour_counts.len()
-        == summary.frame_end_record_count as usize
-        && summary
-            .frame_end_hour_counts
-            .values()
-            .all(|count| *count == 1)
-        && records_by_hour.len() == summary.frame_end_hour_counts.len()
-        && summary
-            .frame_end_hour_counts
+    let accepted_hours = summary
+        .per_hour_perf_domain_counts
+        .iter()
+        .filter_map(|(hour, domains)| (domains.get(&57) == Some(&1)).then_some(*hour))
+        .collect::<BTreeSet<_>>();
+    let exact_one_record_per_accepted_frame = records_by_hour.len() == accepted_hours.len()
+        && accepted_hours
+            .iter()
+            .all(|hour| records_by_hour.get(hour) == Some(&1))
+        && records_by_hour
             .keys()
-            .all(|hour| records_by_hour.get(hour) == Some(&1));
-    if !exact_one_record_per_closed_frame {
+            .all(|hour| accepted_hours.contains(hour));
+    if !exact_one_record_per_accepted_frame {
         errors.push(
-            "independent d57 authority does not have exactly one record per closed frame"
+            "independent d57 authority does not have exactly one record per accepted PERF frame"
                 .to_string(),
         );
     }
@@ -1910,14 +2098,27 @@ fn validate_scanned_hours(
             "independent stream unique hour count {scanned_unique} != manifest unique_game_hour_count {manifest_unique}"
         ));
     }
+    let scanned_skipped = i64::from(summary.skipped_hours);
+    let manifest_skipped = manifest
+        .get("skipped_game_hours")
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    if scanned_skipped != manifest_skipped {
+        errors.push(format!(
+            "independent stream skipped hour count {scanned_skipped} != manifest skipped_game_hours {manifest_skipped}"
+        ));
+    }
+    if !matches!(
+        scanned_unique.checked_add(scanned_skipped),
+        Some(covered_span) if covered_span == scanned_span
+    ) {
+        errors.push(format!(
+            "independent stream unique hours {scanned_unique} + typed discontinuity hours {scanned_skipped} != inclusive span {scanned_span}"
+        ));
+    }
     if scanned_span != manifest_span {
         errors.push(format!(
             "independent stream inclusive hour span {scanned_span} != manifest game_hours_advanced + 1 ({manifest_span})"
-        ));
-    }
-    if scanned_unique < required_span {
-        errors.push(format!(
-            "independent stream unique hour count {scanned_unique} is below required inclusive count {required_span}"
         ));
     }
     if scanned_span < required_span {
@@ -1931,6 +2132,7 @@ fn validate_scanned_hours(
 struct VerifiedReplayAuthority {
     manifest: Value,
     container_stream: Vec<u8>,
+    container_stream_sha256: String,
     details: Value,
 }
 
@@ -2004,9 +2206,7 @@ fn required_static_bundle_file(name: &str) -> Option<&'static str> {
         compact_contract::STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => {
             "artifacts/technology_sharing_static.json"
         }
-        compact_contract::STATIC_ARTIFACT_FOCUS_DEFS_STATIC => {
-            "artifacts/focus_defs_static.json"
-        }
+        compact_contract::STATIC_ARTIFACT_FOCUS_DEFS_STATIC => "artifacts/focus_defs_static.json",
         _ => return None,
     })
 }
@@ -2296,15 +2496,13 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
         .get("portable_content_manifest")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            "production manifest portable_content_manifest is missing or not an object"
-                .to_string()
+            "production manifest portable_content_manifest is missing or not an object".to_string()
         })?;
     if portable_content.get("schema").and_then(Value::as_str)
         != Some("hoi4.portable-content-manifest.v2")
     {
         return Err(
-            "production manifest portable_content_manifest is not v2 product-modset-bound"
-                .into(),
+            "production manifest portable_content_manifest is not v2 product-modset-bound".into(),
         );
     }
     let portable_product_modset_sha256 = canonical_sha256(
@@ -2764,7 +2962,11 @@ fn verify_static_manifest_authority(
     ]
     .into_iter()
     .collect::<BTreeSet<_>>();
-    if product_modset.keys().map(String::as_str).collect::<BTreeSet<_>>() != product_fields
+    if product_modset
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != product_fields
         || product_modset.get("schema").and_then(Value::as_str)
             != Some("extractor.product_modset_key.v1")
     {
@@ -2813,7 +3015,9 @@ fn verify_static_manifest_authority(
                 .into(),
         );
     }
-    if product_modset.get("executable_sha256").and_then(Value::as_str)
+    if product_modset
+        .get("executable_sha256")
+        .and_then(Value::as_str)
         != Some(executable.sha256.as_str())
     {
         return Err("product modset executable identity differs from retained executable".into());
@@ -3233,6 +3437,13 @@ fn load_verified_replay_authority(
                 stream_entry.path
             )
         })?;
+    let independently_observed_stream_sha256 = Sha256::hex(&container_stream);
+    if independently_observed_stream_sha256 != stream_entry.sha256 {
+        return Err(format!(
+            "verified collector_compact_stream bytes independently hash to {independently_observed_stream_sha256}, not container entry digest {}",
+            stream_entry.sha256
+        ));
+    }
     let embedded_manifest_bytes =
         container
             .read_entry_bytes(&manifest_entry.path)
@@ -3265,8 +3476,9 @@ fn load_verified_replay_authority(
     let container_content = container.content_manifest().ok_or_else(|| {
         "production replay container has no top-level portable content manifest".to_string()
     })?;
-    let container_content_value = serde_json::to_value(container_content)
-        .map_err(|error| format!("serialize admitted container content manifest failed: {error}"))?;
+    let container_content_value = serde_json::to_value(container_content).map_err(|error| {
+        format!("serialize admitted container content manifest failed: {error}")
+    })?;
     if embedded_manifest.get("portable_content_manifest") != Some(&container_content_value) {
         return Err(
             "container top-level portable content manifest differs from embedded recorder authority"
@@ -3276,12 +3488,15 @@ fn load_verified_replay_authority(
     Ok(VerifiedReplayAuthority {
         manifest: embedded_manifest,
         container_stream,
+        container_stream_sha256: independently_observed_stream_sha256.clone(),
         details: json!({
             "file": replay_path.display().to_string(),
             "game_id": container.game_id(),
             "collector_compact_stream": stream_entry.path,
             "collector_compact_stream_bytes": stream_entry.bytes,
             "collector_compact_stream_sha256": stream_entry.sha256,
+            "independently_observed_stream_sha256": independently_observed_stream_sha256,
+            "h4cr_stream_digest_bound": true,
             "recorder_manifest": manifest_entry.path,
             "recorder_manifest_bytes": embedded_manifest_bytes.len(),
             "recorder_manifest_sha256": embedded_sha256,
@@ -3542,6 +3757,7 @@ struct HeaderScanSummary {
     record_count: u64,
     domain_perf_record_count: u64,
     domain_data_record_count: u64,
+    domain_gap_record_count: u64,
     frame_end_record_count: u64,
     total_payload_bytes: u64,
     max_payload_len: u64,
@@ -3560,6 +3776,7 @@ struct HeaderScanSummary {
     per_domain_combined_units: BTreeMap<u16, BTreeMap<String, u64>>,
     per_hour_perf_authority: BTreeMap<(i32, u16), PerfAuthority>,
     per_hour_data_authority: BTreeMap<(i32, u16), DataAuthority>,
+    per_hour_gap_authority: BTreeMap<(i32, u16), Vec<compact_contract::DomainGapRecordV1>>,
     domain57_frames: Vec<recorder_host::domain_data_authority::Domain57FrameEvidence>,
     session_header_identity: recorder_host::campaign_identity::SessionHeaderIdentityObservation,
     /// Opaque placement authority retained only when the shared stateful
@@ -3572,10 +3789,17 @@ struct HeaderScanSummary {
     frame_end_hour_counts: BTreeMap<i32, u64>,
     per_hour_perf_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
     per_hour_data_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
+    per_hour_gap_domain_counts: BTreeMap<i32, BTreeMap<u16, u64>>,
     unique_hours: Vec<i32>,
     skipped_hours: i32,
     parse_errors: Vec<String>,
     ordering_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GapSequenceAuthority {
+    next_ordinal: u64,
+    last_range_end: i32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3621,6 +3845,7 @@ fn scan_compact_stream_with_identity_mode(
     let mut open_frame_hour: Option<i32> = None;
     let mut pending_perf_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
+    let mut gap_sequences = BTreeMap::<(u16, u16), GapSequenceAuthority>::new();
     let mut final_record_is_clean_frame_end = false;
     let mut framing_complete = true;
     let mut session_header_identity =
@@ -3648,8 +3873,8 @@ fn scan_compact_stream_with_identity_mode(
             framing_complete = false;
             break;
         }
-        let awaiting_identity = identity_mode == StreamIdentityMode::IdentityV1
-            && summary.validated_cid1.is_none();
+        let awaiting_identity =
+            identity_mode == StreamIdentityMode::IdentityV1 && summary.validated_cid1.is_none();
         if !awaiting_identity {
             if let Some(previous) = previous_sequence {
                 match previous.checked_add(1) {
@@ -3735,6 +3960,76 @@ fn scan_compact_stream_with_identity_mode(
         summary.max_record_len = summary.max_record_len.max(record_len as u64);
         summary.domains_seen.insert(domain_id);
         match record_type {
+            RECORD_TYPE_DOMAIN_GAP => {
+                summary.domain_gap_record_count += 1;
+                *summary
+                    .per_hour_gap_domain_counts
+                    .entry(game_hour_raw)
+                    .or_default()
+                    .entry(domain_id)
+                    .or_default() += 1;
+                match compact_contract::DomainGapRecordV1::decode(payload) {
+                    Ok(gap) => {
+                        if gap.target_hour_raw != game_hour_raw {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: DOMAIN_GAP header hour {game_hour_raw} does not equal target_hour_raw {}",
+                                gap.target_hour_raw
+                            ));
+                        }
+                        let key = (domain_id, gap.part.code());
+                        let expected_ordinal = gap_sequences
+                            .get(&key)
+                            .map_or(0, |state| state.next_ordinal);
+                        if gap.outcome_ordinal != expected_ordinal {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: DOMAIN_GAP domain {domain_id} part {} outcome_ordinal {} != zero-based contiguous expected {expected_ordinal}",
+                                gap.part.code(),
+                                gap.outcome_ordinal
+                            ));
+                        }
+                        if let Some(prior) = gap_sequences.get(&key) {
+                            if gap.range_start_hour_raw <= prior.last_range_end {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: DOMAIN_GAP domain {domain_id} part {} range {}..={} overlaps or regresses after prior end {}",
+                                    gap.part.code(),
+                                    gap.range_start_hour_raw,
+                                    gap.range_end_hour_raw,
+                                    prior.last_range_end
+                                ));
+                            }
+                        }
+                        match gap.outcome_ordinal.checked_add(1) {
+                            Some(next_ordinal) => {
+                                gap_sequences.insert(
+                                    key,
+                                    GapSequenceAuthority {
+                                        next_ordinal,
+                                        last_range_end: gap.range_end_hour_raw,
+                                    },
+                                );
+                            }
+                            None => summary.parse_errors.push(format!(
+                                "offset {offset}: DOMAIN_GAP outcome ordinal is exhausted"
+                            )),
+                        }
+                        summary
+                            .per_hour_gap_authority
+                            .entry((game_hour_raw, domain_id))
+                            .or_default()
+                            .push(gap);
+                    }
+                    Err(error) => summary.parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_GAP failed independent H4DG decode: {error}"
+                    )),
+                }
+                match open_frame_hour {
+                    Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_GAP hour {game_hour_raw} does not match open frame hour {open}"
+                    )),
+                    Some(_) => {}
+                    None => open_frame_hour = Some(game_hour_raw),
+                }
+            }
             RECORD_TYPE_DOMAIN_PERF => {
                 summary.domain_perf_record_count += 1;
                 *summary
@@ -3968,10 +4263,17 @@ fn scan_compact_stream_with_identity_mode(
                         .get(&game_hour_raw)
                         .map(|domains| domains.values().copied().sum::<u64>())
                         .unwrap_or(0);
-                    if u64::from(authority.emitted_domains) != observed_perf_records {
+                    let observed_gap_records = summary
+                        .per_hour_gap_domain_counts
+                        .get(&game_hour_raw)
+                        .map(|domains| domains.values().copied().sum::<u64>())
+                        .unwrap_or(0);
+                    let observed_terminal_records =
+                        observed_perf_records.saturating_add(observed_gap_records);
+                    if u64::from(authority.emitted_domains) != observed_terminal_records {
                         clean = false;
                         summary.parse_errors.push(format!(
-                            "offset {offset}: FRAME_END emitted_domains {} != independently observed DOMAIN_PERF count {observed_perf_records}",
+                            "offset {offset}: FRAME_END emitted_domains {} != independently observed terminal record count {observed_terminal_records} (DOMAIN_PERF {observed_perf_records} + H4DG {observed_gap_records})",
                             authority.emitted_domains
                         ));
                     }
@@ -3994,23 +4296,17 @@ fn scan_compact_stream_with_identity_mode(
                     None => {
                         clean = false;
                         summary.parse_errors.push(format!(
-                            "offset {offset}: FRAME_END hour {game_hour_raw} has no open DATA frame"
+                            "offset {offset}: FRAME_END hour {game_hour_raw} has no open terminal frame"
                         ));
                     }
                 }
                 if let Some(closed) = last_closed_hour {
-                    match closed.checked_add(1) {
-                        Some(expected) if game_hour_raw == expected => {}
-                        Some(_) => {
+                    match game_hour_raw.cmp(&closed) {
+                        std::cmp::Ordering::Greater => {}
+                        _ => {
                             clean = false;
                             summary.parse_errors.push(format!(
-                                "offset {offset}: closed frame hour {game_hour_raw} does not consecutively follow {closed}"
-                            ));
-                        }
-                        None => {
-                            clean = false;
-                            summary.parse_errors.push(format!(
-                                "offset {offset}: closed frame hour {closed} exhausted; another closure is forbidden"
+                                "offset {offset}: closed frame hour {game_hour_raw} does not strictly advance after {closed}"
                             ));
                         }
                     }
@@ -4031,7 +4327,7 @@ fn scan_compact_stream_with_identity_mode(
     if let Some(open) = open_frame_hour {
         summary
             .parse_errors
-            .push(format!("stream ended with open DATA frame hour {open}"));
+            .push(format!("stream ended with open terminal frame hour {open}"));
     }
     if framing_complete && !raw.is_empty() && !final_record_is_clean_frame_end {
         summary
@@ -4129,10 +4425,12 @@ fn compact_domain_coverage_errors(
     expected_domains: &[u16],
 ) -> Vec<String> {
     let mut errors = Vec::new();
+    let expected_set = expected_domains.iter().copied().collect::<BTreeSet<_>>();
     let frame_hours: BTreeSet<i32> = summary.frame_end_hour_counts.keys().copied().collect();
     let mut all_record_hours = frame_hours.clone();
     all_record_hours.extend(summary.per_hour_perf_domain_counts.keys().copied());
     all_record_hours.extend(summary.per_hour_data_domain_counts.keys().copied());
+    all_record_hours.extend(summary.per_hour_gap_domain_counts.keys().copied());
 
     for hour in &all_record_hours {
         let frame_count = summary
@@ -4162,6 +4460,40 @@ fn compact_domain_coverage_errors(
                 ));
             }
         }
+        let observed_terminal_set = summary
+            .per_hour_perf_domain_counts
+            .get(hour)
+            .into_iter()
+            .flat_map(|domains| domains.keys().copied())
+            .chain(
+                summary
+                    .per_hour_gap_domain_counts
+                    .get(hour)
+                    .into_iter()
+                    .flat_map(|domains| domains.keys().copied()),
+            )
+            .filter(|domain| *domain != RC_PROBE_DOMAIN_ID)
+            .collect::<BTreeSet<_>>();
+        if observed_terminal_set != expected_set {
+            errors.push(format!(
+                "game_hour_raw {hour}: independently observed terminal roster {observed_terminal_set:?} != exact scheduled roster {expected_set:?}"
+            ));
+        }
+        let observed_data_set = summary
+            .per_hour_data_domain_counts
+            .get(hour)
+            .into_iter()
+            .flat_map(|domains| domains.keys().copied())
+            .collect::<BTreeSet<_>>();
+        let unexpected_data = observed_data_set
+            .difference(&expected_set)
+            .copied()
+            .collect::<Vec<_>>();
+        if !unexpected_data.is_empty() {
+            errors.push(format!(
+                "game_hour_raw {hour}: DATA records contain unscheduled domains {unexpected_data:?}"
+            ));
+        }
         for expected in expected_domains {
             let Some(descriptor) = compact_contract::assigned_descriptor_by_id(*expected) else {
                 errors.push(format!("unknown compact domain id {expected}"));
@@ -4174,25 +4506,34 @@ fn compact_domain_coverage_errors(
                 .and_then(|domains| domains.get(expected))
                 .copied()
                 .unwrap_or(0);
-            if perf_count != 1 {
+            let gap_count = summary
+                .per_hour_gap_domain_counts
+                .get(hour)
+                .and_then(|domains| domains.get(expected))
+                .copied()
+                .unwrap_or(0);
+            if !matches!((perf_count, gap_count), (1, 0) | (0, 1)) {
                 errors.push(format!(
-                    "game_hour_raw {hour}: compact domain {} perf_record_count {perf_count} != 1",
+                    "game_hour_raw {hour}: compact domain {} must have exactly one terminal outcome PERF XOR H4DG, observed PERF={perf_count} H4DG={gap_count}",
                     contract.name
                 ));
             }
-            if contract.requires_data {
-                let data_count = summary
-                    .per_hour_data_domain_counts
-                    .get(hour)
-                    .and_then(|domains| domains.get(expected))
-                    .copied()
-                    .unwrap_or(0);
-                if data_count != 1 {
-                    errors.push(format!(
-                        "game_hour_raw {hour}: compact domain {} data_record_count {data_count} != 1",
-                        contract.name
-                    ));
-                }
+            let data_count = summary
+                .per_hour_data_domain_counts
+                .get(hour)
+                .and_then(|domains| domains.get(expected))
+                .copied()
+                .unwrap_or(0);
+            let expected_data_count = if perf_count == 1 && contract.requires_data {
+                1
+            } else {
+                0
+            };
+            if data_count != expected_data_count {
+                errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} DATA is nonterminal and must be present exactly once only with an accepted PERF outcome; observed DATA={data_count}, expected {expected_data_count}",
+                    contract.name
+                ));
             }
         }
     }
@@ -4219,15 +4560,96 @@ fn compact_domain_coverage_errors(
                 continue;
             };
             let contract = contract_for_descriptor(descriptor);
-            if !contract.requires_data {
-                continue;
-            }
             let data_count = domain_counts.get(expected).copied().unwrap_or(0);
             if data_count != 0 {
                 errors.push(format!(
                     "game_hour_raw {hour}: compact domain {} data_record_count {data_count} on non-frame hour",
                     contract.name
                 ));
+            }
+        }
+    }
+    for (hour, domain_counts) in &summary.per_hour_gap_domain_counts {
+        if frame_hours.contains(hour) {
+            continue;
+        }
+        for (domain, gap_count) in domain_counts {
+            if *gap_count != 0 {
+                errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} H4DG record_count {gap_count} on non-frame hour",
+                    domain_name(*domain)
+                ));
+            }
+        }
+    }
+
+    // A forward FRAME_END jump is format-valid only when the next frame is a
+    // gap-only frame for the exact scheduled roster and each H4DG range
+    // precisely covers the absent half-open hour interval plus its target
+    // outcome.  This prevents a later aggregate count from laundering missing
+    // frames or a mixed accepted snapshot from silently bridging a hole.
+    for pair in summary.unique_hours.windows(2) {
+        let previous = pair[0];
+        let next = pair[1];
+        if next <= previous.saturating_add(1) {
+            continue;
+        }
+        let Some(required_start) = previous.checked_add(1) else {
+            errors.push(format!(
+                "FRAME_END discontinuity after exhausted hour {previous} cannot be represented"
+            ));
+            continue;
+        };
+        for domain in expected_domains {
+            let matching = summary
+                .per_hour_gap_authority
+                .get(&(next, *domain))
+                .into_iter()
+                .flat_map(|values| values.iter())
+                .filter(|gap| {
+                    gap.range_start_hour_raw == required_start
+                        && gap.range_end_hour_raw == next
+                        && gap.target_hour_raw == next
+                })
+                .count();
+            if matching != 1 {
+                errors.push(format!(
+                    "FRAME_END discontinuity {previous}->{next}: domain {} must have one H4DG with exact range {required_start}..={next}, observed {matching}",
+                    domain_name(*domain)
+                ));
+            }
+        }
+    }
+
+    // A typed range may cover absent hours, but it may never overwrite an
+    // independently closed terminal outcome for the same domain.
+    for ((target_hour, domain), gaps) in &summary.per_hour_gap_authority {
+        for gap in gaps {
+            for closed_hour in summary.unique_hours.iter().copied().filter(|hour| {
+                gap.range_start_hour_raw <= *hour
+                    && *hour <= gap.range_end_hour_raw
+                    && *hour != *target_hour
+            }) {
+                let perf = summary
+                    .per_hour_perf_domain_counts
+                    .get(&closed_hour)
+                    .and_then(|domains| domains.get(domain))
+                    .copied()
+                    .unwrap_or(0);
+                let other_gap = summary
+                    .per_hour_gap_domain_counts
+                    .get(&closed_hour)
+                    .and_then(|domains| domains.get(domain))
+                    .copied()
+                    .unwrap_or(0);
+                if perf != 0 || other_gap != 0 {
+                    errors.push(format!(
+                        "H4DG domain {} target {target_hour} range {}..={} overlaps closed terminal outcome at hour {closed_hour}",
+                        domain_name(*domain),
+                        gap.range_start_hour_raw,
+                        gap.range_end_hour_raw
+                    ));
+                }
             }
         }
     }
@@ -4414,6 +4836,7 @@ mod tests {
         HeaderScanSummary {
             frame_end_record_count: 1,
             frame_end_hour_counts: BTreeMap::from([(100, 1)]),
+            per_hour_perf_domain_counts: BTreeMap::from([(100, BTreeMap::from([(57, 1)]))]),
             domain57_frames: vec![
                 recorder_host::domain_data_authority::Domain57FrameEvidence {
                     sequence: 2,
@@ -4531,6 +4954,377 @@ mod tests {
         assert_eq!(summary.frame_end_record_count, 2);
         assert_eq!(summary.skipped_hours, 0);
         assert!(compact_domain_coverage_errors(&summary, &[10]).is_empty());
+    }
+
+    #[test]
+    fn gap_acceptance_profiles_are_explicit_and_zero_loss_is_opt_in() {
+        let defaults = GateOptions::default();
+        assert_eq!(
+            defaults.gap_acceptance,
+            GapAcceptanceProfile::TypedGapsAllowed
+        );
+        assert_eq!(defaults.gap_acceptance.as_str(), "typed_gaps_allowed");
+        assert_eq!(
+            GapAcceptanceProfile::ZeroLossRequired.as_str(),
+            "require_zero_loss"
+        );
+    }
+
+    #[test]
+    fn manifest_domains_seen_is_bound_to_independent_h4cr_roster() {
+        let summary = HeaderScanSummary {
+            domains_seen: BTreeSet::from([10, compact_contract::COMPACT_DOMAIN_FRAME]),
+            ..HeaderScanSummary::default()
+        };
+        let mut errors = Vec::new();
+        validate_scanned_domains_seen(
+            &summary,
+            &json!({"domains_seen": ["fuel_live", "frame"]}),
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+
+        validate_scanned_domains_seen(&summary, &json!({"domains_seen": ["frame"]}), &mut errors);
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("independent stream domains_seen")));
+
+        let mut malformed_errors = Vec::new();
+        validate_scanned_domains_seen(
+            &summary,
+            &json!({"domains_seen": ["fuel_live", "frame", "frame", 10]}),
+            &mut malformed_errors,
+        );
+        assert!(malformed_errors
+            .iter()
+            .any(|error| error.contains("duplicate")));
+        assert!(malformed_errors
+            .iter()
+            .any(|error| error.contains("not a string")));
+    }
+
+    fn canonical_gap_hour(offset: i32) -> i32 {
+        compact_contract::calendar::DATE_EPOCH_CONST + (1936 * 365 * 24) + offset
+    }
+
+    fn gap_payload(target: i32, range_start: i32, range_end: i32, ordinal: u64) -> Vec<u8> {
+        let width = u64::try_from(i64::from(range_end) - i64::from(range_start) + 1).unwrap();
+        let (reason, tick_before, tick_after) = if range_start == range_end {
+            (compact_contract::DomainGapReason::Torn, 100, 101)
+        } else {
+            (compact_contract::DomainGapReason::Overrun, 100, 100 + width)
+        };
+        compact_contract::DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::State,
+            reason,
+            target_hour_raw: target,
+            range_start_hour_raw: range_start,
+            range_end_hour_raw: range_end,
+            tick_before,
+            tick_after,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: ordinal,
+        }
+        .encode()
+        .unwrap()
+    }
+
+    #[test]
+    fn header_scan_accepts_gap_only_and_mixed_perf_gap_frames() {
+        let hour = canonical_gap_hour(0);
+        let mut gap_only = Vec::new();
+        append_record(
+            &mut gap_only,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour, hour, hour, 0),
+        );
+        append_record(
+            &mut gap_only,
+            2,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(1, 1, 0, 0),
+        );
+        let gap_summary = scan_compact_stream(&gap_only);
+        assert!(
+            gap_summary.parse_errors.is_empty(),
+            "{:?}",
+            gap_summary.parse_errors
+        );
+        assert_eq!(gap_summary.domain_gap_record_count, 1);
+        assert!(compact_domain_coverage_errors(&gap_summary, &[10]).is_empty());
+
+        let mut mixed = Vec::new();
+        append_record(
+            &mut mixed,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut mixed,
+            2,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        append_record(
+            &mut mixed,
+            3,
+            hour,
+            12,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour, hour, hour, 0),
+        );
+        append_record(
+            &mut mixed,
+            4,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(2, 2, 0, 0),
+        );
+        let mixed_summary = scan_compact_stream(&mixed);
+        assert!(
+            mixed_summary.parse_errors.is_empty(),
+            "{:?}",
+            mixed_summary.parse_errors
+        );
+        assert!(
+            compact_domain_coverage_errors(&mixed_summary, &[10, 12]).is_empty(),
+            "{:?}",
+            compact_domain_coverage_errors(&mixed_summary, &[10, 12])
+        );
+    }
+
+    #[test]
+    fn header_scan_rejects_h4dg_ordinal_holes_overlap_and_target_mismatch() {
+        let hour = canonical_gap_hour(0);
+
+        let mut ordinal_hole = Vec::new();
+        append_record(
+            &mut ordinal_hole,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour, hour, hour, 1),
+        );
+        let summary = scan_compact_stream(&ordinal_hole);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("zero-based contiguous expected 0")));
+
+        let mut overlap = Vec::new();
+        append_record(
+            &mut overlap,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour, hour, hour, 0),
+        );
+        append_record(
+            &mut overlap,
+            2,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(1, 1, 0, 0),
+        );
+        append_record(
+            &mut overlap,
+            3,
+            hour + 1,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour + 1, hour, hour + 1, 1),
+        );
+        append_record(
+            &mut overlap,
+            4,
+            hour + 1,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(1, 1, 0, 0),
+        );
+        let summary = scan_compact_stream(&overlap);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("overlaps or regresses")));
+
+        let mut target_mismatch = Vec::new();
+        append_record(
+            &mut target_mismatch,
+            1,
+            hour + 1,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour, hour, hour, 0),
+        );
+        let summary = scan_compact_stream(&target_mismatch);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("does not equal target_hour_raw")));
+    }
+
+    #[test]
+    fn header_scan_requires_exact_forward_discontinuity_h4dg_ranges() {
+        let hour = canonical_gap_hour(0);
+        let mut exact = Vec::new();
+        append_record(
+            &mut exact,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut exact,
+            2,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        append_record(
+            &mut exact,
+            3,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(1, 1, 0, 0),
+        );
+        append_record(
+            &mut exact,
+            4,
+            hour + 3,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour + 3, hour + 1, hour + 3, 0),
+        );
+        append_record(
+            &mut exact,
+            5,
+            hour + 3,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(1, 1, 0, 0),
+        );
+        let exact_summary = scan_compact_stream(&exact);
+        assert!(
+            exact_summary.parse_errors.is_empty(),
+            "{:?}",
+            exact_summary.parse_errors
+        );
+        assert!(
+            compact_domain_coverage_errors(&exact_summary, &[10]).is_empty(),
+            "{:?}",
+            compact_domain_coverage_errors(&exact_summary, &[10])
+        );
+
+        let mut hole = exact;
+        let replacement = gap_payload(hour + 3, hour + 2, hour + 3, 0);
+        let gap_offset = (RECORD_HEADER_LEN + 40)
+            + (RECORD_HEADER_LEN + fuel_empty_payload().len())
+            + (RECORD_HEADER_LEN + 32)
+            + RECORD_HEADER_LEN;
+        hole[gap_offset..gap_offset + replacement.len()].copy_from_slice(&replacement);
+        let hole_summary = scan_compact_stream(&hole);
+        assert!(compact_domain_coverage_errors(&hole_summary, &[10])
+            .iter()
+            .any(|error| error.contains("exact range")));
+
+        let mut initial_coalesced = Vec::new();
+        append_record(
+            &mut initial_coalesced,
+            1,
+            hour + 1,
+            10,
+            RECORD_TYPE_DOMAIN_GAP,
+            &gap_payload(hour + 1, hour, hour + 1, 0),
+        );
+        append_record(
+            &mut initial_coalesced,
+            2,
+            hour + 1,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(1, 1, 0, 0),
+        );
+        let first_summary = scan_compact_stream(&initial_coalesced);
+        assert!(
+            compact_domain_coverage_errors(&first_summary, &[10]).is_empty(),
+            "the first authenticated H4DG range_start is the domain's session origin"
+        );
+    }
+
+    #[test]
+    fn header_scan_rejects_unknown_type_and_aggregate_count_bypass() {
+        let hour = canonical_gap_hour(0);
+        let mut unknown = Vec::new();
+        append_record(&mut unknown, 1, hour, 10, 99, &[]);
+        let summary = scan_compact_stream(&unknown);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unknown record type 99")));
+
+        let mut bypass = Vec::new();
+        append_record(
+            &mut bypass,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut bypass,
+            2,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut bypass,
+            3,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        append_record(
+            &mut bypass,
+            4,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload_with_fields(2, 2, 0, 0),
+        );
+        let summary = scan_compact_stream(&bypass);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "aggregate fixture itself should reach exact-roster checks: {:?}",
+            summary.parse_errors
+        );
+        let errors = compact_domain_coverage_errors(&summary, &[10, 12]);
+        assert!(errors.iter().any(|error| error.contains("terminal roster")));
+        assert!(errors.iter().any(|error| error.contains("PERF XOR H4DG")));
     }
 
     #[test]
@@ -5124,7 +5918,20 @@ mod tests {
         validate_domain57_stream_authority(&missing_record, &compact, &mut missing_record_errors);
         assert!(missing_record_errors
             .iter()
-            .any(|error| error.contains("exactly one record per closed frame")));
+            .any(|error| error.contains("exactly one record per accepted PERF frame")));
+
+        let gapped = HeaderScanSummary {
+            frame_end_record_count: 1,
+            frame_end_hour_counts: BTreeMap::from([(100, 1)]),
+            per_hour_gap_domain_counts: BTreeMap::from([(100, BTreeMap::from([(57, 1)]))]),
+            ..HeaderScanSummary::default()
+        };
+        let gapped_compact = json!({
+            "domain57_frame_evidence": domain57_frame_evidence_json(&gapped),
+        });
+        let mut gapped_errors = Vec::new();
+        validate_domain57_stream_authority(&gapped, &gapped_compact, &mut gapped_errors);
+        assert!(gapped_errors.is_empty(), "{gapped_errors:?}");
 
         let mut bad_root = valid_domain57_summary();
         bad_root.domain57_frames[0].root_evidence_mask = 0x3;
@@ -5216,8 +6023,8 @@ mod tests {
     #[test]
     fn identity_v1_scan_skips_cid1_accounting_and_exactly_joins_known_manifest() {
         use compact_contract::campaign_identity::{
-            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
-            COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
         };
 
         let hour = compact_contract::calendar::DATE_EPOCH_CONST + (1936 * 365 * 24);
@@ -5268,10 +6075,17 @@ mod tests {
             &frame_payload(0),
         );
 
-        let summary =
-            scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
-        assert!(summary.ordering_errors.is_empty(), "{:?}", summary.ordering_errors);
+        let summary = scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(
+            summary.ordering_errors.is_empty(),
+            "{:?}",
+            summary.ordering_errors
+        );
         assert_eq!(summary.record_count, 3, "CID1 is not an ordinary record");
         assert!(!summary.domains_seen.contains(&COMPACT_DOMAIN_STREAM_HEADER));
         let cid1 = summary.validated_cid1.as_ref().expect("retained CID1");
@@ -5307,8 +6121,7 @@ mod tests {
     #[test]
     fn known_manifest_never_falls_back_to_legacy_without_cid1() {
         let raw = one_domain_stream_with_frame_payload(&frame_payload(0));
-        let summary =
-            scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
+        let summary = scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
         assert!(summary.validated_cid1.is_none());
         assert!(summary
             .parse_errors
@@ -5337,7 +6150,7 @@ mod tests {
         assert!(
             summary.parse_errors.iter().any(|error| {
                 error.contains("emitted_domains 0")
-                    && error.contains("independently observed DOMAIN_PERF count 1")
+                    && error.contains("independently observed terminal record count 1")
             }),
             "{:?}",
             summary.parse_errors
@@ -5593,6 +6406,7 @@ mod tests {
         let honest = json!({
             "unique_game_hour_count": 2,
             "game_hours_advanced": 1,
+            "skipped_game_hours": 0,
         });
         let mut errors = Vec::new();
         validate_scanned_hours(&summary, &honest, 1, &mut errors);
@@ -5601,6 +6415,7 @@ mod tests {
         let dishonest = json!({
             "unique_game_hour_count": 3,
             "game_hours_advanced": 2,
+            "skipped_game_hours": 0,
         });
         validate_scanned_hours(&summary, &dishonest, 1, &mut errors);
         assert!(errors
@@ -5617,6 +6432,7 @@ mod tests {
         let manifest = json!({
             "unique_game_hour_count": 1,
             "game_hours_advanced": 0,
+            "skipped_game_hours": 0,
         });
         let mut minimum_errors = Vec::new();
         validate_scanned_hours(&one_hour, &manifest, 1, &mut minimum_errors);
@@ -5625,9 +6441,28 @@ mod tests {
                 .iter()
                 .filter(|error| error.contains("below required"))
                 .count(),
-            2,
+            1,
             "{minimum_errors:?}"
         );
+
+        let discontinuous = HeaderScanSummary {
+            unique_hours: vec![100, 103],
+            skipped_hours: 2,
+            ..HeaderScanSummary::default()
+        };
+        let discontinuous_manifest = json!({
+            "unique_game_hour_count": 2,
+            "game_hours_advanced": 3,
+            "skipped_game_hours": 2,
+        });
+        let mut discontinuity_errors = Vec::new();
+        validate_scanned_hours(
+            &discontinuous,
+            &discontinuous_manifest,
+            3,
+            &mut discontinuity_errors,
+        );
+        assert!(discontinuity_errors.is_empty(), "{discontinuity_errors:?}");
     }
 
     #[test]
@@ -5644,23 +6479,67 @@ mod tests {
             "skipped_game_hours": 0,
         });
         let mut errors = Vec::new();
-        validate_hourly_manifest(&honest, 3, &mut errors);
+        validate_hourly_manifest(
+            &honest,
+            3,
+            GapAcceptanceProfile::TypedGapsAllowed,
+            &mut errors,
+        );
         assert!(errors.is_empty(), "{errors:?}");
 
         let mut mismatched_request = honest.clone();
         mismatched_request["hourly_requirement"]["requested_game_hours"] = json!(4);
-        validate_hourly_manifest(&mismatched_request, 3, &mut errors);
+        validate_hourly_manifest(
+            &mismatched_request,
+            3,
+            GapAcceptanceProfile::TypedGapsAllowed,
+            &mut errors,
+        );
         assert!(errors.iter().any(|error| {
             error.contains("requested_game_hours 4") && error.contains("--min-game-hours 3")
         }));
 
         let mut missing_closed_frame = honest;
         missing_closed_frame["unique_game_hour_count"] = json!(3);
-        validate_hourly_manifest(&missing_closed_frame, 3, &mut errors);
+        validate_hourly_manifest(
+            &missing_closed_frame,
+            3,
+            GapAcceptanceProfile::TypedGapsAllowed,
+            &mut errors,
+        );
         assert!(errors.iter().any(|error| {
             error.contains("unique_game_hour_count 3")
                 && error.contains("game_hours_advanced + 1 (4)")
         }));
+
+        let typed_gap = json!({
+            "hourly_requirement": {
+                "required": true,
+                "met": true,
+                "problems": [],
+                "requested_game_hours": 3,
+            },
+            "game_hours_advanced": 3,
+            "unique_game_hour_count": 2,
+            "skipped_game_hours": 2,
+        });
+        let mut typed_errors = Vec::new();
+        validate_hourly_manifest(
+            &typed_gap,
+            3,
+            GapAcceptanceProfile::TypedGapsAllowed,
+            &mut typed_errors,
+        );
+        assert!(typed_errors.is_empty(), "{typed_errors:?}");
+        validate_hourly_manifest(
+            &typed_gap,
+            3,
+            GapAcceptanceProfile::ZeroLossRequired,
+            &mut typed_errors,
+        );
+        assert!(typed_errors
+            .iter()
+            .any(|error| error.contains("zero-loss profile requires 0")));
     }
 
     #[test]
@@ -6100,8 +6979,7 @@ mod tests {
         let error = static_authority_error(
             "static_bundle_arbitrary_product_modset",
             |manifest| {
-                manifest["static_bundle"]["product_modset_sha256"] =
-                    json!("9".repeat(64));
+                manifest["static_bundle"]["product_modset_sha256"] = json!("9".repeat(64));
             },
             |_, _| {},
         );
@@ -6763,7 +7641,16 @@ mod tests {
         summary
             .per_domain_combined_units
             .insert(10, BTreeMap::from([("fuel_country_rows".to_string(), 23)]));
+        summary
+            .per_hour_perf_domain_counts
+            .insert(100, BTreeMap::from([(10, 1)]));
+        summary
+            .per_hour_data_domain_counts
+            .insert(100, BTreeMap::from([(10, 1)]));
         let manifest_domain = json!({
+            "record_count": 1,
+            "data_record_count": 1,
+            "read_time_us": {"count": 1},
             "row_count_total": 11,
             "changed_rows_total": 12,
             "unit_count_total": 13,
@@ -6779,6 +7666,8 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
 
         for field in [
+            "record_count",
+            "data_record_count",
             "row_count_total",
             "changed_rows_total",
             "unit_count_total",
@@ -6795,6 +7684,19 @@ mod tests {
                 "field={field}: {errors:?}"
             );
         }
+
+        let mut forged_timing = compact.clone();
+        forged_timing["per_domain"]["fuel_live"]["read_time_us"]["count"] = json!(0);
+        let mut timing_errors = Vec::new();
+        validate_scanned_domain_authority(
+            &summary,
+            &forged_timing,
+            &[contract],
+            &mut timing_errors,
+        );
+        assert!(timing_errors
+            .iter()
+            .any(|error| error.contains("timing cardinality")));
 
         let mut forged_status = compact.clone();
         forged_status["per_domain"]["fuel_live"]["status_flags_or"] = json!(1);
@@ -6982,11 +7884,8 @@ mod tests {
     #[test]
     fn every_production_domain_routes_to_a_canonical_structural_decoder() {
         for descriptor in compact_contract::production_profile_domains() {
-            let result = recorder_host::stream_fold::validate_domain_data_payload(
-                descriptor.id,
-                &[],
-                0,
-            );
+            let result =
+                recorder_host::stream_fold::validate_domain_data_payload(descriptor.id, &[], 0);
             assert!(
                 !matches!(result, Err(ref error) if error.contains("no exact structural decoder")),
                 "domain {} ({}): {result:?}",
@@ -7065,8 +7964,7 @@ mod tests {
             required_content: Vec::new(),
             manifest_digest_sha256: None,
         };
-        manifest.source_profile.selection_sha256 =
-            manifest.computed_selection_sha256().unwrap();
+        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
         manifest.with_computed_digest().unwrap()
     }
 

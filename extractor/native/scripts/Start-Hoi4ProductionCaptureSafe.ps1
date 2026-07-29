@@ -3,9 +3,11 @@ param(
     [double]$DurationSeconds = 300,
     [int]$MinGameHours = 48,
     [int]$ReaderConcurrency = 6,
-    [int]$HourLatchPollMs = 2,
-    [int]$HourLatchQueueCap = 64,
+    [int]$ReadOnlySchedulerPollMs = 2,
+    [int]$ReadOnlySchedulerQueueCap = 1,
     [int]$SpeedMonitorMs = 250,
+    [int]$InjectionReadyTimeoutSeconds = 120,
+    [int]$RecorderTeardownAllowanceSeconds = 120,
     [double]$EstimatedMegabytesPerSecond = 70,
     [string]$OutDir = "",
     [string]$SessionId = "",
@@ -33,7 +35,7 @@ param(
     [string]$PrebuiltArtifactAttestationPath = "",
     [string]$DeploymentProfilePath = "",
     [string]$Rung = "",
-    [ValidateSet("production", "synthetic-fault", "paused")][string]$AcceptanceMode = "production",
+    [ValidateSet("production", "synthetic-fault")][string]$AcceptanceMode = "production",
     [string]$AcceptanceTestNonce = "",
     [switch]$SkipBuild,
     [switch]$DryRun,
@@ -54,6 +56,7 @@ $recorder = Join-Path $releaseRoot "collector_record.exe"
 $foldCheck = Join-Path $releaseRoot "fold_check.exe"
 $compactGate = Join-Path $releaseRoot "compact_replay_gate.exe"
 $packReplay = Join-Path $releaseRoot "pack_replay.exe"
+$domainRosterTool = Join-Path $releaseRoot "domain_roster.exe"
 $registryPath = Join-Path $nativeRoot "domain_registry.json"
 $profilePath = Join-Path $repoRoot "extractor\live_capture\collector_profiles\vanilla_latest_2026_06_30.json"
 $staticBundleScript = Join-Path $repoRoot "extractor\game_defs\static_bundle.py"
@@ -65,6 +68,9 @@ $speedStreamVerifier = Join-Path $scriptDir "verify_speed5_stream.py"
 $speedEvidenceVerifier = Join-Path $scriptDir "verify_speed_root_evidence_v2.py"
 $speedEvidenceProbe = Join-Path $scriptDir "collect_speed_root_evidence_v2.py"
 $speedEvidenceSchema = Join-Path $scriptDir "speed_root_evidence_v2.schema.json"
+$readOnlyGameStateWitness = Join-Path $scriptDir "Read-Hoi4GameState.ps1"
+$passiveCapturePolicyTest = Join-Path $scriptDir "Test-PassiveCapturePolicy.ps1"
+$passiveCaptureLifecycle = Join-Path $scriptDir "PassiveCapture.Lifecycle.ps1"
 $sinkReconciliationVerifier = Join-Path $scriptDir "verify_sink_reconciliation.py"
 $expectedSpeedEvidenceVerifierSha = "1a8057e0084e8507b1c8cde6a7d7c0198652db6efca0bbcb891bc7dc99cb8e28"
 $expectedSpeedEvidenceProbeSha = "7302d6981b74b5eba149a58b30e359c9e519e7b7e275273c07ca4214615b406b"
@@ -73,6 +79,7 @@ $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
 . (Join-Path $scriptDir "ProductionArtifact.Attestation.ps1")
 . (Join-Path $scriptDir "WindowsPath.Identity.ps1")
+. (Join-Path $scriptDir "PassiveCapture.Lifecycle.ps1")
 $pythonCommand=Get-Command $PythonExe -CommandType Application -ErrorAction Stop
 $PythonExe=$pythonCommand.Source
 $preparedModsetReceipt=$null
@@ -112,16 +119,17 @@ function Update-AttemptMarker {
 
 if ($DurationSeconds -le 0 -or $MinGameHours -lt 1) { throw "duration and minimum game hours must be positive" }
 if ($ReaderConcurrency -lt 1) { throw "reader concurrency must be at least 1" }
-if ($HourLatchPollMs -lt 1 -or $HourLatchPollMs -gt 25) { throw "hour latch poll must be 1..25 ms" }
-if ($HourLatchQueueCap -lt 1 -or $HourLatchQueueCap -gt 65535) { throw "hour latch queue cap must be 1..65535" }
+if ($ReadOnlySchedulerPollMs -lt 1 -or $ReadOnlySchedulerPollMs -gt 25) { throw "read-only scheduler poll must be 1..25 ms" }
+if ($ReadOnlySchedulerQueueCap -ne 1) { throw "direct passive production capture requires scheduler queue capacity 1" }
 if ($SpeedMonitorMs -lt 50 -or $SpeedMonitorMs -gt 1000) { throw "speed monitor must be 50..1000 ms" }
+if ($InjectionReadyTimeoutSeconds -lt 5 -or $InjectionReadyTimeoutSeconds -gt 300) { throw "injection READY timeout must be 5..300 seconds" }
+if ($RecorderTeardownAllowanceSeconds -lt 30 -or $RecorderTeardownAllowanceSeconds -gt 600) { throw "recorder teardown allowance must be 30..600 seconds" }
 if ($MaxFinalizeSeconds -lt 1 -or $CancellationGraceSeconds -lt 1) { throw "finalize and cancellation limits must be positive" }
 if ($AcceptanceMode -eq "production") {
     if (-not [string]::IsNullOrWhiteSpace($AcceptanceTestNonce)) { throw "production mode forbids an acceptance-test nonce" }
 } else {
     if ($AcceptanceTestNonce -cnotmatch '^[0-9a-f]{64}$') { throw "acceptance test mode requires a 64-character lowercase-hex nonce" }
-    $expectedRung = if ($AcceptanceMode -eq "synthetic-fault") { "synthetic-fault" } else { "paused-short-proof" }
-    if ($Rung -cne $expectedRung) { throw "acceptance mode $AcceptanceMode requires rung $expectedRung" }
+    if ($Rung -cne "synthetic-fault") { throw "acceptance mode $AcceptanceMode requires rung synthetic-fault" }
 }
 $deploymentProfileFile = $null
 $deploymentProfileSha256 = $null
@@ -148,10 +156,18 @@ if (-not (Test-Path -LiteralPath $SpeedEvidenceNonceLedgerRoot -PathType Contain
 $SpeedEvidenceNonceLedgerRoot=(Resolve-Path -LiteralPath $SpeedEvidenceNonceLedgerRoot).Path
 foreach($pin in @($SpeedEvidenceTranscriptSha256,$SpeedEvidenceTranscriptFileSha256,$SpeedEvidenceNonce,$SpeedStaticDisasmSha256)) { if ([string]$pin -cnotmatch '^[0-9a-f]{64}$') { throw "speed evidence pins/nonces must be lowercase SHA-256-shaped values" } }
 if ((Get-FileHash -LiteralPath $SpeedEvidenceTranscriptPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $SpeedEvidenceTranscriptFileSha256) { throw "raw speed evidence transcript file hash differs from the caller pin" }
-if ($SpeedEvidenceSessionId -cnotmatch '^[A-Za-z0-9_.-]{8,128}$') { throw "speed evidence session id is invalid" }
+if ($SpeedEvidenceSessionId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') { throw "speed evidence session id must be a canonical lowercase UUID" }
 foreach($toolPin in @{$speedEvidenceVerifier=$expectedSpeedEvidenceVerifierSha;$speedEvidenceProbe=$expectedSpeedEvidenceProbeSha;$speedEvidenceSchema=$expectedSpeedEvidenceSchemaSha}.GetEnumerator()) {
     if (-not (Test-Path -LiteralPath $toolPin.Key -PathType Leaf) -or (Get-FileHash -LiteralPath $toolPin.Key -Algorithm SHA256).Hash.ToLowerInvariant() -cne $toolPin.Value) { throw "canonical speed evidence tooling hash mismatch: $($toolPin.Key)" }
 }
+foreach ($policyInput in @($readOnlyGameStateWitness, $passiveCapturePolicyTest, $passiveCaptureLifecycle)) {
+    if (-not (Test-Path -LiteralPath $policyInput -PathType Leaf)) {
+        throw "required passive interaction-policy input is missing: $policyInput"
+    }
+}
+$readOnlyGameStateWitnessSha256 = (Get-FileHash -LiteralPath $readOnlyGameStateWitness -Algorithm SHA256).Hash.ToLowerInvariant()
+$passiveCapturePolicyTestSha256 = (Get-FileHash -LiteralPath $passiveCapturePolicyTest -Algorithm SHA256).Hash.ToLowerInvariant()
+$passiveCaptureLifecycleSha256 = (Get-FileHash -LiteralPath $passiveCaptureLifecycle -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $nonce = [guid]::NewGuid().ToString("N")
 if ([string]::IsNullOrWhiteSpace($SessionId)) { $SessionId = $SpeedEvidenceSessionId }
@@ -369,13 +385,56 @@ if ($AcceptanceMode -eq 'production') {
     }
 }
 
+$productionDomains = @(Get-RegistryCaptureDomains $registryPath)
+if (-not (Test-Path -LiteralPath $domainRosterTool -PathType Leaf)) {
+    throw "canonical compact domain-roster tool is missing: $domainRosterTool"
+}
+$domainRosterOutput = @(
+    & $domainRosterTool --native-root $nativeRoot --json 2>&1 |
+        ForEach-Object { [string]$_ }
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "canonical compact domain-roster tool failed with exit code ${LASTEXITCODE}: $($domainRosterOutput -join [Environment]::NewLine)"
+}
+$domainRosterAuthorityRaw = [string]::Join([Environment]::NewLine, $domainRosterOutput)
+$domainRosterAuthorityPath = Join-Path $OutDir "production_domain_roster_authority.json"
+Write-AtomicUtf8Text -Path $domainRosterAuthorityPath -Text $domainRosterAuthorityRaw
+try {
+    $productionDomainRoster = @(
+        (Get-Content -LiteralPath $domainRosterAuthorityPath -Raw | ConvertFrom-Json)
+    )
+} catch {
+    throw "canonical compact domain-roster tool did not emit valid JSON: $($_.Exception.Message)"
+}
+if ($productionDomainRoster.Count -ne $productionDomains.Count) {
+    throw "canonical compact domain-roster count differs from the production registry"
+}
+for ($domainIndex = 0; $domainIndex -lt $productionDomains.Count; $domainIndex++) {
+    $registryDomain = $productionDomains[$domainIndex]
+    $rosterDomain = $productionDomainRoster[$domainIndex]
+    if (
+        (@($rosterDomain.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'id,name,wire_name' -or
+        [int]$rosterDomain.id -ne [int]$registryDomain.id -or
+        [string]$rosterDomain.name -cne [string]$registryDomain.name -or
+        [string]::IsNullOrWhiteSpace([string]$rosterDomain.wire_name)
+    ) {
+        throw "canonical compact domain-roster row $domainIndex does not exactly join the production registry"
+    }
+}
+$productionCanonicalDomainNames = @(
+    $productionDomainRoster | ForEach-Object { [string]$_.name }
+)
+$productionDomainNames = @(
+    $productionDomainRoster | ForEach-Object { [string]$_.wire_name }
+)
 $args = @(
     "--pid", "$Hoi4Pid", "--dll", $stagedDll, "--out-dir", $OutDir,
     "--duration-s", ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "{0:0.###}", $DurationSeconds)),
     "--sample-ms", "1", "--min-game-hours", "$MinGameHours", "--profile", "production",
     "--reader-concurrency", "$ReaderConcurrency",
-    "--session-id", $SessionId, "--capture-id", $CaptureId, "--hour-latch", "--hour-latch-poll-ms", "$HourLatchPollMs",
-    "--hour-latch-queue-cap", "$HourLatchQueueCap",
+    "--session-id", $SessionId, "--capture-id", $CaptureId, "--read-only-scheduler",
+    "--read-only-scheduler-poll-ms", "$ReadOnlySchedulerPollMs",
+    "--read-only-scheduler-queue-cap", "$ReadOnlySchedulerQueueCap",
     "--domain57-game-speed-gate-v2", $SpeedRootGatePath,
     "--domain57-game-speed-transcript-file-sha256", $SpeedEvidenceTranscriptFileSha256,
     "--static-bundle-manifest", $bundleManifestPath,
@@ -399,7 +458,22 @@ $plan = [ordered]@{
     prebuilt_artifact_attestation_authority_path = $prebuiltArtifacts.receipt_path
     prebuilt_artifact_attestation_sha256 = $prebuiltArtifacts.receipt_sha256
     prebuilt_source_input_sha256 = $prebuiltArtifacts.source_input_sha256
-    unpaused_required = ($AcceptanceMode -ne "paused"); hour_latch_required = $true
+    unpaused_required = $true
+    read_only_scheduler_required = $true
+    interaction_closure = [ordered]@{
+        policy = "passive_injected_observer"
+        injected_collector_allowed = $true
+        evidence_backed_hooks_allowed = $true
+        client_commands_during_capture = 0
+        semantic_engine_state_writes = 0
+        game_process_lifecycle_commands = 0
+        game_ui_commands = 0
+        policy_inputs = [ordered]@{
+            read_only_game_state_witness_sha256 = $readOnlyGameStateWitnessSha256
+            passive_capture_policy_test_sha256 = $passiveCapturePolicyTestSha256
+            passive_capture_lifecycle_sha256 = $passiveCaptureLifecycleSha256
+        }
+    }
     domain57_game_speed_gate_v2 = $SpeedRootGatePath; domain57_game_speed_gate_v2_sha256 = $speedRootGateSha
     speed_evidence_transcript_sha256 = $SpeedEvidenceTranscriptSha256; speed_evidence_session_id = $SpeedEvidenceSessionId
     speed_evidence_transcript_file_sha256 = $SpeedEvidenceTranscriptFileSha256
@@ -418,7 +492,41 @@ $plan = [ordered]@{
     finalized_static_bundle = $finalizedStaticBundleDir
     emitted_token_inventory = $EmittedTokensPath
     token_omissions_inventory = $TokenOmissionsPath
-    production_profile_domain_ids = @(Get-RegistryCaptureDomains $registryPath | ForEach-Object { [int]$_.id })
+    domain_roster_tool_sha256 = (Get-FileHash -LiteralPath $domainRosterTool -Algorithm SHA256).Hash.ToLowerInvariant()
+    domain_roster_authority_path = $domainRosterAuthorityPath
+    domain_roster_authority_sha256 = (Get-FileHash -LiteralPath $domainRosterAuthorityPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    production_profile_domain_ids = @($productionDomains | ForEach-Object { [int]$_.id })
+    production_profile_domain_names = @($productionCanonicalDomainNames)
+    production_profile_domain_roster = @(
+        $productionDomainRoster | ForEach-Object {
+            [ordered]@{
+                id = [int]$_.id
+                name = [string]$_.name
+            }
+        }
+    )
+    scheduled_domain_names = @($productionDomainNames)
+    scheduled_domain_roster = @(
+        $productionDomainRoster | ForEach-Object {
+            [ordered]@{
+                id = [int]$_.id
+                wire_name = [string]$_.wire_name
+            }
+        }
+    )
+    requested_duration_ms = [uint32](
+        [decimal]::Parse(
+            [string]::Format(
+                [Globalization.CultureInfo]::InvariantCulture,
+                '{0:0.###}',
+                $DurationSeconds
+            ),
+            [Globalization.CultureInfo]::InvariantCulture
+        ) * 1000
+    )
+    read_only_scheduler_poll_ms = $ReadOnlySchedulerPollMs
+    read_only_scheduler_queue_cap = $ReadOnlySchedulerQueueCap
+    scheduler_worker_count = $ReaderConcurrency
     recorder_arguments = $args
 }
 if ($AcceptanceMode -ne "production") {
@@ -464,7 +572,11 @@ function Read-LiveBytes([IntPtr]$Handle, [Int64]$Address, [int]$Count) {
     if (-not [Hoi4ProductionCapture.Native]::ReadProcessMemory($Handle, [IntPtr]$Address, $buffer, [UIntPtr]$Count, [ref]$read) -or $read.ToUInt64() -ne [uint64]$Count) { throw ("ReadProcessMemory failed at 0x{0:X}" -f $Address) }
     return $buffer
 }
-function Get-LiveSample([IntPtr]$Handle, [Int64]$Base) {
+function Get-LiveSample(
+    [IntPtr]$Handle,
+    [Int64]$Base,
+    [Parameter(Mandatory = $true)][string]$Phase
+) {
     $gs = [BitConverter]::ToInt64((Read-LiveBytes $Handle ($Base + 0x3316E90) 8), 0)
     if ($gs -lt 0x10000 -or ($gs -band 7) -ne 0) { throw "invalid CGameState pointer" }
     $clockA = [BitConverter]::ToInt64((Read-LiveBytes $Handle ($Base + 0x33172E0) 8), 0)
@@ -474,6 +586,7 @@ function Get-LiveSample([IntPtr]$Handle, [Int64]$Base) {
     if ($clockVtable -ne ($Base + 0x2952510)) { throw "clock vtable sentinel mismatch" }
     [pscustomobject]@{
         observed_utc = [DateTime]::UtcNow.ToString("o")
+        phase = $Phase
         speed_raw = [BitConverter]::ToInt32((Read-LiveBytes $Handle ($gs + 0x4BC) 4), 0)
         paused = ((Read-LiveBytes $Handle ($clockA + 0x6C1) 1)[0] -ne 0)
         game_hour_raw = [BitConverter]::ToInt32((Read-LiveBytes $Handle ($gs + 0x468) 4), 0)
@@ -519,6 +632,7 @@ if ($AcceptanceMode -eq 'production' -and $null -ne $preparedModsetReceipt) {
 $plan["domain57_game_speed_gate_v2_sha256"]=$speedRootGateSha
 $plan["process_start_utc"]=$game.StartTime.ToUniversalTime().ToString('o')
 $plan["process_creation_filetime_utc"]=$processCreationFiletimeUtc
+$plan["exe_sha256"]=$exeSha.ToLowerInvariant()
 Write-DurableJson -Path $planPath -Value $plan
 $planSha=(Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
@@ -563,14 +677,29 @@ $process=$null
 $recorderStdoutTask=$null; $recorderStderrTask=$null
 $samples = [System.Collections.Generic.List[object]]::new()
 $monitorWriter=$null
-$expectedPaused = ($AcceptanceMode -eq "paused")
+$expectedPaused = $false
+$readyAuthority = $null
+$teardownAuthority = $null
+$readyReceiptPath = Join-Path $OutDir 'CAPTURE_READY_V2.json'
+$teardownReceiptPath = Join-Path $OutDir 'CAPTURE_TEARDOWN_V1.json'
+$recorderNaturalDeadline = $null
+$requestedDurationMs = [uint32](
+    [decimal]::Parse(
+        [string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            '{0:0.###}',
+            $DurationSeconds
+        ),
+        [Globalization.CultureInfo]::InvariantCulture
+    ) * 1000
+)
 try {
     $dailyExpected = @(([string]$profile.hooks.daily_update.sentinel_bytes -split ' ') | ForEach-Object { [Convert]::ToByte($_,16) })
     $dailyActual = @(Read-LiveBytes $handle ($base + 0x1D4390) 16)
     if (($dailyActual -join ',') -ne ($dailyExpected -join ',')) { throw "daily-update profile sentinel mismatch" }
     $monitorWriter=[System.IO.StreamWriter]::new($speedLog,$false,[System.Text.UTF8Encoding]::new($false)); $monitorWriter.AutoFlush=$true
     1..3 | ForEach-Object {
-        $sample = Get-LiveSample $handle $base
+        $sample = Get-LiveSample $handle $base "preflight"
         $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
         if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) { throw "preflight speed/pause state does not match acceptance mode $AcceptanceMode" }
         Start-Sleep -Milliseconds 100
@@ -589,12 +718,59 @@ try {
     $recorderStart.RedirectStandardOutput=$true; $recorderStart.RedirectStandardError=$true
     $process=[System.Diagnostics.Process]::new(); $process.StartInfo=$recorderStart
     if (-not $process.Start()) { throw "collector_record process start returned false" }
+    $recorderNaturalDeadline = [DateTime]::UtcNow.AddSeconds(
+        $DurationSeconds + $RecorderTeardownAllowanceSeconds
+    )
     $recorderStdoutTask=$process.StandardOutput.ReadToEndAsync(); $recorderStderrTask=$process.StandardError.ReadToEndAsync()
     Update-AttemptMarker $attemptMarkerPath $attemptMarker "child_started" @{child_pid=$process.Id; child_started_utc=[DateTime]::UtcNow.ToString('o')}
-    $deadline=[DateTime]::UtcNow.AddSeconds($DurationSeconds + $MaxFinalizeSeconds)
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds($InjectionReadyTimeoutSeconds)
+    $nextReadyProgress = [DateTime]::UtcNow
+    while (-not (Test-Path -LiteralPath $readyReceiptPath -PathType Leaf)) {
+        $process.Refresh()
+        if ($process.HasExited) {
+            throw "collector_record exited with code $($process.ExitCode) before authenticated READY"
+        }
+        if ([DateTime]::UtcNow -ge $readyDeadline) {
+            throw "collector_record published no authenticated READY receipt within $InjectionReadyTimeoutSeconds seconds"
+        }
+        $sample = Get-LiveSample $handle $base "ready_wait"
+        $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
+        if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) {
+            throw "live monitor detected a speed/pause violation while awaiting authenticated READY"
+        }
+        if ([DateTime]::UtcNow -ge $nextReadyProgress) {
+            $remaining = [Math]::Max(
+                0,
+                [Math]::Ceiling(($readyDeadline - [DateTime]::UtcNow).TotalSeconds)
+            )
+            Write-Host "phase=injection_wait recorder_pid=$($process.Id) game_pid=$Hoi4Pid remaining_s=$remaining"
+            $nextReadyProgress = [DateTime]::UtcNow.AddSeconds(5)
+        }
+        Start-Sleep -Milliseconds ([Math]::Min($SpeedMonitorMs, 250))
+    }
+    $readyAuthority = Test-PassiveCaptureReadyReceipt `
+        -RunDir $OutDir `
+        -TargetPid ([uint32]$Hoi4Pid) `
+        -TargetCreationFiletimeUtc ([uint64]$processCreationFiletimeUtc) `
+        -SessionId $SessionId `
+        -CaptureId $CaptureId `
+        -RequestedDurationMs $requestedDurationMs `
+        -TargetExecutableSha256 ($exeSha.ToLowerInvariant()) `
+        -CollectorDllSha256 $stagedSha `
+        -ScheduledDomainNames $productionDomainNames `
+        -SchedulerPollMs ([uint32]$ReadOnlySchedulerPollMs) `
+        -SchedulerQueueCapacity ([uint32]$ReadOnlySchedulerQueueCap) `
+        -SchedulerWorkerCount ([uint32]$ReaderConcurrency) `
+        -CollectorControlPath $collectorControlPath
+    Update-AttemptMarker $attemptMarkerPath $attemptMarker "capture_ready_authenticated" @{
+        capture_ready_receipt_sha256 = $readyAuthority.ReceiptSha256
+        active_hook_count = $readyAuthority.ActiveHookCount
+    }
+    Write-Host "phase=injection_ready recorder_pid=$($process.Id) game_pid=$Hoi4Pid hooks=$($readyAuthority.ActiveHookCount)"
+    $deadline=$recorderNaturalDeadline
     while (-not $process.HasExited) {
-        if ([DateTime]::UtcNow -ge $deadline) { throw "collector_record exceeded bounded capture/finalize deadline" }
-        $sample = Get-LiveSample $handle $base
+        if ([DateTime]::UtcNow -ge $deadline) { throw "collector_record exceeded bounded natural capture/teardown deadline; post-injection termination is forbidden" }
+        $sample = Get-LiveSample $handle $base "capture"
         $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
         if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) { throw "live monitor detected a speed/pause violation for acceptance mode $AcceptanceMode" }
         Start-Sleep -Milliseconds $SpeedMonitorMs
@@ -602,8 +778,50 @@ try {
     }
     Write-AtomicUtf8Text -Path $stdoutLog -Text ([string]$recorderStdoutTask.Result)
     Write-AtomicUtf8Text -Path $stderrLog -Text ([string]$recorderStderrTask.Result)
-    if ($process.ExitCode -ne 0) { throw "collector_record exited nonzero: $($process.ExitCode)" }
     Update-AttemptMarker $attemptMarkerPath $attemptMarker "child_exited" @{child_exit_code=$process.ExitCode; child_exited_utc=[DateTime]::UtcNow.ToString('o')}
+    $teardownDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    $sample = Get-LiveSample $handle $base "teardown_wait"
+    $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
+    if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) {
+        throw "read-only teardown witness detected a speed/pause violation for acceptance mode $AcceptanceMode"
+    }
+    $nextTeardownSample = [DateTime]::UtcNow.AddMilliseconds($SpeedMonitorMs)
+    while (-not (Test-Path -LiteralPath $teardownReceiptPath -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $teardownDeadline) {
+        if ([DateTime]::UtcNow -ge $nextTeardownSample) {
+            $sample = Get-LiveSample $handle $base "teardown_wait"
+            $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
+            if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) {
+                throw "read-only teardown witness detected a speed/pause violation for acceptance mode $AcceptanceMode"
+            }
+            $nextTeardownSample = [DateTime]::UtcNow.AddMilliseconds($SpeedMonitorMs)
+        }
+        Start-Sleep -Milliseconds ([Math]::Min($SpeedMonitorMs, 250))
+    }
+    if (-not (Test-Path -LiteralPath $teardownReceiptPath -PathType Leaf)) {
+        throw "collector_record exited with code $($process.ExitCode) without authenticated teardown"
+    }
+    $teardownAuthority = Test-PassiveCaptureTeardownReceipt `
+        -RunDir $OutDir `
+        -TargetPid ([uint32]$Hoi4Pid) `
+        -TargetCreationFiletimeUtc ([uint64]$processCreationFiletimeUtc) `
+        -SessionId $SessionId `
+        -CaptureId $CaptureId `
+        -ReadyAuthority $readyAuthority
+    $postTeardownSample = Get-LiveSample $handle $base "post_teardown"
+    $samples.Add($postTeardownSample)
+    $monitorWriter.WriteLine(($postTeardownSample | ConvertTo-Json -Compress))
+    if ($postTeardownSample.speed_raw -ne 4 -or
+        [bool]$postTeardownSample.paused -ne $expectedPaused) {
+        throw "post-teardown read-only witness detected a speed/pause violation for acceptance mode $AcceptanceMode"
+    }
+    Update-AttemptMarker $attemptMarkerPath $attemptMarker "teardown_authenticated" @{
+        child_exit_code = $process.ExitCode
+        capture_teardown_receipt_sha256 = $teardownAuthority.ReceiptSha256
+        collector_module_absent_verified = $true
+    }
+    Write-Host "phase=teardown_authenticated recorder_pid=$($process.Id) game_pid=$Hoi4Pid"
+    if ($process.ExitCode -ne 0) { throw "collector_record exited nonzero after authenticated teardown: $($process.ExitCode)" }
     $monitorWriter.Flush(); $monitorWriter.Dispose(); $monitorWriter=$null
     $manifestPath=Join-Path $OutDir "native_session_manifest.json"
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "collector_record exited without a manifest" }
@@ -680,11 +898,54 @@ catch {
 }
 finally {
     if ($null -ne $monitorWriter) { try { $monitorWriter.Flush(); $monitorWriter.Dispose() } catch {} }
-    if ($null -ne $process -and -not $process.HasExited) {
-        $closeRequested=$false; try { $closeRequested=$process.CloseMainWindow() } catch {}
-        $graceful=$process.WaitForExit($CancellationGraceSeconds*1000)
-        if (-not $graceful) { try { $process.Kill() } catch {}; [void]$process.WaitForExit(5000) }
-        try { Update-AttemptMarker $attemptMarkerPath $attemptMarker "failed_unresolved" @{cancellation_requested=$true; close_main_window_requested=$closeRequested; child_exited=$process.HasExited} } catch {}
+    if ($null -ne $process) {
+        if (-not $process.HasExited) {
+            $nextPassiveWaitNotice = [DateTime]::UtcNow
+            while (-not $process.HasExited -and
+                $null -ne $recorderNaturalDeadline -and
+                [DateTime]::UtcNow -lt $recorderNaturalDeadline) {
+                if ([DateTime]::UtcNow -ge $nextPassiveWaitNotice) {
+                    Write-Host "phase=passive_recorder_finalize_wait recorder_pid=$($process.Id)"
+                    $nextPassiveWaitNotice = [DateTime]::UtcNow.AddSeconds(10)
+                }
+                [void]$process.WaitForExit(500)
+                $process.Refresh()
+            }
+        }
+        if ($process.HasExited -and
+            $null -ne $readyAuthority -and
+            $null -eq $teardownAuthority -and
+            (Test-Path -LiteralPath $teardownReceiptPath -PathType Leaf)) {
+            try {
+                $teardownAuthority = Test-PassiveCaptureTeardownReceipt `
+                    -RunDir $OutDir `
+                    -TargetPid ([uint32]$Hoi4Pid) `
+                    -TargetCreationFiletimeUtc ([uint64]$processCreationFiletimeUtc) `
+                    -SessionId $SessionId `
+                    -CaptureId $CaptureId `
+                    -ReadyAuthority $readyAuthority
+                Update-AttemptMarker $attemptMarkerPath $attemptMarker "failed_clean_teardown" @{
+                    child_exit_code = $process.ExitCode
+                    capture_teardown_receipt_sha256 = $teardownAuthority.ReceiptSha256
+                    collector_module_absent_verified = $true
+                }
+            } catch {
+                try {
+                    Update-AttemptMarker $attemptMarkerPath $attemptMarker "failed_unresolved" @{
+                        teardown_authentication_failure = $_.Exception.Message
+                    }
+                } catch {}
+            }
+        }
+        try {
+            if ($null -eq $teardownAuthority) {
+                Update-AttemptMarker $attemptMarkerPath $attemptMarker "failed_unresolved" @{
+                    post_injection_termination_forbidden = $true
+                    child_exited = $process.HasExited
+                    teardown_receipt_present = (Test-Path -LiteralPath $teardownReceiptPath -PathType Leaf)
+                }
+            }
+        } catch {}
     }
     [void][Hoi4ProductionCapture.Native]::CloseHandle($handle)
     if ($null -ne $process) { $process.Dispose() }
@@ -700,7 +961,7 @@ if ($AcceptanceMode -eq "production") {
     $sinkGate = Invoke-IndependentCaptureGate -Name "verify_sink_reconciliation" -FilePath $PythonExe -Arguments @($sinkReconciliationVerifier,"--run-dir",$OutDir,"--expect","success","--out",$sinkReconciliationReport) -LogDir (Join-Path $OutDir "sink_reconciliation_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
     if (-not $sinkGate.passed -or -not (Test-Path -LiteralPath $sinkReconciliationReport -PathType Leaf)) { throw "independent sink reconciliation failed" }
     $sinkResult = Get-Content -LiteralPath $sinkReconciliationReport -Raw | ConvertFrom-Json
-    if ([string]$sinkResult.schema -cne "extractor.sink-reconciliation-verification.v1" -or [string]$sinkResult.verdict -cne "passed" -or @($sinkResult.problems).Count -ne 0) {
+    if ([string]$sinkResult.schema -cne "extractor.sink-reconciliation-verification.v2" -or [string]$sinkResult.verdict -cne "passed" -or @($sinkResult.problems).Count -ne 0) {
         throw "sink reconciliation returned a noncanonical pass"
     }
 } else {
@@ -712,12 +973,12 @@ if ($AcceptanceMode -eq "production") {
     $extractionReport = Join-Path $OutDir "acceptance_snapshot_extraction.json"
     $extractGate = Invoke-IndependentCaptureGate -Name "extract_acceptance_snapshots" -FilePath $PythonExe -Arguments @((Join-Path $scriptDir "extract_f6_replay_snapshots.py"),"--replay",$replayPath,"--out-dir",$snapshotDir,"--report",$extractionReport) -LogDir (Join-Path $OutDir "acceptance_proof_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
     if (-not $extractGate.passed -or -not (Test-Path -LiteralPath $extractionReport -PathType Leaf)) { throw "acceptance snapshot extraction failed" }
-    $proofScript = if ($AcceptanceMode -eq "synthetic-fault") { Join-Path $scriptDir "verify_f6_synthetic_fault_proof.py" } else { Join-Path $scriptDir "verify_f6_pause_proof.py" }
+    $proofScript = Join-Path $scriptDir "verify_f6_synthetic_fault_proof.py"
     $proofReport = Join-Path $OutDir "acceptance_validation_report.json"
     $proofGate = Invoke-IndependentCaptureGate -Name "verify_acceptance_proof" -FilePath $PythonExe -Arguments @($proofScript,"--run-dir",$OutDir,"--snapshot-dir",$snapshotDir,"--extraction-report",$extractionReport,"--out",$proofReport) -LogDir (Join-Path $OutDir "acceptance_proof_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
     if (-not $proofGate.passed -or -not (Test-Path -LiteralPath $proofReport -PathType Leaf)) { throw "acceptance proof verification failed" }
     $validation = Get-Content -LiteralPath $proofReport -Raw | ConvertFrom-Json
-    $expectedAcceptanceSchema = if ($AcceptanceMode -eq "synthetic-fault") { "battle-plan.f6_synthetic_fault_proof.v1" } else { "battle-plan.f6_pause_proof.v1" }
+    $expectedAcceptanceSchema = "battle-plan.f6_synthetic_fault_proof.v1"
     if (
         [string]$validation.schema -cne $expectedAcceptanceSchema -or
         $validation.ok -isnot [bool] -or
@@ -739,6 +1000,10 @@ $validationReceipt = [ordered]@{
     capture_plan_sha256 = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
     manifest_path = $manifestPath
     manifest_sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    capture_ready_receipt_path = $readyAuthority.ReceiptPath
+    capture_ready_receipt_sha256 = $readyAuthority.ReceiptSha256
+    capture_teardown_receipt_path = $teardownAuthority.ReceiptPath
+    capture_teardown_receipt_sha256 = $teardownAuthority.ReceiptSha256
     validation_report_path = $validationReportPath
     validation_report_sha256 = (Get-FileHash -LiteralPath $validationReportPath -Algorithm SHA256).Hash.ToLowerInvariant()
     validation_report_schema = [string]$validation.schema
@@ -751,6 +1016,31 @@ $validationReceipt = [ordered]@{
     resolved_attempt_marker_schema = "battle-plan.production_capture_attempt.v1"
     resolved_attempt_marker_state = $validationState
     admissible_for_production = ($AcceptanceMode -eq "production")
+    interaction_closure = [ordered]@{
+        policy = "passive_injected_observer"
+        injected_collector_allowed = $true
+        evidence_backed_hooks_allowed = $true
+        client_commands_during_capture = 0
+        semantic_engine_state_writes = 0
+        game_process_lifecycle_commands = 0
+        game_ui_commands = 0
+        speed5_witness_only = $true
+        ready_authenticated = $true
+        hook_lease_released_after_eof = $teardownAuthority.HookLeaseReleasedAfterEof
+        collector_module_absent_verified = $teardownAuthority.CollectorModuleAbsentVerified
+        target_process_epoch_revalidated = $teardownAuthority.TargetProcessEpochRevalidated
+        target_code_temporarily_instrumented = $teardownAuthority.TargetCodeTemporarilyInstrumented
+        pinned_hook_target_code_restored = $teardownAuthority.PinnedHookTargetCodeRestored
+        pinned_hook_sites_restored = $teardownAuthority.PinnedHookSitesRestored
+        pinned_hook_site_count = $teardownAuthority.PinnedHookSiteCount
+        pinned_hook_site_baseline_sha256 = $teardownAuthority.PinnedHookSiteBaselineSha256
+        pinned_hook_site_restored_sha256 = $teardownAuthority.PinnedHookSiteRestoredSha256
+        policy_inputs = [ordered]@{
+            read_only_game_state_witness_sha256 = $readOnlyGameStateWitnessSha256
+            passive_capture_policy_test_sha256 = $passiveCapturePolicyTestSha256
+            passive_capture_lifecycle_sha256 = $passiveCaptureLifecycleSha256
+        }
+    }
 }
 if ($AcceptanceMode -ne "production") {
     $validationReceipt["acceptance_test_nonce"] = $AcceptanceTestNonce

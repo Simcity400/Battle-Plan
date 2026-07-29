@@ -1234,12 +1234,7 @@ pub fn build_certified_replay_artifacts(
     };
     let schema = schema_version().to_string();
     let (mut cache_file, replay_index) = cache_encoder
-        .finish(
-            game_id,
-            schema,
-            cache_identity_mode,
-            expected_source_len,
-        )
+        .finish(game_id, schema, cache_identity_mode, expected_source_len)
         .map_err(|error| OpenError::Certification(error.to_string()))?;
     cache_file.flush()?;
     cache_file.sync_all()?;
@@ -1317,9 +1312,8 @@ pub fn build_certified_replay_artifacts(
                     entry.path().display()
                 )));
             }
-            production_render_blob_count = production_render_blob_count
-                .checked_add(1)
-                .ok_or_else(|| {
+            production_render_blob_count =
+                production_render_blob_count.checked_add(1).ok_or_else(|| {
                     OpenError::Certification("render blob count overflowed u64".to_string())
                 })?;
             production_render_blob_bytes = production_render_blob_bytes

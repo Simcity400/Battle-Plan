@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
-Headless, uncompressed, no-debug-scaffolding recorder test loop.
+Passive, uncompressed, no-debug-scaffolding recorder test loop.
 
-Launches the game into its last save, unpauses it and sets the game speed by
-authenticated memory write (no window activation, no synthetic input, no
-client interaction), attaches the production recorder with the raw
-uncompressed H4CR stream, and leaves every artifact on disk in a form that
-can be read directly.
+By default, attaches the production recorder to one already-running speed-5
+campaign and never drives that user-owned client. An explicitly opted-in,
+unshipped evidence mode may launch and configure the game before the graded
+window. From recorder attach through authenticated teardown, every mode is
+strictly read-only toward the client. A separate independent VM_READ witness
+records speed, pause, and hour progression throughout that window.
 
 Deliberately NOT included: zstd stream compression, the debug capture
 profile, sidecar logs, per-read RC counters. The point of this loop is a
@@ -36,6 +37,12 @@ param(
     [ValidateRange(1, 64)]
     [int]$ReaderConcurrency = 12,
 
+    [ValidateRange(1, 25)]
+    [int]$SchedulerPollMilliseconds = 2,
+
+    [ValidateRange(1, 1)]
+    [int]$SchedulerQueueCapacity = 1,
+
     # Seconds to wait for the loaded campaign to expose stable world singletons.
     [ValidateRange(30, 1800)]
     [int]$WorldReadyTimeoutSeconds = 600,
@@ -46,7 +53,7 @@ param(
     [int]$RecorderOverheadSeconds = 300,
 
     # Seconds of continuously-advancing clock required before the recorder is
-    # allowed to inject.
+    # allowed to inject. All settle observations are read-only.
     #
     # MITIGATION, not a fix. Injecting while the engine is still finishing its
     # parallel post-load work has crashed the game (access violation calling
@@ -57,20 +64,29 @@ param(
     [ValidateRange(0, 900)]
     [int]$SettleSeconds = 90,
 
+    # Maximum time to wait for collector_record to authenticate and atomically
+    # publish its passive CaptureReadyV2 receipt.
+    [ValidateRange(5, 120)]
+    [int]$InjectionReadyTimeoutSeconds = 60,
 
-    # Reuse an already-running campaign instead of launching one.
-    #
-    # Valid only for a game process that has never been recorded. The recorder
-    # takes its injection lease by assigning the target to a job object, and job
-    # membership cannot be revoked for the life of a process, so a second
-    # capture against the same PID always fails with "already belongs to a job".
-    # A repeatable loop must launch a fresh game per capture (the default).
+    # Interval for the independent read-only speed/pause/hour witness during
+    # recorder attach, capture, and teardown.
+    [ValidateRange(2, 60)]
+    [int]$WitnessIntervalSeconds = 5,
+
+    # Compatibility spelling for the now-default passive mode. The harness
+    # always reuses one already-running game unless -EvidenceOnlyDriveGame is
+    # explicitly supplied.
     [switch]$UseRunningGame,
 
-    # Close a running hoi4.exe before launching a fresh one.
+    # Unshipped evidence-only setup mode. This is the sole mode allowed to
+    # launch, stop, or configure the game, and those actions occur before attach.
+    [switch]$EvidenceOnlyDriveGame,
+
+    # Evidence-only: close a running hoi4.exe before launching a fresh one.
     [switch]$StopExistingGame,
 
-    # Leave the game running after the capture instead of closing it.
+    # Evidence-only: leave the harness-launched game running after teardown.
     [switch]$KeepGameAfterCapture,
 
     # Override the derived production roster with an explicit domain list.
@@ -216,14 +232,648 @@ function Write-SettingsGuardNonThrowingWarning {
     }
 }
 
+function ConvertTo-NativeArgumentLine {
+    param([Parameter(Mandatory = $true)][object[]]$Arguments)
+    return (($Arguments | ForEach-Object {
+        $value = [string]$_
+        if ($value -match '[\s"]') { '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+        else { $value }
+    }) -join ' ')
+}
+
+function ConvertTo-PowerShellLiteral {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function ConvertTo-ReceiptUInt32 {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Field
+    )
+
+    if (-not (
+        $Value -is [byte] -or $Value -is [uint16] -or
+        $Value -is [uint32] -or $Value -is [uint64] -or
+        $Value -is [int16] -or $Value -is [int32] -or
+        $Value -is [int64] -or $Value -is [decimal]
+    )) {
+        throw "Ready receipt field '$Field' is not a JSON integer value."
+    }
+    [uint32]$parsed = 0
+    $text = [Convert]::ToString(
+        $Value,
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    if ([string]::IsNullOrEmpty($text) -or
+        -not [uint32]::TryParse(
+            $text,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsed
+        ) -or
+        $text -cne $parsed.ToString([Globalization.CultureInfo]::InvariantCulture)) {
+        throw "Ready receipt field '$Field' is not a canonical bounded u32."
+    }
+    return $parsed
+}
+
+function ConvertTo-ReceiptUInt64 {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Field
+    )
+
+    if (-not (
+        $Value -is [byte] -or $Value -is [uint16] -or
+        $Value -is [uint32] -or $Value -is [uint64] -or
+        $Value -is [int16] -or $Value -is [int32] -or
+        $Value -is [int64] -or $Value -is [decimal]
+    )) {
+        throw "Ready receipt field '$Field' is not a JSON integer value."
+    }
+    [uint64]$parsed = 0
+    $text = [Convert]::ToString(
+        $Value,
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    if ([string]::IsNullOrEmpty($text) -or
+        -not [uint64]::TryParse(
+            $text,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsed
+        ) -or
+        $text -cne $parsed.ToString([Globalization.CultureInfo]::InvariantCulture)) {
+        throw "Ready receipt field '$Field' is not a canonical bounded u64."
+    }
+    return $parsed
+}
+
+function ConvertTo-ReceiptInt32 {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Field
+    )
+
+    if (-not (
+        $Value -is [byte] -or $Value -is [uint16] -or
+        $Value -is [uint32] -or $Value -is [uint64] -or
+        $Value -is [int16] -or $Value -is [int32] -or
+        $Value -is [int64] -or $Value -is [decimal]
+    )) {
+        throw "Ready receipt field '$Field' is not a JSON integer value."
+    }
+    [int32]$parsed = 0
+    $text = [Convert]::ToString(
+        $Value,
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    if ([string]::IsNullOrEmpty($text) -or
+        -not [int32]::TryParse(
+            $text,
+            [Globalization.NumberStyles]::AllowLeadingSign,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsed
+        ) -or
+        $text -cne $parsed.ToString([Globalization.CultureInfo]::InvariantCulture)) {
+        throw "Ready receipt field '$Field' is not a canonical bounded i32."
+    }
+    return $parsed
+}
+
+function Get-Utf8Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Value)
+        return ([BitConverter]::ToString(
+            $sha256.ComputeHash($bytes)
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-BytesSha256Hex {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $sha256.ComputeHash($Bytes)
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function ConvertFrom-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-f]{64}$')]
+        [string]$Value
+    )
+
+    $bytes = [byte[]]::new(32)
+    for ($i = 0; $i -lt 32; $i++) {
+        $bytes[$i] = [Convert]::ToByte($Value.Substring($i * 2, 2), 16)
+    }
+    return ,$bytes
+}
+
+function Assert-ExactJsonPropertySet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $actual = @($Value.PSObject.Properties.Name | Sort-Object)
+    $wanted = @($Expected | Sort-Object)
+    if ($actual.Count -ne $wanted.Count) {
+        throw "$Label has $($actual.Count) properties; expected exactly $($wanted.Count)."
+    }
+    for ($i = 0; $i -lt $wanted.Count; $i++) {
+        if ([string]$actual[$i] -cne [string]$wanted[$i]) {
+            throw "$Label property set differs at index $i ('$($actual[$i])' versus '$($wanted[$i])')."
+        }
+    }
+}
+
+function Stop-ExactProcess {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$Purpose,
+        [ValidateRange(100, 30000)][int]$WaitMilliseconds = 10000
+    )
+
+    $Process.Refresh()
+    if ($Process.HasExited) {
+        return
+    }
+    try {
+        $Process.Kill()
+    } catch {
+        $Process.Refresh()
+        if (-not $Process.HasExited) {
+            throw "Could not terminate exact $Purpose PID $($Process.Id): $($_.Exception.Message)"
+        }
+    }
+    if (-not $Process.WaitForExit($WaitMilliseconds)) {
+        throw "Exact $Purpose PID $($Process.Id) did not exit within $WaitMilliseconds ms after termination."
+    }
+}
+
+function Invoke-BoundedNativeCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][object[]]$Arguments,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 3600)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][string]$Purpose,
+        [switch]$AllowNonzeroExit
+    )
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $process = $null
+    try {
+        $process = Start-Process -FilePath $FilePath `
+            -ArgumentList (ConvertTo-NativeArgumentLine $Arguments) `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $nextProgress = [DateTime]::UtcNow.AddSeconds(5)
+        while (-not $process.HasExited) {
+            $remainingMilliseconds = [Math]::Ceiling(
+                ($deadline - [DateTime]::UtcNow).TotalMilliseconds
+            )
+            if ($remainingMilliseconds -le 0) {
+                Stop-ExactProcess -Process $process -Purpose $Purpose
+                throw "$Purpose timed out after $TimeoutSeconds s; exact child PID $($process.Id) was terminated."
+            }
+            $waitMilliseconds = [int][Math]::Min(1000, $remainingMilliseconds)
+            if ($process.WaitForExit($waitMilliseconds)) {
+                break
+            }
+            if ([DateTime]::UtcNow -ge $nextProgress) {
+                $remainingSeconds = [Math]::Max(
+                    0,
+                    [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
+                )
+                Write-Host "phase=child_wait purpose=$Purpose pid=$($process.Id) remaining_s=$remainingSeconds"
+                $nextProgress = [DateTime]::UtcNow.AddSeconds(5)
+            }
+        }
+        # Bound the redirected-stream flush as well. The process is already
+        # dead, so this cannot turn a completed child into an unbounded wait.
+        [void]$process.WaitForExit(1000)
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) {
+            Get-Content -LiteralPath $stdoutPath -Raw
+        } else {
+            ''
+        }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) {
+            Get-Content -LiteralPath $stderrPath -Raw
+        } else {
+            ''
+        }
+        $stdout = [string]$stdout
+        $stderr = [string]$stderr
+        if (-not $AllowNonzeroExit -and [int]$process.ExitCode -ne 0) {
+            throw "$Purpose exited with code $($process.ExitCode). stderr: $($stderr.Trim())"
+        }
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            Stdout = [string]$stdout
+            Stderr = [string]$stderr
+            Pid = [int]$process.Id
+        }
+    } finally {
+        $canRemoveStreams = $true
+        if ($null -ne $process) {
+            $process.Refresh()
+            if (-not $process.HasExited) {
+                # A bounded helper that survives cleanup is a hard residual,
+                # not a warning. Preserve its redirected evidence files and
+                # terminate the caller rather than unwinding as if cleanup
+                # succeeded.
+                Stop-ExactProcess -Process $process -Purpose $Purpose
+            }
+            $process.Refresh()
+            $canRemoveStreams = $process.HasExited
+            $process.Dispose()
+        }
+        if ($canRemoveStreams) {
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+function Assert-Hoi4ProcessEpoch {
+    param(
+        [Parameter(Mandatory = $true)][int]$TargetProcessId,
+        [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc,
+        [Parameter(Mandatory = $true)][string]$Phase
+    )
+
+    $process = Get-Process -Id $TargetProcessId -ErrorAction Stop
+    $observed = [uint64](
+        $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+    )
+    if ($observed -ne $ExpectedCreationFiletimeUtc) {
+        throw "the game PID $TargetProcessId creation epoch changed during $Phase (expected=$ExpectedCreationFiletimeUtc observed=$observed)."
+    }
+    return $process
+}
+
+function Invoke-BoundedHoi4Control {
+    param(
+        [Parameter(Mandatory = $true)][int]$TargetProcessId,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 5)][int]$RequestedSpeed,
+        [Parameter(Mandatory = $true)][ValidateSet('Play', 'Pause')][string]$Action,
+        [ValidateRange(1, 60)][int]$TimeoutSeconds = 10,
+        [uint64]$ExpectedCreationFiletimeUtc = 0
+    )
+
+    Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+    if ($ExpectedCreationFiletimeUtc -gt 0) {
+        [void](Assert-Hoi4ProcessEpoch `
+            -TargetProcessId $TargetProcessId `
+            -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc `
+            -Phase "before $Action control")
+    }
+    $invocation = "& $(ConvertTo-PowerShellLiteral -Value $headlessControl) -TargetPid $TargetProcessId"
+    $invocation += " -Speed $RequestedSpeed"
+    if ($Action -eq 'Play') {
+        $invocation += ' -Play'
+    } elseif ($Action -eq 'Pause') {
+        $invocation += ' -Pause'
+    }
+    $command = @"
+`$ErrorActionPreference = 'Stop'
+`$result = $invocation
+if (`$null -eq `$result) { throw 'Control-Hoi4Game returned no state.' }
+`$result | ConvertTo-Json -Compress -Depth 8
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $result = Invoke-BoundedNativeCapture `
+        -FilePath $windowsPowerShell `
+        -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) `
+        -TimeoutSeconds $TimeoutSeconds `
+        -Purpose "headless control for the game PID $TargetProcessId"
+    try {
+        $state = $result.Stdout.Trim() | ConvertFrom-Json
+    } catch {
+        throw "Headless control for the game PID $TargetProcessId returned invalid JSON: $($_.Exception.Message)"
+    }
+    if ($ExpectedCreationFiletimeUtc -gt 0) {
+        [void](Assert-Hoi4ProcessEpoch `
+            -TargetProcessId $TargetProcessId `
+            -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc `
+            -Phase "after $Action control")
+    }
+    return $state
+}
+
+function Invoke-BoundedHoi4Observation {
+    param(
+        [Parameter(Mandatory = $true)][int]$TargetProcessId,
+        [ValidateRange(1, 60)][int]$TimeoutSeconds = 10,
+        [uint64]$ExpectedCreationFiletimeUtc = 0
+    )
+
+    if ($ExpectedCreationFiletimeUtc -gt 0) {
+        [void](Assert-Hoi4ProcessEpoch `
+            -TargetProcessId $TargetProcessId `
+            -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc `
+            -Phase 'before read-only observation')
+    }
+    $invocation = "& $(ConvertTo-PowerShellLiteral -Value $readOnlyObserver) -TargetPid $TargetProcessId"
+    $command = @"
+`$ErrorActionPreference = 'Stop'
+`$result = $invocation
+if (`$null -eq `$result) { throw 'Read-Hoi4GameState returned no state.' }
+`$result | ConvertTo-Json -Compress -Depth 8
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $result = Invoke-BoundedNativeCapture `
+        -FilePath $windowsPowerShell `
+        -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) `
+        -TimeoutSeconds $TimeoutSeconds `
+        -Purpose "read-only observation for the game PID $TargetProcessId"
+    try {
+        $state = $result.Stdout.Trim() | ConvertFrom-Json
+    } catch {
+        throw "Read-only observation for the game PID $TargetProcessId returned invalid JSON: $($_.Exception.Message)"
+    }
+    if ($ExpectedCreationFiletimeUtc -gt 0) {
+        [void](Assert-Hoi4ProcessEpoch `
+            -TargetProcessId $TargetProcessId `
+            -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc `
+            -Phase 'after read-only observation')
+    }
+    return $state
+}
+
+function Invoke-BoundedWmiLaunch {
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [Parameter(Mandatory = $true)][string]$CurrentDirectory,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory = $true)][DateTime]$LaunchStartedUtc,
+        [int[]]$PreexistingProcessIds = @(),
+        [ValidateRange(1, 120)][int]$TimeoutSeconds = 30
+    )
+
+    Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+    $commandLiteral = ConvertTo-PowerShellLiteral -Value $CommandLine
+    $directoryLiteral = ConvertTo-PowerShellLiteral -Value $CurrentDirectory
+    $expectedExecutableLiteral = ConvertTo-PowerShellLiteral -Value $ExpectedExecutablePath
+    $launchReceiptPath = Join-Path (
+        [System.IO.Path]::GetTempPath()
+    ) ("hoi4-wmi-launch-" + [Guid]::NewGuid().ToString('N') + '.json')
+    $launchReceiptTempPath = "$launchReceiptPath.tmp"
+    $launchPidPath = "$launchReceiptPath.pid"
+    $launchPidTempPath = "$launchPidPath.tmp"
+    $receiptLiteral = ConvertTo-PowerShellLiteral -Value $launchReceiptPath
+    $receiptTempLiteral = ConvertTo-PowerShellLiteral -Value $launchReceiptTempPath
+    $pidLiteral = ConvertTo-PowerShellLiteral -Value $launchPidPath
+    $pidTempLiteral = ConvertTo-PowerShellLiteral -Value $launchPidTempPath
+    $command = @"
+`$ErrorActionPreference = 'Stop'
+`$created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -OperationTimeoutSec $TimeoutSeconds -Arguments @{
+    CommandLine = $commandLiteral
+    CurrentDirectory = $directoryLiteral
+}
+if ([uint32]`$created.ReturnValue -eq 0 -and [uint32]`$created.ProcessId -gt 0) {
+    `$launched = Get-Process -Id ([int]`$created.ProcessId) -ErrorAction Stop
+    `$launchedPath = `$launched.MainModule.FileName
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals(
+        `$launchedPath,
+        $expectedExecutableLiteral
+    )) {
+        throw "WMI-created process image mismatch: '`$launchedPath'."
+    }
+    `$handoff = [ordered]@{
+        pid = [uint32]`$created.ProcessId
+        process_creation_filetime_utc = [uint64](
+            `$launched.StartTime.ToUniversalTime().ToFileTimeUtc()
+        )
+        executable_path = `$launchedPath
+    } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText(
+        $pidTempLiteral,
+        `$handoff,
+        [System.Text.UTF8Encoding]::new(`$false)
+    )
+    [System.IO.File]::Move($pidTempLiteral, $pidLiteral)
+}
+`$json = `$created | Select-Object ReturnValue, ProcessId | ConvertTo-Json -Compress
+[System.IO.File]::WriteAllText(
+    $receiptTempLiteral,
+    `$json,
+    [System.Text.UTF8Encoding]::new(`$false)
+)
+[System.IO.File]::Move($receiptTempLiteral, $receiptLiteral)
+`$json
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    try {
+        $helperFailure = $null
+        try {
+            [void](Invoke-BoundedNativeCapture `
+                -FilePath $windowsPowerShell `
+                -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) `
+                -TimeoutSeconds ($TimeoutSeconds + 5) `
+                -Purpose 'Win32_Process.Create the game launch')
+        } catch {
+            $helperFailure = $_
+        }
+        try {
+            if (-not (Test-Path -LiteralPath $launchReceiptPath -PathType Leaf)) {
+                if ($null -ne $helperFailure) {
+                    throw $helperFailure
+                }
+                throw 'Win32_Process.Create helper exited without its atomic launch receipt.'
+            }
+            $json = Get-Content -LiteralPath $launchReceiptPath -Raw
+            if ($null -ne $helperFailure) {
+                Write-Warning 'Recovered the exact WMI-created the game PID from its atomic launch receipt after the bounded helper failed.'
+            }
+            $created = $json.Trim() | ConvertFrom-Json
+            $returnValue = ConvertTo-ReceiptUInt32 `
+                -Value $created.ReturnValue `
+                -Field 'wmi.ReturnValue'
+            $handoffPid = [uint32]0
+            $handoffCreation = [uint64]0
+            $handoffExecutablePath = ''
+            if ($returnValue -eq 0) {
+                if (-not (Test-Path -LiteralPath $launchPidPath -PathType Leaf)) {
+                    throw 'successful WMI JSON lacks its prior atomic PID handoff'
+                }
+                $handoff = Get-Content -LiteralPath $launchPidPath -Raw |
+                    ConvertFrom-Json
+                Assert-ExactJsonPropertySet `
+                    -Value $handoff `
+                    -Expected @('pid', 'process_creation_filetime_utc', 'executable_path') `
+                    -Label 'WMI atomic process handoff'
+                $handoffPid = ConvertTo-ReceiptUInt32 `
+                    -Value $handoff.pid `
+                    -Field 'wmi_handoff.pid'
+                $handoffCreation = ConvertTo-ReceiptUInt64 `
+                    -Value $handoff.process_creation_filetime_utc `
+                    -Field 'wmi_handoff.process_creation_filetime_utc'
+                if (-not ($handoff.executable_path -is [string]) -or
+                    -not [StringComparer]::OrdinalIgnoreCase.Equals(
+                        [string]$handoff.executable_path,
+                        $ExpectedExecutablePath
+                    )) {
+                    throw 'WMI atomic handoff executable path differs from authority.'
+                }
+                $handoffExecutablePath = [string]$handoff.executable_path
+                $jsonPid = ConvertTo-ReceiptUInt32 `
+                    -Value $created.ProcessId `
+                    -Field 'wmi.ProcessId'
+                if ($handoffPid -eq 0 -or $jsonPid -ne $handoffPid) {
+                    throw "WMI JSON PID $jsonPid differs from atomic PID handoff $handoffPid."
+                }
+                $handedProcess = Get-Process -Id ([int]$handoffPid) -ErrorAction Stop
+                $handedCreation = [uint64](
+                    $handedProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+                )
+                if ($handedCreation -ne $handoffCreation -or
+                    -not [StringComparer]::OrdinalIgnoreCase.Equals(
+                        $handedProcess.Path,
+                        $ExpectedExecutablePath
+                    )) {
+                    throw 'WMI-created PID no longer matches its atomic creation epoch and image.'
+                }
+            }
+            return [pscustomobject]@{
+                ReturnValue = $returnValue
+                ProcessId = $handoffPid
+                ProcessCreationFiletimeUtc = $handoffCreation
+                ExecutablePath = $handoffExecutablePath
+            }
+        } catch {
+            # The atomic PID/creation/image handoff exists before the WMI JSON
+            # receipt. If reporting fails after creation, stop only that exact
+            # process epoch because the caller cannot own it yet.
+            $cleanedExactPid = $false
+            if (Test-Path -LiteralPath $launchPidPath -PathType Leaf) {
+                try {
+                    $orphanHandoff = Get-Content -LiteralPath $launchPidPath -Raw |
+                        ConvertFrom-Json
+                    Assert-ExactJsonPropertySet `
+                        -Value $orphanHandoff `
+                        -Expected @('pid', 'process_creation_filetime_utc', 'executable_path') `
+                        -Label 'WMI orphan process handoff'
+                    $orphanPid = ConvertTo-ReceiptUInt32 `
+                        -Value $orphanHandoff.pid `
+                        -Field 'orphan_handoff.pid'
+                    $orphanCreation = ConvertTo-ReceiptUInt64 `
+                        -Value $orphanHandoff.process_creation_filetime_utc `
+                        -Field 'orphan_handoff.process_creation_filetime_utc'
+                    $orphan = Get-Process -Id ([int]$orphanPid) -ErrorAction SilentlyContinue
+                    if ($null -ne $orphan) {
+                        $orphanObservedCreation = [uint64](
+                            $orphan.StartTime.ToUniversalTime().ToFileTimeUtc()
+                        )
+                        $orphanPathMatches = (
+                            $orphanHandoff.executable_path -is [string] -and
+                            [StringComparer]::OrdinalIgnoreCase.Equals(
+                                [string]$orphanHandoff.executable_path,
+                                $ExpectedExecutablePath
+                            ) -and
+                            [StringComparer]::OrdinalIgnoreCase.Equals(
+                                $orphan.Path,
+                                $ExpectedExecutablePath
+                            )
+                        )
+                        if ($orphanObservedCreation -eq $orphanCreation -and
+                            $orphanPathMatches) {
+                            Stop-ExactProcess `
+                                -Process $orphan `
+                                -Purpose 'unhanded WMI-created the game'
+                            $cleanedExactPid = $true
+                        }
+                    } else {
+                        # The exact handed-off epoch has already exited.
+                        $cleanedExactPid = $true
+                    }
+                } catch {
+                    $cleanedExactPid = $false
+                }
+            }
+            if (-not $cleanedExactPid) {
+                # Never convert a same-path/time heuristic into kill authority.
+                # List candidates only as operator evidence; without the atomic
+                # PID + creation FILETIME + image handoff there is no exact
+                # process epoch that this harness is authorized to terminate.
+                $candidates = @(
+                    Get-Process -Name the game -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $candidate = $_
+                            if ($PreexistingProcessIds -contains [int]$candidate.Id) {
+                                return $false
+                            }
+                            try {
+                                $samePath = [StringComparer]::OrdinalIgnoreCase.Equals(
+                                    $candidate.Path,
+                                    $ExpectedExecutablePath
+                                )
+                                $createdAfterStart = (
+                                    $candidate.StartTime.ToUniversalTime() -ge
+                                    $LaunchStartedUtc.AddSeconds(-1)
+                                )
+                                return $samePath -and $createdAfterStart
+                            } catch {
+                                return $false
+                            }
+                        }
+                )
+                throw "Win32_Process.Create exact-epoch handoff failed; no process was killed. New exact-path candidate PID(s): $(@($candidates.Id) -join ',')."
+            }
+            throw "Win32_Process.Create did not complete an exact PID handoff: $($_.Exception.Message)"
+        }
+    } finally {
+        Remove-Item -LiteralPath $launchPidTempPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $launchPidPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $launchReceiptTempPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $launchReceiptPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1')
+. (Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1')
+$reuseRunningGame = -not $EvidenceOnlyDriveGame
+if ($EvidenceOnlyDriveGame) {
+    if ($UseRunningGame) {
+        throw '-UseRunningGame and -EvidenceOnlyDriveGame are mutually exclusive.'
+    }
+    Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+} elseif ($StopExistingGame -or $KeepGameAfterCapture) {
+    throw '-StopExistingGame and -KeepGameAfterCapture require -EvidenceOnlyDriveGame.'
+}
+if ($Speed -ne 5) {
+    throw 'Every graded capture window is speed-5-only; lower speeds are diagnostic and cannot use this promotion harness.'
+}
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..\..\..')).Path
 $releaseRoot = Join-Path $repoRoot '.cargo-target\release'
 $nativeRoot = Join-Path $repoRoot 'extractor\native'
 $collectorDll = Join-Path $releaseRoot 'collector.dll'
 $collectorRecord = Join-Path $releaseRoot 'collector_record.exe'
 $headlessControl = Join-Path $scriptDir 'Control-Hoi4Game.ps1'
+$readOnlyObserver = Join-Path $scriptDir 'Read-Hoi4GameState.ps1'
 $streamReport = Join-Path $scriptDir 'report_raw_capture.py'
 $gameDefsOut = Join-Path $repoRoot 'extractor\game_defs\out'
 # Get-Command can return several python.exe entries (real install plus the
@@ -239,9 +889,15 @@ $staticCatalogs = [ordered]@{
     '--static-gfx-icon-manifest'           = Join-Path $gameDefsOut 'gfx_icon_manifest\gfx_icon_asset_manifest_static\gfx_icon_manifest_catalog.json'
 }
 
-foreach ($path in @($Hoi4Exe, $PdxUserDir, $collectorDll, $collectorRecord, $headlessControl)) {
+foreach ($path in @($Hoi4Exe, $PdxUserDir, $collectorDll, $collectorRecord, $headlessControl, $readOnlyObserver)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required path is missing: $path" }
 }
+$headlessControlSha256 = (
+    Get-FileHash -LiteralPath $headlessControl -Algorithm SHA256
+).Hash.ToLowerInvariant()
+$readOnlyObserverSha256 = (
+    Get-FileHash -LiteralPath $readOnlyObserver -Algorithm SHA256
+).Hash.ToLowerInvariant()
 foreach ($entry in $staticCatalogs.GetEnumerator()) {
     if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
         throw "Static catalog for $($entry.Key) is missing: $($entry.Value)"
@@ -268,10 +924,21 @@ if ($ScheduledDomainOverride.Count -gt 0) {
     $scheduledDomains = @($ScheduledDomainOverride | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
     Write-Warning "Using an explicit $($scheduledDomains.Count)-domain roster override; this is a diagnostic configuration, not production coverage."
 } else {
-    $scheduledDomains = @(& $rosterTool --native-root $nativeRoot)
-    if ($LASTEXITCODE -ne 0) { throw 'Production domain roster derivation failed.' }
+    $rosterResult = Invoke-BoundedNativeCapture `
+        -FilePath $rosterTool `
+        -Arguments @('--native-root', $nativeRoot) `
+        -TimeoutSeconds 30 `
+        -Purpose 'production domain roster derivation'
+    $scheduledDomains = @(
+        $rosterResult.Stdout -split '\r?\n' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
     if ($scheduledDomains.Count -eq 0) { throw 'Derived production domain roster is empty.' }
 }
+$scheduledDomainRosterSha256 = Get-Utf8Sha256Hex -Value (
+    $scheduledDomains -join "`n"
+)
 
 $Hoi4Exe = (Resolve-Path -LiteralPath $Hoi4Exe).Path
 $PdxUserDir = (Resolve-Path -LiteralPath $PdxUserDir).Path
@@ -279,6 +946,9 @@ $observedExeSha256 = (Get-FileHash -LiteralPath $Hoi4Exe -Algorithm SHA256).Hash
 if ($observedExeSha256 -cne $expectedExeSha256) {
     throw "hoi4.exe is not the pinned exact-a729 build: $observedExeSha256"
 }
+$collectorDllSha256 = (
+    Get-FileHash -LiteralPath $collectorDll -Algorithm SHA256
+).Hash.ToLowerInvariant()
 
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 if ([string]::IsNullOrWhiteSpace($OutDir)) {
@@ -316,12 +986,112 @@ $settingsGuardSentinel = $settingsGuardCanonicalSentinel
 $settingsGuardPriorReadOnly = $false
 $settingsGuardRestoreRequired = $false
 $settingsGuardOwnerStream = $null
+$captureSucceeded = $false
+$collectorInjectionStarted = $false
+$collectorTeardownAuthenticated = $false
+$collectorTeardownReceiptPath = Join-Path $OutDir 'CAPTURE_TEARDOWN_V1.json'
+$readyReceiptSha256 = $null
+$readyPayloadSha256 = $null
+$readyPublicReceiptCoreSha256 = $null
+$readyAckSha256 = $null
+$readySessionIdSha256 = $null
+$readyPipeTokenSha256 = $null
+$sharedReadyAuthority = $null
+$sharedTeardownAuthority = $null
+$gradedWindowStarted = $false
+$recorderDeadline = $null
+$scriptExitCode = 1
+$passiveWitnessPath = Join-Path $OutDir 'passive_speed5_witness.jsonl'
+
+function Write-PassiveWitnessSample {
+    param(
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [Parameter(Mandatory = $true)][int]$TargetProcessId,
+        [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc,
+        [Parameter(Mandatory = $true)][int]$ExpectedSpeed
+    )
+
+    $state = Invoke-BoundedHoi4Observation `
+        -TargetProcessId $TargetProcessId `
+        -TimeoutSeconds 10 `
+        -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc
+    if ([int]$state.InitialSpeed -ne $ExpectedSpeed -or
+        [int]$state.Speed -ne $ExpectedSpeed -or
+        [bool]$state.InitialPaused -or
+        [bool]$state.Paused -or
+        -not [bool]$state.Advancing) {
+        throw (
+            "Passive witness rejected phase '$Phase': " +
+            "initial_speed=$($state.InitialSpeed) speed=$($state.Speed) " +
+            "initial_paused=$($state.InitialPaused) paused=$($state.Paused) " +
+            "advancing=$($state.Advancing)."
+        )
+    }
+    $sample = [ordered]@{
+        schema                         = 'hoi4-passive-client-state-witness-v1'
+        observed_at_utc                = [DateTime]::UtcNow.ToString('o')
+        phase                          = $Phase
+        pid                            = $TargetProcessId
+        process_creation_filetime_utc  = $ExpectedCreationFiletimeUtc
+        exe_sha256                     = [string]$state.ExeSha256
+        observer_sha256                = $readOnlyObserverSha256
+        access                         = 'PROCESS_QUERY_INFORMATION|PROCESS_VM_READ'
+        speed_initial                  = [int]$state.InitialSpeed
+        speed_final                    = [int]$state.Speed
+        paused_initial                 = [bool]$state.InitialPaused
+        paused_final                   = [bool]$state.Paused
+        hour_a                         = [int]$state.HourA
+        hour_b                         = [int]$state.HourB
+        hour_delta                     = [int]$state.HourDelta
+        advancing                      = [bool]$state.Advancing
+    }
+    ($sample | ConvertTo-Json -Compress -Depth 8) |
+        Add-Content -LiteralPath $passiveWitnessPath -Encoding UTF8
+    Write-Host "phase=passive_witness witness_phase=$Phase speed=$($state.Speed) paused=$($state.Paused) hour_a=$($state.HourA) hour_b=$($state.HourB)"
+    return $state
+}
+
+function Confirm-CollectorTeardownReceipt {
+    if ($null -eq $sharedReadyAuthority) {
+        throw 'Collector teardown cannot be admitted without shared READY authority.'
+    }
+    $script:sharedTeardownAuthority = Test-PassiveCaptureTeardownReceipt `
+        -RunDir $OutDir `
+        -TargetPid ([uint32]$gamePid) `
+        -TargetCreationFiletimeUtc $gameCreationFiletimeUtc `
+        -SessionId $sessionId `
+        -CaptureId $captureId `
+        -ReadyAuthority $sharedReadyAuthority
+    return $true
+}
+
+$harnessPolicyPath = Join-Path $OutDir 'passive_capture_policy.json'
+$harnessPolicy = [ordered]@{
+    schema                              = 'hoi4-passive-capture-policy-v1'
+    mode                                = if ($EvidenceOnlyDriveGame) {
+        'evidence_only_pre_window_setup'
+    } else {
+        'passive_reuse'
+    }
+    requested_speed                     = $Speed
+    reuses_user_owned_game              = $reuseRunningGame
+    client_driving_opt_in_required      = $EvidenceOnlyDriveGame
+    pre_window_setup_may_drive_client   = $EvidenceOnlyDriveGame
+    attach_through_teardown_policy      = 'zero_client_writes_launch_stop_or_ui'
+    graded_observer_access              = 'PROCESS_QUERY_INFORMATION|PROCESS_VM_READ'
+    graded_observer_sha256              = $readOnlyObserverSha256
+    evidence_only_driver_sha256         = $headlessControlSha256
+    ready_contract                      = 'hoi4-capture-ready-v2'
+    teardown_contract                   = 'hoi4-capture-teardown-v1'
+}
+$harnessPolicy | ConvertTo-Json -Depth 8 |
+    Set-Content -LiteralPath $harnessPolicyPath -Encoding UTF8
 
 try {
     if ($DryRun) {
-        if ($UseRunningGame) {
+        if ($reuseRunningGame) {
             Write-Host "phase=settings_guard action=skip reason=use_running_game dry_run=True path=$settingsPath sentinel=$settingsGuardSentinel"
-            Write-Warning 'The settings guard cannot protect -UseRunningGame because the boot-time settings.txt rewrite has already happened; modset resolution may be unresolved for this attach.'
+            Write-Warning 'The settings guard cannot protect an already-running game because the boot-time settings.txt read has already happened; modset resolution may be unresolved for this attach.'
         } else {
             Write-Host "phase=settings_guard action=skip reason=dry_run would_apply=True path=$settingsPath sentinel=$settingsGuardSentinel"
         }
@@ -577,9 +1347,9 @@ try {
         }
 
         $settingsGuardSentinel = $settingsGuardCanonicalSentinel
-        if ($UseRunningGame) {
+        if ($reuseRunningGame) {
             Write-Host "phase=settings_guard action=skip reason=use_running_game path=$settingsPath sentinel=$settingsGuardSentinel"
-            Write-Warning 'The settings guard cannot protect -UseRunningGame because the boot-time settings.txt rewrite has already happened; modset resolution may be unresolved for this attach.'
+            Write-Warning 'The settings guard cannot protect an already-running game because the boot-time settings.txt read has already happened; modset resolution may be unresolved for this attach.'
         } else {
             $settingsItem = Get-Item -LiteralPath $settingsPath -Force
             $settingsGuardPriorReadOnly = [bool]$settingsItem.IsReadOnly
@@ -640,15 +1410,6 @@ try {
         }
     }
 
-function ConvertTo-NativeArgumentLine {
-    param([Parameter(Mandatory = $true)][object[]]$Arguments)
-    return (($Arguments | ForEach-Object {
-        $value = [string]$_
-        if ($value -match '[\s"]') { '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
-        else { $value }
-    }) -join ' ')
-}
-
 function Get-Hoi4Processes {
     # PowerShell unwraps single-element arrays on return, which breaks `.Count`
     # under StrictMode; callers wrap this in @() to restore array semantics.
@@ -658,7 +1419,8 @@ function Get-Hoi4Processes {
 function Wait-Hoi4WorldReady {
     param(
         [Parameter(Mandatory = $true)][int]$TargetProcessId,
-        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $lastError = 'not attempted'
@@ -666,7 +1428,17 @@ function Wait-Hoi4WorldReady {
         $probe = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
         if ($null -eq $probe) { throw "the game PID $TargetProcessId exited before the world became ready." }
         try {
-            $state = & $headlessControl -TargetPid $TargetProcessId
+            $remainingSeconds = [Math]::Max(
+                1,
+                [Math]::Min(
+                    10,
+                    [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
+                )
+            )
+            $state = Invoke-BoundedHoi4Observation `
+                -TargetProcessId $TargetProcessId `
+                -TimeoutSeconds $remainingSeconds `
+                -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc
             if ($null -ne $state) { return $state }
         } catch {
             # CGameState / CInGameIdler do not exist until the save is loaded.
@@ -680,23 +1452,29 @@ function Wait-Hoi4WorldReady {
 # --- Phase 1: obtain a live campaign process -------------------------------
 $launchedProcess = $null
 $gamePid = 0
+$recorderProcess = $null
 
-if ($UseRunningGame) {
+if ($reuseRunningGame) {
     $running = @(Get-Hoi4Processes)
-    if ($running.Count -ne 1) { throw "-UseRunningGame needs exactly one hoi4.exe; found $($running.Count)." }
+    if ($running.Count -ne 1) {
+        throw "Passive capture needs exactly one already-running hoi4.exe; found $($running.Count). Start and configure the game yourself before running the harness."
+    }
     $gamePid = [int]$running[0].Id
-    Write-Host "phase=reuse pid=$gamePid"
+    Write-Host "phase=reuse_passive pid=$gamePid"
 } else {
     $running = @(Get-Hoi4Processes)
     if ($running.Count -ne 0) {
         if (-not $StopExistingGame) {
-            throw "hoi4.exe PID(s) $(@($running.Id) -join ',') are running. Pass -StopExistingGame to close them, or -UseRunningGame to attach to the existing campaign."
+            throw "hoi4.exe PID(s) $(@($running.Id) -join ',') are running. Evidence-only launch requires -StopExistingGame; passive default mode reuses exactly one running game."
         }
         foreach ($proc in $running) {
+            Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
             Write-Host "phase=stop_existing pid=$($proc.Id)"
             if ($DryRun) { continue }
             try { $proc.CloseMainWindow() | Out-Null } catch { }
-            if (-not $proc.WaitForExit(15000)) { $proc.Kill(); [void]$proc.WaitForExit(15000) }
+            if (-not $proc.WaitForExit(15000)) {
+                Stop-ExactProcess -Process $proc -Purpose 'pre-existing the game shutdown'
+            }
         }
     }
 
@@ -716,15 +1494,36 @@ if ($UseRunningGame) {
     if ($DryRun) {
         Write-Host "DRY RUN launch: $launchCommandLine"
     } else {
-        $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-            CommandLine      = $launchCommandLine
-            CurrentDirectory = (Split-Path -Parent $Hoi4Exe)
-        }
+        $preWmiLaunchIds = @(
+            Get-Hoi4Processes | ForEach-Object { [int]$_.Id }
+        )
+        $wmiLaunchStartedUtc = [DateTime]::UtcNow
+        $created = Invoke-BoundedWmiLaunch `
+            -CommandLine $launchCommandLine `
+            -CurrentDirectory (Split-Path -Parent $Hoi4Exe) `
+            -ExpectedExecutablePath $Hoi4Exe `
+            -LaunchStartedUtc $wmiLaunchStartedUtc `
+            -PreexistingProcessIds $preWmiLaunchIds
         if ([int]$created.ReturnValue -ne 0) {
             throw "Win32_Process.Create failed for hoi4.exe with return value $($created.ReturnValue)."
         }
         $gamePid = [int]$created.ProcessId
         $launchedProcess = Get-Process -Id $gamePid -ErrorAction Stop
+        $launchedProcessCreation = [uint64](
+            $launchedProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+        )
+        if ($launchedProcessCreation -ne
+                [uint64]$created.ProcessCreationFiletimeUtc -or
+            -not [StringComparer]::OrdinalIgnoreCase.Equals(
+                $launchedProcess.Path,
+                [string]$created.ExecutablePath
+            ) -or
+            -not [StringComparer]::OrdinalIgnoreCase.Equals(
+                [string]$created.ExecutablePath,
+                $Hoi4Exe
+            )) {
+            throw 'Caller could not preserve the exact WMI PID/creation/image handoff.'
+        }
         Write-Host "phase=launched pid=$gamePid"
     }
 }
@@ -734,31 +1533,61 @@ if ($DryRun) {
     return
 }
 
-# --- Phase 2: headless world-ready + unpause + speed ------------------------
-$readyState = Wait-Hoi4WorldReady -TargetProcessId $gamePid -TimeoutSeconds $WorldReadyTimeoutSeconds
+$gameProcessForEpoch = Get-Process -Id $gamePid -ErrorAction Stop
+$gameCreationFiletimeUtc = [uint64](
+    $gameProcessForEpoch.StartTime.ToUniversalTime().ToFileTimeUtc()
+)
+if ($gameCreationFiletimeUtc -eq 0) {
+    throw "the game PID $gamePid exposed an invalid zero process-creation FILETIME."
+}
+if ($EvidenceOnlyDriveGame -and
+    $gameCreationFiletimeUtc -ne [uint64]$created.ProcessCreationFiletimeUtc) {
+    throw 'WMI-launched game creation epoch changed before world readiness.'
+}
+
+# --- Phase 2: establish and verify pre-attach speed --------------------------
+$readyState = Wait-Hoi4WorldReady `
+    -TargetProcessId $gamePid `
+    -TimeoutSeconds $WorldReadyTimeoutSeconds `
+    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
 Write-Host "phase=world_ready pid=$gamePid initial_paused=$($readyState.Paused) initial_speed=$($readyState.Speed)"
 
-# The world singletons become readable before the save has finished loading,
-# and the engine sets its own paused flag when the load completes. A single
-# unpause write can therefore be silently reverted, which previously produced
-# a capture whose clock never advanced. Re-apply until the hour actually moves.
-$control = $null
-$controlDeadline = [DateTime]::UtcNow.AddSeconds(120)
-while ([DateTime]::UtcNow -lt $controlDeadline) {
-    $attempt = & $headlessControl -TargetPid $gamePid -Speed $Speed -Play
-    if ([int]$attempt.Speed -eq $Speed -and -not [bool]$attempt.Paused -and [bool]$attempt.Advancing) {
-        $control = $attempt
-        break
+if ($EvidenceOnlyDriveGame) {
+    # This is unshipped setup, before the graded attach boundary. The sharp
+    # helper independently requires the process-local evidence opt-in token.
+    $control = $null
+    $controlDeadline = [DateTime]::UtcNow.AddSeconds(120)
+    while ([DateTime]::UtcNow -lt $controlDeadline) {
+        $attempt = Invoke-BoundedHoi4Control `
+            -TargetProcessId $gamePid `
+            -RequestedSpeed $Speed `
+            -Action Play `
+            -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
+        if ([int]$attempt.Speed -eq $Speed -and
+            -not [bool]$attempt.Paused -and
+            [bool]$attempt.Advancing) {
+            $control = $attempt
+            break
+        }
+        Write-Host "phase=evidence_setup_retry speed=$($attempt.Speed) paused=$($attempt.Paused) advancing=$($attempt.Advancing)"
+        Start-Sleep -Milliseconds 1000
     }
-    Write-Host "phase=control_retry speed=$($attempt.Speed) paused=$($attempt.Paused) advancing=$($attempt.Advancing)"
-    Start-Sleep -Milliseconds 1000
+    if ($null -eq $control) {
+        throw "Evidence-only setup could not hold speed $Speed with an advancing clock within 120 s."
+    }
+    Write-Host "phase=evidence_setup_complete speed=$($control.Speed) paused=$($control.Paused) hour_delta=$($control.HourDelta)"
+    $controlPath = Join-Path $OutDir 'evidence_only_pre_window_control.json'
+    ($control | ConvertTo-Json -Depth 8) |
+        Set-Content -LiteralPath $controlPath -Encoding UTF8
+} elseif ([int]$readyState.Speed -ne $Speed -or
+    [bool]$readyState.Paused -or
+    -not [bool]$readyState.Advancing) {
+    throw (
+        "Passive capture requires the user-owned game already advancing at speed $Speed; " +
+        "observed speed=$($readyState.Speed) paused=$($readyState.Paused) advancing=$($readyState.Advancing). " +
+        "Configure the game before invoking the harness."
+    )
 }
-if ($null -eq $control) {
-    throw "Headless control could not hold speed $Speed with an advancing clock within 120 s."
-}
-Write-Host "phase=controlled speed=$($control.Speed) paused=$($control.Paused) hour_delta=$($control.HourDelta) advancing=$($control.Advancing)"
-$controlPath = Join-Path $OutDir 'headless_control.json'
-($control | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $controlPath -Encoding UTF8
 
 # Require the clock to keep advancing for the whole settle window. A single
 # advancing sample only proves the save finished loading, not that the engine's
@@ -766,20 +1595,51 @@ $controlPath = Join-Path $OutDir 'headless_control.json'
 # race kills the game in.
 if ($SettleSeconds -gt 0) {
     Write-Host "phase=settle seconds=$SettleSeconds"
-    $settleDeadline = [DateTime]::UtcNow.AddSeconds($SettleSeconds)
+    $settleStarted = [DateTime]::UtcNow
+    $settleDeadline = $settleStarted.AddSeconds($SettleSeconds)
+    # A bad sample may restart the required continuous-good window, but it may
+    # never extend this phase forever. Two minutes of recovery headroom is
+    # enough for one full control retry window and leaves a deterministic hard
+    # stop for unattended captures.
+    $settleHardDeadline = $settleStarted.AddSeconds($SettleSeconds + 120)
     while ([DateTime]::UtcNow -lt $settleDeadline) {
         Start-Sleep -Seconds 10
-        $sample = & $headlessControl -TargetPid $gamePid -Speed $Speed -Play
-        if (-not $sample.Advancing -or [int]$sample.Speed -ne $Speed) {
-            Write-Host "phase=settle_restart speed=$($sample.Speed) advancing=$($sample.Advancing)"
-            $settleDeadline = [DateTime]::UtcNow.AddSeconds($SettleSeconds)
+        $sample = Invoke-BoundedHoi4Observation `
+            -TargetProcessId $gamePid `
+            -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
+        $now = [DateTime]::UtcNow
+        $stableRemaining = [Math]::Max(
+            0,
+            [Math]::Ceiling(($settleDeadline - $now).TotalSeconds)
+        )
+        $hardRemaining = [Math]::Max(
+            0,
+            [Math]::Ceiling(($settleHardDeadline - $now).TotalSeconds)
+        )
+        Write-Host "phase=settle_progress speed=$($sample.Speed) advancing=$($sample.Advancing) stable_remaining_s=$stableRemaining hard_remaining_s=$hardRemaining"
+        if (-not $sample.Advancing -or
+            [int]$sample.Speed -ne $Speed -or
+            [bool]$sample.Paused) {
+            throw "Passive settle observed client drift: speed=$($sample.Speed) paused=$($sample.Paused) advancing=$($sample.Advancing). The harness will not repair client state."
         }
     }
     Write-Host 'phase=settled'
 }
 
+# The final pre-attach witness establishes the graded boundary. From this call
+# until authenticated collector teardown, this script performs only read-only
+# status observations against HOI4. It never pauses, resumes, changes speed,
+# launches, stops, focuses, minimizes, or otherwise drives the client.
+[void](Write-PassiveWitnessSample `
+    -Phase 'pre_attach' `
+    -TargetProcessId $gamePid `
+    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+    -ExpectedSpeed $Speed)
+$gradedWindowStarted = $true
+Write-Host "phase=graded_window_start policy=zero_client_writes speed=$Speed pid=$gamePid"
+
 # --- Phase 3: raw uncompressed capture --------------------------------------
-$sessionId = "headless_raw_$stamp"
+$sessionId = [guid]::NewGuid().ToString('D').ToLowerInvariant()
 $captureId = "headless-raw-capture-$stamp"
 $durationArg = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.###}', $DurationSeconds)
 $recorderArgs = @(
@@ -792,7 +1652,9 @@ $recorderArgs = @(
     '--stream-format', 'compact',
     '--stream-compression', 'none',
     '--compact-country-frame',
-    '--hour-latch',
+    '--read-only-scheduler',
+    '--read-only-scheduler-poll-ms', "$SchedulerPollMilliseconds",
+    '--read-only-scheduler-queue-cap', "$SchedulerQueueCapacity",
     '--reader-concurrency', "$ReaderConcurrency",
     '--session-id', $sessionId,
     '--capture-id', $captureId
@@ -811,6 +1673,7 @@ if ($SkipHostFold) { $recorderArgs += '--skip-host-fold' }
 
 $stdoutPath = Join-Path $OutDir 'collector_record.stdout.log'
 $stderrPath = Join-Path $OutDir 'collector_record.stderr.log'
+$readyReceiptPath = Join-Path $OutDir 'CAPTURE_READY_V2.json'
 Write-Host "phase=capture duration_s=$durationArg compression=none scheduled_domains=$($scheduledDomains.Count) out_dir=$OutDir"
 
 # Redirect straight to files rather than in-memory pipes: an in-memory read
@@ -821,6 +1684,108 @@ $recorderProcess = Start-Process -FilePath $collectorRecord `
     -NoNewWindow -PassThru `
     -RedirectStandardOutput $stdoutPath `
     -RedirectStandardError $stderrPath
+$recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
+$recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
+$collectorInjectionStarted = $true
+[void](Write-PassiveWitnessSample `
+    -Phase 'attach_started' `
+    -TargetProcessId $gamePid `
+    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+    -ExpectedSpeed $Speed)
+
+$injectionReadyDeadline = [DateTime]::UtcNow.AddSeconds($InjectionReadyTimeoutSeconds)
+$injectionProgressDeadline = [DateTime]::UtcNow
+$nextPassiveWitnessDeadline = [DateTime]::UtcNow.AddSeconds($WitnessIntervalSeconds)
+$gameDied = $false
+while ($true) {
+    $recorderProcess.Refresh()
+    if ($recorderProcess.HasExited) {
+        throw "collector_record exited with code $($recorderProcess.ExitCode) before publishing its authenticated ready receipt."
+    }
+    if (-not (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
+        $gameDied = $true
+        throw "the game PID $gamePid exited before collector_record published its authenticated ready receipt."
+    }
+    if (Test-Path -LiteralPath $readyReceiptPath -PathType Leaf) {
+        break
+    }
+    $now = [DateTime]::UtcNow
+    if ($now -ge $injectionReadyDeadline) {
+        throw "collector_record published no authenticated passive ready receipt within $InjectionReadyTimeoutSeconds s."
+    }
+    if ($now -ge $nextPassiveWitnessDeadline) {
+        [void](Write-PassiveWitnessSample `
+            -Phase 'ready_wait' `
+            -TargetProcessId $gamePid `
+            -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+            -ExpectedSpeed $Speed)
+        $nextPassiveWitnessDeadline = [DateTime]::UtcNow.AddSeconds(
+            $WitnessIntervalSeconds
+        )
+    }
+    if ($now -ge $injectionProgressDeadline) {
+        $remaining = [Math]::Max(
+            0,
+            [Math]::Ceiling(($injectionReadyDeadline - $now).TotalSeconds)
+        )
+        Write-Host "phase=injection_wait remaining_s=$remaining"
+        $injectionProgressDeadline = $now.AddSeconds(5)
+    }
+    Start-Sleep -Milliseconds 250
+}
+
+$expectedDurationMilliseconds = [uint32](
+    [decimal]::Parse(
+        $durationArg,
+        [Globalization.CultureInfo]::InvariantCulture
+    ) * 1000
+)
+$collectorControlPath = Join-Path $releaseRoot 'collector_control.json'
+$sharedReadyAuthority = Test-PassiveCaptureReadyReceipt `
+    -RunDir $OutDir `
+    -TargetPid ([uint32]$gamePid) `
+    -TargetCreationFiletimeUtc $gameCreationFiletimeUtc `
+    -SessionId $sessionId `
+    -CaptureId $captureId `
+    -RequestedDurationMs $expectedDurationMilliseconds `
+    -TargetExecutableSha256 $observedExeSha256 `
+    -CollectorDllSha256 $collectorDllSha256 `
+    -ScheduledDomainNames $scheduledDomains `
+    -SchedulerPollMs ([uint32]$SchedulerPollMilliseconds) `
+    -SchedulerQueueCapacity ([uint32]$SchedulerQueueCapacity) `
+    -SchedulerWorkerCount ([uint32]$ReaderConcurrency) `
+    -CollectorControlPath $collectorControlPath
+$readyReceiptSha256 = [string]$sharedReadyAuthority.ReceiptSha256
+$readyPayloadSha256 = [string]$sharedReadyAuthority.ReadyPayloadSha256
+$readyPublicReceiptCoreSha256 = [string]$sharedReadyAuthority.PublicReceiptCoreSha256
+$readyAckSha256 = [string]$sharedReadyAuthority.ReadyAckSha256
+$readySessionIdSha256 = [string]$sharedReadyAuthority.SessionIdSha256
+$readyPipeTokenSha256 = [string]$sharedReadyAuthority.PipeTokenSha256
+$recorderProcess.Refresh()
+if ($recorderProcess.HasExited) {
+    throw "collector_record exited with code $($recorderProcess.ExitCode) immediately after publishing its ready receipt."
+}
+$currentGameProcess = Get-Process -Id $gamePid -ErrorAction SilentlyContinue
+if ($null -eq $currentGameProcess) {
+    $gameDied = $true
+    throw "the game PID $gamePid exited immediately after collector_record published its ready receipt."
+}
+$currentGameCreationFiletimeUtc = [uint64](
+    $currentGameProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+)
+if ($currentGameCreationFiletimeUtc -ne $gameCreationFiletimeUtc) {
+    throw "the game PID $gamePid creation epoch changed during passive readiness."
+}
+
+[void](Write-PassiveWitnessSample `
+    -Phase 'ready_validated' `
+    -TargetProcessId $gamePid `
+    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+    -ExpectedSpeed $Speed)
+$nextPassiveWitnessDeadline = [DateTime]::UtcNow.AddSeconds(
+    $WitnessIntervalSeconds
+)
+Write-Host "phase=injection_ready receipt=$readyReceiptPath ready_sha256=$readyPayloadSha256 policy=zero_client_writes"
 
 # Bound the wait: capture duration plus a startup/finalize margin. A recorder
 # that outlives this budget is wedged, not slow, and hanging forever here is
@@ -830,45 +1795,85 @@ $recorderProcess = Start-Process -FilePath $collectorRecord `
 # recorder does not always notice promptly -- it sat idle for the whole budget,
 # turning a dead attempt into an 8-minute stall. There is nothing left to
 # capture once the target is gone, so end the attempt immediately.
-$recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
-$recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
-$gameDied = $false
+$captureProgressDeadline = [DateTime]::UtcNow
 while (-not $recorderProcess.HasExited) {
     if ([DateTime]::UtcNow -ge $recorderDeadline) {
-        Write-Warning "collector_record exceeded its $recorderBudgetSeconds s budget (capture $DurationSeconds s + $RecorderOverheadSeconds s overhead); terminating so it cannot wedge later captures."
-        try { $recorderProcess.Kill() } catch { }
-        [void]$recorderProcess.WaitForExit(30000)
         Write-Host 'phase=capture_timeout'
-        break
+        throw "collector_record exceeded its $recorderBudgetSeconds s natural duration/teardown budget. Post-injection termination is forbidden; the attempt remains unresolved until the recorder publishes authenticated teardown."
     }
     if (-not (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
         $gameDied = $true
         Write-Host "phase=game_died pid=$gamePid"
         Write-Warning "the game PID $gamePid exited during capture (collector injection can crash the game); ending this attempt."
-        # Give the recorder a short grace period to finalize the valid prefix.
+        # Give the recorder a short opportunity to finalize naturally. Killing
+        # it after injection could strand its hook/DLL state in the client.
         if (-not $recorderProcess.WaitForExit(30000)) {
-            try { $recorderProcess.Kill() } catch { }
-            [void]$recorderProcess.WaitForExit(30000)
+            throw "the game exited and collector_record did not naturally finalize within 30 seconds. Post-injection termination is forbidden."
         }
         break
     }
+    if ([DateTime]::UtcNow -ge $nextPassiveWitnessDeadline) {
+        [void](Write-PassiveWitnessSample `
+            -Phase 'capture' `
+            -TargetProcessId $gamePid `
+            -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+            -ExpectedSpeed $Speed)
+        $nextPassiveWitnessDeadline = [DateTime]::UtcNow.AddSeconds(
+            $WitnessIntervalSeconds
+        )
+    }
+    if ([DateTime]::UtcNow -ge $captureProgressDeadline) {
+        $captureRemaining = [Math]::Max(
+            0,
+            [Math]::Ceiling(($recorderDeadline - [DateTime]::UtcNow).TotalSeconds)
+        )
+        Write-Host "phase=capture_wait recorder_pid=$($recorderProcess.Id) game_pid=$gamePid remaining_budget_s=$captureRemaining"
+        $captureProgressDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    }
     Start-Sleep -Seconds 2
 }
-if (-not $recorderProcess.HasExited) { [void]$recorderProcess.WaitForExit(30000) }
+if (-not $recorderProcess.HasExited) {
+    throw 'collector_record remained live after its bounded natural capture window; post-injection termination is forbidden.'
+}
 $recorderExit = $recorderProcess.ExitCode
 Write-Host "phase=capture_done exit=$recorderExit"
 
-# --- Phase 4: leave the machine in a known state ----------------------------
-if (-not $KeepGameAfterCapture -and $null -ne $launchedProcess) {
-    $launchedProcess.Refresh()
-    if (-not $launchedProcess.HasExited) {
-        Write-Host "phase=stop_game pid=$gamePid"
-        try { $launchedProcess.CloseMainWindow() | Out-Null } catch { }
-        if (-not $launchedProcess.WaitForExit(20000)) { $launchedProcess.Kill(); [void]$launchedProcess.WaitForExit(20000) }
+# Keep the graded window open until the recorder proves that its hook lease is
+# released and the collector DLL is unloaded. Waiting is bounded and remains
+# read-only toward HOI4.
+$teardownDeadline = [DateTime]::UtcNow.AddSeconds(30)
+$nextTeardownWitnessDeadline = [DateTime]::UtcNow
+while (-not (Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf) -and
+    [DateTime]::UtcNow -lt $teardownDeadline) {
+    if ($null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue) -and
+        [DateTime]::UtcNow -ge $nextTeardownWitnessDeadline) {
+        [void](Write-PassiveWitnessSample `
+            -Phase 'teardown_wait' `
+            -TargetProcessId $gamePid `
+            -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+            -ExpectedSpeed $Speed)
+        $nextTeardownWitnessDeadline = [DateTime]::UtcNow.AddSeconds(
+            $WitnessIntervalSeconds
+        )
     }
+    Start-Sleep -Milliseconds 250
 }
+if (-not (Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf)) {
+    throw 'collector_record exited without publishing an authenticated teardown receipt within 30 s.'
+}
+[void](Confirm-CollectorTeardownReceipt)
+$collectorTeardownAuthenticated = $true
+if ($null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
+    [void](Write-PassiveWitnessSample `
+        -Phase 'post_teardown' `
+        -TargetProcessId $gamePid `
+        -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+        -ExpectedSpeed $Speed)
+}
+$gradedWindowStarted = $false
+Write-Host "phase=teardown_authenticated pid=$gamePid receipt=$collectorTeardownReceiptPath"
 
-# --- Phase 5: read the outputs directly -------------------------------------
+# --- Phase 4: read the outputs directly -------------------------------------
 Write-Host ''
 Get-ChildItem -LiteralPath $OutDir -Force | Sort-Object Length -Descending |
     Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
@@ -880,13 +1885,23 @@ $manifestPath = Join-Path $OutDir 'native_session_manifest.json'
 if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and
     (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     try {
-        $previous = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        & $pythonExe $streamReport --run-dir $OutDir 2>&1 | Write-Host
+        $reportResult = Invoke-BoundedNativeCapture `
+            -FilePath $pythonExe `
+            -Arguments @($streamReport, '--run-dir', $OutDir) `
+            -TimeoutSeconds 60 `
+            -Purpose 'raw-capture report' `
+            -AllowNonzeroExit
+        if (-not [string]::IsNullOrWhiteSpace($reportResult.Stdout)) {
+            Write-Host $reportResult.Stdout.TrimEnd()
+        }
+        if (-not [string]::IsNullOrWhiteSpace($reportResult.Stderr)) {
+            Write-Host $reportResult.Stderr.TrimEnd()
+        }
+        if ($reportResult.ExitCode -ne 0) {
+            Write-Host "report failed: exit code $($reportResult.ExitCode)"
+        }
     } catch {
         Write-Host "report failed: $($_.Exception.Message)"
-    } finally {
-        $ErrorActionPreference = $previous
     }
 } elseif ($gameDied) {
     Write-Host 'no manifest: the game died during capture, so there is nothing to finalize'
@@ -897,11 +1912,89 @@ if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and
 Write-Host "out_dir=$OutDir"
 Write-Host "recorder_exit=$recorderExit"
 Write-Host "game_died=$gameDied"
-if ($null -eq $recorderExit) { exit 1 }
-exit [int]$recorderExit
+if ($null -eq $recorderExit) {
+    throw 'collector_record did not expose a process exit code.'
+}
+$captureSucceeded = ([int]$recorderExit -eq 0 -and -not $gameDied)
+$scriptExitCode = [int]$recorderExit
 } finally {
+    $cleanupFatalMessage = $null
+    # Never terminate collector_record after injection. Its configured duration
+    # is the cooperative stop authority; hard termination can orphan hooks or
+    # the injected DLL before authenticated teardown is published.
+    if ($null -ne $recorderProcess) {
+        try {
+            $recorderProcess.Refresh()
+            $nextPassiveCleanupNotice = [DateTime]::UtcNow
+            while (-not $recorderProcess.HasExited -and
+                $null -ne $recorderDeadline -and
+                [DateTime]::UtcNow -lt $recorderDeadline) {
+                if ([DateTime]::UtcNow -ge $nextPassiveCleanupNotice) {
+                    Write-Host "phase=passive_recorder_finalize_wait recorder_pid=$($recorderProcess.Id)"
+                    $nextPassiveCleanupNotice = [DateTime]::UtcNow.AddSeconds(10)
+                }
+                [void]$recorderProcess.WaitForExit(500)
+                $recorderProcess.Refresh()
+            }
+            if (-not $recorderProcess.HasExited) {
+                Write-SettingsGuardNonThrowingWarning -Message "collector_record PID $($recorderProcess.Id) remains live after its bounded natural-stop budget. The harness will not terminate it after injection; this attempt is unresolved until CAPTURE_TEARDOWN_V1.json authenticates cleanup."
+            }
+        } catch {
+            $cleanupFatalMessage = "Could not observe recorder PID $($recorderProcess.Id) during passive cleanup: $($_.Exception.Message)"
+            Write-SettingsGuardNonThrowingWarning -Message $cleanupFatalMessage
+        }
+    }
+    if ($collectorInjectionStarted -and
+        -not $collectorTeardownAuthenticated -and
+        (Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf)) {
+        try {
+            [void](Confirm-CollectorTeardownReceipt)
+            $collectorTeardownAuthenticated = $true
+            if ($null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
+                [void](Write-PassiveWitnessSample `
+                    -Phase 'post_teardown' `
+                    -TargetProcessId $gamePid `
+                    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+                    -ExpectedSpeed $Speed)
+            }
+            $gradedWindowStarted = $false
+            Write-Host "phase=cleanup_teardown_authenticated pid=$gamePid receipt=$collectorTeardownReceiptPath"
+        } catch {
+            Write-SettingsGuardNonThrowingWarning -Message "Collector teardown receipt was rejected; reused game state will not be changed: $($_.Exception.Message)"
+        }
+    }
+    if ($reuseRunningGame -and
+        $collectorInjectionStarted -and
+        -not $collectorTeardownAuthenticated -and
+        $null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
+        Write-SettingsGuardNonThrowingWarning -Message "Reused the game PID $gamePid survived capture without an authenticated teardown receipt. The harness made no client-state change and will not stop or otherwise drive the user-owned process."
+    }
+    if ($null -ne $launchedProcess -and
+        (-not $captureSucceeded -or -not $KeepGameAfterCapture) -and
+        (-not $collectorInjectionStarted -or
+            ($collectorTeardownAuthenticated -and -not $gradedWindowStarted))) {
+        try {
+            Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+            $launchedProcess.Refresh()
+            if (-not $launchedProcess.HasExited) {
+                try { $launchedProcess.CloseMainWindow() | Out-Null } catch { }
+                if (-not $launchedProcess.WaitForExit(20000)) {
+                    Stop-ExactProcess -Process $launchedProcess -Purpose 'harness-launched the game'
+                }
+                Write-Host "phase=cleanup_game pid=$gamePid"
+            }
+        } catch {
+            $cleanupFatalMessage = "Could not clean up launched the game PID ${gamePid}: $($_.Exception.Message)"
+            Write-SettingsGuardNonThrowingWarning -Message $cleanupFatalMessage
+        }
+    } elseif ($null -ne $launchedProcess -and
+        $collectorInjectionStarted -and
+        $gradedWindowStarted) {
+        Write-SettingsGuardNonThrowingWarning -Message "Harness-launched the game PID $gamePid remains running because the passive graded window did not close cleanly. Stopping it inside that window is forbidden."
+    }
+
     $settingsGuardRestoreSucceeded = $false
-    if ($settingsGuardRestoreRequired) {
+    if ($settingsGuardRestoreRequired -and -not $gradedWindowStarted) {
         try {
             $settingsRestoreItem = Get-Item -LiteralPath $settingsPath -Force
             $settingsRestoreItem.IsReadOnly = $settingsGuardPriorReadOnly
@@ -913,6 +2006,8 @@ exit [int]$recorderExit
         } catch {
             Write-SettingsGuardNonThrowingWarning -Message "SETTINGS GUARD RESTORE FAILED for '$settingsPath'. Manually set IsReadOnly=$settingsGuardPriorReadOnly, then remove sentinel '$settingsGuardSentinel'. The sentinel was retained for recovery. Error: $($_.Exception.Message)"
         }
+    } elseif ($settingsGuardRestoreRequired -and $gradedWindowStarted) {
+        Write-SettingsGuardNonThrowingWarning -Message "Settings guard remains applied to '$settingsPath' because collector teardown was not authenticated. Restoring launcher/user settings inside the graded window is forbidden. After independently proving hooks are gone, set IsReadOnly=$settingsGuardPriorReadOnly and remove sentinel '$settingsGuardSentinel'."
     }
 
     $settingsGuardOwnerStreamClosed = $true
@@ -936,4 +2031,17 @@ exit [int]$recorderExit
             Write-SettingsGuardNonThrowingWarning -Message "Settings guard restored IsReadOnly=$settingsGuardPriorReadOnly on '$settingsPath', but could not remove sentinel '$settingsGuardSentinel'. Remove it manually after verifying the attribute. Error: $($_.Exception.Message)"
         }
     }
+    if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
+        throw $cleanupFatalMessage
+    }
 }
+
+if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
+    Write-Error 'Capture ended without an authenticated collector teardown receipt.'
+    exit 1
+}
+if ($gradedWindowStarted) {
+    Write-Error 'Capture ended without closing the passive graded window.'
+    exit 1
+}
+exit $scriptExitCode

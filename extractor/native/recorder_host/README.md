@@ -223,9 +223,18 @@ the production behavior when omitted.
 
 ## Live validation session
 
-`Invoke-LiveValidationSession.ps1` runs the next speed-5 deep-war validation
-runsheet end to end against a running `hoi4.exe`, with zero manual steps. One
-command:
+`Invoke-LiveValidationSession.ps1` runs the speed-5 deep-war validation
+runsheet against a client that is already advancing at speed 5. The graded
+capture window is passive: from attach through authenticated teardown it may
+observe the target and use the pinned collector hooks, but it must not pause,
+resume, change speed, focus, minimize, launch, stop, or otherwise drive the
+client. The host retains the authenticated H4RD/H4RA pipe as a collector-only
+cooperative-stop capability. It never terminates the recorder after injection:
+the direct harness uses its bounded `--duration-s`, and the product stop request
+closes that retained pipe so the collector unhooks and drains H4CR. Successful
+`CAPTURE_TEARDOWN_V1.json` publication requires H4CR EOF, collector-module
+absence, and byte-for-byte restoration of all 36 pinned hook targets against
+their pre-injection baseline. One command:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-LiveValidationSession.ps1
@@ -234,9 +243,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Inv
 What it does (all captures reuse `Start-Hoi4ProductionSpeed5Capture.ps1`):
 
 1. **Preflight** — require exactly one `hoi4.exe`, build release
-   collector + recorder_host, and run a ~12 s probe capture that must show
-   `game_hours_advanced > 0` (else it aborts with an "unpause / set speed 5"
-   message). Coarse disk-space floor check.
+   collector + recorder_host, independently observe exact speed 5, and run a
+   ~12 s passive probe capture that must show `game_hours_advanced > 0`. If the
+   precondition is not met, abort without changing the client. Coarse disk-space
+   floor check.
 2. **Stage 1 — d53 shadow gate** — a ~75 s capture with
    `-D53RelationReadMode shadow`. **PASS iff
    `domain53_relation_shadow_mismatches == 0` (absent counts as 0) on every d53

@@ -89,9 +89,9 @@ PROTECTED_BASENAMES = {
 }
 PROTECTED_DIR_PARTS = {".github", ".cargo", ".config"}
 
-# Rust declares modules by NAME, never by filename: `mod hour_latch;` refers to
-# hour_latch.rs, which a filename-token scanner cannot see. Before this was
-# handled, collector/src/hour_latch.rs -- the pause barrier -- read as uncited.
+# Rust declares modules by NAME, never by filename: `mod read_only_scheduler;`
+# refers to read_only_scheduler.rs, which a filename-token scanner cannot see.
+# Without this rule, load-bearing module files can be misclassified as uncited.
 RUST_MOD_DECL = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;",
                            re.MULTILINE)
 

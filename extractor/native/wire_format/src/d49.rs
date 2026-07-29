@@ -286,9 +286,9 @@ pub const MAX_POSITIONING_RAW: i32 = 100_000;
 /// over the whole `batch3/deepwar_a` capture is 5,612,750 — 56.13 game units.
 pub const EXACT_ANTI_AIR_RAW_BAND: i64 = 1 << 51;
 
-/// `COMPACT_STATUS_DELTA_DATA`, `compact_contract`. Named here rather than
-/// imported so the library keeps no dependency on `compact_contract`; the
-/// measurement bin, which does depend on it, asserts the two agree.
+/// `COMPACT_STATUS_DELTA_DATA`, `compact_contract`. Named here because d49 is
+/// not admitted to the production-codec dependency surface; the measurement
+/// bin asserts the local value and shipping contract agree.
 ///
 /// It is **informational for this domain**: d49's fold never reads it, because a
 /// pure cumulative delta has no baseline to gate against. Parsed and reported,

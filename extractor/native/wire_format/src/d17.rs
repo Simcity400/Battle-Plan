@@ -202,9 +202,9 @@ pub const COLLECTOR_TOKEN_LEN: u32 = 3;
 /// `COMPACT_STATUS_WAR_SEGMENT_ABSENT` bit (bit 13) read by the caller.
 ///
 /// It is a parameter rather than a bit tested here because that constant belongs
-/// to `compact_contract`, which the reference library deliberately does not
-/// depend on (only the measurement bins do) — and copying the literal into this
-/// crate is exactly the drift the recipe forbids.
+/// to `compact_contract`; d17 is not admitted to the production-codec
+/// dependency surface, and copying the literal into this module is exactly the
+/// drift the recipe forbids.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WarSegment {
     /// Bit 13 clear: the segment was read and applied. A clear per-row gate is a

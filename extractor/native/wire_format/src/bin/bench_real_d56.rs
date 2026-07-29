@@ -1060,9 +1060,9 @@ mod tests {
 
     #[test]
     fn the_library_constants_agree_with_the_shipping_contract() {
-        // `d56.rs` names these locally so the library keeps no dependency on
-        // `compact_contract` (the d24/d32 pattern); this is the assertion that
-        // makes that safe.
+        // `d56.rs` names these locally because d56 is not admitted to the
+        // production-codec dependency surface (the d24/d32 pattern); this is
+        // the assertion that makes that safe.
         assert_eq!(d56::STATUS_DELTA_DATA, COMPACT_STATUS_DELTA_DATA);
         assert_eq!(
             d56::MAX_OWNER_TAG_DB_ID,

@@ -827,6 +827,7 @@ dependencies = [
  "spotted_units_live",
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
+ "wire_product",
  "zip",
 ]
 
@@ -1169,6 +1170,23 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "compact_contract",
+ "portable_content_manifest",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "wire_product"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "compact_contract",
+ "compact_stream",
+ "portable_content_manifest",
+ "serde_json",
+ "sha2",
+ "wire_format",
+ "zstd",
 ]
 
 [[package]]

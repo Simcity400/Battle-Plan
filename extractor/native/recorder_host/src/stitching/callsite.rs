@@ -26,9 +26,12 @@ use snapshot::container::{Container, ExpectedIdentity, SpoolEntryReceipt};
 use snapshot::sha256::{to_hex, Sha256};
 use snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES;
 
-use super::product::{publish_product_stitch_retained, ProductStitchOutcome};
+use super::product::{
+    publish_product_stitch_retained_with_rebuilt_wire, ProductStitchOutcome,
+};
 use super::publish::{
-    PublishReport, RetainedStitchedPayloadSource, VerifiedPayloadReceipt,
+    PublishReport, RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
+    StitchedRebuiltWireSource, VerifiedPayloadReceipt,
 };
 use super::runtime::DurableAppendLedger;
 use super::{
@@ -310,6 +313,9 @@ fn compose_and_publish(
     let mut segments = Vec::with_capacity(entries.len());
     let mut payloads = RetainedProductPayloads::default();
     let mut created_utc = None;
+    let mut wire_catalogs = Vec::with_capacity(entries.len());
+    let mut wire_content_manifest = None;
+    let mut wire_sources = Vec::with_capacity(entries.len());
     for (segment_id, entry) in entries.iter().enumerate() {
         let segment_id = u32::try_from(segment_id)
             .map_err(|_| "registered campaign has more than u32::MAX segments")?;
@@ -344,6 +350,22 @@ fn compose_and_publish(
         let manifest = snapshot::parse_json_strict(&manifest_bytes)
             .map_err(|error| format!("strict-decode registered manifest failed: {error}"))?;
         validate_manifest_identity(&manifest, entry)?;
+        let identity_mode = registered_identity_mode(&manifest)?;
+        let (content_manifest, province_catalog) =
+            verify_registered_rebuilt_wire_authority(&container, &raw_path, identity_mode)?;
+        let content_digest = content_manifest
+            .sha256()
+            .map_err(|error| format!("hash registered content manifest failed: {error}"))?;
+        if let Some((expected_digest, _)) = wire_content_manifest.as_ref() {
+            if expected_digest != &content_digest {
+                return Err(
+                    "registered stitch members use different content manifests".to_string(),
+                );
+            }
+        } else {
+            wire_content_manifest = Some((content_digest, content_manifest));
+        }
+        wire_catalogs.push(province_catalog);
         created_utc = Some(required_pointer_string(
             &manifest,
             "/replay_packaging/created_utc",
@@ -378,6 +400,11 @@ fn compose_and_publish(
                 return Err("registered stitch repeats a retained snapshot locator".into());
             }
         }
+        wire_sources.push(StitchedRebuiltWireSource::open(
+            built.raw_container_path.clone(),
+            raw_path,
+            identity_mode,
+        )?);
         payloads.packages.push(container);
         segments.push(built.segment);
     }
@@ -393,7 +420,265 @@ fn compose_and_publish(
         compression_parameters: BTreeMap::from([("level".to_string(), "none".to_string())]),
         entry_order: STITCH_ENTRY_ORDER.to_string(),
     };
-    publish_product_stitch_retained(&game_id, required_inputs, segments, &payloads, destination)
+    let catalog = wire_product::AuthenticatedProvinceCatalog::union(&wire_catalogs)
+        .map_err(|error| format!("union registered province catalogs failed: {error}"))?;
+    let content_manifest = wire_content_manifest
+        .map(|(_, manifest)| manifest)
+        .ok_or_else(|| "registered stitch has no content manifest authority".to_string())?;
+    publish_product_stitch_retained_with_rebuilt_wire(
+        &game_id,
+        required_inputs,
+        segments,
+        &payloads,
+        destination,
+        move |plan| {
+            StitchedRebuiltWireProduct::build(
+                plan,
+                wire_product::BundleBuildConfig::default(),
+                content_manifest,
+                catalog,
+                wire_sources,
+            )
+        },
+    )
+}
+
+fn registered_identity_mode(
+    manifest: &Value,
+) -> Result<compact_contract::stream_validator::StreamIdentityMode, String> {
+    match manifest
+        .get("compact_stream_identity_mode")
+        .and_then(Value::as_str)
+    {
+        Some("identity_v1") => {
+            Ok(compact_contract::stream_validator::StreamIdentityMode::IdentityV1)
+        }
+        Some("legacy") => Ok(compact_contract::stream_validator::StreamIdentityMode::Legacy),
+        other => Err(format!(
+            "registered recorder manifest has unsupported compact_stream_identity_mode {other:?}"
+        )),
+    }
+}
+
+fn verify_registered_rebuilt_wire_authority(
+    container: &Container,
+    raw_path: &Path,
+    identity_mode: compact_contract::stream_validator::StreamIdentityMode,
+) -> Result<
+    (
+        portable_content_manifest::ContentManifest,
+        wire_product::AuthenticatedProvinceCatalog,
+    ),
+    String,
+> {
+    let content_manifest = container
+        .content_manifest()
+        .cloned()
+        .ok_or_else(|| "registered replay has no portable content manifest".to_string())?;
+    let descriptors = registered_rebuilt_wire_descriptors(container)?;
+    let read_entry = |path: &str| {
+        let packed_path = format!("payload/{}/{path}", container.game_id());
+        container.read_entry_bytes(&packed_path).map_err(|error| {
+            format!("read registered rebuilt-wire entry {packed_path}: {error}")
+        })
+    };
+    let verified = wire_product::verify_entry_source(&descriptors, read_entry)
+        .map_err(|error| format!("registered rebuilt-wire bundle rejected: {error}"))?;
+    let manifest_sha256: [u8; 32] = content_manifest
+        .sha256()
+        .map_err(|error| format!("hash registered content manifest failed: {error}"))
+        .and_then(|digest| decode_sha256(&digest))?
+        .try_into()
+        .map_err(|_| "registered content-manifest digest is not 32 bytes".to_string())?;
+    if verified.content_manifest_sha256 != manifest_sha256 {
+        return Err(
+            "registered rebuilt-wire bundle belongs to a different content manifest".to_string(),
+        );
+    }
+    let catalog_entry = descriptors
+        .iter()
+        .filter(|entry| entry.role == wire_product::ArtifactRole::ProvinceCatalog)
+        .collect::<Vec<_>>();
+    if catalog_entry.len() != 1 {
+        return Err(
+            "registered rebuilt-wire bundle must have exactly one province catalog".to_string(),
+        );
+    }
+    let content_manifest_json = content_manifest
+        .encode_json()
+        .map_err(|error| format!("encode registered content manifest failed: {error}"))?;
+    let catalog_bytes = read_entry(&catalog_entry[0].path)?;
+    let catalog = wire_product::AuthenticatedProvinceCatalog::from_artifact(
+        &content_manifest_json,
+        &catalog_bytes,
+    )
+    .map_err(|error| format!("reauthenticate registered province catalog failed: {error}"))?;
+    let raw_file = File::open(raw_path).map_err(|error| {
+        format!(
+            "retain registered D81 source {} for semantic verification: {error}",
+            raw_path.display()
+        )
+    })?;
+    let session = wire_product::H4crSession {
+        branch: 0,
+        identity_mode,
+        source: wire_product::H4crSource::RetainedFile(&raw_file),
+    };
+    let inspection = wire_product::inspect_d81_session(session)
+        .map_err(|error| format!("inspect registered D81 source failed: {error}"))?;
+    let branch = wire_product::BranchSpec {
+        branch: 0,
+        parent: None,
+        first_tick: inspection.first_tick,
+        session_fingerprint: inspection.decoded_sha256,
+    };
+    wire_product::verify_entry_source_against_h4cr(
+        &descriptors,
+        read_entry,
+        wire_product::BundleBuildConfig::default(),
+        &[branch],
+        &catalog,
+        &[session],
+        &[],
+    )
+    .map_err(|error| format!("registered rebuilt-wire source parity failed: {error}"))?;
+    Ok((content_manifest, catalog))
+}
+
+fn registered_rebuilt_wire_descriptors(
+    container: &Container,
+) -> Result<Vec<wire_product::BundleEntryDescriptor>, String> {
+    let index_path = format!("payload/{}/index.json", container.game_id());
+    let index_bytes = container
+        .read_entry_bytes(&index_path)
+        .map_err(|error| format!("read registered rebuilt-wire index failed: {error}"))?;
+    let index = snapshot::parse_json_strict(&index_bytes)
+        .map_err(|error| format!("strict-decode registered rebuilt-wire index failed: {error}"))?;
+    let rebuilt = index
+        .get("rebuilt_wire")
+        .ok_or_else(|| "registered replay index has no rebuilt_wire discovery".to_string())?;
+    require_exact_object_keys(
+        rebuilt,
+        &[
+            "present",
+            "root",
+            "semantic_reopen_required_before_publication",
+            "entries",
+        ],
+        "registered rebuilt-wire discovery",
+    )?;
+    if rebuilt.get("present").and_then(Value::as_bool) != Some(true)
+        || rebuilt.get("root").and_then(Value::as_str) != Some("rebuilt_wire")
+        || rebuilt
+            .get("semantic_reopen_required_before_publication")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("registered rebuilt-wire discovery is not production-authoritative".to_string());
+    }
+    let rows = rebuilt
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "registered rebuilt-wire discovery entries are not an array".to_string())?;
+    if rows.is_empty() {
+        return Err("registered rebuilt-wire discovery has no entries".to_string());
+    }
+    let mut descriptors = Vec::with_capacity(rows.len());
+    for row in rows {
+        require_exact_object_keys(
+            row,
+            &["path", "role", "bytes", "blake3"],
+            "registered rebuilt-wire descriptor",
+        )?;
+        let path = required_pointer_string(row, "/path")?;
+        if !path.starts_with("rebuilt_wire/") {
+            return Err(format!(
+                "registered rebuilt-wire descriptor has noncanonical path {path}"
+            ));
+        }
+        let role_text = required_pointer_string(row, "/role")?;
+        let role = wire_product::ArtifactRole::from_str(&role_text)
+            .map_err(|error| format!("registered rebuilt-wire role rejected: {error}"))?;
+        let len = row
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "registered rebuilt-wire descriptor has invalid bytes".to_string())?;
+        let blake3: [u8; 32] =
+            decode_sha256(&required_pointer_string(row, "/blake3")?)?
+            .try_into()
+            .map_err(|_| "registered rebuilt-wire BLAKE3 is not 32 bytes".to_string())?;
+        descriptors.push(wire_product::BundleEntryDescriptor {
+            path,
+            role,
+            len,
+            blake3,
+        });
+    }
+    descriptors.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+    if descriptors
+        .windows(2)
+        .any(|pair| pair[0].path == pair[1].path)
+    {
+        return Err("registered rebuilt-wire discovery repeats a path".to_string());
+    }
+
+    let prefix = format!("payload/{}/rebuilt_wire/", container.game_id());
+    let mut packed = BTreeMap::new();
+    for entry in container.entries() {
+        let parsed_role = entry
+            .role
+            .as_deref()
+            .and_then(|role| wire_product::ArtifactRole::from_str(role).ok());
+        if !entry.path.starts_with(&prefix) {
+            if parsed_role.is_some() {
+                return Err(format!(
+                    "registered rebuilt-wire role appears outside canonical prefix: {}",
+                    entry.path
+                ));
+            }
+            continue;
+        }
+        let relative = entry
+            .path
+            .strip_prefix(&format!("payload/{}/", container.game_id()))
+            .ok_or_else(|| format!("registered rebuilt-wire path {} lost prefix", entry.path))?;
+        let role_text = entry
+            .role
+            .as_deref()
+            .ok_or_else(|| format!("registered rebuilt-wire entry {} has no role", entry.path))?;
+        let role = wire_product::ArtifactRole::from_str(role_text).map_err(|error| {
+            format!(
+                "registered rebuilt-wire entry {} has invalid role: {error}",
+                entry.path
+            )
+        })?;
+        if packed
+            .insert(relative.to_string(), (role, entry.bytes))
+            .is_some()
+        {
+            return Err(format!("registered rebuilt-wire repeats entry {relative}"));
+        }
+    }
+    if packed.len() != descriptors.len() {
+        return Err(
+            "registered rebuilt-wire discovery/container cardinality differs".to_string(),
+        );
+    }
+    for descriptor in &descriptors {
+        let (role, len) = packed.get(&descriptor.path).ok_or_else(|| {
+            format!(
+                "registered container is missing rebuilt-wire entry {}",
+                descriptor.path
+            )
+        })?;
+        if *role != descriptor.role || *len != descriptor.len {
+            return Err(format!(
+                "registered rebuilt-wire metadata differs for {}",
+                descriptor.path
+            ));
+        }
+    }
+    Ok(descriptors)
 }
 
 struct BuiltSegment {
@@ -1520,6 +1805,7 @@ fn compare_immutable(path: &Path, expected: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snapshot::{pack_with, PackEntry, PackIdentity, PackOptions};
 
     fn record(sequence: u64, hour: i32, record_type: u16, payload: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(COMPACT_RECORD_HEADER_LEN + payload.len());
@@ -1534,6 +1820,101 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    fn descriptor_container(
+        declared_bundle_len: u64,
+        smuggle_role_outside_prefix: bool,
+        extra_wire_entry: bool,
+    ) -> Container {
+        let game = "descriptor-test";
+        const BUNDLE: &str = "rebuilt_wire/bundle.bin";
+        const PROVINCES: &str = "rebuilt_wire/provinces.bin";
+        let bundle_bytes = b"bundle-body".to_vec();
+        let province_bytes = b"province-body".to_vec();
+        let bundle_descriptor = wire_product::BundleEntry::from_bytes(
+            BUNDLE,
+            wire_product::ArtifactRole::BundleMetadata,
+            bundle_bytes.clone(),
+        )
+        .unwrap();
+        let province_descriptor = wire_product::BundleEntry::from_bytes(
+            PROVINCES,
+            wire_product::ArtifactRole::ProvinceCatalog,
+            province_bytes.clone(),
+        )
+        .unwrap();
+        let descriptors = vec![
+            serde_json::json!({
+                "path": BUNDLE,
+                "role": wire_product::ArtifactRole::BundleMetadata.as_str(),
+                "bytes": declared_bundle_len,
+                "blake3": to_hex(&bundle_descriptor.blake3),
+            }),
+            serde_json::json!({
+                "path": PROVINCES,
+                "role": wire_product::ArtifactRole::ProvinceCatalog.as_str(),
+                "bytes": province_bytes.len(),
+                "blake3": to_hex(&province_descriptor.blake3),
+            }),
+        ];
+        let index = serde_json::to_vec(&serde_json::json!({
+            "game_id": game,
+            "schema_version": "test",
+            "snapshots": [],
+            "rebuilt_wire": {
+                "present": true,
+                "root": "rebuilt_wire",
+                "semantic_reopen_required_before_publication": true,
+                "entries": descriptors,
+            },
+        }))
+        .unwrap();
+        let mut entries = vec![
+            PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: index,
+                role: "index",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/{BUNDLE}"),
+                bytes: bundle_bytes,
+                role: wire_product::ArtifactRole::BundleMetadata.as_str(),
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/{PROVINCES}"),
+                bytes: province_bytes,
+                role: wire_product::ArtifactRole::ProvinceCatalog.as_str(),
+                hour_index: None,
+            },
+        ];
+        if smuggle_role_outside_prefix {
+            entries.push(PackEntry {
+                path: format!("payload/{game}/decoy.bin"),
+                bytes: vec![1],
+                role: wire_product::ArtifactRole::StateBlock.as_str(),
+                hour_index: None,
+            });
+        }
+        if extra_wire_entry {
+            entries.push(PackEntry {
+                path: format!("payload/{game}/rebuilt_wire/unlisted-gap.bin"),
+                bytes: vec![2],
+                role: wire_product::ArtifactRole::GapRecord.as_str(),
+                hour_index: None,
+            });
+        }
+        let bytes = pack_with(
+            game,
+            &entries,
+            &PackIdentity::default(),
+            false,
+            &PackOptions::default(),
+        )
+        .unwrap();
+        Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap()
     }
 
     #[test]
@@ -1631,5 +2012,29 @@ mod tests {
             "fixture",
         )
         .is_err());
+    }
+
+    #[test]
+    fn registered_rebuilt_wire_discovery_joins_metadata_without_loading_bodies() {
+        let exact = descriptor_container(b"bundle-body".len() as u64, false, false);
+        let descriptors = registered_rebuilt_wire_descriptors(&exact).unwrap();
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].path, "rebuilt_wire/bundle.bin");
+        assert_eq!(descriptors[1].path, "rebuilt_wire/provinces.bin");
+
+        let wrong_length = descriptor_container(999, false, false);
+        assert!(registered_rebuilt_wire_descriptors(&wrong_length)
+            .unwrap_err()
+            .contains("metadata differs"));
+
+        let smuggled = descriptor_container(b"bundle-body".len() as u64, true, false);
+        assert!(registered_rebuilt_wire_descriptors(&smuggled)
+            .unwrap_err()
+            .contains("outside canonical prefix"));
+
+        let extra = descriptor_container(b"bundle-body".len() as u64, false, true);
+        assert!(registered_rebuilt_wire_descriptors(&extra)
+            .unwrap_err()
+            .contains("cardinality differs"));
     }
 }

@@ -15,6 +15,7 @@ pub mod campaign_identity;
 pub mod campaign_rollover;
 pub mod cid1_lifecycle_evidence;
 pub mod control_transport;
+pub mod domain_gap;
 pub mod dynamic_modifiers;
 pub mod early_render_content_manifest;
 pub mod early_render_control;
@@ -27,24 +28,28 @@ pub mod gap_record;
 pub mod identity_control;
 pub mod national_focus_presentation;
 pub mod naval_history;
-pub mod preferred_tactic;
+pub mod passive_ready;
 pub mod pov_visibility;
-pub mod spotted_units;
-pub mod tactic_weight;
-pub mod rail_replay;
+pub mod preferred_tactic;
 pub mod raid_instances;
+pub mod rail_replay;
 pub mod record_header;
 pub mod record_semantics;
 pub mod sink_failure;
+pub mod spotted_units;
 pub mod status_flags_base;
 pub mod status_origins;
 pub mod stream_validator;
+pub mod tactic_weight;
 pub mod tech_sharing_groups;
 
+pub use domain_gap::{DomainGapError, DomainGapPart, DomainGapReason, DomainGapRecordV1};
 pub use gap_record::{
     decode_gap_record, encode_gap_record, validate_gap_records, GapCounter, GapReason, GapRecord,
-    GapRecordCodecError, GapRecordValidationError, GapWitness, GAP_RECORD_MAGIC,
-    GAP_RECORD_VERSION, MAX_GAP_DOMAIN_COUNT,
+    GapRecordCodecError, GapRecordValidationError, GapWitness, GAP_COUNTER_CODE_COALESCED_HOURS,
+    GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS, GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS,
+    GAP_REASON_CODE_BACKPRESSURE, GAP_RECORD_LEGACY_VERSION, GAP_RECORD_MAGIC, GAP_RECORD_VERSION,
+    MAX_GAP_DOMAIN_COUNT,
 };
 pub use record_header::{
     parse_compact_record_header, CompactRecordHeader, RecordFramingError, COMPACT_MAX_PAYLOAD_LEN,
@@ -132,8 +137,8 @@ pub const DOMAIN53_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN53_STATUS_OPERATIONS_DETA
 // (`lanes/capitulation_war_state_live/src/compact.rs`).
 pub const DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR: u32 = 1 << 16;
 pub const DOMAIN60_STATUS_WAR_RESIDUALS_EXACT: u32 = 1 << 17;
-pub const DOMAIN60_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR
-    | DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
+pub const DOMAIN60_LANE_LOCAL_STATUS_MASK: u32 =
+    DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR | DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
 
 pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
     match domain_id {
@@ -2107,9 +2112,8 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75,
-            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
-            1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 77, 78,
+            79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 1000,
         ];
         for id in expected {
             assert!(
@@ -2361,10 +2365,7 @@ mod tests {
         // Unregistered domains still reject these bits — the mask is
         // domain-scoped, never a global amnesty.
         assert_eq!(
-            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(
-                52,
-                observed
-            )),
+            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(52, observed)),
             0x0053_0000
         );
     }
@@ -2378,10 +2379,7 @@ mod tests {
         assert_eq!(compact_status_unknown_flags_v1(global), 0);
         assert!(!compact_status_is_failure(global));
         assert_eq!(
-            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(
-                61,
-                observed
-            )),
+            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(61, observed)),
             observed,
             "the d60 badges stay unassigned for every other domain"
         );
@@ -2403,7 +2401,11 @@ mod tests {
                 60 => 0x0003_0000,
                 _ => 0,
             };
-            assert_eq!(lane_local_status_mask(domain_id), expected, "domain {domain_id}");
+            assert_eq!(
+                lane_local_status_mask(domain_id),
+                expected,
+                "domain {domain_id}"
+            );
         }
         // Each badge constant's exact wire position, individually.
         assert_eq!(DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED, 1 << 16);
@@ -2418,14 +2420,32 @@ mod tests {
         // The two overlap-class masks sit inside the v1 vocabulary (legacy
         // wire compatibility); the two badge-class masks sit wholly outside
         // it (fresh bits, strip-before-classification).
-        assert_eq!(DOMAIN49_LANE_LOCAL_STATUS_MASK & !COMPACT_STATUS_V1_KNOWN_MASK, 0);
-        assert_eq!(DOMAIN51_LANE_LOCAL_STATUS_MASK & !COMPACT_STATUS_V1_KNOWN_MASK, 0);
-        assert_eq!(DOMAIN53_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK, 0);
-        assert_eq!(DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK, 0);
+        assert_eq!(
+            DOMAIN49_LANE_LOCAL_STATUS_MASK & !COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
+        assert_eq!(
+            DOMAIN51_LANE_LOCAL_STATUS_MASK & !COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
+        assert_eq!(
+            DOMAIN53_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
+        assert_eq!(
+            DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
         // Registration must never change failure classification: no badge
         // bit may intersect the failure vocabulary.
-        assert_eq!(DOMAIN53_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK, 0);
-        assert_eq!(DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK, 0);
+        assert_eq!(
+            DOMAIN53_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
+        assert_eq!(
+            DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
     }
 
     #[test]

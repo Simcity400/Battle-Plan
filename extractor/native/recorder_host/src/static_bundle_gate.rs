@@ -129,8 +129,17 @@ impl VerifierProcess for CommandVerifierProcess {
             {
                 Some(_) => break,
                 None if started.elapsed() >= invocation.timeout => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    let child_pid = child.id();
+                    if let Err(error) = thread::Builder::new()
+                        .name(format!("static-verifier-passive-reaper-{child_pid}"))
+                        .spawn(move || {
+                            let _ = child.wait_with_output();
+                        })
+                    {
+                        eprintln!(
+                            "failed to start passive static-verifier reaper after timeout: {error}"
+                        );
+                    }
                     return Err(format!(
                         "static bundle verifier timed out after {} ms",
                         invocation.timeout.as_millis()

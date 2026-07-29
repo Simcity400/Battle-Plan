@@ -57,6 +57,12 @@ pub struct SelectedOwnerGlyphCapture {
     pub admitted: AdmittedOwnerGlyphCapture,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedOwnerGlyphCaptureReservation {
+    pub reservation_id: u64,
+    pub captures: Vec<SelectedOwnerGlyphCapture>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnerGlyphProbeTelemetry {
     pub completed_count: u64,
@@ -433,11 +439,31 @@ struct ActiveInvocation {
     health: CaptureHealth,
 }
 
+#[derive(Clone)]
 struct CompletedInvocation {
     owner: usize,
     candidate: OwnerGlyphPresentCandidate,
     row_identity: OwnerGlyphRowIdentity,
     capture: OwnerScopedGlyphCapture,
+}
+
+#[derive(Clone)]
+struct SelectedOwnerInstall {
+    owner: usize,
+    context_id: String,
+    selected_final_text_sha256: String,
+    admitted: AdmittedOwnerGlyphCapture,
+}
+
+#[derive(Clone)]
+struct OwnerGlyphSelectionReservation {
+    reservation_id: u64,
+    selected: OwnerGlyphPresentCandidate,
+    captures: Vec<SelectedOwnerGlyphCapture>,
+    installs: Vec<SelectedOwnerInstall>,
+    admission_after: OwnerGlyphCaptureAdmission,
+    discarded_non_selected_count: u64,
+    active: bool,
 }
 
 /// One hook-thread state machine.  The owner-render detour owns this value;
@@ -451,6 +477,8 @@ pub struct OwnerGlyphEvidenceAutomation {
     active: Option<ActiveInvocation>,
     completed: VecDeque<CompletedInvocation>,
     admission: OwnerGlyphCaptureAdmission,
+    next_selection_reservation_id: u64,
+    selection_reservation: Option<OwnerGlyphSelectionReservation>,
     glyph_buffer_cache_sidecars: GlyphBufferCacheSidecars,
     telemetry: OwnerGlyphProbeTelemetry,
 }
@@ -503,6 +531,8 @@ impl OwnerGlyphEvidenceAutomation {
             active: None,
             completed: VecDeque::new(),
             admission: OwnerGlyphCaptureAdmission::default(),
+            next_selection_reservation_id: 1,
+            selection_reservation: None,
             glyph_buffer_cache_sidecars: GlyphBufferCacheSidecars::default(),
             telemetry: OwnerGlyphProbeTelemetry::default(),
         })
@@ -1050,46 +1080,133 @@ impl OwnerGlyphEvidenceAutomation {
         selected: OwnerGlyphPresentCandidate,
         frame_hour: u64,
     ) -> Result<Vec<SelectedOwnerGlyphCapture>, String> {
+        let reservation = self.reserve_selected_present(selected, frame_hour)?;
+        self.commit_selected_present(reservation.reservation_id)?;
+        Ok(reservation.captures)
+    }
+
+    fn reserve_selected_present(
+        &mut self,
+        selected: OwnerGlyphPresentCandidate,
+        frame_hour: u64,
+    ) -> Result<SelectedOwnerGlyphCaptureReservation, String> {
         self.validate_candidate(selected, frame_hour)?;
         if self.active.is_some() {
             return Err("A25 selected-Present drain crossed an active owner render".into());
         }
+        if let Some(reservation) = self.selection_reservation.as_mut() {
+            if reservation.active {
+                return Err("another A25 selected-Present owner reservation is active".into());
+            }
+            if reservation.selected != selected {
+                return Err(
+                    "retained A25 selected-Present owners belong to another candidate".into(),
+                );
+            }
+            let reservation_id = self.next_selection_reservation_id;
+            self.next_selection_reservation_id = reservation_id
+                .checked_add(1)
+                .ok_or("A25 owner-glyph selection reservation id exhausted")?;
+            reservation.reservation_id = reservation_id;
+            reservation.active = true;
+            return Ok(SelectedOwnerGlyphCaptureReservation {
+                reservation_id,
+                captures: reservation.captures.clone(),
+            });
+        }
+        let reservation_id = self.next_selection_reservation_id;
+        self.next_selection_reservation_id = reservation_id
+            .checked_add(1)
+            .ok_or("A25 owner-glyph selection reservation id exhausted")?;
+        let mut admission_after = self.admission.clone();
         let mut admitted = Vec::new();
+        let mut installs = Vec::new();
         let mut future = VecDeque::new();
-        while let Some(completed) = self.completed.pop_front() {
+        let mut discarded_non_selected_count = 0u64;
+        for completed in &self.completed {
             if completed.candidate.frame_hour > selected.frame_hour {
-                future.push_back(completed);
+                future.push_back(completed.clone());
                 continue;
             }
             let selected_capture = completed.candidate == selected;
-            let admitted_capture = self.admission.admit_against_identity(
-                completed.capture,
+            let admitted_capture = admission_after.admit_against_identity(
+                completed.capture.clone(),
                 &completed.row_identity,
                 completed.candidate.frame_hour,
             )?;
             if !selected_capture {
-                self.telemetry.discarded_non_selected_count = self
-                    .telemetry
-                    .discarded_non_selected_count
-                    .saturating_add(1);
+                discarded_non_selected_count =
+                    discarded_non_selected_count.saturating_add(1);
                 continue;
             }
-            install_admitted_owner_capture(
-                completed.owner,
-                &completed.row_identity.context_id,
-                &completed.row_identity.selected_final_text_sha256,
-                &admitted_capture,
-            )?;
+            installs.push(SelectedOwnerInstall {
+                owner: completed.owner,
+                context_id: completed.row_identity.context_id.clone(),
+                selected_final_text_sha256: completed
+                    .row_identity
+                    .selected_final_text_sha256
+                    .clone(),
+                admitted: admitted_capture.clone(),
+            });
             admitted.push(SelectedOwnerGlyphCapture {
                 candidate: selected,
-                context_id: completed.row_identity.context_id,
-                view_id: completed.row_identity.view_id,
-                element_id: completed.row_identity.element_id,
+                context_id: completed.row_identity.context_id.clone(),
+                view_id: completed.row_identity.view_id.clone(),
+                element_id: completed.row_identity.element_id.clone(),
                 admitted: admitted_capture,
             });
         }
         self.completed = future;
-        Ok(admitted)
+        self.selection_reservation = Some(OwnerGlyphSelectionReservation {
+            reservation_id,
+            selected,
+            captures: admitted.clone(),
+            installs,
+            admission_after,
+            discarded_non_selected_count,
+            active: true,
+        });
+        Ok(SelectedOwnerGlyphCaptureReservation {
+            reservation_id,
+            captures: admitted,
+        })
+    }
+
+    fn commit_selected_present(&mut self, reservation_id: u64) -> Result<(), String> {
+        let reservation = self
+            .selection_reservation
+            .as_ref()
+            .ok_or("A25 selected-Present owner reservation is absent")?;
+        if !reservation.active || reservation.reservation_id != reservation_id {
+            return Err("A25 selected-Present owner reservation id is stale".into());
+        }
+        for install in &reservation.installs {
+            install_admitted_owner_capture(
+                install.owner,
+                &install.context_id,
+                &install.selected_final_text_sha256,
+                &install.admitted,
+            )?;
+        }
+        self.admission = reservation.admission_after.clone();
+        self.telemetry.discarded_non_selected_count = self
+            .telemetry
+            .discarded_non_selected_count
+            .saturating_add(reservation.discarded_non_selected_count);
+        self.selection_reservation = None;
+        Ok(())
+    }
+
+    fn rollback_selected_present(&mut self, reservation_id: u64) -> Result<(), String> {
+        let reservation = self
+            .selection_reservation
+            .as_mut()
+            .ok_or("A25 selected-Present owner reservation is absent")?;
+        if !reservation.active || reservation.reservation_id != reservation_id {
+            return Err("A25 selected-Present owner reservation id is stale".into());
+        }
+        reservation.active = false;
+        Ok(())
     }
 
     pub fn telemetry(&self) -> OwnerGlyphProbeTelemetry {
@@ -1740,6 +1857,12 @@ fn uninstall_automation(
     if installed.active.is_some() {
         return Err("A25 owner-glyph automation teardown crossed an active render".into());
     }
+    if installed.selection_reservation.is_some() {
+        return Err(
+            "A25 owner-glyph automation teardown refused with unresolved selected-Present custody"
+                .into(),
+        );
+    }
     let mut automation = slot.take().expect("automation presence checked above");
     automation.glyph_buffer_cache_sidecars.clear();
     Ok(automation.telemetry())
@@ -1947,6 +2070,32 @@ pub fn admit_selected_present_if_evidence_active(
         automation.admit_selected_present(selected, selected.frame_hour)
     })
     .map(|selected| selected.unwrap_or_default())
+}
+
+pub fn reserve_selected_present_if_evidence_active(
+    selected: OwnerGlyphPresentCandidate,
+) -> Result<Option<SelectedOwnerGlyphCaptureReservation>, String> {
+    with_dormant_evidence_automation(|automation| {
+        automation.reserve_selected_present(selected, selected.frame_hour)
+    })
+}
+
+pub fn reserve_selected_present_if_production_active(
+    selected: OwnerGlyphPresentCandidate,
+) -> Result<Option<SelectedOwnerGlyphCaptureReservation>, String> {
+    with_production_automation(|automation| {
+        automation.reserve_selected_present(selected, selected.frame_hour)
+    })
+}
+
+pub fn commit_selected_present(reservation_id: u64) -> Result<(), String> {
+    with_active_automation(|automation| automation.commit_selected_present(reservation_id))?
+        .ok_or_else(|| "A25 owner-glyph automation is not installed".to_string())
+}
+
+pub fn rollback_selected_present(reservation_id: u64) -> Result<(), String> {
+    with_active_automation(|automation| automation.rollback_selected_present(reservation_id))?
+        .ok_or_else(|| "A25 owner-glyph automation is not installed".to_string())
 }
 
 pub fn admit_selected_present_if_production_active(

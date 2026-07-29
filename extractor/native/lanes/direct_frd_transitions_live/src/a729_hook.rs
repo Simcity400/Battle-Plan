@@ -25,6 +25,11 @@
 
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
+use production_hook_receipt::{
+    next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
+    HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+};
 use std::collections::HashMap;
 use std::mem;
 use std::ptr;
@@ -38,6 +43,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadI
 use crate::{
     DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventRow,
     DirectEventStateSummary, OpaqueInstanceId, UnsequencedDirectEventRow,
+    DEFAULT_MAX_PENDING_ROWS,
     D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK, ROOT_RVA_FOCUS_COMPLETED_A729,
     ROOT_RVA_DECISION_CANCEL_EFFECT_A729, ROOT_RVA_DECISION_REMOVE_EFFECT_A729,
     ROOT_RVA_DECISION_TIMEOUT_EFFECT_A729, ROOT_RVA_ON_ACTION_INVOKED_A729,
@@ -141,13 +147,126 @@ static NEXT_HOOK_EPOCH: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_HOOK_EPOCH: AtomicU64 = AtomicU64::new(0);
 static EVIDENCE_FIXTURE: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
+static HOOK_RECEIPTS: OnceLock<Mutex<HookReceiptState>> = OnceLock::new();
 static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 const OWNER_FIXTURE_ENV: &str = "BATTLE_PLAN_D45_X10_OWNER_FIXTURE";
 
+const EXPECTED_HOOKS: [ExpectedRvaHook; 12] = [
+    expected_hook(
+        "gameplay.d45.focus_completed",
+        ROOT_RVA_FOCUS_COMPLETED_A729,
+        &FOCUS_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.research_completed",
+        ROOT_RVA_RESEARCH_COMPLETED_A729,
+        &RESEARCH_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.ordinary_decision_taken",
+        ROOT_RVA_ORDINARY_DECISION_TAKEN_A729,
+        &ORDINARY_DECISION_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.targeted_decision_taken",
+        ROOT_RVA_TARGETED_DECISION_TAKEN_A729,
+        &TARGETED_DECISION_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.timed_decision_activated",
+        ROOT_RVA_TIMED_DECISION_ACTIVATED_A729,
+        &TIMED_DECISION_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.on_action_invoked",
+        ROOT_RVA_ON_ACTION_INVOKED_A729,
+        &ON_ACTION_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.decision_cancel",
+        ROOT_RVA_DECISION_CANCEL_EFFECT_A729,
+        &DECISION_TERMINAL_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.decision_remove",
+        ROOT_RVA_DECISION_REMOVE_EFFECT_A729,
+        &DECISION_TERMINAL_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.decision_timeout",
+        ROOT_RVA_DECISION_TIMEOUT_EFFECT_A729,
+        &DECISION_TERMINAL_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.targeted_decision_cancel",
+        ROOT_RVA_TARGETED_DECISION_CANCEL_EFFECT_A729,
+        &TARGETED_DECISION_TERMINAL_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.targeted_decision_remove",
+        ROOT_RVA_TARGETED_DECISION_REMOVE_EFFECT_A729,
+        &TARGETED_DECISION_TERMINAL_SENTINEL,
+    ),
+    expected_hook(
+        "gameplay.d45.targeted_decision_timeout",
+        ROOT_RVA_TARGETED_DECISION_TIMEOUT_EFFECT_A729,
+        &TARGETED_DECISION_TIMEOUT_SENTINEL,
+    ),
+];
+
+const fn expected_hook(
+    logical_name: &'static str,
+    requested_rva: u32,
+    original_prefix: &'static [u8],
+) -> ExpectedRvaHook {
+    ExpectedRvaHook {
+        logical_name,
+        requested_rva: requested_rva as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix,
+    }
+}
+
+fn detour_targets() -> [usize; 12] {
+    [
+        hook_focus as usize,
+        hook_research as usize,
+        hook_ordinary as usize,
+        hook_targeted as usize,
+        hook_timed as usize,
+        hook_on_action as usize,
+        hook_decision_cancel_effect as usize,
+        hook_decision_remove_effect as usize,
+        hook_decision_timeout_effect as usize,
+        hook_targeted_decision_cancel_effect as usize,
+        hook_targeted_decision_remove_effect as usize,
+        hook_targeted_decision_timeout_effect as usize,
+    ]
+}
+
+#[derive(Default)]
+struct HookReceiptState {
+    installed: Option<[InstalledRvaHookReceipt; 12]>,
+    released: Option<[ReleasedRvaHookReceipt; 12]>,
+    partial_installed: [Option<InstalledRvaHookReceipt>; 12],
+    release_slots: [Option<ReleasedRvaHookReceipt>; 12],
+    partial_released: Vec<ReleasedRvaHookReceipt>,
+    rollback_retry_required: bool,
+    pre_target_prefixes: Option<[[u8; 5]; 12]>,
+}
+
 #[derive(Debug)]
 struct HookState {
     carrier: DirectEventCarrier,
+    pending_rows: Vec<DirectEventRow>,
+    reservation: Option<BatchReservationState>,
+    next_reservation_id: u64,
+    terminal_custody: Option<TerminalCustodyState>,
+    next_terminal_custody_id: u64,
+    terminal_sealed: bool,
+    hook_epoch: u64,
     pointer_ids: HashMap<usize, OpaqueInstanceId>,
     callback_count: u64,
     bound_thread_id: Option<u32>,
@@ -161,6 +280,13 @@ impl HookState {
     fn fresh() -> Self {
         Self {
             carrier: DirectEventCarrier::new(),
+            pending_rows: Vec::with_capacity(DEFAULT_MAX_PENDING_ROWS),
+            reservation: None,
+            next_reservation_id: 1,
+            terminal_custody: None,
+            next_terminal_custody_id: 1,
+            terminal_sealed: false,
+            hook_epoch: 0,
             pointer_ids: HashMap::new(),
             callback_count: 0,
             bound_thread_id: None,
@@ -197,6 +323,53 @@ impl HookState {
             .allocate_instance_id()
             .map_err(|error| format!("D45 direct hook ephemeral ID allocation failed: {error}"))
     }
+
+    /// Validates and sequences one callback row through the typed carrier, then
+    /// moves it into the runtime-owned bounded queue. The carrier is kept empty
+    /// between callbacks so a reservation can peek without mutating the queue
+    /// and newly captured rows can append behind its immutable prefix.
+    fn capture(&mut self, row: UnsequencedDirectEventRow) -> Result<(), String> {
+        if self.terminal_sealed {
+            return Err("D45 direct hook terminal custody is sealed".into());
+        }
+        if self.pending_rows.len() >= DEFAULT_MAX_PENDING_ROWS {
+            return Err(format!(
+                "D45 direct hook pending queue is full at {} rows",
+                DEFAULT_MAX_PENDING_ROWS
+            ));
+        }
+        let sequence = self
+            .carrier
+            .capture(row)
+            .map_err(|error| format!("typed carrier rejected row: {error}"))?;
+        let mut captured = self
+            .carrier
+            .drain_rows()
+            .map_err(|error| format!("typed carrier staging drain failed: {error}"))?;
+        if captured.len() != 1 || captured[0].sequence != sequence {
+            return Err("D45 direct hook typed carrier staging invariant failed".into());
+        }
+        self.pending_rows.push(captured.remove(0));
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BatchReservationState {
+    reservation_id: u64,
+    row_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalCustodyState {
+    custody_id: u64,
+    current_error: String,
+    row_count: usize,
+    reservation_id: Option<u64>,
+    drain_sequence: u64,
+    sequence_cursor: u64,
+    callback_count: u64,
+    kind_witness_counts: [u64; 12],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +383,10 @@ pub struct HookDiagnostics {
     pub callback_count: u64,
     pub active_callbacks: u64,
     pub pending_rows: usize,
+    pub reserved_rows: usize,
+    pub reservation_id: Option<u64>,
+    pub terminal_custody_id: Option<u64>,
+    pub terminal_sealed: bool,
     pub pointer_identity_count: usize,
     pub bound_thread_id: Option<u32>,
     pub last_game_hour_raw: Option<i32>,
@@ -218,6 +395,30 @@ pub struct HookDiagnostics {
     pub drain_sequence: u64,
     pub kind_witness_counts: [u64; 12],
     pub evidence_fixture: bool,
+}
+
+/// One immutable peek at the ordered D45 event prefix. Callers must explicitly
+/// commit or roll it back. Only one reservation can exist at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectEventBatchReservation {
+    pub reservation_id: u64,
+    pub batch: DirectEventBatch,
+}
+
+/// Explicit terminal handoff for a poisoned D45 producer. Rows remain ordered
+/// and pointer-free, and teardown cannot proceed until the caller acknowledges
+/// custody of this exact snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedDirectEventCustody {
+    pub custody_id: u64,
+    pub hook_epoch: u64,
+    pub drain_sequence: u64,
+    pub sequence_cursor: u64,
+    pub callback_count: u64,
+    pub kind_witness_counts: [u64; 12],
+    pub current_error: String,
+    pub reservation_id: Option<u64>,
+    pub rows: Vec<DirectEventRow>,
 }
 
 struct CallbackLease;
@@ -279,6 +480,7 @@ pub fn install() -> Result<InstalledRoots, String> {
     }
     let targets = targets(base)?;
     if INSTALLED.load(Ordering::Acquire) {
+        validate_live_install_receipts(&targets)?;
         return Ok(installed_roots());
     }
     if MODULE_BASE.load(Ordering::Acquire) != 0 {
@@ -288,15 +490,21 @@ pub fn install() -> Result<InstalledRoots, String> {
         verify_sentinel(target, sentinel, name)?;
     }
 
+    ensure_no_retained_terminal_custody()?;
+    prepare_hook_receipts_for_install()?;
+    capture_pre_target_prefixes(&targets)?;
     let hook_epoch = NEXT_HOOK_EPOCH.fetch_add(1, Ordering::AcqRel);
     if hook_epoch == 0 {
         return Err("D45 direct hook epoch exhausted".into());
     }
-
     let state = STATE.get_or_init(|| Mutex::new(HookState::fresh()));
     *state
         .lock()
         .map_err(|_| "D45 direct hook state mutex poisoned before install")? = HookState::fresh();
+    state
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned before hook epoch bind")?
+        .hook_epoch = hook_epoch;
 
     MODULE_BASE.store(base, Ordering::Release);
     let focus = match unsafe {
@@ -322,7 +530,7 @@ pub fn install() -> Result<InstalledRoots, String> {
     ACTIVE_HOOK_EPOCH.store(hook_epoch, Ordering::Release);
     EVIDENCE_FIXTURE.store(evidence_fixture, Ordering::Release);
     QUIESCED.store(false, Ordering::Release);
-    for (target, name) in targets.into_iter().zip([
+    for (index, (target, name)) in targets.into_iter().zip([
         "focus",
         "research",
         "ordinary decision",
@@ -335,7 +543,7 @@ pub fn install() -> Result<InstalledRoots, String> {
         "targeted decision cancel effect",
         "targeted decision remove effect",
         "targeted decision timeout effect",
-    ]) {
+    ]).enumerate() {
         if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
             let cleanup = rollback(&targets)
                 .err()
@@ -346,6 +554,30 @@ pub fn install() -> Result<InstalledRoots, String> {
             }
             return Err(format!("D45 {name} hook enable failed: {status}{cleanup}"));
         }
+        if let Err(error) = observe_and_record_install_receipt(index, target) {
+            let cleanup = rollback(&targets)
+                .err()
+                .map(|cleanup| format!("; rollback failed: {cleanup}"))
+                .unwrap_or_default();
+            if cleanup.is_empty() {
+                clear_hook_lifecycle_state();
+            }
+            return Err(format!(
+                "D45 {name} installed-hook custody failed: {error}{cleanup}"
+            ));
+        }
+    }
+    if let Err(error) = complete_install_receipts() {
+        let cleanup = rollback(&targets)
+            .err()
+            .map(|cleanup| format!("; rollback failed: {cleanup}"))
+            .unwrap_or_default();
+        if cleanup.is_empty() {
+            clear_hook_lifecycle_state();
+        }
+        return Err(format!(
+            "D45 exact installed-hook receipt failed: {error}{cleanup}"
+        ));
     }
     INSTALLED.store(true, Ordering::Release);
     Ok(installed_roots())
@@ -355,6 +587,11 @@ pub fn uninstall() -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    if failed_install_cleanup_required() {
+        return Err(
+            "D45 failed-install hook custody requires retry_failed_install_cleanup".into(),
+        );
+    }
     if !INSTALLED.load(Ordering::Acquire) && MODULE_BASE.load(Ordering::Acquire) == 0 {
         return Ok(());
     }
@@ -386,9 +623,28 @@ pub fn uninstall() -> Result<(), String> {
     if !disable_errors.is_empty() {
         return Err(disable_errors.join("; "));
     }
-    INSTALLED.store(false, Ordering::Release);
     QUIESCED.store(true, Ordering::Release);
     wait_for_callback_quiescence()?;
+    if let Some(state) = STATE.get() {
+        let state = state
+            .lock()
+            .map_err(|_| "D45 direct hook state mutex poisoned during teardown accounting")?;
+        if !state.pending_rows.is_empty()
+            || state.reservation.is_some()
+            || state.terminal_custody.is_some()
+            || state.current_error.is_some()
+        {
+            return Err(format!(
+                "D45 direct hook teardown refused with {} pending row(s), {} reserved row(s), reservation {:?}, terminal custody {:?}, sticky error {}",
+                state.pending_rows.len(),
+                state.reservation.map_or(0, |reservation| reservation.row_count),
+                state.reservation.map(|reservation| reservation.reservation_id),
+                state.terminal_custody.as_ref().map(|custody| custody.custody_id),
+                state.current_error.is_some(),
+            ));
+        }
+    }
+    INSTALLED.store(false, Ordering::Release);
     let mut remove_errors = Vec::new();
     for (target, name) in targets.into_iter().zip(names) {
         match unsafe { MinHook::remove_hook(target as *mut c_void) } {
@@ -397,6 +653,8 @@ pub fn uninstall() -> Result<(), String> {
         }
     }
     if remove_errors.is_empty() {
+        verify_pre_target_prefixes(&targets)?;
+        observe_release_receipts()?;
         clear_hook_lifecycle_state();
         if let Some(state) = STATE.get() {
             *state
@@ -414,6 +672,66 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 12], String> {
+    if !installed() {
+        return Err("D45 direct hooks are not installed".into());
+    }
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let targets = targets(base)?;
+    validate_live_install_receipts(&targets)
+}
+
+fn stored_install_receipts() -> Result<[InstalledRvaHookReceipt; 12], String> {
+    HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?
+        .installed
+        .ok_or_else(|| "D45 exact installed-hook receipts are unavailable".into())
+}
+
+/// Takes the complete normal-teardown receipt roster exactly once.
+///
+/// Partial failed-install restoration receipts are deliberately excluded and
+/// remain available only through [`take_partial_released_hook_receipts`].
+pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 12], String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    let mut receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    receipts
+        .released
+        .take()
+        .ok_or_else(|| "D45 exact released-hook receipts are unavailable or already taken".into())
+}
+
+/// Compatibility spelling. This remains take-once, not a cloning getter.
+pub fn released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 12], String> {
+    take_released_hook_receipts()
+}
+
+/// Takes restoration receipts from a failed partial install. Reinstallation is
+/// rejected until this custody has been explicitly consumed.
+pub fn take_partial_released_hook_receipts() -> Result<Vec<ReleasedRvaHookReceipt>, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    let mut receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    if receipts.partial_released.is_empty() {
+        return Err("D45 partial release receipts are unavailable or already taken".into());
+    }
+    Ok(std::mem::take(&mut receipts.partial_released))
+}
+
 pub const fn activation_enabled() -> bool {
     PRODUCTION_ACTIVATION
 }
@@ -426,7 +744,11 @@ pub fn scheduling_enabled() -> bool {
     activation_enabled() || evidence_activation_enabled()
 }
 
-pub fn drain_batch() -> Result<DirectEventBatch, String> {
+/// Peeks the complete bounded pending prefix without removing any row.
+///
+/// A second reservation is rejected until the first is explicitly committed
+/// or rolled back. Hook callbacks remain free to append behind this prefix.
+pub fn peek_batch() -> Result<DirectEventBatchReservation, String> {
     if !installed() {
         return Err("D45 a729 direct hooks are not installed".into());
     }
@@ -438,11 +760,34 @@ pub fn drain_batch() -> Result<DirectEventBatch, String> {
     if let Some(error) = &state.current_error {
         return Err(error.clone());
     }
-    let rows = state
-        .carrier
-        .drain_rows()
-        .map_err(|error| format!("D45 direct hook typed drain failed: {error}"))?;
-    let sequence_cursor = state.carrier.next_sequence();
+    peek_batch_locked(
+        &mut state,
+        ACTIVE_HOOK_EPOCH.load(Ordering::Acquire),
+        EVIDENCE_FIXTURE.load(Ordering::Acquire),
+    )
+}
+
+fn peek_batch_locked(
+    state: &mut HookState,
+    hook_epoch: u64,
+    evidence_fixture: bool,
+) -> Result<DirectEventBatchReservation, String> {
+    if let Some(reservation) = state.reservation {
+        return Err(format!(
+            "D45 direct hook reservation {} is already active for {} row(s)",
+            reservation.reservation_id, reservation.row_count
+        ));
+    }
+    let rows = state.pending_rows.clone();
+    let sequence_cursor = rows
+        .last()
+        .map(|row| {
+            row.sequence
+                .checked_add(1)
+                .ok_or_else(|| "D45 direct hook sequence cursor exhausted".to_string())
+        })
+        .transpose()?
+        .unwrap_or_else(|| state.carrier.next_sequence());
     let drain_sequence = state.drain_sequence;
     let observed_kind_mask = state
         .kind_witness_counts
@@ -455,20 +800,317 @@ pub fn drain_batch() -> Result<DirectEventBatch, String> {
                 mask | (1u64 << index)
             }
         });
-    state.drain_sequence = state
+    let reservation_id = state.next_reservation_id;
+    state.next_reservation_id = state
+        .next_reservation_id
+        .checked_add(1)
+        .ok_or("D45 direct hook reservation ID exhausted")?;
+    state.reservation = Some(BatchReservationState {
+        reservation_id,
+        row_count: rows.len(),
+    });
+    Ok(DirectEventBatchReservation {
+        reservation_id,
+        batch: DirectEventBatch {
+            hook_epoch,
+            drain_sequence,
+            installed_root_mask: D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
+            observed_kind_mask,
+            sequence_cursor,
+            producer_complete: true,
+            evidence_fixture,
+            rows,
+        },
+    })
+}
+
+/// Commits exactly the prefix returned by [`peek_batch`].
+pub fn commit_batch(reservation_id: u64) -> Result<(), String> {
+    let mut state = STATE
+        .get()
+        .ok_or("D45 direct hook state is not initialized")?
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    commit_batch_locked(&mut state, reservation_id)
+}
+
+fn commit_batch_locked(state: &mut HookState, reservation_id: u64) -> Result<(), String> {
+    let reservation = state
+        .reservation
+        .ok_or("D45 direct hook has no active reservation")?;
+    if reservation.reservation_id != reservation_id {
+        return Err(format!(
+            "D45 direct hook reservation mismatch: active {}, supplied {reservation_id}",
+            reservation.reservation_id
+        ));
+    }
+    if reservation.row_count > state.pending_rows.len() {
+        return Err("D45 direct hook reserved prefix exceeds pending rows".into());
+    }
+    let next_drain_sequence = state
         .drain_sequence
         .checked_add(1)
         .ok_or("D45 direct hook drain sequence exhausted")?;
-    Ok(DirectEventBatch {
-        hook_epoch: ACTIVE_HOOK_EPOCH.load(Ordering::Acquire),
-        drain_sequence,
-        installed_root_mask: D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
-        observed_kind_mask,
-        sequence_cursor,
-        producer_complete: true,
-        evidence_fixture: EVIDENCE_FIXTURE.load(Ordering::Acquire),
-        rows,
+    state.pending_rows.drain(..reservation.row_count);
+    state.drain_sequence = next_drain_sequence;
+    state.reservation = None;
+    Ok(())
+}
+
+/// Releases a reservation without removing or reordering any row.
+pub fn rollback_batch(reservation_id: u64) -> Result<(), String> {
+    let mut state = STATE
+        .get()
+        .ok_or("D45 direct hook state is not initialized")?
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    rollback_batch_locked(&mut state, reservation_id)
+}
+
+fn rollback_batch_locked(state: &mut HookState, reservation_id: u64) -> Result<(), String> {
+    let reservation = state
+        .reservation
+        .ok_or("D45 direct hook has no active reservation")?;
+    if reservation.reservation_id != reservation_id {
+        return Err(format!(
+            "D45 direct hook reservation mismatch: active {}, supplied {reservation_id}",
+            reservation.reservation_id
+        ));
+    }
+    state.reservation = None;
+    Ok(())
+}
+
+/// Disable every D45 producer, wait for callbacks already inside a detour, and
+/// reserve the now-complete normal terminal batch. The immutable prefix stays
+/// in lane custody until the final H4CR sink acknowledges it.
+pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    if !INSTALLED.load(Ordering::Acquire) {
+        return Err("D45 direct hooks are not installed".into());
+    }
+    if !QUIESCED.load(Ordering::Acquire) {
+        let base = MODULE_BASE.load(Ordering::Acquire);
+        let hook_targets = targets(base)?;
+        let names = [
+            "focus",
+            "research",
+            "ordinary decision",
+            "targeted decision",
+            "timed decision",
+            "on action",
+            "decision cancel effect",
+            "decision remove effect",
+            "decision timeout effect",
+            "targeted decision cancel effect",
+            "targeted decision remove effect",
+            "targeted decision timeout effect",
+        ];
+        let mut disabled = [false; 12];
+        let mut failures = Vec::new();
+        for (index, (target, name)) in hook_targets.into_iter().zip(names).enumerate() {
+            match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+                Ok(())
+                | Err(MH_STATUS::MH_ERROR_DISABLED)
+                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => disabled[index] = true,
+                Err(status) => failures.push(format!("disable {name}: {status}")),
+            }
+        }
+        if !failures.is_empty() {
+            let base = MODULE_BASE.load(Ordering::Acquire);
+            if let Ok(hook_targets) = targets(base) {
+                for (index, (target, name)) in hook_targets.into_iter().zip(names).enumerate() {
+                    if disabled[index] {
+                        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+                            failures.push(format!("restore {name}: {status}"));
+                        }
+                    }
+                }
+            }
+            return Err(failures.join("; "));
+        }
+        QUIESCED.store(true, Ordering::Release);
+        wait_for_callback_quiescence()?;
+    }
+    let mut state = STATE
+        .get()
+        .ok_or("D45 direct hook state is not initialized")?
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    if let Some(error) = &state.current_error {
+        return Err(format!("D45 terminal producer is poisoned: {error}"));
+    }
+    if state.reservation.is_some() {
+        return Err("D45 terminal reservation requires the hourly reservation to be released".into());
+    }
+    state.terminal_sealed = true;
+    peek_batch_locked(
+        &mut state,
+        ACTIVE_HOOK_EPOCH.load(Ordering::Acquire),
+        EVIDENCE_FIXTURE.load(Ordering::Acquire),
+    )
+}
+
+/// Commit the complete terminal prefix, then remove the already-quiesced hook
+/// set and publish its release receipts.
+pub fn commit_terminal_batch_and_uninstall(reservation_id: u64) -> Result<(), String> {
+    commit_batch(reservation_id)?;
+    uninstall()
+}
+
+/// Release a failed terminal publication without reopening callbacks. A later
+/// call to [`seal_and_reserve_terminal_batch`] returns the same complete rows.
+pub fn rollback_terminal_batch(reservation_id: u64) -> Result<(), String> {
+    rollback_batch(reservation_id)
+}
+
+/// Seals a sticky producer error and exposes every retained row. This is the
+/// only path that permits poisoned custody to be acknowledged before hook
+/// removal.
+pub fn seal_terminal_custody() -> Result<SealedDirectEventCustody, String> {
+    let mut state = STATE
+        .get()
+        .ok_or("D45 direct hook state is not initialized")?
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    seal_terminal_custody_locked(&mut state)
+}
+
+fn seal_terminal_custody_locked(
+    state: &mut HookState,
+) -> Result<SealedDirectEventCustody, String> {
+    let current_error = state
+        .current_error
+        .clone()
+        .ok_or("D45 direct hook has no sticky terminal error to seal")?;
+    if let Some(custody) = &state.terminal_custody {
+        return Ok(SealedDirectEventCustody {
+            custody_id: custody.custody_id,
+            hook_epoch: state.hook_epoch,
+            drain_sequence: custody.drain_sequence,
+            sequence_cursor: custody.sequence_cursor,
+            callback_count: custody.callback_count,
+            kind_witness_counts: custody.kind_witness_counts,
+            current_error: custody.current_error.clone(),
+            reservation_id: custody.reservation_id,
+            rows: state.pending_rows.clone(),
+        });
+    }
+    let custody_id = state.next_terminal_custody_id;
+    state.next_terminal_custody_id = state
+        .next_terminal_custody_id
+        .checked_add(1)
+        .ok_or("D45 terminal custody ID exhausted")?;
+    let custody = TerminalCustodyState {
+        custody_id,
+        current_error: current_error.clone(),
+        row_count: state.pending_rows.len(),
+        reservation_id: state
+            .reservation
+            .map(|reservation| reservation.reservation_id),
+        drain_sequence: state.drain_sequence,
+        sequence_cursor: state.carrier.next_sequence(),
+        callback_count: state.callback_count,
+        kind_witness_counts: state.kind_witness_counts,
+    };
+    state.terminal_sealed = true;
+    state.terminal_custody = Some(custody);
+    Ok(SealedDirectEventCustody {
+        custody_id,
+        hook_epoch: state.hook_epoch,
+        drain_sequence: state.drain_sequence,
+        sequence_cursor: state.carrier.next_sequence(),
+        callback_count: state.callback_count,
+        kind_witness_counts: state.kind_witness_counts,
+        current_error,
+        reservation_id: state
+            .reservation
+            .map(|reservation| reservation.reservation_id),
+        rows: state.pending_rows.clone(),
     })
+}
+
+fn ensure_no_retained_terminal_custody() -> Result<(), String> {
+    let Some(state) = STATE.get() else {
+        return Ok(());
+    };
+    let state = state
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    if !state.pending_rows.is_empty()
+        || state.reservation.is_some()
+        || state.current_error.is_some()
+        || state.terminal_custody.is_some()
+        || state.terminal_sealed
+    {
+        return Err(
+            "D45 retained terminal event custody must be sealed and acknowledged before reinstall"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Acknowledges transfer of the exact poisoned snapshot. The producer remains
+/// sealed, so no callback can append between this acknowledgement and removal.
+pub fn acknowledge_terminal_custody(custody_id: u64) -> Result<(), String> {
+    let mut state = STATE
+        .get()
+        .ok_or("D45 direct hook state is not initialized")?
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    acknowledge_terminal_custody_locked(
+        &mut state,
+        custody_id,
+        MODULE_BASE.load(Ordering::Acquire) == 0,
+    )
+}
+
+fn acknowledge_terminal_custody_locked(
+    state: &mut HookState,
+    custody_id: u64,
+    hooks_already_removed: bool,
+) -> Result<(), String> {
+    let custody = state
+        .terminal_custody
+        .as_ref()
+        .ok_or("D45 direct hook has no sealed terminal custody")?;
+    if custody.custody_id != custody_id {
+        return Err(format!(
+            "D45 terminal custody mismatch: active {}, supplied {custody_id}",
+            custody.custody_id
+        ));
+    }
+    if custody.row_count != state.pending_rows.len()
+        || custody.reservation_id
+            != state
+                .reservation
+                .map(|reservation| reservation.reservation_id)
+        || state.current_error.as_deref() != Some(custody.current_error.as_str())
+    {
+        return Err("D45 terminal custody changed before acknowledgement".into());
+    }
+    state.pending_rows.clear();
+    state.reservation = None;
+    state.current_error = None;
+    state.terminal_custody = None;
+    // terminal_sealed deliberately remains true through uninstall.
+    if hooks_already_removed {
+        // A failed install may already have restored every target before its
+        // retained event custody is acknowledged.
+        state.terminal_sealed = false;
+    }
+    Ok(())
+}
+
+/// Compatibility drain. Production publication should use the explicit
+/// peek/commit API so a failed sink write can roll the batch back.
+pub fn drain_batch() -> Result<DirectEventBatch, String> {
+    let reservation = peek_batch()?;
+    commit_batch(reservation.reservation_id)?;
+    Ok(reservation.batch)
 }
 
 pub fn drain_rows() -> Result<Vec<DirectEventRow>, String> {
@@ -479,8 +1121,16 @@ pub fn drain_trailer() -> Result<Vec<u8>, String> {
     if !installed() {
         return Err("D45 a729 direct hooks are not installed".into());
     }
-    crate::encode_authoritative_trailer(&drain_batch()?)
-        .map_err(|error| format!("D45 direct hook trailer drain failed: {error}"))
+    let reservation = peek_batch()?;
+    let encoded = match crate::encode_authoritative_trailer(&reservation.batch) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            rollback_batch(reservation.reservation_id)?;
+            return Err(format!("D45 direct hook trailer drain failed: {error}"));
+        }
+    };
+    commit_batch(reservation.reservation_id)?;
+    Ok(encoded)
 }
 
 pub fn diagnostics() -> HookDiagnostics {
@@ -494,7 +1144,14 @@ pub fn diagnostics() -> HookDiagnostics {
         installed: installed(),
         callback_count: state.callback_count,
         active_callbacks: ACTIVE_CALLBACKS.load(Ordering::Acquire),
-        pending_rows: state.carrier.pending_rows().len(),
+        pending_rows: state.pending_rows.len(),
+        reserved_rows: state.reservation.map_or(0, |reservation| reservation.row_count),
+        reservation_id: state.reservation.map(|reservation| reservation.reservation_id),
+        terminal_custody_id: state
+            .terminal_custody
+            .as_ref()
+            .map(|custody| custody.custody_id),
+        terminal_sealed: state.terminal_sealed,
         pointer_identity_count: state.pointer_ids.len(),
         bound_thread_id: state.bound_thread_id,
         last_game_hour_raw: state.last_game_hour_raw,
@@ -827,7 +1484,7 @@ fn publish(prepared: Result<Option<PreparedRow>, String>) {
         return;
     };
     state.callback_count = state.callback_count.saturating_add(1);
-    if state.current_error.is_some() {
+    if state.current_error.is_some() || state.terminal_sealed {
         return;
     }
     let prepared = match prepared {
@@ -876,7 +1533,7 @@ fn publish(prepared: Result<Option<PreparedRow>, String>) {
         before: prepared.before,
         after,
     };
-    if let Err(error) = state.carrier.capture(row) {
+    if let Err(error) = state.capture(row) {
         state.current_error = Some(format!("D45 direct hook carrier rejected row: {error}"));
     } else {
         state.last_game_hour_raw = Some(prepared.game_hour_raw);
@@ -912,7 +1569,7 @@ fn publish_optional_entry(prepared: Result<Option<PreparedRow>, String>) {
         return;
     };
     state.callback_count = state.callback_count.saturating_add(1);
-    if state.current_error.is_some() {
+    if state.current_error.is_some() || state.terminal_sealed {
         return;
     }
     match state.bound_thread_id {
@@ -954,7 +1611,7 @@ fn publish_optional_entry(prepared: Result<Option<PreparedRow>, String>) {
             ..DirectEventStateSummary::default()
         },
     };
-    if let Err(error) = state.carrier.capture(row) {
+    if let Err(error) = state.capture(row) {
         state.current_error = Some(format!("D45 X10 entry carrier rejected row: {error}"));
     } else {
         state.last_game_hour_raw = Some(prepared.game_hour_raw);
@@ -1135,7 +1792,182 @@ fn create_remaining_hooks(targets: &[usize; 12]) -> Result<(), String> {
     Ok(())
 }
 
+fn observe_and_record_install_receipt(index: usize, target: usize) -> Result<(), String> {
+    let expected = *EXPECTED_HOOKS
+        .get(index)
+        .ok_or("D45 installed-hook receipt index is out of range")?;
+    let receipts = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    if receipts.partial_installed[index].is_some() || receipts.installed.is_some() {
+        return Err(format!(
+            "{} already has installed-hook custody",
+            expected.logical_name
+        ));
+    }
+    let owner_token = next_teardown_owner_token()?;
+    let expected_detour = detour_targets()[index];
+    let observed =
+        observe_enabled_minhook_rel5(expected, target, expected_detour, owner_token)?;
+    receipts.partial_installed[index] = Some(observed);
+    Ok(())
+}
+
+fn complete_install_receipts() -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?;
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    let installed = receipts
+        .partial_installed
+        .iter()
+        .copied()
+        .collect::<Option<Vec<_>>>()
+        .ok_or("D45 installed-hook receipt roster is incomplete")?;
+    let installed: [InstalledRvaHookReceipt; 12] = installed
+        .try_into()
+        .map_err(|_| "D45 installed-hook receipt cardinality mismatch")?;
+    receipts.installed = Some(installed);
+    Ok(())
+}
+
+fn validate_live_install_receipts(
+    targets: &[usize; 12],
+) -> Result<[InstalledRvaHookReceipt; 12], String> {
+    let stored = stored_install_receipts()?;
+    for (((expected, target), expected_detour), installed) in EXPECTED_HOOKS
+        .iter()
+        .copied()
+        .zip(targets.iter().copied())
+        .zip(detour_targets())
+        .zip(stored.iter().copied())
+    {
+        let observed = observe_enabled_minhook_rel5(
+            expected,
+            target,
+            expected_detour,
+            installed.teardown_owner_token,
+        )?;
+        if observed != installed {
+            return Err(format!(
+                "{} live installed-hook receipt changed",
+                expected.logical_name
+            ));
+        }
+    }
+    Ok(stored)
+}
+
+fn prepare_hook_receipts_for_install() -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    if receipts.rollback_retry_required
+        || receipts.installed.is_some()
+        || receipts.partial_installed.iter().any(Option::is_some)
+    {
+        return Err(
+            "D45 prior hook custody requires explicit cleanup before reinstall".into(),
+        );
+    }
+    if receipts.released.is_some() || !receipts.partial_released.is_empty() {
+        return Err(
+            "D45 prior release receipts must be taken before reinstall".into(),
+        );
+    }
+    receipts.installed = None;
+    receipts.released = None;
+    receipts.partial_installed = [None; 12];
+    receipts.release_slots = [None; 12];
+    receipts.partial_released.clear();
+    receipts.rollback_retry_required = false;
+    receipts.pre_target_prefixes = None;
+    Ok(())
+}
+
+fn capture_pre_target_prefixes(targets: &[usize; 12]) -> Result<(), String> {
+    let mut prefixes = [[0u8; 5]; 12];
+    for (index, target) in targets.iter().copied().enumerate() {
+        let above = target
+            .checked_sub(5)
+            .ok_or("D45 pre-target baseline address underflow")?;
+        if !read_process(above, &mut prefixes[index]) {
+            return Err(format!(
+                "D45 pre-target baseline unreadable for {}",
+                EXPECTED_HOOKS[index].logical_name
+            ));
+        }
+    }
+    let receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?;
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    if receipts.pre_target_prefixes.is_some() {
+        return Err("D45 pre-target baseline custody is already active".into());
+    }
+    receipts.pre_target_prefixes = Some(prefixes);
+    Ok(())
+}
+
+fn completed_teardown_attestation() -> Result<HookTeardownAttestation, String> {
+    if !QUIESCED.load(Ordering::Acquire) || ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        return Err(
+            "D45 hook release requested before callback quiescence completed".into(),
+        );
+    }
+    // Callers invoke this only after every MinHook::remove_hook returned either
+    // success or NOT_CREATED (the retry state proving it was already removed).
+    Ok(HookTeardownAttestation {
+        callbacks_quiesced: true,
+        hook_removed: true,
+        relay_freed: true,
+    })
+}
+
+fn observe_release_receipts() -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?;
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    if receipts.installed.is_none() {
+        return Err("D45 exact installed-hook receipts are unavailable at teardown".into());
+    }
+    let attestation = completed_teardown_attestation()?;
+    for index in 0..EXPECTED_HOOKS.len() {
+        if receipts.release_slots[index].is_some() {
+            continue;
+        }
+        let installed = receipts.partial_installed[index]
+            .ok_or("D45 installed-hook release custody has an unexplained hole")?;
+        let released = observe_released(EXPECTED_HOOKS[index], installed, attestation)?;
+        receipts.release_slots[index] = Some(released);
+        receipts.partial_installed[index] = None;
+    }
+    let released = receipts
+        .release_slots
+        .iter()
+        .copied()
+        .collect::<Option<Vec<_>>>()
+        .ok_or("D45 released-hook receipt roster is incomplete")?;
+    let released: [ReleasedRvaHookReceipt; 12] = released.try_into().map_err(
+        |_| "D45 released-hook receipt cardinality mismatch",
+    )?;
+    receipts.installed = None;
+    receipts.released = Some(released);
+    receipts.release_slots = [None; 12];
+    Ok(())
+}
+
 fn rollback(targets: &[usize; 12]) -> Result<(), String> {
+    set_rollback_retry_required(true)?;
     let mut errors = Vec::new();
     for target in targets {
         match unsafe { MinHook::disable_hook(*target as *mut c_void) } {
@@ -1159,7 +1991,115 @@ fn rollback(targets: &[usize; 12]) -> Result<(), String> {
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
+    for (target, sentinel, name) in target_sentinels(targets) {
+        verify_sentinel(target, sentinel, name)
+            .map_err(|error| format!("D45 rollback restoration verification failed: {error}"))?;
+    }
+    verify_pre_target_prefixes(targets)?;
+    observe_partial_release_receipts()?;
+    mark_failed_install_event_custody()?;
     clear_originals();
+    set_rollback_retry_required(false)?;
+    Ok(())
+}
+
+fn verify_pre_target_prefixes(targets: &[usize; 12]) -> Result<(), String> {
+    let prefixes = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?
+        .pre_target_prefixes
+        .ok_or("D45 pre-target baseline custody is unavailable")?;
+    for ((expected, target), baseline) in EXPECTED_HOOKS
+        .iter()
+        .zip(targets.iter())
+        .zip(prefixes.iter())
+    {
+        let above = target
+            .checked_sub(5)
+            .ok_or("D45 pre-target restoration address underflow")?;
+        let mut restored = [0u8; 5];
+        if !read_process(above, &mut restored) || &restored != baseline {
+            return Err(format!(
+                "{} pre-target bytes were not restored",
+                expected.logical_name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn mark_failed_install_event_custody() -> Result<(), String> {
+    let Some(state) = STATE.get() else {
+        return Ok(());
+    };
+    let mut state = state
+        .lock()
+        .map_err(|_| "D45 direct hook state mutex poisoned")?;
+    if (!state.pending_rows.is_empty() || state.callback_count != 0)
+        && state.current_error.is_none()
+    {
+        state.current_error =
+            Some("D45 failed install retained callback observations".into());
+    }
+    Ok(())
+}
+
+/// Retries a failed-install cleanup without allowing a new install to erase
+/// the retained per-target custody state.
+pub fn retry_failed_install_cleanup() -> Result<(), String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    let retry_required = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?
+        .rollback_retry_required;
+    if !retry_required {
+        return Err("D45 failed-install cleanup has no retryable custody".into());
+    }
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let targets = targets(base)?;
+    rollback(&targets)?;
+    clear_hook_lifecycle_state();
+    Ok(())
+}
+
+pub fn failed_install_cleanup_required() -> bool {
+    HOOK_RECEIPTS
+        .get()
+        .and_then(|receipts| receipts.lock().ok())
+        .map_or(false, |receipts| receipts.rollback_retry_required)
+}
+
+fn set_rollback_retry_required(required: bool) -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
+    receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?
+        .rollback_retry_required = required;
+    Ok(())
+}
+
+fn observe_partial_release_receipts() -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D45 production hook receipts are not initialized")?;
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D45 production hook receipt mutex poisoned")?;
+    let attestation = completed_teardown_attestation()?;
+    for index in 0..EXPECTED_HOOKS.len() {
+        let installed = receipts.partial_installed[index];
+        if let Some(installed) = installed {
+            let released = observe_released(EXPECTED_HOOKS[index], installed, attestation)?;
+            receipts.partial_released.push(released);
+            receipts.partial_installed[index] = None;
+        }
+    }
     Ok(())
 }
 
@@ -1376,6 +2316,32 @@ fn original_or_abort(slot: &AtomicUsize) -> usize {
 mod tests {
     use super::*;
 
+    fn test_focus_row(state: &mut HookState, game_hour_raw: i32) -> UnsequencedDirectEventRow {
+        let owner_instance_id = state.intern(0x1000, "test owner").unwrap();
+        let subject_instance_id = state
+            .intern(0x2000 + game_hour_raw as usize, "test subject")
+            .unwrap();
+        UnsequencedDirectEventRow {
+            kind: DirectEventKind::FocusCompleted,
+            thread_id: 1,
+            game_hour_raw,
+            root_rva: ROOT_RVA_FOCUS_COMPLETED_A729,
+            owner_instance_id,
+            subject_instance_id,
+            argument_instance_id: OpaqueInstanceId::NONE,
+            owner_key: 1,
+            subject_token_hash: 1,
+            subject_key: 0,
+            input_bits: 0,
+            return_bits: HOOK_VOID_RETURN_OBSERVED_BITS,
+            before: DirectEventStateSummary::default(),
+            after: DirectEventStateSummary {
+                state_bits: HOOK_SUMMARY_RETURN_OBSERVED,
+                ..DirectEventStateSummary::default()
+            },
+        }
+    }
+
     #[test]
     fn exact_build_hook_is_scheduled_through_the_authenticated_runtime_seam() {
         assert!(PRODUCTION_ACTIVATION);
@@ -1394,6 +2360,44 @@ mod tests {
     #[test]
     fn exact_roots_and_sentinels_are_bound() {
         assert_eq!(installed_roots().rvas.len(), 12);
+        assert_eq!(EXPECTED_HOOKS.len(), 12);
+        let mut detours = detour_targets().to_vec();
+        assert!(detours.iter().all(|detour| *detour != 0));
+        detours.sort_unstable();
+        detours.dedup();
+        assert_eq!(detours.len(), 12);
+        assert!(EXPECTED_HOOKS
+            .iter()
+            .all(|hook| hook.target_patch_len == 5
+                && hook.primitive_id == MINHOOK_NORMAL_REL5_PRIMITIVE_ID
+                && hook.original_prefix.len() == 16));
+        assert_eq!(
+            EXPECTED_HOOKS
+                .iter()
+                .map(|hook| hook.requested_rva as u32)
+                .collect::<Vec<_>>(),
+            installed_roots().rvas
+        );
+        assert_eq!(
+            EXPECTED_HOOKS
+                .iter()
+                .map(|hook| hook.logical_name)
+                .collect::<Vec<_>>(),
+            vec![
+                "gameplay.d45.focus_completed",
+                "gameplay.d45.research_completed",
+                "gameplay.d45.ordinary_decision_taken",
+                "gameplay.d45.targeted_decision_taken",
+                "gameplay.d45.timed_decision_activated",
+                "gameplay.d45.on_action_invoked",
+                "gameplay.d45.decision_cancel",
+                "gameplay.d45.decision_remove",
+                "gameplay.d45.decision_timeout",
+                "gameplay.d45.targeted_decision_cancel",
+                "gameplay.d45.targeted_decision_remove",
+                "gameplay.d45.targeted_decision_timeout",
+            ]
+        );
         assert_eq!(FOCUS_SENTINEL.len(), 16);
         assert_eq!(RESEARCH_SENTINEL.len(), 16);
         assert_eq!(ORDINARY_DECISION_SENTINEL.len(), 16);
@@ -1403,6 +2407,69 @@ mod tests {
         assert_eq!(DECISION_TERMINAL_SENTINEL.len(), 16);
         assert_eq!(TARGETED_DECISION_TERMINAL_SENTINEL.len(), 16);
         assert_eq!(TARGETED_DECISION_TIMEOUT_SENTINEL.len(), 16);
+    }
+
+    #[test]
+    fn reservation_is_single_nondestructive_and_commits_only_its_prefix() {
+        let mut state = HookState::fresh();
+        let first = test_focus_row(&mut state, 10);
+        state.capture(first).unwrap();
+
+        let reservation = peek_batch_locked(&mut state, 7, false).unwrap();
+        assert_eq!(reservation.batch.rows.len(), 1);
+        assert_eq!(reservation.batch.rows[0].sequence, 1);
+        assert!(peek_batch_locked(&mut state, 7, false)
+            .expect_err("a second reservation must fail closed")
+            .contains("already active"));
+
+        let second = test_focus_row(&mut state, 11);
+        state.capture(second).unwrap();
+        commit_batch_locked(&mut state, reservation.reservation_id).unwrap();
+        assert_eq!(
+            state
+                .pending_rows
+                .iter()
+                .map(|row| row.sequence)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let retry = peek_batch_locked(&mut state, 7, false).unwrap();
+        rollback_batch_locked(&mut state, retry.reservation_id).unwrap();
+        let after_rollback = peek_batch_locked(&mut state, 7, false).unwrap();
+        assert_eq!(after_rollback.batch.rows, retry.batch.rows);
+        assert_eq!(after_rollback.batch.drain_sequence, retry.batch.drain_sequence);
+    }
+
+    #[test]
+    fn poisoned_terminal_custody_requires_exact_ack_and_stays_sealed_while_hooks_exist() {
+        let mut state = HookState::fresh();
+        state.hook_epoch = 17;
+        let row = test_focus_row(&mut state, 10);
+        state.capture(row).unwrap();
+        state.current_error = Some("sticky producer poison".into());
+
+        let custody = seal_terminal_custody_locked(&mut state).unwrap();
+        assert_eq!(custody.hook_epoch, 17);
+        assert_eq!(custody.rows.len(), 1);
+        assert!(state.terminal_sealed);
+        assert!(acknowledge_terminal_custody_locked(
+            &mut state,
+            custody.custody_id + 1,
+            false
+        )
+        .is_err());
+        acknowledge_terminal_custody_locked(&mut state, custody.custody_id, false).unwrap();
+        assert!(state.pending_rows.is_empty());
+        assert!(state.current_error.is_none());
+        assert!(state.terminal_sealed);
+
+        let mut failed_install = HookState::fresh();
+        failed_install.current_error = Some("failed install poison".into());
+        let custody = seal_terminal_custody_locked(&mut failed_install).unwrap();
+        acknowledge_terminal_custody_locked(&mut failed_install, custody.custody_id, true)
+            .unwrap();
+        assert!(!failed_install.terminal_sealed);
     }
 
     #[test]

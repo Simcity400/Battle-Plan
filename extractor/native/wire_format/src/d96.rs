@@ -338,9 +338,9 @@ pub const KNOWN_ROW_FLAGS: u16 = FLAG_ACCUMULATOR_ENTRY_PRESENT;
 /// exactly what the fold uses: `compact_status_is_failure`
 /// (`tactic_weight_fold.rs:41`), the plain predicate, and then
 /// `handle_compact_failure` (`world_fold.rs:10568`) on the same word. Named here
-/// rather than imported because `wire_format`'s library half keeps no dependency
-/// on `compact_contract`; the measurement bin, which does depend on it, asserts
-/// all three facts so this constant cannot drift unnoticed (d70's pattern,
+/// rather than imported because d96 is not admitted to the production-codec
+/// dependency surface; the measurement bin asserts all three facts so this
+/// constant cannot drift unnoticed (d70's pattern,
 /// `d70.rs:202`-`:216`).
 pub const FAILURE_STATUS_MASK: u32 = (1 << 0)   // STATE_UNAVAILABLE
     | (1 << 1)  // PROFILE_MISMATCH

@@ -158,7 +158,7 @@ mod live {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, TryRecvError};
     use std::sync::Arc;
-    use std::{mem, ptr};
+    use std::ptr;
 
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::ffi::OsStrExt;
@@ -311,59 +311,21 @@ mod live {
         fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
     }
 
-    // -- Worker crash-containment job ----------------------------------
+    // -- Passive worker ownership + cooperative stop --------------------
 
     type Handle = *mut std::ffi::c_void;
     type Bool = i32;
     type Dword = u32;
 
-    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
-    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Dword = 0x0000_2000;
     const ERROR_ALREADY_EXISTS: Dword = 183;
-
-    #[repr(C)]
-    struct JobObjectBasicLimitInformation {
-        per_process_user_time_limit: i64,
-        per_job_user_time_limit: i64,
-        limit_flags: Dword,
-        minimum_working_set_size: usize,
-        maximum_working_set_size: usize,
-        active_process_limit: Dword,
-        affinity: usize,
-        priority_class: Dword,
-        scheduling_class: Dword,
-    }
-
-    #[repr(C)]
-    struct IoCounters {
-        read_operation_count: u64,
-        write_operation_count: u64,
-        other_operation_count: u64,
-        read_transfer_count: u64,
-        write_transfer_count: u64,
-        other_transfer_count: u64,
-    }
-
-    #[repr(C)]
-    struct JobObjectExtendedLimitInformation {
-        basic_limit_information: JobObjectBasicLimitInformation,
-        io_info: IoCounters,
-        process_memory_limit: usize,
-        job_memory_limit: usize,
-        peak_process_memory_used: usize,
-        peak_job_memory_used: usize,
-    }
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn CreateJobObjectW(attributes: *mut std::ffi::c_void, name: *const u16) -> Handle;
-        fn SetInformationJobObject(
-            job: Handle,
-            information_class: i32,
-            information: *const std::ffi::c_void,
-            information_length: Dword,
-        ) -> Bool;
-        fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
+        fn CreateMutexW(
+            attributes: *mut std::ffi::c_void,
+            initial_owner: Bool,
+            name: *const u16,
+        ) -> Handle;
         fn CreateEventW(
             attributes: *mut std::ffi::c_void,
             manual_reset: Bool,
@@ -382,53 +344,43 @@ mod live {
         fn CloseHandle(handle: Handle) -> Bool;
     }
 
-    struct WorkerCrashJob(Handle);
+    /// A recorder-owned, handle-lifetime lease for one target identity.
+    ///
+    /// The named object is never applied to either the game process or the
+    /// recorder worker. It provides passive duplicate-worker exclusion without
+    /// termination, quota, suspension, or any other process-control capability.
+    struct WorkerOwnershipLease(Handle);
 
-    unsafe impl Send for WorkerCrashJob {}
+    unsafe impl Send for WorkerOwnershipLease {}
+    unsafe impl Sync for WorkerOwnershipLease {}
 
-    impl WorkerCrashJob {
-        fn create() -> Result<Self, String> {
-            let handle = unsafe { CreateJobObjectW(ptr::null_mut(), ptr::null()) };
+    impl WorkerOwnershipLease {
+        fn acquire(spec: &WorkerSpec) -> Result<Self, String> {
+            let name = format!(
+                r"Local\battle-plan_worker_{}_{}",
+                spec.key.pid, spec.key.creation_filetime.0
+            );
+            let mut wide: Vec<u16> = std::ffi::OsStr::new(&name).encode_wide().collect();
+            wide.push(0);
+            let handle = unsafe { CreateMutexW(ptr::null_mut(), 0, wide.as_ptr()) };
             if handle.is_null() {
                 return Err(format!(
-                    "create worker crash-containment job failed: {}",
+                    "create passive worker ownership lease failed: {}",
                     std::io::Error::last_os_error()
                 ));
             }
-            let mut information: JobObjectExtendedLimitInformation = unsafe { mem::zeroed() };
-            information.basic_limit_information.limit_flags =
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if unsafe {
-                SetInformationJobObject(
-                    handle,
-                    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-                    (&information as *const JobObjectExtendedLimitInformation).cast(),
-                    mem::size_of::<JobObjectExtendedLimitInformation>() as Dword,
-                )
-            } == 0
-            {
-                let error = std::io::Error::last_os_error();
+            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
                 unsafe { CloseHandle(handle) };
                 return Err(format!(
-                    "configure worker kill-on-close job failed: {error}"
+                    "a recorder worker already owns target identity ({}, {})",
+                    spec.key.pid, spec.key.creation_filetime.0
                 ));
             }
             Ok(Self(handle))
         }
-
-        fn assign(&self, child: &Child) -> Result<(), String> {
-            let process = child.as_raw_handle() as Handle;
-            if process.is_null() || unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
-                return Err(format!(
-                    "assign worker to crash-containment job failed: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            Ok(())
-        }
     }
 
-    impl Drop for WorkerCrashJob {
+    impl Drop for WorkerOwnershipLease {
         fn drop(&mut self) {
             if !self.0.is_null() {
                 unsafe { CloseHandle(self.0) };
@@ -491,6 +443,35 @@ mod live {
         }
     }
 
+    fn retain_worker_until_exit(
+        mut child: Child,
+        ownership_lease: Arc<WorkerOwnershipLease>,
+        cooperative_stop_event: Option<SupervisorStopEvent>,
+        proof_stop: Arc<AtomicBool>,
+        proof_join: Option<std::thread::JoinHandle<()>>,
+    ) {
+        let pid = child.id();
+        let guardian_lease = ownership_lease.clone();
+        if std::thread::Builder::new()
+            .name(format!("auto-attach-passive-reaper-{pid}"))
+            .spawn(move || {
+                let _ownership_lease = guardian_lease;
+                let _cooperative_stop_event = cooperative_stop_event;
+                let _ = child.wait();
+                proof_stop.store(true, Ordering::Release);
+                if let Some(join) = proof_join {
+                    let _ = join.join();
+                }
+            })
+            .is_err()
+        {
+            // Thread creation failure must not make a still-running worker
+            // appear unowned. Retain the passive lease until recorder-process
+            // exit; the OS closes it without affecting either process.
+            std::mem::forget(ownership_lease);
+        }
+    }
+
     // -- Child-process worker spawner ------------------------------------
 
     /// Spawns `collector_record --pid <target> --dll <staged> --out-dir <run>`
@@ -530,6 +511,7 @@ mod live {
                     "auto-attach worker arg {arg:?} would override coordinator authority"
                 ));
             }
+            let ownership_lease = Arc::new(WorkerOwnershipLease::acquire(spec)?);
             // The durable parent/child proof channel and live H4CT transport
             // coexist inside the worker process. Session capabilities are
             // process-global and single-claim, so the proof channel uses the
@@ -622,13 +604,7 @@ mod live {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::from(worker_stderr));
-            let crash_job = WorkerCrashJob::create()?;
-            let mut child = cmd.spawn().map_err(|e| format!("spawn worker: {e}"))?;
-            if let Err(error) = crash_job.assign(&child) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
+            let child = cmd.spawn().map_err(|e| format!("spawn worker: {e}"))?;
             let (status_tx, status_rx) = mpsc::channel();
             let proof_stop = Arc::new(AtomicBool::new(false));
             let proof_thread_stop = proof_stop.clone();
@@ -695,18 +671,26 @@ mod live {
             {
                 Ok(join) => join,
                 Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Some(stop_event) = cooperative_stop_event.as_ref() {
+                        let _ = stop_event.signal();
+                    }
+                    retain_worker_until_exit(
+                        child,
+                        ownership_lease,
+                        cooperative_stop_event,
+                        Arc::new(AtomicBool::new(true)),
+                        None,
+                    );
                     return Err(format!("spawn proof reader: {e}"));
                 }
             };
             Ok(Box::new(ChildWorkerHandle {
-                child,
+                child: Some(child),
                 out_dir: spec.out_dir.clone(),
                 stderr_path,
                 stop_requested: false,
-                hard_kill_sent: false,
-                crash_job: Some(crash_job),
+                shutdown_failure: None,
+                ownership_lease: Some(ownership_lease),
                 cooperative_stop_event,
                 cooperative_stop_started: None,
                 finalization_progress: None,
@@ -716,8 +700,6 @@ mod live {
                 proof_join: Some(proof_join),
                 saw_attached: false,
                 saw_recording: false,
-                #[cfg(test)]
-                test_reaped: None,
             }))
         }
     }
@@ -728,19 +710,16 @@ mod live {
     /// accepted as Complete only when that ladder succeeded and recorder-main's
     /// fold/pack/verify pipeline left a replay artifact.
     struct ChildWorkerHandle {
-        child: Child,
+        child: Option<Child>,
         out_dir: PathBuf,
         stderr_path: PathBuf,
         stop_requested: bool,
-        /// True only when the legacy adapter successfully issued
-        /// `TerminateProcess` through `Child::kill`. A subsequently observed
-        /// replay can be retained for forensics, but this path can never prove
-        /// graceful drain/finalization and therefore must not report Complete.
-        hard_kill_sent: bool,
-        /// Retained for the entire child lifetime. Closing it is supervisor-
-        /// crash containment only; normal stop still owns the worker protocol
-        /// and waits/reaps before this handle is dropped.
-        crash_job: Option<WorkerCrashJob>,
+        /// Set when cooperative finalization cannot be proven. The supervisor
+        /// reports failure but never terminates the recorder worker.
+        shutdown_failure: Option<String>,
+        /// Recorder-owned duplicate-worker exclusion. If a worker outlives its
+        /// handle, a passive reaper retains this lease until natural exit.
+        ownership_lease: Option<Arc<WorkerOwnershipLease>>,
         cooperative_stop_event: Option<SupervisorStopEvent>,
         cooperative_stop_started: Option<std::time::Instant>,
         finalization_progress: Option<FinalizationProgress>,
@@ -750,23 +729,21 @@ mod live {
         proof_join: Option<std::thread::JoinHandle<()>>,
         saw_attached: bool,
         saw_recording: bool,
-        #[cfg(test)]
-        test_reaped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl WorkerHandle for ChildWorkerHandle {
         fn poll(&mut self) -> WorkerStatus {
             let now = std::time::Instant::now();
             self.refresh_finalization_progress(now);
-            if self.finalization_deadman_expired(now) && !self.hard_kill_sent {
-                if self.child.kill().is_ok() {
-                    self.hard_kill_sent = true;
-                }
+            if self.finalization_deadman_expired(now) && self.shutdown_failure.is_none() {
+                self.shutdown_failure = Some(
+                    "worker finalization stopped making bounded progress; recorder left it running"
+                        .to_string(),
+                );
             }
-            if self.hard_kill_sent {
+            if let Some(reason) = self.shutdown_failure.as_ref() {
                 return WorkerStatus::Failed {
-                    reason: "worker was hard-killed; graceful finalization is unproven"
-                        .into(),
+                    reason: reason.clone(),
                 };
             }
             match self.status_rx.try_recv() {
@@ -779,7 +756,9 @@ mod live {
                     return status;
                 }
                 Ok(WorkerStatus::Failed { reason }) => {
-                    if let Ok(Some(status)) = self.child.try_wait() {
+                    if let Ok(Some(status)) =
+                        self.child.as_mut().expect("worker child retained").try_wait()
+                    {
                         if !status.success() {
                             return self.worker_exit_failure(status);
                         }
@@ -789,7 +768,12 @@ mod live {
                 Ok(status) => return status,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
             }
-            match self.child.try_wait() {
+            match self
+                .child
+                .as_mut()
+                .expect("worker child retained")
+                .try_wait()
+            {
                 Ok(None) if self.cooperative_stop_started.is_some() => WorkerStatus::Finalizing,
                 Ok(None) if self.saw_recording => WorkerStatus::Recording {
                     last_confirmed_hour: None,
@@ -841,19 +825,24 @@ mod live {
                     Ok(()) => {
                         let now = std::time::Instant::now();
                         self.cooperative_stop_started = Some(now);
-                        self.finalization_progress =
-                            Some(observe_finalization_progress(&self.child, &self.out_dir));
+                        self.finalization_progress = Some(observe_finalization_progress(
+                            self.child.as_ref().expect("worker child retained"),
+                            &self.out_dir,
+                        ));
                         self.finalization_last_progress_at = Some(now);
                         return;
                     }
-                    Err(_) => { /* fall through to explicit failed hard-kill */ }
+                    Err(error) => {
+                        self.shutdown_failure = Some(format!(
+                            "cooperative stop signal failed; recorder left worker running: {error}"
+                        ));
+                        return;
+                    }
                 }
             }
-            // Legacy mode has no cooperative channel, and a product signal
-            // failure cannot be treated as graceful. Both fail closed.
-            if self.child.kill().is_ok() {
-                self.hard_kill_sent = true;
-            }
+            self.shutdown_failure = Some(
+                "worker has no cooperative stop channel; recorder left it running".to_string(),
+            );
         }
     }
 
@@ -862,35 +851,39 @@ mod live {
             if !self.stop_requested {
                 self.request_stop();
             }
-            // Rust's `Child::drop` neither terminates nor waits. Preserve a
-            // healthy large finalizer while CPU/filesystem progress continues;
-            // use hard termination only after the stall or absolute deadman.
-            let _waited = loop {
-                match self.child.try_wait() {
-                    Ok(Some(_)) => break true,
-                    Ok(None) => {
-                        if self.hard_kill_sent || self.cooperative_stop_started.is_none() {
-                            let _ = self.child.kill();
-                            break self.child.wait().is_ok();
-                        }
-                        let now = std::time::Instant::now();
-                        self.refresh_finalization_progress(now);
-                        if self.finalization_deadman_expired(now) {
-                            let _ = self.child.kill();
-                            break self.child.wait().is_ok();
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(250));
-                    }
-                    Err(_) => break false,
-                }
-            };
-            self.finish_proof_reader();
-            #[cfg(test)]
-            if _waited {
-                if let Some(reaped) = &self.test_reaped {
-                    reaped.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
+            let exited = self
+                .child
+                .as_mut()
+                .and_then(|child| child.try_wait().ok())
+                .flatten()
+                .is_some();
+            if exited {
+                self.finish_proof_reader();
+                self.child.take();
+                self.ownership_lease.take();
+                self.cooperative_stop_event.take();
+                return;
             }
+
+            // Dropping a Rust `Child` detaches without terminating it. Move the
+            // live worker, its cooperative-stop event, proof reader, and passive
+            // ownership lease to a recorder-owned reaper. The handle drop stays
+            // bounded; duplicate-worker exclusion remains until natural exit.
+            let child = self.child.take().expect("worker child retained");
+            let ownership_lease = self
+                .ownership_lease
+                .take()
+                .expect("worker ownership lease retained");
+            let cooperative_stop_event = self.cooperative_stop_event.take();
+            let proof_stop = self.proof_stop.clone();
+            let proof_join = self.proof_join.take();
+            retain_worker_until_exit(
+                child,
+                ownership_lease,
+                cooperative_stop_event,
+                proof_stop,
+                proof_join,
+            );
         }
     }
 
@@ -899,7 +892,10 @@ mod live {
             if self.cooperative_stop_started.is_none() {
                 return;
             }
-            let observed = observe_finalization_progress(&self.child, &self.out_dir);
+            let observed = observe_finalization_progress(
+                self.child.as_ref().expect("worker child retained"),
+                &self.out_dir,
+            );
             if self.finalization_progress != Some(observed) {
                 self.finalization_progress = Some(observed);
                 self.finalization_last_progress_at = Some(now);
@@ -1201,72 +1197,5 @@ mod live {
             std::fs::remove_file(path).unwrap();
         }
 
-        #[test]
-        #[ignore = "subprocess helper for ChildWorkerHandle drop test"]
-        fn child_worker_drop_wait_helper() {
-            let ready = std::env::var_os("BATTLE_PLAN_TEST_CHILD_READY").or_else(|| std::env::var_os("HOI4_TEST_CHILD_READY")).expect("ready path");
-            std::fs::write(ready, b"ready").unwrap();
-            std::thread::sleep(std::time::Duration::from_secs(30));
-        }
-
-        #[test]
-        fn child_worker_drop_stops_and_waits_live_process() {
-            use std::sync::atomic::{AtomicBool, Ordering};
-            use std::sync::Arc;
-
-            let ready = std::env::temp_dir().join(format!(
-                "auto_attach_child_ready_{}_{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            let child = Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "auto_attach::live::tests::child_worker_drop_wait_helper",
-                    "--ignored",
-                    "--nocapture",
-                ])
-                .env("BATTLE_PLAN_TEST_CHILD_READY", &ready)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !ready.exists() && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            assert!(ready.exists(), "helper child did not become live");
-
-            let (_tx, status_rx) = mpsc::channel();
-            let reaped = Arc::new(AtomicBool::new(false));
-            let handle = ChildWorkerHandle {
-                child,
-                out_dir: std::env::temp_dir(),
-                stderr_path: std::env::temp_dir().join("unused-worker-stderr.log"),
-                stop_requested: false,
-                hard_kill_sent: false,
-                crash_job: None,
-                cooperative_stop_event: None,
-                cooperative_stop_started: None,
-                finalization_progress: None,
-                finalization_last_progress_at: None,
-                status_rx,
-                proof_stop: Arc::new(AtomicBool::new(true)),
-                proof_join: None,
-                saw_attached: false,
-                saw_recording: false,
-                test_reaped: Some(reaped.clone()),
-            };
-            drop(handle);
-            assert!(
-                reaped.load(Ordering::SeqCst),
-                "drop did not wait/reap child"
-            );
-            let _ = std::fs::remove_file(ready);
-        }
     }
 }

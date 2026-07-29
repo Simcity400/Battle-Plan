@@ -6,9 +6,19 @@ description = "Reference implementation of extractor/documents/WIRE_FORMAT.md: p
 
 [dependencies]
 blake3 = "1"
-# Used ONLY by the measurement binaries that read shipping compact streams
-# (`src/bin/bench_real_*.rs`), never by the library: a harness that re-derives
-# the H4CR framing contract instead of calling it drifts from the recorder
-# silently. `compact_contract` is a leaf crate with no runtime dependencies of
-# its own, so this does not compromise the reference implementation's isolation.
+# Admitted uses are deliberately finite: measurement binaries may use the
+# shipping framing/status/stream contract; production library code may use only
+# d81's `compact_contract::rail_replay` payload authority and the shared status
+# predicates needed to preserve its fold order. No other production codec is
+# admitted without updating this allow-list and DOMAIN_SCHEMA_RECIPE.md under
+# adversarial review. The allow-list is enforced by
+# tests/compact_contract_dependency_policy.rs.
+# production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure
+# `compact_contract` has no normal dependencies, so the
+# production exception cannot pull recorder or capture-lane policy into this
+# reference implementation. It does not replace capture, measurement, packed
+# reopen, or source-parity gates.
 compact_contract = { path = "../compact_contract" }
+portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
+serde_json = "1"
+sha2 = "0.10"

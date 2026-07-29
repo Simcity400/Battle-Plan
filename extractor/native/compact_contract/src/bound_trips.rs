@@ -58,6 +58,108 @@ pub const BOUND_TRIP_UNITS: [(&str, &str); BOUND_TRIP_ID_COUNT] = [
 const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
 static TRIP_COUNTS: [AtomicU64; BOUND_TRIP_ID_COUNT] = [ATOMIC_ZERO; BOUND_TRIP_ID_COUNT];
 static TRIP_LAST_RAW: [AtomicU64; BOUND_TRIP_ID_COUNT] = [ATOMIC_ZERO; BOUND_TRIP_ID_COUNT];
+static ACTIVE_FRAME_RESERVATION: AtomicU64 = AtomicU64::new(0);
+static NEXT_FRAME_RESERVATION: AtomicU64 = AtomicU64::new(1);
+
+/// Immutable frame-scoped view of the bound-trip registry. The reservation
+/// keeps the represented counter prefix live until the collector either
+/// commits it after authoritative publication or rolls it back.
+#[derive(Debug)]
+pub struct BoundTripFrameReservation {
+    reservation_id: u64,
+    snapshot: [(u64, u64); BOUND_TRIP_ID_COUNT],
+    active: bool,
+}
+
+impl BoundTripFrameReservation {
+    pub fn snapshot(&self) -> &[(u64, u64); BOUND_TRIP_ID_COUNT] {
+        &self.snapshot
+    }
+
+    /// Consume exactly the counter prefix represented by this reservation.
+    /// Records that raced the snapshot stay in the registry for the next
+    /// frame; last-raw samples remain last-value cells and are never cleared.
+    pub fn commit(mut self) -> Result<(), String> {
+        ensure_active_reservation(self.reservation_id)?;
+        for (id, (reserved, _)) in self.snapshot.iter().copied().enumerate() {
+            let current = TRIP_COUNTS[id].load(Ordering::Acquire);
+            if current < reserved {
+                return Err(format!(
+                    "bound-trip reservation {} counter {} regressed from {} to {}",
+                    self.reservation_id, id, reserved, current
+                ));
+            }
+        }
+        for (id, (reserved, _)) in self.snapshot.iter().copied().enumerate() {
+            if reserved != 0 {
+                TRIP_COUNTS[id].fetch_sub(reserved, Ordering::AcqRel);
+            }
+        }
+        release_active_reservation(self.reservation_id)?;
+        self.active = false;
+        Ok(())
+    }
+
+    pub fn rollback(mut self) -> Result<(), String> {
+        release_active_reservation(self.reservation_id)?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for BoundTripFrameReservation {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = release_active_reservation(self.reservation_id);
+            self.active = false;
+        }
+    }
+}
+
+fn ensure_active_reservation(reservation_id: u64) -> Result<(), String> {
+    let active = ACTIVE_FRAME_RESERVATION.load(Ordering::Acquire);
+    if active != reservation_id {
+        return Err(format!(
+            "bound-trip reservation mismatch: active {}, requested {}",
+            active, reservation_id
+        ));
+    }
+    Ok(())
+}
+
+fn release_active_reservation(reservation_id: u64) -> Result<(), String> {
+    ACTIVE_FRAME_RESERVATION
+        .compare_exchange(reservation_id, 0, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|active| {
+            format!(
+                "bound-trip reservation release mismatch: active {}, requested {}",
+                active, reservation_id
+            )
+        })
+}
+
+/// Reserve the current counter prefix without changing registry state.
+pub fn reserve_frame_trips() -> Result<BoundTripFrameReservation, String> {
+    let reservation_id = NEXT_FRAME_RESERVATION.fetch_add(1, Ordering::Relaxed);
+    if reservation_id == 0 {
+        return Err("bound-trip reservation id wrapped".into());
+    }
+    ACTIVE_FRAME_RESERVATION
+        .compare_exchange(0, reservation_id, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|active| format!("bound-trip frame reservation already active: {}", active))?;
+    let mut snapshot = [(0u64, 0u64); BOUND_TRIP_ID_COUNT];
+    for (id, slot) in snapshot.iter_mut().enumerate() {
+        let count = TRIP_COUNTS[id].load(Ordering::Acquire);
+        let raw = TRIP_LAST_RAW[id].load(Ordering::Relaxed);
+        *slot = (count, raw);
+    }
+    Ok(BoundTripFrameReservation {
+        reservation_id,
+        snapshot,
+        active: true,
+    })
+}
 
 /// Record one bound trip: the observed `raw` value exceeded the bound `id`
 /// guards. Out-of-range `id` is ignored (defensive; all callers use the
@@ -111,14 +213,11 @@ pub fn bound_exceeded_u32(value: u32, max: u32, id: usize) -> bool {
 /// value), and a trip landing between the swap and the load is still a
 /// genuine observed trip.
 pub fn drain_frame_trips() -> [(u64, u64); BOUND_TRIP_ID_COUNT] {
-    let mut out = [(0u64, 0u64); BOUND_TRIP_ID_COUNT];
-    for (id, slot) in out.iter_mut().enumerate() {
-        // Acquire pairs with the Release publish in record_bound_trip: a
-        // counted trip's raw store is visible to the load below.
-        let count = TRIP_COUNTS[id].swap(0, Ordering::Acquire);
-        let raw = TRIP_LAST_RAW[id].load(Ordering::Relaxed);
-        *slot = (count, raw);
-    }
+    let reservation = reserve_frame_trips().expect("bound-trip compatibility drain reservation");
+    let out = *reservation.snapshot();
+    reservation
+        .commit()
+        .expect("bound-trip compatibility drain commit");
     out
 }
 
@@ -163,6 +262,29 @@ mod tests {
         assert!(bound_exceeded_u32(513, 512, id));
         let drained = drain_frame_trips()[id];
         assert_eq!(drained, (1, 513));
+    }
+
+    #[test]
+    fn frame_reservation_rolls_back_or_commits_only_its_prefix() {
+        let _guard = lock_registry();
+        drain_frame_trips();
+        let id = BOUND_TRIP_FACTION_MEMBERS;
+        record_bound_trip(id, 600);
+        let rolled_back = reserve_frame_trips().unwrap();
+        assert_eq!(rolled_back.snapshot()[id], (1, 600));
+        record_bound_trip(id, 601);
+        rolled_back.rollback().unwrap();
+        assert_eq!(drain_frame_trips()[id], (2, 601));
+
+        record_bound_trip(id, 700);
+        let committed = reserve_frame_trips().unwrap();
+        record_bound_trip(id, 701);
+        committed.commit().unwrap();
+        assert_eq!(
+            drain_frame_trips()[id],
+            (1, 701),
+            "post-reservation records must remain queued"
+        );
     }
 
     #[test]

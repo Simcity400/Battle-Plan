@@ -7,7 +7,8 @@
 
       * Test-ProductionCaptureArtifacts - the heavyweight production gate over a
         real run directory: registry roster, per-domain effective-failure
-        fail-closed checks, hour-latch accounting, container/fold/speed
+        fail-closed checks, passive per-domain outcome accounting,
+        container/fold/speed
         independent verifiers, AND the acceptance-telemetry schema gate below.
 
       * Test-ProductionCaptureManifest + Get-AcceptanceTelemetryProblems - the
@@ -69,19 +70,14 @@ $script:RequiredStaticArtifactNames = @(
 $script:ProductionDomainStatuses = @(
     "existing",
     "production_complete",
-    "production_complete_base",
-    "validated_slice",
-    "validated_partial_slice",
-    "validated_slice_open_gaps"
+    "production_complete_base"
 )
 
 # Acceptance-telemetry (F5) schema fields. Per-frame extraction time lives under
-# compact_stream; the new p50/p99 join the pre-existing avg/p95/max. Authoritative
-# collector sink timing, recorder-path diagnostics, and clock skew live in the
-# dedicated acceptance_telemetry block emitted alongside stream_storage.
+# compact_stream; the new p50/p99 join the pre-existing avg/p95/max. Host sink
+# timing and clock skew live in the dedicated acceptance_telemetry block.
 $script:RequiredFrameTimeFields = @("count", "avg", "p50", "p95", "p99", "max")
 $script:RequiredSinkWriteFields = @("count", "avg", "p50", "p95", "p99", "max")
-$script:RequiredCollectorSinkWriteFields = @("count", "total", "avg", "p50", "p99", "max")
 $script:RequiredClockSkewFields = @("wall_elapsed_us", "mono_elapsed_us", "drift_us", "wall_monotonic_ok")
 
 function Write-AtomicUtf8Text {
@@ -182,8 +178,9 @@ function Invoke-IndependentCaptureGate {
     $stdout = Join-Path $LogDir "$Name.stdout.log"
     $stderr = Join-Path $LogDir "$Name.stderr.log"
     if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
-        return [pscustomobject]@{ name=$Name; passed=$false; started=$false; exit_code=$null; timed_out=$false; problem="tool_missing"; stdout=$stdout; stderr=$stderr }
+        return [pscustomobject]@{ name=$Name; passed=$false; started=$false; exit_code=$null; timed_out=$false; problem="tool_missing"; stdout=$stdout; stderr=$stderr; executable_sha256=$null; arguments=@($Arguments) }
     }
+    $executableSha256 = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $process = $null
     $timedOut = $false
     try {
@@ -208,10 +205,10 @@ function Invoke-IndependentCaptureGate {
         }
         $process.Refresh()
         $exitCode = if ($process.HasExited) { $process.ExitCode } else { $null }
-        return [pscustomobject]@{ name=$Name; passed=(-not $timedOut -and $exitCode -eq 0); started=$true; exit_code=$exitCode; timed_out=$timedOut; problem=$(if ($timedOut) { "timeout" } elseif ($exitCode -ne 0) { "nonzero_exit" } else { $null }); stdout=$stdout; stderr=$stderr }
+        return [pscustomobject]@{ name=$Name; passed=(-not $timedOut -and $exitCode -eq 0); started=$true; exit_code=$exitCode; timed_out=$timedOut; problem=$(if ($timedOut) { "timeout" } elseif ($exitCode -ne 0) { "nonzero_exit" } else { $null }); stdout=$stdout; stderr=$stderr; executable_sha256=$executableSha256; arguments=@($Arguments) }
     }
     catch {
-        return [pscustomobject]@{ name=$Name; passed=$false; started=$false; exit_code=$null; timed_out=$timedOut; problem=$_.Exception.Message; stdout=$stdout; stderr=$stderr }
+        return [pscustomobject]@{ name=$Name; passed=$false; started=$false; exit_code=$null; timed_out=$timedOut; problem=$_.Exception.Message; stdout=$stdout; stderr=$stderr; executable_sha256=$executableSha256; arguments=@($Arguments) }
     }
     finally { if ($null -ne $process) { $process.Dispose() } }
 }
@@ -265,30 +262,16 @@ function Test-ProductionCaptureArtifacts {
 
     $expectedDomains = @(Get-RegistryCaptureDomains -RegistryPath $RegistryPath)
     $expectedIds = @($expectedDomains | ForEach-Object { [int]$_.id })
-    $expectedDataIds = @($expectedDomains | Where-Object { $_.requires_data_record -eq $true } | ForEach-Object { [int]$_.id })
-
-    # d77 is deliberately reserved/non-schedulable.  The suspended-launch
-    # collector inserts it as an authenticated carrier only after H4CT READY,
-    # FIRST and COMMIT.  Treat it as part of the exact production roster only
-    # when that receipt is present and internally joined to the launch manifest.
-    $earlyLaunch = Get-ObjectProperty $manifest "early_render_launch_manifest"
-    $earlyReceipt = Get-ObjectProperty $manifest "early_render_capture_receipt"
-    $earlyReceiptSha = Get-ObjectProperty $manifest "early_render_capture_receipt_sha256"
-    $hasAuthenticatedEarlyRender = (
-        $null -ne $earlyLaunch -and
-        $null -ne $earlyReceipt -and
-        [string](Get-ObjectProperty $earlyLaunch "schema") -ceq "extractor.early-render-launch-manifest.v1" -and
-        [string](Get-ObjectProperty $earlyReceipt "schema") -ceq "extractor.early-render-capture-receipt.v1" -and
-        (Get-ObjectProperty $earlyReceipt "created_suspended") -eq $true -and
-        [string](Get-ObjectProperty $earlyLaunch "executable_sha256") -ceq "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad" -and
-        [string](Get-ObjectProperty $earlyReceipt "executable_sha256") -ceq [string](Get-ObjectProperty $earlyLaunch "executable_sha256") -and
-        [string](Get-ObjectProperty $earlyReceipt "collector_sha256") -ceq [string](Get-ObjectProperty $earlyLaunch "collector_sha256") -and
-        (Test-HexSha256 $earlyReceiptSha)
+    $expectedNames = @($expectedDomains | ForEach-Object { [string]$_.name })
+    $expectedRoster = @(
+        for ($domainIndex = 0; $domainIndex -lt $expectedDomains.Count; $domainIndex++) {
+            [pscustomobject]@{
+                id = [int]$expectedIds[$domainIndex]
+                name = [string]$expectedNames[$domainIndex]
+            }
+        }
     )
-    if ($hasAuthenticatedEarlyRender) {
-        $expectedIds = @($expectedIds + 77 | Sort-Object -Unique)
-        $expectedDataIds = @($expectedDataIds + 77 | Sort-Object -Unique)
-    }
+    $expectedDataIds = @($expectedDomains | Where-Object { $_.requires_data_record -eq $true } | ForEach-Object { [int]$_.id })
 
     if ([string](Get-ObjectProperty $manifest "stream_format") -ne "compact") { Add-CaptureProblem $problems "stream_format_not_compact" }
     if ((Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "enabled") -ne $true) { Add-CaptureProblem $problems "production_profile_not_enabled" }
@@ -347,44 +330,106 @@ function Test-ProductionCaptureArtifacts {
             else { $seenById[$id] = $row }
         }
     }
-    $actualIds = @($seenById.Keys | Sort-Object)
-    if (($actualIds -join ',') -ne (($expectedIds | Sort-Object) -join ',')) { Add-CaptureProblem $problems "registry_roster_mismatch" }
-    if ($seenById.ContainsKey(77) -and -not $hasAuthenticatedEarlyRender) {
-        Add-CaptureProblem $problems "domain_77_without_authenticated_early_render"
+    $gapRows = @(Get-ObjectProperty $compact "domain_gap_outcomes")
+    $declaredGapCount = Get-ObjectProperty $compact "domain_gap_record_count"
+    if (-not (Test-IsJsonInteger $declaredGapCount) -or [int64]$declaredGapCount -lt 0) {
+        Add-CaptureProblem $problems "domain_gap_record_count_invalid"
+    } elseif ([int64]$declaredGapCount -ne $gapRows.Count) {
+        Add-CaptureProblem $problems "domain_gap_record_count_mismatch"
     }
-    foreach ($id in $expectedIds) {
-        if (-not $seenById.ContainsKey($id)) { Add-CaptureProblem $problems "domain_${id}_missing"; continue }
-        $row = $seenById[$id]
-        if ($id -eq 77) {
-            if ([int64](Get-ObjectProperty $row "record_count") -ne 0) { Add-CaptureProblem $problems "domain_77_unexpected_perf_record" }
+    if ($gapRows.Count -ne 0) {
+        Add-CaptureProblem $problems "production_zero_loss_domain_gaps_present"
+    }
+    $gapCountById = @{}
+    $gapOrdinalByPart = @{}
+    $gapRangeEndByPart = @{}
+    $gapTargetByDomain = @{}
+    foreach ($gap in $gapRows) {
+        if ($null -eq $gap) { continue }
+        $id = [int](Get-ObjectProperty $gap "domain_id")
+        $part = [string](Get-ObjectProperty $gap "part")
+        $reason = [string](Get-ObjectProperty $gap "reason")
+        $start = Get-ObjectProperty $gap "range_start_hour_raw"
+        $end = Get-ObjectProperty $gap "range_end_hour_raw"
+        $target = Get-ObjectProperty $gap "target_hour_raw"
+        $ordinal = Get-ObjectProperty $gap "outcome_ordinal"
+        if ($expectedIds -notcontains $id) { Add-CaptureProblem $problems "domain_gap_unknown_domain_$id"; continue }
+        if (@("state","event","both") -notcontains $part) { Add-CaptureProblem $problems "domain_${id}_gap_part_invalid" }
+        if (@("torn","overrun","backpressure","clock_unreadable","worker_panic") -notcontains $reason) { Add-CaptureProblem $problems "domain_${id}_gap_reason_invalid" }
+        if (-not (Test-IsJsonInteger $start) -or -not (Test-IsJsonInteger $end) -or [int64]$start -gt [int64]$end) {
+            Add-CaptureProblem $problems "domain_${id}_gap_range_invalid"
+        } else {
+            $rangeKey = "${id}:$part"
+            if ($gapRangeEndByPart.ContainsKey($rangeKey) -and
+                [int64]$start -le [int64]$gapRangeEndByPart[$rangeKey]) {
+                Add-CaptureProblem $problems "domain_${id}_${part}_gap_range_overlap_or_regression"
+            }
+            $gapRangeEndByPart[$rangeKey] = [int64]$end
+            if (-not (Test-IsJsonInteger $target) -or
+                [int64]$target -lt [int64]$start -or [int64]$target -gt [int64]$end) {
+                Add-CaptureProblem $problems "domain_${id}_gap_target_outside_range"
+            } else {
+                $targetKey = "${id}:$([int64]$target)"
+                if ($gapTargetByDomain.ContainsKey($targetKey)) {
+                    Add-CaptureProblem $problems "domain_${id}_duplicate_gap_terminal_for_frame"
+                }
+                $gapTargetByDomain[$targetKey] = $true
+            }
         }
-        elseif ([int64](Get-ObjectProperty $row "record_count") -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_record_count_mismatch" }
-        if ($expectedDataIds -contains $id -and [int64](Get-ObjectProperty $row "data_record_count") -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_data_record_count_mismatch" }
+        if (-not (Test-IsJsonInteger $ordinal) -or [int64]$ordinal -lt 0) {
+            Add-CaptureProblem $problems "domain_${id}_gap_ordinal_invalid"
+        } else {
+            $ordinalKey = "${id}:$part"
+            $expectedOrdinal = if ($gapOrdinalByPart.ContainsKey($ordinalKey)) { [int64]$gapOrdinalByPart[$ordinalKey] } else { 0 }
+            if ([int64]$ordinal -ne $expectedOrdinal) { Add-CaptureProblem $problems "domain_${id}_${part}_gap_ordinal_discontinuous" }
+            $gapOrdinalByPart[$ordinalKey] = $expectedOrdinal + 1
+        }
+        if ($gapCountById.ContainsKey($id)) { $gapCountById[$id] = [int64]$gapCountById[$id] + 1 }
+        else { $gapCountById[$id] = [int64]1 }
+    }
+    $actualIds = @(@($seenById.Keys) + @($gapCountById.Keys) | Sort-Object -Unique)
+    if (($actualIds -join ',') -ne (($expectedIds | Sort-Object) -join ',')) { Add-CaptureProblem $problems "registry_roster_mismatch" }
+    foreach ($id in $expectedIds) {
+        $gapCount = if ($gapCountById.ContainsKey($id)) { [int64]$gapCountById[$id] } else { 0 }
+        if (-not $seenById.ContainsKey($id)) {
+            if ($gapCount -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_missing" }
+            continue
+        }
+        $row = $seenById[$id]
+        $acceptedRaw = Get-ObjectProperty $row "record_count"
+        if (-not (Test-IsJsonInteger $acceptedRaw) -or [int64]$acceptedRaw -lt 0) {
+            Add-CaptureProblem $problems "domain_${id}_record_count_invalid"
+            continue
+        }
+        $acceptedCount = [int64]$acceptedRaw
+        if ($acceptedCount + $gapCount -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_terminal_outcome_count_mismatch" }
+        $dataCountRaw = Get-ObjectProperty $row "data_record_count"
+        if ($expectedDataIds -contains $id -and
+            (-not (Test-IsJsonInteger $dataCountRaw) -or [int64]$dataCountRaw -ne $acceptedCount)) {
+            Add-CaptureProblem $problems "domain_${id}_data_record_count_mismatch"
+        }
         $rawFlags = [uint32](Get-ObjectProperty $row "status_flags_or")
         $effectiveFlags = Get-ObjectProperty $row "effective_failure_status_flags_or"
+        if (($rawFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
+            # A raw source-unavailable, hard-disabled, partial, bridge, or decode
+            # status is never production-complete. Effective-status masking is
+            # useful for replay semantics, but it cannot promote missing source
+            # data into a successful real capture.
+            Add-CaptureProblem $problems "domain_${id}_raw_failure_status"
+        }
         if ($null -eq $effectiveFlags) {
             # Fail-closed: an absent/unreadable per-domain effective-failure field
             # means we cannot evaluate whether this domain masked a real failure,
             # so it is a validation FAILURE, not a silent pass.
             Add-CaptureProblem $problems "domain_${id}_effective_failure_status_flags_or_missing"
         }
-        elseif (($rawFlags -band $script:CanonicalCompactFailureMask) -ne 0 -and ([uint32]$effectiveFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
+        elseif (([uint32]$effectiveFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
             Add-CaptureProblem $problems "domain_${id}_effective_failure_status"
         }
     }
 
-    $latch = Get-ObjectProperty $compact "hour_latch"
-    if ($null -eq $latch) { Add-CaptureProblem $problems "hour_latch_summary_missing" }
-    else {
-        if ((Get-ObjectProperty $latch "requested") -ne $true -or (Get-ObjectProperty $latch "enabled") -ne $true) { Add-CaptureProblem $problems "hour_latch_not_enabled" }
-        if ((Get-ObjectProperty $latch "latch_requested_but_inactive") -eq $true) { Add-CaptureProblem $problems "hour_latch_inactive" }
-        if ((Get-ObjectProperty $latch "coverage_invariant_ok") -ne $true) { Add-CaptureProblem $problems "hour_latch_coverage_failed" }
-        if ([int64](Get-ObjectProperty $latch "hours_unaccounted") -ne 0) { Add-CaptureProblem $problems "hour_latch_unaccounted_hours" }
-        if ([int64](Get-ObjectProperty $latch "capture_attempts") -ne $frameCount) { Add-CaptureProblem $problems "hour_latch_attempt_count_mismatch" }
-        if ([int64](Get-ObjectProperty $latch "frames_emitted_to_sink") -ne $frameCount) { Add-CaptureProblem $problems "hour_latch_sink_count_mismatch" }
-        if ((Get-ObjectProperty $latch "sink_write_success_verified") -ne $true) { Add-CaptureProblem $problems "sink_write_success_unverified" }
-        if ([int64](Get-ObjectProperty $latch "hours_coalesced") -ne 0) { Add-CaptureProblem $problems "coalesced_game_hours" }
-        if ([int64](Get-ObjectProperty $latch "capture_failed") -ne 0 -or [int64](Get-ObjectProperty $latch "recorded_failed") -ne 0) { Add-CaptureProblem $problems "hour_latch_failed_captures" }
+    if ($null -ne (Get-ObjectProperty $compact "hour_latch")) {
+        Add-CaptureProblem $problems "forbidden_hour_latch_summary_present"
     }
 
     $finalize = Get-ObjectProperty $manifest "host_finalize"
@@ -448,10 +493,111 @@ function Test-ProductionCaptureArtifacts {
     }
 
     $capturePlan = $null
+    $validatedDomainRosterAuthorityPath = $null
+    $validatedDomainRosterAuthoritySha256 = $null
     if (-not [string]::IsNullOrWhiteSpace($CapturePlanPath) -and (Test-Path -LiteralPath $CapturePlanPath -PathType Leaf)) {
         try { $capturePlan = Get-Content -LiteralPath $CapturePlanPath -Raw | ConvertFrom-Json }
         catch { $capturePlan = $null; Add-CaptureProblem $problems "capture_plan_not_json" }
         if ($null -ne $capturePlan) {
+            $planDomainIds = @(Get-ObjectProperty $capturePlan "production_profile_domain_ids")
+            $planDomainNames = @(Get-ObjectProperty $capturePlan "production_profile_domain_names")
+            $planDomainRoster = @(Get-ObjectProperty $capturePlan "production_profile_domain_roster")
+            $planScheduledNames = @(Get-ObjectProperty $capturePlan "scheduled_domain_names")
+            $planScheduledRoster = @(Get-ObjectProperty $capturePlan "scheduled_domain_roster")
+            if (
+                $planDomainIds.Count -ne $expectedRoster.Count -or
+                $planDomainNames.Count -ne $expectedRoster.Count -or
+                $planDomainRoster.Count -ne $expectedRoster.Count -or
+                $planScheduledNames.Count -ne $expectedRoster.Count -or
+                $planScheduledRoster.Count -ne $expectedRoster.Count
+            ) {
+                Add-CaptureProblem $problems "capture_plan_domain_roster_count_mismatch"
+            } else {
+                $seenScheduledNames = @{}
+                for ($domainIndex = 0; $domainIndex -lt $expectedRoster.Count; $domainIndex++) {
+                    $planRosterRow = $planDomainRoster[$domainIndex]
+                    $planScheduledRow = $planScheduledRoster[$domainIndex]
+                    $scheduledName = $planScheduledNames[$domainIndex]
+                    if (
+                        -not (Test-IsJsonInteger $planDomainIds[$domainIndex]) -or
+                        [int64]$planDomainIds[$domainIndex] -ne [int64]$expectedRoster[$domainIndex].id -or
+                        $planDomainNames[$domainIndex] -isnot [string] -or
+                        [string]$planDomainNames[$domainIndex] -cne [string]$expectedRoster[$domainIndex].name -or
+                        $null -eq $planRosterRow -or
+                        (@($planRosterRow.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'id,name' -or
+                        -not (Test-IsJsonInteger (Get-ObjectProperty $planRosterRow "id")) -or
+                        [int64](Get-ObjectProperty $planRosterRow "id") -ne [int64]$expectedRoster[$domainIndex].id -or
+                        (Get-ObjectProperty $planRosterRow "name") -isnot [string] -or
+                        [string](Get-ObjectProperty $planRosterRow "name") -cne [string]$expectedRoster[$domainIndex].name -or
+                        $scheduledName -isnot [string] -or
+                        [string]::IsNullOrWhiteSpace([string]$scheduledName) -or
+                        $seenScheduledNames.ContainsKey([string]$scheduledName) -or
+                        $null -eq $planScheduledRow -or
+                        (@($planScheduledRow.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'id,wire_name' -or
+                        -not (Test-IsJsonInteger (Get-ObjectProperty $planScheduledRow "id")) -or
+                        [int64](Get-ObjectProperty $planScheduledRow "id") -ne [int64]$expectedRoster[$domainIndex].id -or
+                        (Get-ObjectProperty $planScheduledRow "wire_name") -isnot [string] -or
+                        [string](Get-ObjectProperty $planScheduledRow "wire_name") -cne [string]$scheduledName
+                    ) {
+                        Add-CaptureProblem $problems "capture_plan_domain_roster_pair_mismatch"
+                        break
+                    }
+                    $seenScheduledNames[[string]$scheduledName] = $true
+                }
+                if ((@((Get-ObjectProperty $manifest "scheduled_domains")) -join "`n") -cne ($planScheduledNames -join "`n")) {
+                    Add-CaptureProblem $problems "manifest_scheduled_domain_roster_mismatch"
+                }
+                if ((@((Get-ObjectProperty $compact "expected_domains")) -join "`n") -cne ($planScheduledNames -join "`n")) {
+                    Add-CaptureProblem $problems "compact_expected_domain_roster_mismatch"
+                }
+            }
+            if (-not (Test-HexSha256 (Get-ObjectProperty $capturePlan "domain_roster_tool_sha256"))) {
+                Add-CaptureProblem $problems "capture_plan_domain_roster_tool_sha256_invalid"
+            }
+            $authorityPath = [string](Get-ObjectProperty $capturePlan "domain_roster_authority_path")
+            $expectedAuthorityPath = Join-Path (Split-Path -Parent $CapturePlanPath) "production_domain_roster_authority.json"
+            $authoritySha256 = [string](Get-ObjectProperty $capturePlan "domain_roster_authority_sha256")
+            if (
+                [string]::IsNullOrWhiteSpace($authorityPath) -or
+                [System.IO.Path]::GetFullPath($authorityPath) -cne [System.IO.Path]::GetFullPath($expectedAuthorityPath) -or
+                -not (Test-Path -LiteralPath $authorityPath -PathType Leaf) -or
+                -not (Test-HexSha256 $authoritySha256) -or
+                (Get-FileHash -LiteralPath $authorityPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $authoritySha256
+            ) {
+                Add-CaptureProblem $problems "capture_plan_domain_roster_authority_binding_invalid"
+            } else {
+                try { $authorityRoster = @(Get-Content -LiteralPath $authorityPath -Raw | ConvertFrom-Json) }
+                catch { $authorityRoster = @(); Add-CaptureProblem $problems "domain_roster_authority_not_json" }
+                if (
+                    $authorityRoster.Count -ne $expectedRoster.Count -or
+                    $planScheduledNames.Count -ne $expectedRoster.Count
+                ) {
+                    Add-CaptureProblem $problems "domain_roster_authority_count_mismatch"
+                } else {
+                    for ($domainIndex = 0; $domainIndex -lt $expectedRoster.Count; $domainIndex++) {
+                        $authorityRow = $authorityRoster[$domainIndex]
+                        if (
+                            $null -eq $authorityRow -or
+                            (@($authorityRow.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'id,name,wire_name' -or
+                            -not (Test-IsJsonInteger (Get-ObjectProperty $authorityRow "id")) -or
+                            [int64](Get-ObjectProperty $authorityRow "id") -ne [int64]$expectedRoster[$domainIndex].id -or
+                            (Get-ObjectProperty $authorityRow "name") -isnot [string] -or
+                            [string](Get-ObjectProperty $authorityRow "name") -cne [string]$expectedRoster[$domainIndex].name -or
+                            (Get-ObjectProperty $authorityRow "wire_name") -isnot [string] -or
+                            [string](Get-ObjectProperty $authorityRow "wire_name") -cne [string]$planScheduledNames[$domainIndex]
+                        ) {
+                            Add-CaptureProblem $problems "domain_roster_authority_pair_mismatch"
+                            break
+                        }
+                    }
+                }
+                if (-not (@($problems) -contains "domain_roster_authority_not_json") -and
+                    -not (@($problems) -contains "domain_roster_authority_count_mismatch") -and
+                    -not (@($problems) -contains "domain_roster_authority_pair_mismatch")) {
+                    $validatedDomainRosterAuthorityPath = [System.IO.Path]::GetFullPath($authorityPath)
+                    $validatedDomainRosterAuthoritySha256 = $authoritySha256
+                }
+            }
             $planSourceInventory=[string](Get-ObjectProperty $capturePlan "static_bundle_source_inventory")
             if (-not (Test-Path -LiteralPath $SourceInventoryPath -PathType Leaf)) { Add-CaptureProblem $problems "source_inventory_missing" }
             elseif ([string]::IsNullOrWhiteSpace($planSourceInventory) -or [System.IO.Path]::GetFullPath($planSourceInventory) -cne [System.IO.Path]::GetFullPath($SourceInventoryPath) -or [string](Get-ObjectProperty $capturePlan "static_bundle_source_inventory_sha256") -cne (Get-FileHash -LiteralPath $SourceInventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()) { Add-CaptureProblem $problems "source_inventory_plan_binding_mismatch" }
@@ -512,7 +658,10 @@ function Test-ProductionCaptureArtifacts {
     }
     else {
         $compactReport = Join-Path $toolLogDir "compact_gate.report.json"
-        $toolResults.Add((Invoke-IndependentCaptureGate -Name "compact_gate" -FilePath $CompactGateExe -Arguments @("--run-dir",$RunDir,"--min-game-hours",([string]$requestedGameHours),"--max-stream-bytes","2199023255552","--max-record-bytes","268435456","--max-bytes-per-frame","2147483648","--write-report",$compactReport) -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds))
+        $compactGateResult = Invoke-IndependentCaptureGate -Name "compact_gate" -FilePath $CompactGateExe -Arguments @("--run-dir",$RunDir,"--min-game-hours",([string]$requestedGameHours),"--max-stream-bytes","2199023255552","--max-record-bytes","268435456","--max-bytes-per-frame","2147483648","--require-zero-loss","--write-report",$compactReport) -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds
+        $compactGateResult | Add-Member -NotePropertyName report_path -NotePropertyValue ([IO.Path]::GetFullPath($compactReport))
+        $compactGateResult | Add-Member -NotePropertyName report_sha256 -NotePropertyValue $(if (Test-Path -LiteralPath $compactReport -PathType Leaf) { (Get-FileHash -LiteralPath $compactReport -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
+        $toolResults.Add($compactGateResult)
         $foldReport = Join-Path $toolLogDir "fold_check.report.json"
         $toolResults.Add((Invoke-IndependentCaptureGate -Name "fold_check" -FilePath $FoldCheckExe -Arguments @("hash",$rawPath,"--expected-profile","production","--out",$foldReport) -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds))
         $replayPath = if ([string]::IsNullOrWhiteSpace($replayFile)) { Join-Path $RunDir "native_session.battleplan" } else { Join-Path $RunDir $replayFile }
@@ -534,6 +683,14 @@ function Test-ProductionCaptureArtifacts {
         ok = ($problems.Count -eq 0)
         canonical_failure_mask = ("0x{0:X}" -f $script:CanonicalCompactFailureMask)
         expected_domain_count = $expectedIds.Count
+        expected_domain_roster = @($expectedRoster)
+        scheduled_domain_roster = @(
+            if ($null -ne $capturePlan) {
+                @(Get-ObjectProperty $capturePlan "scheduled_domain_roster")
+            }
+        )
+        domain_roster_authority_path = $validatedDomainRosterAuthorityPath
+        domain_roster_authority_sha256 = $validatedDomainRosterAuthoritySha256
         frame_count = $frameCount
         manifest_path = $manifestPath
         manifest_sha256 = $manifestSha256
@@ -783,46 +940,9 @@ function Get-AcceptanceTelemetryProblems {
         }
     }
 
-    # The authoritative sink timing is measured by the collector around its
-    # synchronous writes to the sole H4CR pipe and sealed in-band by the terminal
-    # latch record. Recorder StreamWriter timings below are retained as a host
-    # buffering/compression diagnostic; they are not accepted as sink evidence.
-    $collectorSink = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us"
-    if (-not $collectorSink.Found) {
-        $problems.Add("acceptance_telemetry.collector_sink_write_us missing (at $($collectorSink.Missing))")
-    } elseif ($null -eq $collectorSink.Value) {
-        $problems.Add("acceptance_telemetry.collector_sink_write_us is null")
-    } else {
-        Test-TimingSummaryFields -Summary $collectorSink.Value -RequiredFields $script:RequiredCollectorSinkWriteFields `
-            -Label "acceptance_telemetry.collector_sink_write_us" -Problems $problems
-        $collectorCount = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.count"
-        if ($collectorCount.Found) {
-            if (-not (Test-IsJsonInteger $collectorCount.Value) -or [int64]$collectorCount.Value -le 0) {
-                $problems.Add("acceptance_telemetry.collector_sink_write_us.count is not a positive integer")
-            }
-        }
-        foreach ($field in @("total", "avg", "p50", "p99", "max")) {
-            $value = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.$field"
-            if ($value.Found -and (-not (Test-IsJsonNumber $value.Value) -or [double]$value.Value -lt 0)) {
-                $problems.Add("acceptance_telemetry.collector_sink_write_us.$field is not a non-negative finite number")
-            }
-        }
-        $p50 = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.p50"
-        $p99 = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.p99"
-        $max = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.max"
-        $total = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.collector_sink_write_us.total"
-        if ($p50.Found -and $p99.Found -and $max.Found -and
-            (Test-IsJsonNumber $p50.Value) -and (Test-IsJsonNumber $p99.Value) -and (Test-IsJsonNumber $max.Value) -and
-            ([double]$p50.Value -gt [double]$p99.Value -or [double]$p99.Value -gt [double]$max.Value)) {
-            $problems.Add("acceptance_telemetry.collector_sink_write_us percentiles are not ordered")
-        }
-        if ($total.Found -and $max.Found -and (Test-IsJsonNumber $total.Value) -and
-            (Test-IsJsonNumber $max.Value) -and [double]$max.Value -gt [double]$total.Value) {
-            $problems.Add("acceptance_telemetry.collector_sink_write_us max exceeds total")
-        }
-    }
-
-    # sink_write_us under acceptance_telemetry.
+    # Host sink timing under acceptance_telemetry. The passive H4CR stream and
+    # its authenticated sequence/FRAME_END/H4DG closure are the delivery
+    # authority; no collector-side pause/latch receipt exists.
     $sink = Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.sink_write_us"
     if (-not $sink.Found) {
         $problems.Add("acceptance_telemetry.sink_write_us missing (at $($sink.Missing))")
@@ -961,7 +1081,7 @@ function Test-ProductionCaptureManifest {
           -MaxFrameTimeUs        frame_time_us.p95 <= this (e.g. 100000 for the
                                  speed-5 "<100ms/frame" rung)
           -RequireZeroSkipped    skipped_game_hours must be 0
-          -RequireZeroCoalesced  compact_stream.hour_latch.hours_coalesced must be 0
+          -RequireZeroDomainGaps compact_stream.domain_gap_record_count must be 0
           -RequireHourlyMet      hourly_requirement.met must be $true
     #>
     param(
@@ -973,7 +1093,7 @@ function Test-ProductionCaptureManifest {
 
         [double]$MaxFrameTimeUs = 0,
         [switch]$RequireZeroSkipped,
-        [switch]$RequireZeroCoalesced,
+        [switch]$RequireZeroDomainGaps,
         [switch]$RequireHourlyMet
     )
 
@@ -1015,13 +1135,14 @@ function Test-ProductionCaptureManifest {
         }
     }
 
-    # 4. Zero-coalesced-hours gate (hour-latch accounting).
-    if ($RequireZeroCoalesced) {
-        $coalesced = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.hour_latch.hours_coalesced"
-        if (-not $coalesced.Found) {
-            $problems.Add("compact_stream.hour_latch.hours_coalesced missing")
-        } elseif ([int64]$coalesced.Value -ne 0) {
-            $problems.Add("compact_stream.hour_latch.hours_coalesced = $($coalesced.Value) (must be 0)")
+    # 4. Optional clean-capture gate. The product accepts typed H4DG outcomes,
+    # but a speed-five clean-capture rung may require that none occurred.
+    if ($RequireZeroDomainGaps) {
+        $gapCount = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.domain_gap_record_count"
+        if (-not $gapCount.Found) {
+            $problems.Add("compact_stream.domain_gap_record_count missing")
+        } elseif ([int64]$gapCount.Value -ne 0) {
+            $problems.Add("compact_stream.domain_gap_record_count = $($gapCount.Value) (must be 0)")
         }
     }
 
@@ -1069,7 +1190,7 @@ function New-TestManifest {
     param(
         [int]$FrameP95 = 5000,
         [int]$SkippedHours = 0,
-        [int]$CoalescedHours = 0,
+        [int]$DomainGapRecordCount = 0,
         [bool]$HourlyMet = $true
     )
     return [ordered]@{
@@ -1078,13 +1199,12 @@ function New-TestManifest {
         hourly_requirement  = [ordered]@{ required = $true; met = $HourlyMet; problems = @() }
         compact_stream      = [ordered]@{
             frame_time_us = (New-TestTimingSummary -P95 $FrameP95)
-            hour_latch    = [ordered]@{ hours_coalesced = $CoalescedHours }
+            domain_gap_record_count = $DomainGapRecordCount
         }
         acceptance_telemetry = [ordered]@{
             schema       = "battle-plan.acceptance_telemetry.v1"
             complete     = $true
             problems     = @()
-            collector_sink_write_us = [ordered]@{ count = 10; total = 250; avg = 25.0; p50 = 20; p99 = 100; max = 120 }
             sink_write_us = (New-TestTimingSummary -P95 60 -Max 120 -Avg 25 -P50 20 -P99 100)
             clock_skew   = [ordered]@{
                 wall_elapsed_us   = 300000000
@@ -1113,7 +1233,7 @@ function Invoke-ValidationSelfTest {
     # 1. Full, healthy manifest passes every gate.
     $good = ConvertTo-RoundTrippedManifest (New-TestManifest)
     $r = Test-ProductionCaptureManifest -Manifest $good -MaxFrameTimeUs 100000 `
-        -RequireZeroSkipped -RequireZeroCoalesced -RequireHourlyMet
+        -RequireZeroSkipped -RequireZeroDomainGaps -RequireHourlyMet
     Assert-True $r.Passed "healthy manifest should pass; problems: $($r.Problems -join '; ')"
 
     # 2. Missing p99 on frame_time_us fails the schema gate (fail-closed on absence).
@@ -1145,13 +1265,13 @@ function Invoke-ValidationSelfTest {
     Assert-True (-not $r.Passed) "frame p95 150ms must fail the 100ms ceiling"
     Assert-True (($r.Problems -join "`n") -match "frame_time_us\.p95 = 150000 exceeds max 100000") "problem must name the exceeded ceiling"
 
-    # 6. Non-zero skipped/coalesced hours fail their gates.
+    # 6. Non-zero skipped hours or typed domain-gap outcomes fail clean-rung gates.
     $skipped = ConvertTo-RoundTrippedManifest (New-TestManifest -SkippedHours 3)
     $r = Test-ProductionCaptureManifest -Manifest $skipped -RequireZeroSkipped
     Assert-True (-not $r.Passed) "3 skipped hours must fail -RequireZeroSkipped"
-    $coalesced = ConvertTo-RoundTrippedManifest (New-TestManifest -CoalescedHours 2)
-    $r = Test-ProductionCaptureManifest -Manifest $coalesced -RequireZeroCoalesced
-    Assert-True (-not $r.Passed) "2 coalesced hours must fail -RequireZeroCoalesced"
+    $gapped = ConvertTo-RoundTrippedManifest (New-TestManifest -DomainGapRecordCount 2)
+    $r = Test-ProductionCaptureManifest -Manifest $gapped -RequireZeroDomainGaps
+    Assert-True (-not $r.Passed) "2 typed domain gaps must fail -RequireZeroDomainGaps"
 
     # 7. Null percentile is PRESENT (schema ok) but FAILS a numeric threshold.
     $h4 = New-TestManifest
@@ -1236,7 +1356,7 @@ function Invoke-ValidationSelfTest {
     # 16. FINITE-VALUE gate end-to-end: a sink_write_us percentile parsed from bare
     #     JSON NaN/Infinity must fail Get-AcceptanceTelemetryProblems. Fail-before:
     #     the same manifest text with a finite percentile passes.
-    $jsonFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"schema":"battle-plan.acceptance_telemetry.v1","complete":true,"problems":[],"collector_sink_write_us":{"count":10,"total":250,"avg":25,"p50":20,"p99":100,"max":120},"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true},"clock_skew_scope":"complete physical H4CR capture; capture-set scoped during rollover"}}'
+    $jsonFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"domain_gap_record_count":0},"acceptance_telemetry":{"schema":"battle-plan.acceptance_telemetry.v1","complete":true,"problems":[],"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true},"clock_skew_scope":"complete physical H4CR capture; capture-set scoped during rollover"}}'
     $mFinite = $jsonFinite | ConvertFrom-Json
     [string[]]$probsFinite = Get-AcceptanceTelemetryProblems -Manifest $mFinite
     Assert-True ($probsFinite.Count -eq 0) "finite sink_write_us telemetry must pass (fail-before baseline); problems: $($probsFinite -join '; ')"
@@ -1254,7 +1374,7 @@ function Invoke-ValidationSelfTest {
     #     compared the value with `-gt` without rejecting non-finite first, so a bare
     #     JSON NaN/Infinity frame_time_us.p95/max returned Passed=True. Prove BOTH
     #     holes closed, with a finite fail-before baseline for each.
-    $jsonFrameFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"hour_latch":{"hours_coalesced":0}},"acceptance_telemetry":{"schema":"battle-plan.acceptance_telemetry.v1","complete":true,"problems":[],"collector_sink_write_us":{"count":10,"total":250,"avg":25,"p50":20,"p99":100,"max":120},"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true},"clock_skew_scope":"complete physical H4CR capture; capture-set scoped during rollover"}}'
+    $jsonFrameFinite = '{"schema":"native_collector_session_v1","skipped_game_hours":0,"hourly_requirement":{"required":true,"met":true,"problems":[]},"compact_stream":{"frame_time_us":{"count":10,"avg":500,"p50":400,"p95":900,"p99":980,"max":1000},"domain_gap_record_count":0},"acceptance_telemetry":{"schema":"battle-plan.acceptance_telemetry.v1","complete":true,"problems":[],"sink_write_us":{"count":1,"avg":25,"p50":20,"p95":60,"p99":100,"max":120},"clock_skew":{"wall_elapsed_us":300000000,"mono_elapsed_us":300000100,"drift_us":-100,"wall_monotonic_ok":true},"clock_skew_scope":"complete physical H4CR capture; capture-set scoped during rollover"}}'
     # (a) schema/value gate: bare NaN/Infinity frame percentiles are rejected.
     [string[]]$probsFrameFinite = Get-AcceptanceTelemetryProblems -Manifest ($jsonFrameFinite | ConvertFrom-Json)
     Assert-True ($probsFrameFinite.Count -eq 0) "finite frame_time_us telemetry must pass (fail-before baseline); problems: $($probsFrameFinite -join '; ')"
@@ -1266,9 +1386,9 @@ function Invoke-ValidationSelfTest {
     Assert-True (($probsFrameInf -join "`n") -match "frame_time_us\.max is not numeric") "an Infinity frame_time_us.max must be rejected as non-numeric (finding 2)"
     # (b) end-to-end: Test-ProductionCaptureManifest with -MaxFrameTimeUs. OLD code
     #     returned Passed=True on a NaN p95 (NaN -gt Max is false); it must now FAIL.
-    $rFrameFinite = Test-ProductionCaptureManifest -Manifest ($jsonFrameFinite | ConvertFrom-Json) -MaxFrameTimeUs 100000 -RequireZeroSkipped -RequireZeroCoalesced -RequireHourlyMet
+    $rFrameFinite = Test-ProductionCaptureManifest -Manifest ($jsonFrameFinite | ConvertFrom-Json) -MaxFrameTimeUs 100000 -RequireZeroSkipped -RequireZeroDomainGaps -RequireHourlyMet
     Assert-True $rFrameFinite.Passed "finite frame manifest must pass -MaxFrameTimeUs (fail-before); problems: $($rFrameFinite.Problems -join '; ')"
-    $rFrameNaN = Test-ProductionCaptureManifest -Manifest ($jsonFrameNaN | ConvertFrom-Json) -MaxFrameTimeUs 100000 -RequireZeroSkipped -RequireZeroCoalesced -RequireHourlyMet
+    $rFrameNaN = Test-ProductionCaptureManifest -Manifest ($jsonFrameNaN | ConvertFrom-Json) -MaxFrameTimeUs 100000 -RequireZeroSkipped -RequireZeroDomainGaps -RequireHourlyMet
     Assert-True (-not $rFrameNaN.Passed) "a NaN frame_time_us.p95 must FAIL Test-ProductionCaptureManifest, not pass on NaN -gt Max being false (finding 2)"
     # (c) Test-NumericThreshold rejects a non-finite value BEFORE the ceiling compare.
     $ntNaN = [System.Collections.Generic.List[string]]::new()
@@ -1398,25 +1518,6 @@ function Invoke-ValidationSelfTest {
     try { $rNullAcceptance = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $nullAcceptance) } catch { $nullThrew = $true }
     Assert-True (-not $nullThrew) "null acceptance_telemetry must return a failed verdict, never throw"
     Assert-True (-not $rNullAcceptance.Passed) "null acceptance_telemetry must fail closed"
-
-    # 21. Host buffering metrics cannot substitute for the in-band collector
-    # sink timing. Absence and incoherent percentile ordering both fail closed.
-    $missingCollectorSink = New-TestManifest
-    $missingCollectorSink.acceptance_telemetry.Remove("collector_sink_write_us") | Out-Null
-    $rMissingCollectorSink = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $missingCollectorSink)
-    Assert-True (-not $rMissingCollectorSink.Passed) "missing collector sink timing must fail even when host sink timing is present"
-    Assert-True (($rMissingCollectorSink.Problems -join "`n") -match "collector_sink_write_us missing") "problem must name missing authoritative collector sink timing"
-    $unorderedCollectorSink = New-TestManifest
-    $unorderedCollectorSink.acceptance_telemetry.collector_sink_write_us.p50 = 101
-    $unorderedCollectorSink.acceptance_telemetry.collector_sink_write_us.p99 = 100
-    $rUnorderedCollectorSink = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $unorderedCollectorSink)
-    Assert-True (-not $rUnorderedCollectorSink.Passed) "unordered collector sink percentiles must fail"
-    Assert-True (($rUnorderedCollectorSink.Problems -join "`n") -match "percentiles are not ordered") "problem must name incoherent collector sink timing"
-    $impossibleCollectorTotal = New-TestManifest
-    $impossibleCollectorTotal.acceptance_telemetry.collector_sink_write_us.total = 50
-    $rImpossibleCollectorTotal = Test-ProductionCaptureManifest -Manifest (ConvertTo-RoundTrippedManifest $impossibleCollectorTotal)
-    Assert-True (-not $rImpossibleCollectorTotal.Passed) "collector max greater than total must fail"
-    Assert-True (($rImpossibleCollectorTotal.Problems -join "`n") -match "max exceeds total") "problem must name impossible collector sink total"
 
     if ($failures.Count -gt 0) {
         Write-Host "ProductionCapture.Validation self-test FAILED:" -ForegroundColor Red

@@ -21,15 +21,15 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-use compact_contract::{
-    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
-};
+use compact_contract::campaign_identity::ValidatedCid1;
 use compact_contract::stream_validator::{
     AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode,
 };
-use compact_contract::campaign_identity::ValidatedCid1;
+use compact_contract::{
+    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
+};
 use snapshot::sha256::{to_hex, Sha256};
 
 use crate::domain_data_authority::{summarize_domain_data_payload, DomainDataContext};
@@ -268,7 +268,9 @@ pub struct BoundaryTracker {
     pending_perf_hour: Option<i32>,
     last_closed_hour: Option<i32>,
     last_record_kind: Option<u16>,
-    non_probe_perf_domains: BTreeSet<u16>,
+    terminal_outcome_domains: BTreeSet<u16>,
+    gap_domains: BTreeSet<u16>,
+    data_domains: BTreeSet<u16>,
     prev_sequence: Option<u64>,
     violation: Option<String>,
 }
@@ -326,14 +328,25 @@ impl BoundaryTracker {
 
         self.last_record_kind = Some(header.record_type);
         match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
-                if header.domain_id != 250 && !self.non_probe_perf_domains.insert(header.domain_id)
-                {
+            COMPACT_RECORD_TYPE_DOMAIN_PERF | COMPACT_RECORD_TYPE_DOMAIN_GAP => {
+                let is_probe = header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
+                    && header.domain_id == 250;
+                if !is_probe && !self.terminal_outcome_domains.insert(header.domain_id) {
                     self.violation = Some(format!(
-                        "duplicate DOMAIN_PERF for domain {} in hour {} at byte {at_byte}",
+                        "duplicate terminal outcome for domain {} in hour {} at byte {at_byte}",
                         header.domain_id, header.game_hour_raw
                     ));
                     return;
+                }
+                if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_GAP {
+                    if self.data_domains.contains(&header.domain_id) {
+                        self.violation = Some(format!(
+                            "DOMAIN_GAP for domain {} in hour {} coexists with DOMAIN_DATA at byte {at_byte}",
+                            header.domain_id, header.game_hour_raw
+                        ));
+                        return;
+                    }
+                    self.gap_domains.insert(header.domain_id);
                 }
                 match self.open_hour {
                     Some(open) if open != header.game_hour_raw => {
@@ -366,37 +379,47 @@ impl BoundaryTracker {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => match self.open_hour {
-                Some(open) if open != header.game_hour_raw => {
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                if self.gap_domains.contains(&header.domain_id) {
                     self.violation = Some(format!(
-                        "hour interleaving at byte {at_byte}: DOMAIN_DATA for hour {} \
-                         while hour {open} is still open",
-                        header.game_hour_raw
+                        "DOMAIN_DATA for domain {} in hour {} coexists with DOMAIN_GAP at byte {at_byte}",
+                        header.domain_id, header.game_hour_raw
                     ));
+                    return;
                 }
-                Some(_) => {}
-                None => {
-                    if let Some(pending) = self.pending_perf_hour {
-                        if pending != header.game_hour_raw {
-                            self.violation = Some(format!(
-                                "DATA hour conflict at byte {at_byte}: pending PERF hour {pending}, then DATA hour {}",
-                                header.game_hour_raw
-                            ));
-                            return;
-                        }
+                self.data_domains.insert(header.domain_id);
+                match self.open_hour {
+                    Some(open) if open != header.game_hour_raw => {
+                        self.violation = Some(format!(
+                            "hour interleaving at byte {at_byte}: DOMAIN_DATA for hour {} \
+                         while hour {open} is still open",
+                            header.game_hour_raw
+                        ));
                     }
-                    if let Some(last_closed) = self.last_closed_hour {
-                        if header.game_hour_raw <= last_closed {
-                            self.violation = Some(format!(
-                                "non-monotonic DOMAIN_DATA at byte {at_byte}: closed hour {last_closed}, then {}",
-                                header.game_hour_raw
-                            ));
-                            return;
+                    Some(_) => {}
+                    None => {
+                        if let Some(pending) = self.pending_perf_hour {
+                            if pending != header.game_hour_raw {
+                                self.violation = Some(format!(
+                                    "DATA hour conflict at byte {at_byte}: pending PERF hour {pending}, then DATA hour {}",
+                                    header.game_hour_raw
+                                ));
+                                return;
+                            }
                         }
+                        if let Some(last_closed) = self.last_closed_hour {
+                            if header.game_hour_raw <= last_closed {
+                                self.violation = Some(format!(
+                                    "non-monotonic DOMAIN_DATA at byte {at_byte}: closed hour {last_closed}, then {}",
+                                    header.game_hour_raw
+                                ));
+                                return;
+                            }
+                        }
+                        self.open_hour = Some(header.game_hour_raw);
                     }
-                    self.open_hour = Some(header.game_hour_raw);
                 }
-            },
+            }
             COMPACT_RECORD_TYPE_FRAME_END => {
                 let (emitted_domains, scheduled_domains) =
                     match validate_frame_end_seal_fields(payload) {
@@ -408,17 +431,17 @@ impl BoundaryTracker {
                             return;
                         }
                     };
-                let observed_perf_domains =
-                    self.non_probe_perf_domains.len().min(u32::MAX as usize) as u32;
-                if observed_perf_domains != emitted_domains
-                    || observed_perf_domains != scheduled_domains
+                let observed_terminal_outcomes =
+                    self.terminal_outcome_domains.len().min(u32::MAX as usize) as u32;
+                if observed_terminal_outcomes != emitted_domains
+                    || observed_terminal_outcomes != scheduled_domains
                 {
                     self.violation = Some(format!(
-                        "FRAME_END domain counts at byte {at_byte} claim emitted={emitted_domains} scheduled={scheduled_domains}, but observed {observed_perf_domains} unique non-probe DOMAIN_PERF domains"
+                        "FRAME_END domain counts at byte {at_byte} claim emitted={emitted_domains} scheduled={scheduled_domains}, but observed {observed_terminal_outcomes} unique non-probe terminal outcomes (DOMAIN_PERF or DOMAIN_GAP)"
                     ));
                     return;
                 }
-                match self.open_hour {
+                match self.open_hour.or(self.pending_perf_hour) {
                     Some(open) if open == header.game_hour_raw => {}
                     Some(open) => {
                         self.violation = Some(format!(
@@ -430,7 +453,7 @@ impl BoundaryTracker {
                     }
                     None => {
                         self.violation = Some(format!(
-                            "FRAME_END at byte {at_byte} closes hour {} without an open DOMAIN_DATA hour",
+                            "FRAME_END at byte {at_byte} closes hour {} without a terminal domain outcome",
                             header.game_hour_raw
                         ));
                         return;
@@ -448,7 +471,9 @@ impl BoundaryTracker {
                 }
                 self.open_hour = None;
                 self.pending_perf_hour = None;
-                self.non_probe_perf_domains.clear();
+                self.terminal_outcome_domains.clear();
+                self.gap_domains.clear();
+                self.data_domains.clear();
                 self.last_closed_hour = Some(header.game_hour_raw);
             }
             _ => {}
@@ -577,15 +602,17 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
                 break;
             }
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
-            let accepted = validator.validate_record(&header, payload).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "seal-time stream validation failed at byte {}: {error}",
-                        processed + off as u64
-                    ),
-                )
-            })?;
+            let accepted = validator
+                .validate_record(&header, payload)
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "seal-time stream validation failed at byte {}: {error}",
+                            processed + off as u64
+                        ),
+                    )
+                })?;
             if accepted == AcceptedRecordKind::CampaignIdentity {
                 off += record_len;
                 continue;
@@ -892,13 +919,8 @@ pub fn drive_fold<R: Read>(
     total_len: u64,
     fold: &mut WorldFold,
 ) -> io::Result<FoldStreamStats> {
-    drive_fold_with_identity_mode(
-        reader.by_ref(),
-        total_len,
-        fold,
-        StreamIdentityMode::Legacy,
-    )
-    .map(|outcome| outcome.stats)
+    drive_fold_with_identity_mode(reader.by_ref(), total_len, fold, StreamIdentityMode::Legacy)
+        .map(|outcome| outcome.stats)
 }
 
 /// Identity-mode-explicit uncompressed fold driver.
@@ -908,13 +930,7 @@ pub fn drive_fold_with_identity_mode<R: Read>(
     fold: &mut WorldFold,
     identity_mode: StreamIdentityMode,
 ) -> io::Result<IdentityAwareFoldStats> {
-    drive_fold_compressed_with_identity_mode(
-        reader.by_ref(),
-        total_len,
-        fold,
-        false,
-        identity_mode,
-    )
+    drive_fold_compressed_with_identity_mode(reader.by_ref(), total_len, fold, false, identity_mode)
 }
 
 /// `compressed` = the reader is a checksummed zstd stream. On such a source an
@@ -1180,8 +1196,8 @@ mod tests {
     use super::*;
     use compact_contract::calendar::DATE_EPOCH_CONST;
     use compact_contract::campaign_identity::{
-        encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
-        COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+        encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
+        COMPACT_RECORD_TYPE_STREAM_HEADER,
     };
     use compact_contract::{
         CompactRecordHeader, COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN,
@@ -1514,7 +1530,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(identity.stats.bytes_folded, 0);
-        assert!(identity.stats
+        assert!(identity
+            .stats
             .stop_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("invalid CID1 stream header")));
@@ -1545,11 +1562,8 @@ mod tests {
         let dir = TmpDir::new("identity_v1_seal");
         let path = dir.0.join("stream.bin");
         std::fs::write(&path, stream).unwrap();
-        verify_stream_logical_boundary_with_identity_mode(
-            &path,
-            StreamIdentityMode::IdentityV1,
-        )
-        .unwrap();
+        verify_stream_logical_boundary_with_identity_mode(&path, StreamIdentityMode::IdentityV1)
+            .unwrap();
         let legacy = verify_stream_logical_boundary(&path).unwrap_err();
         assert!(legacy.to_string().contains("next required sequence 1"));
     }
@@ -1902,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_tracker_binds_frame_end_counts_to_unique_non_probe_perf_domains() {
+    fn boundary_tracker_binds_frame_end_counts_to_unique_terminal_outcomes() {
         let hour = raw_for(HOUR_A);
 
         let mut duplicate = BoundaryTracker::default();
@@ -1921,7 +1935,10 @@ mod tests {
             );
         }
         let err = duplicate.eof_check(0).unwrap_err();
-        assert!(err.contains("duplicate DOMAIN_PERF for domain 18"), "{err}");
+        assert!(
+            err.contains("duplicate terminal outcome for domain 18"),
+            "{err}"
+        );
 
         let mut missing = BoundaryTracker::default();
         observe_zero_payload(
@@ -1943,7 +1960,7 @@ mod tests {
         );
         let err = missing.eof_check(0).unwrap_err();
         assert!(
-            err.contains("observed 0 unique non-probe DOMAIN_PERF domains"),
+            err.contains("observed 0 unique non-probe terminal outcomes"),
             "{err}"
         );
 
@@ -1982,6 +1999,92 @@ mod tests {
         probe_excluded
             .eof_check(0)
             .expect("reserved probe domain 250 must not inflate FRAME_END counts");
+
+        let gap_payload = compact_contract::DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::Both,
+            reason: compact_contract::DomainGapReason::ClockUnreadable,
+            target_hour_raw: hour,
+            range_start_hour_raw: hour,
+            range_end_hour_raw: hour,
+            tick_before: 0,
+            tick_after: 0,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        }
+        .encode()
+        .expect("canonical gap fixture");
+        let mut gap_only = BoundaryTracker::default();
+        gap_only.observe(
+            &boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                gap_payload.len(),
+                0,
+            ),
+            &gap_payload,
+            0,
+        );
+        gap_only.observe(
+            &boundary_header(
+                2,
+                hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                COMPACT_FRAME_END_PAYLOAD_LEN,
+                0,
+            ),
+            &frame_end_payload(1, 1, 0, 0),
+            32,
+        );
+        gap_only
+            .eof_check(0)
+            .expect("one DOMAIN_GAP terminal outcome must seal a gap-only frame");
+
+        let mut gap_then_data = BoundaryTracker::default();
+        gap_then_data.observe(
+            &boundary_header(
+                1,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                gap_payload.len(),
+                0,
+            ),
+            &gap_payload,
+            0,
+        );
+        observe_zero_payload(
+            &mut gap_then_data,
+            boundary_header(2, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            32,
+        );
+        let error = gap_then_data.eof_check(0).unwrap_err();
+        assert!(error.contains("coexists with DOMAIN_GAP"), "{error}");
+
+        let mut data_then_gap = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut data_then_gap,
+            boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        data_then_gap.observe(
+            &boundary_header(
+                2,
+                hour,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                gap_payload.len(),
+                0,
+            ),
+            &gap_payload,
+            32,
+        );
+        let error = data_then_gap.eof_check(0).unwrap_err();
+        assert!(error.contains("coexists with DOMAIN_DATA"), "{error}");
     }
 
     #[test]

@@ -212,8 +212,7 @@ pub(super) unsafe extern "system" fn hook_building_constructor(
 ) -> usize {
     let original: BuildingConstructorFn =
         unsafe { mem::transmute(ORIGINAL_BUILDING_CONSTRUCTOR.load(Ordering::Acquire)) };
-    let record =
-        unsafe { original(owner, building_type, source, spawn_point, kind, extra) };
+    let record = unsafe { original(owner, building_type, source, spawn_point, kind, extra) };
     if record != 0 {
         let stable_id = NEXT_RUNTIME_OBJECT_ID.fetch_add(1, Ordering::AcqRel);
         if stable_id == 0 {
@@ -271,7 +270,8 @@ pub(super) unsafe extern "system" fn hook_building_vector_update(
             }
         };
         for ordinal in 0..count {
-            let Some(pointer_slot) = vector.checked_add(ordinal.saturating_mul(mem::size_of::<usize>()))
+            let Some(pointer_slot) =
+                vector.checked_add(ordinal.saturating_mul(mem::size_of::<usize>()))
             else {
                 pending.rejected = true;
                 return;
@@ -306,22 +306,25 @@ pub(super) unsafe extern "system" fn hook_building_vector_update(
                 }
             };
             let entity_ptr = usize::try_from(u64::from_le_bytes(
-                record_bytes[0x10..0x18].try_into().expect("bounded O05 pointer"),
+                record_bytes[0x10..0x18]
+                    .try_into()
+                    .expect("bounded O05 pointer"),
             ))
             .ok()
             .unwrap_or(0);
-            let (selected_entity_instance_id, world_transform_4x4_f32_bits) =
-                if entity_ptr == 0 {
-                    (None, None)
-                } else {
-                    (
-                        entity_state.entities.get(&entity_ptr).map(|row| row.stable_id),
-                        state.entity_matrices.get(&entity_ptr).copied(),
-                    )
-                };
+            let (selected_entity_instance_id, world_transform_4x4_f32_bits) = if entity_ptr == 0 {
+                (None, None)
+            } else {
+                (
+                    entity_state
+                        .entities
+                        .get(&entity_ptr)
+                        .map(|row| row.stable_id),
+                    state.entity_matrices.get(&entity_ptr).copied(),
+                )
+            };
             if entity_ptr != 0
-                && (selected_entity_instance_id.is_none()
-                    || world_transform_4x4_f32_bits.is_none())
+                && (selected_entity_instance_id.is_none() || world_transform_4x4_f32_bits.is_none())
             {
                 pending.rejected = true;
                 return;
@@ -336,10 +339,7 @@ pub(super) unsafe extern "system" fn hook_building_vector_update(
     });
 }
 
-pub(super) unsafe extern "system" fn hook_entity_transform_setter(
-    entity: usize,
-    matrix: usize,
-) {
+pub(super) unsafe extern "system" fn hook_entity_transform_setter(entity: usize, matrix: usize) {
     let original: EntityTransformSetterFn =
         unsafe { mem::transmute(ORIGINAL_ENTITY_TRANSFORM_SETTER.load(Ordering::Acquire)) };
     if entity != 0 && matrix != 0 {

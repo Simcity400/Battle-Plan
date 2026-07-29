@@ -104,7 +104,11 @@ impl SpottedUnitsSnapshot {
             .checked_add(taskforce_count)
             .ok_or("spotted-units row count overflow")?;
         let expected = 44usize
-            .checked_add(ROW_LEN.checked_mul(row_count).ok_or("spotted-units length overflow")?)
+            .checked_add(
+                ROW_LEN
+                    .checked_mul(row_count)
+                    .ok_or("spotted-units length overflow")?,
+            )
             .ok_or("spotted-units length overflow")?;
         if bytes.len() != expected {
             return Err("spotted-units carrier is truncated or has trailing bytes".into());
@@ -118,7 +122,11 @@ impl SpottedUnitsSnapshot {
             if bytes[cursor + 9..cursor + 12] != [0u8; 3] {
                 return Err("spotted-units row reserved bytes are nonzero".into());
             }
-            rows.push(SpottedUnitHandle { type_id, stable_id, raw_intel });
+            rows.push(SpottedUnitHandle {
+                type_id,
+                stable_id,
+                raw_intel,
+            });
             cursor += ROW_LEN;
         }
         let taskforces = rows.split_off(land_count);
@@ -148,7 +156,9 @@ fn validate_surface(
     minimum_intel: u8,
 ) -> Result<(), String> {
     if rows.len() > MAX_ROWS_PER_SURFACE {
-        return Err(format!("spotted-units {name} row count exceeds the admitted ceiling"));
+        return Err(format!(
+            "spotted-units {name} row count exceeds the admitted ceiling"
+        ));
     }
     match sequence {
         None if !rows.is_empty() => {
@@ -161,11 +171,15 @@ fn validate_surface(
     let mut prior = None;
     for row in rows {
         if row.type_id == 0 || row.stable_id == 0 || row.raw_intel < minimum_intel {
-            return Err(format!("spotted-units {name} row is outside the admitted range"));
+            return Err(format!(
+                "spotted-units {name} row is outside the admitted range"
+            ));
         }
         let key = (row.type_id, row.stable_id);
         if prior.is_some_and(|value| value >= key) || !identities.insert(key) {
-            return Err(format!("spotted-units {name} rows are not unique and sorted"));
+            return Err(format!(
+                "spotted-units {name} rows are not unique and sorted"
+            ));
         }
         prior = Some(key);
     }

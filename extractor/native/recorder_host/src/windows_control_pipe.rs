@@ -128,6 +128,42 @@ impl<B: ControlPipeBackend> PreparedControlListener<B> {
         &self.ready
     }
 
+    /// Accept one peer and return the deadline-bearing raw transport only after
+    /// the restrictive listener has re-read and matched its PID + process
+    /// creation FILETIME. This narrow seam is for fixed, feature-local typed
+    /// handshakes (currently direct-capture READY/ACK); it does not admit the
+    /// general H4CT message dispatcher or bypass capability admission.
+    pub fn accept_and_identify(
+        mut self,
+        expected_peer: ControlPeerIdentity,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<B::Io, ControlPipeError> {
+        preflight(deadline, cancellation)?;
+        let io = self.backend.accept(self.listener, deadline, cancellation)?;
+        preflight(deadline, cancellation)?;
+        let observed_peer = self.backend.peer_identity(&io, deadline, cancellation)?;
+        if expected_peer.pid == 0 || expected_peer.creation_filetime == 0 {
+            return Err(ControlPipeError::Peer(ControlError::InvalidPeerIdentity));
+        }
+        if observed_peer.pid != expected_peer.pid {
+            return Err(ControlPipeError::Peer(ControlError::PeerPidMismatch {
+                expected: expected_peer.pid,
+                actual: observed_peer.pid,
+            }));
+        }
+        if observed_peer.creation_filetime != expected_peer.creation_filetime {
+            return Err(ControlPipeError::Peer(
+                ControlError::PeerCreationTimeMismatch {
+                    expected: expected_peer.creation_filetime,
+                    actual: observed_peer.creation_filetime,
+                },
+            ));
+        }
+        preflight(deadline, cancellation)?;
+        Ok(io)
+    }
+
     /// Consume the prepared listener, accept exactly one client, re-read its
     /// identity, and construct the only deadline-bearing channel form.
     pub fn accept_and_admit(
@@ -417,6 +453,11 @@ mod win32 {
     pub struct WindowsControlIo {
         handle: OwnedHandle,
     }
+
+    // `WindowsControlIo` uniquely owns a kernel handle. Moving that ownership
+    // to the recorder's control worker is safe: the handle is never aliased and
+    // all I/O remains serialized by the owning worker.
+    unsafe impl Send for WindowsControlIo {}
 
     #[derive(Default)]
     pub struct WindowsPipeBackend;

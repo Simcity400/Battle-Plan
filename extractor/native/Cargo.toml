@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "wire_format",
+    "wire_product",
     "compact_stream",
     "compact_contract",
     "snapshot",
@@ -44,6 +45,7 @@ members = [
     "lanes/production_render_submit_live",
     "lanes/production_render_catalog_capture_contract",
     "lanes/production_render_catalog_live",
+    "lanes/production_hook_receipt",
     "lanes/design_catalog_context_live",
     "lanes/hud_role_observer_live",
     "lanes/weather_live",

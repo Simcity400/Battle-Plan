@@ -1,5 +1,5 @@
 use compact_replay_verification_gates::{
-    validate_report_output_path, validate_run_dir, GateOptions,
+    validate_report_output_path, validate_run_dir, GapAcceptanceProfile, GateOptions,
 };
 use std::path::PathBuf;
 
@@ -47,6 +47,9 @@ fn main() {
             "--allow-bridge-roots" => options.allow_bridge_roots = true,
             "--allow-partial-or-source-failure" => options.allow_partial_or_source_failure = true,
             "--no-strict-semantic-units" => options.strict_semantic_units = false,
+            "--require-zero-loss" => {
+                options.gap_acceptance = GapAcceptanceProfile::ZeroLossRequired
+            }
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -120,6 +123,7 @@ fn print_usage() {
            --skip-replay-verify             diagnostic-only; forces passed=false\n\
            --allow-bridge-roots             report bridge/root debt as warning instead of failure\n\
            --allow-partial-or-source-failure allow only partial-data/source-unavailable status\n\
-           --no-strict-semantic-units       do not require domain semantic counter keys"
+           --no-strict-semantic-units       do not require domain semantic counter keys\n\
+           --require-zero-loss              additionally reject every authenticated H4DG outcome"
     );
 }

@@ -114,29 +114,72 @@ pub enum A25SelectedOwnerCaptureDrain {
     SourceUnavailable(Vec<A25RuntimeTextUnavailableReason>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A25SelectedOwnerCaptureReservation {
+    pub reservation_id: Option<u64>,
+    pub drain: A25SelectedOwnerCaptureDrain,
+}
+
+/// Reserve the exact selected/nonselected A25 owner frontier. A completed
+/// reservation remains lane-owned until the enclosing compact item reaches
+/// its authoritative sink; rollback makes the identical selected result
+/// retriable without admitting or discarding any owner twice.
+pub fn reserve_selected_a25_owner_captures(
+    selected: OwnerGlyphPresentCandidate,
+) -> Result<A25SelectedOwnerCaptureReservation, String> {
+    if A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED {
+        let reservation = runtime_text_inputs_live_lane::owner_glyph_probe::
+            reserve_selected_present_if_production_active(selected)?
+            .ok_or_else(|| {
+                "A25 product latch is true without an installed production owner-glyph automation"
+                    .to_string()
+            })?;
+        return Ok(A25SelectedOwnerCaptureReservation {
+            reservation_id: Some(reservation.reservation_id),
+            drain: A25SelectedOwnerCaptureDrain::ProductionReady(reservation.captures),
+        });
+    }
+    if runtime_text_inputs_live_lane::owner_glyph_probe::A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED {
+        let reservation = runtime_text_inputs_live_lane::owner_glyph_probe::
+            reserve_selected_present_if_evidence_active(selected)?;
+        return Ok(match reservation {
+            Some(reservation) => A25SelectedOwnerCaptureReservation {
+                reservation_id: Some(reservation.reservation_id),
+                drain: A25SelectedOwnerCaptureDrain::EvidenceOnly(reservation.captures),
+            },
+            None => A25SelectedOwnerCaptureReservation {
+                reservation_id: None,
+                drain: A25SelectedOwnerCaptureDrain::EvidenceOnly(Vec::new()),
+            },
+        });
+    }
+    Ok(A25SelectedOwnerCaptureReservation {
+        reservation_id: None,
+        drain: A25SelectedOwnerCaptureDrain::SourceUnavailable(
+            A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.to_vec(),
+        ),
+    })
+}
+
+pub fn commit_selected_a25_owner_captures(reservation_id: u64) -> Result<(), String> {
+    runtime_text_inputs_live_lane::owner_glyph_probe::commit_selected_present(reservation_id)
+}
+
+pub fn rollback_selected_a25_owner_captures(reservation_id: u64) -> Result<(), String> {
+    runtime_text_inputs_live_lane::owner_glyph_probe::rollback_selected_present(reservation_id)
+}
+
 /// Drain the selected-Present owner queue without conflating a dormant
 /// producer with an authenticated empty result. The legacy evidence switch is
 /// still isolated and can never produce a production-ready drain.
 pub fn drain_selected_a25_owner_captures(
     selected: OwnerGlyphPresentCandidate,
 ) -> Result<A25SelectedOwnerCaptureDrain, String> {
-    if A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED {
-        return runtime_text_inputs_live_lane::owner_glyph_probe::
-            admit_selected_present_if_production_active(selected)?
-            .map(A25SelectedOwnerCaptureDrain::ProductionReady)
-            .ok_or_else(|| {
-                "A25 product latch is true without an installed production owner-glyph automation"
-                    .to_string()
-            });
+    let reservation = reserve_selected_a25_owner_captures(selected)?;
+    if let Some(reservation_id) = reservation.reservation_id {
+        commit_selected_a25_owner_captures(reservation_id)?;
     }
-    if runtime_text_inputs_live_lane::owner_glyph_probe::A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED {
-        return runtime_text_inputs_live_lane::owner_glyph_probe::
-            admit_selected_present_if_evidence_active(selected)
-            .map(A25SelectedOwnerCaptureDrain::EvidenceOnly);
-    }
-    Ok(A25SelectedOwnerCaptureDrain::SourceUnavailable(
-        A25_RUNTIME_TEXT_UNAVAILABLE_REASONS.to_vec(),
-    ))
+    Ok(reservation.drain)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

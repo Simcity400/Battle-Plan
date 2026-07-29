@@ -508,9 +508,7 @@ pub fn decode_payload_with_definition_ids(
                 "tech-sharing row {row_index} has invalid or duplicate runtime ordinal"
             ));
         }
-        if pair_offset != expected_pair_offset
-            || definition_offset != expected_definition_offset
-        {
+        if pair_offset != expected_pair_offset || definition_offset != expected_definition_offset {
             return Err(format!(
                 "tech-sharing row {row_index} has non-contiguous pair or definition offset"
             ));
@@ -563,9 +561,7 @@ pub fn decode_payload_with_definition_ids(
         expected_pair_offset = pair_end;
         expected_definition_offset = definition_end;
     }
-    if expected_pair_offset != pair_total
-        || expected_definition_offset != definition_blob.len()
-    {
+    if expected_pair_offset != pair_total || expected_definition_offset != definition_blob.len() {
         return Err("tech-sharing definition payload has unclaimed bytes or pairs".to_string());
     }
     Ok(DecodedTechSharingGroupsDefinitionPayload {
@@ -580,8 +576,7 @@ fn validate_definition_id(row_index: usize, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > TECH_SHARING_DEFINITION_ID_MAX_BYTES
         || !value.as_bytes().iter().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(*byte, b'_' | b'-' | b'.' | b':' | b'/')
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'.' | b':' | b'/')
         })
     {
         return Err(format!(

@@ -2098,9 +2098,9 @@ mod tests {
 
     #[test]
     fn the_delta_bit_matches_the_shipping_contract() {
-        // The library half must not depend on `compact_contract`, so the bit is
-        // named here — and pinned against the contract's own value, which the
-        // measurement bin (which may depend on it) asserts too.
+        // d52 is not admitted to the production-codec dependency surface, so
+        // the bit is named here and pinned against the contract's own value,
+        // which the measurement bin asserts too.
         assert_eq!(STATUS_DELTA_DATA, 1 << 10);
     }
 

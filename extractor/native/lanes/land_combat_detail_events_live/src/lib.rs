@@ -5,6 +5,8 @@ use compact_contract::{parse_compact_record_header, RecordFramingError};
 #[cfg(windows)]
 pub mod a729_hook;
 #[cfg(windows)]
+pub mod terminal_coordinator;
+#[cfg(windows)]
 pub mod x2_carriers;
 
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
@@ -228,8 +230,8 @@ pub const CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE: u32 = 1 << 6;
 /// The synchronous update came from the participant-lifecycle producer at
 /// `hoi4.exe+0x1299850`.
 pub const CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE: u32 = 1 << 7;
-pub const CURRENT_LOSS_SOURCE_FLAG_MASK: u32 = CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE
-    | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE;
+pub const CURRENT_LOSS_SOURCE_FLAG_MASK: u32 =
+    CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE;
 pub const CURRENT_LOSS_REQUIRED_FLAG_MASK: u32 = CURRENT_LOSS_FLAG_WRITER_SENTINEL
     | CURRENT_LOSS_FLAG_ACTIVE_EPOCH_BOUND
     | CURRENT_LOSS_FLAG_TWO_HOUR_CONTROL
@@ -1251,10 +1253,16 @@ pub fn encode_detail_events_payload_v6(
     payload.extend_from_slice(&status_flags.to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload.extend_from_slice(&(strings.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(reserve_member_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(terminal_record_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(
+        &(reserve_member_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(terminal_record_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
     payload.extend_from_slice(&0u32.to_le_bytes());
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
@@ -1316,13 +1324,25 @@ pub fn encode_detail_events_payload_v8(
     payload.extend_from_slice(&status_flags.to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload.extend_from_slice(&(strings.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(reserve_member_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(terminal_record_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(width_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(current_loss_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&(panel_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(
+        &(reserve_member_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(terminal_record_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(width_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(current_loss_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(panel_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
         append_side_detail_row(&mut payload, row, &string_indices, true);
@@ -1554,10 +1574,7 @@ fn append_width_observation_row(payload: &mut Vec<u8>, row: &WidthObservationRow
     payload.extend_from_slice(&row.final_width_raw.to_le_bytes());
 }
 
-fn append_current_loss_observation_row(
-    payload: &mut Vec<u8>,
-    row: &CurrentLossObservationRow,
-) {
+fn append_current_loss_observation_row(payload: &mut Vec<u8>, row: &CurrentLossObservationRow) {
     validate_current_loss_observation_row(row).expect("invalid current loss observation row");
     payload.extend_from_slice(&row.combat_id.to_le_bytes());
     payload.extend_from_slice(&row.generation.to_le_bytes());
@@ -1602,9 +1619,7 @@ fn validate_width_observation_row(row: &WidthObservationRow) -> Result<(), Strin
     Ok(())
 }
 
-fn validate_current_loss_observation_row(
-    row: &CurrentLossObservationRow,
-) -> Result<(), String> {
+fn validate_current_loss_observation_row(row: &CurrentLossObservationRow) -> Result<(), String> {
     if row.combat_id == 0
         || row.combat_id > MAX_COMBAT_ID
         || row.generation == 0
@@ -1613,8 +1628,7 @@ fn validate_current_loss_observation_row(
         || row.equipment_count as usize > MAX_SIDE_UNITS
         || row.ordinal >= row.equipment_count
         || row.equipment_id == 0
-        || row.control_flags & CURRENT_LOSS_REQUIRED_FLAG_MASK
-            != CURRENT_LOSS_REQUIRED_FLAG_MASK
+        || row.control_flags & CURRENT_LOSS_REQUIRED_FLAG_MASK != CURRENT_LOSS_REQUIRED_FLAG_MASK
         || row.control_flags & !(CURRENT_LOSS_REQUIRED_FLAG_MASK | CURRENT_LOSS_SOURCE_FLAG_MASK)
             != 0
         || (row.control_flags & CURRENT_LOSS_SOURCE_FLAG_MASK).count_ones() != 1
@@ -1943,7 +1957,17 @@ pub fn decode_detail_events_payload(
         panel_observation_row_count,
         side_detail_row_len,
     ) = match version {
-        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize),
+        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (
+            PAYLOAD_HEADER_LEN_V1,
+            0usize,
+            0usize,
+            0usize,
+            0usize,
+            0usize,
+            0usize,
+            0usize,
+            0usize,
+        ),
         SCHEMA_VERSION_V2_SIDE_DETAIL => {
             if payload.len() < PAYLOAD_HEADER_LEN_V2 {
                 return Err(vec![format!(
@@ -2109,7 +2133,14 @@ pub fn decode_detail_events_payload(
             "offset {offset}: transition baseline reset is not badged PARTIAL_DATA"
         ));
     }
-    if (!matches!(version, SCHEMA_VERSION_V4_TACTIC_PROGRESS | SCHEMA_VERSION_V5_RESERVE_MEMBERS | SCHEMA_VERSION_V6_TERMINAL_RECORDS | SCHEMA_VERSION_V7_WIDTH_LOSS | SCHEMA_VERSION) && string_count != 0)
+    if (!matches!(
+        version,
+        SCHEMA_VERSION_V4_TACTIC_PROGRESS
+            | SCHEMA_VERSION_V5_RESERVE_MEMBERS
+            | SCHEMA_VERSION_V6_TERMINAL_RECORDS
+            | SCHEMA_VERSION_V7_WIDTH_LOSS
+            | SCHEMA_VERSION
+    ) && string_count != 0)
         || (version != SCHEMA_VERSION && reserved != 0)
     {
         errors.push(format!(
@@ -2171,7 +2202,9 @@ pub fn decode_detail_events_payload(
         .saturating_add(reserve_member_row_count.saturating_mul(RESERVE_MEMBER_ROW_LEN))
         .saturating_add(terminal_record_row_count.saturating_mul(TERMINAL_RECORD_ROW_LEN))
         .saturating_add(width_observation_row_count.saturating_mul(WIDTH_OBSERVATION_ROW_LEN))
-        .saturating_add(current_loss_observation_row_count.saturating_mul(CURRENT_LOSS_OBSERVATION_ROW_LEN))
+        .saturating_add(
+            current_loss_observation_row_count.saturating_mul(CURRENT_LOSS_OBSERVATION_ROW_LEN),
+        )
         .saturating_add(panel_observation_row_count.saturating_mul(PANEL_OBSERVATION_ROW_LEN));
     if payload.len() < fixed_len {
         errors.push(format!(
@@ -2341,8 +2374,7 @@ pub fn decode_detail_events_payload(
         cursor += WIDTH_OBSERVATION_ROW_LEN;
     }
 
-    let mut current_loss_observation_rows =
-        Vec::with_capacity(current_loss_observation_row_count);
+    let mut current_loss_observation_rows = Vec::with_capacity(current_loss_observation_row_count);
     for row_index in 0..current_loss_observation_row_count {
         match decode_current_loss_observation_row(offset, row_index, payload, cursor) {
             Ok(row) => current_loss_observation_rows.push(row),
@@ -2361,11 +2393,7 @@ pub fn decode_detail_events_payload(
     }
 
     validate_width_observation_groups(offset, &width_observation_rows, &mut errors);
-    validate_current_loss_observation_groups(
-        offset,
-        &current_loss_observation_rows,
-        &mut errors,
-    );
+    validate_current_loss_observation_groups(offset, &current_loss_observation_rows, &mut errors);
 
     validate_payload_referential_consistency(
         offset,
@@ -2506,7 +2534,12 @@ fn validate_width_observation_groups(
             ));
         }
         groups
-            .entry((row.combat_id, row.generation, row.side.wire_id(), row.capture_sequence))
+            .entry((
+                row.combat_id,
+                row.generation,
+                row.side.wire_id(),
+                row.capture_sequence,
+            ))
             .or_default()
             .push(row);
     }
@@ -2558,16 +2591,18 @@ fn validate_current_loss_observation_groups(
             ));
         }
         groups
-            .entry((row.combat_id, row.generation, row.side.wire_id(), row.capture_sequence))
+            .entry((
+                row.combat_id,
+                row.generation,
+                row.side.wire_id(),
+                row.capture_sequence,
+            ))
             .or_default()
             .push(row);
     }
     for (key, group) in groups {
         let expected = group[0].equipment_count as usize;
-        let manpower = (
-            group[0].manpower_before_raw,
-            group[0].manpower_after_raw,
-        );
+        let manpower = (group[0].manpower_before_raw, group[0].manpower_after_raw);
         let source_flags = group[0].control_flags & CURRENT_LOSS_SOURCE_FLAG_MASK;
         let ordinals = group.iter().map(|row| row.ordinal).collect::<BTreeSet<_>>();
         let equipment = group
@@ -3801,14 +3836,13 @@ mod tests {
             } else {
                 0
             };
-        let reserve_member_rows =
-            if version >= SCHEMA_VERSION_V5_RESERVE_MEMBERS
-                && payload.len() >= PAYLOAD_HEADER_LEN_V5
-            {
-                read_u32(payload, 32)
-            } else {
-                0
-            };
+        let reserve_member_rows = if version >= SCHEMA_VERSION_V5_RESERVE_MEMBERS
+            && payload.len() >= PAYLOAD_HEADER_LEN_V5
+        {
+            read_u32(payload, 32)
+        } else {
+            0
+        };
         let terminal_record_rows = if version >= SCHEMA_VERSION_V6_TERMINAL_RECORDS
             && payload.len() >= PAYLOAD_HEADER_LEN_V6
         {
@@ -3816,27 +3850,24 @@ mod tests {
         } else {
             0
         };
-        let width_observation_rows = if version >= SCHEMA_VERSION_V7_WIDTH_LOSS
-            && payload.len() >= PAYLOAD_HEADER_LEN
-        {
-            read_u32(payload, 40)
-        } else {
-            0
-        };
-        let current_loss_observation_rows = if version >= SCHEMA_VERSION_V7_WIDTH_LOSS
-            && payload.len() >= PAYLOAD_HEADER_LEN
-        {
-            read_u32(payload, 44)
-        } else {
-            0
-        };
-        let panel_observation_rows = if version >= SCHEMA_VERSION
-            && payload.len() >= PAYLOAD_HEADER_LEN
-        {
-            read_u32(payload, 48)
-        } else {
-            0
-        };
+        let width_observation_rows =
+            if version >= SCHEMA_VERSION_V7_WIDTH_LOSS && payload.len() >= PAYLOAD_HEADER_LEN {
+                read_u32(payload, 40)
+            } else {
+                0
+            };
+        let current_loss_observation_rows =
+            if version >= SCHEMA_VERSION_V7_WIDTH_LOSS && payload.len() >= PAYLOAD_HEADER_LEN {
+                read_u32(payload, 44)
+            } else {
+                0
+            };
+        let panel_observation_rows =
+            if version >= SCHEMA_VERSION && payload.len() >= PAYLOAD_HEADER_LEN {
+                read_u32(payload, 48)
+            } else {
+                0
+            };
         (
             read_u64(payload, 4),
             read_u32(payload, 12),
@@ -5166,8 +5197,7 @@ mod tests {
 
         let mut corrupt = payload.clone();
         let width_start = PAYLOAD_HEADER_LEN + SIDE_DETAIL_ROW_LEN;
-        corrupt[width_start + 40..width_start + 48]
-            .copy_from_slice(&1_999_999i64.to_le_bytes());
+        corrupt[width_start + 40..width_start + 48].copy_from_slice(&1_999_999i64.to_le_bytes());
         assert!(decode_detail_events_payload(0, &corrupt)
             .unwrap_err()
             .iter()
@@ -5186,8 +5216,7 @@ mod tests {
         mixed_source[loss_start + CURRENT_LOSS_OBSERVATION_ROW_LEN + 36
             ..loss_start + CURRENT_LOSS_OBSERVATION_ROW_LEN + 40]
             .copy_from_slice(
-                &(CURRENT_LOSS_REQUIRED_FLAG_MASK
-                    | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE)
+                &(CURRENT_LOSS_REQUIRED_FLAG_MASK | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE)
                     .to_le_bytes(),
             );
         assert!(decode_detail_events_payload(0, &mixed_source)
@@ -5195,8 +5224,7 @@ mod tests {
             .iter()
             .any(|error| error.contains("complete/order-unique/consistent")));
 
-        let panel_start =
-            loss_start + losses.len() * CURRENT_LOSS_OBSERVATION_ROW_LEN;
+        let panel_start = loss_start + losses.len() * CURRENT_LOSS_OBSERVATION_ROW_LEN;
         let mut bad_panel = encode_detail_events_payload_v8(
             5,
             STATUS_DELTA_DATA,
@@ -5209,8 +5237,7 @@ mod tests {
             &losses,
             &[panel],
         );
-        bad_panel[panel_start + 32..panel_start + 36]
-            .copy_from_slice(&0u32.to_le_bytes());
+        bad_panel[panel_start + 32..panel_start + 36].copy_from_slice(&0u32.to_le_bytes());
         assert!(decode_detail_events_payload(0, &bad_panel)
             .unwrap_err()
             .iter()

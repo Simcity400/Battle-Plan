@@ -10,10 +10,13 @@
 use std::path::Path;
 
 use super::publish::{
-    publish_stitched_container_retained, PublishReport, RetainedStitchedPayloadSource,
+    publish_stitched_container_retained_with_rebuilt_wire, PublishReport,
+    RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
 };
 #[cfg(test)]
-use super::publish::{publish_stitched_container, StitchedPayloadSource};
+use super::publish::{
+    publish_stitched_container, publish_stitched_container_retained, StitchedPayloadSource,
+};
 use super::{plan_stitch, SegmentInput, StitchOutcome, StitchRequiredInputs, StitchedPlan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +53,7 @@ pub fn publish_product_stitch<S: StitchedPayloadSource>(
 /// Production retained-handle variant. Planning semantics match the fixture
 /// seam above, while large payloads stream into the unpublished sibling temp
 /// and are never returned as resident byte vectors.
+#[cfg(test)]
 pub fn publish_product_stitch_retained<S: RetainedStitchedPayloadSource>(
     game_id: &str,
     required_inputs: StitchRequiredInputs,
@@ -63,6 +67,40 @@ pub fn publish_product_stitch_retained<S: RetainedStitchedPayloadSource>(
         segments,
         destination,
         |plan, destination| publish_stitched_container_retained(plan, source, destination),
+    )
+}
+
+/// Production stitch with a rebuilt-wire bundle prepared only after the
+/// planner has selected the final immutable branch graph.
+///
+/// `prepare` receives that exact [`StitchedPlan`]. A planner refusal never calls
+/// it. A successful preparation still cannot publish until the typed product
+/// has independently refolded its retained H4CR authority.
+pub fn publish_product_stitch_retained_with_rebuilt_wire<
+    S: RetainedStitchedPayloadSource,
+    P,
+>(
+    game_id: &str,
+    required_inputs: StitchRequiredInputs,
+    segments: Vec<SegmentInput>,
+    source: &S,
+    destination: &Path,
+    prepare: P,
+) -> Result<ProductStitchOutcome, String>
+where
+    P: FnOnce(&StitchedPlan) -> Result<StitchedRebuiltWireProduct, String>,
+{
+    publish_product_stitch_with(
+        game_id,
+        required_inputs,
+        segments,
+        destination,
+        |plan, destination| {
+            let rebuilt_wire = prepare(plan)?;
+            publish_stitched_container_retained_with_rebuilt_wire(
+                plan, source, rebuilt_wire, destination,
+            )
+        },
     )
 }
 
@@ -292,5 +330,60 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains(".battleplan"));
+    }
+
+    #[test]
+    fn rebuilt_wire_preparation_never_runs_before_a_stitched_plan_exists() {
+        let prepared = Cell::new(false);
+        let result = publish_product_stitch_retained_with_rebuilt_wire(
+            "the game",
+            required_inputs(),
+            vec![segment(0, 10)],
+            &NoPayloadSource,
+            &destination(),
+            |_| {
+                prepared.set(true);
+                unreachable!("single segment must be refused before wire preparation")
+            },
+        )
+        .unwrap();
+        assert!(matches!(result, ProductStitchOutcome::KeptSeparate { .. }));
+        assert!(!prepared.get());
+    }
+
+    struct NoPayloadSource;
+
+    impl RetainedStitchedPayloadSource for NoPayloadSource {
+        fn snapshot_receipt(
+            &self,
+            _: u32,
+            _: i64,
+        ) -> Result<super::super::publish::VerifiedPayloadReceipt, String> {
+            unreachable!("planner refusal must not touch payload authority")
+        }
+
+        fn copy_snapshot_to_unpublished(
+            &self,
+            _: u32,
+            _: i64,
+            _: &mut dyn std::io::Write,
+        ) -> Result<super::super::publish::VerifiedPayloadReceipt, String> {
+            unreachable!("planner refusal must not touch payload authority")
+        }
+
+        fn raw_source_receipt(
+            &self,
+            _: &str,
+        ) -> Result<super::super::publish::VerifiedPayloadReceipt, String> {
+            unreachable!("planner refusal must not touch payload authority")
+        }
+
+        fn copy_raw_source_to_unpublished(
+            &self,
+            _: &str,
+            _: &mut dyn std::io::Write,
+        ) -> Result<super::super::publish::VerifiedPayloadReceipt, String> {
+            unreachable!("planner refusal must not touch payload authority")
+        }
     }
 }

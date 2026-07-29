@@ -5,9 +5,12 @@
 > Acquisition, the wire format and the container are being replaced, so do not read what
 > follows as the target.
 >
-> Two things below are already superseded. The recorder is described as read-only, but
-> today's collector writes the engine pause byte before every sweep, and that mechanism is
-> being removed. And the product was built for one owner's machine, whereas it must now work
+> Two things below are already superseded. The pause-owning acquisition path has been
+> replaced in the in-flight Extractor Layer by an injected,
+> zero-semantic-state-mutation,
+> tick-bracketed scheduler; the working tree is not
+> production authority until central validation and a real speed-five passive capture issue
+> fresh receipts. And the product was built for one owner's machine, whereas it must now work
 > for any player, on any mod set, with any DLC.
 
 `DECISIONS.md` is intent. This page is implementation. `SEAM_CONTRACTS.md` is what each half
@@ -34,6 +37,15 @@ activation is enabled, campaign identity works same-machine, and durable append-
 is called from production. **That describes implementation, not a current receipt** — central
 validation has not been re-run against the present worktree. Rehosting campaign identity on a
 second physical machine is the one genuine external dependency.
+
+The Extractor rebuild treats injection and hooks separately from client
+control. The production collector remains injected and may retain the small,
+evidence-backed hook allowlist, but it may not write semantic engine state. The
+canonical recorder, passive capture driver, package-byte denylist, retained
+observer/no-write markers, and read-only speed-five witness form the intended
+interaction closure. Evidence client-driving is separately named and excluded
+from the package. This paragraph records the implementation boundary only: no
+current Release receipt or genuine speed-five capture is claimed here.
 
 ## Replay layer — playback half
 

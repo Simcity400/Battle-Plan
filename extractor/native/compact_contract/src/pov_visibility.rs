@@ -56,7 +56,11 @@ impl PovVisibilitySnapshot {
         let capture_sequence = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         let pov_country_id = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
         let count = u32::from_le_bytes(bytes[20..24].try_into().unwrap()) as usize;
-        if bytes.len() != 24usize.checked_add(count).ok_or("visibility carrier length overflow")? {
+        if bytes.len()
+            != 24usize
+                .checked_add(count)
+                .ok_or("visibility carrier length overflow")?
+        {
             return Err("visibility carrier is truncated or has trailing bytes".into());
         }
         let snapshot = Self {

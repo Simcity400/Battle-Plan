@@ -6,9 +6,7 @@
 //! depends on that variable or on persisted diagnostic bytes.
 
 use super::*;
-use portable_content_manifest::{
-    normalize_game_relative_path, ContentLayerKind, UsedContentKey,
-};
+use portable_content_manifest::{normalize_game_relative_path, ContentLayerKind, UsedContentKey};
 use portable_render_stream::{PreparedRenderTarget, RenderTargetDesc};
 use runtime_text_inputs_live_lane::RuntimeTextSourceIdentity;
 use serde::Serialize;
@@ -23,20 +21,16 @@ pub const GENERIC_SPRITE_RENDER_RVA: usize = 0x022E_95C0;
 pub const PRODUCT_PROMOTION_ENABLED: bool = true;
 
 const GUI_LIST_CONSUMER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x58,
-    0x48,
+    0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x58, 0x48,
 ];
 const INSTANT_TEXT_RENDER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
-    0x57,
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
 ];
 const UNITS_STACK_UPDATE_SENTINEL: [u8; 16] = [
-    0x44, 0x88, 0x4C, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x53, 0x41, 0x55, 0x41,
-    0x56,
+    0x44, 0x88, 0x4C, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x53, 0x41, 0x55, 0x41, 0x56,
 ];
 const GENERIC_SPRITE_RENDER_SENTINEL: [u8; 16] = [
-    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x68, 0x18, 0x56, 0x57, 0x41, 0x56, 0x48, 0x81, 0xEC, 0xB0,
-    0x00,
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x68, 0x18, 0x56, 0x57, 0x41, 0x56, 0x48, 0x81, 0xEC, 0xB0, 0x00,
 ];
 const MAX_LIST_NODES: usize = 1_048_576;
 const MAX_CAPTURED_NODES_PER_PRESENT: usize = 262_144;
@@ -55,6 +49,7 @@ static CALLBACKS_OPEN: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static NEXT_LIST_INVOCATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_DIAGNOSTIC_DRAW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static NEXT_SELECTED_GUI_DRAW_RESERVATION: AtomicU64 = AtomicU64::new(1);
 static STATE: OnceLock<Mutex<BridgeState>> = OnceLock::new();
 static TARGETS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 static COUNTER_OWNER_PATHS: OnceLock<Mutex<BTreeMap<usize, CounterOwnerPath>>> = OnceLock::new();
@@ -67,8 +62,7 @@ thread_local! {
 type GuiListConsumerFn = unsafe extern "system" fn(usize, usize);
 type InstantTextRenderFn = unsafe extern "system" fn(usize, usize, usize, usize);
 type UnitsStackUpdateFn = unsafe extern "system" fn(usize, usize, u8, u8);
-type GenericSpriteRenderFn =
-    unsafe extern "system" fn(usize, usize, usize, usize, u32, u32, usize);
+type GenericSpriteRenderFn = unsafe extern "system" fn(usize, usize, usize, usize, u32, u32, usize);
 
 struct CallbackFlight;
 
@@ -93,9 +87,9 @@ struct BridgeState {
     next_paint_ordinal: u32,
     mapicons_gui_definition: Option<UsedContentKey>,
     gui_definitions: BTreeMap<String, UsedContentKey>,
-    selected_present_gui_roots:
-        BTreeMap<(u64, u64, usize), SelectedPresentGuiRootRegistration>,
+    selected_present_gui_roots: BTreeMap<(u64, u64, usize), SelectedPresentGuiRootRegistration>,
     selected_present_gui_draws: Vec<SelectedPresentGuiDrawCapture>,
+    selected_present_gui_draw_reservation: Option<SelectedPresentGuiDrawReservationState>,
     active_lists: BTreeMap<u64, DiagnosticGuiList>,
     completed_lists: VecDeque<DiagnosticGuiList>,
     captured_node_count: usize,
@@ -103,6 +97,15 @@ struct BridgeState {
     rejected_owner_run_count: u64,
     rejected_draw_count: u64,
     queue_overflow_count: u64,
+}
+
+#[derive(Clone)]
+struct SelectedPresentGuiDrawReservationState {
+    reservation_id: u64,
+    candidate_submit_index: u64,
+    candidate_frame_sequence: u64,
+    captures: Vec<SelectedPresentGuiDrawCapture>,
+    claimed: bool,
 }
 
 #[derive(Clone)]
@@ -120,8 +123,7 @@ struct ActiveOwnerRun {
     render_context_ptr: usize,
     start_qpc_ticks: u64,
     game_hour_raw: Option<i32>,
-    common_gui_operation:
-        Option<crate::a25_runtime_text_present::CommonGuiOperationIdentity>,
+    common_gui_operation: Option<crate::a25_runtime_text_present::CommonGuiOperationIdentity>,
     is_generic_sprite_owner: bool,
     owner: Option<DiagnosticOwnerJoin>,
     counter_owner: Option<DiagnosticCounterOwnerJoin>,
@@ -590,6 +592,15 @@ pub(super) fn uninstall() -> Result<(), String> {
     if !INSTALLED.load(Ordering::Acquire) {
         return Ok(());
     }
+    if STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .is_some_and(|state| state.selected_present_gui_draw_reservation.is_some())
+    {
+        return Err(
+            "A25 GUI bridge teardown refused with unresolved selected-Present draws".into(),
+        );
+    }
     CALLBACKS_OPEN.store(false, Ordering::Release);
     let base = STATE
         .get()
@@ -635,9 +646,7 @@ pub(super) fn uninstall() -> Result<(), String> {
             .clear();
     }
     if let Some(state) = STATE.get() {
-        *state
-            .lock()
-            .map_err(|_| "A25 GUI bridge state poisoned")? = BridgeState::default();
+        *state.lock().map_err(|_| "A25 GUI bridge state poisoned")? = BridgeState::default();
     }
     if let Some(paths) = COUNTER_OWNER_PATHS.get() {
         paths
@@ -702,9 +711,9 @@ pub(super) fn discard_candidate() {
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
-    state.rejected_list_count = state.rejected_list_count.saturating_add(
-        state.active_lists.len() as u64 + state.completed_lists.len() as u64,
-    );
+    state.rejected_list_count = state
+        .rejected_list_count
+        .saturating_add(state.active_lists.len() as u64 + state.completed_lists.len() as u64);
     state.active_lists.clear();
     state.completed_lists.clear();
     state.selected_present_gui_roots.clear();
@@ -744,11 +753,7 @@ pub(super) fn reset_test_state() {
 }
 
 fn current_pending_render_frame() -> Option<PendingRenderFrame> {
-    super::STATE
-        .get()?
-        .lock()
-        .ok()?
-        .pending_render_frame
+    super::STATE.get()?.lock().ok()?.pending_render_frame
 }
 
 pub(super) fn bind_effective_vfs_winner_index(
@@ -791,9 +796,11 @@ pub(super) fn bind_effective_vfs_winner_index(
         .ok_or("A25 GUI bridge state is absent")?
         .lock()
         .map_err(|_| "A25 GUI bridge state poisoned")?;
-    if state.mapicons_gui_definition.as_ref().is_some_and(|existing| {
-        existing != &definition
-    }) {
+    if state
+        .mapicons_gui_definition
+        .as_ref()
+        .is_some_and(|existing| existing != &definition)
+    {
         return Err("A25 GUI bridge mapicons winner was rebound".into());
     }
     if !state.gui_definitions.is_empty() && state.gui_definitions != gui_definitions {
@@ -829,10 +836,7 @@ fn authenticated_inline_icon_content(
 
 fn authenticated_font_asset_receipts(
     binding: &crate::RawEffectiveVfsWinnerIndexBinding,
-) -> Result<
-    Vec<runtime_text_inputs_live_lane::owner_glyph_capture::FontAssetReceipt>,
-    String,
-> {
+) -> Result<Vec<runtime_text_inputs_live_lane::owner_glyph_capture::FontAssetReceipt>, String> {
     let rows = binding
         .ordered_rows
         .iter()
@@ -843,10 +847,7 @@ fn authenticated_font_asset_receipts(
     // scans over the current 57,951-row effective roster). Iterating `rows`
     // preserves the same canonical path ordering that the per-font sort
     // previously supplied.
-    let mut numbered_atlases = BTreeMap::<
-        &str,
-        Vec<(&str, &crate::RawVfsContentIdentity)>,
-    >::new();
+    let mut numbered_atlases = BTreeMap::<&str, Vec<(&str, &crate::RawVfsContentIdentity)>>::new();
     for (&path, &content) in &rows {
         let Some(without_extension) = path.strip_suffix(".dds") else {
             continue;
@@ -862,10 +863,7 @@ fn authenticated_font_asset_receipts(
         }
     }
     let mut receipts = Vec::new();
-    for (definition_path, definition) in rows
-        .iter()
-        .filter(|(path, _)| path.ends_with(".fnt"))
-    {
+    for (definition_path, definition) in rows.iter().filter(|(path, _)| path.ends_with(".fnt")) {
         let stem = definition_path
             .strip_suffix(".fnt")
             .ok_or("font definition suffix disappeared")?;
@@ -886,11 +884,13 @@ fn authenticated_font_asset_receipts(
         if atlas_sha256.is_empty() {
             continue;
         }
-        receipts.push(runtime_text_inputs_live_lane::owner_glyph_capture::FontAssetReceipt {
-            identity: (*definition_path).to_string(),
-            descriptor_sha256: definition.payload_sha256.clone(),
-            atlas_sha256,
-        });
+        receipts.push(
+            runtime_text_inputs_live_lane::owner_glyph_capture::FontAssetReceipt {
+                identity: (*definition_path).to_string(),
+                descriptor_sha256: definition.payload_sha256.clone(),
+                atlas_sha256,
+            },
+        );
     }
     if receipts.is_empty() {
         return Err("authenticated VFS contains no bindable bitmap-font assets".into());
@@ -960,7 +960,9 @@ pub(super) fn register_selected_present_gui_root(
         || !normalized.starts_with("interface/")
         || !normalized.ends_with(".gui")
     {
-        return Err("selected-Present GUI root winner is not one canonical interface GUI path".into());
+        return Err(
+            "selected-Present GUI root winner is not one canonical interface GUI path".into(),
+        );
     }
     let registration = SelectedPresentGuiRootRegistration {
         candidate_submit_index,
@@ -979,7 +981,10 @@ pub(super) fn register_selected_present_gui_root(
         .ok_or("A25 GUI bridge state is absent")?
         .lock()
         .map_err(|_| "A25 GUI bridge state poisoned")?;
-    if !state.gui_definitions.contains_key(effective_interface_winner) {
+    if !state
+        .gui_definitions
+        .contains_key(effective_interface_winner)
+    {
         return Err("selected-Present GUI root winner is absent from the authenticated VFS".into());
     }
     let key = (
@@ -1014,10 +1019,8 @@ pub(super) fn register_selected_present_gui_root(
         .map(|(index, capture)| {
             let authored_child_path =
                 runtime_authored_child_path(runtime_root_ptr, capture.runtime_widget_ptr)?;
-            let graphical_child_path = graphical_child_path(
-                runtime_graphical_subobject_ptr,
-                capture.graphical_node_ptr,
-            )?;
+            let graphical_child_path =
+                graphical_child_path(runtime_graphical_subobject_ptr, capture.graphical_node_ptr)?;
             capture.authored_node.as_ref()?;
             Some((index, authored_child_path, graphical_child_path))
         })
@@ -1036,18 +1039,16 @@ pub(super) fn register_selected_present_gui_root(
         .insert(key, registration.clone());
     for (index, authored_child_path, graphical_child_path) in matching_draw_updates {
         state.selected_present_gui_draws[index].root = Some(registration.clone());
-        state.selected_present_gui_draws[index].authored_child_path =
-            Some(authored_child_path);
-        state.selected_present_gui_draws[index].graphical_child_path =
-            Some(graphical_child_path);
+        state.selected_present_gui_draws[index].authored_child_path = Some(authored_child_path);
+        state.selected_present_gui_draws[index].graphical_child_path = Some(graphical_child_path);
     }
     Ok(())
 }
 
-pub(super) fn take_selected_present_gui_draws(
+pub(super) fn reserve_selected_present_gui_draws(
     candidate_submit_index: u64,
     candidate_frame_sequence: u64,
-) -> Result<Vec<SelectedPresentGuiDrawCapture>, String> {
+) -> Result<(u64, Vec<SelectedPresentGuiDrawCapture>), String> {
     if candidate_submit_index == 0 || candidate_frame_sequence == 0 {
         return Err("selected-Present GUI draw candidate identity is incomplete".into());
     }
@@ -1056,21 +1057,35 @@ pub(super) fn take_selected_present_gui_draws(
         .ok_or("A25 GUI bridge state is absent")?
         .lock()
         .map_err(|_| "A25 GUI bridge state poisoned")?;
+    if let Some(reservation) = state.selected_present_gui_draw_reservation.as_mut() {
+        if reservation.claimed {
+            return Err("another selected-Present GUI draw reservation is active".into());
+        }
+        if reservation.candidate_submit_index != candidate_submit_index
+            || reservation.candidate_frame_sequence != candidate_frame_sequence
+        {
+            return Err("retained selected-Present GUI draws belong to another candidate".into());
+        }
+        let reservation_id = NEXT_SELECTED_GUI_DRAW_RESERVATION.fetch_add(1, Ordering::AcqRel);
+        if reservation_id == 0 {
+            return Err("selected-Present GUI draw reservation id overflowed".into());
+        }
+        reservation.reservation_id = reservation_id;
+        reservation.claimed = true;
+        return Ok((reservation_id, reservation.captures.clone()));
+    }
     if state.selected_present_gui_draws.iter().any(|capture| {
         capture.candidate_submit_index != candidate_submit_index
             || capture.candidate_frame_sequence != candidate_frame_sequence
     }) {
         return Err("selected-Present GUI draw queue spans multiple candidates".into());
     }
-    let mut captures = mem::take(&mut state.selected_present_gui_draws);
+    let reservation_id = NEXT_SELECTED_GUI_DRAW_RESERVATION.fetch_add(1, Ordering::AcqRel);
+    if reservation_id == 0 {
+        return Err("selected-Present GUI draw reservation id overflowed".into());
+    }
+    let mut captures = state.selected_present_gui_draws.clone();
     let module_base = state.module_base;
-    state.selected_present_gui_roots.retain(
-        |(submit_index, frame_sequence, _), _| {
-            *submit_index != candidate_submit_index
-                || *frame_sequence != candidate_frame_sequence
-        },
-    );
-    drop(state);
     for capture in &mut captures {
         if capture.root.is_none() {
             derive_automatic_global_root(capture, module_base)?;
@@ -1080,14 +1095,79 @@ pub(super) fn take_selected_present_gui_draws(
             || capture.authored_child_path.is_none()
             || capture.graphical_child_path.is_none()
         {
-            return Err("selected-Present GUI draw has no complete mechanical root identity".into());
+            return Err(
+                "selected-Present GUI draw has no complete mechanical root identity".into(),
+            );
         }
     }
+    state.selected_present_gui_draws.clear();
+    state
+        .selected_present_gui_roots
+        .retain(|(submit_index, frame_sequence, _), _| {
+            *submit_index != candidate_submit_index || *frame_sequence != candidate_frame_sequence
+        });
+    state.selected_present_gui_draw_reservation = Some(SelectedPresentGuiDrawReservationState {
+        reservation_id,
+        candidate_submit_index,
+        candidate_frame_sequence,
+        captures: captures.clone(),
+        claimed: true,
+    });
+    Ok((reservation_id, captures))
+}
+
+pub(super) fn commit_selected_present_gui_draws(reservation_id: u64) -> Result<(), String> {
+    if reservation_id == 0 {
+        return Err("selected-Present GUI draw reservation id is null".into());
+    }
+    let mut state = STATE
+        .get()
+        .ok_or("A25 GUI bridge state is absent")?
+        .lock()
+        .map_err(|_| "A25 GUI bridge state poisoned")?;
+    let reservation = state
+        .selected_present_gui_draw_reservation
+        .as_ref()
+        .ok_or("selected-Present GUI draw reservation is absent")?;
+    if !reservation.claimed || reservation.reservation_id != reservation_id {
+        return Err("selected-Present GUI draw reservation id is stale".into());
+    }
+    state.selected_present_gui_draw_reservation = None;
+    Ok(())
+}
+
+pub(super) fn rollback_selected_present_gui_draws(reservation_id: u64) -> Result<(), String> {
+    if reservation_id == 0 {
+        return Err("selected-Present GUI draw reservation id is null".into());
+    }
+    let mut state = STATE
+        .get()
+        .ok_or("A25 GUI bridge state is absent")?
+        .lock()
+        .map_err(|_| "A25 GUI bridge state poisoned")?;
+    let reservation = state
+        .selected_present_gui_draw_reservation
+        .as_mut()
+        .ok_or("selected-Present GUI draw reservation is absent")?;
+    if !reservation.claimed || reservation.reservation_id != reservation_id {
+        return Err("selected-Present GUI draw reservation id is stale".into());
+    }
+    reservation.claimed = false;
+    Ok(())
+}
+
+pub(super) fn take_selected_present_gui_draws(
+    candidate_submit_index: u64,
+    candidate_frame_sequence: u64,
+) -> Result<Vec<SelectedPresentGuiDrawCapture>, String> {
+    let (reservation_id, captures) =
+        reserve_selected_present_gui_draws(candidate_submit_index, candidate_frame_sequence)?;
+    commit_selected_present_gui_draws(reservation_id)?;
     Ok(captures)
 }
 
-pub(super) fn static_d3d_captures_for_active_candidate(
-) -> Result<Vec<RawStaticD3dCapture>, String> {
+pub(super) fn static_d3d_captures_for_active_candidate() -> Result<Vec<RawStaticD3dCapture>, String>
+{
     let state = STATE
         .get()
         .ok_or("A25 GUI bridge state is absent")?
@@ -1101,7 +1181,10 @@ pub(super) fn static_d3d_captures_for_active_candidate(
             .ok_or_else(|| "A25 GUI static captures have no active Present candidate".into());
     };
     if state.selected_present_gui_draws.iter().any(|capture| {
-        (capture.candidate_submit_index, capture.candidate_frame_sequence) != candidate
+        (
+            capture.candidate_submit_index,
+            capture.candidate_frame_sequence,
+        ) != candidate
     }) {
         return Err("A25 GUI static capture queue spans multiple candidates".into());
     }
@@ -1149,8 +1232,7 @@ fn maybe_allocate_common_gui_operation(
     node_ordinal: u32,
 ) -> Result<Option<crate::a25_runtime_text_present::CommonGuiOperationIdentity>, String> {
     if !product_capture_is_active()
-        && !runtime_text_inputs_live_lane::owner_glyph_probe::
-            production_automation_is_active()
+        && !runtime_text_inputs_live_lane::owner_glyph_probe::production_automation_is_active()
     {
         return Ok(None);
     }
@@ -1185,9 +1267,7 @@ unsafe extern "system" fn hook_gui_list_consumer(graphics: usize, list: usize) {
             return;
         }
     };
-    let thread_id = unsafe {
-        windows_sys::Win32::System::Threading::GetCurrentThreadId()
-    };
+    let thread_id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
     let diagnostic = DiagnosticGuiList {
         list_invocation_ordinal: invocation_ordinal.to_string(),
         candidate_submit_index: candidate.submit_index.to_string(),
@@ -1279,8 +1359,7 @@ unsafe extern "system" fn hook_instant_text_render(
                 .nodes
                 .iter()
                 .find(|node| {
-                    node.graphical_node_ptr == layout_object
-                        && node.exact_instant_text_dispatch
+                    node.graphical_node_ptr == layout_object && node.exact_instant_text_dispatch
                 })
                 .cloned()
                 .map(|node| (active.invocation_ordinal, node.node_ordinal))
@@ -1299,21 +1378,15 @@ unsafe extern "system" fn hook_instant_text_render(
         unsafe { original(layout_object, graphics, render_context, transform) };
         return;
     }
-    let owner = runtime_text_inputs_live_lane::a729_hook::observed_owner_for_render_layout(
-        layout_object,
-    )
-    .map(diagnostic_owner);
-    let common_gui_operation = maybe_allocate_common_gui_operation(
-        list_invocation_ordinal,
-        node_ordinal,
-    )
-    .ok()
-    .flatten();
-    let production_scope_started = begin_production_owner_scope(
-        layout_object,
-        common_gui_operation,
-    )
-    .unwrap_or(false);
+    let owner =
+        runtime_text_inputs_live_lane::a729_hook::observed_owner_for_render_layout(layout_object)
+            .map(diagnostic_owner);
+    let common_gui_operation =
+        maybe_allocate_common_gui_operation(list_invocation_ordinal, node_ordinal)
+            .ok()
+            .flatten();
+    let production_scope_started =
+        begin_production_owner_scope(layout_object, common_gui_operation).unwrap_or(false);
     let active = ActiveOwnerRun {
         list_invocation_ordinal,
         node_ordinal,
@@ -1337,8 +1410,7 @@ unsafe extern "system" fn hook_instant_text_render(
     ACTIVE_OWNER_RUN.with(|run| *run.borrow_mut() = Some(active));
     unsafe { original(layout_object, graphics, render_context, transform) };
     if production_scope_started
-        && runtime_text_inputs_live_lane::owner_glyph_probe::
-            finish_production_owner_render()
+        && runtime_text_inputs_live_lane::owner_glyph_probe::finish_production_owner_render()
             .is_err()
     {
         reject_owner_run();
@@ -1351,9 +1423,7 @@ fn begin_production_owner_scope(
     layout_object: usize,
     operation: Option<crate::a25_runtime_text_present::CommonGuiOperationIdentity>,
 ) -> Result<bool, String> {
-    if !runtime_text_inputs_live_lane::owner_glyph_probe::
-        production_automation_is_active()
-    {
+    if !runtime_text_inputs_live_lane::owner_glyph_probe::production_automation_is_active() {
         return Ok(false);
     }
     let pending = current_pending_render_frame()
@@ -1365,13 +1435,11 @@ fn begin_production_owner_scope(
         .ok_or("A25 common-GUI owner has a noncanonical game hour")?;
     let destination_rect = read_object_rect_candidate(layout_object)
         .ok_or("A25 common-GUI owner rectangle is unreadable")?;
-    if destination_rect[2] <= destination_rect[0]
-        || destination_rect[3] <= destination_rect[1]
-    {
+    if destination_rect[2] <= destination_rect[0] || destination_rect[3] <= destination_rect[1] {
         return Err("A25 common-GUI owner rectangle has non-positive extent".into());
     }
-    let operation = operation
-        .ok_or("A25 common-GUI text owner has no allocated operation identity")?;
+    let operation =
+        operation.ok_or("A25 common-GUI text owner has no allocated operation identity")?;
     runtime_text_inputs_live_lane::owner_glyph_probe::begin_production_owner_render(
         layout_object,
         runtime_text_inputs_live_lane::owner_glyph_probe::OwnerGlyphPresentCandidate {
@@ -1442,8 +1510,7 @@ unsafe extern "system" fn hook_generic_sprite_render(
                 .nodes
                 .iter()
                 .find(|node| {
-                    node.graphical_node_ptr == layout_object
-                        && node.exact_generic_sprite_dispatch
+                    node.graphical_node_ptr == layout_object && node.exact_generic_sprite_dispatch
                 })
                 .cloned()
                 .map(|node| (active.invocation_ordinal, node.node_ordinal))
@@ -1463,8 +1530,8 @@ unsafe extern "system" fn hook_generic_sprite_render(
         };
         return;
     };
-    let counter_owner = resolve_counter_owner_path(layout_object)
-        .map(|(owner_path, ancestry_edges)| {
+    let counter_owner =
+        resolve_counter_owner_path(layout_object).map(|(owner_path, ancestry_edges)| {
             diagnostic_counter_owner(owner_path, layout_object, ancestry_edges)
         });
     if counter_owner.is_none() && !product_capture_is_active() {
@@ -1555,15 +1622,17 @@ pub(super) fn record_final_draw(
         });
         return;
     }
-    let diagnostic_sequence =
-        NEXT_DIAGNOSTIC_DRAW_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+    let diagnostic_sequence = NEXT_DIAGNOSTIC_DRAW_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     let Some(capture_sequence) = next_catalog_observation_sequence() else {
         reject_draw();
         return;
     };
-    let Some(captured) =
-        capture_d3d_core(capture_sequence, render_context, shader_program_ptr, draw_call)
-    else {
+    let Some(captured) = capture_d3d_core(
+        capture_sequence,
+        render_context,
+        shader_program_ptr,
+        draw_call,
+    ) else {
         reject_draw();
         ACTIVE_OWNER_RUN.with(|run| {
             if let Some(run) = run.borrow_mut().as_mut() {
@@ -1579,11 +1648,9 @@ pub(super) fn record_final_draw(
         draw_call,
         &captured,
     );
-    let Some(static_d3d_capture) = static_d3d_capture_from_core(
-        capture_sequence,
-        raw_static_draw_call(draw_call),
-        captured,
-    ) else {
+    let Some(static_d3d_capture) =
+        static_d3d_capture_from_core(capture_sequence, raw_static_draw_call(draw_call), captured)
+    else {
         reject_draw();
         ACTIVE_OWNER_RUN.with(|run| {
             if let Some(run) = run.borrow_mut().as_mut() {
@@ -1677,8 +1744,8 @@ pub(super) fn seal_present(
     if lists.is_empty() {
         return Ok(());
     }
-    let (candidate_submit_index, candidate_frame_sequence) = candidate
-        .ok_or("A25 GUI diagnostic lists have no pending render candidate")?;
+    let (candidate_submit_index, candidate_frame_sequence) =
+        candidate.ok_or("A25 GUI diagnostic lists have no pending render candidate")?;
     if lists.iter().any(|list| {
         list.candidate_submit_index != candidate_submit_index.to_string()
             || list.candidate_frame_sequence != candidate_frame_sequence.to_string()
@@ -1693,8 +1760,7 @@ pub(super) fn seal_present(
         schema: "hoi4.a25.gui-owner-run-diagnostic.v1",
         authority_executable_sha256: A729_EXECUTABLE_SHA256,
         gui_list_consumer_rva_hex: "0x02228c20",
-        gui_list_consumer_job_id:
-            "20260720T140158Z-w5-a25-gui-list-consumer-abi-50153dfb",
+        gui_list_consumer_job_id: "20260720T140158Z-w5-a25-gui-list-consumer-abi-50153dfb",
         gui_list_consumer_manifest_sha256:
             "9cef9790657a006993c84582017e0b6ad327072326491a120c0e0f151990af2a",
         gui_list_consumer_decompile_sha256:
@@ -1702,8 +1768,7 @@ pub(super) fn seal_present(
         gui_list_consumer_instructions_sha256:
             "308c96d416c212481c26d541dbd41ce2482648ac4f63bb5959a108594df95d85",
         instant_text_render_rva_hex: "0x022d8350",
-        instant_text_render_job_id:
-            "20260720T124822Z-w5-a25-callsite-recovery-134af434",
+        instant_text_render_job_id: "20260720T124822Z-w5-a25-callsite-recovery-134af434",
         instant_text_render_manifest_sha256:
             "8c1ed3ff735f3ed4d33a9beaa7f4961054897ec7682adec64d1e4f9c75c7d2ff",
         instant_text_render_decompile_sha256:
@@ -2033,13 +2098,13 @@ fn diagnostic_counter_owner(
         .checked_add(0x148)
         .and_then(read_usize)
         .filter(|value| *value != 0);
-    let authored_identity = runtime_widget
-        .and_then(|widget| runtime_authored_identity(widget, module_base));
+    let authored_identity =
+        runtime_widget.and_then(|widget| runtime_authored_identity(widget, module_base));
     let selected_gui_definition = authored_identity
         .as_ref()
         .map(|identity| identity.selected_gui_definition.clone());
-    let authored_child_path = runtime_widget
-        .and_then(|widget| runtime_authored_child_path(path.gui_root, widget));
+    let authored_child_path =
+        runtime_widget.and_then(|widget| runtime_authored_child_path(path.gui_root, widget));
     let graphical_child_path = graphical_child_path(path.paint_root, graphical_node);
     let authored_surface_identity = match path.owner_kind {
         0 => Some("unit_counter"),
@@ -2081,7 +2146,8 @@ fn diagnostic_counter_owner(
             .map(|identity| identity.source_line),
         authored_child_path,
         graphical_child_path,
-        path_validation: "owner+0x10->root;root+0x15f0->wrapper;root+0x15f8->paint_root;parent+0x118",
+        path_validation:
+            "owner+0x10->root;root+0x15f0->wrapper;root+0x15f8->paint_root;parent+0x118",
     }
 }
 
@@ -2214,8 +2280,7 @@ fn finish_owner_run(end_qpc_ticks: u64) {
             if !production_capture_ready {
                 return true;
             }
-            let Some((candidate_submit_index, candidate_frame_sequence)) =
-                state.current_candidate
+            let Some((candidate_submit_index, candidate_frame_sequence)) = state.current_candidate
             else {
                 return false;
             };
@@ -2239,10 +2304,7 @@ fn finish_owner_run(end_qpc_ticks: u64) {
             }
             let root = matching_roots.into_iter().next();
             let authored_child_path = root.as_ref().and_then(|root| {
-                runtime_authored_child_path(
-                    root.runtime_root_ptr,
-                    production_runtime_widget_ptr,
-                )
+                runtime_authored_child_path(root.runtime_root_ptr, production_runtime_widget_ptr)
             });
             let graphical_child_path = root.as_ref().and_then(|root| {
                 graphical_child_path(
@@ -2513,7 +2575,12 @@ fn diagnostic_target(
     };
     Some(RenderTargetDesc {
         prepared_target,
-        width: receipt.resource_desc.width.checked_shr(mip_level).unwrap_or(0).max(1),
+        width: receipt
+            .resource_desc
+            .width
+            .checked_shr(mip_level)
+            .unwrap_or(0)
+            .max(1),
         height: receipt
             .resource_desc
             .height
@@ -2724,10 +2791,7 @@ fn hash_geometry_state(core: &NeutralD3dDrawState) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn hash_pipeline_state(
-    core: &NeutralD3dDrawState,
-    shaders: &[DiagnosticShaderBinding],
-) -> String {
+fn hash_pipeline_state(core: &NeutralD3dDrawState, shaders: &[DiagnosticShaderBinding]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"hoi4-a25-gui-pipeline-diagnostic.v1\0");
     hasher.update(pointer_bytes(core.shader_program_ptr));
@@ -2749,10 +2813,7 @@ fn hash_pipeline_state(
     format!("{:x}", hasher.finalize())
 }
 
-fn hash_output_state(
-    core: &NeutralD3dDrawState,
-    target_descriptor_sha256: Option<&str>,
-) -> String {
+fn hash_output_state(core: &NeutralD3dDrawState, target_descriptor_sha256: Option<&str>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"hoi4-a25-gui-output-diagnostic.v1\0");
     for view in &core.ordered_color_target_view_ptrs {
@@ -3031,9 +3092,7 @@ fn runtime_authored_identity(
     }
     let raw_source_path = read_msvc_string(authored_type_ptr.checked_add(0x48)?, 4_096)?;
     let source_path = normalize_game_relative_path(&raw_source_path).ok()?;
-    if !source_path.starts_with("interface/")
-        || !source_path.ends_with(".gui")
-    {
+    if !source_path.starts_with("interface/") || !source_path.ends_with(".gui") {
         return None;
     }
     let source_line = read_u32(authored_type_ptr.checked_add(0xe0)?)?;
@@ -3069,23 +3128,11 @@ fn selected_present_authored_node(
 }
 
 fn runtime_authored_child_path(runtime_root: usize, runtime_widget: usize) -> Option<Vec<u32>> {
-    child_path_through_parent_vectors(
-        runtime_root,
-        runtime_widget,
-        0x108,
-        0x10d8,
-        0x10e4,
-    )
+    child_path_through_parent_vectors(runtime_root, runtime_widget, 0x108, 0x10d8, 0x10e4)
 }
 
 fn graphical_child_path(graphical_root: usize, graphical_node: usize) -> Option<Vec<u32>> {
-    child_path_through_parent_vectors(
-        graphical_root,
-        graphical_node,
-        0x118,
-        0x0d0,
-        0x0dc,
-    )
+    child_path_through_parent_vectors(graphical_root, graphical_node, 0x118, 0x0d0, 0x0dc)
 }
 
 fn graphical_is_descendant_or_self(graphical_root: usize, graphical_node: usize) -> bool {
@@ -3252,10 +3299,7 @@ fn sha256_json(value: &impl Serialize) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn persist_create_new_or_equal(
-    path: &Path,
-    capture: &impl Serialize,
-) -> Result<(), String> {
+fn persist_create_new_or_equal(path: &Path, capture: &impl Serialize) -> Result<(), String> {
     use std::io::Write;
     let mut bytes = serde_json::to_vec_pretty(capture).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
@@ -3274,7 +3318,12 @@ fn persist_create_new_or_equal(
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("A25 GUI diagnostic path has no file name: {}", path.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "A25 GUI diagnostic path has no file name: {}",
+                path.display()
+            )
+        })?;
     let mut temporary = None;
     for attempt in 0..16u32 {
         let candidate = parent.join(format!(
@@ -3380,18 +3429,16 @@ mod font_asset_tests {
             winner("gfx/fonts/numbered_2.dds", '6'),
             winner("gfx/fonts/orphan.fnt", '7'),
         ];
-        ordered_rows.sort_by(|left, right| {
-            left.content
-                .logical_path
-                .cmp(&right.content.logical_path)
-        });
+        ordered_rows
+            .sort_by(|left, right| left.content.logical_path.cmp(&right.content.logical_path));
         let binding = crate::RawEffectiveVfsWinnerIndexBinding {
             process_start_nonce: 1,
             authority_manifest_sha256: "a".repeat(64),
             declared_row_count: ordered_rows.len() as u64,
-            ordered_rows_sha256:
-                crate::RawEffectiveVfsWinnerIndexBinding::canonical_rows_sha256(&ordered_rows)
-                    .unwrap(),
+            ordered_rows_sha256: crate::RawEffectiveVfsWinnerIndexBinding::canonical_rows_sha256(
+                &ordered_rows,
+            )
+            .unwrap(),
             ordered_rows,
         };
 

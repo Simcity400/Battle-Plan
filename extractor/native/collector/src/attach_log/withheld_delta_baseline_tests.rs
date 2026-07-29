@@ -109,8 +109,11 @@ fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     };
 
     // Hour 1: clean baseline.
-    let (rows, ..) =
-        compact_air_region_activity_delta_rows(&mut tracker, vec![air_region_bucket(88, 1, 7, 100)], 0);
+    let (rows, ..) = compact_air_region_activity_delta_rows(
+        &mut tracker,
+        vec![air_region_bucket(88, 1, 7, 100)],
+        0,
+    );
     apply(&mut fold, 0, &rows);
     assert_eq!(fold.accumulator[&(88, 1, 7)], 100);
 
@@ -129,8 +132,11 @@ fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
 
     // Hour 3: clean read of the SAME 140 planes. With the baseline advanced by
     // hour 2 this emits nothing and the fold is stuck at 100 forever.
-    let (rows, changed_rows, _) =
-        compact_air_region_activity_delta_rows(&mut tracker, vec![air_region_bucket(88, 1, 7, 140)], 0);
+    let (rows, changed_rows, _) = compact_air_region_activity_delta_rows(
+        &mut tracker,
+        vec![air_region_bucket(88, 1, 7, 140)],
+        0,
+    );
     assert_eq!(changed_rows, 1, "the withheld change must be re-emitted");
     apply(&mut fold, 0, &rows);
     assert_eq!(
@@ -149,7 +155,10 @@ fn d31_withheld_first_frame_does_not_seed_a_baseline() {
     let mut tracker = CompactAirRegionActivityTracker::default();
     let (rows, ..) = compact_air_region_activity_delta_rows(
         &mut tracker,
-        vec![air_region_bucket(88, 1, 7, 100), air_region_bucket(89, 1, 8, 50)],
+        vec![
+            air_region_bucket(88, 1, 7, 100),
+            air_region_bucket(89, 1, 8, 50),
+        ],
         COMPACT_STATUS_PARTIAL_DATA,
     );
     assert!(rows.is_empty());
@@ -160,7 +169,10 @@ fn d31_withheld_first_frame_does_not_seed_a_baseline() {
 
     let (rows, changed_rows, deleted_rows) = compact_air_region_activity_delta_rows(
         &mut tracker,
-        vec![air_region_bucket(88, 1, 7, 100), air_region_bucket(89, 1, 8, 50)],
+        vec![
+            air_region_bucket(88, 1, 7, 100),
+            air_region_bucket(89, 1, 8, 50),
+        ],
         0,
     );
     assert_eq!(changed_rows, 2, "the next clean frame is a full snapshot");
@@ -176,7 +188,10 @@ fn d31_withheld_frame_never_tombstones_an_unread_bucket() {
     let mut tracker = CompactAirRegionActivityTracker::default();
     let _ = compact_air_region_activity_delta_rows(
         &mut tracker,
-        vec![air_region_bucket(88, 1, 7, 100), air_region_bucket(89, 1, 8, 50)],
+        vec![
+            air_region_bucket(88, 1, 7, 100),
+            air_region_bucket(89, 1, 8, 50),
+        ],
         0,
     );
 
@@ -215,14 +230,24 @@ fn d38_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
         fold.apply_frame(
             status,
             rows,
-            |row| (row.region_id, row.owner_tag_db_id, row.mission_mask, row.variant_id),
+            |row| {
+                (
+                    row.region_id,
+                    row.owner_tag_db_id,
+                    row.mission_mask,
+                    row.variant_id,
+                )
+            },
             |row| row.deleted,
             |row| row.amount_raw,
         );
     };
 
-    let (rows, ..) =
-        compact_air_superiority_input_delta_rows(&mut tracker, vec![superiority_row(900, 100_000)], 0);
+    let (rows, ..) = compact_air_superiority_input_delta_rows(
+        &mut tracker,
+        vec![superiority_row(900, 100_000)],
+        0,
+    );
     apply(&mut fold, 0, &rows);
     assert_eq!(fold.accumulator[&(88, 1, 7, 900)], 100_000);
 
@@ -238,8 +263,11 @@ fn d38_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     apply(&mut fold, partial_status, &rows);
     assert_eq!(fold.dropped_frames, 1);
 
-    let (rows, changed_rows, _) =
-        compact_air_superiority_input_delta_rows(&mut tracker, vec![superiority_row(900, 140_000)], 0);
+    let (rows, changed_rows, _) = compact_air_superiority_input_delta_rows(
+        &mut tracker,
+        vec![superiority_row(900, 140_000)],
+        0,
+    );
     assert_eq!(changed_rows, 1);
     apply(&mut fold, 0, &rows);
     assert_eq!(fold.accumulator[&(88, 1, 7, 900)], 140_000);
@@ -327,8 +355,14 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
         vec![sample(4, 99, scaled(99) + 1), sample(5, 20, scaled(20))],
         0,
     );
-    assert_eq!(scale_mismatch_rows, 1, "the caller flags this frame PARTIAL");
-    assert!(rows.is_empty(), "a mismatch frame is withheld, not published");
+    assert_eq!(
+        scale_mismatch_rows, 1,
+        "the caller flags this frame PARTIAL"
+    );
+    assert!(
+        rows.is_empty(),
+        "a mismatch frame is withheld, not published"
+    );
     assert_eq!(changed_rows, 0);
     assert_eq!(tracker.previous[&(HEAP_LO + 0x400)].count, 100);
     assert!(!tracker.previous.contains_key(&(HEAP_LO + 0x500)));
@@ -353,7 +387,10 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     let loss = rows.iter().find(|row| row.wing_id == 4).unwrap();
     assert_eq!((loss.old_count, loss.new_count), (100, 99));
     let seeded = rows.iter().find(|row| row.wing_id == 5).unwrap();
-    assert!(seeded.baseline, "wing 5 still owes the fold its baseline row");
+    assert!(
+        seeded.baseline,
+        "wing 5 still owes the fold its baseline row"
+    );
     assert_eq!(
         seeded.generation, generation_after_seed,
         "the rolled-back generation is reissued to the same wing"
@@ -376,10 +413,16 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         sunk_convoys: 0,
     };
     let mut ship_tracker = CompactShipTracker::default();
-    let (rows, changed_rows, deleted_rows) =
-        compact_ship_delta_rows(&mut ship_tracker, vec![ship.clone()], COMPACT_STATUS_PARTIAL_DATA);
+    let (rows, changed_rows, deleted_rows) = compact_ship_delta_rows(
+        &mut ship_tracker,
+        vec![ship.clone()],
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
     assert!(rows.is_empty() && changed_rows == 0 && deleted_rows == 0);
-    assert!(ship_tracker.previous.is_empty(), "d29 baseline must not advance");
+    assert!(
+        ship_tracker.previous.is_empty(),
+        "d29 baseline must not advance"
+    );
     let (rows, ..) = compact_ship_delta_rows(&mut ship_tracker, vec![ship], 0);
     assert_eq!(rows.len(), 1, "d29 re-delivers on the next clean frame");
 
@@ -395,9 +438,16 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         effective_planes: 70,
     };
     let mut wing_tracker = CompactAirWingTracker::default();
-    let (rows, ..) = compact_air_wing_delta_rows(&mut wing_tracker, vec![wing.clone()], COMPACT_STATUS_PARTIAL_DATA);
+    let (rows, ..) = compact_air_wing_delta_rows(
+        &mut wing_tracker,
+        vec![wing.clone()],
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
     assert!(rows.is_empty());
-    assert!(wing_tracker.previous.is_empty(), "d30 baseline must not advance");
+    assert!(
+        wing_tracker.previous.is_empty(),
+        "d30 baseline must not advance"
+    );
     assert_eq!(
         wing_tracker.next_generation, 0,
         "d30 must not burn a generation on a discarded frame"
@@ -419,9 +469,16 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
     };
     let mut loadout_tracker = CompactAirWingLoadoutTracker::default();
     let (rows, changed_rows, deleted_rows, emitted_equipment_rows) =
-        compact_air_wing_loadout_delta_rows(&mut loadout_tracker, vec![loadout.clone()], COMPACT_STATUS_PARTIAL_DATA);
+        compact_air_wing_loadout_delta_rows(
+            &mut loadout_tracker,
+            vec![loadout.clone()],
+            COMPACT_STATUS_PARTIAL_DATA,
+        );
     assert!(rows.is_empty());
-    assert_eq!((changed_rows, deleted_rows, emitted_equipment_rows), (0, 0, 0));
+    assert_eq!(
+        (changed_rows, deleted_rows, emitted_equipment_rows),
+        (0, 0, 0)
+    );
     assert!(
         loadout_tracker.previous.is_empty(),
         "d32 baseline must not advance"
@@ -440,8 +497,11 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         based_plane_count: 278,
     };
     let mut air_base_tracker = CompactAirBaseStatusTracker::default();
-    let (rows, ..) =
-        compact_air_base_status_delta_rows(&mut air_base_tracker, vec![air_base.clone()], COMPACT_STATUS_PARTIAL_DATA);
+    let (rows, ..) = compact_air_base_status_delta_rows(
+        &mut air_base_tracker,
+        vec![air_base.clone()],
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
     assert!(rows.is_empty());
     assert!(
         air_base_tracker.previous.is_empty(),
@@ -457,15 +517,17 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         amount_raw: 250_000,
     };
     let mut reserve_tracker = CompactAirVariantReserveTracker::default();
-    let (rows, ..) =
-        compact_air_variant_reserve_delta_rows(&mut reserve_tracker, vec![reserve], COMPACT_STATUS_PARTIAL_DATA);
+    let (rows, ..) = compact_air_variant_reserve_delta_rows(
+        &mut reserve_tracker,
+        vec![reserve],
+        COMPACT_STATUS_PARTIAL_DATA,
+    );
     assert!(rows.is_empty());
     assert!(
         reserve_tracker.previous.is_empty(),
         "d36 baseline must not advance"
     );
-    let (rows, ..) =
-        compact_air_variant_reserve_delta_rows(&mut reserve_tracker, vec![reserve], 0);
+    let (rows, ..) = compact_air_variant_reserve_delta_rows(&mut reserve_tracker, vec![reserve], 0);
     assert_eq!(rows.len(), 1, "d36 re-delivers on the next clean frame");
 }
 

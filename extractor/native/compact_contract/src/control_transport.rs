@@ -124,13 +124,15 @@ impl ControlCapabilities {
     pub const TRANSPORT_STATUS: u32 = 1 << 4;
     pub const CAMPAIGN_IDENTITY: u32 = 1 << 5;
     pub const EARLY_RENDER: u32 = 1 << 6;
+    pub const CAPTURE_READY: u32 = 1 << 7;
     pub const KNOWN_MASK: u32 = Self::HEARTBEAT
         | Self::FIRST_COMPACT_ACK
         | Self::ROLLOVER
         | Self::STAGE_B
         | Self::TRANSPORT_STATUS
         | Self::CAMPAIGN_IDENTITY
-        | Self::EARLY_RENDER;
+        | Self::EARLY_RENDER
+        | Self::CAPTURE_READY;
 
     pub fn from_bits(bits: u32) -> Result<Self, ControlError> {
         let unknown = bits & !Self::KNOWN_MASK;
@@ -161,7 +163,8 @@ impl ControlCapabilities {
     pub const AUTO_ATTACH_DUPLEX_V1: u32 = Self::HEARTBEAT
         | Self::FIRST_COMPACT_ACK
         | Self::TRANSPORT_STATUS
-        | Self::CAMPAIGN_IDENTITY;
+        | Self::CAMPAIGN_IDENTITY
+        | Self::CAPTURE_READY;
 
     pub fn auto_attach_duplex_v1() -> Self {
         Self::from_bits(Self::AUTO_ATTACH_DUPLEX_V1).expect("closed auto-attach capability set")
@@ -364,6 +367,8 @@ pub enum MessageKind {
     EarlyRenderDiagnosticEnd = 32,
     EarlyRenderG2CaptureArm = 33,
     EarlyRenderStartupFailure = 34,
+    CaptureReady = 35,
+    CaptureReadyAck = 36,
 }
 
 impl MessageKind {
@@ -402,7 +407,9 @@ impl MessageKind {
             | Self::EarlyRenderRuntimeDlcRoster
             | Self::EarlyRenderDiagnosticLivenessResponse
             | Self::EarlyRenderVfsPayloadRequest
-            | Self::EarlyRenderStartupFailure => EndpointRole::Collector,
+            | Self::EarlyRenderStartupFailure
+            | Self::CaptureReady => EndpointRole::Collector,
+            Self::CaptureReadyAck => EndpointRole::Recorder,
         }
     }
 
@@ -444,6 +451,7 @@ impl MessageKind {
             | Self::EarlyRenderDiagnosticEnd
             | Self::EarlyRenderG2CaptureArm
             | Self::EarlyRenderStartupFailure => ControlCapabilities::EARLY_RENDER,
+            Self::CaptureReady | Self::CaptureReadyAck => ControlCapabilities::CAPTURE_READY,
         }
     }
 
@@ -483,6 +491,8 @@ impl MessageKind {
             32 => Ok(Self::EarlyRenderDiagnosticEnd),
             33 => Ok(Self::EarlyRenderG2CaptureArm),
             34 => Ok(Self::EarlyRenderStartupFailure),
+            35 => Ok(Self::CaptureReady),
+            36 => Ok(Self::CaptureReadyAck),
             other => Err(ControlError::UnknownMessageKind(other)),
         }
     }
@@ -1765,7 +1775,7 @@ mod tests {
         assert!(channel.is_poisoned());
     }
 
-    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 32] {
+    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 34] {
         [
             (
                 MessageKind::HeartbeatChallenge,
@@ -1927,6 +1937,16 @@ mod tests {
                 EndpointRole::Collector,
                 ControlCapabilities::EARLY_RENDER,
             ),
+            (
+                MessageKind::CaptureReady,
+                EndpointRole::Collector,
+                ControlCapabilities::CAPTURE_READY,
+            ),
+            (
+                MessageKind::CaptureReadyAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::CAPTURE_READY,
+            ),
         ]
     }
 
@@ -1967,8 +1987,10 @@ mod tests {
             MessageKind::EarlyRenderDiagnosticEnd,
             MessageKind::EarlyRenderG2CaptureArm,
             MessageKind::EarlyRenderStartupFailure,
+            MessageKind::CaptureReady,
+            MessageKind::CaptureReadyAck,
         ];
-        for (wire, kind) in (1u16..=34).zip(registry) {
+        for (wire, kind) in (1u16..=36).zip(registry) {
             assert_eq!(kind as u16, wire);
             assert_eq!(MessageKind::from_wire(wire).unwrap(), kind);
         }
@@ -1996,6 +2018,8 @@ mod tests {
         assert_eq!(MessageKind::EarlyRenderDiagnosticEnd as u16, 32);
         assert_eq!(MessageKind::EarlyRenderG2CaptureArm as u16, 33);
         assert_eq!(MessageKind::EarlyRenderStartupFailure as u16, 34);
+        assert_eq!(MessageKind::CaptureReady as u16, 35);
+        assert_eq!(MessageKind::CaptureReadyAck as u16, 36);
     }
 
     fn wrong_capability(required: u32) -> u32 {
@@ -2007,6 +2031,7 @@ mod tests {
             ControlCapabilities::TRANSPORT_STATUS => ControlCapabilities::HEARTBEAT,
             ControlCapabilities::CAMPAIGN_IDENTITY => ControlCapabilities::TRANSPORT_STATUS,
             ControlCapabilities::EARLY_RENDER => ControlCapabilities::CAMPAIGN_IDENTITY,
+            ControlCapabilities::CAPTURE_READY => ControlCapabilities::EARLY_RENDER,
             _ => unreachable!(),
         }
     }

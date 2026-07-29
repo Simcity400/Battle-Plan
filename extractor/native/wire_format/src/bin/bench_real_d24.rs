@@ -164,9 +164,9 @@ struct StreamScan {
 
 /// d24 carries no lane-local status bits and no expected-partial tolerance, so
 /// `compact_contract`'s failure predicate reduces exactly to the global mask —
-/// which is what `d24::FAILURE_STATUS_MASK` (the library's copy, kept because
-/// `wire_format`'s library half must not depend on `compact_contract`) has to
-/// equal. Asserting the three facts proves the two predicates agree for every
+/// which is what `d24::FAILURE_STATUS_MASK` (the local copy retained because d24
+/// is not admitted to the production-codec dependency surface) has to equal.
+/// Asserting the three facts proves the two predicates agree for every
 /// status word, rather than for the words this capture happens to contain.
 fn assert_failure_predicates_agree() {
     assert_eq!(

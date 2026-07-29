@@ -96,9 +96,8 @@ pub mod field {
 
 // --- Payload grammar, from `compact_contract/src/pov_visibility.rs`. ---------
 //
-// Re-stated here rather than imported: `wire_format`'s library half deliberately
-// does not depend on `compact_contract` (`Cargo.toml`), which is a measurement-bin
-// dependency only. The measurement bin, which does have it, asserts that
+// Re-stated here rather than imported because d94 is not admitted to the
+// production-codec dependency surface. The measurement bin asserts that
 // `PovVisibilitySnapshot::decode` and [`split_payload`] agree on every real
 // payload AND on a swept space of synthetic ones, so the restatement cannot drift
 // silently (`bin/bench_real_d94.rs`).

@@ -388,9 +388,9 @@ pub mod field {
 
 // --- Transcribed shipping constants -----------------------------------------
 //
-// `wire_format`'s library half may depend on nothing but itself (the recipe's
-// dependency ruling gives `compact_contract` to the measurement bins only), and
-// d54's codec lives in a lane crate that is not even that. So these are hand
+// d54 is not admitted to the recipe's production-codec dependency surface, and
+// its codec lives in a capture-lane crate that the library may not depend on.
+// So these are hand
 // transcriptions of `lanes/army_battleplans_depth_live/src/lib.rs` and its
 // `orders_group_live.rs`, in the d67/d70 class. Two machine checks hold the copy
 // to the original, both in `bin/bench_real_d54.rs`: the status-bit values are

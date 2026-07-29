@@ -284,8 +284,8 @@ pub mod scope_code {
 
 // --- Payload constants, from the lane crate ----------------------------------
 //
-// `wire_format`'s library half keeps no dependency on the lane crate or on
-// `compact_contract` (d24's and d32's convention), so the constants the fold's
+// d48 is not admitted to the production-codec dependency surface and the
+// library may not depend on its capture-lane crate, so the constants the fold's
 // checks are written against are restated here with their source line and the
 // measurement bin asserts each one against `compact_contract::build_profile`'s
 // own value, so neither copy can drift unnoticed.

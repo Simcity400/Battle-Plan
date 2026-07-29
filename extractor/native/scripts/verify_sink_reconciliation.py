@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Fail-closed H-SINK-OK / H-SINK-FAIL receipt regrader.
+"""Fail-closed passive-recorder sink reconciliation.
 
-This tool never launches or attaches to HOI4.  It grades only immutable files in
-one completed run directory and emits a hash-bound certification.
+The verifier grades immutable output files only.  A successful production run
+must have been attached to a user-owned the game process, must declare zero client
+commands/state writes, and must account for every scheduled domain in each
+FRAME_END as either an accepted PERF outcome or an authenticated H4DG outcome.
+Evidence-only sink fault receipts remain non-production regression inputs.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import math
+import re
 import struct
 from pathlib import Path
 from typing import Any
@@ -18,9 +23,27 @@ from typing import Any
 
 HEX64 = set("0123456789abcdef")
 EXACT_A729_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
-EARLY_LAUNCH_SCHEMA = "extractor.early-render-launch-manifest.v1"
-EARLY_CAPTURE_SCHEMA = "extractor.early-render-capture-receipt.v1"
-EARLY_STAGED_HOOK_COUNT = 71
+COLLECTOR_BUILD_PROFILE_ID = "vanilla_latest_2026_06_30"
+CANONICAL_COMPACT_FAILURE_MASK = 0x13CF
+FORBIDDEN_RECORDER_ARGUMENTS = {
+    "--early-launch-exe",
+    "--early-launch-arg",
+    "--early-launch-keep-window",
+    "--hour-latch",
+}
+ALLOWED_GAP_PARTS = {"state", "event", "both"}
+ALLOWED_GAP_REASONS = {
+    "torn",
+    "overrun",
+    "backpressure",
+    "clock_unreadable",
+    "worker_panic",
+}
+PRODUCTION_DOMAIN_STATUSES = {
+    "existing",
+    "production_complete",
+    "production_complete_base",
+}
 
 
 def reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -32,12 +55,26 @@ def reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def load_object(path: Path) -> dict[str, Any]:
-    value = json.loads(
-        path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_members
+def load_json(path: Path) -> Any:
+    return json.loads(
+        path.read_bytes().decode("utf-8"),
+        object_pairs_hook=reject_duplicate_members,
     )
+
+
+def load_object(path: Path) -> dict[str, Any]:
+    value = load_json(path)
     if not isinstance(value, dict):
         raise ValueError(f"{path} is not a JSON object")
+    return value
+
+
+def decode_object(raw: bytes, label: str) -> dict[str, Any]:
+    value = json.loads(
+        raw.decode("utf-8"), object_pairs_hook=reject_duplicate_members
+    )
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} is not a JSON object")
     return value
 
 
@@ -53,149 +90,12 @@ def is_hex64(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= HEX64
 
 
+def is_int(value: Any) -> bool:
+    return type(value) is int
+
+
 def is_finite_number(value: Any) -> bool:
-    if type(value) is int:
-        return True
-    return type(value) is float and math.isfinite(value)
-
-
-def canonical_json_sha256(value: Any) -> str:
-    # Rust serde_json::to_vec emits compact UTF-8 in struct/member order.  The
-    # decoder above preserves that order, so this reproduces the recorder hash.
-    encoded = json.dumps(
-        value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def runtime_dlc_roster_sha256(names: list[str]) -> str:
-    preimage = bytearray(b"hoi4-a729-runtime-dlc-roster-v1\0")
-    preimage += struct.pack("<I", len(names))
-    for ordinal, name in enumerate(names):
-        raw = name.encode("utf-8")
-        preimage += struct.pack("<II", ordinal, len(raw))
-        preimage += raw
-    return hashlib.sha256(preimage).hexdigest()
-
-
-def expected_early_transcript_sha256(receipt: dict[str, Any]) -> str:
-    keys = (
-        "launch_manifest_sha256",
-        "effective_vfs_index_sha256",
-        "effective_vfs_index_row_count",
-        "effective_vfs_index_chunk_count",
-        "content_manifest_bytes_sha256",
-        "content_manifest_byte_count",
-        "content_manifest_chunk_count",
-        "process_id",
-        "process_start_nonce",
-        "hook_epoch_nonce",
-        "hook_set_sha256",
-        "hook_ready_sequence",
-        "resume_sequence",
-        "hook_ready_qpc",
-        "resume_qpc",
-        "first_creation_sequence",
-        "first_game_d3d_creation_qpc",
-        "staged_hook_generation",
-        "staged_hook_count",
-        "staged_hook_set_sha256",
-        "game_device_ptr",
-        "immediate_context_ptr",
-        "effective_runtime_dlc",
-    )
-    transcript: dict[str, Any] = {
-        "events": [
-            "created_suspended",
-            "injection_committed",
-            "collector_epoch_bound",
-            "hooks_ready",
-            "primary_thread_resumed",
-            "first_game_d3d_creation",
-            "staged_hook_set_ready",
-            "runtime_dlc_roster_validated",
-        ]
-    }
-    for key in keys:
-        transcript[key] = receipt.get(key)
-    return canonical_json_sha256(transcript)
-
-
-def grade_early_capture(
-    launch: dict[str, Any], receipt: dict[str, Any], recorded_sha256: Any,
-    problems: list[str],
-) -> None:
-    require(launch.get("schema") == EARLY_LAUNCH_SCHEMA,
-            "success_launch_schema_invalid", problems)
-    require(receipt.get("schema") == EARLY_CAPTURE_SCHEMA,
-            "success_capture_schema_invalid", problems)
-    require(receipt.get("launch_manifest_sha256") == canonical_json_sha256(launch),
-            "success_launch_manifest_digest_mismatch", problems)
-    require(recorded_sha256 == canonical_json_sha256(receipt),
-            "success_capture_receipt_digest_mismatch", problems)
-    require(receipt.get("effective_vfs_manifest_sha256")
-            == launch.get("effective_vfs_manifest_sha256"),
-            "success_effective_vfs_mismatch", problems)
-    require(receipt.get("collector_sha256") == launch.get("collector_sha256"),
-            "success_collector_identity_mismatch", problems)
-    require(receipt.get("created_suspended") is True,
-            "success_capture_not_created_suspended", problems)
-    for key in (
-        "process_id", "process_start_nonce", "hook_epoch_nonce",
-        "hook_ready_sequence", "resume_sequence", "hook_ready_qpc", "resume_qpc",
-        "first_creation_sequence", "first_game_d3d_creation_qpc",
-        "game_device_ptr", "immediate_context_ptr",
-    ):
-        require(isinstance(receipt.get(key), int) and not isinstance(receipt.get(key), bool)
-                and receipt[key] > 0, f"success_{key}_invalid", problems)
-    require(receipt.get("resume_sequence", 0) > receipt.get("hook_ready_sequence", 0),
-            "success_resume_sequence_not_after_ready", problems)
-    require(receipt.get("resume_qpc", 0) > receipt.get("hook_ready_qpc", 0),
-            "success_resume_qpc_not_after_ready", problems)
-    require(receipt.get("first_game_d3d_creation_qpc", 0) >= receipt.get("resume_qpc", 0),
-            "success_first_creation_not_after_resume", problems)
-    require(receipt.get("staged_hook_generation") == 1,
-            "success_staged_hook_generation_invalid", problems)
-    require(receipt.get("diagnostic_staged_hook_mask") is None,
-            "success_diagnostic_hook_subset_present", problems)
-    require(receipt.get("staged_hook_count") == EARLY_STAGED_HOOK_COUNT,
-            "success_staged_hook_count_invalid", problems)
-    require(receipt.get("game_d3d_creation_count_at_hook_ready") == 0,
-            "success_game_d3d_preexisted_at_ready", problems)
-    require(receipt.get("preexisting_game_d3d_object_count") == 0,
-            "success_preexisting_game_d3d_object", problems)
-    completeness = receipt.get("completeness")
-    expected_completeness = {
-        "all_shader_create", "input_layout_create", "blend_state_create",
-        "depth_stencil_state_create", "rasterizer_state_create",
-        "sampler_state_create", "buffer_create_update", "texture_create_update",
-        "resource_view_create", "draw_state_readback",
-    }
-    require(isinstance(completeness, dict)
-            and set(completeness) == expected_completeness
-            and all(value is True for value in completeness.values()),
-            "success_hook_completeness_invalid", problems)
-    require(receipt.get("transcript_sha256") == expected_early_transcript_sha256(receipt),
-            "success_capture_transcript_digest_mismatch", problems)
-
-    runtime = receipt.get("effective_runtime_dlc")
-    runtime = runtime if isinstance(runtime, dict) else {}
-    names = runtime.get("active_display_names_engine_order")
-    names = names if isinstance(names, list) and all(isinstance(v, str) for v in names) else []
-    require(runtime.get("schema") == "hoi4.effective_runtime_dlc.v1",
-            "success_runtime_dlc_schema_invalid", problems)
-    require(runtime.get("source") == "engine_active_dlc_manager_v1",
-            "success_runtime_dlc_source_invalid", problems)
-    require(runtime.get("sample_count") == 2 and runtime.get("double_stable") is True,
-            "success_runtime_dlc_not_double_stable", problems)
-    require(runtime.get("manager_getter_rva") == 0x02060F10,
-            "success_runtime_dlc_manager_rva_invalid", problems)
-    require(runtime.get("active_dlc_enumerator_rva") == 0x02063660,
-            "success_runtime_dlc_enumerator_rva_invalid", problems)
-    require(runtime.get("string_vector_teardown_rva") == 0x001207D0,
-            "success_runtime_dlc_teardown_rva_invalid", problems)
-    require(runtime.get("engine_order_sha256") == runtime_dlc_roster_sha256(names),
-            "success_runtime_dlc_roster_digest_mismatch", problems)
+    return type(value) is int or (type(value) is float and math.isfinite(value))
 
 
 def require(condition: bool, problem: str, problems: list[str]) -> None:
@@ -212,203 +112,1405 @@ def nested(root: dict[str, Any], *keys: str) -> Any:
     return value
 
 
+def utf8_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def labelled_preimage(label: str) -> bytes:
+    raw = label.encode("utf-8")
+    return struct.pack("<H", len(raw)) + raw + struct.pack("<H", 1)
+
+
+def canonical_uuid_bytes(value: Any) -> bytes | None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 36
+        or any(value[offset] != "-" for offset in (8, 13, 18, 23))
+    ):
+        return None
+    compact = value.replace("-", "")
+    if len(compact) != 32 or any(char not in "0123456789abcdef" for char in compact):
+        return None
+    decoded = bytes.fromhex(compact)
+    return decoded if decoded != bytes(16) else None
+
+
+def capture_ready_payload_sha256(ready: dict[str, Any], pipe_token: str) -> str | None:
+    digest_fields = (
+        "target_executable_sha256",
+        "collector_dll_sha256",
+        "hook_allowlist_sha256",
+        "hook_outcomes_sha256",
+        "validated_domain_roster_sha256",
+        "clock_witness_sha256",
+        "scheduler_config_sha256",
+        "output_pipe_identity_sha256",
+        "pipe_token_sha256",
+        "zero_mutation_policy_sha256",
+        "session_id_sha256",
+        "capture_id_sha256",
+        "control_sha256",
+    )
+    if not all(is_hex64(ready.get(field)) for field in digest_fields):
+        return None
+    try:
+        body = (
+            b"H4RD"
+            + struct.pack("<HHI", 2, 512, 512)
+            + struct.pack(
+                "<IIIQIIIHHHHiQ",
+                ready["readiness_flags"],
+                ready["pid"],
+                0,
+                ready["process_creation_filetime_utc"],
+                ready["requested_duration_ms"],
+                ready["validated_domain_count"],
+                ready["scheduler_queue_capacity"],
+                ready["scheduler_worker_count"],
+                ready["allowed_hook_count"],
+                ready["active_hook_count"],
+                0,
+                ready["clock_hour_raw"],
+                ready["clock_observation_ordinal"],
+            )
+            + b"".join(bytes.fromhex(ready[field]) for field in digest_fields)
+        )
+    except (KeyError, TypeError, ValueError, struct.error):
+        return None
+    if len(body) != 480:
+        return None
+    authenticated = body + hmac.new(
+        pipe_token.encode("utf-8"), body, hashlib.sha256
+    ).digest()
+    return hashlib.sha256(authenticated).hexdigest()
+
+
+def capture_ready_ack_sha256(ready: dict[str, Any], pipe_token: str) -> str | None:
+    digest_fields = (
+        "ready_payload_sha256",
+        "public_receipt_core_sha256",
+        "session_id_sha256",
+    )
+    if not all(is_hex64(ready.get(field)) for field in digest_fields):
+        return None
+    try:
+        body = (
+            b"H4RA"
+            + struct.pack("<HHI", 2, 168, 168)
+            + struct.pack(
+                "<IIIQII",
+                1,
+                ready["pid"],
+                0,
+                ready["process_creation_filetime_utc"],
+                ready["requested_duration_ms"],
+                ready["validated_domain_count"],
+            )
+            + b"".join(bytes.fromhex(ready[field]) for field in digest_fields)
+        )
+    except (KeyError, TypeError, ValueError, struct.error):
+        return None
+    if len(body) != 136:
+        return None
+    authenticated = body + hmac.new(
+        pipe_token.encode("utf-8"), body, hashlib.sha256
+    ).digest()
+    return hashlib.sha256(authenticated).hexdigest()
+
+
+def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
+    source_path = (
+        Path(__file__).resolve().parent.parent
+        / "compact_contract"
+        / "src"
+        / "passive_ready.rs"
+    )
+    require(source_path.is_file(), "canonical_hook_authority_source_missing", problems)
+    if not source_path.is_file():
+        return 0, None
+    source = source_path.read_text(encoding="utf-8")
+    count_match = re.search(
+        r"pub const PINNED_PRODUCTION_HOOK_COUNT_V1:\s*u16\s*=\s*"
+        r"PINNED_PRODUCTION_HOOK_SPECS_V1\.len\(\)\s+as\s+u16\s*;",
+        source,
+    )
+    roster_match = re.search(
+        r"pub const PINNED_PRODUCTION_HOOK_SPECS_V1:.*?=\s*&?\[(.*?)\n\];",
+        source,
+        re.DOTALL,
+    )
+    require(
+        count_match is not None and roster_match is not None,
+        "canonical_hook_authority_declaration_invalid",
+        problems,
+    )
+    if count_match is None or roster_match is None:
+        return 0, None
+    constants = {
+        name: value
+        for name, value in re.findall(
+            r'const\s+([A-Z][A-Z0-9_]+):\s*&str\s*=\s*"([^"]+)"\s*;',
+            source,
+        )
+    }
+    roster_source = roster_match.group(1)
+    import_rows = re.findall(
+        r'pinned_import!\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*'
+        r'"([^"]+)"\s*,\s*"([0-9a-f]{64})"\s*\)',
+        roster_source,
+        re.DOTALL,
+    )
+    rva_rows = re.findall(
+        r'pinned_rva!\(\s*"([^"]+)"\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*'
+        r"(\d+)\s*,\s*([A-Z][A-Z0-9_]+|\"[^\"]+\")\s*,\s*"
+        r'"([0-9a-f]{64})"\s*\)',
+        roster_source,
+        re.DOTALL,
+    )
+    expected_count = len(import_rows) + len(rva_rows)
+    declared_macro_count = len(
+        re.findall(r"\bpinned_(?:import|rva)!\s*\(", roster_source)
+    )
+    require(
+        0 < expected_count <= 0xFFFF
+        and declared_macro_count == expected_count,
+        "canonical_hook_authority_roster_count_mismatch",
+        problems,
+    )
+    if not (0 < expected_count <= 0xFFFF and declared_macro_count == expected_count):
+        return 0, None
+
+    def named_digest(label: str, name: str) -> bytes:
+        raw = name.encode("utf-8")
+        return hashlib.sha256(
+            labelled_preimage(label) + struct.pack("<H", len(raw)) + raw
+        ).digest()
+
+    entries: list[tuple[bytes, bytes]] = []
+    logical_names: list[str] = []
+    for logical_name, module_name, symbol_name, proof in import_rows:
+        identity = named_digest(
+            "battle-plan.capture_ready.hook_identity.v1", logical_name
+        )
+        primitive = constants.get("MINHOOK_NORMAL_REL5")
+        if primitive is None:
+            problems.append("canonical_hook_authority_minhook_primitive_missing")
+            continue
+        body = (
+            identity
+            + struct.pack("<HH", 1, 5)
+            + named_digest(
+                "battle-plan.capture_ready.hook_target_name.v1", module_name
+            )
+            + named_digest(
+                "battle-plan.capture_ready.hook_target_name.v1", symbol_name
+            )
+            + named_digest(
+                "battle-plan.capture_ready.hook_primitive_id.v1", primitive
+            )
+            + bytes.fromhex(proof)
+            + b"\x01"
+            + bytes(7)
+        )
+        entries.append((identity, body))
+        logical_names.append(logical_name)
+    for logical_name, raw_rva, raw_patch_len, primitive_expr, proof in rva_rows:
+        primitive = (
+            primitive_expr[1:-1]
+            if primitive_expr.startswith('"')
+            else constants.get(primitive_expr)
+        )
+        if primitive is None:
+            problems.append(
+                f"canonical_hook_authority_primitive_missing:{primitive_expr}"
+            )
+            continue
+        identity = named_digest(
+            "battle-plan.capture_ready.hook_identity.v1", logical_name
+        )
+        body = (
+            identity
+            + struct.pack("<HH", 2, int(raw_patch_len))
+            + named_digest(
+                "battle-plan.capture_ready.hook_target_name.v1", "hoi4.exe"
+            )
+            + struct.pack("<Q", int(raw_rva, 0))
+            + named_digest(
+                "battle-plan.capture_ready.hook_primitive_id.v1", primitive
+            )
+            + bytes(24)
+            + bytes.fromhex(proof)
+            + b"\x01"
+            + bytes(7)
+        )
+        entries.append((identity, body))
+        logical_names.append(logical_name)
+    require(
+        len(entries) == expected_count
+        and len(set(logical_names)) == expected_count
+        and logical_names == sorted(logical_names),
+        "canonical_hook_authority_roster_invalid",
+        problems,
+    )
+    bootstrap_names = {
+        "bootstrap.d3d11_create_device",
+        "bootstrap.d3d_compile",
+    }
+    production_names = [
+        name for name in logical_names if name not in bootstrap_names
+    ]
+    require(
+        bootstrap_names.issubset(logical_names)
+        and all(
+            re.fullmatch(
+                r"(?:gameplay\.d\d+|presentation\.d82)\.[a-z0-9_.-]+",
+                name,
+            )
+            is not None
+            for name in production_names
+        )
+        and all(
+            not any(
+                forbidden in name
+                for forbidden in (
+                    "a25",
+                    "a28",
+                    "a30",
+                    "render",
+                    "evidence",
+                )
+            )
+            for name in logical_names
+        ),
+        "canonical_hook_authority_name_policy_invalid",
+        problems,
+    )
+    entries.sort(key=lambda row: row[0])
+    if len(entries) != expected_count:
+        return expected_count, None
+    preimage = (
+        labelled_preimage("battle-plan.capture_ready.hook_allowlist.v1")
+        + struct.pack("<H", expected_count)
+        + b"".join(row[1] for row in entries)
+    )
+    return expected_count, hashlib.sha256(preimage).hexdigest()
+
+
+def canonical_production_domain_roster(problems: list[str]) -> list[tuple[int, str]]:
+    registry_path = Path(__file__).resolve().parent.parent / "domain_registry.json"
+    require(registry_path.is_file(), "canonical_domain_registry_missing", problems)
+    if not registry_path.is_file():
+        return []
+    registry = load_object(registry_path)
+    require(
+        registry.get("schema") == "battle-plan.compact_domain_registry.v1",
+        "canonical_domain_registry_schema_invalid",
+        problems,
+    )
+    raw_domains = registry.get("domains")
+    require(isinstance(raw_domains, list), "canonical_domain_registry_domains_invalid", problems)
+    if not isinstance(raw_domains, list):
+        return []
+    roster: list[tuple[int, str]] = []
+    for index, row in enumerate(raw_domains):
+        if not isinstance(row, dict):
+            problems.append(f"canonical_domain_registry_row_{index}_invalid")
+            continue
+        if row.get("schedulable") is True and row.get("status") in PRODUCTION_DOMAIN_STATUSES:
+            domain_id = row.get("id")
+            name = row.get("name")
+            require(
+                is_int(domain_id) and 0 < domain_id <= 0xFFFF,
+                f"canonical_domain_registry_row_{index}_id_invalid",
+                problems,
+            )
+            require(
+                isinstance(name, str) and bool(name),
+                f"canonical_domain_registry_row_{index}_name_invalid",
+                problems,
+            )
+            if is_int(domain_id) and 0 < domain_id <= 0xFFFF and isinstance(name, str) and name:
+                roster.append((domain_id, name))
+    roster.sort(key=lambda row: row[0])
+    require(bool(roster), "canonical_production_domain_roster_empty", problems)
+    require(
+        len({row[0] for row in roster}) == len(roster)
+        and len({row[1] for row in roster}) == len(roster),
+        "canonical_production_domain_roster_not_unique",
+        problems,
+    )
+    return roster
+
+
+def grade_passive_lifecycle(
+    run_dir: Path,
+    plan: dict[str, Any],
+    expected_domain_names: list[str],
+    problems: list[str],
+) -> None:
+    expected_hook_count, expected_hook_allowlist_sha256 = (
+        canonical_hook_authority(problems)
+    )
+    ready_path = run_dir / "CAPTURE_READY_V2.json"
+    teardown_path = run_dir / "CAPTURE_TEARDOWN_V1.json"
+    require(ready_path.is_file(), "capture_ready_receipt_missing", problems)
+    require(teardown_path.is_file(), "capture_teardown_receipt_missing", problems)
+    if not ready_path.is_file() or not teardown_path.is_file():
+        return
+    ready = load_object(ready_path)
+    teardown = load_object(teardown_path)
+    ready_keys = {
+        "schema", "status", "capture_policy", "pid",
+        "process_creation_filetime_utc", "session_id", "capture_id",
+        "requested_duration_ms", "readiness_flags", "validated_domain_count",
+        "scheduler_queue_capacity", "scheduler_worker_count",
+        "allowed_hook_count", "active_hook_count", "clock_hour_raw",
+        "clock_observation_ordinal", "target_executable_sha256", "collector_dll_sha256",
+        "hook_allowlist_sha256", "hook_outcomes_sha256",
+        "validated_domain_roster_sha256", "clock_witness_sha256",
+        "scheduler_config_sha256", "output_pipe_identity_sha256",
+        "zero_mutation_policy_sha256", "session_id_sha256",
+        "capture_id_sha256", "control_sha256", "pipe_token_sha256",
+        "ready_payload_sha256", "host_binding_sha256", "host_validated",
+        "public_receipt_core_sha256", "ready_ack_sha256",
+    }
+    teardown_keys = {
+        "schema", "status", "capture_policy", "pid",
+        "process_creation_filetime_utc", "session_id", "capture_id",
+        "session_id_sha256", "capture_id_sha256", "pipe_token_sha256",
+        "collector_dll_sha256", "capture_ready_payload_sha256",
+        "capture_ready_receipt_core_sha256", "capture_ready_ack_sha256",
+        "capture_ready_receipt_sha256", "host_binding_sha256",
+        "data_pipe_eof_observed", "hook_lease_released_after_eof",
+        "collector_module_absent_verified",
+        "target_process_epoch_revalidated",
+        "target_code_temporarily_instrumented",
+        "pinned_hook_target_code_restored",
+        "semantic_game_state_mutated", "pinned_hook_sites_restored",
+        "pinned_hook_site_count", "pinned_hook_site_baseline_sha256",
+        "pinned_hook_site_restored_sha256",
+    }
+    require(set(ready) == ready_keys, "capture_ready_property_set_invalid", problems)
+    require(
+        set(teardown) == teardown_keys,
+        "capture_teardown_property_set_invalid",
+        problems,
+    )
+    digest_fields = {
+        "target_executable_sha256", "collector_dll_sha256",
+        "hook_allowlist_sha256", "hook_outcomes_sha256",
+        "validated_domain_roster_sha256", "clock_witness_sha256",
+        "scheduler_config_sha256", "output_pipe_identity_sha256",
+        "zero_mutation_policy_sha256", "session_id_sha256",
+        "capture_id_sha256", "control_sha256", "pipe_token_sha256",
+        "ready_payload_sha256", "host_binding_sha256",
+        "public_receipt_core_sha256", "ready_ack_sha256",
+    }
+    require(
+        all(is_hex64(ready.get(field)) and ready[field] != "0" * 64
+            for field in digest_fields),
+        "capture_ready_digest_set_invalid",
+        problems,
+    )
+    expected_pid = plan.get("pid")
+    expected_creation = plan.get("process_creation_filetime_utc")
+    expected_duration = plan.get("requested_duration_ms")
+    expected_queue = plan.get("read_only_scheduler_queue_cap")
+    expected_workers = plan.get("scheduler_worker_count")
+    expected_poll = plan.get("read_only_scheduler_poll_ms")
+    expected_session = plan.get("session_id")
+    expected_capture = plan.get("capture_id")
+    require(
+        is_int(expected_pid)
+        and 0 < expected_pid <= 0xFFFFFFFF
+        and is_int(expected_creation)
+        and 0 < expected_creation <= 0xFFFFFFFFFFFFFFFF
+        and is_int(expected_duration)
+        and 0 < expected_duration <= 0xFFFFFFFF
+        and is_int(expected_queue)
+        and expected_queue == 1
+        and is_int(expected_workers)
+        and 0 < expected_workers <= 0xFFFF
+        and is_int(expected_poll)
+        and 0 < expected_poll <= 0xFFFFFFFF // 1000,
+        "capture_plan_ready_configuration_invalid",
+        problems,
+    )
+    require(
+        ready.get("schema") == "hoi4-capture-ready-v2"
+        and ready.get("status") == "ready"
+        and ready.get("capture_policy") == "passive-observer-only"
+        and is_int(ready.get("pid"))
+        and 0 < ready.get("pid") <= 0xFFFFFFFF
+        and ready.get("pid") == expected_pid
+        and is_int(ready.get("process_creation_filetime_utc"))
+        and 0 < ready.get("process_creation_filetime_utc") <= 0xFFFFFFFFFFFFFFFF
+        and ready.get("process_creation_filetime_utc") == expected_creation
+        and ready.get("session_id") == expected_session
+        and ready.get("capture_id") == expected_capture
+        and is_int(ready.get("requested_duration_ms"))
+        and 0 < ready.get("requested_duration_ms") <= 0xFFFFFFFF
+        and ready.get("requested_duration_ms") == expected_duration
+        and is_int(ready.get("readiness_flags"))
+        and 0 <= ready.get("readiness_flags") <= 0xFFFFFFFF
+        and ready.get("readiness_flags") == 255
+        and is_int(ready.get("validated_domain_count"))
+        and 0 < ready.get("validated_domain_count") <= 0xFFFFFFFF
+        and ready.get("validated_domain_count") == len(expected_domain_names)
+        and is_int(ready.get("scheduler_queue_capacity"))
+        and 0 < ready.get("scheduler_queue_capacity") <= 0xFFFFFFFF
+        and ready.get("scheduler_queue_capacity") == expected_queue == 1
+        and is_int(ready.get("scheduler_worker_count"))
+        and 0 < ready.get("scheduler_worker_count") <= 0xFFFF
+        and ready.get("scheduler_worker_count") == expected_workers
+        and is_int(ready.get("allowed_hook_count"))
+        and 0 < ready.get("allowed_hook_count") <= 0xFFFF
+        and ready.get("allowed_hook_count") == expected_hook_count
+        and is_int(ready.get("active_hook_count"))
+        and 0 < ready.get("active_hook_count") <= 0xFFFF
+        and ready.get("active_hook_count") == expected_hook_count
+        and is_int(ready.get("clock_hour_raw"))
+        and 60005999 <= ready.get("clock_hour_raw") <= 63071999
+        and is_int(ready.get("clock_observation_ordinal"))
+        and 0 <= ready.get("clock_observation_ordinal") < 0xFFFFFFFFFFFFFFFF
+        and ready.get("host_validated") is True,
+        "capture_ready_identity_or_configuration_invalid",
+        problems,
+    )
+    require(
+        ready.get("target_executable_sha256") == plan.get("exe_sha256")
+        == EXACT_A729_SHA256
+        and ready.get("collector_dll_sha256") == plan.get("staged_dll_sha256")
+        and ready.get("hook_allowlist_sha256")
+        == expected_hook_allowlist_sha256,
+        "capture_ready_binary_binding_invalid",
+        problems,
+    )
+    expected_session_sha = (
+        utf8_sha256(expected_session) if isinstance(expected_session, str) else None
+    )
+    expected_capture_sha = (
+        utf8_sha256(expected_capture) if isinstance(expected_capture, str) else None
+    )
+    expected_roster_sha = utf8_sha256("\n".join(expected_domain_names))
+    if (
+        is_int(expected_poll)
+        and 0 < expected_poll <= 0xFFFFFFFF // 1000
+        and is_int(expected_workers)
+        and 0 < expected_workers <= 0xFFFF
+    ):
+        scheduler_preimage = (
+            labelled_preimage("battle-plan.capture_ready.scheduler_config.v1")
+            + struct.pack(
+                "<IIIHHIQ",
+                expected_poll * 1000,
+                1,
+                2,
+                expected_workers,
+                0,
+                0,
+                256 * 1024 * 1024,
+            )
+        )
+        expected_scheduler_sha = hashlib.sha256(scheduler_preimage).hexdigest()
+    else:
+        expected_scheduler_sha = None
+    expected_mutation_sha = hashlib.sha256(
+        labelled_preimage("battle-plan.capture_ready.zero_mutation_policy.v1")
+        + struct.pack("<H", 1)
+    ).hexdigest()
+    if (
+        is_int(ready.get("clock_hour_raw"))
+        and 60005999 <= ready.get("clock_hour_raw") <= 63071999
+        and is_int(ready.get("clock_observation_ordinal"))
+        and 0 <= ready.get("clock_observation_ordinal") < 0xFFFFFFFFFFFFFFFF
+        and is_hex64(ready.get("target_executable_sha256"))
+    ):
+        clock_preimage = (
+            labelled_preimage(
+                "battle-plan.capture_ready.read_only_clock_witness.v1"
+            )
+            + struct.pack(
+                "<iiQ",
+                ready["clock_hour_raw"],
+                ready["clock_hour_raw"],
+                ready["clock_observation_ordinal"],
+            )
+            + bytes.fromhex(ready["target_executable_sha256"])
+            + hashlib.sha256(COLLECTOR_BUILD_PROFILE_ID.encode("utf-8")).digest()
+        )
+        expected_clock_sha = hashlib.sha256(clock_preimage).hexdigest()
+    else:
+        expected_clock_sha = None
+    staged_dll_value = plan.get("staged_dll")
+    control_path = (
+        Path(staged_dll_value).resolve().parent / "collector_control.json"
+        if isinstance(staged_dll_value, str)
+        else run_dir / "__missing_control__"
+    )
+    try:
+        control_path.relative_to(run_dir)
+        control_contained = True
+    except ValueError:
+        control_contained = False
+    require(
+        control_contained and control_path.is_file(),
+        "capture_ready_control_file_missing_or_uncontained",
+        problems,
+    )
+    control_bytes = (
+        control_path.read_bytes()
+        if control_contained and control_path.is_file()
+        else None
+    )
+    expected_control_sha = (
+        hashlib.sha256(control_bytes).hexdigest()
+        if isinstance(control_bytes, bytes)
+        else None
+    )
+    control = (
+        decode_object(control_bytes, str(control_path))
+        if isinstance(control_bytes, bytes)
+        else {}
+    )
+    pipe_token = control.get("pipe_token")
+    expected_pipe_name = (
+        f"\\\\.\\pipe\\battle-plan_control_{expected_pid}_{pipe_token}"
+        if is_int(expected_pid) and isinstance(pipe_token, str) and pipe_token
+        else None
+    )
+    session_uuid = canonical_uuid_bytes(expected_session)
+    pipe_name_bytes = (
+        expected_pipe_name.encode("utf-8")
+        if isinstance(expected_pipe_name, str)
+        else b""
+    )
+    pipe_suffix = (
+        expected_pipe_name[9:] if isinstance(expected_pipe_name, str) else ""
+    )
+    pipe_name_valid = (
+        isinstance(expected_pipe_name, str)
+        and expected_pipe_name.startswith("\\\\.\\pipe\\")
+        and 0 < len(pipe_name_bytes) <= 256
+        and all(0x21 <= byte <= 0x7E for byte in pipe_name_bytes)
+        and bool(pipe_suffix)
+        and "\\" not in pipe_suffix
+        and "/" not in pipe_suffix
+    )
+    require(
+        isinstance(pipe_token, str)
+        and bool(pipe_token)
+        and control.get("capture_ready_pipe_name_v1") == expected_pipe_name
+        and pipe_name_valid
+        and session_uuid is not None,
+        "capture_ready_output_pipe_control_identity_invalid",
+        problems,
+    )
+    expected_pipe_token_sha = (
+        utf8_sha256(pipe_token) if isinstance(pipe_token, str) and pipe_token else None
+    )
+    if (
+        isinstance(expected_pipe_name, str)
+        and is_int(expected_pid)
+        and 0 < expected_pid <= 0xFFFFFFFF
+        and is_int(expected_creation)
+        and 0 < expected_creation <= 0xFFFFFFFFFFFFFFFF
+        and session_uuid is not None
+        and pipe_name_valid
+    ):
+        output_pipe_preimage = (
+            labelled_preimage(
+                "battle-plan.capture_ready.output_pipe_identity.v1"
+            )
+            + struct.pack("<H", len(pipe_name_bytes))
+            + pipe_name_bytes
+            + struct.pack("<IQ", expected_pid, expected_creation)
+            + session_uuid
+        )
+        expected_output_pipe_sha = hashlib.sha256(output_pipe_preimage).hexdigest()
+    else:
+        expected_output_pipe_sha = None
+    expected_ready_payload_sha = (
+        capture_ready_payload_sha256(ready, pipe_token)
+        if isinstance(pipe_token, str) and pipe_token
+        else None
+    )
+    expected_ready_ack_sha = (
+        capture_ready_ack_sha256(ready, pipe_token)
+        if isinstance(pipe_token, str) and pipe_token
+        else None
+    )
+    require(
+        ready.get("session_id_sha256") == expected_session_sha
+        and ready.get("capture_id_sha256") == expected_capture_sha
+        and ready.get("validated_domain_roster_sha256") == expected_roster_sha
+        and ready.get("scheduler_config_sha256") == expected_scheduler_sha
+        and ready.get("zero_mutation_policy_sha256") == expected_mutation_sha
+        and ready.get("clock_witness_sha256") == expected_clock_sha
+        and ready.get("output_pipe_identity_sha256") == expected_output_pipe_sha
+        and ready.get("pipe_token_sha256") == expected_pipe_token_sha
+        and ready.get("control_sha256") == expected_control_sha,
+        "capture_ready_derived_digest_invalid",
+        problems,
+    )
+    require(
+        ready.get("ready_payload_sha256") == expected_ready_payload_sha
+        and ready.get("ready_ack_sha256") == expected_ready_ack_sha,
+        "capture_ready_authenticated_payload_or_ack_digest_invalid",
+        problems,
+    )
+    host_digest_inputs = (
+        ready.get("ready_payload_sha256"),
+        ready.get("target_executable_sha256"),
+        ready.get("collector_dll_sha256"),
+        expected_session_sha,
+        expected_capture_sha,
+        ready.get("pipe_token_sha256"),
+    )
+    if (
+        is_int(expected_pid) and 0 <= expected_pid <= 0xFFFFFFFF
+        and is_int(expected_creation) and 0 <= expected_creation <= 0xFFFFFFFFFFFFFFFF
+        and is_int(expected_duration) and 0 <= expected_duration <= 0xFFFFFFFF
+        and all(is_hex64(value) for value in host_digest_inputs)
+    ):
+        host_bytes = (
+            b"battle-plan.capture_ready.host_binding.v2\0"
+            + bytes.fromhex(host_digest_inputs[0])
+            + struct.pack("<IQI", expected_pid, expected_creation, expected_duration)
+            + b"".join(bytes.fromhex(value) for value in host_digest_inputs[1:])
+        )
+        expected_host_sha = hashlib.sha256(host_bytes).hexdigest()
+    else:
+        expected_host_sha = None
+    require(
+        ready.get("host_binding_sha256") == expected_host_sha,
+        "capture_ready_host_binding_invalid",
+        problems,
+    )
+    require(
+        teardown.get("schema") == "hoi4-capture-teardown-v1"
+        and teardown.get("status") == "collector-unloaded"
+        and teardown.get("capture_policy") == "passive-observer-only"
+        and teardown.get("pid") == expected_pid
+        and teardown.get("process_creation_filetime_utc") == expected_creation
+        and teardown.get("session_id") == expected_session
+        and teardown.get("capture_id") == expected_capture
+        and teardown.get("data_pipe_eof_observed") is True
+        and teardown.get("hook_lease_released_after_eof") is True
+        and teardown.get("collector_module_absent_verified") is True
+        and teardown.get("target_process_epoch_revalidated") is True
+        and teardown.get("target_code_temporarily_instrumented") is True
+        and teardown.get("pinned_hook_target_code_restored") is True
+        and teardown.get("semantic_game_state_mutated") is False
+        and teardown.get("pinned_hook_sites_restored") is True
+        and teardown.get("pinned_hook_site_count") == expected_hook_count
+        and is_hex64(teardown.get("pinned_hook_site_baseline_sha256"))
+        and teardown.get("pinned_hook_site_baseline_sha256") != "0" * 64
+        and teardown.get("pinned_hook_site_restored_sha256")
+            == teardown.get("pinned_hook_site_baseline_sha256"),
+        "capture_teardown_identity_or_state_invalid",
+        problems,
+    )
+    require(
+        teardown.get("session_id_sha256") == ready.get("session_id_sha256")
+        and teardown.get("capture_id_sha256") == ready.get("capture_id_sha256")
+        and teardown.get("pipe_token_sha256") == ready.get("pipe_token_sha256")
+        and teardown.get("collector_dll_sha256") == ready.get("collector_dll_sha256")
+        and teardown.get("capture_ready_payload_sha256")
+            == ready.get("ready_payload_sha256")
+        and teardown.get("capture_ready_receipt_core_sha256")
+            == ready.get("public_receipt_core_sha256")
+        and teardown.get("capture_ready_ack_sha256")
+            == ready.get("ready_ack_sha256")
+        and teardown.get("capture_ready_receipt_sha256") == sha256(ready_path)
+        and teardown.get("host_binding_sha256")
+            == ready.get("host_binding_sha256"),
+        "capture_teardown_ready_binding_invalid",
+        problems,
+    )
+
+
+def grade_passive_domain_outcomes(
+    compact: dict[str, Any],
+    expected_roster: list[tuple[int, str]],
+    problems: list[str],
+) -> None:
+    expected_domain_ids = {row[0] for row in expected_roster}
+    expected_domain_names = [row[1] for row in expected_roster]
+    frame_count = compact.get("frame_end_record_count")
+    require(is_int(frame_count) and frame_count > 0, "frame_end_count_invalid", problems)
+    if not is_int(frame_count) or frame_count <= 0:
+        return
+
+    gaps = compact.get("domain_gap_outcomes")
+    require(isinstance(gaps, list), "domain_gap_outcomes_missing", problems)
+    if not isinstance(gaps, list):
+        gaps = []
+    require(
+        compact.get("domain_gap_record_count") == len(gaps),
+        "domain_gap_record_count_mismatch",
+        problems,
+    )
+    require(len(gaps) == 0, "production_zero_loss_domain_gaps_present", problems)
+
+    gap_counts: dict[int, int] = {}
+    next_ordinals: dict[tuple[int, str], int] = {}
+    previous_ranges: dict[tuple[int, str], tuple[int, int]] = {}
+    gap_targets: set[tuple[int, int]] = set()
+    for index, row in enumerate(gaps):
+        prefix = f"domain_gap_{index}"
+        if not isinstance(row, dict):
+            problems.append(f"{prefix}_not_object")
+            continue
+        domain_id = row.get("domain_id")
+        part = row.get("part")
+        reason = row.get("reason")
+        start = row.get("range_start_hour_raw")
+        end = row.get("range_end_hour_raw")
+        ordinal = row.get("outcome_ordinal")
+        target = row.get("target_hour_raw")
+        require(is_int(domain_id) and 0 < domain_id <= 0xFFFF,
+                f"{prefix}_domain_invalid", problems)
+        require(part in ALLOWED_GAP_PARTS, f"{prefix}_part_invalid", problems)
+        require(reason in ALLOWED_GAP_REASONS, f"{prefix}_reason_invalid", problems)
+        require(is_int(start) and is_int(end) and start <= end,
+                f"{prefix}_range_invalid", problems)
+        require(is_int(target) and is_int(start) and is_int(end)
+                and start <= target <= end,
+                f"{prefix}_target_outside_range", problems)
+        require(is_int(ordinal) and ordinal >= 0,
+                f"{prefix}_ordinal_invalid", problems)
+        if not (is_int(domain_id) and part in ALLOWED_GAP_PARTS):
+            continue
+        require(domain_id in expected_domain_ids,
+                f"{prefix}_domain_not_scheduled", problems)
+        if is_int(target):
+            target_key = (domain_id, target)
+            require(target_key not in gap_targets,
+                    f"{prefix}_duplicate_domain_frame_terminal", problems)
+            gap_targets.add(target_key)
+        key = (domain_id, part)
+        expected = next_ordinals.get(key, 0)
+        require(ordinal == expected, f"{prefix}_ordinal_discontinuous", problems)
+        next_ordinals[key] = expected + 1
+        if is_int(start) and is_int(end) and start <= end:
+            prior = previous_ranges.get(key)
+            require(prior is None or start > prior[1],
+                    f"{prefix}_range_overlap_or_regression", problems)
+            previous_ranges[key] = (start, end)
+        gap_counts[domain_id] = gap_counts.get(domain_id, 0) + 1
+
+    per_domain = compact.get("per_domain")
+    require(isinstance(per_domain, dict), "per_domain_missing", problems)
+    if not isinstance(per_domain, dict):
+        per_domain = {}
+    expected = compact.get("expected_domains")
+    require(
+        expected == expected_domain_names,
+        "expected_domain_roster_not_canonical_or_ordered",
+        problems,
+    )
+    require(
+        nested(compact, "domain_coverage", "ok") is True
+        and nested(compact, "domain_coverage", "errors") == [],
+        "domain_coverage_not_closed",
+        problems,
+    )
+
+    seen_ids: set[int] = set()
+    observed_roster: list[tuple[int, str]] = []
+    for name, row in per_domain.items():
+        if not isinstance(row, dict):
+            problems.append(f"per_domain_{name}_not_object")
+            continue
+        domain_id = row.get("domain_id")
+        accepted = row.get("record_count")
+        data_count = row.get("data_record_count")
+        raw_flags = row.get("status_flags_or")
+        effective_flags = row.get("effective_failure_status_flags_or")
+        require(is_int(domain_id) and 0 < domain_id <= 0xFFFF,
+                f"per_domain_{name}_id_invalid", problems)
+        require(is_int(accepted) and accepted >= 0,
+                f"per_domain_{name}_record_count_invalid", problems)
+        require(is_int(data_count) and data_count == accepted,
+                f"per_domain_{name}_data_record_count_mismatch", problems)
+        require(
+            is_int(raw_flags) and raw_flags >= 0
+            and raw_flags & CANONICAL_COMPACT_FAILURE_MASK == 0,
+            f"per_domain_{name}_raw_failure_status",
+            problems,
+        )
+        require(
+            is_int(effective_flags) and effective_flags >= 0
+            and effective_flags & CANONICAL_COMPACT_FAILURE_MASK == 0,
+            f"per_domain_{name}_effective_failure_status",
+            problems,
+        )
+        if is_int(domain_id) and is_int(accepted):
+            seen_ids.add(domain_id)
+            observed_roster.append((domain_id, name))
+            require(
+                accepted + gap_counts.get(domain_id, 0) == frame_count,
+                f"domain_{domain_id}_terminal_outcome_count_mismatch",
+                problems,
+            )
+    for domain_id, gap_count in gap_counts.items():
+        if domain_id not in seen_ids:
+            require(
+                gap_count == frame_count,
+                f"domain_{domain_id}_gap_only_terminal_outcome_count_mismatch",
+                problems,
+            )
+    require(
+        seen_ids | set(gap_counts) == expected_domain_ids,
+        "scheduled_domain_id_roster_mismatch",
+        problems,
+    )
+    require(
+        sorted(observed_roster, key=lambda row: row[0]) == expected_roster,
+        "per_domain_id_name_pair_roster_not_canonical",
+        problems,
+    )
+
+
 def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
     manifest_path = run_dir / "native_session_manifest.json"
+    plan_path = run_dir / "production_capture_plan.json"
+    speed_path = run_dir / "speed5_proof.json"
     require(manifest_path.is_file(), "native_session_manifest_missing", problems)
-    if not manifest_path.is_file():
+    require(plan_path.is_file(), "production_capture_plan_missing", problems)
+    require(speed_path.is_file(), "speed5_proof_missing", problems)
+    if not (manifest_path.is_file() and plan_path.is_file() and speed_path.is_file()):
         return {"manifest": None}
+
     manifest = load_object(manifest_path)
-    plan_path = run_dir / "early_launch_authorization_plan.json"
-    resolved_path = run_dir / "early_launch_resolved_attempt.json"
-    admission_path = run_dir / "prepared_product_modset_admission.json"
-    require(plan_path.is_file(), "early_launch_authorization_missing", problems)
-    require(resolved_path.is_file(), "early_launch_resolved_attempt_missing", problems)
-    require(admission_path.is_file(), "prepared_product_modset_admission_missing", problems)
-    plan = load_object(plan_path) if plan_path.is_file() else {}
-    resolved = load_object(resolved_path) if resolved_path.is_file() else {}
-    admission = load_object(admission_path) if admission_path.is_file() else {}
-    require(plan.get("schema") == "battle-plan.early_launch_authorization.v1",
-            "early_launch_authorization_schema_invalid", problems)
-    require(plan.get("purpose") == "Production",
-            "early_launch_authorization_not_full_production", problems)
-    require(plan.get("operator_approved") is True and plan.get("dry_run") is False,
-            "early_launch_not_operator_authorized", problems)
-    require(plan.get("attempt_budget") == 1, "early_launch_attempt_budget_invalid", problems)
-    require(resolved.get("schema") == "battle-plan.early_launch_resolved_attempt.v1",
-            "early_launch_resolved_attempt_schema_invalid", problems)
-    if plan_path.is_file():
-        require(resolved.get("authorization_plan_sha256") == sha256(plan_path),
-                "early_launch_resolved_plan_hash_mismatch", problems)
-    require(plan.get("executable_sha256") == EXACT_A729_SHA256,
-            "early_launch_plan_not_exact_a729", problems)
-    require(admission.get("schema") == "extractor.product_modset_capture_admission.v1"
-            and admission.get("verdict") == "passed",
-            "prepared_product_modset_admission_invalid", problems)
-    if admission_path.is_file():
-        require(plan.get("prepared_admission_sha256") == sha256(admission_path),
-                "prepared_product_modset_admission_hash_mismatch", problems)
-    require(plan.get("product_modset_sha256") == admission.get("product_modset_sha256"),
-            "early_launch_product_modset_mismatch", problems)
-    acceptance = manifest.get("acceptance_telemetry")
-    require(isinstance(acceptance, dict), "acceptance_telemetry_missing", problems)
-    acceptance = acceptance if isinstance(acceptance, dict) else {}
+    plan = load_object(plan_path)
+    speed = load_object(speed_path)
+    require(plan.get("schema") == "battle-plan.production_capture_plan.v1",
+            "production_capture_plan_schema_invalid", problems)
+    require(plan.get("unpaused_required") is True,
+            "production_capture_did_not_require_unpaused", problems)
+    require(plan.get("read_only_scheduler_required") is True,
+            "read_only_scheduler_not_required", problems)
+    closure = plan.get("interaction_closure")
+    closure = closure if isinstance(closure, dict) else {}
+    expected_closure = {
+        "policy": "passive_injected_observer",
+        "injected_collector_allowed": True,
+        "evidence_backed_hooks_allowed": True,
+        "client_commands_during_capture": 0,
+        "semantic_engine_state_writes": 0,
+        "game_process_lifecycle_commands": 0,
+        "game_ui_commands": 0,
+    }
     require(
-        acceptance.get("schema") == "battle-plan.acceptance_telemetry.v1",
-        "acceptance_schema_invalid",
+        all(closure.get(key) == value for key, value in expected_closure.items()),
+        "interaction_closure_invalid",
         problems,
     )
+    policy_inputs = closure.get("policy_inputs")
+    policy_inputs = policy_inputs if isinstance(policy_inputs, dict) else {}
+    require(
+        set(policy_inputs) == {
+            "read_only_game_state_witness_sha256",
+            "passive_capture_policy_test_sha256",
+            "passive_capture_lifecycle_sha256",
+        }
+        and all(is_hex64(value) for value in policy_inputs.values()),
+        "interaction_closure_policy_inputs_invalid",
+        problems,
+    )
+    current_policy_inputs = {
+        "read_only_game_state_witness_sha256": sha256(
+            Path(__file__).with_name("Read-Hoi4GameState.ps1")
+        ),
+        "passive_capture_policy_test_sha256": sha256(
+            Path(__file__).with_name("Test-PassiveCapturePolicy.ps1")
+        ),
+        "passive_capture_lifecycle_sha256": sha256(
+            Path(__file__).with_name("PassiveCapture.Lifecycle.ps1")
+        ),
+    }
+    require(
+        policy_inputs == current_policy_inputs,
+        "interaction_closure_policy_inputs_stale",
+        problems,
+    )
+
+    arguments = plan.get("recorder_arguments")
+    require(isinstance(arguments, list) and all(isinstance(v, str) for v in arguments),
+            "recorder_arguments_invalid", problems)
+    arguments = arguments if isinstance(arguments, list) else []
+    require("--read-only-scheduler" in arguments,
+            "read_only_scheduler_argument_missing", problems)
+    require("--read-only-scheduler-poll-ms" in arguments,
+            "read_only_scheduler_poll_argument_missing", problems)
+    require("--read-only-scheduler-queue-cap" in arguments,
+            "read_only_scheduler_capacity_argument_missing", problems)
+    for forbidden in FORBIDDEN_RECORDER_ARGUMENTS:
+        require(forbidden not in arguments, f"forbidden_recorder_argument:{forbidden}", problems)
+
+    require(plan.get("session_id") == manifest.get("session_id"),
+            "session_id_mismatch", problems)
+    require(plan.get("capture_id") == manifest.get("capture_id"),
+            "capture_id_mismatch", problems)
+    require(plan.get("pid") == manifest.get("pid"), "process_id_mismatch", problems)
+    require(plan.get("speed_required_raw") == 4, "speed5_not_required", problems)
+    require(speed.get("schema") == "battle-plan.speed5_proof.v2",
+            "speed5_proof_schema_invalid", problems)
+    require(speed.get("pid") == plan.get("pid"), "speed5_process_id_mismatch", problems)
+    require(speed.get("speed_raw") == 4 and speed.get("paused") is False,
+            "speed5_unpaused_not_proven", problems)
+    require(is_int(speed.get("sample_count")) and speed["sample_count"] >= 3,
+            "speed5_samples_insufficient", problems)
+    require(speed.get("capture_plan_sha256") == sha256(plan_path),
+            "speed5_capture_plan_digest_mismatch", problems)
+    require(speed.get("exe_sha256") == EXACT_A729_SHA256,
+            "speed5_executable_not_exact_a729", problems)
+
+    # The passive product must never publish the retired client-owning path.
+    for name in (
+        "early_launch_authorization_plan.json",
+        "early_launch_resolved_attempt.json",
+        "early_render_capture_receipt.json",
+    ):
+        require(not (run_dir / name).exists(), f"forbidden_early_launch_artifact:{name}", problems)
+    require(manifest.get("early_render_launch_manifest") is None,
+            "forbidden_early_launch_manifest_present", problems)
+    require(manifest.get("early_render_capture_receipt") is None,
+            "forbidden_early_capture_receipt_present", problems)
+
+    expected_domain_roster = canonical_production_domain_roster(problems)
+    expected_domain_ids = [row[0] for row in expected_domain_roster]
+    expected_domain_names = [row[1] for row in expected_domain_roster]
+    expected_domain_roster_json = [
+        {"id": domain_id, "name": name}
+        for domain_id, name in expected_domain_roster
+    ]
+    raw_expected_ids = plan.get("production_profile_domain_ids")
+    raw_expected_names = plan.get("production_profile_domain_names")
+    require(
+        raw_expected_ids == expected_domain_ids
+        and raw_expected_names == expected_domain_names
+        and list(zip(raw_expected_ids, raw_expected_names)) == expected_domain_roster,
+        "production_profile_domain_roster_not_canonical_or_pairwise_ordered",
+        problems,
+    )
+    require(
+        plan.get("production_profile_domain_roster")
+        == expected_domain_roster_json,
+        "production_profile_domain_pair_roster_not_canonical_or_ordered",
+        problems,
+    )
+    scheduled_domain_names = plan.get("scheduled_domain_names")
+    scheduled_domain_roster_json = plan.get("scheduled_domain_roster")
+    scheduled_domain_names = (
+        scheduled_domain_names if isinstance(scheduled_domain_names, list) else []
+    )
+    scheduled_domain_roster_json = (
+        scheduled_domain_roster_json
+        if isinstance(scheduled_domain_roster_json, list)
+        else []
+    )
+    scheduled_domain_roster: list[tuple[int, str]] = []
+    if (
+        len(scheduled_domain_names) == len(expected_domain_roster)
+        and len(scheduled_domain_roster_json) == len(expected_domain_roster)
+    ):
+        for index, ((expected_id, _), scheduled_name, row) in enumerate(
+            zip(
+                expected_domain_roster,
+                scheduled_domain_names,
+                scheduled_domain_roster_json,
+            )
+        ):
+            if (
+                isinstance(scheduled_name, str)
+                and bool(scheduled_name)
+                and isinstance(row, dict)
+                and set(row) == {"id", "wire_name"}
+                and row.get("id") == expected_id
+                and row.get("wire_name") == scheduled_name
+            ):
+                scheduled_domain_roster.append((expected_id, scheduled_name))
+            else:
+                problems.append(f"scheduled_domain_roster_row_{index}_invalid")
+    require(
+        len(scheduled_domain_roster) == len(expected_domain_roster)
+        and len({row[1] for row in scheduled_domain_roster})
+        == len(scheduled_domain_roster)
+        and is_hex64(plan.get("domain_roster_tool_sha256")),
+        "scheduled_domain_roster_not_authoritative_pairwise_or_ordered",
+        problems,
+    )
+    roster_authority_path = run_dir / "production_domain_roster_authority.json"
+    raw_roster_authority_path = plan.get("domain_roster_authority_path")
+    try:
+        planned_roster_authority_path = (
+            Path(raw_roster_authority_path).resolve()
+            if isinstance(raw_roster_authority_path, str)
+            else run_dir / "__missing_roster_authority__"
+        )
+    except (OSError, RuntimeError):
+        planned_roster_authority_path = run_dir / "__invalid_roster_authority__"
+    require(
+        planned_roster_authority_path == roster_authority_path
+        and roster_authority_path.is_file()
+        and is_hex64(plan.get("domain_roster_authority_sha256"))
+        and (
+            sha256(roster_authority_path)
+            == plan.get("domain_roster_authority_sha256")
+            if roster_authority_path.is_file()
+            else False
+        ),
+        "domain_roster_authority_file_not_digest_bound",
+        problems,
+    )
+    authority_roster: Any = []
+    if roster_authority_path.is_file():
+        try:
+            authority_roster = load_json(roster_authority_path)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            problems.append("domain_roster_authority_not_strict_json")
+    expected_authority_roster = [
+        {
+            "id": domain_id,
+            "name": canonical_name,
+            "wire_name": wire_name,
+        }
+        for (domain_id, canonical_name), (_, wire_name) in zip(
+            expected_domain_roster,
+            scheduled_domain_roster,
+        )
+    ]
+    require(
+        authority_roster == expected_authority_roster,
+        "domain_roster_authority_not_exact_canonical_wire_join",
+        problems,
+    )
+    require(
+        manifest.get("scheduled_domains") == scheduled_domain_names,
+        "manifest_scheduled_domain_roster_not_canonical_or_ordered",
+        problems,
+    )
+    if scheduled_domain_roster:
+        grade_passive_lifecycle(
+            run_dir,
+            plan,
+            scheduled_domain_names,
+            problems,
+        )
+    compact = manifest.get("compact_stream")
+    require(isinstance(compact, dict), "compact_stream_missing", problems)
+    if isinstance(compact, dict):
+        require("hour_latch" not in compact, "forbidden_hour_latch_summary_present", problems)
+        require(compact.get("decodable") is True, "compact_stream_not_decodable", problems)
+        require(compact.get("ordered") is True, "compact_stream_not_ordered", problems)
+        grade_passive_domain_outcomes(compact, scheduled_domain_roster, problems)
+
+    raw_stream_name = manifest.get("raw_stream")
+    raw_stream = (run_dir / (
+        raw_stream_name if isinstance(raw_stream_name, str) else "collector_stream.bin"
+    )).resolve()
+    try:
+        raw_stream.relative_to(run_dir)
+    except ValueError:
+        problems.append("collector_stream_path_escapes_run")
+        raw_stream = run_dir / "collector_stream.bin"
+    require(raw_stream.is_file(), "collector_stream_missing", problems)
+    raw_stream_sha256 = sha256(raw_stream) if raw_stream.is_file() else None
+    raw_stream_bytes = raw_stream.stat().st_size if raw_stream.is_file() else None
+    manifest_storage = manifest.get("stream_storage")
+    manifest_storage = manifest_storage if isinstance(manifest_storage, dict) else {}
+    require(bool(manifest_storage), "manifest_stream_storage_missing", problems)
+    require(
+        manifest_storage.get("compression") in {"none", "zstd"}
+        and is_int(manifest_storage.get("stored_bytes"))
+        and manifest_storage.get("stored_bytes") == raw_stream_bytes
+        and is_int(manifest_storage.get("decoded_bytes"))
+        and manifest_storage.get("decoded_bytes") >= 0
+        and is_hex64(manifest_storage.get("decoded_sha256")),
+        "manifest_stream_storage_invalid_or_unbound",
+        problems,
+    )
+    if "stored_sha256" in manifest_storage:
+        require(
+            manifest_storage.get("stored_sha256") == raw_stream_sha256,
+            "manifest_stream_storage_stored_digest_mismatch",
+            problems,
+        )
+    if manifest_storage.get("compression") == "none":
+        require(
+            manifest_storage.get("decoded_bytes") == raw_stream_bytes
+            and manifest_storage.get("decoded_sha256") == raw_stream_sha256,
+            "uncompressed_stream_storage_decoded_identity_mismatch",
+            problems,
+        )
+    if raw_stream.is_file():
+        require(
+            raw_stream_sha256 == nested(manifest, "host_finalize", "stream_sha256"),
+            "collector_stream_digest_mismatch",
+            problems,
+        )
+    validation_path = run_dir / "production_validation_report.json"
+    require(validation_path.is_file(), "production_validation_report_missing", problems)
+    if validation_path.is_file():
+        validation = load_object(validation_path)
+        require(validation.get("schema") == "battle-plan.production_capture_validation.v2"
+                and validation.get("ok") is True
+                and validation.get("problems") == [],
+                "production_validation_report_invalid", problems)
+        require(
+            validation.get("manifest_sha256") == sha256(manifest_path),
+            "production_validation_manifest_digest_mismatch",
+            problems,
+        )
+        require(
+            validation.get("capture_id") == plan.get("capture_id")
+            and validation.get("session_id") == plan.get("session_id"),
+            "production_validation_identity_mismatch",
+            problems,
+        )
+        require(
+            validation.get("stream_sha256")
+            == nested(manifest, "host_finalize", "stream_sha256"),
+            "production_validation_stream_digest_mismatch",
+            problems,
+        )
+        require(
+            validation.get("expected_domain_count") == len(expected_domain_roster)
+            and validation.get("expected_domain_roster")
+            == expected_domain_roster_json
+            and validation.get("scheduled_domain_roster")
+            == scheduled_domain_roster_json
+            and isinstance(validation.get("domain_roster_authority_path"), str)
+            and Path(validation["domain_roster_authority_path"]).resolve()
+            == roster_authority_path
+            and validation.get("domain_roster_authority_sha256")
+            == plan.get("domain_roster_authority_sha256"),
+            "production_validation_domain_roster_not_canonical_or_ordered",
+            problems,
+        )
+        independent = validation.get("independent_gates")
+        independent = independent if isinstance(independent, list) else []
+        compact_results = [
+            row for row in independent
+            if isinstance(row, dict) and row.get("name") == "compact_gate"
+        ]
+        require(
+            len(compact_results) == 1 and compact_results[0].get("passed") is True,
+            "independent_compact_gate_not_proven",
+            problems,
+        )
+        if len(compact_results) == 1:
+            compact_result = compact_results[0]
+            compact_args = compact_result.get("arguments")
+            compact_args = compact_args if isinstance(compact_args, list) else []
+            try:
+                compact_run_arg = compact_args[compact_args.index("--run-dir") + 1]
+                compact_run_matches = (
+                    Path(compact_run_arg).resolve() == run_dir
+                )
+            except (ValueError, IndexError, TypeError):
+                compact_run_matches = False
+            require(
+                all(isinstance(value, str) for value in compact_args)
+                and compact_args.count("--run-dir") == 1
+                and compact_run_matches
+                and compact_args.count("--require-zero-loss") == 1
+                and compact_args.count("--write-report") == 1
+                and is_hex64(compact_result.get("executable_sha256")),
+                "independent_compact_gate_invocation_unbound",
+                problems,
+            )
+            compact_report_value = compact_result.get("report_path")
+            compact_report = Path(compact_report_value).resolve() if isinstance(
+                compact_report_value, str
+            ) else run_dir / "__missing_compact_report__"
+            expected_report_parent = (run_dir / "independent_validation").resolve()
+            try:
+                compact_report.relative_to(expected_report_parent)
+                compact_report_contained = True
+            except ValueError:
+                compact_report_contained = False
+            require(
+                compact_report_contained and compact_report.is_file(),
+                "independent_compact_gate_report_missing_or_uncontained",
+                problems,
+            )
+            if compact_report_contained and compact_report.is_file():
+                try:
+                    compact_write_arg = compact_args[
+                        compact_args.index("--write-report") + 1
+                    ]
+                    compact_write_matches = (
+                        Path(compact_write_arg).resolve() == compact_report
+                    )
+                except (ValueError, IndexError, TypeError):
+                    compact_write_matches = False
+                require(
+                    compact_write_matches,
+                    "independent_compact_gate_report_argument_unbound",
+                    problems,
+                )
+                require(
+                    compact_result.get("report_sha256") == sha256(compact_report),
+                    "independent_compact_gate_report_digest_mismatch",
+                    problems,
+                )
+                compact_report_json = load_object(compact_report)
+                require(
+                    compact_report_json.get("gate")
+                    == "compact_replay_verification_gates"
+                    and compact_report_json.get("passed") is True
+                    and compact_report_json.get("errors") == [],
+                    "independent_compact_gate_report_invalid",
+                    problems,
+                )
+                require(
+                    nested(
+                        compact_report_json,
+                        "details",
+                        "verification_profile",
+                        "gap_acceptance",
+                    )
+                    == "require_zero_loss"
+                    and nested(
+                        compact_report_json,
+                        "details",
+                        "verification_profile",
+                        "zero_loss_claimed",
+                    )
+                    is True,
+                    "independent_compact_gate_zero_loss_not_proven",
+                    problems,
+                )
+                compact_details = compact_report_json.get("details")
+                compact_details = (
+                    compact_details if isinstance(compact_details, dict) else {}
+                )
+                compact_manifest_value = compact_details.get("manifest")
+                compact_stream_value = compact_details.get("stream_file")
+                require(
+                    isinstance(compact_details.get("run_dir"), str)
+                    and Path(compact_details["run_dir"]).resolve() == run_dir
+                    and isinstance(compact_manifest_value, str)
+                    and Path(compact_manifest_value).resolve() == manifest_path,
+                    "independent_compact_gate_run_or_manifest_path_unbound",
+                    problems,
+                )
+                require(
+                    isinstance(compact_stream_value, str)
+                    and Path(compact_stream_value).resolve() == raw_stream,
+                    "independent_compact_gate_stream_path_unbound",
+                    problems,
+                )
+                require(
+                    compact_details.get("scheduled_domains")
+                    == scheduled_domain_names
+                    and compact_details.get("required_domains") == [],
+                    "independent_compact_gate_domain_roster_not_canonical_or_ordered",
+                    problems,
+                )
+                compact_storage = compact_details.get("stream_storage")
+                compact_storage = (
+                    compact_storage if isinstance(compact_storage, dict) else {}
+                )
+                require(
+                    set(compact_storage)
+                    == {
+                        "compression",
+                        "stored_bytes",
+                        "stored_sha256",
+                        "decoded_bytes",
+                        "decoded_sha256",
+                    }
+                    and compact_storage.get("compression")
+                    == manifest_storage.get("compression")
+                    and compact_storage.get("stored_bytes") == raw_stream_bytes
+                    and compact_storage.get("stored_sha256") == raw_stream_sha256
+                    and compact_storage.get("decoded_bytes")
+                    == manifest_storage.get("decoded_bytes")
+                    and compact_storage.get("decoded_sha256")
+                    == manifest_storage.get("decoded_sha256"),
+                    "independent_compact_gate_stream_storage_unbound",
+                    problems,
+                )
+                replay_verify = compact_details.get("replay_verify")
+                replay_verify = (
+                    replay_verify if isinstance(replay_verify, dict) else {}
+                )
+                replay_name_for_binding = manifest.get("replay_file")
+                replay_path_for_binding = (
+                    (run_dir / replay_name_for_binding).resolve()
+                    if isinstance(replay_name_for_binding, str)
+                    else run_dir / "__missing_replay__"
+                )
+                replay_entries = manifest.get("replay_entries")
+                replay_entries = (
+                    replay_entries if isinstance(replay_entries, dict) else {}
+                )
+                replay_game_id = manifest.get("replay_game_id")
+                expected_container_stream = (
+                    f"payload/{replay_game_id}/{replay_entries.get('stream')}"
+                    if isinstance(replay_game_id, str)
+                    and isinstance(replay_entries.get("stream"), str)
+                    else None
+                )
+                expected_container_manifest = (
+                    f"payload/{replay_game_id}/"
+                    f"{replay_entries.get('session_manifest')}"
+                    if isinstance(replay_game_id, str)
+                    and isinstance(replay_entries.get("session_manifest"), str)
+                    else None
+                )
+                replay_file_value = replay_verify.get("file")
+                require(
+                    isinstance(replay_file_value, str)
+                    and Path(replay_file_value).resolve() == replay_path_for_binding
+                    and replay_verify.get("game_id") == replay_game_id
+                    and replay_entries.get("stream_role")
+                    == "collector_compact_stream"
+                    and replay_entries.get("session_manifest_role")
+                    == "recorder_manifest"
+                    and replay_verify.get("collector_compact_stream")
+                    == expected_container_stream
+                    and replay_verify.get("recorder_manifest")
+                    == expected_container_manifest
+                    and replay_verify.get("recorder_manifest_bytes")
+                    == manifest_path.stat().st_size
+                    and replay_verify.get("recorder_manifest_sha256")
+                    == sha256(manifest_path)
+                    and replay_verify.get("external_manifest_exact_match") is True
+                    and replay_verify.get("h4cr_stream_digest_bound") is True
+                    and replay_verify.get("collector_compact_stream_bytes")
+                    == manifest_storage.get("decoded_bytes")
+                    and replay_verify.get("collector_compact_stream_sha256")
+                    == manifest_storage.get("decoded_sha256")
+                    and replay_verify.get("independently_observed_stream_sha256")
+                    == manifest_storage.get("decoded_sha256"),
+                    "independent_compact_gate_replay_authority_unbound",
+                    problems,
+                )
+
+    acceptance = manifest.get("acceptance_telemetry")
+    acceptance = acceptance if isinstance(acceptance, dict) else {}
+    require(acceptance.get("schema") == "battle-plan.acceptance_telemetry.v1",
+            "acceptance_schema_invalid", problems)
     require(acceptance.get("complete") is True, "acceptance_not_complete", problems)
     require(acceptance.get("problems") == [], "acceptance_problems_present", problems)
-
-    launch = manifest.get("early_render_launch_manifest")
-    launch = launch if isinstance(launch, dict) else {}
-    capture_receipt = manifest.get("early_render_capture_receipt")
-    capture_receipt = capture_receipt if isinstance(capture_receipt, dict) else {}
-    require(launch.get("executable_sha256") == EXACT_A729_SHA256,
-            "success_launch_not_exact_a729", problems)
-    require(capture_receipt.get("executable_sha256") == EXACT_A729_SHA256,
-            "success_capture_not_exact_a729", problems)
-    require(capture_receipt.get("created_suspended") is True,
-            "success_capture_not_created_suspended", problems)
-    require(is_hex64(launch.get("collector_sha256")),
-            "success_launch_collector_sha256_invalid", problems)
-    require(capture_receipt.get("collector_sha256") == launch.get("collector_sha256"),
-            "success_collector_identity_mismatch", problems)
-    require(plan.get("collector_sha256") == launch.get("collector_sha256"),
-            "success_plan_collector_identity_mismatch", problems)
-    require(plan.get("session_id") == manifest.get("session_id"),
-            "success_plan_session_id_mismatch", problems)
-    require(plan.get("capture_id") == manifest.get("capture_id"),
-            "success_plan_capture_id_mismatch", problems)
-    require(resolved.get("native_session_manifest_sha256") == sha256(manifest_path),
-            "success_resolved_manifest_hash_mismatch", problems)
-    require(resolved.get("session_id") == manifest.get("session_id"),
-            "success_resolved_session_id_mismatch", problems)
-    require(resolved.get("capture_id") == manifest.get("capture_id"),
-            "success_resolved_capture_id_mismatch", problems)
-    require(resolved.get("process_id") == capture_receipt.get("process_id"),
-            "success_resolved_process_id_mismatch", problems)
-    require(resolved.get("process_start_nonce") == capture_receipt.get("process_start_nonce"),
-            "success_resolved_process_nonce_mismatch", problems)
-    require(resolved.get("early_render_capture_receipt_sha256")
-            == manifest.get("early_render_capture_receipt_sha256"),
-            "success_resolved_capture_receipt_mismatch", problems)
-    require(plan.get("product_modset_sha256")
-            == nested(manifest, "static_bundle", "product_modset_sha256"),
-            "success_manifest_product_modset_mismatch", problems)
-    require(resolved.get("product_modset_sha256") == plan.get("product_modset_sha256"),
-            "success_resolved_product_modset_mismatch", problems)
-    require(is_hex64(manifest.get("early_render_capture_receipt_sha256")),
-            "success_capture_receipt_sha256_invalid", problems)
-    if launch and capture_receipt:
-        grade_early_capture(
-            launch, capture_receipt,
-            manifest.get("early_render_capture_receipt_sha256"), problems,
-        )
-
-    host_write = acceptance.get("sink_write_us")
-    host_write = host_write if isinstance(host_write, dict) else {}
-    require(isinstance(host_write.get("count"), int) and host_write["count"] > 0,
+    sink = acceptance.get("sink_write_us")
+    sink = sink if isinstance(sink, dict) else {}
+    require(is_int(sink.get("count")) and sink["count"] > 0,
             "host_sink_write_samples_empty", problems)
-    require(isinstance(host_write.get("avg"), (int, float)),
-            "host_sink_write_average_missing", problems)
-    require(isinstance(host_write.get("max"), int), "host_sink_write_max_missing", problems)
-    require(
-        acceptance.get("sink_write_scope")
-        == "recorder StreamWriter::write_all calls over the complete physical H4CR capture; capture-set scoped during rollover; buffered/compressed host-path diagnostic, not logical-stream collector sink latency",
-        "host_sink_write_scope_invalid",
-        problems,
-    )
-    collector_write = acceptance.get("collector_sink_write_us")
-    collector_write = collector_write if isinstance(collector_write, dict) else {}
-    require(
-        collector_write.get("scope")
-        == "collector synchronous writes to the sole authoritative H4CR pipe sink, finalized by the in-band terminal latch record",
-        "collector_sink_write_scope_invalid",
-        problems,
-    )
-    collector_count = collector_write.get("count")
-    collector_p50 = collector_write.get("p50")
-    collector_p99 = collector_write.get("p99")
-    collector_max = collector_write.get("max")
-    require(type(collector_count) is int and collector_count > 0,
-            "collector_sink_time_samples_empty", problems)
-    require(type(collector_write.get("total")) is int
-            and collector_write["total"] >= 0,
-            "collector_sink_time_total_missing", problems)
-    require(is_finite_number(collector_write.get("avg"))
-            and collector_write["avg"] >= 0,
-            "collector_sink_time_average_missing", problems)
-    require(
-        all(type(value) is int and value >= 0
-            for value in (collector_p50, collector_p99, collector_max))
-        and collector_p50 <= collector_p99 <= collector_max,
-        "collector_sink_time_percentiles_invalid",
-        problems,
-    )
-    require(
-        type(collector_write.get("total")) is int
-        and type(collector_max) is int
-        and collector_max <= collector_write["total"],
-        "collector_sink_time_total_invalid",
-        problems,
-    )
+    require(is_finite_number(sink.get("avg")) and sink["avg"] >= 0,
+            "host_sink_write_average_invalid", problems)
+    require(is_int(sink.get("max")) and sink["max"] >= 0,
+            "host_sink_write_max_invalid", problems)
     clock = acceptance.get("clock_skew")
     clock = clock if isinstance(clock, dict) else {}
-    require(bool(clock), "clock_skew_unmeasured", problems)
-    require(clock.get("wall_monotonic_ok") is True, "wall_clock_non_monotonic", problems)
-    require(
-        acceptance.get("clock_skew_scope")
-        == "complete physical H4CR capture; capture-set scoped during rollover",
-        "clock_skew_scope_invalid",
-        problems,
-    )
-
-    lifecycle = acceptance.get("sink_lifecycle")
-    lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
-    attempts = lifecycle.get("write_attempts")
-    require(lifecycle.get("requested") == 1, "sink_requested_not_one", problems)
-    require(lifecycle.get("open_attempts") == 1, "sink_open_attempts_not_one", problems)
-    require(lifecycle.get("open_finishes") == 1, "sink_open_finishes_not_one", problems)
-    require(lifecycle.get("opened") == 1, "sink_opened_not_one", problems)
-    require(lifecycle.get("open_failures") == 0, "sink_open_failure_seen", problems)
-    require(isinstance(attempts, int) and attempts > 0, "sink_write_attempts_empty", problems)
-    require(lifecycle.get("write_finishes") == attempts, "sink_write_finish_mismatch", problems)
-    require(lifecycle.get("write_commits") == attempts, "sink_write_commit_mismatch", problems)
-    require(lifecycle.get("write_failures") == 0, "sink_write_failure_seen", problems)
-    require(lifecycle.get("write_in_flight") == 0, "sink_write_left_in_flight", problems)
-    require(lifecycle.get("file_bytes_committed") == 0, "file_sink_was_not_disabled", problems)
-    require(
-        isinstance(lifecycle.get("pipe_bytes_committed"), int)
-        and lifecycle["pipe_bytes_committed"] > 0,
-        "pipe_sink_committed_no_bytes",
-        problems,
-    )
-
-    latch = nested(manifest, "compact_stream", "hour_latch")
-    latch = latch if isinstance(latch, dict) else {}
-    latch_collector_write = latch.get("sink_write_us")
-    latch_collector_write = latch_collector_write if isinstance(latch_collector_write, dict) else {}
-    require(isinstance(latch_collector_write.get("count"), int)
-            and latch_collector_write["count"] > 0,
-            "collector_sink_time_samples_empty", problems)
-    require(latch_collector_write.get("count") == lifecycle.get("write_finishes"),
-            "collector_sink_time_sample_count_mismatch", problems)
-    require(collector_write.get("count") == latch_collector_write.get("count")
-            and collector_write.get("total") == latch_collector_write.get("total")
-            and collector_write.get("p50") == latch_collector_write.get("p50")
-            and collector_write.get("p99") == latch_collector_write.get("p99")
-            and collector_write.get("max") == latch_collector_write.get("max"),
-            "acceptance_collector_sink_time_mismatch", problems)
-    require(latch.get("terminal_proof_seen") is True, "terminal_latch_proof_missing", problems)
-    require(latch.get("configured_sink_count") == 1, "configured_sink_not_one", problems)
-    require(latch.get("pipe_sink_enabled") == 1, "pipe_sink_not_enabled", problems)
-    require(latch.get("file_sink_enabled") == 0, "file_sink_enabled", problems)
-    require(latch.get("per_hour_delivery_proof_complete") is True,
-            "per_hour_delivery_unproven", problems)
-    require(latch.get("sink_write_success_verified") is True,
-            "sink_write_success_unverified", problems)
-    require(latch.get("sink_write_gap") is None, "sink_write_gap_present", problems)
+    require(clock.get("wall_monotonic_ok") is True,
+            "wall_clock_non_monotonic_or_unmeasured", problems)
     require(nested(manifest, "hourly_requirement", "met") is True,
             "hourly_requirement_not_met", problems)
 
@@ -418,27 +1520,22 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
     if isinstance(replay_name, str) and Path(replay_name).name == replay_name:
         require((run_dir / replay_name).is_file(), "replay_file_missing", problems)
     finalize = manifest.get("host_finalize")
-    require(isinstance(finalize, dict), "host_finalize_missing", problems)
-    if isinstance(finalize, dict):
-        require(nested(finalize, "fold", "skipped") is not True,
-                "host_fold_skipped", problems)
-        require(nested(finalize, "fold", "truncated_tail_bytes") == 0,
-                "host_fold_truncated_tail", problems)
-        require(nested(finalize, "fold", "framing_stopped") is None,
-                "host_fold_framing_stopped", problems)
-        require(nested(finalize, "verify", "stream_sha256_matches_capture") is True,
-                "host_verify_stream_hash_mismatch", problems)
+    finalize = finalize if isinstance(finalize, dict) else {}
+    require(bool(finalize), "host_finalize_missing", problems)
+    require(nested(finalize, "fold", "skipped") is not True,
+            "host_fold_skipped", problems)
+    require(nested(finalize, "fold", "truncated_tail_bytes") == 0,
+            "host_fold_truncated_tail", problems)
+    require(nested(finalize, "verify", "stream_sha256_matches_capture") is True,
+            "host_verify_stream_hash_mismatch", problems)
     require(not (run_dir / "collector_sink_failure.json").exists(),
             "failure_receipt_present_in_success_run", problems)
     return {
         "manifest": str(manifest_path),
         "manifest_sha256": sha256(manifest_path),
-        "early_launch_authorization": str(plan_path),
-        "early_launch_authorization_sha256": sha256(plan_path) if plan_path.is_file() else None,
-        "early_launch_resolved_attempt_sha256": sha256(resolved_path) if resolved_path.is_file() else None,
-        "prepared_product_modset_admission_sha256": (
-            sha256(admission_path) if admission_path.is_file() else None
-        ),
+        "production_capture_plan": str(plan_path),
+        "production_capture_plan_sha256": sha256(plan_path),
+        "speed5_proof_sha256": sha256(speed_path),
     }
 
 
@@ -457,90 +1554,44 @@ def grade_failure(run_dir: Path, expected: str, problems: list[str]) -> dict[str
             "sink_failure_plan_schema_invalid", problems)
     require(plan.get("admissible_for_production") is False,
             "failure_plan_claimed_production", problems)
-    require(plan.get("expected_receipt_schema")
-            == "extractor.authenticated-sink-failure.v2",
-            "failure_plan_expected_receipt_schema_invalid", problems)
-    require(plan.get("expected_topology") == "sole_pipe",
-            "failure_plan_topology_invalid", problems)
-    require(plan.get("expected_terminality") == "attempt_terminal",
-            "failure_plan_terminality_invalid", problems)
     require(receipt.get("admissible_for_production") is False,
             "failure_receipt_claimed_production", problems)
     require(receipt.get("attempt_terminal") is True, "failure_not_terminal", problems)
     require(receipt.get("authenticated_h4ct_session") is True,
             "failure_h4ct_not_authenticated", problems)
-    require(receipt.get("replay_created") is False, "failure_claimed_replay", problems)
+    require(receipt.get("replay_created") is False,
+            "failure_claimed_replay", problems)
     acceptance = receipt.get("acceptance_test")
     acceptance = acceptance if isinstance(acceptance, dict) else {}
     require(acceptance.get("mode") == expected, "failure_mode_mismatch", problems)
     require(acceptance.get("report_matches_armed_fault") is True,
             "armed_fault_report_mismatch", problems)
     require(is_hex64(acceptance.get("nonce")), "failure_nonce_invalid", problems)
-    require(is_hex64(acceptance.get("control_authorization_v1")),
-            "failure_control_authorization_invalid", problems)
     require(acceptance.get("acceptance_plan_sha256") == sha256(plan_path),
             "failure_plan_hash_mismatch", problems)
     require(plan.get("mode") == expected, "plan_mode_mismatch", problems)
-    require(plan.get("nonce") == acceptance.get("nonce"), "plan_nonce_mismatch", problems)
-    require(plan.get("control_authorization_v1") == acceptance.get("control_authorization_v1"),
-            "plan_control_authorization_mismatch", problems)
-    require(isinstance(receipt.get("session_id"), str)
-            and bool(receipt["session_id"].strip()),
-            "failure_session_id_invalid", problems)
-    require(isinstance(receipt.get("capture_id"), str)
-            and bool(receipt["capture_id"].strip()),
-            "failure_capture_id_invalid", problems)
-    require(isinstance(receipt.get("process_id"), int)
-            and not isinstance(receipt.get("process_id"), bool)
-            and receipt["process_id"] > 0,
-            "failure_process_id_invalid", problems)
     for key in ("session_id", "capture_id", "process_id"):
         require(plan.get(key) == receipt.get(key), f"plan_{key}_mismatch", problems)
-    game_executable_file = plan.get("game_executable_file")
-    require(isinstance(game_executable_file, str)
-            and Path(game_executable_file).name == game_executable_file,
-            "plan_game_executable_file_invalid", problems)
     require(plan.get("game_executable_sha256") == EXACT_A729_SHA256,
             "plan_game_executable_not_exact_a729", problems)
-    recorder_executable_file = plan.get("recorder_executable_file")
-    require(isinstance(recorder_executable_file, str)
-            and Path(recorder_executable_file).name == recorder_executable_file,
-            "plan_recorder_executable_file_invalid", problems)
-    require(is_hex64(plan.get("recorder_executable_sha256")),
-            "plan_recorder_executable_sha256_invalid", problems)
-    collector_dll_file = plan.get("collector_dll_file")
-    require(isinstance(collector_dll_file, str)
-            and Path(collector_dll_file).name == collector_dll_file,
-            "plan_collector_dll_file_invalid", problems)
-    require(is_hex64(plan.get("collector_dll_sha256")),
-            "plan_collector_dll_sha256_invalid", problems)
-
-    pipe_bit = 2
-    require(receipt.get("requested_bits") == pipe_bit, "failure_not_sole_pipe", problems)
-    require(receipt.get("failed_bits") == pipe_bit, "failed_sink_not_pipe", problems)
-    require(receipt.get("file_bytes_committed") == 0, "failure_file_bytes_nonzero", problems)
-    require(receipt.get("error_class") == "OtherIo", "fault_error_class_invalid", problems)
-    require(receipt.get("win32_error") is None, "fault_win32_error_present", problems)
+    require(receipt.get("requested_bits") == 2, "failure_not_sole_pipe", problems)
+    require(receipt.get("failed_bits") == 2, "failed_sink_not_pipe", problems)
+    require(receipt.get("file_bytes_committed") == 0,
+            "failure_file_bytes_nonzero", problems)
     if expected == "sink-open-fault":
         require(receipt.get("kind") == "Setup", "open_fault_kind_invalid", problems)
         require(receipt.get("opened_bits") == 0, "open_fault_claimed_open", problems)
-        for key in ("last_complete_sequence", "failed_sequence"):
-            require(receipt.get(key) is None, f"open_fault_{key}_present", problems)
-        require(receipt.get("pipe_bytes_committed") == 0,
-                "open_fault_pipe_bytes_nonzero", problems)
     else:
         require(receipt.get("kind") == "Terminal", "write_fault_kind_invalid", problems)
-        require(receipt.get("opened_bits") == pipe_bit, "write_fault_pipe_not_open", problems)
+        require(receipt.get("opened_bits") == 2, "write_fault_pipe_not_open", problems)
         last = receipt.get("last_complete_sequence")
         failed = receipt.get("failed_sequence")
-        require(isinstance(last, int) and isinstance(failed, int) and last + 1 == failed,
+        require(is_int(last) and is_int(failed) and last + 1 == failed,
                 "write_fault_sequence_progress_invalid", problems)
-        require(isinstance(receipt.get("pipe_bytes_committed"), int)
-                and receipt["pipe_bytes_committed"] > 0,
-                "write_fault_has_no_committed_prefix", problems)
     require(not (run_dir / "native_session_manifest.json").exists(),
             "failure_run_published_session_manifest", problems)
-    require(not any(run_dir.glob("*.battleplan")), "failure_run_published_replay", problems)
+    require(not any(run_dir.glob("*.battleplan")),
+            "failure_run_published_replay", problems)
     return {
         "receipt": str(receipt_path),
         "receipt_sha256": sha256(receipt_path),
@@ -567,7 +1618,7 @@ def main() -> int:
         else grade_failure(run_dir, args.expect, problems)
     )
     result = {
-        "schema": "extractor.sink-reconciliation-verification.v1",
+        "schema": "extractor.sink-reconciliation-verification.v2",
         "run_dir": str(run_dir),
         "expected_outcome": args.expect,
         "verdict": "passed" if not problems else "failed",

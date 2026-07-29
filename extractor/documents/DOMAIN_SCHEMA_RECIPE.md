@@ -969,16 +969,30 @@ times:
   counted, named certification deviation (d49's rule). "Mirror the fold" and "apply every other
   authority predicate" read as one instruction right up until they disagree about order.
 
-**Dependency ruling (already made — do not re-decide per domain):** the harness needs the
-shipping framing contract, so `wire_format` carries `compact_contract` (a leaf crate) as a
-dependency used only by measurement bins, documented as such in `Cargo.toml`. Never copy its
-constants. For compression, `scripts/bench_real_dynamics.py` hardcodes the d20 arm name; use
-`scripts/compress_arms.py <out_dir> <ship_arm_basename> [hours_per_span]` instead.
+**Dependency ruling (already made — do not improvise per domain):** `wire_format` carries
+`compact_contract`, which has no normal dependencies, for two deliberately bounded uses:
 
-**Where the library half must transcribe a shipping codec, the duplication is machine-checked,
-never trusted (d67, d70).** The ruling above gives `compact_contract` to measurement bins
-only, so a domain whose row grammar lives in a codec crate is transcribed by hand into
-`dNN.rs` — d67's DMI2 (`compact_contract/src/dynamic_modifiers.rs`) and d70's SCH1
+1. measurement binaries call the shipping framing, status and stream-validation contract; and
+2. a library port may call a domain payload codec only when that codec is already the production
+   payload authority in `compact_contract` and the admission is explicitly listed beside the
+   dependency in `wire_format/Cargo.toml` (currently d81 `rail_replay` only).
+
+The library exception is an authority reuse, not a general licence to import recorder policy.
+The port must call the canonical decoder over the complete payload in the shipping fold's order,
+alias codec constants rather than copying them, and retain its own fold-faithful mapping and wire
+validation. The dependency remains mechanically bounded by the dependency-free leaf crate and
+the executable source allow-list in
+`wire_format/tests/compact_contract_dependency_policy.rs`; admitting another codec requires
+updating that guard, this ruling and the manifest allow-list under adversarial review. It does
+**not** waive real-capture coverage,
+per-hour lane bounds, status-independent authority checks, measurement replay, byte-identity, or
+source/reopen parity. For compression, `scripts/bench_real_dynamics.py` hardcodes the d20 arm
+name; use `scripts/compress_arms.py <out_dir> <ship_arm_basename> [hours_per_span]` instead.
+
+**Where the library half is not admitted to reuse a shipping codec, any duplication is
+machine-checked, never trusted (d67, d70).** A domain whose row grammar lives in a codec not
+named by the production-codec allow-list is transcribed by hand into `dNN.rs` — d67's DMI2
+(`compact_contract/src/dynamic_modifiers.rs`) and d70's SCH1
 (`compact_contract/src/naval_history.rs`) are the first two. Three checks hold the copy to
 the original: the harness dual-decodes **every** real capture record with both decoders and
 requires identical frames — header scalars, authority, ordering and every row, ordinal
@@ -1001,10 +1015,12 @@ go quiet about it.**
 `compact_contract`, which measurement bins may depend on. d46's row grammar, its payload
 authority and the whole `ACE1` codec live in `lanes/air_wings_variants_lifecycle_live`, d54's
 codec in `lanes/army_battleplans_depth_live`, and d56 is in the same position — and
-`wire_format`'s library half may depend on itself only, its bins on `compact_contract` and
-nothing else. There is no second decoder to call, so the dual-decode and the per-constant
-equality checks are unavailable; say so in the module docs and in your open questions, and
-compensate with the **weaker empirical stand-in**, labelled as weaker: assert every constant that
+`wire_format`'s library half may depend only on itself and the explicitly admitted
+`compact_contract` production-codec surface, while its bins may use `compact_contract`; neither
+half may depend on a capture-lane crate. There is no second decoder to call, so the dual-decode
+and the per-constant equality checks are unavailable; say so in the module docs and in your open
+questions, and compensate with the **weaker empirical stand-in**, labelled as weaker: assert
+every constant that
 IS reachable (d54 asserts `STATUS_DELTA_DATA` against `compact_contract`'s, the tolerance-table
 entry, and the fold's hand-written failure mask against the shared predicate over the whole
 14-bit status space), and make **every real record reproduce its own payload length from the

@@ -171,6 +171,10 @@ const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
 /// single swapped word makes (count, flag) inseparable.
 static ORIGIN_PACKED: [AtomicU64; STATUS_ORIGIN_ID_COUNT] = [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
 static ORIGIN_SAMPLES: [AtomicU64; STATUS_ORIGIN_ID_COUNT] = [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
+static ORIGIN_SAMPLE_GENERATIONS: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
+    [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
+static ACTIVE_FRAME_RESERVATION: AtomicU64 = AtomicU64::new(0);
+static NEXT_FRAME_RESERVATION: AtomicU64 = AtomicU64::new(1);
 
 const SAMPLE_FLAG: u64 = 1 << 63;
 const COUNT_MASK: u64 = SAMPLE_FLAG - 1;
@@ -195,6 +199,7 @@ pub fn record_status_origin_sample(id: usize, sample: u64) {
         return;
     }
     ORIGIN_SAMPLES[id].store(sample, Ordering::Relaxed);
+    ORIGIN_SAMPLE_GENERATIONS[id].fetch_add(1, Ordering::Relaxed);
     // CAS loop: increment the count AND set the flag in one atomic word.
     let mut current = ORIGIN_PACKED[id].load(Ordering::Relaxed);
     loop {
@@ -211,22 +216,138 @@ pub fn record_status_origin_sample(id: usize, sample: u64) {
     }
 }
 
+/// Immutable frame-scoped view of status-origin introductions. The represented
+/// counter prefix remains live until authoritative frame publication commits
+/// the reservation.
+#[derive(Debug)]
+pub struct StatusOriginFrameReservation {
+    reservation_id: u64,
+    snapshot: [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT],
+    sample_generations: [u64; STATUS_ORIGIN_ID_COUNT],
+    active: bool,
+}
+
+impl StatusOriginFrameReservation {
+    pub fn snapshot(&self) -> &[(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT] {
+        &self.snapshot
+    }
+
+    /// Consume only the snapshotted counter prefix. Introductions recorded
+    /// after the snapshot remain queued. A post-snapshot sampled introduction
+    /// retains the packed sample flag for that next frame.
+    pub fn commit(mut self) -> Result<(), String> {
+        ensure_active_reservation(self.reservation_id)?;
+        for (id, (reserved, _)) in self.snapshot.iter().copied().enumerate() {
+            let current = ORIGIN_PACKED[id].load(Ordering::Acquire) & COUNT_MASK;
+            if current < reserved {
+                return Err(format!(
+                    "status-origin reservation {} counter {} regressed from {} to {}",
+                    self.reservation_id, id, reserved, current
+                ));
+            }
+        }
+        for (id, (reserved, _)) in self.snapshot.iter().copied().enumerate() {
+            let reserved_generation = self.sample_generations[id];
+            let mut current = ORIGIN_PACKED[id].load(Ordering::Acquire);
+            loop {
+                let current_count = current & COUNT_MASK;
+                let remaining_count = current_count - reserved;
+                let current_generation = ORIGIN_SAMPLE_GENERATIONS[id].load(Ordering::Acquire);
+                let keep_sample = remaining_count != 0 && current_generation != reserved_generation;
+                let next = remaining_count | if keep_sample { SAMPLE_FLAG } else { 0 };
+                match ORIGIN_PACKED[id].compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => current = observed,
+                }
+            }
+        }
+        release_active_reservation(self.reservation_id)?;
+        self.active = false;
+        Ok(())
+    }
+
+    pub fn rollback(mut self) -> Result<(), String> {
+        release_active_reservation(self.reservation_id)?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for StatusOriginFrameReservation {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = release_active_reservation(self.reservation_id);
+            self.active = false;
+        }
+    }
+}
+
+fn ensure_active_reservation(reservation_id: u64) -> Result<(), String> {
+    let active = ACTIVE_FRAME_RESERVATION.load(Ordering::Acquire);
+    if active != reservation_id {
+        return Err(format!(
+            "status-origin reservation mismatch: active {}, requested {}",
+            active, reservation_id
+        ));
+    }
+    Ok(())
+}
+
+fn release_active_reservation(reservation_id: u64) -> Result<(), String> {
+    ACTIVE_FRAME_RESERVATION
+        .compare_exchange(reservation_id, 0, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|active| {
+            format!(
+                "status-origin reservation release mismatch: active {}, requested {}",
+                active, reservation_id
+            )
+        })
+}
+
+/// Reserve the current status-origin prefix without resetting any counter.
+pub fn reserve_frame_origins() -> Result<StatusOriginFrameReservation, String> {
+    let reservation_id = NEXT_FRAME_RESERVATION.fetch_add(1, Ordering::Relaxed);
+    if reservation_id == 0 {
+        return Err("status-origin reservation id wrapped".into());
+    }
+    ACTIVE_FRAME_RESERVATION
+        .compare_exchange(0, reservation_id, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|active| format!("status-origin frame reservation already active: {}", active))?;
+    let mut snapshot = [(0u64, None); STATUS_ORIGIN_ID_COUNT];
+    let mut sample_generations = [0u64; STATUS_ORIGIN_ID_COUNT];
+    for (id, slot) in snapshot.iter_mut().enumerate() {
+        let packed = ORIGIN_PACKED[id].load(Ordering::Acquire);
+        let generation = ORIGIN_SAMPLE_GENERATIONS[id].load(Ordering::Relaxed);
+        let sample =
+            (packed & SAMPLE_FLAG != 0).then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
+        *slot = (packed & COUNT_MASK, sample);
+        sample_generations[id] = generation;
+    }
+    Ok(StatusOriginFrameReservation {
+        reservation_id,
+        snapshot,
+        sample_generations,
+        active: true,
+    })
+}
+
 /// Drain this frame's introductions: per id, (count since last drain,
 /// Some(sample) if a sample was recorded since last drain). Index-aligned
 /// with [`STATUS_ORIGIN_UNITS`]. Counts and the sample-set flag reset on
 /// drain; a racing record lands in the next frame's drain (never lost).
 pub fn drain_frame_origins() -> [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT] {
-    let mut out = [(0u64, None); STATUS_ORIGIN_ID_COUNT];
-    for (id, slot) in out.iter_mut().enumerate() {
-        // Acquire pairs with the Release publishes in the record fns: a
-        // flagged count's sample store is visible below. Swapping ONE word
-        // keeps the count and its sample-flag inseparable.
-        let packed = ORIGIN_PACKED[id].swap(0, Ordering::Acquire);
-        let count = packed & COUNT_MASK;
-        let sample =
-            (packed & SAMPLE_FLAG != 0).then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
-        *slot = (count, sample);
-    }
+    let reservation =
+        reserve_frame_origins().expect("status-origin compatibility drain reservation");
+    let out = *reservation.snapshot();
+    reservation
+        .commit()
+        .expect("status-origin compatibility drain commit");
     out
 }
 
@@ -254,6 +375,29 @@ mod tests {
         let drained = drain_frame_origins()[id];
         assert_eq!(drained, (2, None));
         assert_eq!(drain_frame_origins()[id], (0, None));
+    }
+
+    #[test]
+    fn frame_reservation_rolls_back_or_commits_only_its_prefix() {
+        let _guard = lock_registry();
+        drain_frame_origins();
+        let id = SO_D65_PARTIAL_WALK_FAILURE;
+        record_status_origin_sample(id, 0x100);
+        let rolled_back = reserve_frame_origins().unwrap();
+        assert_eq!(rolled_back.snapshot()[id], (1, Some(0x100)));
+        record_status_origin_sample(id, 0x200);
+        rolled_back.rollback().unwrap();
+        assert_eq!(drain_frame_origins()[id], (2, Some(0x200)));
+
+        record_status_origin_sample(id, 0x300);
+        let committed = reserve_frame_origins().unwrap();
+        record_status_origin_sample(id, 0x400);
+        committed.commit().unwrap();
+        assert_eq!(
+            drain_frame_origins()[id],
+            (1, Some(0x400)),
+            "post-reservation sampled introductions must remain queued"
+        );
     }
 
     #[test]
@@ -423,10 +567,7 @@ mod tests {
                 SO_D48_LANE_SKIPPED_RESOURCE_ROWS,
                 "so_d48_lane_skipped_resource_rows",
             ),
-            (
-                SO_D65_PARTIAL_WALK_FAILURE,
-                "so_d65_partial_walk_failure",
-            ),
+            (SO_D65_PARTIAL_WALK_FAILURE, "so_d65_partial_walk_failure"),
         ];
         for (id, name) in expected {
             assert_eq!(

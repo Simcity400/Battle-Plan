@@ -17,9 +17,11 @@ pub mod a729_runtime;
 pub const DOMAIN_ID: u16 = 75;
 pub const DOMAIN_NAME: &str = "fired_event_popups_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
-/// v2 replaces the ambiguous singular runtime-text join with independently
-/// authenticated title, description, and definition-ordinal option joins.
-pub const SCHEMA_VERSION: u32 = 2;
+/// v3 retains the independently authenticated runtime-text joins from v2 and
+/// makes semantic-only production explicit: completeness requires the three
+/// semantic hooks, while the legacy materialisation bit remains a literal UI
+/// hook observation and is false in canonical capture.
+pub const SCHEMA_VERSION: u32 = 3;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
 pub const MAX_OPTIONS: usize = 65_536;
@@ -93,6 +95,10 @@ pub struct FiredEventRow {
 pub struct HookTelemetry {
     pub fire_hook_validated: bool,
     pub option_hook_validated: bool,
+    /// Literal observation of the popup-materialisation/UI hook. This remains
+    /// false in production because the semantic-only roster does not install
+    /// or validate that UI detour. It may be true only in the explicitly
+    /// unshipped full-evidence profile.
     pub materialisation_hook_validated: bool,
     pub timeout_hook_validated: bool,
     /// Wire-compatible name for exact-build popup-class route certification.
@@ -115,7 +121,6 @@ impl HookTelemetry {
     pub fn zero_gap(&self) -> bool {
         self.fire_hook_validated
             && self.option_hook_validated
-            && self.materialisation_hook_validated
             && self.timeout_hook_validated
             && self.all_event_classes_covered
             && self.player_ai_timeout_no_choice_covered
@@ -232,13 +237,15 @@ impl A729EventLedger {
         }
     }
 
-    /// Marks only the facts proved by successful installation of the complete
-    /// pinned hook set. Coverage and baseline are separate witnesses.
-    pub(crate) fn record_installation_validation(&self) {
+    /// Marks the facts proved by successful atomic installation of the pinned
+    /// hook roster. `materialisation_hook_installed` is literal: canonical
+    /// semantic-only production passes false, while the explicitly unshipped
+    /// nine-site evidence profile passes true.
+    pub(crate) fn record_installation_validation(&self, materialisation_hook_installed: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.fire_hook_validated = true;
             state.telemetry.option_hook_validated = true;
-            state.telemetry.materialisation_hook_validated = true;
+            state.telemetry.materialisation_hook_validated = materialisation_hook_installed;
             state.telemetry.timeout_hook_validated = true;
         }
     }
@@ -272,7 +279,7 @@ impl A729EventLedger {
         all_classes: bool,
         all_resolution_paths: bool,
     ) {
-        self.record_installation_validation();
+        self.record_installation_validation(false);
         self.record_baseline_complete(baseline_complete);
         self.record_route_certification(all_classes, all_resolution_paths);
     }
@@ -931,6 +938,23 @@ mod tests {
         assert_eq!(decode_payload(&b).unwrap(), f);
         assert_eq!(encode_payload(&decode_payload(&b).unwrap()).unwrap(), b)
     }
+
+    #[test]
+    fn semantic_only_production_is_complete_without_materialisation_hook() {
+        let mut production = telemetry();
+        production.materialisation_hook_validated = false;
+        assert!(
+            production.zero_gap(),
+            "UI materialisation is not part of the production semantic roster"
+        );
+
+        let ledger = A729EventLedger::new(8);
+        ledger.authenticate_installation_and_route_certification(true, true, true);
+        let (telemetry, _) = ledger.snapshot_rows(0, 0).unwrap();
+        assert!(telemetry.zero_gap());
+        assert!(!telemetry.materialisation_hook_validated);
+    }
+
     #[test]
     fn fail_closed_on_gap_or_bad_choice() {
         let mut t = telemetry();

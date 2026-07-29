@@ -824,9 +824,9 @@ impl MapDetailState {
 /// `delta_update` is `status_flags & COMPACT_STATUS_DELTA_DATA != 0`
 /// (`world_fold.rs:22348`). The caller supplies it rather than this function
 /// reading the bit itself, because that constant belongs to `compact_contract`
-/// and `wire_format`'s library half deliberately does not depend on that crate;
-/// copying the literal here is exactly the drift the shared-contract rule
-/// forbids. A **failure-status** record folds nothing at all
+/// and d23 is not admitted to the production-codec dependency surface; copying
+/// the literal here is exactly the drift the shared-contract rule forbids. A
+/// **failure-status** record folds nothing at all
 /// (`:22340`-`:22347`) and a delta before any baseline folds nothing
 /// (`:22349`-`:22354`); both are the caller's to exclude before calling this.
 ///

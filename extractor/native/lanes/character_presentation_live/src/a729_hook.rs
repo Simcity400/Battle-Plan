@@ -13,10 +13,18 @@ use crate::{
 use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
+use production_hook_receipt::{
+    next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
+    HookPatchPlacement, HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    A729_EXE_SHA256, BATTLE_PLAN_MODULE_NAME, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+};
 use runtime_text_inputs_live_lane::a729_hook::{
-    install_a729_runtime_text_hooks, pin_observed_textbox_context,
-    register_post_setter_observer, register_pre_setter_observer,
-    register_sprite_setter_observer,
+    pin_observed_textbox_context, register_post_setter_observer, register_pre_setter_observer,
+    register_sprite_setter_observer, unregister_post_setter_observer,
+    unregister_pre_setter_observer, unregister_sprite_setter_observer,
+};
+use runtime_text_inputs_live_lane::{
+    TEXTBOX_DESTRUCTOR_RVA, TEXTBOX_REGISTRATION_RVA, TEXT_SETTER_RVA,
 };
 use std::collections::BTreeMap;
 use std::mem;
@@ -44,10 +52,14 @@ pub const TRAIT_TOOLTIP_FORMATTER_RVA: u32 = 0x01CF_F880;
 // The complete hashes and closed historical job identities are recorded in
 // H_A39_PREREQUISITE_ENGINEERING_20260720.md.
 
-/// Production activation for the exact-build passive trait/ace observer.
-/// Installation, callback identity, queue custody, and each emitted carrier
-/// remain fail-closed; mixed fixtures are optional regression evidence.
-pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = true;
+/// The current eight-site owner (four local D82 hooks plus four shared A25
+/// runtime-text hooks) is UI-conditional. It is not an unconditional
+/// simulation source and therefore is not promotable for passive production.
+/// A future re-sourced owner must explicitly replace this authority gate; the
+/// receipt/custody seams below remain fail-closed in the meantime.
+pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = false;
+pub const CURRENT_EIGHT_SITE_UI_OWNER_PROMOTABLE: bool = false;
+pub const SHARED_RUNTIME_TYPED_OWNER_CUSTODY_AUTHORIZED: bool = false;
 
 const TRAIT_REFRESH_SENTINEL: [u8; 18] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x30, 0x49,
@@ -62,9 +74,50 @@ const ACE_ROW_BIND_SENTINEL: [u8; 17] = [
     0x54,
 ];
 const TRAIT_TOOLTIP_FORMATTER_SENTINEL: [u8; 24] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
-    0x57, 0x48, 0x8d, 0xac, 0x24, 0x30, 0xf8, 0xff, 0xff,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+    0x48, 0x8d, 0xac, 0x24, 0x30, 0xf8, 0xff, 0xff,
 ];
+const SPRITE_SET_SENTINEL: [u8; 20] = [
+    0x48, 0x85, 0xc9, 0x0f, 0x84, 0x47, 0x01, 0x00, 0x00, 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89,
+    0x74, 0x24, 0x20, 0x57,
+];
+const LOCAL_PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; 4] = [
+    ExpectedRvaHook {
+        logical_name: "presentation.d82.trait_refresh",
+        requested_rva: TRAIT_REFRESH_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &TRAIT_REFRESH_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "presentation.d82.ace_refresh",
+        requested_rva: ACE_REFRESH_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &ACE_REFRESH_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "presentation.d82.ace_row_bind",
+        requested_rva: ACE_ROW_BIND_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &ACE_ROW_BIND_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "presentation.d82.trait_tooltip_formatter",
+        requested_rva: TRAIT_TOOLTIP_FORMATTER_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &TRAIT_TOOLTIP_FORMATTER_SENTINEL,
+    },
+];
+const SHARED_SPRITE_PRODUCTION_HOOK_SPEC: ExpectedRvaHook = ExpectedRvaHook {
+    logical_name: "presentation.d82.sprite_set",
+    requested_rva: SPRITE_SET_RVA as u64,
+    target_patch_len: 5,
+    primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    original_prefix: &SPRITE_SET_SENTINEL,
+};
 const MAX_ACE_BINDS_PER_REFRESH: usize = 4_096;
 const TRAIT_SELECTED_LEADER_REFERENCE: usize = 0x78;
 const ACE_OBJECT_ID: usize = 0x0c;
@@ -106,6 +159,7 @@ static ORIGINAL_ACE_ROW_BIND: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_TRAIT_TOOLTIP_FORMATTER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static NEXT_COMPONENT_RESERVATION_ID: AtomicU64 = AtomicU64::new(1);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static HOOK_SET_PRESENT: AtomicBool = AtomicBool::new(false);
 static LIFECYCLE_HEALTHY: AtomicBool = AtomicBool::new(false);
@@ -114,9 +168,16 @@ static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static HEALTH_EPOCH: AtomicU64 = AtomicU64::new(1);
 static COLLECTOR_GAME_HOUR_RAW: AtomicI32 = AtomicI32::new(i32::MIN);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
-static FIXTURE_DECODER: OnceLock<Mutex<Option<Arc<dyn ExactA729BoundaryDecoder>>>> = OnceLock::new();
+static FIXTURE_DECODER: OnceLock<Mutex<Option<Arc<dyn ExactA729BoundaryDecoder>>>> =
+    OnceLock::new();
 static COLLECTOR_DECODER: OnceLock<Arc<CollectorBoundaryDecoder>> = OnceLock::new();
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+static HOOK_RECEIPTS: OnceLock<Mutex<HookReceiptState>> = OnceLock::new();
+static PARTIAL_LOCAL_INSTALL_RECEIPTS: OnceLock<
+    Mutex<Vec<(ExpectedRvaHook, InstalledRvaHookReceipt)>>,
+> = OnceLock::new();
+static PARTIAL_LOCAL_RELEASE_RECEIPTS: OnceLock<Mutex<Vec<ReleasedRvaHookReceipt>>> =
+    OnceLock::new();
 
 thread_local! {
     static ACTIVE_CALLBACKS: Cell<u8> = const { Cell::new(0) };
@@ -259,6 +320,45 @@ struct HookState {
     /// uninstall/reinstall; a success from the other component cannot revive
     /// stale evidence.
     current_error: Option<String>,
+    component_reservation: Option<ComponentPairReservationState>,
+}
+
+#[derive(Default)]
+struct HookReceiptState {
+    installed_local: Option<[InstalledRvaHookReceipt; 4]>,
+    installed_shared_runtime: Option<[InstalledRvaHookReceipt; 4]>,
+    released_local_progress: [Option<ReleasedRvaHookReceipt>; 4],
+    released_local: Option<[ReleasedRvaHookReceipt; 4]>,
+    released_shared_sprite: Option<ReleasedRvaHookReceipt>,
+}
+
+struct SharedRuntimeObserverGuard {
+    armed: bool,
+}
+
+impl SharedRuntimeObserverGuard {
+    fn begin(module_base: usize) -> Result<Self, String> {
+        if shared_runtime_targets_are_original(module_base)? {
+            return Err("A39 requires the registry-owned shared-runtime lease first".into());
+        }
+        // D82 never installs or removes the shared set. The registry/evidence
+        // harness must hold the complete A25 four-site lease throughout this
+        // observer registration.
+        Ok(Self { armed: true })
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SharedRuntimeObserverGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        unregister_a39_shared_observers();
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -428,7 +528,9 @@ pub fn decode_trait_rows_with_catalog(
     let &(owner_tag_db_id, unit_leader_id) = catalog
         .leaders_by_address
         .get(&boundary.selected_leader_ptr)
-        .ok_or_else(|| "A39 selected leader address is absent from exact d47 registry".to_string())?;
+        .ok_or_else(|| {
+            "A39 selected leader address is absent from exact d47 registry".to_string()
+        })?;
     if owner_tag_db_id == 0 || unit_leader_id == 0 {
         return Err("A39 d47 leader registry carried a zero identity".into());
     }
@@ -528,10 +630,10 @@ fn decode_ace_context_with_catalog(
 ) -> Result<AceListContext, String> {
     match context {
         ProcessLocalAceListContext::SelectedWing { wing_ptr } => {
-            let &(owner_tag_db_id, wing_id) = catalog
-                .wings_by_address
-                .get(wing_ptr)
-                .ok_or_else(|| "A39 selected wing is absent from exact air-wing registry".to_string())?;
+            let &(owner_tag_db_id, wing_id) =
+                catalog.wings_by_address.get(wing_ptr).ok_or_else(|| {
+                    "A39 selected wing is absent from exact air-wing registry".to_string()
+                })?;
             if owner_tag_db_id == 0 || wing_id == 0 {
                 return Err("A39 selected-wing registry carried a zero identity".into());
             }
@@ -541,7 +643,9 @@ fn decode_ace_context_with_catalog(
             })
         }
         ProcessLocalAceListContext::PlaneTypeMask { mask_raw } if *mask_raw != 0 => {
-            Ok(AceListContext::PlaneTypeMask { mask_raw: *mask_raw })
+            Ok(AceListContext::PlaneTypeMask {
+                mask_raw: *mask_raw,
+            })
         }
         ProcessLocalAceListContext::PlaneTypeMask { .. } => {
             Err("A39 plane-type context mask is zero".into())
@@ -645,9 +749,13 @@ fn validate_identity_catalog(catalog: &ProcessLocalIdentityCatalog) -> Result<()
     {
         return Err("A39 collector catalog contains an invalid leader identity".into());
     }
-    if catalog.trait_tokens_by_definition.iter().any(|(address, token)| {
-        *address == 0 || token.trim().is_empty() || token.len() > MAX_TOKEN_BYTES
-    }) {
+    if catalog
+        .trait_tokens_by_definition
+        .iter()
+        .any(|(address, token)| {
+            *address == 0 || token.trim().is_empty() || token.len() > MAX_TOKEN_BYTES
+        })
+    {
         return Err("A39 collector catalog contains an invalid trait identity".into());
     }
     if catalog
@@ -714,7 +822,10 @@ impl ExactA729BoundaryDecoder for CatalogBoundaryDecoder {
         boundary: &ProcessLocalAceRefresh,
     ) -> Result<(AceListContext, Vec<AcePortraitObservation>), String> {
         let context = decode_ace_context_with_catalog(&boundary.context, &self.catalog)?;
-        Ok((context, decode_ace_rows_with_catalog(boundary, &self.catalog)?))
+        Ok((
+            context,
+            decode_ace_rows_with_catalog(boundary, &self.catalog)?,
+        ))
     }
 }
 
@@ -735,96 +846,32 @@ impl A729ObservedCharacterPresentationSource {
     /// Harness-only candidate decode used to generate the missing mixed
     /// fixtures. This never changes the source authentication result.
     pub fn decode_fixture_candidate(&self) -> Result<CharacterPresentationSnapshot, String> {
-        let (trait_component, ace_component) = drain_decoded_component_pair()?;
-        if trait_component.observed_game_hour_raw != ace_component.observed_game_hour_raw
-            || trait_component.observed_game_hour_raw != self.expected_game_hour_raw
-        {
-            return Err("A39 fixture components do not share the requested game hour".into());
-        }
-        let shared_epoch = match (
-            trait_component.identity_catalog_epoch,
-            ace_component.identity_catalog_epoch,
-        ) {
-            (Some(trait_epoch), Some(ace_epoch)) if trait_epoch == ace_epoch => trait_epoch,
-            _ => {
-                return Err(
-                    "A39 fixture components do not share one collector catalog epoch".into(),
-                )
-            }
-        };
-        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
-            return Err(
-                "A39 fixture components are stale for the collector catalog epoch".into(),
-            );
-        }
-        let snapshot = CharacterPresentationSnapshot {
-            source_sequence: trait_component.sequence.max(ace_component.sequence),
-            trait_trees: trait_component.rows,
-            ace_context: ace_component.context,
-            ace_portraits: ace_component.rows,
-        };
-        validate_decoded_snapshot(&snapshot)?;
-        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
-            return Err("A39 collector catalog changed while reading the fixture batch".into());
-        }
+        let reservation = peek_character_presentation_candidate(self.expected_game_hour_raw)?
+            .ok_or("A39 decoded trait/ace component pair is incomplete")?;
+        let snapshot = reservation.snapshot.clone();
+        commit_character_presentation_candidate(reservation.reservation_id)?;
         Ok(snapshot)
     }
 }
 
 impl ExactCharacterPresentationSource for A729ObservedCharacterPresentationSource {
     fn is_exact_a729_character_presentation_source(&self) -> bool {
-        production_source_ready()
+        // The legacy trait cannot carry a publication reservation across its
+        // caller's encode/stage boundary. Production must use the explicit
+        // peek/commit/rollback API below.
+        false
     }
 
     fn read_character_presentation(&self) -> Result<CharacterPresentationSnapshot, String> {
-        if !production_source_ready() {
-            return Err(
-                "A39 exact-a729 live source is reserved or lacks its sealed collector decoder"
-                    .into()
-            );
-        }
-        let (trait_component, ace_component) = drain_decoded_component_pair()?;
-        if trait_component.observed_game_hour_raw != self.expected_game_hour_raw
-            || ace_component.observed_game_hour_raw != self.expected_game_hour_raw
-        {
-            return Err("A39 UI observations are stale or cross-hour for this collector frame".into());
-        }
-        let shared_epoch = match (
-            trait_component.identity_catalog_epoch,
-            ace_component.identity_catalog_epoch,
-        ) {
-            (Some(trait_epoch), Some(ace_epoch)) if trait_epoch == ace_epoch => trait_epoch,
-            _ => {
-                return Err(
-                    "A39 production trait/ace components do not share one collector catalog epoch"
-                        .into(),
-                )
-            }
-        };
-        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
-            return Err(
-                "A39 production trait/ace components are stale for the collector catalog epoch"
-                    .into(),
-            );
-        }
-        let snapshot = CharacterPresentationSnapshot {
-            source_sequence: trait_component.sequence.max(ace_component.sequence),
-            trait_trees: trait_component.rows,
-            ace_context: ace_component.context,
-            ace_portraits: ace_component.rows,
-        };
-        validate_decoded_snapshot(&snapshot)?;
-        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
-            return Err("A39 collector catalog changed while reading the production batch".into());
-        }
-        Ok(snapshot)
+        Err("A39 production requires transactional peek/commit/rollback publication custody".into())
     }
 }
 
-fn production_source_ready() -> bool {
+pub fn production_transaction_ready() -> bool {
     if !PRODUCTION_ACTIVATION_AUTHORIZED
         || !INSTALLED.load(Ordering::Acquire)
         || !LIFECYCLE_HEALTHY.load(Ordering::Acquire)
+        || installed_hook_receipts().is_err()
     {
         return false;
     }
@@ -871,7 +918,95 @@ pub fn install() -> Result<InstalledAddresses, String> {
         );
     }
     register_decoder(collector_boundary_decoder())?;
-    install_hook_set()
+    install_hook_set(true)
+}
+
+#[derive(Clone, Debug)]
+struct ComponentPairReservationState {
+    reservation_id: u64,
+    active: bool,
+    trait_component: DecodedTraitComponent,
+    ace_component: DecodedAceComponent,
+}
+
+impl HookState {
+    fn reserve_component_pair(
+        &mut self,
+        reservation_id: u64,
+    ) -> Result<Option<(u64, DecodedTraitComponent, DecodedAceComponent)>, String> {
+        if let Some(reservation) = self.component_reservation.as_mut() {
+            if reservation.active {
+                return Err(format!(
+                    "A39 component reservation {} is already active",
+                    reservation.reservation_id
+                ));
+            }
+            reservation.active = true;
+            return Ok(Some((
+                reservation.reservation_id,
+                reservation.trait_component.clone(),
+                reservation.ace_component.clone(),
+            )));
+        }
+        if self.latest_trait_component.is_none() || self.latest_ace_component.is_none() {
+            return Ok(None);
+        }
+        let trait_component = self.latest_trait_component.take().unwrap();
+        let ace_component = self.latest_ace_component.take().unwrap();
+        if reservation_id == 0 || reservation_id == u64::MAX {
+            self.latest_trait_component = Some(trait_component);
+            self.latest_ace_component = Some(ace_component);
+            return Err("A39 component reservation id space exhausted".into());
+        }
+        self.component_reservation = Some(ComponentPairReservationState {
+            reservation_id,
+            active: true,
+            trait_component: trait_component.clone(),
+            ace_component: ace_component.clone(),
+        });
+        Ok(Some((reservation_id, trait_component, ace_component)))
+    }
+
+    fn commit_component_pair(&mut self, reservation_id: u64) -> Result<(), String> {
+        let reservation = self
+            .component_reservation
+            .as_ref()
+            .ok_or_else(|| format!("A39 has no active component reservation {reservation_id}"))?;
+        if reservation.reservation_id != reservation_id || !reservation.active {
+            return Err(format!(
+                "A39 component reservation mismatch: active={} requested={reservation_id}",
+                reservation.reservation_id
+            ));
+        }
+        self.component_reservation = None;
+        Ok(())
+    }
+
+    fn rollback_component_pair(&mut self, reservation_id: u64) -> Result<(), String> {
+        let reservation = self
+            .component_reservation
+            .as_mut()
+            .ok_or_else(|| format!("A39 has no active component reservation {reservation_id}"))?;
+        if reservation.reservation_id != reservation_id || !reservation.active {
+            return Err(format!(
+                "A39 component reservation mismatch: active={} requested={reservation_id}",
+                reservation.reservation_id
+            ));
+        }
+        reservation.active = false;
+        Ok(())
+    }
+}
+
+/// Pointer-free D82 candidate held under a bounded single reservation.
+///
+/// The caller may encode and stage this snapshot without removing the source
+/// pair. It must commit only after successful publication, or roll back on any
+/// failure so the same pair remains first in order ahead of newer callbacks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CharacterPresentationCandidateReservation {
+    pub reservation_id: u64,
+    pub snapshot: CharacterPresentationSnapshot,
 }
 
 /// Explicit harness-only entry point for collecting the receipts and mixed
@@ -882,7 +1017,7 @@ pub fn install_for_fixture_capture(
     decoder: Arc<dyn ExactA729BoundaryDecoder>,
 ) -> Result<InstalledAddresses, String> {
     register_decoder(decoder)?;
-    let result = install_hook_set();
+    let result = install_hook_set(false);
     if result.is_err() && !HOOK_SET_PRESENT.load(Ordering::Acquire) {
         if let Some(slot) = FIXTURE_DECODER.get() {
             if let Ok(mut slot) = slot.lock() {
@@ -910,7 +1045,7 @@ fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), St
     Ok(())
 }
 
-fn install_hook_set() -> Result<InstalledAddresses, String> {
+fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, String> {
     let _install_guard = INSTALL_LOCK
         .lock()
         .map_err(|_| "A39 install mutex poisoned")?;
@@ -919,7 +1054,15 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
         && MODULE_BASE.load(Ordering::Acquire) != 0
         && originals_ready()
     {
-        return Ok(addresses(MODULE_BASE.load(Ordering::Acquire)));
+        let resolved = addresses(MODULE_BASE.load(Ordering::Acquire));
+        if production_receipts {
+            if local_installed_hook_receipts_available() {
+                reobserve_local_install_receipts(resolved)?;
+            } else {
+                observe_install_receipts(resolved)?;
+            }
+        }
+        return Ok(resolved);
     }
     if HOOK_SET_PRESENT.load(Ordering::Acquire) {
         return Err(
@@ -933,6 +1076,9 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
         .is_none()
     {
         return Err("A39 fixture decoder is not registered".into());
+    }
+    if production_receipts {
+        ensure_receipt_install_admissible()?;
     }
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
@@ -963,8 +1109,7 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
     ] {
         verify_sentinel(address, sentinel, label)?;
     }
-    install_a729_runtime_text_hooks()
-        .map_err(|error| format!("A39 shared A25 text-hook install failed: {error}"))?;
+    let mut shared_runtime_guard = SharedRuntimeObserverGuard::begin(base)?;
     register_pre_setter_observer(a39_pre_text_setter_observer)
         .map_err(|error| format!("A39 shared A25 pre-setter observer failed: {error}"))?;
     register_post_setter_observer(a39_post_text_setter_observer)
@@ -1011,9 +1156,9 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
                     clear_removed_hook_set();
                 }
                 return Err(match rollback.error {
-                    Some(rollback_error) => format!(
-                        "A39 {target:#x} hook creation failed: {status}; rollback anomaly: {rollback_error}"
-                    ),
+                    Some(rollback_error) => {
+                        format!("A39 {target:#x} hook creation failed: {status}; rollback anomaly: {rollback_error}")
+                    }
                     None => format!("A39 {target:#x} hook creation failed: {status}"),
                 });
             }
@@ -1028,10 +1173,37 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
                 clear_removed_hook_set();
             }
             return Err(match rollback.error {
-                Some(rollback_error) => format!(
-                    "A39 {target:#x} hook enable failed: {status}; rollback anomaly: {rollback_error}"
-                ),
+                Some(rollback_error) => {
+                    format!("A39 {target:#x} hook enable failed: {status}; rollback anomaly: {rollback_error}")
+                }
                 None => format!("A39 {target:#x} hook enable failed: {status}"),
+            });
+        }
+    }
+    if production_receipts {
+        if let Err(error) = observe_install_receipts(resolved) {
+            TEARDOWN_ACTIVE.store(true, Ordering::Release);
+            HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+            let rollback = disable_and_remove(resolved);
+            let partial_release_error =
+                if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+                    release_partial_local_install_receipts().err()
+                } else {
+                    None
+                };
+            if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+                clear_removed_hook_set();
+            }
+            if let Some(partial_release_error) = partial_release_error {
+                return Err(format!(
+                    "A39 exact installed-hook receipt failed: {error}; partial receipt rollback failed: {partial_release_error}"
+                ));
+            }
+            return Err(match rollback.error {
+                Some(rollback_error) => {
+                    format!("A39 exact installed-hook receipt failed: {error}; rollback anomaly: {rollback_error}")
+                }
+                None => format!("A39 exact installed-hook receipt failed: {error}"),
             });
         }
     }
@@ -1039,6 +1211,7 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
     HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
     INSTALLED.store(true, Ordering::Release);
     LIFECYCLE_HEALTHY.store(true, Ordering::Release);
+    shared_runtime_guard.disarm();
     Ok(resolved)
 }
 
@@ -1047,16 +1220,42 @@ pub fn uninstall() -> Result<(), String> {
         .lock()
         .map_err(|_| "A39 install mutex poisoned")?;
     if !HOOK_SET_PRESENT.load(Ordering::Acquire) {
+        // Hook restoration may have succeeded while receipt observation
+        // failed. Preserve retryable custody instead of silently converting
+        // that failure into success on the next teardown call.
+        observe_local_release_receipts_if_owned()?;
+        release_partial_local_install_receipts()?;
         return Ok(());
     }
     let resolved = addresses(MODULE_BASE.load(Ordering::Acquire));
+    // Close admission before inspecting reservation custody. A reserving
+    // caller rechecks these gates while holding STATE, so it cannot enter
+    // after this transition.
     TEARDOWN_ACTIVE.store(true, Ordering::Release);
     INSTALLED.store(false, Ordering::Release);
     LIFECYCLE_HEALTHY.store(false, Ordering::Release);
     HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+    if STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.component_reservation.as_ref().map(|_| true))
+        .unwrap_or(false)
+    {
+        return Err(
+            "A39 teardown refused while component publication custody is unresolved".into(),
+        );
+    }
     ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
+    unregister_a39_shared_observers();
     let removal = disable_and_remove(resolved);
     let in_flight = IN_FLIGHT_CALLBACKS.load(Ordering::Acquire);
+    let release_receipt_error = if removal.all_removed && in_flight == 0 {
+        observe_local_release_receipts_if_owned()
+            .and_then(|_| release_partial_local_install_receipts())
+            .err()
+    } else {
+        None
+    };
     if removal.all_removed && in_flight == 0 {
         clear_removed_hook_set();
         if let Some(state) = STATE.get() {
@@ -1068,6 +1267,11 @@ pub fn uninstall() -> Result<(), String> {
         // may have left a detour callable unless every remove succeeded.
         return Err(error);
     }
+    if let Some(error) = release_receipt_error {
+        return Err(format!(
+            "A39 local hooks were restored but exact release receipt failed: {error}"
+        ));
+    }
     if in_flight != 0 {
         return Err(format!(
             "A39 teardown has {in_flight} in-flight callback(s); retry uninstall after quiescence"
@@ -1075,6 +1279,248 @@ pub fn uninstall() -> Result<(), String> {
     }
     if !removal.all_removed {
         return Err("A39 hook removal was incomplete without a MinHook status".into());
+    }
+    Ok(())
+}
+
+/// Bind the shared owner's complete four-site installed receipt set and retain
+/// only D82's non-owning sprite observation. The shared owner has already
+/// authenticated each MinHook relay against its actual detour.
+pub fn bind_shared_runtime_installed_receipts(
+    shared_runtime_installed_receipts: &[InstalledRvaHookReceipt; 4],
+) -> Result<(), String> {
+    if !SHARED_RUNTIME_TYPED_OWNER_CUSTODY_AUTHORIZED {
+        return Err(
+            "D82 shared runtime owner custody is not implemented or promotion-authorized".into(),
+        );
+    }
+    validate_shared_runtime_install_custody(shared_runtime_installed_receipts)?;
+    let mut receipts = HOOK_RECEIPTS
+        .get_or_init(|| Mutex::new(HookReceiptState::default()))
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    if receipts.installed_local.is_none() || receipts.released_local.is_some() {
+        return Err("D82 shared runtime custody cannot bind before local install".into());
+    }
+    if receipts
+        .installed_shared_runtime
+        .is_some_and(|installed| installed != *shared_runtime_installed_receipts)
+    {
+        return Err("D82 shared runtime installed custody changed without release".into());
+    }
+    receipts.installed_shared_runtime = Some(*shared_runtime_installed_receipts);
+    receipts.released_shared_sprite = None;
+    Ok(())
+}
+
+/// Exact enabled receipts for D82's four locally owned hooks plus its
+/// non-owning observation of the shared A25 sprite-set hook.
+///
+/// This five-entry D82 observation is not the complete active-hook census:
+/// `install_a729_runtime_text_hooks` also owns registration, setter, and
+/// destructor detours. The fifth receipt does not transfer removal ownership
+/// to D82.
+pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 5], String> {
+    let receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D82 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    let local = receipts
+        .installed_local
+        .ok_or("D82 exact local installed-hook receipts are unavailable")?;
+    let shared = receipts
+        .installed_shared_runtime
+        .as_ref()
+        .and_then(|installed| {
+            installed
+                .iter()
+                .find(|receipt| receipt.observed_rva == SPRITE_SET_RVA as u64)
+        })
+        .copied()
+        .ok_or("D82 exact shared sprite installed-hook receipt is unavailable")?;
+    Ok([local[0], local[1], local[2], local[3], shared])
+}
+
+/// Observe the shared sprite target only after the A25 owner has uninstalled
+/// its complete hook set. This refuses to manufacture a complete D82 release
+/// while the shared target is still patched.
+pub fn finalize_shared_sprite_release_receipt(
+    shared_runtime_release_receipts: &[ReleasedRvaHookReceipt; 4],
+) -> Result<(), String> {
+    if !SHARED_RUNTIME_TYPED_OWNER_CUSTODY_AUTHORIZED {
+        return Err(
+            "D82 shared runtime owner custody is not implemented or promotion-authorized".into(),
+        );
+    }
+    validate_shared_runtime_release_custody(shared_runtime_release_receipts)?;
+    let receipts = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    if receipts.released_shared_sprite.is_some() {
+        return Ok(());
+    }
+    if receipts.installed_local.is_some() || receipts.released_local.is_none() {
+        return Err("D82 shared runtime release requires completed local teardown first".into());
+    }
+    let installed_shared_runtime = receipts
+        .installed_shared_runtime
+        .ok_or("D82 shared runtime installed-hook custody is unavailable")?;
+    for installed in installed_shared_runtime {
+        let released = shared_runtime_release_receipts
+            .iter()
+            .find(|receipt| {
+                receipt.observed_rva == installed.observed_rva
+                    && receipt.teardown_owner_token == installed.teardown_owner_token
+            })
+            .ok_or("D82 shared runtime release does not match installed custody")?;
+        if released.logical_name != installed.logical_name
+            || released.observed_module_name != installed.observed_module_name
+            || released.observed_module_sha256 != installed.observed_module_sha256
+            || released.observed_rva != installed.observed_rva
+            || released.observed_runtime_address != installed.observed_runtime_address
+            || released.target_patch_len != installed.target_patch_len
+            || released.primitive_id != installed.primitive_id
+        {
+            return Err(
+                "D82 shared runtime release identity changed from installed custody".into(),
+            );
+        }
+    }
+    let installed = installed_shared_runtime
+        .iter()
+        .find(|receipt| receipt.observed_rva == SPRITE_SET_RVA as u64)
+        .copied()
+        .ok_or("D82 shared runtime installed custody omitted sprite target")?;
+    let released = shared_runtime_release_receipts
+        .iter()
+        .find(|receipt| {
+            receipt.observed_rva == SPRITE_SET_RVA as u64
+                && receipt.teardown_owner_token == installed.teardown_owner_token
+        })
+        .copied()
+        .ok_or("D82 shared sprite release does not match installed shared-owner custody")?;
+    receipts.installed_shared_runtime = None;
+    receipts.released_shared_sprite = Some(released);
+    Ok(())
+}
+
+/// Consume D82's exact five-observation release set. It remains unavailable
+/// until D82's four local targets are restored and the shared owner supplies
+/// release custody for all four runtime-text targets. It is not a replacement
+/// for the shared owner's complete four-site release set.
+pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 5], String> {
+    let receipts = HOOK_RECEIPTS
+        .get()
+        .ok_or("D82 production hook receipts are not initialized")?;
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    let local = receipts
+        .released_local
+        .ok_or("D82 exact local released-hook receipts are unavailable")?;
+    let shared = receipts
+        .released_shared_sprite
+        .ok_or("D82 shared sprite release is still owned by runtime-text teardown")?;
+    receipts.released_local = None;
+    receipts.released_shared_sprite = None;
+    Ok([local[0], local[1], local[2], local[3], shared])
+}
+
+fn validate_shared_runtime_release_custody(
+    receipts: &[ReleasedRvaHookReceipt; 4],
+) -> Result<(), String> {
+    let mut observed = [
+        receipts[0].observed_rva,
+        receipts[1].observed_rva,
+        receipts[2].observed_rva,
+        receipts[3].observed_rva,
+    ];
+    observed.sort_unstable();
+    let mut expected = [
+        TEXTBOX_REGISTRATION_RVA as u64,
+        TEXT_SETTER_RVA as u64,
+        TEXTBOX_DESTRUCTOR_RVA as u64,
+        SPRITE_SET_RVA as u64,
+    ];
+    expected.sort_unstable();
+    let owner_tokens = [
+        receipts[0].teardown_owner_token,
+        receipts[1].teardown_owner_token,
+        receipts[2].teardown_owner_token,
+        receipts[3].teardown_owner_token,
+    ];
+    if observed != expected
+        || receipts.iter().any(|receipt| {
+            !receipt.released
+                || receipt.observed_module_name != BATTLE_PLAN_MODULE_NAME
+                || receipt.observed_module_sha256 != A729_EXE_SHA256
+                || receipt.target_patch_len != 5
+                || receipt.primitive_id != MINHOOK_NORMAL_REL5_PRIMITIVE_ID
+                || receipt.teardown_owner_token == 0
+                || receipt.observed_runtime_address == 0
+                || receipt.restored_prefix_sha256 == [0; 32]
+        })
+        || owner_tokens
+            .iter()
+            .enumerate()
+            .any(|(index, token)| owner_tokens[..index].contains(token))
+    {
+        return Err(
+            "D82 shared sprite release lacks complete exact A25 four-target custody".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_shared_runtime_install_custody(
+    receipts: &[InstalledRvaHookReceipt; 4],
+) -> Result<(), String> {
+    let mut observed = [
+        receipts[0].observed_rva,
+        receipts[1].observed_rva,
+        receipts[2].observed_rva,
+        receipts[3].observed_rva,
+    ];
+    observed.sort_unstable();
+    let mut expected = [
+        TEXTBOX_REGISTRATION_RVA as u64,
+        TEXT_SETTER_RVA as u64,
+        TEXTBOX_DESTRUCTOR_RVA as u64,
+        SPRITE_SET_RVA as u64,
+    ];
+    expected.sort_unstable();
+    let module_base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
+    let owner_tokens = [
+        receipts[0].teardown_owner_token,
+        receipts[1].teardown_owner_token,
+        receipts[2].teardown_owner_token,
+        receipts[3].teardown_owner_token,
+    ];
+    if observed != expected
+        || receipts.iter().any(|receipt| {
+            !receipt.enabled
+                || receipt.patch_above
+                || receipt.observed_module_name != BATTLE_PLAN_MODULE_NAME
+                || receipt.observed_module_sha256 != A729_EXE_SHA256
+                || receipt.target_patch_len != 5
+                || receipt.primitive_id != MINHOOK_NORMAL_REL5_PRIMITIVE_ID
+                || receipt.teardown_owner_token == 0
+                || receipt.requested_rva != receipt.observed_rva
+                || receipt.placement != HookPatchPlacement::NormalTarget
+                || receipt.observed_runtime_address
+                    != module_base.saturating_add(receipt.observed_rva as usize)
+        })
+        || module_base == 0
+        || owner_tokens
+            .iter()
+            .enumerate()
+            .any(|(index, token)| owner_tokens[..index].contains(token))
+    {
+        return Err(
+            "D82 shared sprite install lacks complete exact A25 four-target custody".into(),
+        );
     }
     Ok(())
 }
@@ -1126,8 +1572,17 @@ pub fn drain_decoded_trait_candidate() -> Result<(u64, Vec<TraitTreeObservation>
         .ok_or("A39 hook state is unavailable")?
         .lock()
         .map_err(|_| "A39 hook state poisoned")?;
+    if !INSTALLED.load(Ordering::Acquire)
+        || !LIFECYCLE_HEALTHY.load(Ordering::Acquire)
+        || TEARDOWN_ACTIVE.load(Ordering::Acquire)
+    {
+        return Err("A39 component reservation rejected during teardown".into());
+    }
     if let Some(error) = &state.current_error {
         return Err(error.clone());
+    }
+    if state.component_reservation.is_some() {
+        return Err("A39 trait drain is blocked by ordered pair reservation custody".into());
     }
     state
         .latest_trait_component
@@ -1149,6 +1604,9 @@ pub fn drain_decoded_ace_candidate() -> Result<(u64, Vec<AcePortraitObservation>
     if let Some(error) = &state.current_error {
         return Err(error.clone());
     }
+    if state.component_reservation.is_some() {
+        return Err("A39 ace drain is blocked by ordered pair reservation custody".into());
+    }
     state
         .latest_ace_component
         .take()
@@ -1156,7 +1614,55 @@ pub fn drain_decoded_ace_candidate() -> Result<(u64, Vec<AcePortraitObservation>
         .ok_or_else(|| "A39 has not decoded a complete ace refresh".into())
 }
 
-fn drain_decoded_component_pair() -> Result<(DecodedTraitComponent, DecodedAceComponent), String> {
+/// Reserve the oldest complete pointer-free D82 pair without consuming it.
+///
+/// Exactly one reservation may be active. New callbacks continue into the
+/// bounded latest-pending slots while a reservation is held. A rollback keeps
+/// the reserved pair first; a later commit reveals the newer pending pair.
+pub fn peek_character_presentation_candidate(
+    expected_game_hour_raw: i32,
+) -> Result<Option<CharacterPresentationCandidateReservation>, String> {
+    let Some((reservation_id, trait_component, ace_component)) = reserve_decoded_component_pair()?
+    else {
+        return Ok(None);
+    };
+    let result = build_reserved_snapshot(expected_game_hour_raw, &trait_component, &ace_component);
+    match result {
+        Ok(snapshot) => Ok(Some(CharacterPresentationCandidateReservation {
+            reservation_id,
+            snapshot,
+        })),
+        Err(error) => {
+            // A source-invalid/cross-hour pair can never become publishable.
+            // Discard it so the collector can emit a typed gap and later
+            // observe a newer pair. Rollback is reserved for failures after a
+            // valid snapshot has entered publication staging.
+            commit_character_presentation_candidate(reservation_id)?;
+            Err(error)
+        }
+    }
+}
+
+pub fn commit_character_presentation_candidate(reservation_id: u64) -> Result<(), String> {
+    let mut state = STATE
+        .get()
+        .ok_or("A39 hook state is unavailable")?
+        .lock()
+        .map_err(|_| "A39 hook state poisoned")?;
+    state.commit_component_pair(reservation_id)
+}
+
+pub fn rollback_character_presentation_candidate(reservation_id: u64) -> Result<(), String> {
+    let mut state = STATE
+        .get()
+        .ok_or("A39 hook state is unavailable")?
+        .lock()
+        .map_err(|_| "A39 hook state poisoned")?;
+    state.rollback_component_pair(reservation_id)
+}
+
+fn reserve_decoded_component_pair(
+) -> Result<Option<(u64, DecodedTraitComponent, DecodedAceComponent)>, String> {
     if !INSTALLED.load(Ordering::Acquire) || !LIFECYCLE_HEALTHY.load(Ordering::Acquire) {
         return Err("A39 exact-a729 fixture hooks are not installed".into());
     }
@@ -1165,16 +1671,64 @@ fn drain_decoded_component_pair() -> Result<(DecodedTraitComponent, DecodedAceCo
         .ok_or("A39 hook state is unavailable")?
         .lock()
         .map_err(|_| "A39 hook state poisoned")?;
-    if let Some(error) = &state.current_error {
-        return Err(error.clone());
+    if !INSTALLED.load(Ordering::Acquire)
+        || !LIFECYCLE_HEALTHY.load(Ordering::Acquire)
+        || TEARDOWN_ACTIVE.load(Ordering::Acquire)
+    {
+        return Err("A39 component reservation rejected during teardown".into());
     }
-    if state.latest_trait_component.is_none() || state.latest_ace_component.is_none() {
+    if state.component_reservation.is_none() {
+        if let Some(error) = &state.current_error {
+            return Err(error.clone());
+        }
+    }
+    let reservation_id = NEXT_COMPONENT_RESERVATION_ID.fetch_add(1, Ordering::AcqRel);
+    state.reserve_component_pair(reservation_id)
+}
+
+fn build_reserved_snapshot(
+    expected_game_hour_raw: i32,
+    trait_component: &DecodedTraitComponent,
+    ace_component: &DecodedAceComponent,
+) -> Result<CharacterPresentationSnapshot, String> {
+    if trait_component.observed_game_hour_raw != expected_game_hour_raw
+        || ace_component.observed_game_hour_raw != expected_game_hour_raw
+        || trait_component.observed_game_hour_raw != ace_component.observed_game_hour_raw
+    {
+        return Err("A39 UI observations are stale or cross-hour for this collector frame".into());
+    }
+    let shared_epoch = match (
+        trait_component.identity_catalog_epoch,
+        ace_component.identity_catalog_epoch,
+    ) {
+        (Some(trait_epoch), Some(ace_epoch)) if trait_epoch == ace_epoch => trait_epoch,
+        _ => {
+            return Err("A39 trait/ace components do not share one collector catalog epoch".into())
+        }
+    };
+    if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
+        return Err("A39 trait/ace components are stale for the collector catalog epoch".into());
+    }
+    let snapshot = CharacterPresentationSnapshot {
+        source_sequence: trait_component.sequence.max(ace_component.sequence),
+        trait_trees: trait_component.rows.clone(),
+        ace_context: ace_component.context.clone(),
+        ace_portraits: ace_component.rows.clone(),
+    };
+    validate_decoded_snapshot(&snapshot)?;
+    if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
+        return Err("A39 collector catalog changed while reading the reserved batch".into());
+    }
+    Ok(snapshot)
+}
+
+fn drain_decoded_component_pair() -> Result<(DecodedTraitComponent, DecodedAceComponent), String> {
+    let Some((reservation_id, trait_component, ace_component)) = reserve_decoded_component_pair()?
+    else {
         return Err("A39 decoded trait/ace component pair is incomplete".into());
-    }
-    Ok((
-        state.latest_trait_component.take().unwrap(),
-        state.latest_ace_component.take().unwrap(),
-    ))
+    };
+    commit_character_presentation_candidate(reservation_id)?;
+    Ok((trait_component, ace_component))
 }
 
 unsafe extern "system" fn hook_trait_refresh(
@@ -1242,12 +1796,8 @@ unsafe extern "system" fn hook_ace_row_bind(
     if nested {
         reject_callback("A39 recursive ace row bind rejected");
     }
-    let capture_portrait = admitted_epoch.is_some()
-        && !nested
-        && begin_ace_portrait_set(row_ptr);
-    let capture_modifiers = admitted_epoch.is_some()
-        && !nested
-        && begin_ace_modifier_set(row_ptr);
+    let capture_portrait = admitted_epoch.is_some() && !nested && begin_ace_portrait_set(row_ptr);
+    let capture_modifiers = admitted_epoch.is_some() && !nested && begin_ace_modifier_set(row_ptr);
     let original = ORIGINAL_ACE_ROW_BIND.load(Ordering::Acquire);
     if original != 0 {
         let original: AceRowBindFn = unsafe { mem::transmute(original) };
@@ -1438,16 +1988,15 @@ fn trait_item_locators(
         return Err("A39 decoded trait tree count differs from process-local refresh".into());
     }
     let mut items = BTreeMap::new();
-    for (tree_index, (boundary_tree, decoded_tree)) in boundary
-        .trees
-        .iter()
-        .zip(&component.rows)
-        .enumerate()
+    for (tree_index, (boundary_tree, decoded_tree)) in
+        boundary.trees.iter().zip(&component.rows).enumerate()
     {
         if boundary_tree.root != decoded_tree.root
             || boundary_tree.nodes.len() != decoded_tree.nodes.len()
         {
-            return Err("A39 decoded trait tree shape/order differs from process-local refresh".into());
+            return Err(
+                "A39 decoded trait tree shape/order differs from process-local refresh".into(),
+            );
         }
         for (node_index, node) in boundary_tree.nodes.iter().enumerate() {
             if items
@@ -1891,10 +2440,7 @@ fn read_process_local_trait_trees(
                 item_ptr,
                 trait_definition_ptr,
                 state: read_trait_node_state(item_ptr)?,
-                progress_raw: trait_progress_raw(
-                    trait_definition_ptr,
-                    &progress_by_definition,
-                )?,
+                progress_raw: trait_progress_raw(trait_definition_ptr, &progress_by_definition)?,
             });
         }
         trees.push(ProcessLocalTraitTree { root, nodes });
@@ -1968,15 +2514,19 @@ fn trait_progress_raw(
     let kind_address = trait_definition_ptr
         .checked_add(TRAIT_DEFINITION_KIND)
         .ok_or_else(|| "A39 trait kind address overflowed".to_string())?;
-    let first_kind = read_u32(kind_address)
-        .ok_or_else(|| "A39 trait kind was unreadable".to_string())?;
+    let first_kind =
+        read_u32(kind_address).ok_or_else(|| "A39 trait kind was unreadable".to_string())?;
     let second_kind = read_u32(kind_address)
         .ok_or_else(|| "A39 trait kind re-read was unreadable".to_string())?;
     if first_kind != second_kind {
         return Err("A39 trait kind changed during observation".into());
     }
-    Ok(matches!(first_kind, 2 | 3)
-        .then(|| progress_by_definition.get(&trait_definition_ptr).copied().unwrap_or(0)))
+    Ok(matches!(first_kind, 2 | 3).then(|| {
+        progress_by_definition
+            .get(&trait_definition_ptr)
+            .copied()
+            .unwrap_or(0)
+    }))
 }
 
 fn read_trait_node_state(item_ptr: usize) -> Result<TraitNodeState, String> {
@@ -2062,10 +2612,8 @@ fn read_process_local_ace_context(
         .and_then(read_u32)
         .ok_or_else(|| "A39 plane-type mask was unreadable".to_string())?;
     if selected_reference != 0 {
-        let wing_ptr = resolve_reference_object(
-            MODULE_BASE.load(Ordering::Acquire),
-            selected_reference,
-        )?;
+        let wing_ptr =
+            resolve_reference_object(MODULE_BASE.load(Ordering::Acquire), selected_reference)?;
         if wing_ptr == 0 {
             return Err("A39 selected-wing reference resolved to null".into());
         }
@@ -2203,6 +2751,245 @@ fn addresses(base: usize) -> InstalledAddresses {
     }
 }
 
+fn observe_install_receipts(addresses: InstalledAddresses) -> Result<(), String> {
+    let targets = [
+        addresses.trait_refresh,
+        addresses.ace_refresh,
+        addresses.ace_row_bind,
+        addresses.trait_tooltip_formatter,
+    ];
+    let detours = [
+        hook_trait_refresh as usize,
+        hook_ace_refresh as usize,
+        hook_ace_row_bind as usize,
+        hook_trait_tooltip_formatter as usize,
+    ];
+    let mut local = Vec::with_capacity(LOCAL_PRODUCTION_HOOK_SPECS.len());
+    for ((expected, target), detour) in LOCAL_PRODUCTION_HOOK_SPECS
+        .into_iter()
+        .zip(targets)
+        .zip(detours)
+    {
+        match observe_enabled_minhook_rel5(expected, target, detour, next_teardown_owner_token()?) {
+            Ok(receipt) => {
+                PARTIAL_LOCAL_INSTALL_RECEIPTS
+                    .get_or_init(|| Mutex::new(Vec::new()))
+                    .lock()
+                    .map_err(|_| "D82 partial hook receipt mutex poisoned")?
+                    .push((expected, receipt));
+                local.push(receipt);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let local: [InstalledRvaHookReceipt; 4] = local
+        .try_into()
+        .map_err(|_| "D82 local installed-hook receipt cardinality mismatch")?;
+    let mut partial = PARTIAL_LOCAL_INSTALL_RECEIPTS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map_err(|_| "D82 partial hook receipt mutex poisoned")?;
+    if partial.len() != local.len()
+        || partial
+            .iter()
+            .enumerate()
+            .any(|(index, (observed_spec, observed_receipt))| {
+                *observed_spec != LOCAL_PRODUCTION_HOOK_SPECS[index]
+                    || *observed_receipt != local[index]
+            })
+    {
+        return Err("D82 partial installed-hook receipt ordering changed".into());
+    }
+    let mut receipts = HOOK_RECEIPTS
+        .get_or_init(|| Mutex::new(HookReceiptState::default()))
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    if receipts.installed_local.is_some()
+        || receipts.released_local.is_some()
+        || receipts.released_local_progress.iter().any(Option::is_some)
+        || receipts.installed_shared_runtime.is_some()
+        || receipts.released_shared_sprite.is_some()
+    {
+        return Err("D82 prior hook receipt custody is unresolved".into());
+    }
+    receipts.installed_local = Some(local);
+    receipts.installed_shared_runtime = None;
+    receipts.released_local = None;
+    receipts.released_local_progress = [None; 4];
+    receipts.released_shared_sprite = None;
+    partial.clear();
+    Ok(())
+}
+
+fn ensure_receipt_install_admissible() -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
+    let receipts = receipts
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    if receipts.installed_local.is_some()
+        || receipts.released_local.is_some()
+        || receipts.released_local_progress.iter().any(Option::is_some)
+        || receipts.installed_shared_runtime.is_some()
+        || receipts.released_shared_sprite.is_some()
+    {
+        return Err("D82 prior hook receipt custody must be released and consumed".into());
+    }
+    if PARTIAL_LOCAL_INSTALL_RECEIPTS
+        .get()
+        .and_then(|partial| partial.lock().ok())
+        .is_some_and(|partial| !partial.is_empty())
+    {
+        return Err("D82 partial hook receipt rollback custody is unresolved".into());
+    }
+    if PARTIAL_LOCAL_RELEASE_RECEIPTS
+        .get()
+        .and_then(|partial| partial.lock().ok())
+        .is_some_and(|partial| !partial.is_empty())
+    {
+        return Err("D82 partial hook release receipts must be consumed".into());
+    }
+    Ok(())
+}
+
+fn release_partial_local_install_receipts() -> Result<(), String> {
+    loop {
+        let mut partial = PARTIAL_LOCAL_INSTALL_RECEIPTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map_err(|_| "D82 partial hook receipt mutex poisoned")?;
+        let next = partial.first().copied();
+        let Some((expected, installed)) = next else {
+            return Ok(());
+        };
+        let mut released_receipts = PARTIAL_LOCAL_RELEASE_RECEIPTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map_err(|_| "D82 partial release receipt mutex poisoned")?;
+        let released = observe_released(
+            expected,
+            installed,
+            HookTeardownAttestation {
+                callbacks_quiesced: true,
+                hook_removed: true,
+                relay_freed: true,
+            },
+        )?;
+        if partial.first().copied() != Some((expected, installed)) {
+            return Err("D82 partial hook receipt custody changed during release".into());
+        }
+        released_receipts.push(released);
+        partial.remove(0);
+    }
+}
+
+/// Consume release proof from a failed partial local install. Reinstallation
+/// remains blocked until the caller has taken this custody.
+pub fn take_partial_install_rollback_release_receipts(
+) -> Result<Vec<ReleasedRvaHookReceipt>, String> {
+    if PARTIAL_LOCAL_INSTALL_RECEIPTS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map_err(|_| "D82 partial hook receipt mutex poisoned")?
+        .is_empty()
+    {
+        let mut released = PARTIAL_LOCAL_RELEASE_RECEIPTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map_err(|_| "D82 partial release receipt mutex poisoned")?;
+        return Ok(mem::take(&mut *released));
+    }
+    Err("D82 partial local hook rollback is not fully released".into())
+}
+
+fn local_installed_hook_receipts_available() -> bool {
+    HOOK_RECEIPTS
+        .get()
+        .and_then(|receipts| receipts.lock().ok())
+        .is_some_and(|receipts| receipts.installed_local.is_some())
+}
+
+fn reobserve_local_install_receipts(addresses: InstalledAddresses) -> Result<(), String> {
+    let stored = HOOK_RECEIPTS
+        .get()
+        .ok_or("D82 production hook receipts are not initialized")?
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?
+        .installed_local
+        .ok_or("D82 exact local installed-hook receipts are unavailable")?;
+    let targets = [
+        addresses.trait_refresh,
+        addresses.ace_refresh,
+        addresses.ace_row_bind,
+        addresses.trait_tooltip_formatter,
+    ];
+    let detours = [
+        hook_trait_refresh as usize,
+        hook_ace_refresh as usize,
+        hook_ace_row_bind as usize,
+        hook_trait_tooltip_formatter as usize,
+    ];
+    let mut observed = Vec::with_capacity(LOCAL_PRODUCTION_HOOK_SPECS.len());
+    for (((expected, target), detour), installed) in LOCAL_PRODUCTION_HOOK_SPECS
+        .into_iter()
+        .zip(targets)
+        .zip(detours)
+        .zip(stored)
+    {
+        observed.push(observe_enabled_minhook_rel5(
+            expected,
+            target,
+            detour,
+            installed.teardown_owner_token,
+        )?);
+    }
+    let observed: [InstalledRvaHookReceipt; 4] = observed
+        .try_into()
+        .map_err(|_| "D82 local reobservation receipt cardinality mismatch")?;
+    if observed != stored {
+        return Err("D82 local installed-hook receipts changed on install retry".into());
+    }
+    Ok(())
+}
+
+fn observe_local_release_receipts_if_owned() -> Result<(), String> {
+    let receipts = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
+    let mut receipts = receipts
+        .lock()
+        .map_err(|_| "D82 production hook receipt mutex poisoned")?;
+    let Some(installed) = receipts.installed_local else {
+        return Ok(());
+    };
+    for index in 0..LOCAL_PRODUCTION_HOOK_SPECS.len() {
+        if receipts.released_local_progress[index].is_some() {
+            continue;
+        }
+        let released = observe_released(
+            LOCAL_PRODUCTION_HOOK_SPECS[index],
+            installed[index],
+            HookTeardownAttestation {
+                callbacks_quiesced: true,
+                hook_removed: true,
+                relay_freed: true,
+            },
+        )?;
+        receipts.released_local_progress[index] = Some(released);
+    }
+    let released = [
+        receipts.released_local_progress[0]
+            .ok_or("D82 local release progress omitted trait refresh")?,
+        receipts.released_local_progress[1]
+            .ok_or("D82 local release progress omitted ace refresh")?,
+        receipts.released_local_progress[2]
+            .ok_or("D82 local release progress omitted ace row bind")?,
+        receipts.released_local_progress[3]
+            .ok_or("D82 local release progress omitted tooltip formatter")?,
+    ];
+    receipts.installed_local = None;
+    receipts.released_local_progress = [None; 4];
+    receipts.released_local = Some(released);
+    Ok(())
+}
+
 fn targets(addresses: InstalledAddresses) -> [usize; 4] {
     [
         addresses.trait_refresh,
@@ -2328,6 +3115,69 @@ fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), S
         ));
     }
     Ok(())
+}
+
+fn shared_runtime_targets_are_original(module_base: usize) -> Result<bool, String> {
+    let sites = [
+        (
+            module_base
+                .checked_add(TEXTBOX_REGISTRATION_RVA as usize)
+                .ok_or("A39 shared registration target overflow")?,
+            [0x48, 0x89, 0x5c, 0x24, 0x08],
+        ),
+        (
+            module_base
+                .checked_add(TEXT_SETTER_RVA as usize)
+                .ok_or("A39 shared setter target overflow")?,
+            [0x48, 0x89, 0x5c, 0x24, 0x08],
+        ),
+        (
+            module_base
+                .checked_add(TEXTBOX_DESTRUCTOR_RVA as usize)
+                .ok_or("A39 shared destructor target overflow")?,
+            [0x48, 0x89, 0x5c, 0x24, 0x08],
+        ),
+        (
+            module_base
+                .checked_add(SPRITE_SET_RVA as usize)
+                .ok_or("A39 shared sprite target overflow")?,
+            SPRITE_SET_SENTINEL[..5]
+                .try_into()
+                .map_err(|_| "A39 shared sprite prefix is truncated")?,
+        ),
+    ];
+    let mut original_count = 0usize;
+    let mut normal_patch_count = 0usize;
+    for (address, original) in sites {
+        let mut observed = [0u8; 5];
+        if !read_exact(address, &mut observed) {
+            return Err(format!(
+                "A39 shared runtime target is unreadable at 0x{address:X}"
+            ));
+        }
+        if observed == original {
+            original_count += 1;
+        } else if observed[0] == 0xe9 {
+            normal_patch_count += 1;
+        } else if observed.starts_with(&[0xeb, 0xf9]) {
+            return Err("A39 shared runtime target uses forbidden patchAbove placement".into());
+        } else {
+            return Err(format!(
+                "A39 shared runtime target has unauthenticated bytes at 0x{address:X}"
+            ));
+        }
+    }
+    match (original_count, normal_patch_count) {
+        (4, 0) => Ok(true),
+        (0, 4) => Ok(false),
+        _ => Err("A39 shared runtime hook set is partially installed; custody is ambiguous".into()),
+    }
+}
+
+fn unregister_a39_shared_observers() {
+    unregister_pre_setter_observer(a39_pre_text_setter_observer);
+    unregister_post_setter_observer(a39_post_text_setter_observer);
+    unregister_sprite_setter_observer(a39_sprite_setter_observer);
 }
 
 fn read_exact(address: usize, out: &mut [u8]) -> bool {
@@ -2457,10 +3307,9 @@ fn resolve_reference_object(module_base: usize, reference_raw: u64) -> Result<us
         .ok_or_else(|| "A39 selected leader reference bucket overflow".to_string())?;
     let mut probe = 1u16;
     loop {
-        let occupied_distance = slot
-            .checked_add(4)
-            .and_then(read_u8)
-            .ok_or_else(|| "A39 selected leader reference bucket metadata is unreadable".to_string())?;
+        let occupied_distance = slot.checked_add(4).and_then(read_u8).ok_or_else(|| {
+            "A39 selected leader reference bucket metadata is unreadable".to_string()
+        })?;
         if occupied_distance == 0 || probe > u16::from(occupied_distance) {
             return Err("A39 selected leader reference was absent from its registry".into());
         }
@@ -2468,10 +3317,9 @@ fn resolve_reference_object(module_base: usize, reference_raw: u64) -> Result<us
             .checked_add(8)
             .and_then(read_u32)
             .ok_or_else(|| "A39 selected leader reference bucket key is unreadable".to_string())?;
-        let observed_high = slot
-            .checked_add(0x0c)
-            .and_then(read_u32)
-            .ok_or_else(|| "A39 selected leader reference bucket generation is unreadable".to_string())?;
+        let observed_high = slot.checked_add(0x0c).and_then(read_u32).ok_or_else(|| {
+            "A39 selected leader reference bucket generation is unreadable".to_string()
+        })?;
         if observed_low == low && observed_high == high {
             return slot
                 .checked_add(0x10)
@@ -2492,9 +3340,7 @@ fn resolve_reference_object(module_base: usize, reference_raw: u64) -> Result<us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        TraitNodeObservation, TraitNodeState, TraitTreeRoot,
-    };
+    use crate::{TraitNodeObservation, TraitNodeState, TraitTreeRoot};
 
     fn candidate(progress_raw: Option<i64>) -> CharacterPresentationSnapshot {
         CharacterPresentationSnapshot {
@@ -2529,6 +3375,28 @@ mod tests {
         }
     }
 
+    fn decoded_pair(
+        trait_sequence: u64,
+        ace_sequence: u64,
+    ) -> (DecodedTraitComponent, DecodedAceComponent) {
+        let snapshot = candidate(None);
+        (
+            DecodedTraitComponent {
+                sequence: trait_sequence,
+                observed_game_hour_raw: 1,
+                identity_catalog_epoch: Some(1),
+                rows: snapshot.trait_trees,
+            },
+            DecodedAceComponent {
+                sequence: ace_sequence,
+                observed_game_hour_raw: 1,
+                identity_catalog_epoch: Some(1),
+                context: snapshot.ace_context,
+                rows: snapshot.ace_portraits,
+            },
+        )
+    }
+
     struct Decoder;
 
     impl ExactA729BoundaryDecoder for Decoder {
@@ -2552,6 +3420,9 @@ mod tests {
     fn production_activation_is_fail_closed() {
         let _decoder = Decoder;
         let source = A729ObservedCharacterPresentationSource::new(1);
+        assert!(!PRODUCTION_ACTIVATION_AUTHORIZED);
+        assert!(!CURRENT_EIGHT_SITE_UI_OWNER_PROMOTABLE);
+        assert!(!SHARED_RUNTIME_TYPED_OWNER_CUSTODY_AUTHORIZED);
         assert!(!source.is_exact_a729_character_presentation_source());
         assert!(source.read_character_presentation().is_err());
     }
@@ -2642,7 +3513,10 @@ mod tests {
         let epoch = decoder.identity_catalog_epoch().unwrap();
         assert!(!decoder.publish(catalog).unwrap());
         assert_eq!(decoder.identity_catalog_epoch(), Some(epoch));
-        assert_eq!(decoder.decode_ace_refresh(&boundary).unwrap().1[0].ace_id, 11);
+        assert_eq!(
+            decoder.decode_ace_refresh(&boundary).unwrap().1[0].ace_id,
+            11
+        );
 
         assert!(decoder.invalidate());
         assert_eq!(decoder.identity_catalog_epoch(), None);
@@ -2663,8 +3537,62 @@ mod tests {
         assert_eq!(ACE_REFRESH_SENTINEL.len(), 21);
         assert_eq!(ACE_ROW_BIND_SENTINEL.len(), 17);
         assert_eq!(TRAIT_TOOLTIP_FORMATTER_SENTINEL.len(), 24);
+        assert_eq!(SPRITE_SET_SENTINEL.len(), 20);
         assert_eq!(TRAIT_SELECTED_LEADER_REFERENCE, 0x78);
         assert_eq!(ACE_OBJECT_ID, 0x0c);
+        assert_eq!(
+            LOCAL_PRODUCTION_HOOK_SPECS.map(|spec| spec.logical_name),
+            [
+                "presentation.d82.trait_refresh",
+                "presentation.d82.ace_refresh",
+                "presentation.d82.ace_row_bind",
+                "presentation.d82.trait_tooltip_formatter",
+            ]
+        );
+        assert_eq!(
+            SHARED_SPRITE_PRODUCTION_HOOK_SPEC.logical_name,
+            "presentation.d82.sprite_set"
+        );
+        assert!(LOCAL_PRODUCTION_HOOK_SPECS
+            .iter()
+            .chain([&SHARED_SPRITE_PRODUCTION_HOOK_SPEC])
+            .all(|spec| {
+                spec.target_patch_len == 5 && spec.primitive_id == MINHOOK_NORMAL_REL5_PRIMITIVE_ID
+            }));
+    }
+
+    #[test]
+    fn component_reservation_rollback_preserves_order_before_newer_pending_pair() {
+        let (first_traits, first_aces) = decoded_pair(10, 11);
+        let mut state = HookState {
+            latest_trait_component: Some(first_traits),
+            latest_ace_component: Some(first_aces),
+            ..HookState::default()
+        };
+        let (first_id, reserved_traits, reserved_aces) =
+            state.reserve_component_pair(7).unwrap().unwrap();
+        assert_eq!(first_id, 7);
+        assert_eq!(reserved_traits.sequence, 10);
+        assert_eq!(reserved_aces.sequence, 11);
+        assert!(state.reserve_component_pair(8).is_err());
+
+        let (newer_traits, newer_aces) = decoded_pair(20, 21);
+        state.latest_trait_component = Some(newer_traits);
+        state.latest_ace_component = Some(newer_aces);
+        state.rollback_component_pair(7).unwrap();
+
+        let (retried_id, retried_traits, retried_aces) =
+            state.reserve_component_pair(8).unwrap().unwrap();
+        assert_eq!(retried_id, 7);
+        assert_eq!(retried_traits.sequence, 10);
+        assert_eq!(retried_aces.sequence, 11);
+        state.commit_component_pair(7).unwrap();
+
+        let (newer_id, newer_traits, newer_aces) =
+            state.reserve_component_pair(8).unwrap().unwrap();
+        assert_eq!(newer_id, 8);
+        assert_eq!(newer_traits.sequence, 20);
+        assert_eq!(newer_aces.sequence, 21);
     }
 
     #[test]

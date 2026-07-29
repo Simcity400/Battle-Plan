@@ -41,9 +41,9 @@
 //! # Payload grammar (v2 `DMI2`)
 //!
 //! Transcribed from `compact_contract/src/dynamic_modifiers.rs:141`-`:310`
-//! (`decode_payload`). **This crate's library half deliberately does not depend
-//! on `compact_contract`** (`Cargo.toml`; the same rule d22 states at
-//! `d22.rs:470` and d24 at `d24.rs:999`), so the grammar is transcribed with
+//! (`decode_payload`). **d67 is not admitted to the production-codec dependency
+//! surface** (`Cargo.toml`; the same rule d22 states at `d22.rs:470` and d24 at
+//! `d24.rs:999`), so the grammar is transcribed with
 //! per-constant citations exactly as every other domain module transcribes its
 //! fold's row layout. The duplication is not left on trust: `bench_real_d67`
 //! *does* depend on `compact_contract` and asserts, on every one of the capture's
@@ -1201,9 +1201,9 @@ pub fn fold_payload(
 
 /// `compact_contract/src/calendar.rs:22`: the engine's stored hour counter minus
 /// the epoch, or `None` outside the plausible calendar window (fail closed).
-/// Transcribed for the same reason the payload grammar is — the library half
-/// does not depend on `compact_contract` — and asserted equal to it over the
-/// whole `i32` boundary neighbourhood in `bench_real_d67`.
+/// Transcribed for the same reason the payload grammar is — d67 is not admitted
+/// to the production-codec dependency surface — and asserted equal to it over
+/// the whole `i32` boundary neighbourhood in `bench_real_d67`.
 pub fn hour_index_from_raw(stored: i32) -> Option<i64> {
     // `calendar.rs:14`-`:18`.
     if !(RAW_DATE_MIN..=RAW_DATE_MAX).contains(&stored) {

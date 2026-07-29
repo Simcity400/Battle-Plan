@@ -349,9 +349,9 @@ pub const SCALE_DIGITS: u8 = 5;
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 pub const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
 /// `compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID` (lane `:88`),
-/// mirrored rather than imported so this crate's library half keeps no dependency
-/// on `compact_contract`. The measurement bin, which does depend on it, asserts
-/// the mirror — the same arrangement d32 uses for its `DELTA_DATA` bit.
+/// mirrored rather than imported because d50 is not admitted to the production-
+/// codec dependency surface. The measurement bin asserts the mirror — the same
+/// arrangement d32 uses for its `DELTA_DATA` bit.
 pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
 pub const MAX_GROUP_INDEX: u32 = 64;
 pub const MAX_MEMBER_INDEX: u32 = 1_000;

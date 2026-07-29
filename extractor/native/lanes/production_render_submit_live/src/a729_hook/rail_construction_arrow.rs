@@ -126,9 +126,7 @@ pub fn snapshot_active() -> Option<Vec<RawRailConstructionArrowVisualObservation
         .map(|state| state.active.values().map(|row| row.raw.clone()).collect())
 }
 
-pub fn validate_snapshot(
-    rows: &[RawRailConstructionArrowVisualObservation],
-) -> Result<(), String> {
+pub fn validate_snapshot(rows: &[RawRailConstructionArrowVisualObservation]) -> Result<(), String> {
     let mut prior_key = None;
     let mut entity_ids = BTreeSet::new();
     for row in rows {
@@ -183,7 +181,11 @@ fn endpoint_hash(province_lo: u32, province_hi: u32) -> u32 {
 /// over the canonical little-endian endpoint pair. A signed marker of -1 at
 /// +0x04 is empty. On a collision, the next record is +0x30 and the byte at
 /// current+0x34 bounds the one-based chain ordinal.
-fn find_entity_ptr(manager: usize, province_lo: u32, province_hi: u32) -> Result<Option<usize>, ()> {
+fn find_entity_ptr(
+    manager: usize,
+    province_lo: u32,
+    province_hi: u32,
+) -> Result<Option<usize>, ()> {
     let base = read_usize(manager.checked_add(0x90).ok_or(())?).ok_or(())?;
     let mask = read_u32(manager.checked_add(0x9c).ok_or(())?).ok_or(())?;
     let bucket_count = mask.checked_add(1).ok_or(())?;
@@ -209,8 +211,7 @@ fn find_entity_ptr(manager: usize, province_lo: u32, province_hi: u32) -> Result
             };
         }
         ordinal = ordinal.checked_add(1).ok_or(())?;
-        let chain_length =
-            u16::from(read_u8(entry.checked_add(0x34).ok_or(())?).ok_or(())?);
+        let chain_length = u16::from(read_u8(entry.checked_add(0x34).ok_or(())?).ok_or(())?);
         if ordinal > chain_length {
             return Ok(None);
         }

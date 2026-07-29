@@ -22,6 +22,10 @@ if ($Play -and $Pause) {
     throw '-Play and -Pause are mutually exclusive.'
 }
 
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1')
+Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $gameStateSingletonRva = 0x3316E90L
 $gameHourOffset = 0x468L

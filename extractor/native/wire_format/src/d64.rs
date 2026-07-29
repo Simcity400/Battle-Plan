@@ -1299,7 +1299,7 @@ mod tests {
         assert_eq!(parts.header.row_count, 0);
         assert_eq!(parts.header.observed_rows, 0);
         assert_eq!(parts.header.status_flags, 0x100);
-        assert_eq!(parts.state_rows, &[]);
+        assert!(parts.state_rows.is_empty());
         assert_eq!(parts.trailer, Some(lifecycle.as_slice()));
         for len in 0..BASE_HEADER_LEN {
             assert_eq!(

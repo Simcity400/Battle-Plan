@@ -1,9 +1,11 @@
 //! Owner-runnable, signature-gated a729 producer for the final tooltip blob.
 //!
-//! The controller detour is the sole A26 hook. After the original controller
-//! returns, A26 copies the exact post-layout text, owner identity, rectangle,
-//! viewport and a QPC timestamp in one observation. It does not depend on A25,
-//! split newlines, infer source rows, or retain process pointers in the carrier.
+//! Production observes the exact `CInGameIdler` update vtable slot. After the
+//! original update returns, A26 copies the exact post-layout text, owner
+//! identity, rectangle, viewport and a QPC timestamp in one observation. The
+//! front-end and nudge idlers are deliberately excluded from hourly in-game
+//! recording. A26 does not depend on A25, split newlines, infer source rows, or
+//! retain process pointers in the carrier.
 
 use crate::{
     ExactTooltipInstanceSource, RectI32, ResolvedTooltipInstance, SelectedPresentStamp,
@@ -25,6 +27,13 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 pub const TOOLTIP_CONTROLLER_RVA: u32 = 0x002A_4080;
 pub const TOOLTIP_EXTENT_ACCESSOR_RVA: u32 = 0x0228_F100;
 pub const TOOLTIP_FINAL_TEXT_SETTER_RVA: u32 = 0x0228_EE80;
+/// `CInGameIdler` vtable and the sole production update slot which directly
+/// calls `TOOLTIP_CONTROLLER_RVA`. Exact-a729 FunctionEvidence proves the two
+/// other direct callers are `CFrontEndIdler` and `CNudgeIdler`, not production
+/// in-game recorder paths.
+pub const IN_GAME_IDLER_VTABLE_RVA: u32 = 0x0295_2510;
+pub const IN_GAME_IDLER_UPDATE_SLOT_RVA: u32 = 0x0295_2530;
+pub const IN_GAME_IDLER_UPDATE_RVA: u32 = 0x00DB_F240;
 const TEXTBOX_VTABLE_RVA: usize = 0x02B2_B418;
 const CONTROLLER_TOOLTIP_OWNER_OFFSET: usize = 0x4E8;
 const CONTROLLER_POSITION_OFFSET: usize = 0x4E0;
@@ -57,6 +66,11 @@ const FINAL_TEXT_SETTER_SENTINEL: [u8; 16] = [
 /// broker for the controller/layout closure.
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] =
     hex32(b"a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177");
+/// Fresh exact-a729 source-closure export covering the controller and all
+/// three callers. RTTI/data evidence narrows shipped recording to the single
+/// `CInGameIdler` slot above.
+pub const NONSUSPENDING_SOURCE_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"d1cd35e661d9184f99e7efa3c8a7a92c5cf5976fd15df10bc449804c5f1bdb44");
 
 type ControllerFn = unsafe extern "system" fn(usize, u8);
 type ExtentFn = unsafe extern "system" fn(usize, *mut i32) -> *mut i32;
@@ -169,7 +183,9 @@ impl A729ResolvedTooltipHookOwner {
             let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
             ORIGINAL_CONTROLLER.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
-            return Err(format!("A26 tooltip controller hook enable failed: {status}"));
+            return Err(format!(
+                "A26 tooltip controller hook enable failed: {status}"
+            ));
         }
         INSTALLED.store(true, Ordering::Release);
         Ok(Self {
@@ -179,7 +195,10 @@ impl A729ResolvedTooltipHookOwner {
         })
     }
 
-    pub fn source(&self, pov_country_or_global: impl Into<String>) -> Result<A729ResolvedTooltipHookSource, String> {
+    pub fn source(
+        &self,
+        pov_country_or_global: impl Into<String>,
+    ) -> Result<A729ResolvedTooltipHookSource, String> {
         if !self.active || !INSTALLED.load(Ordering::Acquire) {
             return Err("A26 hook owner is not active".into());
         }
@@ -243,10 +262,7 @@ pub struct A729ResolvedTooltipHookSource {
 }
 
 impl A729ResolvedTooltipHookSource {
-    fn new(
-        install_epoch: usize,
-        pov_country_or_global: impl Into<String>,
-    ) -> Result<Self, String> {
+    fn new(install_epoch: usize, pov_country_or_global: impl Into<String>) -> Result<Self, String> {
         let pov_country_or_global = pov_country_or_global.into();
         if !crate::valid_pov_country_or_global(&pov_country_or_global) {
             return Err("A26 POV country/global identity is not portable".to_string());
@@ -312,7 +328,10 @@ impl ExactTooltipInstanceSource for A729ResolvedTooltipHookSource {
                     && qpc <= selected_present.selected_present_qpc_ticks
             })
             .max_by_key(|observation| {
-                (observation_qpc(observation), observation_sequence(observation))
+                (
+                    observation_qpc(observation),
+                    observation_sequence(observation),
+                )
             })
             .cloned();
         let Some(observation) = observation else {
@@ -384,9 +403,7 @@ pub fn diagnostics() -> HookDiagnostics {
         callbacks_open: CALLBACKS_OPEN.load(Ordering::Acquire),
         in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
         controller_calls: state.as_ref().map_or(0, |state| state.controller_calls),
-        observation_sequence: state
-            .as_ref()
-            .map_or(0, |state| state.observation_sequence),
+        observation_sequence: state.as_ref().map_or(0, |state| state.observation_sequence),
         owner_generation: state.as_ref().map_or(0, |state| state.owner_generation),
         has_observed_baseline: state
             .as_ref()
@@ -447,8 +464,8 @@ fn publish_controller_observation(controller: usize) {
             push_observation(
                 &mut state,
                 ControllerObservation::Hidden {
-                sequence,
-                qpc_ticks,
+                    sequence,
+                    qpc_ticks,
                 },
             );
         }
@@ -633,7 +650,8 @@ fn qpc_ticks() -> Result<u64, String> {
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
-    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual =
+        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }

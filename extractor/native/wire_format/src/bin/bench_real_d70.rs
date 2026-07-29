@@ -17,10 +17,10 @@
 //! through `compact_contract`'s own parser and stateful validator.
 //!
 //! **And the one contract this crate cannot call, it cross-checks.** d70's row
-//! grammar lives in `compact_contract::naval_history`, not in the fold, and
-//! `wire_format`'s library half must not depend on `compact_contract`
-//! (`Cargo.toml`) — so `d70.rs` mirrors that codec rather than calling it. This
-//! bin *can* call it, and does: [`check_authority_payload`] runs the real
+//! grammar lives in `compact_contract::naval_history`, not in the fold, and d70
+//! is not admitted to the production-codec dependency surface (`Cargo.toml`) —
+//! so `d70.rs` mirrors that codec rather than calling it. This bin *can* call it,
+//! and does: [`check_authority_payload`] runs the real
 //! `naval_history::decode_payload` on every d70 record and
 //! [`cross_check_against_codec`] requires the codec's decode and `d70::decode` to
 //! agree, record for record, on the header scalars, the authority, the ordering,
@@ -296,9 +296,9 @@ const PROBE_DOMAIN_ID: u16 = 250;
 
 /// d70 carries no lane-local status bits and no expected-partial tolerance, so
 /// `compact_contract`'s failure predicate reduces exactly to the global mask —
-/// which is what `d70::FAILURE_STATUS_MASK` (the library's copy, kept because
-/// `wire_format`'s library half must not depend on `compact_contract`) has to
-/// equal. Asserting the three facts proves the two predicates agree for every
+/// which is what `d70::FAILURE_STATUS_MASK` (the local copy retained because d70
+/// is not admitted to the production-codec dependency surface) has to equal.
+/// Asserting the three facts proves the two predicates agree for every
 /// status word, rather than for the words this capture happens to contain.
 ///
 /// The same argument covers `d70::KNOWN_STATUS_MASK_V1` against

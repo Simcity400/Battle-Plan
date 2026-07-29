@@ -260,9 +260,9 @@ pub const SCALE_DIGITS: u8 = 5;
 /// every value a capture can contain (`1e15 < 2^53`).
 pub const PRODUCER_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 
-/// `COMPACT_STATUS_DELTA_DATA`. Named here rather than imported so the library
-/// half keeps no dependency on `compact_contract`; the measurement bin, which
-/// does depend on it, asserts the two agree. d24 declares it the same way.
+/// `COMPACT_STATUS_DELTA_DATA`. Named here because d32 is not admitted to the
+/// production-codec dependency surface; the measurement bin asserts the local
+/// value and shipping contract agree. d24 declares it the same way.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 
 pub fn schema() -> Schema {

@@ -9,24 +9,36 @@ run is merge-ready before shared recorder integration.
 ## Tool
 
 ```powershell
-cargo run --manifest-path extractor\native\lanes\compact_replay_verification_gates\Cargo.toml -- `
+compact_replay_gate.exe `
   --run-dir extractor\native\runs\compact_full_plus_tf_location_870ebf_20260701_v1 `
   --min-game-hours 20 `
   --write-report extractor\native\runs\compact_replay_verification_gates_20260701_v1\gate_report.json
 ```
 
-The gate requires an explicit positive `--min-game-hours N` and treats it as an exact advancement
-contract: the manifest must report exactly `N` requested/advanced game hours and the physical stream
-must contain exactly `N + 1` consecutive closed frames spanning exactly `N` hours. It opens the replay
+The gate requires an explicit positive `--min-game-hours N` and treats it as an
+exact advancement contract. The independently scanned physical stream must span
+at least `N` game hours. Missing FRAME_END hours are valid only when the next
+gap-only frame carries an exact, authenticated H4DG range for every scheduled
+domain; the scanner proves `unique_hours + skipped_hours == inclusive_span`.
+It opens the replay
 container first, and treats its unique `recorder_manifest` entry as the
 authority. The disk manifest must be byte-identical to that embedded manifest.
 It then decodes the manifest-declared raw/zstd stream, independently scans the
-decoded H4CR records, and compares those decoded bytes with the container's
-unique `collector_compact_stream` entry. Stored and decoded lengths/hashes are
-reported separately.
+decoded H4CR records, independently hashes those bytes, binds that digest to
+the verified container entry, and compares the bytes with the run stream.
+Stored and decoded lengths/hashes are reported separately.
 
-Production admission also requires all-domain canonical DATA decoding, exact DATA/PERF and
-FRAME_END authority, and the exact seven-role static bundle across the bundle report, production
+For every FRAME_END, production admission requires the exact scheduled domain
+roster and exactly one terminal outcome per domain: `DOMAIN_PERF XOR H4DG`.
+`DOMAIN_DATA` is nonterminal, appears only beside an accepted PERF outcome, and
+can never satisfy cardinality. H4DG target/range witnesses and zero-based
+per-`(domain, part)` outcome ordinals are independently decoded and sequenced.
+The default profile accepts truthful typed gaps. `--require-zero-loss` adds a
+separate promotion claim and rejects every H4DG; it does not redefine valid
+capture format.
+
+Production admission also requires all-domain canonical DATA decoding for
+accepted outcomes and the exact seven-role static bundle across the bundle report, production
 profile, packaging manifest, index, container entries, canonical paths, bytes, and hashes.
 The bundle must also carry the pointer-free product-modset key; the gate
 recomputes it and joins its executable, mod, DLC, load-order, VFS namespace,
@@ -39,9 +51,15 @@ manifest must be byte-semantically identical and carry that same key.
 - non-compact or non-`--extraction-perf-gate` runs;
 - parse/order errors;
 - missing/duplicate frame-end records;
-- missing per-hour scheduled domain perf records;
-- missing per-hour typed domain data records;
-- skipped game hours;
+- a missing, duplicate, or unscheduled terminal outcome;
+- PERF and H4DG coexistence for one domain/hour;
+- DATA used as a terminal outcome, DATA beside H4DG, or missing DATA beside an
+  accepted PERF outcome for a DATA-bearing domain;
+- malformed H4DG, target/header mismatch, ordinal hole/repeat/regression, or
+  overlapping/regressing range;
+- a forward FRAME_END discontinuity without one exact H4DG range for every
+  scheduled domain;
+- any H4DG when `--require-zero-loss` is explicitly selected;
 - failed hourly requirement;
 - every canonical global failure flag after domain-local status normalization;
   `--allow-partial-or-source-failure` permits only those two named flags and

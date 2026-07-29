@@ -160,7 +160,12 @@ pub fn encode_payload(
         observed_children,
     )?;
     let total = HEADER_LEN
-        .checked_add(parents.len().checked_mul(PARENT_LEN).ok_or("RID1 parent bytes overflow")?)
+        .checked_add(
+            parents
+                .len()
+                .checked_mul(PARENT_LEN)
+                .ok_or("RID1 parent bytes overflow")?,
+        )
         .and_then(|value| value.checked_add(children.len().checked_mul(CHILD_LEN)?))
         .ok_or("RID1 payload bytes overflow")?;
     let mut out = Vec::with_capacity(total);
@@ -218,15 +223,7 @@ pub fn encode_source_unavailable(
     if status_flags == 0 {
         return Err("RID1 unavailable payload requires a nonzero status".into());
     }
-    encode_payload(
-        frame_hour,
-        elapsed_wall_ms,
-        status_flags,
-        &[],
-        &[],
-        0,
-        0,
-    )
+    encode_payload(frame_hour, elapsed_wall_ms, status_flags, &[], &[], 0, 0)
 }
 
 pub fn decode_payload(payload: &[u8]) -> Result<DecodedRaidInstancesPayload, String> {
@@ -250,7 +247,11 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRaidInstancesPayload, Str
         return Err("RID1 row count exceeds bound".into());
     }
     let expected = HEADER_LEN
-        .checked_add(parent_count.checked_mul(PARENT_LEN).ok_or("RID1 parent bytes overflow")?)
+        .checked_add(
+            parent_count
+                .checked_mul(PARENT_LEN)
+                .ok_or("RID1 parent bytes overflow")?,
+        )
         .and_then(|value| value.checked_add(child_count.checked_mul(CHILD_LEN)?))
         .ok_or("RID1 payload bytes overflow")?;
     if payload.len() != expected {
@@ -280,9 +281,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRaidInstancesPayload, Str
     let mut children = Vec::with_capacity(child_count);
     for index in 0..child_count {
         let at = child_base + index * CHILD_LEN;
-        if read_u64(payload, at + 64)? != 0
-            || read_u64(payload, at + 72)? != 0
-        {
+        if read_u64(payload, at + 64)? != 0 || read_u64(payload, at + 72)? != 0 {
             return Err(format!("RID1 child {index} reserved tail nonzero"));
         }
         children.push(RaidInstanceRow {
@@ -388,21 +387,30 @@ fn validate_rows(
                     || parent.country_tag_db_id > MAX_TAG_DB_ID
                     || !parent_tags.insert(parent.country_tag_db_id)
                 {
-                    return Err(format!("RID1 parent {parent_index} country identity invalid"));
+                    return Err(format!(
+                        "RID1 parent {parent_index} country identity invalid"
+                    ));
                 }
             }
         }
         let count = parent.child_count as usize;
-        let end = next_child.checked_add(count).ok_or("RID1 child span overflow")?;
+        let end = next_child
+            .checked_add(count)
+            .ok_or("RID1 child span overflow")?;
         if end > children.len() {
-            return Err(format!("RID1 parent {parent_index} child span out of range"));
+            return Err(format!(
+                "RID1 parent {parent_index} child span out of range"
+            ));
         }
         for (child_index, child) in children[next_child..end].iter().enumerate() {
             if child.producer_ordinal as usize != next_child + child_index
                 || child.parent_ordinal as usize != parent_index
                 || child.child_ordinal as usize != child_index
             {
-                return Err(format!("RID1 child {} producer hierarchy invalid", next_child + child_index));
+                return Err(format!(
+                    "RID1 child {} producer hierarchy invalid",
+                    next_child + child_index
+                ));
             }
         }
         next_child = end;
@@ -423,9 +431,7 @@ fn validate_rows(
             return Err(format!("RID1 child {index} identity/source scalar invalid"));
         }
         let ended = child.phase == RaidPhase::Ended;
-        if ended != (child.outcome != RaidOutcome::None)
-            || ended != child.end_date_present
-        {
+        if ended != (child.outcome != RaidOutcome::None) || ended != child.end_date_present {
             return Err(format!("RID1 child {index} lifecycle tuple invalid"));
         }
     }
@@ -446,22 +452,38 @@ fn put_u64(out: &mut Vec<u8>, value: u64) {
 }
 fn read_u16(bytes: &[u8], at: usize) -> Result<u16, String> {
     Ok(u16::from_le_bytes(
-        bytes.get(at..at + 2).ok_or("RID1 u16 truncated")?.try_into().unwrap(),
+        bytes
+            .get(at..at + 2)
+            .ok_or("RID1 u16 truncated")?
+            .try_into()
+            .unwrap(),
     ))
 }
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32, String> {
     Ok(u32::from_le_bytes(
-        bytes.get(at..at + 4).ok_or("RID1 u32 truncated")?.try_into().unwrap(),
+        bytes
+            .get(at..at + 4)
+            .ok_or("RID1 u32 truncated")?
+            .try_into()
+            .unwrap(),
     ))
 }
 fn read_i32(bytes: &[u8], at: usize) -> Result<i32, String> {
     Ok(i32::from_le_bytes(
-        bytes.get(at..at + 4).ok_or("RID1 i32 truncated")?.try_into().unwrap(),
+        bytes
+            .get(at..at + 4)
+            .ok_or("RID1 i32 truncated")?
+            .try_into()
+            .unwrap(),
     ))
 }
 fn read_u64(bytes: &[u8], at: usize) -> Result<u64, String> {
     Ok(u64::from_le_bytes(
-        bytes.get(at..at + 8).ok_or("RID1 u64 truncated")?.try_into().unwrap(),
+        bytes
+            .get(at..at + 8)
+            .ok_or("RID1 u64 truncated")?
+            .try_into()
+            .unwrap(),
     ))
 }
 

@@ -184,9 +184,9 @@ pub const SCALE_DIGITS: u8 = 5;
 /// whole `deepwar_t1` capture is 101.0.
 pub const EXACT_AMOUNT_RAW_BAND: i64 = 1 << 51;
 
-/// `COMPACT_STATUS_DELTA_DATA`, `compact_contract/src/lib.rs`. Named here rather
-/// than imported so the library keeps no dependency on `compact_contract`; the
-/// measurement bin, which does depend on it, asserts the two agree.
+/// `COMPACT_STATUS_DELTA_DATA`, `compact_contract/src/lib.rs`. Named here because
+/// d36 is not admitted to the production-codec dependency surface; the
+/// measurement bin asserts the local value and shipping contract agree.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 
 /// `COMPACT_STATUS_FAILURE_MASK`. d36 has no lane-local status bits and no

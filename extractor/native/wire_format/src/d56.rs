@@ -224,9 +224,9 @@ pub const MAX_NAVAL_SUPREMACY_ROWS: usize = 20_000;
 /// `MAX_OOB_ID`, `domain56_compact.rs:30`.
 pub const MAX_OOB_ID: u32 = 4_000_000;
 /// `MAX_COMPACT_OWNER_TAG_DB_ID`, `compact_contract/src/build_profile.rs:45`,
-/// reached through `domain56_compact.rs:31`. Named here rather than imported so
-/// the library keeps no dependency on `compact_contract`; the measurement bin,
-/// which does depend on it, asserts the two agree (the d24/d32 pattern).
+/// reached through `domain56_compact.rs:31`. Named here because d56 is not
+/// admitted to the production-codec dependency surface; the measurement bin
+/// asserts the local value and shipping contract agree (the d24/d32 pattern).
 pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
 /// `MAX_PROVINCE_ID`, `domain56_compact.rs:32`.
 pub const MAX_PROVINCE_ID: u32 = 1_000_000;

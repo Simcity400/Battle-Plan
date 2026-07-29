@@ -78,7 +78,8 @@ impl G2CaptureIntent {
         }
         require_sha256(&parsed.settings_file_sha256, "G2 settings file")?;
         require_sha256(&parsed.camera_payload_sha256, "G2 camera payload")?;
-        let capture_context_path = canonical_file(&parsed.capture_context_path, "G2 capture context")?;
+        let capture_context_path =
+            canonical_file(&parsed.capture_context_path, "G2 capture context")?;
         let first = fs::read(&capture_context_path)
             .map_err(|error| format!("read G2 capture context failed: {error}"))?;
         let second = fs::read(&capture_context_path)
@@ -91,8 +92,7 @@ impl G2CaptureIntent {
         if context.get("schema").and_then(serde_json::Value::as_str)
             != Some("hoi4-rendering-law-capture-context-v1")
             || context.get("packets") != Some(&serde_json::json!(["G2"]))
-            || context.pointer("/inventory/active_hoi4_pids")
-                != Some(&serde_json::json!([]))
+            || context.pointer("/inventory/active_hoi4_pids") != Some(&serde_json::json!([]))
         {
             return Err("G2 capture context is not an isolated pre-launch G2 snapshot".into());
         }
@@ -126,8 +126,9 @@ impl G2CaptureIntent {
         self.validate_unchanged()?;
         let bytes = fs::read(&self.capture_context_path)
             .map_err(|error| format!("read G2 capture context authority failed: {error}"))?;
-        let context = snapshot::parse_json_strict(&bytes)
-            .map_err(|error| format!("strict parse G2 capture context authority failed: {error}"))?;
+        let context = snapshot::parse_json_strict(&bytes).map_err(|error| {
+            format!("strict parse G2 capture context authority failed: {error}")
+        })?;
         let context_language = context
             .pointer("/inventory/settings/language")
             .and_then(serde_json::Value::as_str)
@@ -273,10 +274,7 @@ pub fn validate_g2_capture_artifacts(
     intent.validate_unchanged()?;
     manifest.validate()?;
     receipt.validate()?;
-    require_sha256(
-        content_manifest_digest_sha256,
-        "G2 content manifest digest",
-    )?;
+    require_sha256(content_manifest_digest_sha256, "G2 content manifest digest")?;
     intent.validate_context_authority(
         &manifest.executable_sha256,
         &intent.settings_file_sha256,
@@ -488,9 +486,7 @@ pub fn seal_g2_capture_artifacts(
 
 pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
     compact_contract::early_render_control::staged_hook_count_for_group_mask(mask).ok_or_else(
-        || {
-            "diagnostic staged-hook mask has invalid group or packed COM-selector bits".into()
-        },
+        || "diagnostic staged-hook mask has invalid group or packed COM-selector bits".into(),
     )
 }
 
@@ -1745,7 +1741,7 @@ fn require_file_sha256(path: &Path, expected: &str, label: &str) -> Result<(), S
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "evidence-client-driving"))]
 mod windows {
     use super::*;
     use std::marker::PhantomData;
@@ -1999,10 +1995,7 @@ mod windows {
 
     #[link(name = "user32")]
     extern "system" {
-        fn EnumWindows(
-            callback: extern "system" fn(Hwnd, isize) -> Bool,
-            lparam: isize,
-        ) -> Bool;
+        fn EnumWindows(callback: extern "system" fn(Hwnd, isize) -> Bool, lparam: isize) -> Bool;
         fn GetWindowThreadProcessId(window: Hwnd, process_id: *mut Dword) -> Dword;
         fn ShowWindow(window: Hwnd, command: i32) -> Bool;
     }
@@ -3563,11 +3556,94 @@ mod windows {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "evidence-client-driving"))]
 pub use windows::{
     create_suspended_early_render_process, create_suspended_game_process,
     launch_suspended_early_render_capture, EarlyRenderProcess, PendingEarlyRenderProcess,
     RecorderOwnedCreationJob, RecorderOwnedCreationJobLease,
+};
+
+#[cfg(all(windows, not(feature = "evidence-client-driving")))]
+mod observer_only {
+    use super::*;
+
+    const DISABLED: &str =
+        "client-driving is physically excluded from the production observer binary; build the Evidence tier with feature evidence-client-driving";
+
+    pub struct EarlyRenderProcess {
+        pub process_id: u32,
+        pub receipt: EarlyRenderCaptureReceipt,
+    }
+
+    impl EarlyRenderProcess {
+        pub fn wait(&self, _timeout_ms: u32) -> Result<bool, String> {
+            Err(DISABLED.into())
+        }
+
+        pub fn terminate_diagnostic(&mut self) -> Result<(), String> {
+            Err(DISABLED.into())
+        }
+    }
+
+    pub struct PendingEarlyRenderProcess {
+        process_id: u32,
+        process_start_nonce: u64,
+    }
+
+    impl PendingEarlyRenderProcess {
+        pub fn process_id(&self) -> u32 {
+            self.process_id
+        }
+
+        pub fn process_start_nonce(&self) -> u64 {
+            self.process_start_nonce
+        }
+
+        pub fn resolve_modset(&self) -> crate::modset::ModsetReport {
+            crate::modset::resolve_modset(self.process_id, None)
+        }
+
+        pub fn validate_suspended_image_authority(
+            &self,
+            _expected_sha256: &str,
+        ) -> Result<(), String> {
+            Err(DISABLED.into())
+        }
+
+        pub fn activate_with_post_resume_validation(
+            self,
+            _spec: &EarlyRenderLaunchSpec,
+            _ready: &mut impl EarlyHookReadyChannel,
+            _post_resume_validation: impl FnOnce() -> Result<(), String>,
+        ) -> Result<EarlyRenderProcess, String> {
+            Err(DISABLED.into())
+        }
+    }
+
+    pub fn create_suspended_early_render_process(
+        _spec: &EarlyRenderLaunchSpec,
+    ) -> Result<PendingEarlyRenderProcess, String> {
+        Err(DISABLED.into())
+    }
+
+    pub fn create_suspended_game_process(
+        _spec: &EarlyRenderProcessCreateSpec,
+    ) -> Result<PendingEarlyRenderProcess, String> {
+        Err(DISABLED.into())
+    }
+
+    pub fn launch_suspended_early_render_capture(
+        _spec: &EarlyRenderLaunchSpec,
+        _ready: &mut impl EarlyHookReadyChannel,
+    ) -> Result<EarlyRenderProcess, String> {
+        Err(DISABLED.into())
+    }
+}
+
+#[cfg(all(windows, not(feature = "evidence-client-driving")))]
+pub use observer_only::{
+    create_suspended_early_render_process, create_suspended_game_process,
+    launch_suspended_early_render_capture, EarlyRenderProcess, PendingEarlyRenderProcess,
 };
 
 #[cfg(test)]
@@ -3767,7 +3843,10 @@ mod tests {
         let three_com_hooks = pack_diagnostic_hook_masks(0x03, 0x40003).unwrap();
         assert_eq!(diagnostic_stage_group_mask(three_com_hooks), 0x03);
         assert_eq!(diagnostic_com_hook_mask(three_com_hooks), 0x40003);
-        assert_eq!(staged_hook_count_for_group_mask(three_com_hooks).unwrap(), 5);
+        assert_eq!(
+            staged_hook_count_for_group_mask(three_com_hooks).unwrap(),
+            5
+        );
 
         assert!(pack_diagnostic_hook_masks(0x01, 0).is_err());
         assert!(pack_diagnostic_hook_masks(0x01, 0x7ffff).is_err());
@@ -3958,14 +4037,8 @@ mod tests {
             serde_json::to_vec_pretty(&witness).unwrap(),
         )
         .unwrap();
-        validate_g2_capture_artifacts(
-            &intent,
-            &output,
-            &manifest,
-            &receipt,
-            &content_digest,
-        )
-        .unwrap();
+        validate_g2_capture_artifacts(&intent, &output, &manifest, &receipt, &content_digest)
+            .unwrap();
 
         let mut drift = witness;
         drift["unexpected"] = serde_json::json!(true);
@@ -4112,7 +4185,7 @@ mod tests {
         assert!(validate_launcher_effective_arguments(&duplicate).is_err());
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "evidence-client-driving"))]
     #[test]
     fn launcher_argv_paths_drop_only_verbatim_prefixes() {
         assert_eq!(
@@ -4129,7 +4202,7 @@ mod tests {
         assert!(windows::launcher_argv_path(Path::new(r"\\.\PhysicalDrive0")).is_err());
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "evidence-client-driving"))]
     #[test]
     fn launcher_command_line_matches_authoritative_continue_shape() {
         let command = windows::build_launcher_effective_command_line(

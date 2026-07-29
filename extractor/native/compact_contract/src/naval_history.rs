@@ -595,12 +595,14 @@ mod tests {
         let mut payload = encode_legacy_ordered_payload(&rows(), 77, 0, 2).unwrap();
         payload[4..6].copy_from_slice(&LEGACY_PAYLOAD_VERSION.to_le_bytes());
         let decoded = decode_payload(&payload).unwrap();
-        assert_eq!(decoded.ordering, SunkConvoyHistoryOrdering::CanonicalIdentity);
+        assert_eq!(
+            decoded.ordering,
+            SunkConvoyHistoryOrdering::CanonicalIdentity
+        );
 
         let mut unsorted = rows();
         unsorted.reverse();
-        let mut invalid_legacy =
-            encode_legacy_ordered_payload(&unsorted, 77, 0, 2).unwrap();
+        let mut invalid_legacy = encode_legacy_ordered_payload(&unsorted, 77, 0, 2).unwrap();
         invalid_legacy[4..6].copy_from_slice(&LEGACY_PAYLOAD_VERSION.to_le_bytes());
         assert!(decode_payload(&invalid_legacy)
             .unwrap_err()

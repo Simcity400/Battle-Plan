@@ -228,9 +228,9 @@ pub const MAX_ACTIVE_MODIFIERS: u32 = 4_096;
 /// `world_fold.rs:17186` bounds `intensity` at one byte.
 pub const MAX_INTENSITY: u32 = u8::MAX as u32;
 
-/// `COMPACT_STATUS_DELTA_DATA`. Named here rather than imported so the library
-/// keeps no dependency on `compact_contract`; the measurement bin, which does
-/// depend on it, asserts the two agree.
+/// `COMPACT_STATUS_DELTA_DATA`. Named here because d24 is not admitted to the
+/// production-codec dependency surface; the measurement bin asserts the local
+/// value and the shipping contract agree.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 
 /// `FIXED_SCALE`, `world_fold.rs:156`, and the header word the fold asserts

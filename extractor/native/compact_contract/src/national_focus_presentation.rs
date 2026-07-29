@@ -16,15 +16,12 @@ pub const MAX_TEXT_BYTES: usize = 65_536;
 pub const AUTHORED_SURFACE_IDENTITY: &str = "national_focus_canvas";
 pub const RUNTIME_ROOT_IDENTITY: &str = "nationalfocusview";
 pub const EFFECTIVE_INTERFACE_WINNER: &str = "interface/nationalfocusview.gui";
-pub const EXECUTABLE_SHA256: [u8; 32] = hex32(
-    b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
-);
-pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] = hex32(
-    b"b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
-);
-pub const EXACT20_JOB_RECEIPT_SHA256: [u8; 32] = hex32(
-    b"b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
-);
+pub const EXECUTABLE_SHA256: [u8; 32] =
+    hex32(b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad");
+pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f");
+pub const EXACT20_JOB_RECEIPT_SHA256: [u8; 32] =
+    hex32(b"b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b");
 
 /// The ordinary collector owns the exact passive hook and selected-Present
 /// transaction. Missing callbacks emit typed unavailable; fixtures are not a
@@ -35,8 +32,7 @@ pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 const ITEM_FLAG_HIGHLIGHT: u16 = 1;
 const ITEM_FLAG_HISTORICAL: u16 = 1 << 1;
 const ITEM_FLAG_JOINT_COUNTRY: u16 = 1 << 2;
-const ITEM_KNOWN_FLAGS: u16 =
-    ITEM_FLAG_HIGHLIGHT | ITEM_FLAG_HISTORICAL | ITEM_FLAG_JOINT_COUNTRY;
+const ITEM_KNOWN_FLAGS: u16 = ITEM_FLAG_HIGHLIGHT | ITEM_FLAG_HISTORICAL | ITEM_FLAG_JOINT_COUNTRY;
 
 const fn hex32(input: &[u8; 64]) -> [u8; 32] {
     const fn nibble(value: u8) -> u8 {
@@ -116,7 +112,12 @@ pub struct RectI32 {
 }
 
 impl RectI32 {
-    pub const EMPTY: Self = Self { x: 0, y: 0, width: 0, height: 0 };
+    pub const EMPTY: Self = Self {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,7 +285,9 @@ fn validate_snapshot_inner(
         if require_selected_present_operations
             != !item.selected_present_ui_operation_ordinals.is_empty()
         {
-            return invalid("NFP1 focus operation ownership is absent or populated before its bridge");
+            return invalid(
+                "NFP1 focus operation ownership is absent or populated before its bridge",
+            );
         }
         if require_selected_present_operations
             && (item.selected_present_screen_rect.width <= 0
@@ -333,7 +336,9 @@ fn validate_snapshot_inner(
             || snapshot.selected_present_ui_operation_order
                 != mapped_operations.iter().copied().collect::<Vec<_>>())
         || !require_selected_present_operations
-            && (!snapshot.selected_present_canvas_operation_ordinals.is_empty()
+            && (!snapshot
+                .selected_present_canvas_operation_ordinals
+                .is_empty()
                 || !snapshot.selected_present_ui_operation_order.is_empty()
                 || !mapped_operations.is_empty())
     {
@@ -365,14 +370,11 @@ pub fn validate_frame(frame: &Frame) -> Result<(), CarrierError> {
                 || selected_present.materialization_qpc_ticks
                     > selected_present.selected_present_qpc_ticks
                 || !valid_sha256(&selected_present.selected_present_receipt_sha256)
-                || !valid_sha256(
-                    &selected_present.selected_present_pass_identity_sha256,
-                )
+                || !valid_sha256(&selected_present.selected_present_pass_identity_sha256)
                 || selected_present.selected_present_engine_instance_token == 0
                 || selected_present.authored_surface_identity != AUTHORED_SURFACE_IDENTITY
                 || selected_present.runtime_root_identity != RUNTIME_ROOT_IDENTITY
-                || selected_present.effective_interface_winner
-                    != EFFECTIVE_INTERFACE_WINNER
+                || selected_present.effective_interface_winner != EFFECTIVE_INTERFACE_WINNER
                 || selected_present
                     .render_target_extent_pixels
                     .iter()
@@ -471,10 +473,7 @@ pub fn encode_payload(frame: &Frame) -> Result<Vec<u8>, CarrierError> {
         u32v(&mut output, selected.selected_present_ordinal);
         u64v(&mut output, selected.selected_present_candidate_id);
         u64v(&mut output, selected.selected_present_qpc_ticks);
-        u64v(
-            &mut output,
-            selected.selected_present_cutoff_qpc_ticks,
-        );
+        u64v(&mut output, selected.selected_present_cutoff_qpc_ticks);
         u64v(&mut output, selected.qpc_frequency_hz);
         output.extend_from_slice(
             &decode_sha256(&selected.selected_present_receipt_sha256)
@@ -484,10 +483,7 @@ pub fn encode_payload(frame: &Frame) -> Result<Vec<u8>, CarrierError> {
             &decode_sha256(&selected.selected_present_pass_identity_sha256)
                 .expect("validated selected-Present pass SHA-256"),
         );
-        u64v(
-            &mut output,
-            selected.selected_present_engine_instance_token,
-        );
+        u64v(&mut output, selected.selected_present_engine_instance_token);
         textv(&mut output, &selected.authored_surface_identity);
         textv(&mut output, &selected.runtime_root_identity);
         textv(&mut output, &selected.effective_interface_winner);
@@ -685,8 +681,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<Frame, CarrierError> {
                         "NFP1 decoded per-focus operation total exceeds bound".into(),
                     )
                 })?;
-            let mut selected_present_ui_operation_ordinals =
-                Vec::with_capacity(operation_count);
+            let mut selected_present_ui_operation_ordinals = Vec::with_capacity(operation_count);
             for _ in 0..operation_count {
                 selected_present_ui_operation_ordinals.push(reader.u32()?);
             }
@@ -841,32 +836,96 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, CarrierError> {
     Err(CarrierError::Invalid(message.into()))
 }
 
-fn u16v(output: &mut Vec<u8>, value: u16) { output.extend_from_slice(&value.to_le_bytes()); }
-fn u32v(output: &mut Vec<u8>, value: u32) { output.extend_from_slice(&value.to_le_bytes()); }
-fn u64v(output: &mut Vec<u8>, value: u64) { output.extend_from_slice(&value.to_le_bytes()); }
-fn i32v(output: &mut Vec<u8>, value: i32) { output.extend_from_slice(&value.to_le_bytes()); }
-fn i64v(output: &mut Vec<u8>, value: i64) { output.extend_from_slice(&value.to_le_bytes()); }
+fn u16v(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn u32v(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn u64v(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn i32v(output: &mut Vec<u8>, value: i32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn i64v(output: &mut Vec<u8>, value: i64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
 fn rectv(output: &mut Vec<u8>, value: RectI32) {
     i32v(output, value.x);
     i32v(output, value.y);
     i32v(output, value.width);
     i32v(output, value.height);
 }
-fn textv(output: &mut Vec<u8>, value: &str) { u32v(output, value.len() as u32); output.extend_from_slice(value.as_bytes()); }
-fn opt_textv(output: &mut Vec<u8>, value: Option<&str>) { match value { Some(value) => { output.push(1); textv(output, value); }, None => output.push(0), } }
+fn textv(output: &mut Vec<u8>, value: &str) {
+    u32v(output, value.len() as u32);
+    output.extend_from_slice(value.as_bytes());
+}
+fn opt_textv(output: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            textv(output, value);
+        }
+        None => output.push(0),
+    }
+}
 
-struct Reader<'a> { payload: &'a [u8], at: usize }
+struct Reader<'a> {
+    payload: &'a [u8],
+    at: usize,
+}
 impl<'a> Reader<'a> {
-    fn bytes(&mut self, count: usize) -> Result<&'a [u8], CarrierError> { let end = self.at.checked_add(count).ok_or(CarrierError::Truncated)?; let bytes = self.payload.get(self.at..end).ok_or(CarrierError::Truncated)?; self.at = end; Ok(bytes) }
-    fn u8(&mut self) -> Result<u8, CarrierError> { Ok(self.bytes(1)?[0]) }
-    fn u16(&mut self) -> Result<u16, CarrierError> { Ok(u16::from_le_bytes(self.bytes(2)?.try_into().unwrap())) }
-    fn u32(&mut self) -> Result<u32, CarrierError> { Ok(u32::from_le_bytes(self.bytes(4)?.try_into().unwrap())) }
-    fn u64(&mut self) -> Result<u64, CarrierError> { Ok(u64::from_le_bytes(self.bytes(8)?.try_into().unwrap())) }
-    fn i32(&mut self) -> Result<i32, CarrierError> { Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap())) }
-    fn i64(&mut self) -> Result<i64, CarrierError> { Ok(i64::from_le_bytes(self.bytes(8)?.try_into().unwrap())) }
-    fn rect(&mut self) -> Result<RectI32, CarrierError> { Ok(RectI32 { x: self.i32()?, y: self.i32()?, width: self.i32()?, height: self.i32()? }) }
-    fn text(&mut self) -> Result<String, CarrierError> { let count = self.u32()? as usize; if count > MAX_TEXT_BYTES { return invalid("NFP1 text exceeds bound"); } String::from_utf8(self.bytes(count)?.to_vec()).map_err(|_| CarrierError::Invalid("NFP1 text is not UTF-8".into())) }
-    fn opt_text(&mut self) -> Result<Option<String>, CarrierError> { match self.u8()? { 0 => Ok(None), 1 => Ok(Some(self.text()?)), _ => invalid("NFP1 optional-text marker invalid"), } }
+    fn bytes(&mut self, count: usize) -> Result<&'a [u8], CarrierError> {
+        let end = self.at.checked_add(count).ok_or(CarrierError::Truncated)?;
+        let bytes = self
+            .payload
+            .get(self.at..end)
+            .ok_or(CarrierError::Truncated)?;
+        self.at = end;
+        Ok(bytes)
+    }
+    fn u8(&mut self) -> Result<u8, CarrierError> {
+        Ok(self.bytes(1)?[0])
+    }
+    fn u16(&mut self) -> Result<u16, CarrierError> {
+        Ok(u16::from_le_bytes(self.bytes(2)?.try_into().unwrap()))
+    }
+    fn u32(&mut self) -> Result<u32, CarrierError> {
+        Ok(u32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
+    }
+    fn u64(&mut self) -> Result<u64, CarrierError> {
+        Ok(u64::from_le_bytes(self.bytes(8)?.try_into().unwrap()))
+    }
+    fn i32(&mut self) -> Result<i32, CarrierError> {
+        Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
+    }
+    fn i64(&mut self) -> Result<i64, CarrierError> {
+        Ok(i64::from_le_bytes(self.bytes(8)?.try_into().unwrap()))
+    }
+    fn rect(&mut self) -> Result<RectI32, CarrierError> {
+        Ok(RectI32 {
+            x: self.i32()?,
+            y: self.i32()?,
+            width: self.i32()?,
+            height: self.i32()?,
+        })
+    }
+    fn text(&mut self) -> Result<String, CarrierError> {
+        let count = self.u32()? as usize;
+        if count > MAX_TEXT_BYTES {
+            return invalid("NFP1 text exceeds bound");
+        }
+        String::from_utf8(self.bytes(count)?.to_vec())
+            .map_err(|_| CarrierError::Invalid("NFP1 text is not UTF-8".into()))
+    }
+    fn opt_text(&mut self) -> Result<Option<String>, CarrierError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.text()?)),
+            _ => invalid("NFP1 optional-text marker invalid"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -889,7 +948,12 @@ mod tests {
             effective_interface_winner: EFFECTIVE_INTERFACE_WINNER.into(),
             render_target_extent_pixels: [1920, 1080],
             client_extent_pixels: [1920, 1080],
-            clip_rect: RectI32 { x: 100, y: 100, width: 1200, height: 800 },
+            clip_rect: RectI32 {
+                x: 100,
+                y: 100,
+                width: 1200,
+                height: 800,
+            },
             content_extent_pixels: [2000, 1600],
             viewport_extent_pixels: [1200, 800],
             canvas_origin_pixels_fixed5: [3200, 3200],
@@ -897,28 +961,126 @@ mod tests {
             canvas_scale_bits: [1.0f32.to_bits(), 1.0f32.to_bits()],
         }
     }
-    fn frame() -> Frame { Frame { elapsed_wall_ms: 7, frame_hour: 42, status_flags: 0, authority: AuthorityState::Exact20Receipt, selected_present: Some(selected_present()), snapshot: Some(Snapshot { source_sequence: 9, producer_complete: true, country_tag: "GER".into(), view_id: "nationalfocusview:GER".into(), producer_record_identity: "a729:a31:42:GER:9".into(), expected_visible_item_count: 2, visible_items: vec![ FocusPresentationItem { focus_id: "ger_a".into(), source_ordinal: 0, presentation_state_code: 1, display_progress_percent: 100, highlight_glow_visible: false, historical_marker_visible: true, joint_viewing_country_tag: None, selected_present_ui_operation_ordinals: vec![4, 5], selected_present_screen_rect: RectI32 { x: 120, y: 140, width: 80, height: 80 } }, FocusPresentationItem { focus_id: "ger_b".into(), source_ordinal: 1, presentation_state_code: 3, display_progress_percent: 37, highlight_glow_visible: true, historical_marker_visible: false, joint_viewing_country_tag: Some("ITA".into()), selected_present_ui_operation_ordinals: vec![6], selected_present_screen_rect: RectI32 { x: 240, y: 260, width: 80, height: 80 } } ], selected_present_canvas_operation_ordinals: vec![2, 3], selected_present_ui_operation_order: vec![2, 3, 4, 5, 6] }) } }
-    #[test] fn roundtrip_preserves_pointer_free_item_identity_and_engine_order() { let expected = frame(); assert_eq!(decode_payload(&encode_payload(&expected).unwrap()).unwrap(), expected); }
-    #[test] fn incomplete_or_inferred_state_rejects_whole_frame() { let mut value = frame(); value.snapshot.as_mut().unwrap().visible_items[1].source_ordinal = 7; assert!(encode_payload(&value).is_err()); let mut value = frame(); value.snapshot.as_mut().unwrap().visible_items[0].display_progress_percent = 99; assert!(encode_payload(&value).is_err()); }
-    #[test] fn production_activation_uses_exact_source_without_fixture_gate() { struct Source; impl ExactNationalFocusPresentationSource for Source { fn is_exact_a729_focus_view_source(&self) -> bool { true } fn producer_manifest_sha256(&self) -> [u8; 32] { EXACT20_FUNCTION_MANIFEST_SHA256 } fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> { Ok(frame().snapshot.unwrap()) } } assert!(collect_and_encode(&Source, 42, 7, "GER", selected_present()).is_ok()); }
+    fn frame() -> Frame {
+        Frame {
+            elapsed_wall_ms: 7,
+            frame_hour: 42,
+            status_flags: 0,
+            authority: AuthorityState::Exact20Receipt,
+            selected_present: Some(selected_present()),
+            snapshot: Some(Snapshot {
+                source_sequence: 9,
+                producer_complete: true,
+                country_tag: "GER".into(),
+                view_id: "nationalfocusview:GER".into(),
+                producer_record_identity: "a729:a31:42:GER:9".into(),
+                expected_visible_item_count: 2,
+                visible_items: vec![
+                    FocusPresentationItem {
+                        focus_id: "ger_a".into(),
+                        source_ordinal: 0,
+                        presentation_state_code: 1,
+                        display_progress_percent: 100,
+                        highlight_glow_visible: false,
+                        historical_marker_visible: true,
+                        joint_viewing_country_tag: None,
+                        selected_present_ui_operation_ordinals: vec![4, 5],
+                        selected_present_screen_rect: RectI32 {
+                            x: 120,
+                            y: 140,
+                            width: 80,
+                            height: 80,
+                        },
+                    },
+                    FocusPresentationItem {
+                        focus_id: "ger_b".into(),
+                        source_ordinal: 1,
+                        presentation_state_code: 3,
+                        display_progress_percent: 37,
+                        highlight_glow_visible: true,
+                        historical_marker_visible: false,
+                        joint_viewing_country_tag: Some("ITA".into()),
+                        selected_present_ui_operation_ordinals: vec![6],
+                        selected_present_screen_rect: RectI32 {
+                            x: 240,
+                            y: 260,
+                            width: 80,
+                            height: 80,
+                        },
+                    },
+                ],
+                selected_present_canvas_operation_ordinals: vec![2, 3],
+                selected_present_ui_operation_order: vec![2, 3, 4, 5, 6],
+            }),
+        }
+    }
+    #[test]
+    fn roundtrip_preserves_pointer_free_item_identity_and_engine_order() {
+        let expected = frame();
+        assert_eq!(
+            decode_payload(&encode_payload(&expected).unwrap()).unwrap(),
+            expected
+        );
+    }
+    #[test]
+    fn incomplete_or_inferred_state_rejects_whole_frame() {
+        let mut value = frame();
+        value.snapshot.as_mut().unwrap().visible_items[1].source_ordinal = 7;
+        assert!(encode_payload(&value).is_err());
+        let mut value = frame();
+        value.snapshot.as_mut().unwrap().visible_items[0].display_progress_percent = 99;
+        assert!(encode_payload(&value).is_err());
+    }
+    #[test]
+    fn production_activation_uses_exact_source_without_fixture_gate() {
+        struct Source;
+        impl ExactNationalFocusPresentationSource for Source {
+            fn is_exact_a729_focus_view_source(&self) -> bool {
+                true
+            }
+            fn producer_manifest_sha256(&self) -> [u8; 32] {
+                EXACT20_FUNCTION_MANIFEST_SHA256
+            }
+            fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> {
+                Ok(frame().snapshot.unwrap())
+            }
+        }
+        assert!(collect_and_encode(&Source, 42, 7, "GER", selected_present()).is_ok());
+    }
     #[test]
     fn selected_present_binding_is_mandatory_and_ordered() {
         let mut value = frame();
         value.selected_present = None;
         assert!(encode_payload(&value).is_err());
         let mut value = frame();
-        value.selected_present.as_mut().unwrap().materialization_qpc_ticks = 101;
+        value
+            .selected_present
+            .as_mut()
+            .unwrap()
+            .materialization_qpc_ticks = 101;
         assert!(encode_payload(&value).is_err());
         let mut value = frame();
-        value.selected_present.as_mut().unwrap().selected_present_receipt_sha256 = "A".repeat(64);
+        value
+            .selected_present
+            .as_mut()
+            .unwrap()
+            .selected_present_receipt_sha256 = "A".repeat(64);
         assert!(encode_payload(&value).is_err());
     }
     #[test]
     fn source_authority_and_requested_country_are_mandatory() {
-        struct Source { authenticated: bool, manifest: [u8; 32], country: &'static str }
+        struct Source {
+            authenticated: bool,
+            manifest: [u8; 32],
+            country: &'static str,
+        }
         impl ExactNationalFocusPresentationSource for Source {
-            fn is_exact_a729_focus_view_source(&self) -> bool { self.authenticated }
-            fn producer_manifest_sha256(&self) -> [u8; 32] { self.manifest }
+            fn is_exact_a729_focus_view_source(&self) -> bool {
+                self.authenticated
+            }
+            fn producer_manifest_sha256(&self) -> [u8; 32] {
+                self.manifest
+            }
             fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> {
                 let mut snapshot = frame().snapshot.unwrap();
                 snapshot.country_tag = self.country.into();
@@ -927,14 +1089,59 @@ mod tests {
                 Ok(snapshot)
             }
         }
-        assert_eq!(collect_and_validate(&Source { authenticated: false, manifest: EXACT20_FUNCTION_MANIFEST_SHA256, country: "GER" }, 42, "GER"), Err(CarrierError::UnauthenticatedSource));
-        assert_eq!(collect_and_validate(&Source { authenticated: true, manifest: [7; 32], country: "GER" }, 42, "GER"), Err(CarrierError::UnauthenticatedSource));
-        assert!(collect_and_validate(&Source { authenticated: true, manifest: EXACT20_FUNCTION_MANIFEST_SHA256, country: "ITA" }, 42, "GER").is_err());
-        assert!(collect_and_validate(&Source { authenticated: true, manifest: EXACT20_FUNCTION_MANIFEST_SHA256, country: "GER" }, 42, "GER").is_ok());
+        assert_eq!(
+            collect_and_validate(
+                &Source {
+                    authenticated: false,
+                    manifest: EXACT20_FUNCTION_MANIFEST_SHA256,
+                    country: "GER"
+                },
+                42,
+                "GER"
+            ),
+            Err(CarrierError::UnauthenticatedSource)
+        );
+        assert_eq!(
+            collect_and_validate(
+                &Source {
+                    authenticated: true,
+                    manifest: [7; 32],
+                    country: "GER"
+                },
+                42,
+                "GER"
+            ),
+            Err(CarrierError::UnauthenticatedSource)
+        );
+        assert!(collect_and_validate(
+            &Source {
+                authenticated: true,
+                manifest: EXACT20_FUNCTION_MANIFEST_SHA256,
+                country: "ITA"
+            },
+            42,
+            "GER"
+        )
+        .is_err());
+        assert!(collect_and_validate(
+            &Source {
+                authenticated: true,
+                manifest: EXACT20_FUNCTION_MANIFEST_SHA256,
+                country: "GER"
+            },
+            42,
+            "GER"
+        )
+        .is_ok());
     }
     #[test]
     fn focus_identity_is_portable_and_mod_valid() {
-        for accepted in ["GER_autobahn", "mod-focus.v2", "shared@branch", "_joint_focus"] {
+        for accepted in [
+            "GER_autobahn",
+            "mod-focus.v2",
+            "shared@branch",
+            "_joint_focus",
+        ] {
             assert!(valid_focus_id(accepted), "{accepted}");
         }
         for rejected in [
