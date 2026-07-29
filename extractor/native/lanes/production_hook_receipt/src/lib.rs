@@ -314,6 +314,15 @@ pub struct InstallAbortDiscard {
 }
 
 impl InstallAbortDiscard {
+    /// Const-constructible zero, so a lane can hold a running discard total in
+    /// a `static Mutex<InstallAbortDiscard>` without a lazy initializer.
+    pub const ZERO: Self = Self {
+        retained_rows: 0,
+        reserved_rows: 0,
+        discarded_diagnostics: 0,
+        poisoned: false,
+    };
+
     pub const fn is_empty(&self) -> bool {
         self.retained_rows == 0
             && self.reserved_rows == 0

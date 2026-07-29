@@ -417,7 +417,7 @@ pub fn install() -> Result<InstalledAddresses, String> {
 }
 
 pub fn uninstall() -> Result<(), String> {
-    seal_after_final_drain_and_uninstall_inner(None, None)
+    seal_after_final_drain_and_uninstall_inner(None, false)
 }
 
 /// Discards every retained D57 mutation and removes the three detours, for the
@@ -432,9 +432,37 @@ pub fn uninstall() -> Result<(), String> {
 /// receipt-owned removal and release-receipt observation all still run, and any
 /// of them failing still fails this abort.
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
-    let mut discard = InstallAbortDiscard::default();
-    seal_after_final_drain_and_uninstall_inner(None, Some(&mut discard))?;
-    Ok(discard)
+    seal_after_final_drain_and_uninstall_inner(None, true)?;
+    Ok(take_install_abort_discard())
+}
+
+/// Running total of what install aborts have discarded from this lane.
+///
+/// Producer custody has to be cleared before the receipt-owned hook removal
+/// below, or that removal's own custody guard refuses. That leaves a window: if
+/// removal or release-receipt observation then fails, the evidence is already
+/// gone while the abort returns `Err` and the caller records nothing. The count
+/// is therefore accumulated here rather than returned straight out, so the
+/// retry that finds an already-empty lane still reports the exact number of
+/// observations the first attempt dropped.
+static INSTALL_ABORT_DISCARD: Mutex<InstallAbortDiscard> = Mutex::new(InstallAbortDiscard::ZERO);
+
+fn accumulate_install_abort_discard(observed: InstallAbortDiscard) {
+    INSTALL_ABORT_DISCARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .merge(observed);
+}
+
+/// Takes the running total. Called only after a complete physical release, so
+/// a lane that comes back fresh does not inherit an earlier abort's count.
+fn take_install_abort_discard() -> InstallAbortDiscard {
+    mem::replace(
+        &mut *INSTALL_ABORT_DISCARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        InstallAbortDiscard::ZERO,
+    )
 }
 
 /// Close the callback admission gate, remove all three detours, and prove that
@@ -446,17 +474,17 @@ pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, Stri
 /// that entered before the close to finish, and only then examines the queue
 /// and sticky error state.  Any such late mutation is a terminal capture error.
 pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
-    seal_after_final_drain_and_uninstall_inner(None, None)
+    seal_after_final_drain_and_uninstall_inner(None, false)
 }
 
 fn seal_after_final_drain_and_uninstall_inner(
     retained_terminal_reservation_id: Option<u64>,
-    discard: Option<&mut InstallAbortDiscard>,
+    discard_custody: bool,
 ) -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "X12 hook lifecycle mutex poisoned".to_string())?;
-    seal_after_final_drain_and_uninstall_locked(retained_terminal_reservation_id, discard)
+    seal_after_final_drain_and_uninstall_locked(retained_terminal_reservation_id, discard_custody)
 }
 
 /// Records and clears every retained D57 evidence custody so the teardown
@@ -479,7 +507,7 @@ fn discard_install_abort_custody_locked(state: &mut HookState, discard: &mut Ins
 
 fn seal_after_final_drain_and_uninstall_locked(
     retained_terminal_reservation_id: Option<u64>,
-    mut discard: Option<&mut InstallAbortDiscard>,
+    discard_custody: bool,
 ) -> Result<(), String> {
     let was_installed = INSTALLED.swap(false, Ordering::AcqRel);
     let base = MODULE_BASE.load(Ordering::Acquire);
@@ -567,24 +595,26 @@ fn seal_after_final_drain_and_uninstall_locked(
         return Err(errors.join("; "));
     }
     if CALLBACK_FATAL.load(Ordering::Acquire) {
-        match discard.as_mut() {
-            // An install abort has no capture to poison: record the latch and
+        if discard_custody {
+            // An install abort has no capture to poison: bank the latch and
             // clear it so the aborted roster leaves no sticky state behind.
-            Some(discard) => {
-                discard.poisoned = true;
-                CALLBACK_FATAL.store(false, Ordering::Release);
-            }
-            None => {
-                errors.push("X12 callback admission/state failed during final teardown".into())
-            }
+            accumulate_install_abort_discard(InstallAbortDiscard {
+                poisoned: true,
+                ..InstallAbortDiscard::ZERO
+            });
+            CALLBACK_FATAL.store(false, Ordering::Release);
+        } else {
+            errors.push("X12 callback admission/state failed during final teardown".into());
         }
     }
     let mut pending_custody = false;
     match STATE.get() {
         Some(state) => match state.lock() {
             Ok(mut state) => {
-                if let Some(discard) = discard.as_mut() {
-                    discard_install_abort_custody_locked(&mut state, discard);
+                if discard_custody {
+                    let mut observed = InstallAbortDiscard::ZERO;
+                    discard_install_abort_custody_locked(&mut state, &mut observed);
+                    accumulate_install_abort_discard(observed);
                 }
                 if let Some(error) = &state.current_error {
                     errors.push(format!("X12 final hook state failed: {error}"));
@@ -872,7 +902,7 @@ pub fn commit_terminal_batch_and_uninstall(reservation_id: u64) -> Result<(), St
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "X12 hook lifecycle mutex poisoned".to_string())?;
-    seal_after_final_drain_and_uninstall_locked(Some(reservation_id), None)?;
+    seal_after_final_drain_and_uninstall_locked(Some(reservation_id), false)?;
     update_reservation(reservation_id, EvidenceReservationKind::Terminal, true)
 }
 
@@ -1730,6 +1760,31 @@ mod tests {
                 && expected.primitive_id == MINHOOK_NORMAL_REL5_PRIMITIVE_ID
                 && expected.original_prefix.len() == 16
         }));
+    }
+
+    #[test]
+    fn a_failed_physical_release_never_loses_an_earlier_install_abort_discard() {
+        // Custody is cleared before the receipt-owned hook removal, so an abort
+        // that clears evidence and then fails during removal must not let the
+        // retry -- which finds an already-empty lane -- report zero.
+        accumulate_install_abort_discard(InstallAbortDiscard {
+            retained_rows: 6,
+            reserved_rows: 6,
+            discarded_diagnostics: 1,
+            poisoned: true,
+        });
+        let mut retry_state = HookState::fresh();
+        let mut observed = InstallAbortDiscard::ZERO;
+        discard_install_abort_custody_locked(&mut retry_state, &mut observed);
+        accumulate_install_abort_discard(observed);
+
+        let total = take_install_abort_discard();
+
+        assert_eq!(total.retained_rows, 6);
+        assert_eq!(total.reserved_rows, 6);
+        assert_eq!(total.discarded_diagnostics, 1);
+        assert!(total.poisoned);
+        assert!(take_install_abort_discard().is_empty());
     }
 
     #[test]

@@ -587,7 +587,7 @@ pub fn uninstall() -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
-    uninstall_locked(None)
+    uninstall_locked(false)
 }
 
 /// Discards every retained D45 producer observation and removes the hook set,
@@ -605,9 +605,37 @@ pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, Stri
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
-    let mut discard = InstallAbortDiscard::default();
-    uninstall_locked(Some(&mut discard))?;
-    Ok(discard)
+    uninstall_locked(true)?;
+    Ok(take_install_abort_discard())
+}
+
+/// Running total of what install aborts have discarded from this lane.
+///
+/// Producer custody has to be cleared before the physical removal below, or
+/// that removal's own custody guard refuses. That leaves a window: if removal,
+/// prefix verification or release-receipt observation then fails, the rows are
+/// already gone while the abort returns `Err` and the caller records nothing.
+/// The count is therefore accumulated here instead of being returned straight
+/// out, so the retry that finds an already-empty lane still reports the exact
+/// number of observations the first attempt dropped.
+static INSTALL_ABORT_DISCARD: Mutex<InstallAbortDiscard> = Mutex::new(InstallAbortDiscard::ZERO);
+
+fn accumulate_install_abort_discard(observed: InstallAbortDiscard) {
+    INSTALL_ABORT_DISCARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .merge(observed);
+}
+
+/// Takes the running total. Called only after a complete physical release, so
+/// a lane that comes back fresh does not inherit an earlier abort's count.
+fn take_install_abort_discard() -> InstallAbortDiscard {
+    mem::replace(
+        &mut *INSTALL_ABORT_DISCARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        InstallAbortDiscard::ZERO,
+    )
 }
 
 /// Records and clears every retained producer custody so a following physical
@@ -631,7 +659,7 @@ fn discard_install_abort_custody_locked(state: &mut HookState) -> InstallAbortDi
     discard
 }
 
-fn uninstall_locked(mut discard: Option<&mut InstallAbortDiscard>) -> Result<(), String> {
+fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
     if failed_install_cleanup_required() {
         return Err(
             "D45 failed-install hook custody requires retry_failed_install_cleanup".into(),
@@ -674,8 +702,8 @@ fn uninstall_locked(mut discard: Option<&mut InstallAbortDiscard>) -> Result<(),
         let mut state = state
             .lock()
             .map_err(|_| "D45 direct hook state mutex poisoned during teardown accounting")?;
-        if let Some(discard) = discard.as_mut() {
-            **discard = discard_install_abort_custody_locked(&mut state);
+        if discard_custody {
+            accumulate_install_abort_discard(discard_install_abort_custody_locked(&mut state));
         }
         if !state.pending_rows.is_empty()
             || state.reservation.is_some()
@@ -2512,6 +2540,31 @@ mod tests {
         assert!(state.reservation.is_none());
         assert!(state.terminal_custody.is_none());
         assert!(state.current_error.is_none());
+    }
+
+    #[test]
+    fn a_failed_physical_release_never_loses_an_earlier_install_abort_discard() {
+        // Custody has to be cleared before the hook removal that follows it, so
+        // an abort that clears rows and then fails during removal must not let
+        // the retry -- which finds an already-empty lane -- report zero.
+        accumulate_install_abort_discard(InstallAbortDiscard {
+            retained_rows: 4,
+            reserved_rows: 4,
+            discarded_diagnostics: 1,
+            poisoned: true,
+        });
+        let mut retry_state = HookState::fresh();
+        accumulate_install_abort_discard(discard_install_abort_custody_locked(&mut retry_state));
+
+        let total = take_install_abort_discard();
+
+        assert_eq!(total.retained_rows, 4);
+        assert_eq!(total.reserved_rows, 4);
+        assert_eq!(total.discarded_diagnostics, 1);
+        assert!(total.poisoned);
+        // Taking it is what a completed release does, so a lane that comes back
+        // fresh cannot inherit an earlier abort's count.
+        assert!(take_install_abort_discard().is_empty());
     }
 
     #[test]
