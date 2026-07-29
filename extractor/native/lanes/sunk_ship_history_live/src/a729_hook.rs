@@ -2016,8 +2016,14 @@ fn read_complete_history_baseline(module_base: usize) -> Result<HistoryVectorBas
         let event_sequence = u64::from(index)
             .checked_add(2)
             .ok_or("A33 baseline sequence overflow")?;
+        // Name the record and the field. The bare message this replaced could not
+        // distinguish 2,690 good records from one bad one.
         let event = read_baseline_record(module_base, record, event_sequence, current_date)
-            .ok_or("A33 existing sunk-history record is incomplete or unreadable")?;
+            .map_err(|why| {
+                format!(
+                    "A33 existing sunk-history record {index} of {count} at 0x{record:016x} is unusable: {why}"
+                )
+            })?;
         record_addresses.push(record);
         events.push(event);
     }
@@ -2056,48 +2062,98 @@ fn read_complete_history_baseline(module_base: usize) -> Result<HistoryVectorBas
     })
 }
 
+/// Decodes one existing `CSunkShipInfo`.
+///
+/// Every refusal names the field that refused. This previously returned a bare
+/// `Option`, so roughly ten distinct causes -- vtable mismatch, an over-long or
+/// non-UTF-8 string, a sink date outside the campaign, an out-of-range flag byte,
+/// any unreadable scalar -- collapsed into one `None` and the caller could only
+/// say "incomplete or unreadable". A live capture then failed on a campaign whose
+/// save holds 2,690 well-formed sunk-ship records, with no way to tell which
+/// record or which field had refused.
 fn read_baseline_record(
     module_base: usize,
     address: usize,
     event_sequence: u64,
     current_date: i32,
-) -> Option<crate::SunkShipEvent> {
-    if address == 0 || read_value::<usize>(address)? != module_base + SUNK_SHIP_INFO_VTABLE_RVA {
-        return None;
+) -> Result<crate::SunkShipEvent, String> {
+    fn field<T>(value: Option<T>, what: &str) -> Result<T, String> {
+        value.ok_or_else(|| format!("{what} is unreadable"))
     }
-    let ship_name = read_msvc_string(address + 0x08, true)?;
-    let class_ptr: usize = read_value(address + 0x68)?;
-    let ship_class_name = read_msvc_string(class_ptr.checked_add(0x68)?, true)?;
-    let attribution_source_name = read_msvc_string(address + 0x28, false)?;
-    let attribution_class_ptr: usize = read_value(address + 0x70)?;
+    if address == 0 {
+        return Err("record pointer is null".into());
+    }
+    let vtable = field(read_value::<usize>(address), "vtable")?;
+    let expected_vtable = module_base + SUNK_SHIP_INFO_VTABLE_RVA;
+    if vtable != expected_vtable {
+        return Err(format!(
+            "vtable is 0x{vtable:016x}, expected 0x{expected_vtable:016x}"
+        ));
+    }
+    let ship_name = field(read_msvc_string(address + 0x08, true), "ship name (+0x08)")?;
+    let class_ptr: usize = field(read_value(address + 0x68), "ship class pointer (+0x68)")?;
+    let ship_class_name = field(
+        class_ptr
+            .checked_add(0x68)
+            .and_then(|at| read_msvc_string(at, true)),
+        "ship class name (class+0x68)",
+    )?;
+    let attribution_source_name = field(
+        read_msvc_string(address + 0x28, false),
+        "attribution source name (+0x28)",
+    )?;
+    let attribution_class_ptr: usize =
+        field(read_value(address + 0x70), "attribution class pointer (+0x70)")?;
     let attribution_source_class_name = if attribution_class_ptr == 0 {
         String::new()
     } else {
-        read_msvc_string(attribution_class_ptr.checked_add(0x68)?, false)?
+        field(
+            attribution_class_ptr
+                .checked_add(0x68)
+                .and_then(|at| read_msvc_string(at, false)),
+            "attribution source class name (attribution class+0x68)",
+        )?
     };
-    let sink_date_raw: i32 = read_value(address + SUNK_SHIP_INFO_SINK_DATE_OFFSET)?;
+    let sink_date_raw: i32 = field(
+        read_value(address + SUNK_SHIP_INFO_SINK_DATE_OFFSET),
+        "sink date",
+    )?;
     if sink_date_raw <= 0 || sink_date_raw > current_date {
-        return None;
+        return Err(format!(
+            "sink date {sink_date_raw} is outside 1..={current_date}"
+        ));
     }
-    let assisted_kill_raw: u8 = read_value(address + 0xa1)?;
-    let cause_record_flag_raw: u8 = read_value(address + 0xa0)?;
+    let assisted_kill_raw: u8 = field(read_value(address + 0xa1), "assisted-kill flag (+0xa1)")?;
+    let cause_record_flag_raw: u8 =
+        field(read_value(address + 0xa0), "cause-record flag (+0xa0)")?;
     if assisted_kill_raw > 1 || cause_record_flag_raw > 1 {
-        return None;
+        return Err(format!(
+            "flag bytes out of range: assisted_kill={assisted_kill_raw}, cause_record={cause_record_flag_raw}"
+        ));
     }
-    let task_force: usize = read_value(address + 0x90)?;
+    let task_force: usize = field(read_value(address + 0x90), "task force pointer (+0x90)")?;
     let task_force_id_raw = if task_force == 0 {
         0
     } else {
-        read_value(task_force.checked_add(0xa4)?)?
+        field(
+            task_force.checked_add(0xa4).and_then(read_value),
+            "task force id (task force+0xa4)",
+        )?
     };
-    Some(crate::SunkShipEvent {
+    Ok(crate::SunkShipEvent {
         event_sequence,
         combat_join_present: false,
         combat_id: 0,
         combat_generation: 0,
-        victim_country_id_raw: read_value(address + 0x48)?,
-        attacker_country_id_raw: read_value(address + 0x4c)?,
-        ui_source_country_id_raw: read_value(address + 0x78)?,
+        victim_country_id_raw: field(read_value(address + 0x48), "victim country id (+0x48)")?,
+        attacker_country_id_raw: field(
+            read_value(address + 0x4c),
+            "attacker country id (+0x4c)",
+        )?,
+        ui_source_country_id_raw: field(
+            read_value(address + 0x78),
+            "ui source country id (+0x78)",
+        )?,
         sink_date_raw,
         victim_member_battle_slot_index: 0,
         flags: if assisted_kill_raw != 0 {
@@ -2105,10 +2161,19 @@ fn read_baseline_record(
         } else {
             crate::EVENT_FLAG_KILLED
         },
-        victim_ship_reference_raw: [read_value(address + 0x7c)?, read_value(address + 0x80)?],
-        damage_source_reference_raw: [read_value(address + 0x84)?, read_value(address + 0x88)?],
+        victim_ship_reference_raw: [
+            field(read_value(address + 0x7c), "victim ship reference lo (+0x7c)")?,
+            field(read_value(address + 0x80), "victim ship reference hi (+0x80)")?,
+        ],
+        damage_source_reference_raw: [
+            field(read_value(address + 0x84), "damage source reference lo (+0x84)")?,
+            field(read_value(address + 0x88), "damage source reference hi (+0x88)")?,
+        ],
         task_force_id_raw,
-        terminal_context_raw: [read_value(address + 0x98)?, read_value(address + 0x9c)?],
+        terminal_context_raw: [
+            field(read_value(address + 0x98), "terminal context lo (+0x98)")?,
+            field(read_value(address + 0x9c), "terminal context hi (+0x9c)")?,
+        ],
         cause_record_flag: cause_record_flag_raw != 0,
         ship_name,
         ship_class_name,
