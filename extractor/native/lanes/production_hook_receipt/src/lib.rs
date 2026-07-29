@@ -6,6 +6,9 @@
 //! shims. Every path fails closed unless the loaded binary and primitive match
 //! their admitted identities.
 
+mod custody_record;
+
+use custody_record::{perform_recorded_cas, reconcile_recorded_cas};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -402,20 +405,16 @@ struct ProvisionalPe64ImportSlotBinding {
     /// The install compare-exchange this crate itself performed, recorded the
     /// instant the hardware exchange returned and before any fallible cleanup.
     /// A retry that finds the slot already reading the external shim replays
-    /// these values and, if `protection_reconciled` is still false, finishes the
-    /// page cleanup first. A retry with no record here has no evidence of a
+    /// these values and, if the record is not yet reconciled, finishes the page
+    /// cleanup first. A retry with no record here has no evidence of a
     /// transition and must not mint a receipt.
-    recorded_install_cas: Option<RecordedInstallCas>,
+    ///
+    /// The cell is handed to the ordering helper directly. There is no accessor
+    /// method and no storage trait: the helper writes into this field, and the
+    /// only way to put a record into the field is to have performed the
+    /// exchange that produced it.
+    install_cas_custody: InstallCasCustody,
     authenticity_seal: u64,
-}
-
-#[cfg(windows)]
-impl RecordedInstallCasStorage for ProvisionalPe64ImportSlotBinding {
-    /// The returned borrow is tied to `&mut self`, so this accessor cannot
-    /// return a throwaway local -- the borrow checker rejects it (`E0515`).
-    fn recorded_install_cas_slot(&mut self) -> &mut Option<RecordedInstallCas> {
-        &mut self.recorded_install_cas
-    }
 }
 
 #[cfg(windows)]
@@ -435,21 +434,16 @@ struct TerminalizingPe64ImportSlotBinding {
     /// The restore compare-exchange this crate itself performed, recorded the
     /// instant the hardware exchange returned and before any fallible cleanup.
     /// A retry that finds the slot already reading the original replays these
-    /// values and, if `protection_reconciled` is still false, finishes the page
+    /// values and, if the record is not yet reconciled, finishes the page
     /// cleanup first. A retry with no record here has no evidence of a
     /// transition and must not mint a receipt.
-    recorded_restore_cas: Option<RecordedRestoreCas>,
+    ///
+    /// The cell is handed to the ordering helper directly. There is no accessor
+    /// method and no storage trait: the helper writes into this field, and the
+    /// only way to put a record into the field is to have performed the
+    /// exchange that produced it.
+    restore_cas_custody: RestoreCasCustody,
     authenticity_seal: u64,
-}
-
-#[cfg(windows)]
-impl RecordedRestoreCasStorage for TerminalizingPe64ImportSlotBinding {
-    /// The returned borrow is tied to `&mut self`, so this accessor cannot
-    /// return a throwaway local even if someone tried to write one -- that is
-    /// the property the previous wrapper method did not have.
-    fn recorded_restore_cas_slot(&mut self) -> &mut Option<RecordedRestoreCas> {
-        &mut self.recorded_restore_cas
-    }
 }
 
 #[cfg(windows)]
@@ -891,6 +885,73 @@ fn canonical_shim_normalized_digest(
 /// aligned atomic pointer compare/exchange. This function never changes code
 /// bytes and never suspends a target thread.
 #[cfg(windows)]
+/// Re-read the provisional binding out of the registry and require it to hold
+/// the record the exchange just produced.
+///
+/// `perform_recorded_cas` writes through the `&mut` it was handed, and safe Rust
+/// cannot state that such a borrow points into the registry entry this receipt
+/// will be minted from. A redirected write -- say a leaked throwaway cell --
+/// would leave the registry empty and strand the lease silently on the next
+/// attempt as `UnwitnessedForeignInstall`, blaming a foreign agent for this
+/// crate's own lost evidence. This makes that case say what it is, here, where
+/// it happened.
+#[cfg(windows)]
+fn confirm_provisional_install_custody_retained(
+    registry: &BTreeMap<(u64, u64), Pe64ImportSlotCustodyState>,
+    key: &(u64, u64),
+    expected: ExpectedPe64ImportAddressSlot,
+    external_shim: ExternalDispatchShimIdentity,
+    teardown_owner_token: u64,
+    slot_address: usize,
+    performed: UnconfirmedInstallCas,
+) -> Result<RecordedInstallCas, String> {
+    let retained = match registry.get(key) {
+        Some(Pe64ImportSlotCustodyState::Provisional(binding))
+            if binding.expected == expected
+                && binding.external_shim == external_shim
+                && binding.teardown_owner_token == teardown_owner_token
+                && binding.slot_address == slot_address =>
+        {
+            binding.install_cas_custody.recorded()
+        }
+        _ => {
+            return Err(format!(
+                "{} provisional import-slot custody changed after the install CAS",
+                expected.logical_name
+            ));
+        }
+    };
+    release_install_cas_if_custody_matches(retained, performed)
+        .map_err(|error| format!("{} {error}", expected.logical_name))
+}
+
+/// The restore direction of [`confirm_provisional_install_custody_retained`].
+#[cfg(windows)]
+fn confirm_terminalizing_restore_custody_retained(
+    registry: &BTreeMap<(u64, u64), Pe64ImportSlotCustodyState>,
+    key: &(u64, u64),
+    expected: ExpectedPe64ImportAddressSlot,
+    installed: &InstalledPe64ImportAddressSlotReceipt,
+    permit: &Pe64ImportAddressSlotTerminalPermit,
+    performed: UnconfirmedRestoreCas,
+) -> Result<RecordedRestoreCas, String> {
+    let retained = match registry.get(key) {
+        Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
+            if binding.installed == *installed && &binding.permit == permit =>
+        {
+            binding.restore_cas_custody.recorded()
+        }
+        _ => {
+            return Err(format!(
+                "{} terminalizing custody changed after the restore CAS",
+                expected.logical_name
+            ));
+        }
+    };
+    release_restore_cas_if_custody_matches(retained, performed)
+        .map_err(|error| format!("{} {error}", expected.logical_name))
+}
+
 pub fn install_pe64_import_address_slot(
     expected: ExpectedPe64ImportAddressSlot,
     sealed_shim: &SealedExternalDispatchShim,
@@ -1044,7 +1105,7 @@ pub fn install_pe64_import_address_slot(
             (
                 binding.authenticity_seal,
                 binding.protection_before,
-                binding.recorded_install_cas,
+                binding.install_cas_custody.recorded(),
             )
         }
         Some(_) => unreachable!("active and terminal custody returned above"),
@@ -1069,7 +1130,7 @@ pub fn install_pe64_import_address_slot(
                     teardown_owner_token,
                     slot_address,
                     protection_before,
-                    recorded_install_cas: None,
+                    install_cas_custody: InstallCasCustody::unrecorded(),
                     authenticity_seal,
                 }),
             );
@@ -1113,11 +1174,11 @@ pub fn install_pe64_import_address_slot(
                     ));
                 }
             };
-            // The ordering lives in `perform_recorded_install_cas`: the record
-            // is written between the exchange and the fallible cleanup, so a
-            // cleanup failure leaves a resumable record instead of losing the
-            // evidence that the exchange happened.
-            let (reconciled, protection_after) = perform_recorded_install_cas(
+            // The ordering lives in `custody_record::perform_recorded_cas`: the
+            // record is written between the exchange and the fallible cleanup,
+            // so a cleanup failure leaves a resumable record instead of losing
+            // the evidence that the exchange happened.
+            let (performed, protection_after) = perform_recorded_cas(
                 || {
                     let prepared = begin_atomic_compare_exchange_pointer_slot(slot_address)?;
                     Ok((
@@ -1133,27 +1194,38 @@ pub fn install_pe64_import_address_slot(
                         external_shim_address,
                     )
                 },
-                binding,
+                &mut binding.install_cas_custody,
                 finish_atomic_compare_exchange_pointer_slot,
+            )?;
+            // `performed` is an `UnconfirmedInstallCas`, so simply deleting
+            // this call does not compile -- the receipt below has nothing to
+            // form itself from. That makes the re-read the shortest path, not
+            // the only one; `custody_record`'s module docs name the two ways
+            // around it that still compile.
+            let reconciled = confirm_provisional_install_custody_retained(
+                &registry,
+                &key,
+                expected,
+                external_shim,
+                teardown_owner_token,
+                slot_address,
+                performed,
             )?;
             complete_recorded_install_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
         Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded) => {
-            let protection_after =
-                reconcile_pointer_slot_protection(slot_address, recorded.protection_before)?;
-            let reconciled = RecordedInstallCas {
-                protection_reconciled: true,
-                ..recorded
-            };
-            match registry.get_mut(&key) {
+            // Resolve the registry slot before the reconciliation runs, for the
+            // same reason the `PerformCas` arm does: the write that follows must
+            // not be able to fail to find its home.
+            let binding = match registry.get_mut(&key) {
                 Some(Pe64ImportSlotCustodyState::Provisional(binding))
                     if binding.expected == expected
                         && binding.external_shim == external_shim
                         && binding.teardown_owner_token == teardown_owner_token
                         && binding.slot_address == slot_address =>
                 {
-                    binding.recorded_install_cas = Some(reconciled);
+                    binding
                 }
                 _ => {
                     return Err(format!(
@@ -1161,7 +1233,23 @@ pub fn install_pe64_import_address_slot(
                         expected.logical_name
                     ));
                 }
-            }
+            };
+            let (performed, protection_after) = reconcile_recorded_cas(
+                recorded,
+                &mut binding.install_cas_custody,
+                |protection_before| {
+                    reconcile_pointer_slot_protection(slot_address, protection_before)
+                },
+            )?;
+            let reconciled = confirm_provisional_install_custody_retained(
+                &registry,
+                &key,
+                expected,
+                external_shim,
+                teardown_owner_token,
+                slot_address,
+                performed,
+            )?;
             complete_recorded_install_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
@@ -1173,22 +1261,12 @@ pub fn install_pe64_import_address_slot(
         }
     };
     // Both comparisons are against the protection observed when the provisional
-    // binding was created, not against the record's own. KNOWN, DELIBERATE: if
-    // an external agent re-protects the page between that observation and
-    // `begin_atomic_compare_exchange_pointer_slot`, a successful exchange
-    // records the newer value, this check refuses, and the retry cannot satisfy
-    // both this check and `complete_recorded_install_cas_observation` at once --
-    // the lease stays provisional for the process lifetime. That is a liveness
-    // cost, never a forged receipt. The restore path holds the identical
-    // property against `protection_before_restore`; changing the reference
-    // value here alone would desynchronise the two directions, so it is left
-    // for a change that covers both.
-    if cas.protection_before != protection_before || cas.protection_after != protection_before {
-        return Err(format!(
-            "{} provisional import-slot page protection remains unresolved",
-            expected.logical_name
-        ));
-    }
+    // binding was created, not against the record's own. KNOWN, DELIBERATE, and
+    // deliberately kept: see `verify_install_cas_matches_lease_protection` for
+    // why a permanently stranded lease is the right outcome here and what each
+    // typed refusal means.
+    verify_install_cas_matches_lease_protection(protection_before, cas)
+        .map_err(|error| format!("{} {error}", expected.logical_name))?;
     // Non-tautological now: `observed_before` is only ever a value some real
     // compare-exchange returned, replayed verbatim from the record if this is a
     // retry. Before the fix the already-shim arm defined it to equal the value
@@ -1200,14 +1278,18 @@ pub fn install_pe64_import_address_slot(
             expected.logical_name, expected.expected_original_address
         ));
     }
-    // KNOWN, DELIBERATE: if an external writer puts the slot back to the
-    // original between the exchange and this load, the call fails here and the
-    // retry is refused as `RecordedInstallCasSlotDiverged` rather than driving a
-    // second exchange. The pre-change code recovered from this only by
-    // synthesizing the observation, which is the defect this lane removes; a
-    // record whose slot no longer holds the shim genuinely no longer describes
-    // the live slot, so re-exchanging under the same record would attest a
-    // transition against evidence from a different one.
+    // KNOWN, DELIBERATE, and deliberately kept: if an external writer puts the
+    // slot back to the original between the exchange and this load, the call
+    // fails here and the retry is refused as `RecordedInstallCasSlotDiverged`
+    // rather than driving a second exchange. The pre-change code recovered from
+    // this only by synthesizing the observation, which is the defect this file's
+    // custody records remove; a record whose slot no longer holds the shim
+    // genuinely no longer describes the live slot, so re-exchanging under the
+    // same record would attest a transition against evidence from a different
+    // one. Re-exchanging under a *replacement* record would be honest about the
+    // second exchange but silently drop the fact that a third party wrote the
+    // slot in between -- an installation receipt says this invocation held the
+    // slot from original to shim, and after a contested write it did not.
     let observed_after = atomic_load_pointer_slot(slot_address)?;
     if observed_after != external_shim_address {
         return Err(format!(
@@ -1573,7 +1655,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 permit: permit.clone(),
                 observed_terminal: permit.observed_terminal,
                 protection_before_restore,
-                recorded_restore_cas: None,
+                restore_cas_custody: RestoreCasCustody::unrecorded(),
                 authenticity_seal,
             };
             registry.insert(
@@ -1621,7 +1703,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         current,
         installed.expected_original_address,
         installed.external_shim_address,
-        terminalizing.recorded_restore_cas,
+        terminalizing.restore_cas_custody.recorded(),
     )
     .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let cas = match decision {
@@ -1643,11 +1725,11 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                     ));
                 }
             };
-            // The ordering lives in `perform_recorded_restore_cas`: the record
-            // below is written between the exchange and the fallible cleanup,
-            // so a cleanup failure leaves a resumable record instead of losing
-            // the evidence that the exchange happened.
-            let (reconciled, protection_after) = perform_recorded_restore_cas(
+            // The ordering lives in `custody_record::perform_recorded_cas`: the
+            // record below is written between the exchange and the fallible
+            // cleanup, so a cleanup failure leaves a resumable record instead of
+            // losing the evidence that the exchange happened.
+            let (performed, protection_after) = perform_recorded_cas(
                 || {
                     let prepared = begin_atomic_compare_exchange_pointer_slot(slot_address)?;
                     Ok((
@@ -1663,26 +1745,34 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                         installed.expected_original_address,
                     )
                 },
-                binding,
+                &mut binding.restore_cas_custody,
                 finish_atomic_compare_exchange_pointer_slot,
+            )?;
+            // `performed` is an `UnconfirmedRestoreCas`, so simply deleting
+            // this call does not compile -- the receipt below has nothing to
+            // form itself from. That makes the re-read the shortest path, not
+            // the only one; `custody_record`'s module docs name the two ways
+            // around it that still compile.
+            let reconciled = confirm_terminalizing_restore_custody_retained(
+                &registry,
+                &key,
+                expected,
+                installed,
+                permit,
+                performed,
             )?;
             complete_recorded_restore_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
         Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded) => {
-            let protection_after = reconcile_pointer_slot_protection(
-                slot_address,
-                recorded.protection_before,
-            )?;
-            let reconciled = RecordedRestoreCas {
-                protection_reconciled: true,
-                ..recorded
-            };
-            match registry.get_mut(&key) {
+            // Resolve the registry slot before the reconciliation runs, for the
+            // same reason the `PerformCas` arm does: the write that follows must
+            // not be able to fail to find its home.
+            let binding = match registry.get_mut(&key) {
                 Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
                     if binding.installed == *installed && &binding.permit == permit =>
                 {
-                    binding.recorded_restore_cas = Some(reconciled);
+                    binding
                 }
                 _ => {
                     return Err(format!(
@@ -1690,7 +1780,22 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                         expected.logical_name
                     ));
                 }
-            }
+            };
+            let (performed, protection_after) = reconcile_recorded_cas(
+                recorded,
+                &mut binding.restore_cas_custody,
+                |protection_before| {
+                    reconcile_pointer_slot_protection(slot_address, protection_before)
+                },
+            )?;
+            let reconciled = confirm_terminalizing_restore_custody_retained(
+                &registry,
+                &key,
+                expected,
+                installed,
+                permit,
+                performed,
+            )?;
             complete_recorded_restore_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
@@ -1703,14 +1808,12 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
     };
-    if cas.protection_before != terminalizing.protection_before_restore
-        || cas.protection_after != terminalizing.protection_before_restore
-    {
-        return Err(format!(
-            "{} terminalizing import-slot protection remains unresolved",
-            expected.logical_name
-        ));
-    }
+    // Against the protection observed when the terminalizing binding was
+    // created, not against the record's own. KNOWN, DELIBERATE, and deliberately
+    // kept -- identical to the install path; see
+    // `verify_restore_cas_matches_lease_protection`.
+    verify_restore_cas_matches_lease_protection(terminalizing.protection_before_restore, cas)
+        .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let observed_before = cas.observed_before;
     if observed_before != installed.external_shim_address {
         return Err(format!(
@@ -1718,6 +1821,15 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             expected.logical_name, installed.external_shim_address
         ));
     }
+    // KNOWN, DELIBERATE, and deliberately kept -- the restore direction of the
+    // property the install path states above its own retention check. If an
+    // external writer puts the slot back to the shim between the exchange and
+    // this load, the call fails here and the retry is refused as
+    // `RecordedRestoreCasSlotDiverged` rather than driving a second exchange:
+    // the record on hand describes an exchange whose result a third party has
+    // since overwritten, so replaying it would attest a transition against
+    // evidence from a different one, and re-exchanging under a replacement
+    // record would drop the fact that custody of the slot was contested.
     let observed_after = atomic_load_pointer_slot(slot_address)?;
     if observed_after != installed.expected_original_address {
         return Err(format!(
@@ -3343,6 +3455,27 @@ pub enum Pe64ImportSlotRestoreCustodyError {
         protection_before: u32,
         protection_after: u32,
     },
+    /// The exchange ran but the record this crate holds for the slot is not the
+    /// one it just performed. The write went somewhere other than the custody
+    /// the receipt is minted against, so the evidence a retry needs is not
+    /// where it has to be.
+    RecordedRestoreCasNotRetained {
+        retained: Option<RecordedRestoreCas>,
+        performed: RecordedRestoreCas,
+    },
+    /// The page protection the exchange observed before it ran is not the
+    /// protection observed when the lease over the slot was taken -- something
+    /// outside this crate re-protected the page in between.
+    RestoreCasProtectionBeforeDivergedFromLease {
+        lease_protection: u32,
+        cas_protection_before: u32,
+    },
+    /// The page protection observed after the exchange is not the protection
+    /// observed when the lease was taken.
+    RestoreCasProtectionAfterDivergedFromLease {
+        lease_protection: u32,
+        cas_protection_after: u32,
+    },
 }
 
 impl std::fmt::Display for Pe64ImportSlotRestoreCustodyError {
@@ -3372,6 +3505,27 @@ impl std::fmt::Display for Pe64ImportSlotRestoreCustodyError {
                 f,
                 "recorded restore CAS left page protection at 0x{protection_after:X}, not the 0x{protection_before:X} it started from"
             ),
+            Self::RecordedRestoreCasNotRetained {
+                retained,
+                performed,
+            } => write!(
+                f,
+                "restore CAS custody did not retain the record the exchange produced: performed {performed:?}, custody holds {retained:?}"
+            ),
+            Self::RestoreCasProtectionBeforeDivergedFromLease {
+                lease_protection,
+                cas_protection_before,
+            } => write!(
+                f,
+                "restore CAS observed page protection 0x{cas_protection_before:X} before the exchange; the lease was taken over 0x{lease_protection:X}"
+            ),
+            Self::RestoreCasProtectionAfterDivergedFromLease {
+                lease_protection,
+                cas_protection_after,
+            } => write!(
+                f,
+                "restore CAS left page protection at 0x{cas_protection_after:X}; the lease was taken over 0x{lease_protection:X}"
+            ),
         }
     }
 }
@@ -3380,22 +3534,25 @@ impl std::fmt::Display for Pe64ImportSlotRestoreCustodyError {
 ///
 /// Written the instant the hardware `compare_exchange` returns and *before* any
 /// fallible page-protection cleanup, so a failure during that cleanup leaves
-/// evidence of the transition behind instead of losing it. `protection_reconciled`
-/// distinguishes "exchange done, page protection still owed" from "exchange done
-/// and the page is back where it started"; only the latter can form a receipt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RecordedRestoreCas {
-    /// The value the compare-exchange actually returned.
-    pub observed_before: usize,
-    /// Page protection observed before the exchange.
-    pub protection_before: u32,
-    /// Protection the exchange temporarily installed. Equals
-    /// `protection_before` when the page was already writable.
-    pub protection_temporary: u32,
-    /// False until the page protection has been observed back at
-    /// `protection_before`.
-    pub protection_reconciled: bool,
-}
+/// evidence of the transition behind instead of losing it.
+/// `protection_reconciled` distinguishes "exchange done, page protection still
+/// owed" from "exchange done and the page is back where it started"; only the
+/// latter can form a receipt.
+///
+/// Constructible only inside [`crate::custody_record`], and there only by
+/// performing an exchange. A synthesized `observed_before` -- the defect this
+/// whole mechanism exists to prevent -- is a compile error outside that module
+/// rather than something a test has to catch.
+pub type RecordedRestoreCas = custody_record::RecordedCas<custody_record::Restore>;
+
+/// The durable slot a restore record lives in, owned by the terminalizing
+/// binding the custody registry holds.
+pub type RestoreCasCustody = custody_record::CasCustody<custody_record::Restore>;
+
+/// A restore record whose landing in the terminalizing binding has not been
+/// checked yet. [`release_restore_cas_if_custody_matches`] turns one into a
+/// [`RecordedRestoreCas`].
+pub type UnconfirmedRestoreCas = custody_record::UnconfirmedCas<custody_record::Restore>;
 
 /// Which arm the restore path takes for one import slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3440,7 +3597,7 @@ pub fn decide_pe64_import_slot_restore_cas(
                     },
                 );
             }
-            if recorded.protection_reconciled {
+            if recorded.protection_reconciled() {
                 Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(recorded))
             } else {
                 Ok(Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded))
@@ -3459,59 +3616,71 @@ pub fn decide_pe64_import_slot_restore_cas(
     }
 }
 
-/// Sequence one restore compare-exchange so that its result is persisted before
-/// anything that can fail runs after it.
+/// Release the record an exchange just produced, if the custody the caller
+/// observed holds it.
 ///
-/// This is the ordering, extracted so it can be driven with an injected fault:
-/// `prepare` holds everything fallible that must precede the exchange,
-/// `exchange` is infallible by construction, `record` persists, and only then
-/// does `finish` run the fallible cleanup. `record` is called twice -- once with
-/// `protection_reconciled: false` immediately after the exchange, once with it
-/// true once the cleanup has landed -- so a `finish` failure leaves behind
-/// evidence that the transition happened and that the page is still owed,
-/// rather than leaving no evidence at all.
+/// `custody_record::perform_recorded_cas` writes through the `&mut` it is handed
+/// and cannot tell whether that borrow points into the registry entry this
+/// receipt will be minted from -- safe Rust has no way to state the provenance
+/// of a `&mut`. So the call site re-reads the entry afterwards and passes what it
+/// found here. What this establishes is only that the record matches the
+/// `observed_custody` it was given; the value of that depends entirely on the
+/// caller having re-read its real storage, which is why
+/// [`confirm_terminalizing_restore_custody_retained`] does the re-read itself
+/// rather than trusting a caller to.
 ///
-/// The sink is reached through [`RecordedRestoreCasStorage`] rather than as a
-/// bare `&mut Option`, and that is the point. An implementor's accessor returns
-/// a borrow tied to `&mut self`, so it *cannot* hand back a throwaway local --
-/// the borrow checker rejects it. A bare `Option` does not implement the trait,
-/// so it cannot reach the production call site either. Taking `&mut Option`
-/// directly left exactly one unpinned substitution point: redirecting the
-/// record there compiled cleanly, dropped the evidence, and brought back the
-/// legitimate-retry refusal this whole mechanism exists to prevent.
-fn perform_recorded_restore_cas<P, E>(
-    prepare: impl FnOnce() -> Result<(P, u32, u32), E>,
-    exchange: impl FnOnce(&P) -> usize,
-    storage: &mut impl RecordedRestoreCasStorage,
-    finish: impl FnOnce(P) -> Result<u32, E>,
-) -> Result<(RecordedRestoreCas, u32), E> {
-    let (prepared, protection_before, protection_temporary) = prepare()?;
-    let observed_before = exchange(&prepared);
-    let recorded = RecordedRestoreCas {
-        observed_before,
-        protection_before,
-        protection_temporary,
-        protection_reconciled: false,
-    };
-    // Between the exchange above and this line there is nothing fallible.
-    *storage.recorded_restore_cas_slot() = Some(recorded);
-    let protection_after = finish(prepared)?;
-    let reconciled = RecordedRestoreCas {
-        protection_reconciled: true,
-        ..recorded
-    };
-    *storage.recorded_restore_cas_slot() = Some(reconciled);
-    Ok((reconciled, protection_after))
+/// A record that did not land is fail-closed either way -- the next attempt
+/// finds no evidence and refuses the transition as unwitnessed -- so this turns
+/// a silent liveness loss into a named refusal at the point it happens.
+pub fn release_restore_cas_if_custody_matches(
+    observed_custody: Option<RecordedRestoreCas>,
+    performed: UnconfirmedRestoreCas,
+) -> Result<RecordedRestoreCas, Pe64ImportSlotRestoreCustodyError> {
+    performed
+        .release_if_custody_matches(observed_custody)
+        .map_err(|mismatch| {
+            Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+                retained: mismatch.retained,
+                performed: mismatch.performed,
+            }
+        })
 }
 
-/// Owner of the slot a restore compare-exchange records itself into.
+/// Refuse unless the page protection the exchange saw, and left, is the
+/// protection observed when the lease over this slot was taken.
 ///
-/// Deliberately not implemented for `Option<RecordedRestoreCas>`: the whole
-/// value of the trait is that the only implementors are types that *own*
-/// durable custody storage, so the record cannot be pointed at something that
-/// dies with the call.
-trait RecordedRestoreCasStorage {
-    fn recorded_restore_cas_slot(&mut self) -> &mut Option<RecordedRestoreCas>;
+/// Both comparisons are against the lease's observation, not the record's own.
+/// KNOWN, DELIBERATE, and re-affirmed rather than changed: if an external agent
+/// re-protects the page between the lease observation and the exchange, a
+/// successful exchange records the newer value, this refuses, and no retry can
+/// satisfy both this and [`complete_recorded_restore_cas_observation`] at once
+/// -- the lease stays terminalizing for the process lifetime. That is a
+/// liveness cost, never a forged receipt, and the alternative is worse: an
+/// external re-protection of a page this crate holds custody of is exactly the
+/// kind of event a custody receipt must not silently absorb. The typed variants
+/// exist so an operator reading the log can tell that case from a cleanup that
+/// failed to put the page back.
+pub fn verify_restore_cas_matches_lease_protection(
+    lease_protection: u32,
+    cas: AtomicPointerCasObservation,
+) -> Result<(), Pe64ImportSlotRestoreCustodyError> {
+    if cas.protection_before != lease_protection {
+        return Err(
+            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
+                lease_protection,
+                cas_protection_before: cas.protection_before,
+            },
+        );
+    }
+    if cas.protection_after != lease_protection {
+        return Err(
+            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
+                lease_protection,
+                cas_protection_after: cas.protection_after,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Render the message a timed-out quiescence reports.
@@ -3541,18 +3710,18 @@ pub fn complete_recorded_restore_cas_observation(
     recorded: RecordedRestoreCas,
     protection_after: u32,
 ) -> Result<AtomicPointerCasObservation, Pe64ImportSlotRestoreCustodyError> {
-    if !recorded.protection_reconciled || protection_after != recorded.protection_before {
+    if !recorded.protection_reconciled() || protection_after != recorded.protection_before() {
         return Err(
             Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
-                protection_before: recorded.protection_before,
+                protection_before: recorded.protection_before(),
                 protection_after,
             },
         );
     }
     Ok(AtomicPointerCasObservation {
-        observed_before: recorded.observed_before,
-        protection_before: recorded.protection_before,
-        protection_temporary: recorded.protection_temporary,
+        observed_before: recorded.observed_before(),
+        protection_before: recorded.protection_before(),
+        protection_temporary: recorded.protection_temporary(),
         protection_after,
     })
 }
@@ -3599,6 +3768,27 @@ pub enum Pe64ImportSlotInstallCustodyError {
         protection_before: u32,
         protection_after: u32,
     },
+    /// The exchange ran but the record this crate holds for the slot is not the
+    /// one it just performed. The write went somewhere other than the custody
+    /// the receipt is minted against, so the evidence a retry needs is not
+    /// where it has to be.
+    RecordedInstallCasNotRetained {
+        retained: Option<RecordedInstallCas>,
+        performed: RecordedInstallCas,
+    },
+    /// The page protection the exchange observed before it ran is not the
+    /// protection observed when the lease over the slot was taken -- something
+    /// outside this crate re-protected the page in between.
+    InstallCasProtectionBeforeDivergedFromLease {
+        lease_protection: u32,
+        cas_protection_before: u32,
+    },
+    /// The page protection observed after the exchange is not the protection
+    /// observed when the lease was taken.
+    InstallCasProtectionAfterDivergedFromLease {
+        lease_protection: u32,
+        cas_protection_after: u32,
+    },
 }
 
 impl std::fmt::Display for Pe64ImportSlotInstallCustodyError {
@@ -3628,6 +3818,27 @@ impl std::fmt::Display for Pe64ImportSlotInstallCustodyError {
                 f,
                 "recorded install CAS left page protection at 0x{protection_after:X}, not the 0x{protection_before:X} it started from"
             ),
+            Self::RecordedInstallCasNotRetained {
+                retained,
+                performed,
+            } => write!(
+                f,
+                "install CAS custody did not retain the record the exchange produced: performed {performed:?}, custody holds {retained:?}"
+            ),
+            Self::InstallCasProtectionBeforeDivergedFromLease {
+                lease_protection,
+                cas_protection_before,
+            } => write!(
+                f,
+                "install CAS observed page protection 0x{cas_protection_before:X} before the exchange; the lease was taken over 0x{lease_protection:X}"
+            ),
+            Self::InstallCasProtectionAfterDivergedFromLease {
+                lease_protection,
+                cas_protection_after,
+            } => write!(
+                f,
+                "install CAS left page protection at 0x{cas_protection_after:X}; the lease was taken over 0x{lease_protection:X}"
+            ),
         }
     }
 }
@@ -3636,22 +3847,26 @@ impl std::fmt::Display for Pe64ImportSlotInstallCustodyError {
 ///
 /// Written the instant the hardware `compare_exchange` returns and *before* any
 /// fallible page-protection cleanup, so a failure during that cleanup leaves
-/// evidence of the transition behind instead of losing it. `protection_reconciled`
-/// distinguishes "exchange done, page protection still owed" from "exchange done
-/// and the page is back where it started"; only the latter can form a receipt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RecordedInstallCas {
-    /// The value the compare-exchange actually returned.
-    pub observed_before: usize,
-    /// Page protection observed before the exchange.
-    pub protection_before: u32,
-    /// Protection the exchange temporarily installed. Equals
-    /// `protection_before` when the page was already writable.
-    pub protection_temporary: u32,
-    /// False until the page protection has been observed back at
-    /// `protection_before`.
-    pub protection_reconciled: bool,
-}
+/// evidence of the transition behind instead of losing it.
+/// `protection_reconciled` distinguishes "exchange done, page protection still
+/// owed" from "exchange done and the page is back where it started"; only the
+/// latter can form a receipt.
+///
+/// A distinct type from [`RecordedRestoreCas`], not an alias of it: the two
+/// directions swap the roles of the original and the shim address, so a record
+/// of one is not evidence for the other and the compiler refuses to substitute
+/// them. Constructible only inside [`crate::custody_record`], and there only by
+/// performing an exchange.
+pub type RecordedInstallCas = custody_record::RecordedCas<custody_record::Install>;
+
+/// The durable slot an install record lives in, owned by the provisional
+/// binding the custody registry holds.
+pub type InstallCasCustody = custody_record::CasCustody<custody_record::Install>;
+
+/// An install record whose landing in the provisional binding has not been
+/// checked yet. [`release_install_cas_if_custody_matches`] turns one into a
+/// [`RecordedInstallCas`].
+pub type UnconfirmedInstallCas = custody_record::UnconfirmedCas<custody_record::Install>;
 
 /// Which arm the install path takes for one import slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3699,7 +3914,7 @@ pub fn decide_pe64_import_slot_install_cas(
                     },
                 );
             }
-            if recorded.protection_reconciled {
+            if recorded.protection_reconciled() {
                 Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(recorded))
             } else {
                 Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded))
@@ -3718,55 +3933,51 @@ pub fn decide_pe64_import_slot_install_cas(
     }
 }
 
-/// Sequence one install compare-exchange so that its result is persisted before
-/// anything that can fail runs after it.
-///
-/// Same ordering contract as [`perform_recorded_restore_cas`], in the install
-/// direction: `prepare` holds everything fallible that must precede the
-/// exchange, `exchange` is infallible by construction, the record is persisted,
-/// and only then does `finish` run the fallible cleanup. Nothing fallible sits
-/// between the exchange and the record, so a completed exchange can never be
-/// lost -- a `finish` failure leaves behind evidence that the transition
-/// happened and that the page is still owed.
-///
-/// The sink is reached through [`RecordedInstallCasStorage`] rather than as a
-/// bare `&mut Option`, and that is the point: an implementor's accessor returns
-/// a borrow tied to `&mut self`, so it cannot hand back a throwaway local. A
-/// bare `Option` does not implement the trait, so it cannot reach the
-/// production call site either.
-fn perform_recorded_install_cas<P, E>(
-    prepare: impl FnOnce() -> Result<(P, u32, u32), E>,
-    exchange: impl FnOnce(&P) -> usize,
-    storage: &mut impl RecordedInstallCasStorage,
-    finish: impl FnOnce(P) -> Result<u32, E>,
-) -> Result<(RecordedInstallCas, u32), E> {
-    let (prepared, protection_before, protection_temporary) = prepare()?;
-    let observed_before = exchange(&prepared);
-    let recorded = RecordedInstallCas {
-        observed_before,
-        protection_before,
-        protection_temporary,
-        protection_reconciled: false,
-    };
-    // Between the exchange above and this line there is nothing fallible.
-    *storage.recorded_install_cas_slot() = Some(recorded);
-    let protection_after = finish(prepared)?;
-    let reconciled = RecordedInstallCas {
-        protection_reconciled: true,
-        ..recorded
-    };
-    *storage.recorded_install_cas_slot() = Some(reconciled);
-    Ok((reconciled, protection_after))
+/// Release the record an exchange just produced, if the custody the caller
+/// observed holds it. The install direction of
+/// [`release_restore_cas_if_custody_matches`]; see it for what this does and
+/// does not establish.
+pub fn release_install_cas_if_custody_matches(
+    observed_custody: Option<RecordedInstallCas>,
+    performed: UnconfirmedInstallCas,
+) -> Result<RecordedInstallCas, Pe64ImportSlotInstallCustodyError> {
+    performed
+        .release_if_custody_matches(observed_custody)
+        .map_err(|mismatch| {
+            Pe64ImportSlotInstallCustodyError::RecordedInstallCasNotRetained {
+                retained: mismatch.retained,
+                performed: mismatch.performed,
+            }
+        })
 }
 
-/// Owner of the slot an install compare-exchange records itself into.
+/// Refuse unless the page protection the exchange saw, and left, is the
+/// protection observed when the lease over this slot was taken.
 ///
-/// Deliberately not implemented for `Option<RecordedInstallCas>`: the whole
-/// value of the trait is that the only implementors are types that *own*
-/// durable custody storage, so the record cannot be pointed at something that
-/// dies with the call.
-trait RecordedInstallCasStorage {
-    fn recorded_install_cas_slot(&mut self) -> &mut Option<RecordedInstallCas>;
+/// The install direction of [`verify_restore_cas_matches_lease_protection`],
+/// with the identical deliberate liveness cost. The two are kept in step by
+/// being the same shape over the same fields.
+pub fn verify_install_cas_matches_lease_protection(
+    lease_protection: u32,
+    cas: AtomicPointerCasObservation,
+) -> Result<(), Pe64ImportSlotInstallCustodyError> {
+    if cas.protection_before != lease_protection {
+        return Err(
+            Pe64ImportSlotInstallCustodyError::InstallCasProtectionBeforeDivergedFromLease {
+                lease_protection,
+                cas_protection_before: cas.protection_before,
+            },
+        );
+    }
+    if cas.protection_after != lease_protection {
+        return Err(
+            Pe64ImportSlotInstallCustodyError::InstallCasProtectionAfterDivergedFromLease {
+                lease_protection,
+                cas_protection_after: cas.protection_after,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Turn a recorded install exchange plus the live page protection into the
@@ -3779,18 +3990,18 @@ pub fn complete_recorded_install_cas_observation(
     recorded: RecordedInstallCas,
     protection_after: u32,
 ) -> Result<AtomicPointerCasObservation, Pe64ImportSlotInstallCustodyError> {
-    if !recorded.protection_reconciled || protection_after != recorded.protection_before {
+    if !recorded.protection_reconciled() || protection_after != recorded.protection_before() {
         return Err(
             Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
-                protection_before: recorded.protection_before,
+                protection_before: recorded.protection_before(),
                 protection_after,
             },
         );
     }
     Ok(AtomicPointerCasObservation {
-        observed_before: recorded.observed_before,
-        protection_before: recorded.protection_before,
-        protection_temporary: recorded.protection_temporary,
+        observed_before: recorded.observed_before(),
+        protection_before: recorded.protection_before(),
+        protection_temporary: recorded.protection_temporary(),
         protection_after,
     })
 }
@@ -4806,22 +5017,41 @@ mod pe64_import_slot_custody_decision_tests {
     const PROTECTION_TEMPORARY: u32 = 0x22;
 
     /// A recorded exchange whose page cleanup completed.
+    ///
+    /// Built by actually driving `custody_record::perform_recorded_cas`, because
+    /// there is no other way: `RecordedRestoreCas` has private fields and no
+    /// constructor outside `custody_record`, so a test cannot hand-assemble one
+    /// any more than production can. That is what this lane changed -- the
+    /// forged record these helpers used to be written as is now a compile error.
     fn recorded_cas() -> RecordedRestoreCas {
-        RecordedRestoreCas {
-            observed_before: RECORDED_SENTINEL_BEFORE,
-            protection_before: PROTECTION_BEFORE,
-            protection_temporary: PROTECTION_TEMPORARY,
-            protection_reconciled: true,
-        }
+        let mut custody = RestoreCasCustody::unrecorded();
+        let (performed, _) = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Ok(PROTECTION_BEFORE),
+        )
+        .expect("an injected cleanup returning the starting protection cannot fail");
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed")
     }
 
     /// A recorded exchange that completed but whose page cleanup then failed --
-    /// the state Finding 1 is about.
+    /// the state Finding 1 is about. Read back out of the custody cell, because
+    /// that path returns `Err` rather than a record.
     fn recorded_cas_pending_protection() -> RecordedRestoreCas {
-        RecordedRestoreCas {
-            protection_reconciled: false,
-            ..recorded_cas()
-        }
+        let mut custody = RestoreCasCustody::unrecorded();
+        let outcome = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Err("injected page protection restoration failure"),
+        );
+        assert_eq!(outcome, Err("injected page protection restoration failure"));
+        custody
+            .recorded()
+            .expect("the exchange is recorded before the cleanup runs")
     }
 
     // ---- Defect A: restore arm selection --------------------------------
@@ -4880,17 +5110,18 @@ mod pe64_import_slot_custody_decision_tests {
 
         let recorded = recorded_cas();
         let outcome = decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
-        assert_eq!(
-            outcome,
-            Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(
-                RecordedRestoreCas {
-                    observed_before: RECORDED_SENTINEL_BEFORE,
-                    protection_before: PROTECTION_BEFORE,
-                    protection_temporary: PROTECTION_TEMPORARY,
-                    protection_reconciled: true,
-                }
-            ))
-        );
+        // Field by field rather than against `recorded_cas()`: comparing the
+        // decision to the same helper that produced its input would pass for any
+        // implementation that echoes its argument, including one that rebuilt the
+        // record from the addresses. These four values are the ones a receipt
+        // copies.
+        let Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(replayed)) = outcome else {
+            panic!("a reconciled record must select the plain replay arm: {outcome:?}");
+        };
+        assert_eq!(replayed.observed_before(), RECORDED_SENTINEL_BEFORE);
+        assert_eq!(replayed.protection_before(), PROTECTION_BEFORE);
+        assert_eq!(replayed.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(replayed.protection_reconciled());
         // ...and the value that reaches the receipt is that same recorded one.
         assert_eq!(
             complete_recorded_restore_cas_observation(recorded, PROTECTION_BEFORE),
@@ -4952,92 +5183,226 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: move the `record(recorded)` call in
-    // `perform_recorded_restore_cas` to after `finish(prepared)?` -- exactly the
-    // ordering Finding 1 identified, where the record is written only once the
-    // fallible page cleanup has returned -- and this test fails: `records` comes
-    // back empty. That empty state is what leaves a caller who genuinely did
-    // perform the transition refused as `UnwitnessedForeignRestore`, and the
-    // last assertion here is the retry it must get instead.
+    // FALSIFIABILITY: move the `custody.record = Some(recorded)` write in
+    // `custody_record::perform_recorded_cas` to after `finish(prepared)?` --
+    // exactly the ordering Finding 1 identified, where the record is written
+    // only once the fallible page cleanup has returned -- and this test fails:
+    // the custody cell comes back empty. That empty state is what leaves a
+    // caller who genuinely did perform the transition refused as
+    // `UnwitnessedForeignRestore`, and the last assertion here is the retry it
+    // must get instead.
     #[test]
     fn a_cleanup_failure_after_the_exchange_still_leaves_the_exchange_recorded() {
-        let mut sink = TestRestoreCasStorage::default();
-        let outcome = perform_recorded_restore_cas(
+        let mut custody = RestoreCasCustody::unrecorded();
+        let outcome = perform_recorded_cas(
             || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
             |_: &()| RECORDED_SENTINEL_BEFORE,
-            &mut sink,
+            &mut custody,
             |_: ()| Err("page protection restoration failed"),
         );
         assert_eq!(outcome, Err("page protection restoration failed"));
-        // The sink is the same storage production hands in -- a registry field,
-        // not a test-local recorder -- so this pins the write production
-        // actually performs rather than one the test supplied.
+        // This is the same cell type production hands in -- the field of the
+        // registry binding -- so this pins the write production actually
+        // performs rather than one the test supplied.
+        let stored = custody
+            .recorded()
+            .expect("the exchange must be recorded before the cleanup runs");
+        assert_eq!(stored.observed_before(), RECORDED_SENTINEL_BEFORE);
+        assert_eq!(stored.protection_before(), PROTECTION_BEFORE);
+        assert_eq!(stored.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(!stored.protection_reconciled());
         assert_eq!(
-            sink.0,
-            Some(RecordedRestoreCas {
-                observed_before: RECORDED_SENTINEL_BEFORE,
-                protection_before: PROTECTION_BEFORE,
-                protection_temporary: PROTECTION_TEMPORARY,
-                protection_reconciled: false,
-            })
-        );
-        assert_eq!(
-            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, sink.0),
+            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, custody.recorded()),
             Ok(
-                Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(RecordedRestoreCas {
-                    observed_before: RECORDED_SENTINEL_BEFORE,
-                    protection_before: PROTECTION_BEFORE,
-                    protection_temporary: PROTECTION_TEMPORARY,
-                    protection_reconciled: false,
-                })
+                Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(stored)
             )
         );
     }
 
-    // FALSIFIABILITY: drop the second `*sink = Some(reconciled)` write in
-    // `perform_recorded_restore_cas` and this test fails -- the sink would still
-    // hold the unreconciled record, so a fully completed restore would stay
-    // marked as owing page cleanup forever and
+    // FALSIFIABILITY: drop the second `custody.record = Some(reconciled)` write
+    // in `custody_record::perform_recorded_cas` and this test fails -- the cell
+    // would still hold the unreconciled record, so a fully completed restore
+    // would stay marked as owing page cleanup forever and
     // `complete_recorded_restore_cas_observation` would refuse it. The
     // companion property -- that the *first* write lands before the fallible
     // cleanup -- is pinned by
     // `a_cleanup_failure_after_the_exchange_still_leaves_the_exchange_recorded`,
     // which is the only path on which that intermediate write is observable.
+    //
+    // The exchange and the cleanup here are injected closures, so what this pins
+    // is the ordering contract -- not that a hardware compare-exchange swapped
+    // anything.
     #[test]
-    fn a_successful_exchange_is_recorded_after_its_cleanup_completes() {
-        let mut sink = TestRestoreCasStorage::default();
-        let outcome = perform_recorded_restore_cas(
+    fn a_restore_exchange_whose_injected_cleanup_succeeds_is_recorded_as_reconciled() {
+        let mut custody = RestoreCasCustody::unrecorded();
+        let outcome = perform_recorded_cas(
             || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
             |_: &()| RECORDED_SENTINEL_BEFORE,
-            &mut sink,
+            &mut custody,
             |_: ()| Ok(PROTECTION_BEFORE),
         );
-        let reconciled = RecordedRestoreCas {
-            observed_before: RECORDED_SENTINEL_BEFORE,
-            protection_before: PROTECTION_BEFORE,
-            protection_temporary: PROTECTION_TEMPORARY,
-            protection_reconciled: true,
-        };
-        assert_eq!(outcome, Ok((reconciled, PROTECTION_BEFORE)));
-        assert_eq!(sink.0, Some(reconciled));
+        let (performed, protection_after) =
+            outcome.expect("a cleanup returning the starting protection cannot fail");
+        assert_eq!(protection_after, PROTECTION_BEFORE);
+        let reconciled =
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed");
+        assert_eq!(reconciled.observed_before(), RECORDED_SENTINEL_BEFORE);
+        assert_eq!(reconciled.protection_before(), PROTECTION_BEFORE);
+        assert_eq!(reconciled.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(reconciled.protection_reconciled());
+        assert_eq!(custody.recorded(), Some(reconciled));
+    }
+
+    // FALSIFIABILITY: change `protection_reconciled: protection_after ==
+    // protection_before` in `custody_record::perform_recorded_cas` back to a
+    // bare `true` -- the shape both paths shipped with -- and this test fails:
+    // the record would claim the page was observed back at its starting
+    // protection when the cleanup returned something else. The negative arm is
+    // the sibling test above, where a cleanup that does return the starting
+    // protection must still reconcile.
+    #[test]
+    fn a_cleanup_returning_the_wrong_protection_is_not_recorded_as_reconciled() {
+        assert_ne!(PROTECTION_BEFORE, PROTECTION_TEMPORARY);
+        let mut custody = RestoreCasCustody::unrecorded();
+        let (performed, protection_after) = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            // Returns `Ok`, but not at the protection the exchange started from.
+            |_: ()| Ok(PROTECTION_TEMPORARY),
+        )
+        .expect("an Ok cleanup must not turn into an error");
+        assert_eq!(protection_after, PROTECTION_TEMPORARY);
+        let recorded =
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed");
+        assert!(!recorded.protection_reconciled());
+        assert_eq!(custody.recorded(), Some(recorded));
+        assert_eq!(
+            complete_recorded_restore_cas_observation(recorded, protection_after),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                    protection_before: PROTECTION_BEFORE,
+                    protection_after: PROTECTION_TEMPORARY,
+                }
+            )
+        );
     }
 
     // FALSIFIABILITY: drop the `?` on `prepare()` in
-    // `perform_recorded_restore_cas` and this test panics in the `exchange`
-    // closure -- the slot would be exchanged after the page could not be made
-    // writable. The panicking closures are the negative arm: they assert the
-    // failed prepare short-circuits rather than merely that an error came back.
+    // `custody_record::perform_recorded_cas` and this test panics in the
+    // `exchange` closure -- the slot would be exchanged after the page could not
+    // be made writable. The panicking closures are the negative arm: they assert
+    // the failed prepare short-circuits rather than merely that an error came
+    // back.
     #[test]
     fn a_failure_before_the_exchange_records_nothing() {
-        let mut sink = TestRestoreCasStorage::default();
-        let outcome = perform_recorded_restore_cas::<(), &str>(
+        let mut custody = RestoreCasCustody::unrecorded();
+        let outcome = perform_recorded_cas::<custody_record::Restore, (), &str>(
             || Err("page protection change failed"),
             |_| panic!("must not exchange after a failed prepare"),
-            &mut sink,
+            &mut custody,
             |_| panic!("must not run cleanup after a failed prepare"),
         );
         assert_eq!(outcome, Err("page protection change failed"));
-        assert_eq!(sink.0, None);
+        assert_eq!(custody.recorded(), None);
+    }
+
+    // FALSIFIABILITY: drop the `custody.record = Some(reconciled)` write in
+    // `custody_record::reconcile_recorded_cas` and the last assertion fails: the
+    // cell would still hold the unreconciled record, so the resumed attempt
+    // would owe the page cleanup forever. Make `reconcile_recorded_cas` set
+    // `protection_reconciled: true` unconditionally and
+    // `a_reconciliation_that_lands_elsewhere_stays_unreconciled` fails instead.
+    #[test]
+    fn a_resumed_reconciliation_marks_the_recorded_exchange_reconciled() {
+        let mut custody = RestoreCasCustody::unrecorded();
+        let owed = recorded_cas_pending_protection();
+        let (performed, protection_after) =
+            reconcile_recorded_cas(owed, &mut custody, |protection_before| {
+                // The helper must hand the reconciliation the protection the
+                // exchange started from, not some value of the caller's.
+                assert_eq!(protection_before, PROTECTION_BEFORE);
+                Ok::<_, &str>(PROTECTION_BEFORE)
+            })
+            .expect("an injected reconciliation returning Ok cannot fail");
+        assert_eq!(protection_after, PROTECTION_BEFORE);
+        let reconciled =
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed");
+        // `observed_before` is carried through: reconciling the page must not be
+        // able to change what transition the record attests.
+        assert_eq!(reconciled.observed_before(), RECORDED_SENTINEL_BEFORE);
+        assert_eq!(reconciled.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(reconciled.protection_reconciled());
+        assert_eq!(custody.recorded(), Some(reconciled));
+    }
+
+    // FALSIFIABILITY: set `protection_reconciled: true` unconditionally in
+    // `custody_record::reconcile_recorded_cas` -- the shape the production
+    // `ReconcileProtectionThenReplay` arms shipped with -- and this test fails:
+    // a page that came back at some other protection would be recorded as
+    // reconciled, and a later retry would take the plain replay arm believing
+    // the cleanup was done.
+    #[test]
+    fn a_reconciliation_that_lands_elsewhere_stays_unreconciled() {
+        assert_ne!(PROTECTION_BEFORE, PROTECTION_TEMPORARY);
+        let mut custody = RestoreCasCustody::unrecorded();
+        let (performed, protection_after) = reconcile_recorded_cas(
+            recorded_cas_pending_protection(),
+            &mut custody,
+            |_| Ok::<_, &str>(PROTECTION_TEMPORARY),
+        )
+        .expect("an Ok reconciliation must not turn into an error");
+        assert_eq!(protection_after, PROTECTION_TEMPORARY);
+        let still_owed =
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed");
+        assert!(!still_owed.protection_reconciled());
+        assert_eq!(custody.recorded(), Some(still_owed));
+        assert_eq!(
+            complete_recorded_restore_cas_observation(still_owed, protection_after),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                    protection_before: PROTECTION_BEFORE,
+                    protection_after: PROTECTION_TEMPORARY,
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: make `custody_record::reconcile_recorded_cas` absorb the
+    // failure instead of propagating it -- `let protection_after =
+    // reconcile(recorded.protection_before()).unwrap_or(recorded.protection_before)`,
+    // the "recover by assuming what we wanted to see" shape that produced both
+    // of the forged-attestation defects on this file -- and this test fails
+    // twice over: the call returns `Ok` and custody comes back holding a record
+    // marked reconciled.
+    #[test]
+    fn a_failed_reconciliation_leaves_the_recorded_exchange_still_owing_the_page() {
+        // Custody in the state production is in when this arm runs: the exchange
+        // recorded, the page cleanup still owed.
+        let mut custody = RestoreCasCustody::unrecorded();
+        let _ = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Err("injected page protection restoration failure"),
+        );
+        let owed = custody
+            .recorded()
+            .expect("the exchange must be recorded before the cleanup runs");
+        let outcome = reconcile_recorded_cas(owed, &mut custody, |_| {
+            Err::<u32, &str>("page protection recovery remains unresolved")
+        });
+        assert_eq!(outcome, Err("page protection recovery remains unresolved"));
+        assert_eq!(custody.recorded(), Some(owed));
+        assert!(!owed.protection_reconciled());
     }
 
     // FALSIFIABILITY: drop the `!recorded.protection_reconciled` clause from
@@ -5169,35 +5534,36 @@ mod pe64_import_slot_custody_decision_tests {
     const INSTALL_RECORDED_SENTINEL_BEFORE: usize = 0x0000_7777_8000;
 
     /// An install exchange this crate performed whose page cleanup completed.
+    ///
+    /// As on the restore side, built by driving the real ordering helper: an
+    /// install record cannot be written down by hand any more.
     fn recorded_install_cas() -> RecordedInstallCas {
-        RecordedInstallCas {
-            observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
-            protection_before: PROTECTION_BEFORE,
-            protection_temporary: PROTECTION_TEMPORARY,
-            protection_reconciled: true,
-        }
+        let mut custody = InstallCasCustody::unrecorded();
+        let (performed, _) = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Ok(PROTECTION_BEFORE),
+        )
+        .expect("an injected cleanup returning the starting protection cannot fail");
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed")
     }
 
     /// An install exchange that completed but whose page cleanup then failed.
     fn recorded_install_cas_pending_protection() -> RecordedInstallCas {
-        RecordedInstallCas {
-            protection_reconciled: false,
-            ..recorded_install_cas()
-        }
-    }
-
-    /// Test-side owner of an install-CAS slot.
-    ///
-    /// Exists so the tests drive `perform_recorded_install_cas` through the SAME
-    /// `RecordedInstallCasStorage` trait production uses, rather than through a
-    /// bare `&mut Option` production could never pass.
-    #[derive(Debug, Default, Eq, PartialEq)]
-    struct TestInstallCasStorage(Option<RecordedInstallCas>);
-
-    impl RecordedInstallCasStorage for TestInstallCasStorage {
-        fn recorded_install_cas_slot(&mut self) -> &mut Option<RecordedInstallCas> {
-            &mut self.0
-        }
+        let mut custody = InstallCasCustody::unrecorded();
+        let outcome = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Err("injected page protection restoration failure"),
+        );
+        assert_eq!(outcome, Err("injected page protection restoration failure"));
+        custody
+            .recorded()
+            .expect("the exchange is recorded before the cleanup runs")
     }
 
     // FALSIFIABILITY: delete the `current_slot_value == external_shim_address`
@@ -5256,17 +5622,17 @@ mod pe64_import_slot_custody_decision_tests {
 
         let recorded = recorded_install_cas();
         let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
-        assert_eq!(
-            outcome,
-            Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(
-                RecordedInstallCas {
-                    observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
-                    protection_before: PROTECTION_BEFORE,
-                    protection_temporary: PROTECTION_TEMPORARY,
-                    protection_reconciled: true,
-                }
-            ))
-        );
+        // Field by field rather than against `recorded_install_cas()`: comparing
+        // the decision to the same helper that produced its input would pass for
+        // any implementation that echoes its argument, including one that
+        // rebuilt the record from the addresses.
+        let Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(replayed)) = outcome else {
+            panic!("a reconciled record must select the plain replay arm: {outcome:?}");
+        };
+        assert_eq!(replayed.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
+        assert_eq!(replayed.protection_before(), PROTECTION_BEFORE);
+        assert_eq!(replayed.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(replayed.protection_reconciled());
         // ...and the value that reaches the receipt is that same recorded one.
         assert_eq!(
             complete_recorded_install_cas_observation(recorded, PROTECTION_BEFORE),
@@ -5328,53 +5694,46 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: move the first `*storage.recorded_install_cas_slot() =
-    // Some(recorded)` write in `perform_recorded_install_cas` to after
-    // `finish(prepared)?` and this test fails: `sink.0` comes back `None`. That
-    // empty state is what would leave a caller who genuinely did perform the
-    // installing exchange refused as `UnwitnessedForeignInstall` on the retry,
-    // and the last assertion here is the retry it must get instead.
+    // FALSIFIABILITY: move the first `custody.record = Some(recorded)` write in
+    // `custody_record::perform_recorded_cas` to after `finish(prepared)?` and
+    // this test fails: the custody cell comes back `None`. That empty state is
+    // what would leave a caller who genuinely did perform the installing
+    // exchange refused as `UnwitnessedForeignInstall` on the retry, and the last
+    // assertion here is the retry it must get instead.
+    //
+    // The install and restore directions share one implementation, so this and
+    // its restore twin fail together; they are kept separate because each pins
+    // its own direction's decision function on the last assertion.
     #[test]
     fn a_cleanup_failure_after_the_install_exchange_still_leaves_the_exchange_recorded() {
-        let mut sink = TestInstallCasStorage::default();
-        let outcome = perform_recorded_install_cas(
+        let mut custody = InstallCasCustody::unrecorded();
+        let outcome = perform_recorded_cas(
             || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
             |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
-            &mut sink,
+            &mut custody,
             |_: ()| Err("page protection restoration failed"),
         );
         assert_eq!(outcome, Err("page protection restoration failed"));
-        // The sink is the same storage production hands in -- the provisional
-        // binding held in the custody registry, not a test-local recorder -- so
-        // this pins the write production actually performs.
+        // This is the same cell type production hands in -- the field of the
+        // provisional binding held in the custody registry -- so this pins the
+        // write production actually performs.
+        let stored = custody
+            .recorded()
+            .expect("the exchange must be recorded before the cleanup runs");
+        assert_eq!(stored.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
+        assert_eq!(stored.protection_before(), PROTECTION_BEFORE);
+        assert_eq!(stored.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(!stored.protection_reconciled());
         assert_eq!(
-            sink.0,
-            Some(RecordedInstallCas {
-                observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
-                protection_before: PROTECTION_BEFORE,
-                protection_temporary: PROTECTION_TEMPORARY,
-                protection_reconciled: false,
-            })
-        );
-        assert_eq!(
-            decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, sink.0),
-            Ok(
-                Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(
-                    RecordedInstallCas {
-                        observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
-                        protection_before: PROTECTION_BEFORE,
-                        protection_temporary: PROTECTION_TEMPORARY,
-                        protection_reconciled: false,
-                    }
-                )
-            )
+            decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, custody.recorded()),
+            Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(stored))
         );
     }
 
-    // FALSIFIABILITY: drop the second `*storage.recorded_install_cas_slot() =
-    // Some(reconciled)` write in `perform_recorded_install_cas` and this test
-    // fails -- the sink would still hold the unreconciled record, so a fully
-    // completed install would stay marked as owing page cleanup forever and
+    // FALSIFIABILITY: drop the second `custody.record = Some(reconciled)` write
+    // in `custody_record::perform_recorded_cas` and this test fails -- the cell
+    // would still hold the unreconciled record, so a fully completed install
+    // would stay marked as owing page cleanup forever and
     // `complete_recorded_install_cas_observation` would refuse it. The companion
     // property -- that the *first* write lands before the fallible cleanup -- is
     // pinned by
@@ -5382,43 +5741,336 @@ mod pe64_import_slot_custody_decision_tests {
     // the only path on which that intermediate write is observable.
     //
     // The exchange and the cleanup here are injected closures, so what this
-    // pins is `perform_recorded_install_cas`'s ordering contract -- not that a
-    // hardware compare-exchange swapped anything. The name says so.
+    // pins is the ordering contract -- not that a hardware compare-exchange
+    // swapped anything. The name says so.
     #[test]
     fn an_install_exchange_whose_injected_cleanup_succeeds_is_recorded_as_reconciled() {
-        let mut sink = TestInstallCasStorage::default();
-        let outcome = perform_recorded_install_cas(
+        let mut custody = InstallCasCustody::unrecorded();
+        let (performed, protection_after) = perform_recorded_cas(
             || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
             |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
-            &mut sink,
+            &mut custody,
             |_: ()| Ok(PROTECTION_BEFORE),
-        );
-        let reconciled = RecordedInstallCas {
-            observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
-            protection_before: PROTECTION_BEFORE,
-            protection_temporary: PROTECTION_TEMPORARY,
-            protection_reconciled: true,
-        };
-        assert_eq!(outcome, Ok((reconciled, PROTECTION_BEFORE)));
-        assert_eq!(sink.0, Some(reconciled));
+        )
+        .expect("a cleanup returning the starting protection cannot fail");
+        assert_eq!(protection_after, PROTECTION_BEFORE);
+        let reconciled =
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed");
+        assert_eq!(reconciled.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
+        assert_eq!(reconciled.protection_before(), PROTECTION_BEFORE);
+        assert_eq!(reconciled.protection_temporary(), PROTECTION_TEMPORARY);
+        assert!(reconciled.protection_reconciled());
+        assert_eq!(custody.recorded(), Some(reconciled));
     }
 
     // FALSIFIABILITY: drop the `?` on `prepare()` in
-    // `perform_recorded_install_cas` and this test panics in the `exchange`
-    // closure -- the slot would be exchanged after the page could not be made
-    // writable. The panicking closures are the negative arm: they assert the
-    // failed prepare short-circuits rather than merely that an error came back.
+    // `custody_record::perform_recorded_cas` and this test panics in the
+    // `exchange` closure -- the slot would be exchanged after the page could not
+    // be made writable. The panicking closures are the negative arm: they assert
+    // the failed prepare short-circuits rather than merely that an error came
+    // back.
     #[test]
     fn a_failure_before_the_install_exchange_records_nothing() {
-        let mut sink = TestInstallCasStorage::default();
-        let outcome = perform_recorded_install_cas::<(), &str>(
+        let mut custody = InstallCasCustody::unrecorded();
+        let outcome = perform_recorded_cas::<custody_record::Install, (), &str>(
             || Err("page protection change failed"),
             |_| panic!("must not exchange after a failed prepare"),
-            &mut sink,
+            &mut custody,
             |_| panic!("must not run cleanup after a failed prepare"),
         );
         assert_eq!(outcome, Err("page protection change failed"));
-        assert_eq!(sink.0, None);
+        assert_eq!(custody.recorded(), None);
+    }
+
+    // FALSIFIABILITY: delete the `custody.record = Some(reconciled)` write in
+    // `custody_record::reconcile_recorded_cas` and this test fails -- an install
+    // whose resumed page reconciliation succeeded would keep a record saying the
+    // page is still owed, and every later retry would redo the reconciliation.
+    #[test]
+    fn a_resumed_install_reconciliation_marks_the_recorded_exchange_reconciled() {
+        let mut custody = InstallCasCustody::unrecorded();
+        let (performed, protection_after) = reconcile_recorded_cas(
+            recorded_install_cas_pending_protection(),
+            &mut custody,
+            |protection_before| {
+                assert_eq!(protection_before, PROTECTION_BEFORE);
+                Ok::<_, &str>(PROTECTION_BEFORE)
+            },
+        )
+        .expect("an injected reconciliation returning Ok cannot fail");
+        assert_eq!(protection_after, PROTECTION_BEFORE);
+        let reconciled =
+        performed
+            .release_if_custody_matches(custody.recorded())
+            .expect("the helper writes into the cell it was handed");
+        assert_eq!(reconciled.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
+        assert!(reconciled.protection_reconciled());
+        assert_eq!(custody.recorded(), Some(reconciled));
+    }
+
+    // ---- The redirected-write backstop -----------------------------------
+    //
+    // `perform_recorded_cas` writes through the `&mut CasCustody` it is handed.
+    // Safe Rust cannot express "this borrow points into the registry entry the
+    // receipt will be minted from", so a call site that handed over a leaked
+    // throwaway cell would compile and silently lose the evidence. The call
+    // sites therefore re-read the registry afterwards and pass what they found
+    // here.
+
+    /// One exchange, returning both the unconfirmed record and the cell it was
+    /// written into. A fresh pair each call, because confirming consumes the
+    /// unconfirmed record -- which is the property that makes the confirmation
+    /// impossible to skip.
+    fn performed_install_cas() -> (UnconfirmedInstallCas, InstallCasCustody) {
+        let mut custody = InstallCasCustody::unrecorded();
+        let (performed, _) = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Ok(PROTECTION_BEFORE),
+        )
+        .expect("an injected cleanup returning the starting protection cannot fail");
+        (performed, custody)
+    }
+
+    /// The restore twin of `performed_install_cas`.
+    fn performed_restore_cas() -> (UnconfirmedRestoreCas, RestoreCasCustody) {
+        let mut custody = RestoreCasCustody::unrecorded();
+        let (performed, _) = perform_recorded_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut custody,
+            |_: ()| Ok(PROTECTION_BEFORE),
+        )
+        .expect("an injected cleanup returning the starting protection cannot fail");
+        (performed, custody)
+    }
+
+    // FALSIFIABILITY: delete the `observed_custody != Some(self.0)` refusal in
+    // `custody_record::UnconfirmedCas::release_if_custody_matches` and the first two
+    // assertions return `Ok`. The `None` case is the one a leaked custody cell
+    // produces: the exchange happened, the cell the receipt is minted against
+    // holds nothing, and without this the next attempt would refuse as
+    // `UnwitnessedForeignInstall` -- blaming a foreign agent for this crate's
+    // own lost write.
+    #[test]
+    fn install_custody_that_did_not_retain_the_performed_record_is_refused() {
+        let record = recorded_install_cas();
+
+        // What a redirected write leaves behind: the cell the receipt is minted
+        // against never received anything.
+        let (performed, _) = performed_install_cas();
+        assert_eq!(
+            release_install_cas_if_custody_matches(None, performed),
+            Err(
+                Pe64ImportSlotInstallCustodyError::RecordedInstallCasNotRetained {
+                    retained: None,
+                    performed: record,
+                }
+            )
+        );
+
+        // A cell holding some other record is refused just as hard.
+        let stale = recorded_install_cas_pending_protection();
+        assert_ne!(stale, record);
+        let (performed, _) = performed_install_cas();
+        assert_eq!(
+            release_install_cas_if_custody_matches(Some(stale), performed),
+            Err(
+                Pe64ImportSlotInstallCustodyError::RecordedInstallCasNotRetained {
+                    retained: Some(stale),
+                    performed: record,
+                }
+            )
+        );
+
+        // Negative arm: the honest case must pass and must hand back the record
+        // itself, or the check would be a blanket refusal no production path
+        // could satisfy.
+        let (performed, custody) = performed_install_cas();
+        assert_eq!(
+            release_install_cas_if_custody_matches(custody.recorded(), performed),
+            Ok(record)
+        );
+    }
+
+    // FALSIFIABILITY: the restore twin of the test above; the two directions
+    // share `release_if_custody_matches`, so both go red together.
+    #[test]
+    fn restore_custody_that_did_not_retain_the_performed_record_is_refused() {
+        let record = recorded_cas();
+
+        let (performed, _) = performed_restore_cas();
+        assert_eq!(
+            release_restore_cas_if_custody_matches(None, performed),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+                    retained: None,
+                    performed: record,
+                }
+            )
+        );
+
+        let stale = recorded_cas_pending_protection();
+        assert_ne!(stale, record);
+        let (performed, _) = performed_restore_cas();
+        assert_eq!(
+            release_restore_cas_if_custody_matches(Some(stale), performed),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+                    retained: Some(stale),
+                    performed: record,
+                }
+            )
+        );
+
+        let (performed, custody) = performed_restore_cas();
+        assert_eq!(
+            release_restore_cas_if_custody_matches(custody.recorded(), performed),
+            Ok(record)
+        );
+    }
+
+    // ---- Lease protection, and the states that stay stranded -------------
+
+    const LEASE_PROTECTION: u32 = PROTECTION_BEFORE;
+    const EXTERNALLY_REPROTECTED: u32 = 0x33;
+
+    /// The observation a completed exchange produces, parameterised so a test
+    /// can state the page protections it wants without hand-building a record.
+    fn cas_observation(protection_before: u32, protection_after: u32) -> AtomicPointerCasObservation {
+        AtomicPointerCasObservation {
+            observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+            protection_before,
+            protection_temporary: PROTECTION_TEMPORARY,
+            protection_after,
+        }
+    }
+
+    // FALSIFIABILITY: relax either comparison in
+    // `verify_install_cas_matches_lease_protection` to compare the CAS against
+    // its own `protection_before` instead of against the lease's -- the change
+    // that would make the externally-re-protected page retryable -- and the
+    // first assertion returns `Ok`. That is the change this lane examined and
+    // declined: it would let a receipt form over a page some other agent
+    // re-protected while this crate held the lease.
+    #[test]
+    fn an_install_cas_over_an_externally_reprotected_page_is_refused() {
+        assert_ne!(LEASE_PROTECTION, EXTERNALLY_REPROTECTED);
+        assert_eq!(
+            verify_install_cas_matches_lease_protection(
+                LEASE_PROTECTION,
+                cas_observation(EXTERNALLY_REPROTECTED, EXTERNALLY_REPROTECTED),
+            ),
+            Err(
+                Pe64ImportSlotInstallCustodyError::InstallCasProtectionBeforeDivergedFromLease {
+                    lease_protection: LEASE_PROTECTION,
+                    cas_protection_before: EXTERNALLY_REPROTECTED,
+                }
+            )
+        );
+        // The after-clause carries its own variant so a log reader can tell a
+        // page that was re-protected before the exchange from one the cleanup
+        // failed to put back. Defence in depth: with the current
+        // `complete_recorded_*_cas_observation` a CAS observation reaching here
+        // always has `protection_after == protection_before`, so only a change
+        // there could make production produce this one.
+        assert_eq!(
+            verify_install_cas_matches_lease_protection(
+                LEASE_PROTECTION,
+                cas_observation(LEASE_PROTECTION, EXTERNALLY_REPROTECTED),
+            ),
+            Err(
+                Pe64ImportSlotInstallCustodyError::InstallCasProtectionAfterDivergedFromLease {
+                    lease_protection: LEASE_PROTECTION,
+                    cas_protection_after: EXTERNALLY_REPROTECTED,
+                }
+            )
+        );
+        // Negative arm: the ordinary case must pass, or every install would be
+        // refused and the two assertions above would prove nothing.
+        assert_eq!(
+            verify_install_cas_matches_lease_protection(
+                LEASE_PROTECTION,
+                cas_observation(LEASE_PROTECTION, LEASE_PROTECTION),
+            ),
+            Ok(())
+        );
+    }
+
+    // FALSIFIABILITY: the restore twin of the test above; relax either
+    // comparison in `verify_restore_cas_matches_lease_protection`. Held
+    // separately because the two directions must refuse the same states -- a
+    // change to one alone shows up as one of these two tests going red.
+    #[test]
+    fn a_restore_cas_over_an_externally_reprotected_page_is_refused() {
+        assert_ne!(LEASE_PROTECTION, EXTERNALLY_REPROTECTED);
+        assert_eq!(
+            verify_restore_cas_matches_lease_protection(
+                LEASE_PROTECTION,
+                cas_observation(EXTERNALLY_REPROTECTED, EXTERNALLY_REPROTECTED),
+            ),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
+                    lease_protection: LEASE_PROTECTION,
+                    cas_protection_before: EXTERNALLY_REPROTECTED,
+                }
+            )
+        );
+        assert_eq!(
+            verify_restore_cas_matches_lease_protection(
+                LEASE_PROTECTION,
+                cas_observation(LEASE_PROTECTION, EXTERNALLY_REPROTECTED),
+            ),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
+                    lease_protection: LEASE_PROTECTION,
+                    cas_protection_after: EXTERNALLY_REPROTECTED,
+                }
+            )
+        );
+        assert_eq!(
+            verify_restore_cas_matches_lease_protection(
+                LEASE_PROTECTION,
+                cas_observation(LEASE_PROTECTION, LEASE_PROTECTION),
+            ),
+            Ok(())
+        );
+    }
+
+    // FALSIFIABILITY: change the `Some(recorded)` branch of either decision
+    // function to fall through to `PerformCas` when the slot has diverged --
+    // "retry by exchanging again" -- and this test fails. The two directions
+    // must stay in step: the state is unretryable on both, deliberately, because
+    // the record on hand describes an exchange whose result a third party has
+    // since overwritten.
+    #[test]
+    fn a_diverged_slot_is_refused_rather_than_re_exchanged_in_both_directions() {
+        assert_eq!(
+            decide_pe64_import_slot_install_cas(
+                ORIGINAL,
+                ORIGINAL,
+                SHIM,
+                Some(recorded_install_cas())
+            ),
+            Err(
+                Pe64ImportSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
+                    observed_slot_value: ORIGINAL,
+                    external_shim_address: SHIM,
+                }
+            )
+        );
+        assert_eq!(
+            decide_pe64_import_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas())),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+                    observed_slot_value: SHIM,
+                    expected_original_address: ORIGINAL,
+                }
+            )
+        );
     }
 
     // FALSIFIABILITY: drop the `!recorded.protection_reconciled` clause from
@@ -5607,22 +6259,6 @@ mod pe64_import_slot_custody_decision_tests {
             render_pe64_import_slot_quiesce_timeout("lane", &base),
             render_pe64_import_slot_quiesce_timeout("lane", &more_iterations)
         );
-    }
-
-    /// Test-side owner of a restore-CAS slot.
-    ///
-    /// Exists so the tests drive `perform_recorded_restore_cas` through the SAME
-    /// `RecordedRestoreCasStorage` trait production uses, rather than through a
-    /// bare `&mut Option` production could never pass. A bare `Option` does not
-    /// implement the trait, so the production call site and these tests cannot
-    /// diverge in the way that previously left the sink unpinned.
-    #[derive(Debug, Default, Eq, PartialEq)]
-    struct TestRestoreCasStorage(Option<RecordedRestoreCas>);
-
-    impl RecordedRestoreCasStorage for TestRestoreCasStorage {
-        fn recorded_restore_cas_slot(&mut self) -> &mut Option<RecordedRestoreCas> {
-            &mut self.0
-        }
     }
 
     // ---- Defect B1: the yield-budget ceiling ----------------------------
@@ -5908,12 +6544,44 @@ mod pe64_import_slot_custody_decision_tests {
                 protection_after: PROTECTION_TEMPORARY,
             }
             .to_string();
+        let not_retained = Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+            retained: None,
+            performed: recorded_cas(),
+        }
+        .to_string();
+        let reprotected_before =
+            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
+                lease_protection: LEASE_PROTECTION,
+                cas_protection_before: EXTERNALLY_REPROTECTED,
+            }
+            .to_string();
+        let reprotected_after =
+            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
+                lease_protection: LEASE_PROTECTION,
+                cas_protection_after: EXTERNALLY_REPROTECTED,
+            }
+            .to_string();
         let bound = Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
             requested: 9,
             ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
         }
         .to_string();
 
+        assert!(
+            not_retained.contains("did not retain")
+                && not_retained.contains(&format!("0x{RECORDED_SENTINEL_BEFORE:X}")),
+            "not-retained message must name the record the exchange produced: {not_retained}"
+        );
+        assert!(
+            reprotected_before.contains("before the exchange")
+                && reprotected_before.contains(&format!("0x{EXTERNALLY_REPROTECTED:X}"))
+                && reprotected_before.contains(&format!("0x{LEASE_PROTECTION:X}")),
+            "re-protected-before message must report both protections: {reprotected_before}"
+        );
+        assert!(
+            reprotected_after.contains(&format!("0x{EXTERNALLY_REPROTECTED:X}")),
+            "re-protected-after message lost the observed protection: {reprotected_after}"
+        );
         assert!(
             unwitnessed.contains("no restore CAS recorded by this crate"),
             "unwitnessed message lost its distinguishing text: {unwitnessed}"
@@ -5945,6 +6613,9 @@ mod pe64_import_slot_custody_decision_tests {
             &diverged,
             &indistinguishable,
             &unreconciled,
+            &not_retained,
+            &reprotected_before,
+            &reprotected_after,
             &bound,
         ];
         for i in 0..rendered.len() {
