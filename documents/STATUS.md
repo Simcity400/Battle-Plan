@@ -47,6 +47,21 @@ interaction closure. Evidence client-driving is separately named and excluded
 from the package. This paragraph records the implementation boundary only: no
 current Release receipt or genuine speed-five capture is claimed here.
 
+One named defect stands open in that hook machinery. The A31 inline patcher's
+`SuspendedOtherThreads::capture`
+(`extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs:126`)
+means to skip threads that exit between the toolhelp snapshot and the suspend, and tolerates
+`ERROR_INVALID_PARAMETER` and `ERROR_INVALID_HANDLE` for that. Windows actually reports an
+already-terminated thread as `ERROR_ACCESS_DENIED`, measured by instrumenting `GetLastError`
+across five reproductions. The skip therefore never fires for the common case and `capture`
+fails closed, refusing the patch, whenever any thread happens to exit during installation —
+reproduced in 2 of 40 module runs. It fails safe, so this is an availability defect rather
+than a correctness one, but under a live game it makes hook installation intermittently
+refuse for a reason unrelated to the patch. Closing it means requesting
+`THREAD_QUERY_LIMITED_INFORMATION` in the `OpenThread` call and gating the skip on
+`GetExitCodeThread() != STILL_ACTIVE`, which widens which threads a safety-critical patcher
+will leave running — the owning lane's call, not a test-lane change.
+
 ## Replay layer — playback half
 
 The rendering-laws programme closed its register: every XN01–XN17 non-UI packet and every

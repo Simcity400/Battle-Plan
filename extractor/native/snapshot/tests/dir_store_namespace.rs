@@ -39,14 +39,56 @@ impl Drop for Temp {
     }
 }
 
+/// Creates a directory junction, retrying only when Windows failed to *start*
+/// `cmd.exe` at all.
+///
+/// Under a full `cargo test --workspace` run, 200+ test binaries spawn
+/// short-lived processes concurrently and process creation intermittently fails
+/// with `STATUS_DLL_INIT_FAILED` (`0xC000_0142`) — the child is created but its
+/// loader cannot initialise, so it dies before `mklink` ever runs. That is a
+/// harness resource stall, not a product signal. The identical helper in
+/// `recorder_host` was seen failing this way once in four full runs.
+///
+/// Only that exact code is retried. It is matched exactly rather than by the
+/// NTSTATUS range `>= 0xC000_0000`, because that range is not exclusive to the
+/// loader: a process may pass any 32-bit value to `ExitProcess`, `TerminateProcess`
+/// may impose one, and an unhandled exception surfaces as its own status code. A
+/// range test would therefore also retry an access violation or a fast-fail inside
+/// the child. `mklink` reports its own refusals with exit code 1, which stays a
+/// hard failure on the first attempt, so a genuinely broken junction still fails.
+/// The post-condition keeps the callers falsifiable: if junction creation ever
+/// silently produced a plain directory, this fires rather than letting the
+/// reparse-point tests pass over a normal directory.
 fn make_junction(link: &Path, target: &Path) {
-    let status = Command::new("cmd.exe")
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .status()
-        .expect("launch mklink /J");
-    assert!(status.success(), "mklink /J failed with {status}");
+    const MAX_ATTEMPTS: u32 = 5;
+    const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let status = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("launch mklink /J");
+        if status.success() {
+            break;
+        }
+        let child_never_ran = status
+            .code()
+            .is_some_and(|code| code as u32 == STATUS_DLL_INIT_FAILED);
+        assert!(
+            child_never_ran && attempt < MAX_ATTEMPTS,
+            "mklink /J failed with {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
+    }
+    assert!(
+        fs::symlink_metadata(link)
+            .expect("junction was reported created")
+            .file_type()
+            .is_symlink(),
+        "mklink /J reported success without leaving a reparse point at {}",
+        link.display()
+    );
 }
 
 fn wide(path: &Path) -> Vec<u16> {

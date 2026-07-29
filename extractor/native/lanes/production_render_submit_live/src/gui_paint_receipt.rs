@@ -2896,8 +2896,22 @@ mod instrumentation_tests {
         assert_eq!(capture.completed_observation_count(), 1);
     }
 
+    /// Poison-tolerant: the five tests that take this guard share one lock and
+    /// one set of process-global instrumentation singletons, so `unwrap()` here
+    /// let the first test that panicked while holding the guard convert the
+    /// other four into `PoisonError` panics — five reported failures for one
+    /// real defect, and a workspace count that moved with test order.
+    ///
+    /// Recovering the guard hides nothing: the test that panicked still fails
+    /// and is still named. The `teardown_gui_paint_instrumentation` below is
+    /// what makes recovery sound — it restores the shared state before the next
+    /// test observes it, and its `unwrap` stays, because a teardown that cannot
+    /// clean up is a real defect rather than collateral from a prior panic.
     fn lock_and_reset() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         teardown_gui_paint_instrumentation().unwrap();
         guard
     }
