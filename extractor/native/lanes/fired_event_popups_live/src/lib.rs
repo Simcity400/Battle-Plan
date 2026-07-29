@@ -258,6 +258,17 @@ impl A729EventLedger {
             poisoned: !telemetry.zero_gap(),
         };
         state.rows.clear();
+        // The counters are discarded with the rows they describe. Leaving them
+        // set would make a second call -- which happens when the physical hook
+        // release fails and the abort is retried -- report the same diagnostics
+        // again, multiplying the total by the number of attempts. The validated
+        // route/hook bits are deliberately left alone: they are not counters,
+        // and `poisoned` merges idempotently.
+        state.telemetry.dropped_fire_rows = 0;
+        state.telemetry.dropped_resolution_rows = 0;
+        state.telemetry.correlation_failures = 0;
+        state.telemetry.invalid_definition_joins = 0;
+        state.telemetry.fired_ledger_shadow_mismatches = 0;
         discard
     }
 
@@ -977,6 +988,39 @@ mod tests {
         let (telemetry, _) = ledger.snapshot_rows(0, 0).unwrap();
         assert!(telemetry.zero_gap());
         assert!(!telemetry.materialisation_hook_validated);
+    }
+
+    #[test]
+    fn a_retried_install_abort_discard_never_counts_the_same_ledger_twice() {
+        // The first abort clears the ledger and banks its count; if the
+        // physical hook release then fails, the abort is retried. The retry
+        // must contribute nothing, or the reported discard grows with every
+        // attempt.
+        let ledger = A729EventLedger::new(1);
+        for sequence in [10, 11] {
+            ledger.record_fire(FireInput {
+                event_id: "germany.1".into(),
+                recipient_tag: "GER".into(),
+                fire_date: "1936.1.1.12".into(),
+                fire_hour: 0,
+                fire_tick: 12,
+                event_sequence: sequence,
+                popup_subtype: PopupSubtype::News,
+                effective_timeout_hours: 312,
+                timeout_tick: 324,
+            });
+        }
+
+        let first = ledger.discard_retained_rows();
+        let retry = ledger.discard_retained_rows();
+
+        assert_eq!(first.retained_rows, 1);
+        assert_eq!(first.discarded_diagnostics, 1, "one fire row was dropped");
+        assert_eq!(retry.retained_rows, 0);
+        assert_eq!(
+            retry.discarded_diagnostics, 0,
+            "a retry must not re-report diagnostics the first attempt already banked"
+        );
     }
 
     #[test]
