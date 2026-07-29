@@ -180,6 +180,7 @@ dependencies = [
  "spotted_units_live",
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
+ "theatre_selector_live_lane",
  "windows-sys",
 ]
 
@@ -844,6 +845,7 @@ dependencies = [
  "spotted_units_live",
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
+ "theatre_selector_live_lane",
  "wire_product",
  "zip",
 ]
@@ -1043,6 +1045,10 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "theatre_selector_live_lane"
+version = "0.1.0"
 
 [[package]]
 name = "thiserror"

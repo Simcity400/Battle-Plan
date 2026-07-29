@@ -51,6 +51,7 @@ members = [
     "lanes/weather_live",
     "lanes/character_presentation_live",
     "lanes/nuke_stockpile_live",
+    "lanes/theatre_selector_live",
     "lanes/country_army_upgrade_requests_live",
     "lanes/sunk_ship_history_live",
     "lanes/decision_panel_live",

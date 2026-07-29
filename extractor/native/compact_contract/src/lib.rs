@@ -270,7 +270,18 @@ pub const PRODUCTION_PROFILE_RULE: &str =
 ///
 /// D57's multiplayer-only arm is excluded until CID1 M3 can be exercised on a
 /// second physical machine. This exception must stay explicit and domain-local.
-pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] = &[57, 78, 84];
+///
+/// D98 `theatre_selector_live` is excluded because its status is
+/// `ValidatedSliceOpenGaps`: the all-country hierarchy it carries is exact, but
+/// the XUI07 dependency contract's controller-field table (priority ordinals,
+/// training/exercise/spotting/border-conflict state, combat-log ownership,
+/// split-off state, strategic-region rows, alert atlas-frame law, active visual
+/// frame) has no established exact a729 read law and ships as explicit
+/// unavailable variants. Promoting it into the mandatory profile would broaden
+/// production with an open-gap contract, which is exactly what
+/// `PRODUCTION_PROFILE_RULE` forbids. It stays individually schedulable so the
+/// XUI07 work can capture against it.
+pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] = &[57, 78, 84, 98];
 
 // --- Domain descriptors -----------------------------------------------------
 
@@ -1808,6 +1819,40 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // XUI07 all-country theatre selector. THS2 carries one section per
+    // selectable country -- the replay observer picks the country, so a
+    // recorder-POV carrier could never authorize the panel -- with the D18
+    // census, the producer-observed ordered mod/DLC content identity, and
+    // fail-closed per-country admission where a refused country is an explicit
+    // unavailable section rather than an empty theatre list.
+    //
+    // STATUS: validated_slice_open_gaps, NOT production_complete. The hierarchy,
+    // engine order, identities, display names and free-wing order are carried
+    // exactly; the XUI07 dependency contract's uncaptured controller-field table
+    // (priority ordinals, training/exercise/spotting/border-conflict state,
+    // combat-log ownership, split-off state, strategic-region rows, alert
+    // atlas-frame law, active visual frame) has no established exact a729 read
+    // law and every one of those ships as an explicit unavailable variant. See
+    // `theatre_selector_live_lane::UNCAPTURED_CONTROLLER_FIELDS`.
+    //
+    // Second open gap: the Rust recorder host does not yet write the
+    // `d98_theatre_selector_content_identity_v1` control block, so scheduling
+    // this domain through the ordinary capture path currently yields the
+    // explicit unavailable form on every frame. That is the correct fail-closed
+    // outcome for a missing content identity -- display names must not be
+    // transported without the mod/DLC/language identity that produced them --
+    // but it does mean the admitted path is not yet reachable in the shipped
+    // product. See the wiring note on `content_identity` in
+    // `collector/src/attach_log/theatre_selector.rs`.
+    domain(
+        98,
+        "theatre_selector_live",
+        "theatre_selector_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -2147,7 +2192,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 77, 78,
-            79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 1000,
+            79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 1000,
         ];
         for id in expected {
             assert!(

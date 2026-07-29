@@ -22,6 +22,7 @@ pub mod static_research_catalog;
 pub mod static_focus_defs;
 pub mod tactic_weight;
 pub mod tech_sharing;
+pub mod theatre_selector;
 pub mod world;
 
 pub use portable_content_manifest::{

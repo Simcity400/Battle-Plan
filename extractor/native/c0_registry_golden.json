@@ -84,5 +84,6 @@
   {"id":95,"wire_name":"pov_spotted_units_live","internal_name":"pov_spotted_units_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
   {"id":96,"wire_name":"country_preferred_tactic_weight_live","internal_name":"country_preferred_tactic_weight_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
   {"id":97,"wire_name":"peace_conference_live","internal_name":"peace_conference_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
+  {"id":98,"wire_name":"theatre_selector_live","internal_name":"theatre_selector_live","status":"ValidatedSliceOpenGaps","schedulable":true,"requires_data_record":true,"tags":[]},
   {"id":1000,"wire_name":"frame","internal_name":"frame","status":"Infrastructure","schedulable":false,"requires_data_record":false,"tags":[]}
 ]

@@ -13,6 +13,7 @@ use construction_buildings_state_damage_live_lane as domain48;
 use country_economy_production_stockpile_live_lane as production11;
 use design_catalog_context_live_lane as design78;
 use design_catalog_context_live_lane::peace_conference_live as peace97;
+use theatre_selector_live_lane as theatre98;
 use design_catalog_context_live_lane::selected_designer_identity as selected85;
 use decision_panel_live_lane as decision87;
 use diplomacy_intel_operatives_live as diplomacy53;
@@ -13797,6 +13798,83 @@ fn decode_compact_peace_conference_data_payload(
     );
 }
 
+/// Count what domain 98 actually measured, keeping the three outcomes apart.
+///
+/// `theatre_selector_admitted_sections` and
+/// `theatre_selector_refused_sections` must be reported separately: collapsing
+/// them would make a recording in which every country failed look identical to
+/// one in which every country genuinely had no theatres.
+fn decode_compact_theatre_selector_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match theatre98::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: theatre_selector THS2 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let Some(snapshot) = decoded.snapshot else {
+        return;
+    };
+    let mut admitted = 0usize;
+    let mut refused = 0usize;
+    let mut theatres = 0usize;
+    let mut members = 0usize;
+    for section in &snapshot.sections {
+        match &section.admission {
+            theatre98::SectionAdmission::Unavailable(_) => refused += 1,
+            theatre98::SectionAdmission::Admitted(body) => {
+                admitted += 1;
+                theatres = theatres.saturating_add(body.theatres.len());
+                members = members.saturating_add(
+                    body.theatres
+                        .iter()
+                        .map(|row| row.members.len())
+                        .sum::<usize>()
+                        .saturating_add(body.free_air_wings.len()),
+                );
+            }
+        }
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&theatre98::DOMAIN_ID) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(snapshot.sections.len() as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        theatre98::DOMAIN_ID,
+        "theatre_selector_admitted_sections",
+        admitted,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        theatre98::DOMAIN_ID,
+        "theatre_selector_refused_sections",
+        refused,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        theatre98::DOMAIN_ID,
+        "theatre_selector_theatres",
+        theatres,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        theatre98::DOMAIN_ID,
+        "theatre_selector_members",
+        members,
+    );
+}
+
 fn decode_compact_sunk_ship_history_data_payload(
     offset: usize,
     payload: &[u8],
@@ -17099,6 +17177,9 @@ pub fn summarize_domain_data_payload(
         }
         peace97::DOMAIN_ID => {
             decode_compact_peace_conference_data_payload(offset, payload, &mut summary)
+        }
+        theatre98::DOMAIN_ID => {
+            decode_compact_theatre_selector_data_payload(offset, payload, &mut summary)
         }
         sunk86::DOMAIN_ID => {
             decode_compact_sunk_ship_history_data_payload(offset, payload, &mut summary)
