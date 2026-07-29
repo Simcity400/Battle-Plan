@@ -8,6 +8,7 @@
 
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 #[cfg(windows)]
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -415,7 +416,24 @@ struct TerminalizingPe64ImportSlotBinding {
     permit: Pe64ImportAddressSlotTerminalPermit,
     observed_terminal: ObservedExternalDispatchTerminal,
     protection_before_restore: u32,
+    /// The restore compare-exchange this crate itself performed, recorded the
+    /// instant the hardware exchange returned and before any fallible cleanup.
+    /// A retry that finds the slot already reading the original replays these
+    /// values and, if `protection_reconciled` is still false, finishes the page
+    /// cleanup first. A retry with no record here has no evidence of a
+    /// transition and must not mint a receipt.
+    recorded_restore_cas: Option<RecordedRestoreCas>,
     authenticity_seal: u64,
+}
+
+#[cfg(windows)]
+impl RecordedRestoreCasStorage for TerminalizingPe64ImportSlotBinding {
+    /// The returned borrow is tied to `&mut self`, so this accessor cannot
+    /// return a throwaway local even if someone tried to write one -- that is
+    /// the property the previous wrapper method did not have.
+    fn recorded_restore_cas_slot(&mut self) -> &mut Option<RecordedRestoreCas> {
+        &mut self.recorded_restore_cas
+    }
 }
 
 #[cfg(windows)]
@@ -1208,6 +1226,8 @@ pub fn quiesce_pe64_import_address_slot(
     validate_installed_pe64_import_slot_binding(expected, installed)?;
     validate_sealed_external_dispatch_shim(sealed_shim)?;
     validate_installed_sealed_shim_authority(installed, sealed_shim)?;
+    let max_yields = validate_pe64_import_slot_quiesce_yields(max_yields)
+        .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let module = observe_main_module()?;
     let slot_address = validate_pe64_import_slot(module, expected)?;
     if slot_address != installed.slot_address
@@ -1220,69 +1240,76 @@ pub fn quiesce_pe64_import_address_slot(
     }
     let key = (installed.teardown_owner_token, installed.slot_rva);
     let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut registry = registry
-        .lock()
-        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
-    match registry.get(&key) {
-        Some(Pe64ImportSlotCustodyState::Active(binding)) if binding.receipt == *installed => {
-            transition_sealed_shim_lease(
-                sealed_shim,
-                SealedShimLeasePhase::Pe64ImportSlotActive {
-                    teardown_owner_token: installed.teardown_owner_token,
-                    slot_rva: installed.slot_rva,
-                },
-                SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
-                    teardown_owner_token: installed.teardown_owner_token,
-                    slot_rva: installed.slot_rva,
-                },
-                sealed_shim.callback_address,
-                false,
-            )?;
-            registry.insert(
-                key,
-                Pe64ImportSlotCustodyState::Quiescing(QuiescingPe64ImportSlotBinding {
-                    installed: installed.clone(),
-                    permit: None,
-                }),
-            );
+    // Publish `Quiescing` under the guard, then drop it. The cutover and the
+    // yield loop below run unlocked: they are the caller-bounded part of the
+    // operation and every other import-slot custody call needs this same
+    // process-wide registry. `Quiescing` is exactly the resumable state that
+    // makes releasing the guard safe -- re-entry is handled above and the
+    // re-acquire below re-verifies the binding before publishing anything.
+    let published_permit = {
+        let mut registry = registry
+            .lock()
+            .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+        match registry.get(&key) {
+            Some(Pe64ImportSlotCustodyState::Active(binding)) if binding.receipt == *installed => {
+                transition_sealed_shim_lease(
+                    sealed_shim,
+                    SealedShimLeasePhase::Pe64ImportSlotActive {
+                        teardown_owner_token: installed.teardown_owner_token,
+                        slot_rva: installed.slot_rva,
+                    },
+                    SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+                        teardown_owner_token: installed.teardown_owner_token,
+                        slot_rva: installed.slot_rva,
+                    },
+                    sealed_shim.callback_address,
+                    false,
+                )?;
+                registry.insert(
+                    key,
+                    Pe64ImportSlotCustodyState::Quiescing(QuiescingPe64ImportSlotBinding {
+                        installed: installed.clone(),
+                        permit: None,
+                    }),
+                );
+                None
+            }
+            Some(Pe64ImportSlotCustodyState::Quiescing(binding))
+                if binding.installed == *installed =>
+            {
+                binding.permit.clone()
+            }
+            Some(Pe64ImportSlotCustodyState::Quiescing(_)) => {
+                return Err(format!(
+                    "{} quiescence retry changed installed custody",
+                    expected.logical_name
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "{} is not an active or quiescing import-slot lease",
+                    expected.logical_name
+                ));
+            }
         }
-        Some(Pe64ImportSlotCustodyState::Quiescing(binding)) if binding.installed == *installed => {
-        }
-        Some(Pe64ImportSlotCustodyState::Quiescing(_)) => {
-            return Err(format!(
-                "{} quiescence retry changed installed custody",
-                expected.logical_name
-            ));
-        }
-        _ => {
-            return Err(format!(
-                "{} is not an active or quiescing import-slot lease",
-                expected.logical_name
-            ));
-        }
-    }
-    if let Some(Pe64ImportSlotCustodyState::Quiescing(binding)) = registry.get(&key) {
-        if let Some(permit) = &binding.permit {
-            validate_pe64_import_terminal_permit(installed, sealed_shim, permit)?;
-            return Ok(permit.clone());
-        }
+    };
+    if let Some(permit) = published_permit {
+        validate_pe64_import_terminal_permit(installed, sealed_shim, &permit)?;
+        return Ok(permit);
     }
     atomic_cutover_external_dispatch_to_original(sealed_shim)?;
-    let mut observed_zero = false;
-    for attempt in 0..=max_yields {
-        let (_, active_count) = observe_sealed_shim_dispatch(sealed_shim)?;
-        if active_count == 0 {
-            observed_zero = true;
-            break;
-        }
-        if attempt != max_yields {
-            std::thread::yield_now();
-        }
-    }
-    if !observed_zero {
-        return Err(format!(
-            "{} collector callbacks did not quiesce within {max_yields} yields; cutover custody retained",
-            expected.logical_name
+    let started = std::time::Instant::now();
+    let outcome = drive_pe64_import_slot_quiesce_loop(
+        max_yields,
+        PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET,
+        || observe_sealed_shim_dispatch(sealed_shim).map(|(_, active_count)| active_count),
+        std::thread::yield_now,
+        || started.elapsed(),
+    )?;
+    if !outcome.observed_zero() {
+        return Err(render_pe64_import_slot_quiesce_timeout(
+            expected.logical_name,
+            &outcome,
         ));
     }
     let observed_terminal = observe_external_dispatch_terminal_live(
@@ -1305,20 +1332,39 @@ pub fn quiesce_pe64_import_address_slot(
         observed_terminal,
         authenticity_seal,
     };
-    match registry.get_mut(&key) {
-        Some(Pe64ImportSlotCustodyState::Quiescing(binding))
-            if binding.installed == *installed && binding.permit.is_none() =>
-        {
-            binding.permit = Some(permit.clone());
+    // Re-acquire and re-verify. A racing caller may have finished the same
+    // quiescence while the guard was down; adopting its permit is the same
+    // outcome the re-entry fast path above gives, so validate and return it
+    // instead of erroring. Anything other than `Quiescing` with this exact
+    // `installed` stays a hard error.
+    let (published, adopted_racing_permit) = {
+        let mut registry = registry
+            .lock()
+            .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+        match registry.get_mut(&key) {
+            Some(Pe64ImportSlotCustodyState::Quiescing(binding))
+                if binding.installed == *installed =>
+            {
+                match &binding.permit {
+                    Some(racing) => (racing.clone(), true),
+                    None => {
+                        binding.permit = Some(permit.clone());
+                        (permit, false)
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "{} quiescence custody changed before permit publication",
+                    expected.logical_name
+                ));
+            }
         }
-        _ => {
-            return Err(format!(
-                "{} quiescence custody changed before permit publication",
-                expected.logical_name
-            ));
-        }
+    };
+    if adopted_racing_permit {
+        validate_pe64_import_terminal_permit(installed, sealed_shim, &published)?;
     }
-    Ok(permit)
+    Ok(published)
 }
 
 /// Restore one installed PE64 import slot with an atomic pointer CAS after the
@@ -1406,6 +1452,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 permit: permit.clone(),
                 observed_terminal: permit.observed_terminal,
                 protection_before_restore,
+                recorded_restore_cas: None,
                 authenticity_seal,
             };
             registry.insert(
@@ -1444,29 +1491,96 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         }
     };
     let current = atomic_load_pointer_slot(slot_address)?;
-    let cas = if current == installed.expected_original_address {
-        let current_protection = pointer_slot_protection(slot_address)?;
-        if current_protection != terminalizing.protection_before_restore {
-            restore_pointer_slot_protection(
+    // The arm is chosen by what this crate recorded, not by what the slot
+    // happens to read. A slot already holding the original with no recorded
+    // compare-exchange is somebody else's restore and is refused outright --
+    // synthesizing `observed_before` from `installed` there would attest a
+    // transition this crate never witnessed.
+    let decision = decide_pe64_import_slot_restore_cas(
+        current,
+        installed.expected_original_address,
+        installed.external_shim_address,
+        terminalizing.recorded_restore_cas,
+    )
+    .map_err(|error| format!("{} {error}", expected.logical_name))?;
+    let cas = match decision {
+        Pe64ImportSlotRestoreCasDecision::PerformCas => {
+            // Resolve the registry slot to write into *before* the exchange.
+            // After it, recording is a plain field write on a borrow that
+            // already exists, so no early return can stand between the
+            // exchange and its record.
+            let binding = match registry.get_mut(&key) {
+                Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
+                    if binding.installed == *installed && &binding.permit == permit =>
+                {
+                    binding
+                }
+                _ => {
+                    return Err(format!(
+                        "{} terminalizing custody changed before the restore CAS",
+                        expected.logical_name
+                    ));
+                }
+            };
+            // The ordering lives in `perform_recorded_restore_cas`: the record
+            // below is written between the exchange and the fallible cleanup,
+            // so a cleanup failure leaves a resumable record instead of losing
+            // the evidence that the exchange happened.
+            let (reconciled, protection_after) = perform_recorded_restore_cas(
+                || {
+                    let prepared = begin_atomic_compare_exchange_pointer_slot(slot_address)?;
+                    Ok((
+                        prepared,
+                        prepared.protection_before,
+                        prepared.protection_temporary,
+                    ))
+                },
+                |prepared| {
+                    exchange_pointer_slot(
+                        prepared,
+                        installed.external_shim_address,
+                        installed.expected_original_address,
+                    )
+                },
+                binding,
+                finish_atomic_compare_exchange_pointer_slot,
+            )?;
+            complete_recorded_restore_cas_observation(reconciled, protection_after)
+                .map_err(|error| format!("{} {error}", expected.logical_name))?
+        }
+        Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded) => {
+            let protection_after = reconcile_restored_pointer_slot_protection(
                 slot_address,
-                current_protection,
+                recorded.protection_before,
+            )?;
+            let reconciled = RecordedRestoreCas {
+                protection_reconciled: true,
+                ..recorded
+            };
+            match registry.get_mut(&key) {
+                Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
+                    if binding.installed == *installed && &binding.permit == permit =>
+                {
+                    binding.recorded_restore_cas = Some(reconciled);
+                }
+                _ => {
+                    return Err(format!(
+                        "{} terminalizing custody changed before the restore CAS",
+                        expected.logical_name
+                    ));
+                }
+            }
+            complete_recorded_restore_cas_observation(reconciled, protection_after)
+                .map_err(|error| format!("{} {error}", expected.logical_name))?
+        }
+        Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(recorded) => {
+            let protection_after = reconcile_restored_pointer_slot_protection(
+                slot_address,
                 terminalizing.protection_before_restore,
             )?;
+            complete_recorded_restore_cas_observation(recorded, protection_after)
+                .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-        AtomicPointerCasObservation {
-            observed_before: installed.external_shim_address,
-            protection_before: terminalizing.protection_before_restore,
-            protection_temporary: pointer_slot_temporary_protection(
-                terminalizing.protection_before_restore,
-            ),
-            protection_after: pointer_slot_protection(slot_address)?,
-        }
-    } else {
-        atomic_compare_exchange_pointer_slot(
-            slot_address,
-            installed.external_shim_address,
-            installed.expected_original_address,
-        )?
     };
     if cas.protection_before != terminalizing.protection_before_restore
         || cas.protection_after != terminalizing.protection_before_restore
@@ -3054,13 +3168,446 @@ fn file_c_string_at_rva(
     Err("PE64 import string is unterminated".into())
 }
 
-#[cfg(windows)]
+/// One atomic pointer-slot compare-exchange, as observed when it ran.
+///
+/// Recorded verbatim into the terminalizing binding so a retry can replay the
+/// values this crate actually saw rather than reconstruct them from what the
+/// caller expected to see.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AtomicPointerCasObservation {
-    observed_before: usize,
-    protection_before: u32,
-    protection_temporary: u32,
+pub struct AtomicPointerCasObservation {
+    pub observed_before: usize,
+    pub protection_before: u32,
+    pub protection_temporary: u32,
+    pub protection_after: u32,
+}
+
+// ---------------------------------------------------------------------------
+// PE64 import-slot custody decisions.
+//
+// These are deliberately pure: they take values the `#[cfg(windows)]` paths
+// have already observed and return a decision or a typed refusal. The entry
+// points that call them are gated behind `observe_main_module()` and cannot be
+// driven from a test process; the decisions themselves are the part that has
+// to be right, so they live here where they are directly exercisable.
+// ---------------------------------------------------------------------------
+
+/// Why a PE64 import-slot restore refused to attest a shim -> original
+/// transition. Typed rather than stringly so a caller -- or a test -- can pin
+/// *which* refusal fired instead of only that one did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pe64ImportSlotRestoreCustodyError {
+    /// The slot already reads the original export, but this crate never
+    /// recorded a compare-exchange for it. Some agent outside this crate
+    /// performed the transition (a competing hook engine unhooking, a shim
+    /// that never installed, a rewritten slot). Custody is unresolvable: the
+    /// crate cannot attest a transition it did not perform and must not adopt
+    /// someone else's restore.
+    UnwitnessedForeignRestore { observed_slot_value: usize },
+    /// A prior attempt of this crate recorded a completed compare-exchange,
+    /// but the slot no longer reads the original export that attempt left in
+    /// it. The recorded observation no longer describes the live slot.
+    RecordedRestoreCasSlotDiverged {
+        observed_slot_value: usize,
+        expected_original_address: usize,
+    },
+    /// The external shim and the original export share one address, so "the
+    /// slot reads the shim" and "the slot reads the original" are the same
+    /// observation and no transition is attestable in either direction.
+    IndistinguishableShimAndOriginalAddress { address: usize },
+    /// A recorded compare-exchange was completed, but the page protection it
+    /// left behind has still not been observed back at the value the exchange
+    /// started from. The transition happened; the custody of the page has not
+    /// been resolved, so no receipt may form yet.
+    RecordedRestoreProtectionUnreconciled {
+        protection_before: u32,
+        protection_after: u32,
+    },
+}
+
+impl std::fmt::Display for Pe64ImportSlotRestoreCustodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnwitnessedForeignRestore {
+                observed_slot_value,
+            } => write!(
+                f,
+                "import slot already reads 0x{observed_slot_value:X} with no restore CAS recorded by this crate; custody of the transition is unresolvable"
+            ),
+            Self::RecordedRestoreCasSlotDiverged {
+                observed_slot_value,
+                expected_original_address,
+            } => write!(
+                f,
+                "recorded restore CAS expected the slot to retain original 0x{expected_original_address:X}, observed 0x{observed_slot_value:X}"
+            ),
+            Self::IndistinguishableShimAndOriginalAddress { address } => write!(
+                f,
+                "external shim and original export share address 0x{address:X}; no import-slot transition is attestable"
+            ),
+            Self::RecordedRestoreProtectionUnreconciled {
+                protection_before,
+                protection_after,
+            } => write!(
+                f,
+                "recorded restore CAS left page protection at 0x{protection_after:X}, not the 0x{protection_before:X} it started from"
+            ),
+        }
+    }
+}
+
+/// What this crate recorded about a restore compare-exchange it performed.
+///
+/// Written the instant the hardware `compare_exchange` returns and *before* any
+/// fallible page-protection cleanup, so a failure during that cleanup leaves
+/// evidence of the transition behind instead of losing it. `protection_reconciled`
+/// distinguishes "exchange done, page protection still owed" from "exchange done
+/// and the page is back where it started"; only the latter can form a receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordedRestoreCas {
+    /// The value the compare-exchange actually returned.
+    pub observed_before: usize,
+    /// Page protection observed before the exchange.
+    pub protection_before: u32,
+    /// Protection the exchange temporarily installed. Equals
+    /// `protection_before` when the page was already writable.
+    pub protection_temporary: u32,
+    /// False until the page protection has been observed back at
+    /// `protection_before`.
+    pub protection_reconciled: bool,
+}
+
+/// Which arm the restore path takes for one import slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pe64ImportSlotRestoreCasDecision {
+    /// Drive a real compare-exchange and record what it returns.
+    PerformCas,
+    /// Replay the recorded exchange. Its page protection was already
+    /// reconciled, so only the live protection has to be re-observed.
+    ReplayRecordedCas(RecordedRestoreCas),
+    /// Replay the recorded exchange, but finish the page-protection
+    /// reconciliation the earlier attempt failed to complete before returning.
+    /// This is the resumable state an exchange followed by a failed protection
+    /// restore leaves behind.
+    ReconcileProtectionThenReplay(RecordedRestoreCas),
+}
+
+/// Choose the restore arm from recorded custody, never from the slot alone.
+///
+/// `recorded_prior_cas` is `Some` only when this crate's own exchange returned
+/// for this `(teardown_owner_token, slot_rva)`, so neither replay arm is
+/// reachable without that evidence.
+pub fn decide_pe64_import_slot_restore_cas(
+    current_slot_value: usize,
+    expected_original_address: usize,
+    external_shim_address: usize,
+    recorded_prior_cas: Option<RecordedRestoreCas>,
+) -> Result<Pe64ImportSlotRestoreCasDecision, Pe64ImportSlotRestoreCustodyError> {
+    if external_shim_address == expected_original_address {
+        return Err(
+            Pe64ImportSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
+                address: external_shim_address,
+            },
+        );
+    }
+    match recorded_prior_cas {
+        Some(recorded) => {
+            if current_slot_value != expected_original_address {
+                return Err(
+                    Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+                        observed_slot_value: current_slot_value,
+                        expected_original_address,
+                    },
+                );
+            }
+            if recorded.protection_reconciled {
+                Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(recorded))
+            } else {
+                Ok(Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded))
+            }
+        }
+        None => {
+            if current_slot_value == expected_original_address {
+                return Err(
+                    Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore {
+                        observed_slot_value: current_slot_value,
+                    },
+                );
+            }
+            Ok(Pe64ImportSlotRestoreCasDecision::PerformCas)
+        }
+    }
+}
+
+/// Sequence one restore compare-exchange so that its result is persisted before
+/// anything that can fail runs after it.
+///
+/// This is the ordering, extracted so it can be driven with an injected fault:
+/// `prepare` holds everything fallible that must precede the exchange,
+/// `exchange` is infallible by construction, `record` persists, and only then
+/// does `finish` run the fallible cleanup. `record` is called twice -- once with
+/// `protection_reconciled: false` immediately after the exchange, once with it
+/// true once the cleanup has landed -- so a `finish` failure leaves behind
+/// evidence that the transition happened and that the page is still owed,
+/// rather than leaving no evidence at all.
+///
+/// The sink is reached through [`RecordedRestoreCasStorage`] rather than as a
+/// bare `&mut Option`, and that is the point. An implementor's accessor returns
+/// a borrow tied to `&mut self`, so it *cannot* hand back a throwaway local --
+/// the borrow checker rejects it. A bare `Option` does not implement the trait,
+/// so it cannot reach the production call site either. Taking `&mut Option`
+/// directly left exactly one unpinned substitution point: redirecting the
+/// record there compiled cleanly, dropped the evidence, and brought back the
+/// legitimate-retry refusal this whole mechanism exists to prevent.
+fn perform_recorded_restore_cas<P, E>(
+    prepare: impl FnOnce() -> Result<(P, u32, u32), E>,
+    exchange: impl FnOnce(&P) -> usize,
+    storage: &mut impl RecordedRestoreCasStorage,
+    finish: impl FnOnce(P) -> Result<u32, E>,
+) -> Result<(RecordedRestoreCas, u32), E> {
+    let (prepared, protection_before, protection_temporary) = prepare()?;
+    let observed_before = exchange(&prepared);
+    let recorded = RecordedRestoreCas {
+        observed_before,
+        protection_before,
+        protection_temporary,
+        protection_reconciled: false,
+    };
+    // Between the exchange above and this line there is nothing fallible.
+    *storage.recorded_restore_cas_slot() = Some(recorded);
+    let protection_after = finish(prepared)?;
+    let reconciled = RecordedRestoreCas {
+        protection_reconciled: true,
+        ..recorded
+    };
+    *storage.recorded_restore_cas_slot() = Some(reconciled);
+    Ok((reconciled, protection_after))
+}
+
+/// Owner of the slot a restore compare-exchange records itself into.
+///
+/// Deliberately not implemented for `Option<RecordedRestoreCas>`: the whole
+/// value of the trait is that the only implementors are types that *own*
+/// durable custody storage, so the record cannot be pointed at something that
+/// dies with the call.
+trait RecordedRestoreCasStorage {
+    fn recorded_restore_cas_slot(&mut self) -> &mut Option<RecordedRestoreCas>;
+}
+
+/// Render the message a timed-out quiescence reports.
+///
+/// This is the production renderer, not a test-side reconstruction of it: the
+/// call site passes the outcome straight through, so every number in the text
+/// is one the loop counted rather than one recomputed from `max_yields`. Kept
+/// pure and separate precisely so a test can assert the *rendered* string and
+/// therefore catch a call site that starts quoting the wrong field.
+pub fn render_pe64_import_slot_quiesce_timeout(
+    logical_name: &str,
+    outcome: &Pe64ImportSlotQuiesceOutcome,
+) -> String {
+    format!(
+        "{logical_name} collector callbacks did not quiesce: stopped on {} after {} yields and {} dispatch observations in {:?}; cutover custody retained",
+        outcome.stopped_on, outcome.yields_performed, outcome.observations, outcome.elapsed
+    )
+}
+
+/// Turn a recorded exchange plus the live page protection into the complete
+/// observation a receipt is minted from.
+///
+/// Refuses unless the page is back at the protection the exchange started from,
+/// so an unreconciled record can never reach a receipt no matter which arm
+/// produced it.
+pub fn complete_recorded_restore_cas_observation(
+    recorded: RecordedRestoreCas,
     protection_after: u32,
+) -> Result<AtomicPointerCasObservation, Pe64ImportSlotRestoreCustodyError> {
+    if !recorded.protection_reconciled || protection_after != recorded.protection_before {
+        return Err(
+            Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                protection_before: recorded.protection_before,
+                protection_after,
+            },
+        );
+    }
+    Ok(AtomicPointerCasObservation {
+        observed_before: recorded.observed_before,
+        protection_before: recorded.protection_before,
+        protection_temporary: recorded.protection_temporary,
+        protection_after,
+    })
+}
+
+/// Wall-clock budget for the quiescence loop. **This is an operational policy
+/// limit, not a derivation** -- nothing about the loop bounds how long a
+/// collector callback takes to leave the shim.
+///
+/// What the loop waits for is callbacks already inside the sealed shim to
+/// return. It cannot make that happen: `std::thread::yield_now` is
+/// `SwitchToThread`, which offers a scheduling opportunity to a ready thread on
+/// the current processor, guarantees no fairness, and does not imply any
+/// callback completes; a callback that is blocked stays active across any
+/// number of yields. So iterations bound only a proxy, and this budget bounds
+/// the quantity that actually matters.
+///
+/// The policy the 2 seconds encodes: teardown runs on a caller thread and holds
+/// the sealed-shim lease for this slot, so a stalled quiescence blocks any
+/// later install for the same slot. Long enough that a callback merely
+/// descheduled several times still finishes; short enough that a teardown never
+/// reads as hung. Expiry is not data loss -- the function returns its resumable
+/// timeout error with the dispatch already cut over to the original, so the
+/// caller may re-drive it.
+const PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS: u64 = 2_000_000_000;
+
+/// See [`PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS`].
+pub const PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET: Duration =
+    Duration::from_nanos(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS);
+
+/// Cost this policy assumes one loop iteration cannot go below: a `VirtualQuery`
+/// plus a `SwitchToThread`. It is used only to size the iteration backstop below
+/// so that the backstop sits above what the time budget can admit -- it is not a
+/// claim about how long an iteration takes in practice.
+const PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS: u64 = 1_000;
+
+/// Ceiling on the caller-supplied yield budget of
+/// [`quiesce_pe64_import_address_slot`].
+///
+/// A **backstop**, not the operative bound. [`PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET`]
+/// is what stops a contended loop; this catches a caller asking for an absurd
+/// iteration count and a clock that has stalled or gone backwards. It is derived
+/// from the two policy numbers above -- the iterations the time budget could
+/// admit if every one of them cost only the assumed minimum -- so it sits above
+/// the clock rather than pre-empting it, and it moves when the budget moves.
+pub const MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS: u32 = {
+    let iterations = PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS
+        / PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS;
+    if iterations > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        iterations as u32
+    }
+};
+
+/// Why a quiescence yield budget was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pe64ImportSlotQuiesceBoundError {
+    YieldBudgetAboveCeiling { requested: u32, ceiling: u32 },
+}
+
+impl std::fmt::Display for Pe64ImportSlotQuiesceBoundError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::YieldBudgetAboveCeiling { requested, ceiling } => write!(
+                f,
+                "quiescence yield budget {requested} exceeds the {ceiling} ceiling"
+            ),
+        }
+    }
+}
+
+/// Validate a caller-supplied quiescence yield budget against the ceiling.
+pub fn validate_pe64_import_slot_quiesce_yields(
+    max_yields: u32,
+) -> Result<u32, Pe64ImportSlotQuiesceBoundError> {
+    if max_yields > MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS {
+        return Err(Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
+            requested: max_yields,
+            ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+        });
+    }
+    Ok(max_yields)
+}
+
+/// Why the quiescence loop stopped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pe64ImportSlotQuiesceStop {
+    /// An observation returned an active callback count of zero.
+    Quiesced,
+    /// The caller-supplied yield budget ran out.
+    YieldBudgetExhausted,
+    /// [`PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET`] ran out.
+    TimeBudgetExhausted,
+}
+
+impl std::fmt::Display for Pe64ImportSlotQuiesceStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Quiesced => write!(f, "a zero active-callback observation"),
+            Self::YieldBudgetExhausted => write!(f, "the yield budget"),
+            Self::TimeBudgetExhausted => write!(f, "the time budget"),
+        }
+    }
+}
+
+/// What the quiescence loop actually did, counted by the loop itself.
+///
+/// The timeout message quotes these fields rather than recomputing them from
+/// `max_yields`, so the message cannot drift from the loop's behaviour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pe64ImportSlotQuiesceOutcome {
+    pub stopped_on: Pe64ImportSlotQuiesceStop,
+    pub observations: u64,
+    pub yields_performed: u32,
+    pub elapsed: Duration,
+}
+
+impl Pe64ImportSlotQuiesceOutcome {
+    pub fn observed_zero(&self) -> bool {
+        matches!(self.stopped_on, Pe64ImportSlotQuiesceStop::Quiesced)
+    }
+}
+
+/// The quiescence loop itself.
+///
+/// This is the loop `quiesce_pe64_import_address_slot` runs -- the observation,
+/// the yield, and both bounds are here, not duplicated at the call site -- so a
+/// test that drives it with its own closures exercises the real control flow.
+/// The `#[cfg(windows)]` caller supplies `observe_active_callback_count`,
+/// `yield_now` and `elapsed`; nothing else about the loop is platform-specific.
+///
+/// One observation precedes any yield and one follows each yield, so a run that
+/// stops on the yield budget has performed `max_yields` yields and
+/// `max_yields + 1` observations. The time budget is checked after an
+/// observation shows callbacks still active and before the yield that would
+/// follow it, so an already-quiesced slot is never failed for lateness.
+pub fn drive_pe64_import_slot_quiesce_loop<E>(
+    max_yields: u32,
+    time_budget: Duration,
+    mut observe_active_callback_count: impl FnMut() -> Result<u64, E>,
+    mut yield_now: impl FnMut(),
+    mut elapsed: impl FnMut() -> Duration,
+) -> Result<Pe64ImportSlotQuiesceOutcome, E> {
+    let mut observations: u64 = 0;
+    let mut yields_performed: u32 = 0;
+    loop {
+        let active_count = observe_active_callback_count()?;
+        observations += 1;
+        if active_count == 0 {
+            return Ok(Pe64ImportSlotQuiesceOutcome {
+                stopped_on: Pe64ImportSlotQuiesceStop::Quiesced,
+                observations,
+                yields_performed,
+                elapsed: elapsed(),
+            });
+        }
+        if yields_performed >= max_yields {
+            return Ok(Pe64ImportSlotQuiesceOutcome {
+                stopped_on: Pe64ImportSlotQuiesceStop::YieldBudgetExhausted,
+                observations,
+                yields_performed,
+                elapsed: elapsed(),
+            });
+        }
+        let spent = elapsed();
+        if spent >= time_budget {
+            return Ok(Pe64ImportSlotQuiesceOutcome {
+                stopped_on: Pe64ImportSlotQuiesceStop::TimeBudgetExhausted,
+                observations,
+                yields_performed,
+                elapsed: spent,
+            });
+        }
+        yield_now();
+        yields_performed += 1;
+    }
 }
 
 #[cfg(windows)]
@@ -3104,18 +3651,33 @@ fn atomic_cutover_external_dispatch_to_original(
     Ok(())
 }
 
+/// A pointer-slot compare-exchange that has been prepared but not yet performed.
+///
+/// Splitting the operation into prepare / exchange / finish is what lets the
+/// restore path persist the exchange's result with no fallible call standing
+/// between the two: everything that can fail is either before the exchange
+/// (`begin_`) or after the record has been written (`finish_`).
 #[cfg(windows)]
-fn atomic_compare_exchange_pointer_slot(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreparedPointerSlotCas {
     address: usize,
-    expected: usize,
-    replacement: usize,
-) -> Result<AtomicPointerCasObservation, String> {
+    protection_before: u32,
+    protection_temporary: u32,
+    was_writable: bool,
+}
+
+/// Everything fallible that must happen *before* the exchange: validate the
+/// slot memory, observe the page protection, and make the page writable.
+#[cfg(windows)]
+fn begin_atomic_compare_exchange_pointer_slot(
+    address: usize,
+) -> Result<PreparedPointerSlotCas, String> {
     use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_READWRITE};
     validate_atomic_pointer_slot_memory(address)?;
     let protection_before = pointer_slot_protection(address)?;
-    let writable = pointer_protection_is_writable(protection_before);
+    let was_writable = pointer_protection_is_writable(protection_before);
     let protection_temporary = pointer_slot_temporary_protection(protection_before);
-    if !writable {
+    if !was_writable {
         let mut previous = 0u32;
         let changed = unsafe {
             VirtualProtect(
@@ -3143,32 +3705,75 @@ fn atomic_compare_exchange_pointer_slot(
             );
         }
     }
-    let slot = unsafe { &*(address as *const AtomicUsize) };
+    Ok(PreparedPointerSlotCas {
+        address,
+        protection_before,
+        protection_temporary,
+        was_writable,
+    })
+}
+
+/// The exchange itself. Infallible by construction: the caller must be able to
+/// persist what it returns without a `?` in between.
+#[cfg(windows)]
+fn exchange_pointer_slot(
+    prepared: &PreparedPointerSlotCas,
+    expected: usize,
+    replacement: usize,
+) -> usize {
+    let slot = unsafe { &*(prepared.address as *const AtomicUsize) };
     let observed_before =
         match slot.compare_exchange(expected, replacement, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(previous) | Err(previous) => previous,
         };
     unsafe { windows_sys::Win32::System::Threading::FlushProcessWriteBuffers() };
-    if !writable {
+    observed_before
+}
+
+/// Everything fallible that must happen *after* the exchange: put the page
+/// protection back and confirm it landed. Returns the observed protection.
+#[cfg(windows)]
+fn finish_atomic_compare_exchange_pointer_slot(
+    prepared: PreparedPointerSlotCas,
+) -> Result<u32, String> {
+    use windows_sys::Win32::System::Memory::VirtualProtect;
+    if !prepared.was_writable {
         let mut temporary = 0u32;
         let restored = unsafe {
             VirtualProtect(
-                address as *const core::ffi::c_void,
+                prepared.address as *const core::ffi::c_void,
                 size_of::<usize>(),
-                protection_before,
+                prepared.protection_before,
                 &mut temporary,
             )
         };
-        if restored == 0 || temporary != protection_temporary {
+        if restored == 0 || temporary != prepared.protection_temporary {
             return Err(
                 "atomic pointer slot page protection restoration failed; custody unresolved".into(),
             );
         }
     }
-    let protection_after = pointer_slot_protection(address)?;
-    if protection_after != protection_before {
+    let protection_after = pointer_slot_protection(prepared.address)?;
+    if protection_after != prepared.protection_before {
         return Err("atomic pointer slot page protection was not exactly restored".into());
     }
+    Ok(protection_after)
+}
+
+/// Prepare, exchange and finish in one call, for callers that have nothing to
+/// persist between the exchange and the cleanup. Behaviourally identical to the
+/// single function this replaced.
+#[cfg(windows)]
+fn atomic_compare_exchange_pointer_slot(
+    address: usize,
+    expected: usize,
+    replacement: usize,
+) -> Result<AtomicPointerCasObservation, String> {
+    let prepared = begin_atomic_compare_exchange_pointer_slot(address)?;
+    let observed_before = exchange_pointer_slot(&prepared, expected, replacement);
+    let protection_before = prepared.protection_before;
+    let protection_temporary = prepared.protection_temporary;
+    let protection_after = finish_atomic_compare_exchange_pointer_slot(prepared)?;
     Ok(AtomicPointerCasObservation {
         observed_before,
         protection_before,
@@ -3225,6 +3830,21 @@ fn pointer_slot_protection(address: usize) -> Result<u32, String> {
         return Err("atomic pointer slot protection query failed".into());
     }
     Ok(info.Protect)
+}
+
+/// Put a restored slot's page protection back at `expected` if it has drifted,
+/// then report what it actually reads. Used by both replay arms so the retry
+/// path finishes the cleanup a failed attempt left owed.
+#[cfg(windows)]
+fn reconcile_restored_pointer_slot_protection(
+    address: usize,
+    expected: u32,
+) -> Result<u32, String> {
+    let observed = pointer_slot_protection(address)?;
+    if observed != expected {
+        restore_pointer_slot_protection(address, observed, expected)?;
+    }
+    pointer_slot_protection(address)
 }
 
 #[cfg(windows)]
@@ -3817,5 +4437,798 @@ const fn hex_nibble(value: u8) -> u8 {
         b'a'..=b'f' => value - b'a' + 10,
         b'A'..=b'F' => value - b'A' + 10,
         _ => panic!("invalid hex digest"),
+    }
+}
+
+#[cfg(test)]
+mod pe64_import_slot_custody_decision_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Stand-in addresses. They only have to be distinct and non-zero: the
+    /// decision helper compares them, it never dereferences them.
+    const ORIGINAL: usize = 0x7FFA_1111_0000;
+    const SHIM: usize = 0x0000_2222_3000;
+    const FOREIGN: usize = 0x0000_3333_4000;
+
+    /// `observed_before` here is deliberately *not* `SHIM`. The pre-fix code
+    /// synthesized `observed_before` as `installed.external_shim_address`, so
+    /// any test whose recorded value equals `SHIM` cannot tell a replay from a
+    /// reconstruction. This sentinel can.
+    const RECORDED_SENTINEL_BEFORE: usize = 0x0000_5555_6000;
+
+    /// Page protections. Distinct so a test can tell which field was replayed.
+    const PROTECTION_BEFORE: u32 = 0x11;
+    const PROTECTION_TEMPORARY: u32 = 0x22;
+
+    /// A recorded exchange whose page cleanup completed.
+    fn recorded_cas() -> RecordedRestoreCas {
+        RecordedRestoreCas {
+            observed_before: RECORDED_SENTINEL_BEFORE,
+            protection_before: PROTECTION_BEFORE,
+            protection_temporary: PROTECTION_TEMPORARY,
+            protection_reconciled: true,
+        }
+    }
+
+    /// A recorded exchange that completed but whose page cleanup then failed --
+    /// the state Finding 1 is about.
+    fn recorded_cas_pending_protection() -> RecordedRestoreCas {
+        RecordedRestoreCas {
+            protection_reconciled: false,
+            ..recorded_cas()
+        }
+    }
+
+    // ---- Defect A: restore arm selection --------------------------------
+
+    // FALSIFIABILITY: delete the `current_slot_value == expected_original_address`
+    // refusal in the `None` branch of `decide_pe64_import_slot_restore_cas` --
+    // i.e. restore the pre-fix behaviour where an already-original slot silently
+    // took the synthesized-observation arm -- and this test fails: the call
+    // returns `Ok(PerformCas)` instead of `Err(UnwitnessedForeignRestore)`.
+    //
+    // This is the forged-attestation case. On a first attempt the crate has
+    // recorded no CAS; if the slot already reads the original then some agent
+    // outside this crate performed the transition and no receipt may be minted.
+    #[test]
+    fn first_attempt_with_slot_already_original_and_no_record_is_refused() {
+        let outcome = decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, None);
+        assert_eq!(
+            outcome,
+            Err(
+                Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore {
+                    observed_slot_value: ORIGINAL
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: make the `None` branch refuse unconditionally, or invert
+    // its comparison to `current_slot_value != expected_original_address`, and
+    // this test fails: the genuine first attempt no longer reaches `PerformCas`.
+    // This is the negative arm of the test above -- without it the refusal could
+    // be a blanket rejection and still look correct.
+    #[test]
+    fn first_attempt_with_slot_holding_the_shim_performs_a_real_cas() {
+        let outcome = decide_pe64_import_slot_restore_cas(SHIM, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(Pe64ImportSlotRestoreCasDecision::PerformCas));
+    }
+
+    // FALSIFIABILITY: change the `Some(recorded)` branch to rebuild the
+    // observation from the caller-supplied addresses -- e.g. return
+    // `ReplayRecordedCas(AtomicPointerCasObservation { observed_before:
+    // external_shim_address, .. })`, which is exactly what the pre-fix code did
+    // -- and this test fails on `observed_before`, because the replayed value
+    // would become `SHIM` instead of the recorded sentinel.
+    //
+    // This is property A2: the retry arm reports what the earlier CAS actually
+    // returned, never a value reconstructed from `installed`.
+    #[test]
+    fn retry_replays_the_recorded_observation_verbatim() {
+        // The sentinel is load-bearing test data, so pin it here. Set it equal
+        // to `SHIM` and the assertion below passes against the pre-fix
+        // reconstruction as well -- the test would go vacuous with nothing
+        // going red anywhere.
+        assert_ne!(RECORDED_SENTINEL_BEFORE, SHIM);
+        assert_ne!(RECORDED_SENTINEL_BEFORE, ORIGINAL);
+        assert_ne!(SHIM, ORIGINAL);
+
+        let recorded = recorded_cas();
+        let outcome = decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
+        assert_eq!(
+            outcome,
+            Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(
+                RecordedRestoreCas {
+                    observed_before: RECORDED_SENTINEL_BEFORE,
+                    protection_before: PROTECTION_BEFORE,
+                    protection_temporary: PROTECTION_TEMPORARY,
+                    protection_reconciled: true,
+                }
+            ))
+        );
+        // ...and the value that reaches the receipt is that same recorded one.
+        assert_eq!(
+            complete_recorded_restore_cas_observation(recorded, PROTECTION_BEFORE),
+            Ok(AtomicPointerCasObservation {
+                observed_before: RECORDED_SENTINEL_BEFORE,
+                protection_before: PROTECTION_BEFORE,
+                protection_temporary: PROTECTION_TEMPORARY,
+                protection_after: PROTECTION_BEFORE,
+            })
+        );
+    }
+
+    // ---- Finding 1: a completed exchange must survive a failed cleanup ----
+
+    // FALSIFIABILITY: make the `Some(recorded)` branch return `ReplayRecordedCas`
+    // regardless of `protection_reconciled` -- i.e. collapse the two replay
+    // variants back into one -- and this test fails. It is the sequencing
+    // decision for the state a successful exchange followed by a failed page
+    // cleanup leaves behind: the exchange happened and must be replayed, but the
+    // page cleanup is still owed and has to run before a receipt can form.
+    #[test]
+    fn retry_after_a_cleanup_failure_resumes_the_protection_reconciliation() {
+        let outcome = decide_pe64_import_slot_restore_cas(
+            ORIGINAL,
+            ORIGINAL,
+            SHIM,
+            Some(recorded_cas_pending_protection()),
+        );
+        assert_eq!(
+            outcome,
+            Ok(
+                Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(
+                    recorded_cas_pending_protection()
+                )
+            )
+        );
+    }
+
+    // FALSIFIABILITY: delete the record-back between `exchange_pointer_slot` and
+    // `finish_atomic_compare_exchange_pointer_slot` in the `PerformCas` arm --
+    // i.e. go back to recording only after the fallible cleanup returned -- and
+    // the state this test describes becomes `None` instead, which
+    // `first_attempt_with_slot_already_original_and_no_record_is_refused` shows
+    // is refused as `UnwitnessedForeignRestore`. This test names the outcome
+    // that refusal would wrongly produce for a caller who genuinely did perform
+    // the transition.
+    #[test]
+    fn a_recorded_exchange_is_never_mistaken_for_a_foreign_restore() {
+        for recorded in [recorded_cas(), recorded_cas_pending_protection()] {
+            let outcome =
+                decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
+            assert!(
+                !matches!(
+                    outcome,
+                    Err(Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore { .. })
+                ),
+                "a recorded exchange ({recorded:?}) was refused as foreign: {outcome:?}"
+            );
+        }
+    }
+
+    // FALSIFIABILITY: move the `record(recorded)` call in
+    // `perform_recorded_restore_cas` to after `finish(prepared)?` -- exactly the
+    // ordering Finding 1 identified, where the record is written only once the
+    // fallible page cleanup has returned -- and this test fails: `records` comes
+    // back empty. That empty state is what leaves a caller who genuinely did
+    // perform the transition refused as `UnwitnessedForeignRestore`, and the
+    // last assertion here is the retry it must get instead.
+    #[test]
+    fn a_cleanup_failure_after_the_exchange_still_leaves_the_exchange_recorded() {
+        let mut sink = TestRestoreCasStorage::default();
+        let outcome = perform_recorded_restore_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut sink,
+            |_: ()| Err("page protection restoration failed"),
+        );
+        assert_eq!(outcome, Err("page protection restoration failed"));
+        // The sink is the same storage production hands in -- a registry field,
+        // not a test-local recorder -- so this pins the write production
+        // actually performs rather than one the test supplied.
+        assert_eq!(
+            sink.0,
+            Some(RecordedRestoreCas {
+                observed_before: RECORDED_SENTINEL_BEFORE,
+                protection_before: PROTECTION_BEFORE,
+                protection_temporary: PROTECTION_TEMPORARY,
+                protection_reconciled: false,
+            })
+        );
+        assert_eq!(
+            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, sink.0),
+            Ok(
+                Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(RecordedRestoreCas {
+                    observed_before: RECORDED_SENTINEL_BEFORE,
+                    protection_before: PROTECTION_BEFORE,
+                    protection_temporary: PROTECTION_TEMPORARY,
+                    protection_reconciled: false,
+                })
+            )
+        );
+    }
+
+    // FALSIFIABILITY: drop the second `*sink = Some(reconciled)` write in
+    // `perform_recorded_restore_cas` and this test fails -- the sink would still
+    // hold the unreconciled record, so a fully completed restore would stay
+    // marked as owing page cleanup forever and
+    // `complete_recorded_restore_cas_observation` would refuse it. The
+    // companion property -- that the *first* write lands before the fallible
+    // cleanup -- is pinned by
+    // `a_cleanup_failure_after_the_exchange_still_leaves_the_exchange_recorded`,
+    // which is the only path on which that intermediate write is observable.
+    #[test]
+    fn a_successful_exchange_is_recorded_after_its_cleanup_completes() {
+        let mut sink = TestRestoreCasStorage::default();
+        let outcome = perform_recorded_restore_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| RECORDED_SENTINEL_BEFORE,
+            &mut sink,
+            |_: ()| Ok(PROTECTION_BEFORE),
+        );
+        let reconciled = RecordedRestoreCas {
+            observed_before: RECORDED_SENTINEL_BEFORE,
+            protection_before: PROTECTION_BEFORE,
+            protection_temporary: PROTECTION_TEMPORARY,
+            protection_reconciled: true,
+        };
+        assert_eq!(outcome, Ok((reconciled, PROTECTION_BEFORE)));
+        assert_eq!(sink.0, Some(reconciled));
+    }
+
+    // FALSIFIABILITY: drop the `?` on `prepare()` in
+    // `perform_recorded_restore_cas` and this test panics in the `exchange`
+    // closure -- the slot would be exchanged after the page could not be made
+    // writable. The panicking closures are the negative arm: they assert the
+    // failed prepare short-circuits rather than merely that an error came back.
+    #[test]
+    fn a_failure_before_the_exchange_records_nothing() {
+        let mut sink = TestRestoreCasStorage::default();
+        let outcome = perform_recorded_restore_cas::<(), &str>(
+            || Err("page protection change failed"),
+            |_| panic!("must not exchange after a failed prepare"),
+            &mut sink,
+            |_| panic!("must not run cleanup after a failed prepare"),
+        );
+        assert_eq!(outcome, Err("page protection change failed"));
+        assert_eq!(sink.0, None);
+    }
+
+    // FALSIFIABILITY: drop the `!recorded.protection_reconciled` clause from
+    // `complete_recorded_restore_cas_observation` and the first assertion fails:
+    // an exchange whose page cleanup never completed would mint a receipt.
+    // Drop the `protection_after != recorded.protection_before` clause and the
+    // second fails.
+    #[test]
+    fn an_unreconciled_record_cannot_form_a_receipt_observation() {
+        assert_eq!(
+            complete_recorded_restore_cas_observation(
+                recorded_cas_pending_protection(),
+                PROTECTION_BEFORE
+            ),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                    protection_before: PROTECTION_BEFORE,
+                    protection_after: PROTECTION_BEFORE,
+                }
+            )
+        );
+        assert_eq!(
+            complete_recorded_restore_cas_observation(recorded_cas(), PROTECTION_TEMPORARY),
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                    protection_before: PROTECTION_BEFORE,
+                    protection_after: PROTECTION_TEMPORARY,
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: delete the `current_slot_value != expected_original_address`
+    // check in the `Some(recorded)` branch and this test fails: a slot rewritten
+    // back to the shim since the recorded CAS would replay the stale observation
+    // and return `Ok`.
+    #[test]
+    fn retry_with_record_but_slot_no_longer_original_is_refused() {
+        let outcome =
+            decide_pe64_import_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas()));
+        assert_eq!(
+            outcome,
+            Err(
+                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+                    observed_slot_value: SHIM,
+                    expected_original_address: ORIGINAL,
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: remove the `external_shim_address == expected_original_address`
+    // guard at the top of `decide_pe64_import_slot_restore_cas` and this test
+    // fails: with the two addresses equal the `None` case falls through to
+    // `UnwitnessedForeignRestore` and the `Some` case to a replay, neither of
+    // which is an attestable transition.
+    #[test]
+    fn shim_sharing_the_original_address_is_refused_with_and_without_a_record() {
+        let expected = Err(
+            Pe64ImportSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
+                address: ORIGINAL,
+            },
+        );
+        assert_eq!(
+            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, ORIGINAL, None),
+            expected
+        );
+        assert_eq!(
+            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, ORIGINAL, Some(recorded_cas())),
+            expected
+        );
+    }
+
+    // FALSIFIABILITY: broaden the `None` branch to refuse anything other than
+    // the shim -- e.g. `if current_slot_value != external_shim_address { Err(..) }`
+    // -- and this test fails. The refusal must be specific to the already-original
+    // case; a third-party value is still a case the real CAS resolves, and it
+    // fails there with the existing "restore CAS expected shim" message.
+    #[test]
+    fn first_attempt_with_a_third_party_slot_value_still_performs_the_cas() {
+        let outcome = decide_pe64_import_slot_restore_cas(FOREIGN, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(Pe64ImportSlotRestoreCasDecision::PerformCas));
+    }
+
+    // FALSIFIABILITY: any edit that lets the no-record path yield a replay --
+    // for instance defaulting `recorded_prior_cas` to a synthesized observation
+    // when it is `None` -- makes this test fail. This is property A1 stated
+    // directly: the replay arm is reachable only from recorded evidence.
+    #[test]
+    fn replay_arm_is_unreachable_without_a_recorded_cas() {
+        for current in [SHIM, ORIGINAL, FOREIGN, 0usize, usize::MAX] {
+            let outcome = decide_pe64_import_slot_restore_cas(current, ORIGINAL, SHIM, None);
+            // BOTH replay variants, not just the plain one. Rejecting only
+            // `ReplayRecordedCas` left `ReconcileProtectionThenReplay` free to
+            // be fabricated from `None`, which reaches a receipt through the
+            // same completion path and is the identical defect.
+            assert!(
+                !matches!(
+                    outcome,
+                    Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(_))
+                        | Ok(Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(_))
+                ),
+                "slot value 0x{current:X} reached a replay arm with no recorded CAS: {outcome:?}"
+            );
+        }
+    }
+
+    // ---- the timeout message production actually emits -------------------
+
+    // FALSIFIABILITY: change the call site to quote `max_yields` instead of
+    // `outcome.yields_performed`, and this test fails -- a time-budget timeout
+    // after 10 yields would otherwise report the full budget. The earlier loop
+    // test proves the counters are *accurate*; only this one proves the message
+    // quotes THOSE counters. Drop the stop reason from the format string and
+    // the first assertion fails; drop the elapsed time and the last fails.
+    #[test]
+    fn the_timeout_message_quotes_the_outcome_counters_not_the_budget() {
+        let outcome = Pe64ImportSlotQuiesceOutcome {
+            stopped_on: Pe64ImportSlotQuiesceStop::TimeBudgetExhausted,
+            observations: 11,
+            yields_performed: 10,
+            elapsed: Duration::from_millis(100),
+        };
+        let rendered = render_pe64_import_slot_quiesce_timeout("d90 convoy", &outcome);
+        assert!(
+            rendered.contains(&Pe64ImportSlotQuiesceStop::TimeBudgetExhausted.to_string()),
+            "stop reason missing from {rendered:?}"
+        );
+        assert!(
+            rendered.contains("after 10 yields"),
+            "expected the 10 yields the loop performed, got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("11 dispatch observations"),
+            "expected the 11 observations the loop made, got {rendered:?}"
+        );
+        assert!(rendered.contains("d90 convoy"), "logical name missing");
+        assert!(
+            rendered.contains(&format!("{:?}", Duration::from_millis(100))),
+            "elapsed time missing from {rendered:?}"
+        );
+    }
+
+    // FALSIFIABILITY: make the renderer quote anything other than the outcome's
+    // own counters -- a constant, or `max_yields` -- and this fails.
+    //
+    // The two fixtures are identical in stop reason, elapsed time and logical
+    // name, and differ ONLY in `observations` and `yields_performed`. That
+    // isolation is the point: an earlier version of this test also varied the
+    // stop reason and the elapsed time, so a renderer that ignored the counters
+    // entirely and rendered only the stop reason still passed it.
+    #[test]
+    fn outcomes_differing_only_in_their_counters_render_differently() {
+        let base = Pe64ImportSlotQuiesceOutcome {
+            stopped_on: Pe64ImportSlotQuiesceStop::TimeBudgetExhausted,
+            observations: 4,
+            yields_performed: 3,
+            elapsed: Duration::from_millis(100),
+        };
+        let more_iterations = Pe64ImportSlotQuiesceOutcome {
+            observations: 900,
+            yields_performed: 899,
+            ..base
+        };
+        assert_eq!(base.stopped_on, more_iterations.stopped_on);
+        assert_eq!(base.elapsed, more_iterations.elapsed);
+        assert_ne!(
+            render_pe64_import_slot_quiesce_timeout("lane", &base),
+            render_pe64_import_slot_quiesce_timeout("lane", &more_iterations)
+        );
+    }
+
+    /// Test-side owner of a restore-CAS slot.
+    ///
+    /// Exists so the tests drive `perform_recorded_restore_cas` through the SAME
+    /// `RecordedRestoreCasStorage` trait production uses, rather than through a
+    /// bare `&mut Option` production could never pass. A bare `Option` does not
+    /// implement the trait, so the production call site and these tests cannot
+    /// diverge in the way that previously left the sink unpinned.
+    #[derive(Debug, Default, Eq, PartialEq)]
+    struct TestRestoreCasStorage(Option<RecordedRestoreCas>);
+
+    impl RecordedRestoreCasStorage for TestRestoreCasStorage {
+        fn recorded_restore_cas_slot(&mut self) -> &mut Option<RecordedRestoreCas> {
+            &mut self.0
+        }
+    }
+
+    // ---- Defect B1: the yield-budget ceiling ----------------------------
+
+    // FALSIFIABILITY: change the comparison in
+    // `validate_pe64_import_slot_quiesce_yields` from `>` to `>=` and this test
+    // fails -- a budget exactly at the ceiling would be refused.
+    #[test]
+    fn yield_budget_at_the_ceiling_is_accepted_unchanged() {
+        assert_eq!(
+            validate_pe64_import_slot_quiesce_yields(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS),
+            Ok(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS)
+        );
+    }
+
+    // FALSIFIABILITY: delete the ceiling check in
+    // `validate_pe64_import_slot_quiesce_yields` -- the pre-fix state, where
+    // `max_yields` was never validated at all -- and this test fails: the call
+    // returns `Ok` instead of `Err(YieldBudgetAboveCeiling)`.
+    #[test]
+    fn yield_budget_one_above_the_ceiling_is_refused() {
+        assert_eq!(
+            validate_pe64_import_slot_quiesce_yields(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS + 1),
+            Err(Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
+                requested: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS + 1,
+                ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+            })
+        );
+    }
+
+    // FALSIFIABILITY: raise `MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS` to `u32::MAX`
+    // -- the unbounded state this lane exists to close -- and this test fails.
+    // It pins the ceiling from above independently of the constant's own value.
+    #[test]
+    fn a_full_u32_yield_budget_is_refused() {
+        assert_eq!(
+            validate_pe64_import_slot_quiesce_yields(u32::MAX),
+            Err(Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
+                requested: u32::MAX,
+                ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+            })
+        );
+    }
+
+    // FALSIFIABILITY: lower `MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS` below the
+    // iterations a tenth of the time budget can admit and this test fails. The
+    // number is not free-standing: it is a tenth of the time budget divided by
+    // the same assumed per-iteration cost the ceiling itself is derived from, so
+    // a caller asking to wait a fraction of the budget must not be pre-empted by
+    // the backstop.
+    #[test]
+    fn a_budget_covering_a_fraction_of_the_time_budget_is_accepted() {
+        let tenth_of_the_budget = (PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS
+            / 10
+            / PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS)
+            as u32;
+        assert_eq!(tenth_of_the_budget, 200_000);
+        for budget in [0u32, 1, tenth_of_the_budget] {
+            assert_eq!(
+                validate_pe64_import_slot_quiesce_yields(budget),
+                Ok(budget),
+                "budget {budget} was refused"
+            );
+        }
+    }
+
+    // FALSIFIABILITY: replace `MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS` with a
+    // hand-picked literal, or change either policy constant without the ceiling
+    // following, and this test fails. The ceiling is a backstop sized from the
+    // time budget, not a number chosen on its own, and this pins that
+    // relationship rather than the value -- asserting the constant equals itself
+    // would prove nothing.
+    #[test]
+    fn the_yield_ceiling_is_derived_from_the_time_budget() {
+        assert_eq!(
+            u64::from(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS),
+            PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS
+                / PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS
+        );
+        assert_eq!(
+            PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET,
+            Duration::from_nanos(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS)
+        );
+    }
+
+    // FALSIFIABILITY: move `PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET` outside the
+    // band and this test fails. The budget is a policy choice, so what is pinned
+    // is the property the policy has to satisfy, not the literal: below 250 ms a
+    // callback that was merely descheduled a few times gets failed as a timeout,
+    // above 10 s a teardown reads as hung to whoever is waiting on it.
+    #[test]
+    fn the_quiesce_time_budget_stays_inside_its_policy_band() {
+        assert!(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET >= Duration::from_millis(250));
+        assert!(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET <= Duration::from_secs(10));
+    }
+
+    // ---- Defect B2/B3: the real loop, driven directly --------------------
+
+    /// Drive the production loop -- `drive_pe64_import_slot_quiesce_loop`, the
+    /// same function `quiesce_pe64_import_address_slot` calls -- with scripted
+    /// active-callback counts, a counted yield, and a clock this harness
+    /// advances. Nothing here re-implements the loop; the control flow under
+    /// test is the production control flow.
+    ///
+    /// Returns the outcome plus independently counted invocations of the two
+    /// closures, so the loop's self-reported numbers can be checked against what
+    /// it actually did rather than against a recomputation.
+    fn run_real_quiesce_loop(
+        max_yields: u32,
+        time_budget: Duration,
+        active_counts: &[u64],
+        clock_step_per_yield: Duration,
+    ) -> (Pe64ImportSlotQuiesceOutcome, u64, u32) {
+        use std::cell::Cell;
+        let observe_calls = Cell::new(0u64);
+        let yield_calls = Cell::new(0u32);
+        let clock = Cell::new(Duration::ZERO);
+        let outcome = drive_pe64_import_slot_quiesce_loop(
+            max_yields,
+            time_budget,
+            || {
+                let index = observe_calls.get() as usize;
+                observe_calls.set(observe_calls.get() + 1);
+                let count = active_counts
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(|| *active_counts.last().expect("non-empty script"));
+                Ok::<u64, std::convert::Infallible>(count)
+            },
+            || {
+                yield_calls.set(yield_calls.get() + 1);
+                clock.set(clock.get() + clock_step_per_yield);
+            },
+            || clock.get(),
+        )
+        .expect("scripted observations never fail");
+        (outcome, observe_calls.get(), yield_calls.get())
+    }
+
+    // FALSIFIABILITY: change the loop's `yields_performed >= max_yields` stop to
+    // `>` and `yields_performed` becomes `max_yields + 1`, failing the second
+    // assertion; move the `observations += 1` so it no longer counts every
+    // observation and the fourth fails, because it compares the number the
+    // timeout message quotes against the closure invocations this harness
+    // counted independently. The old version of this test re-implemented the
+    // loop and could not see either edit.
+    #[test]
+    fn the_real_loop_reports_the_counts_the_timeout_message_quotes() {
+        for max_yields in [0u32, 1, 2, 7, 1_000] {
+            let (outcome, observe_calls, yield_calls) = run_real_quiesce_loop(
+                max_yields,
+                Duration::from_secs(3_600),
+                &[1],
+                Duration::ZERO,
+            );
+            assert_eq!(
+                outcome.stopped_on,
+                Pe64ImportSlotQuiesceStop::YieldBudgetExhausted,
+                "max_yields={max_yields}"
+            );
+            assert_eq!(
+                outcome.yields_performed, max_yields,
+                "yield count at max_yields={max_yields}"
+            );
+            assert_eq!(
+                outcome.observations,
+                u64::from(max_yields) + 1,
+                "observation count at max_yields={max_yields}"
+            );
+            assert_eq!(
+                outcome.observations, observe_calls,
+                "reported observations disagree with the observations performed at max_yields={max_yields}"
+            );
+            assert_eq!(
+                outcome.yields_performed, yield_calls,
+                "reported yields disagree with the yields performed at max_yields={max_yields}"
+            );
+            assert!(!outcome.observed_zero());
+        }
+    }
+
+    // FALSIFIABILITY: move the time-budget check above the `active_count == 0`
+    // check in `drive_pe64_import_slot_quiesce_loop` and this test fails. The
+    // budget here is already exhausted at entry, so a slot that is quiescent on
+    // its first observation must still be reported as quiesced -- the deadline
+    // may not fail an operation that has already succeeded.
+    #[test]
+    fn the_real_loop_reports_quiescence_even_with_the_time_budget_already_spent() {
+        let (outcome, observe_calls, yield_calls) =
+            run_real_quiesce_loop(1_000, Duration::ZERO, &[0], Duration::ZERO);
+        assert_eq!(outcome.stopped_on, Pe64ImportSlotQuiesceStop::Quiesced);
+        assert!(outcome.observed_zero());
+        assert_eq!(outcome.observations, 1);
+        assert_eq!(outcome.yields_performed, 0);
+        assert_eq!(observe_calls, 1);
+        assert_eq!(yield_calls, 0);
+    }
+
+    // FALSIFIABILITY: delete the time-budget check from
+    // `drive_pe64_import_slot_quiesce_loop` and this test fails -- the loop runs
+    // to the million-yield budget instead of stopping at 10 yields. This is the
+    // Finding-3 property: iterations are a proxy, wall clock is the bound that
+    // actually holds, and the yield ceiling must not be able to override it.
+    #[test]
+    fn the_real_loop_stops_on_the_time_budget_long_before_the_yield_budget() {
+        let (outcome, observe_calls, yield_calls) = run_real_quiesce_loop(
+            1_000_000,
+            Duration::from_millis(100),
+            &[1],
+            Duration::from_millis(10),
+        );
+        assert_eq!(
+            outcome.stopped_on,
+            Pe64ImportSlotQuiesceStop::TimeBudgetExhausted
+        );
+        assert_eq!(outcome.yields_performed, 10);
+        assert_eq!(outcome.observations, 11);
+        assert_eq!(outcome.elapsed, Duration::from_millis(100));
+        assert_eq!(observe_calls, 11);
+        assert_eq!(yield_calls, 10);
+    }
+
+    // FALSIFIABILITY: remove the `break`-equivalent early return on a zero
+    // active-callback count and this test fails -- the loop would keep yielding
+    // past the observation that already showed quiescence.
+    #[test]
+    fn the_real_loop_stops_at_the_observation_that_sees_zero() {
+        let (outcome, observe_calls, yield_calls) = run_real_quiesce_loop(
+            1_000,
+            Duration::from_secs(3_600),
+            &[3, 2, 1, 0],
+            Duration::ZERO,
+        );
+        assert_eq!(outcome.stopped_on, Pe64ImportSlotQuiesceStop::Quiesced);
+        assert_eq!(outcome.observations, 4);
+        assert_eq!(outcome.yields_performed, 3);
+        assert_eq!(observe_calls, 4);
+        assert_eq!(yield_calls, 3);
+    }
+
+    // FALSIFIABILITY: swallow the observation error in
+    // `drive_pe64_import_slot_quiesce_loop` -- treat a failed dispatch
+    // observation as a non-zero count and keep looping -- and this test fails.
+    // A dispatch observation that cannot be taken is not evidence of activity.
+    #[test]
+    fn the_real_loop_propagates_a_failed_dispatch_observation() {
+        let outcome = drive_pe64_import_slot_quiesce_loop(
+            5,
+            Duration::from_secs(1),
+            || Err::<u64, &str>("dispatch observation failed"),
+            || panic!("must not yield after a failed observation"),
+            || Duration::ZERO,
+        );
+        assert_eq!(outcome, Err("dispatch observation failed"));
+    }
+
+    // ---- Refusal messages ------------------------------------------------
+
+    // FALSIFIABILITY: fold any of these refusals into an existing message
+    // string, or give two of them the same text, and this test fails. Property
+    // A3 requires the unwitnessed-restore case to carry its own message rather
+    // than reusing the generic "restore CAS expected shim" one, which is what a
+    // reader of the receipt log has to distinguish them by.
+    #[test]
+    fn each_custody_refusal_renders_a_distinct_message() {
+        let unwitnessed = Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore {
+            observed_slot_value: ORIGINAL,
+        }
+        .to_string();
+        let diverged = Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+            observed_slot_value: SHIM,
+            expected_original_address: ORIGINAL,
+        }
+        .to_string();
+        let indistinguishable =
+            Pe64ImportSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
+                address: ORIGINAL,
+            }
+            .to_string();
+        let unreconciled =
+            Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                protection_before: PROTECTION_BEFORE,
+                protection_after: PROTECTION_TEMPORARY,
+            }
+            .to_string();
+        let bound = Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
+            requested: 9,
+            ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+        }
+        .to_string();
+
+        assert!(
+            unwitnessed.contains("no restore CAS recorded by this crate"),
+            "unwitnessed message lost its distinguishing text: {unwitnessed}"
+        );
+        assert!(
+            !unwitnessed.contains("restore CAS expected shim"),
+            "unwitnessed message was folded into the generic CAS-mismatch text: {unwitnessed}"
+        );
+        assert!(
+            diverged.contains("recorded restore CAS"),
+            "diverged message lost its distinguishing text: {diverged}"
+        );
+        assert!(
+            indistinguishable.contains("share address"),
+            "indistinguishable message lost its distinguishing text: {indistinguishable}"
+        );
+        assert!(
+            unreconciled.contains("page protection"),
+            "unreconciled message lost its distinguishing text: {unreconciled}"
+        );
+        assert!(
+            bound.contains('9')
+                && bound.contains(&MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS.to_string()),
+            "bound message must report both the request and the ceiling: {bound}"
+        );
+
+        let rendered = [
+            &unwitnessed,
+            &diverged,
+            &indistinguishable,
+            &unreconciled,
+            &bound,
+        ];
+        for i in 0..rendered.len() {
+            for j in (i + 1)..rendered.len() {
+                assert_ne!(rendered[i], rendered[j], "two refusals render identically");
+            }
+        }
+    }
+
+    // FALSIFIABILITY: give two `Pe64ImportSlotQuiesceStop` variants the same
+    // rendering, or drop the reason from the timeout message's format string,
+    // and this test fails. The timeout message says which bound fired, and a
+    // yield-budget timeout and a time-budget timeout call for different
+    // responses from the caller.
+    #[test]
+    fn each_quiesce_stop_reason_renders_distinctly() {
+        let rendered = [
+            Pe64ImportSlotQuiesceStop::Quiesced.to_string(),
+            Pe64ImportSlotQuiesceStop::YieldBudgetExhausted.to_string(),
+            Pe64ImportSlotQuiesceStop::TimeBudgetExhausted.to_string(),
+        ];
+        assert!(rendered[1].contains("yield"), "{}", rendered[1]);
+        assert!(rendered[2].contains("time"), "{}", rendered[2]);
+        for i in 0..rendered.len() {
+            for j in (i + 1)..rendered.len() {
+                assert_ne!(rendered[i], rendered[j], "two stop reasons render identically");
+            }
+        }
     }
 }
