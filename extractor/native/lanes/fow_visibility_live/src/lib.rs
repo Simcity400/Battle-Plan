@@ -14,7 +14,8 @@ pub use compact_contract::pov_visibility::{
 mod a729;
 #[cfg(windows)]
 pub use a729::{
-    drain_latest, install, installed, installed_hook_receipts, take_released_hook_receipts,
-    uninstall, PovVisibilityDrainError, PovVisibilityHookError, HOOK_RECEIPT_COUNT,
+    drain_latest, install, installed, installed_hook_receipts, invocation_counts,
+    take_released_hook_receipts, uninstall, PovVisibilityDrainError, PovVisibilityHookError,
+    PovVisibilityInvocationCounts, PovVisibilityInvocationOutcome, HOOK_RECEIPT_COUNT,
     PRODUCER_LOGICAL_NAME, PRODUCER_RVA,
 };
