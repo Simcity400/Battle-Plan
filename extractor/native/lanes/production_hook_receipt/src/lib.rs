@@ -1,9 +1,10 @@
 //! Pointer-free production hook custody receipts.
 //!
-//! This crate does not install hooks.  It observes the already-installed
-//! target bytes and the loaded main module, then fails closed unless they are
-//! the exact a729 executable and admitted patch primitive.  Teardown receipts
-//! are minted only after the original target prefix is restored.
+//! Legacy inline-hook callers use this crate to observe already-installed
+//! target bytes and retain teardown custody. New pointer-slot callers use its
+//! core-owned, non-suspending atomic CAS and sealed process-lifetime dispatch
+//! shims. Every path fails closed unless the loaded binary and primitive match
+//! their admitted identities.
 
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -24,6 +25,17 @@ pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID: &str =
     "pe64.import-address-slot.atomic-usize-cas.v1";
 pub const PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID: &str =
     "pe64.import-address-slot.external-dispatch.process-lifetime.v1";
+pub const D3D11_CREATE_DEVICE_COUNTED_SHIM_TEMPLATE_ID: &str =
+    "d3d11-create-device.pe64-iat-counted-shim-unwind.v1";
+pub const D3D_COMPILE_COUNTED_SHIM_TEMPLATE_ID: &str = "d3dcompile.pe64-iat-counted-shim-unwind.v1";
+pub const WIN64_REGISTER_ARGS_COUNTED_SHIM_TEMPLATE_ID: &str =
+    "win64-register-args.counted-shim-unwind.v1";
+pub const D3D11_CREATE_DEVICE_CALLBACK_SEMANTIC_ID: &str =
+    "render-bootstrap.d3d11-create-device.callback.v1";
+pub const D3D11_CREATE_DEVICE_CALLBACK_EXPORT_NAME: &str =
+    "hoi4_bootstrap_d3d11_create_device_callback_v1";
+pub const D3D_COMPILE_CALLBACK_SEMANTIC_ID: &str = "render-bootstrap.d3dcompile.callback.v1";
+pub const D3D_COMPILE_CALLBACK_EXPORT_NAME: &str = "hoi4_bootstrap_d3d_compile_callback_v1";
 
 const MAX_EXTERNAL_DISPATCH_SHIM_LEN: usize = 4 * 1024;
 const MAX_EXTERNAL_DISPATCH_ALLOCATION_LEN: usize = 64 * 1024 * 1024;
@@ -36,6 +48,8 @@ static HOOK_CUSTODY: OnceLock<Mutex<BTreeMap<(u64, u64), HookCustodyState>>> = O
 #[cfg(windows)]
 static PE64_IMPORT_SLOT_CUSTODY: OnceLock<Mutex<BTreeMap<(u64, u64), Pe64ImportSlotCustodyState>>> =
     OnceLock::new();
+#[cfg(windows)]
+static SEALED_SHIM_CUSTODY: OnceLock<Mutex<BTreeMap<usize, SealedShimBinding>>> = OnceLock::new();
 #[cfg(windows)]
 static MAIN_MODULE_AUTHORITY: OnceLock<Result<ObservedMainModule, String>> = OnceLock::new();
 
@@ -75,6 +89,65 @@ pub struct ExternalDispatchShimIdentity {
     pub active_callback_counter_address: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExternalCallbackBinaryIdentity {
+    pub module_file_sha256: [u8; 32],
+    pub module_pe_identity_sha256: [u8; 32],
+    pub module_size_of_image: u32,
+    pub callback_rva: u64,
+    pub entry_prefix_len: u16,
+    pub entry_prefix_sha256: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpectedExternalCallbackManifest {
+    pub semantic_id: &'static str,
+    pub export_name: &'static str,
+    pub binary_identity: ExternalCallbackBinaryIdentity,
+    callback_class: ExternalCallbackManifestClass,
+    authenticity_seal: u64,
+    authenticity_digest_sha256: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExternalCallbackManifestClass {
+    D3D11CreateDevice,
+    D3DCompile,
+    Win64RegisterArgsOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExternalCallbackManifestAuthority {
+    pub semantic_id: &'static str,
+    pub export_name: &'static str,
+    pub binary_identity: ExternalCallbackBinaryIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CanonicalPe64IatShimTemplate {
+    Win64RegisterArgsOnly,
+    D3D11CreateDevice,
+    D3DCompile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedExternalDispatchShim {
+    pub identity: ExternalDispatchShimIdentity,
+    pub template_id: &'static str,
+    pub callback_semantic_id: &'static str,
+    pub callback_export_name: &'static str,
+    pub callback_binary_identity: ExternalCallbackBinaryIdentity,
+    pub callback_manifest_sha256: [u8; 32],
+    pub normalized_template_sha256: [u8; 32],
+    pub unwind_handler_sha256: [u8; 32],
+    pub unwind_info_sha256: [u8; 32],
+    pub runtime_function_sha256: [u8; 32],
+    pub original_address: usize,
+    pub callback_address: usize,
+    unwind_registered: bool,
+    authenticity_seal: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstalledPe64ImportAddressSlotReceipt {
     pub logical_name: &'static str,
@@ -93,6 +166,17 @@ pub struct InstalledPe64ImportAddressSlotReceipt {
     pub expected_original_address: usize,
     pub external_shim_address: usize,
     pub external_shim: ExternalDispatchShimIdentity,
+    pub shim_template_id: &'static str,
+    pub shim_callback_semantic_id: &'static str,
+    pub shim_callback_export_name: &'static str,
+    pub shim_callback_binary_identity: ExternalCallbackBinaryIdentity,
+    pub shim_callback_manifest_sha256: [u8; 32],
+    /// Process-local diagnostic only. Never serialize this field.
+    pub shim_callback_address: usize,
+    pub shim_normalized_template_sha256: [u8; 32],
+    pub shim_unwind_handler_sha256: [u8; 32],
+    pub shim_unwind_info_sha256: [u8; 32],
+    pub shim_runtime_function_sha256: [u8; 32],
     pub observed_before_address: usize,
     pub observed_after_address: usize,
     pub slot_protection_before: u32,
@@ -147,11 +231,23 @@ pub struct RestoredPe64ImportAddressSlotCustodyReceipt {
     pub retained_until_process_exit: bool,
     pub policy_id: &'static str,
     pub external_shim: ExternalDispatchShimIdentity,
+    pub shim_template_id: &'static str,
+    pub shim_callback_semantic_id: &'static str,
+    pub shim_callback_export_name: &'static str,
+    pub shim_callback_binary_identity: ExternalCallbackBinaryIdentity,
+    pub shim_callback_manifest_sha256: [u8; 32],
+    /// Process-local diagnostic only. Never serialize this field.
+    pub shim_callback_address: usize,
+    pub shim_normalized_template_sha256: [u8; 32],
+    pub shim_unwind_handler_sha256: [u8; 32],
+    pub shim_unwind_info_sha256: [u8; 32],
+    pub shim_runtime_function_sha256: [u8; 32],
     pub dispatch_slot_sha256: [u8; 32],
     pub observed_terminal_dispatch_address: usize,
     pub active_callback_counter_sha256: [u8; 32],
     pub observed_active_callback_count: u64,
     pub custody_digest_sha256: [u8; 32],
+    pub promotion_digest_sha256: [u8; 32],
     authenticity_seal: u64,
 }
 
@@ -295,6 +391,17 @@ struct ActivePe64ImportSlotBinding {
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ProvisionalPe64ImportSlotBinding {
+    expected: ExpectedPe64ImportAddressSlot,
+    external_shim: ExternalDispatchShimIdentity,
+    teardown_owner_token: u64,
+    slot_address: usize,
+    protection_before: u32,
+    authenticity_seal: u64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TerminalPe64ImportSlotBinding {
     installed: InstalledPe64ImportAddressSlotReceipt,
     receipt: RestoredPe64ImportAddressSlotCustodyReceipt,
@@ -302,9 +409,50 @@ struct TerminalPe64ImportSlotBinding {
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalizingPe64ImportSlotBinding {
+    installed: InstalledPe64ImportAddressSlotReceipt,
+    attestation: Pe64ImportAddressSlotTerminalAttestation,
+    observed_terminal: ObservedExternalDispatchTerminal,
+    protection_before_restore: u32,
+    authenticity_seal: u64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Pe64ImportSlotCustodyState {
+    Provisional(ProvisionalPe64ImportSlotBinding),
     Active(ActivePe64ImportSlotBinding),
+    Terminalizing(TerminalizingPe64ImportSlotBinding),
     Terminal(TerminalPe64ImportSlotBinding),
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SealedShimBinding {
+    shim: SealedExternalDispatchShim,
+    phase: SealedShimLeasePhase,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SealedShimLeasePhase {
+    Available,
+    Pe64ImportSlotInstalling {
+        teardown_owner_token: u64,
+        slot_rva: u64,
+    },
+    Pe64ImportSlotActive {
+        teardown_owner_token: u64,
+        slot_rva: u64,
+    },
+    Pe64ImportSlotTerminalizing {
+        teardown_owner_token: u64,
+        slot_rva: u64,
+    },
+    Pe64ImportSlotTerminal {
+        teardown_owner_token: u64,
+        slot_rva: u64,
+    },
 }
 
 pub fn next_teardown_owner_token() -> Result<u64, String> {
@@ -322,13 +470,387 @@ pub fn next_teardown_owner_token() -> Result<u64, String> {
     }
 }
 
+#[cfg(windows)]
+pub fn admit_canonical_pe64_iat_callback_manifest(
+    template: CanonicalPe64IatShimTemplate,
+    admitted_callback_module_sha256: [u8; 32],
+    callback_address: usize,
+) -> Result<ExpectedExternalCallbackManifest, String> {
+    let (semantic_id, export_name) = match template {
+        CanonicalPe64IatShimTemplate::D3D11CreateDevice => (
+            D3D11_CREATE_DEVICE_CALLBACK_SEMANTIC_ID,
+            D3D11_CREATE_DEVICE_CALLBACK_EXPORT_NAME,
+        ),
+        CanonicalPe64IatShimTemplate::D3DCompile => (
+            D3D_COMPILE_CALLBACK_SEMANTIC_ID,
+            D3D_COMPILE_CALLBACK_EXPORT_NAME,
+        ),
+        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => {
+            return Err(
+                "register-args callbacks require an exact external callback authority".into(),
+            );
+        }
+    };
+    if admitted_callback_module_sha256 == [0; 32] {
+        return Err("admitted callback module SHA-256 is zero".into());
+    }
+    let binary_identity =
+        observe_external_callback_binary_identity(callback_address, export_name, 64)?;
+    if binary_identity.module_file_sha256 != admitted_callback_module_sha256 {
+        return Err("loaded callback module differs from the admitted collector SHA-256".into());
+    }
+    let authenticity_seal = next_receipt_seal()?;
+    let mut manifest = ExpectedExternalCallbackManifest {
+        semantic_id,
+        export_name,
+        binary_identity,
+        callback_class: match template {
+            CanonicalPe64IatShimTemplate::D3D11CreateDevice => {
+                ExternalCallbackManifestClass::D3D11CreateDevice
+            }
+            CanonicalPe64IatShimTemplate::D3DCompile => ExternalCallbackManifestClass::D3DCompile,
+            CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => unreachable!(),
+        },
+        authenticity_seal,
+        authenticity_digest_sha256: [0; 32],
+    };
+    manifest.authenticity_digest_sha256 = authenticated_external_callback_manifest_sha256(manifest);
+    Ok(manifest)
+}
+
+#[cfg(windows)]
+pub fn admit_win64_register_args_callback_manifest(
+    authority: ExternalCallbackManifestAuthority,
+    callback_address: usize,
+) -> Result<ExpectedExternalCallbackManifest, String> {
+    if authority.semantic_id.is_empty()
+        || authority.semantic_id.len() > 256
+        || !authority.semantic_id.is_ascii()
+        || authority.export_name.is_empty()
+        || authority.export_name.len() > 256
+        || !authority.export_name.is_ascii()
+        || authority.export_name.as_bytes().contains(&0)
+        || authority.binary_identity.module_file_sha256 == [0; 32]
+        || authority.binary_identity.module_pe_identity_sha256 == [0; 32]
+        || authority.binary_identity.module_size_of_image == 0
+        || authority.binary_identity.callback_rva
+            >= u64::from(authority.binary_identity.module_size_of_image)
+        || !(16..=256).contains(&authority.binary_identity.entry_prefix_len)
+        || authority.binary_identity.entry_prefix_sha256 == [0; 32]
+    {
+        return Err("register-args callback authority is not exact".into());
+    }
+    let observed = observe_external_callback_binary_identity(
+        callback_address,
+        authority.export_name,
+        authority.binary_identity.entry_prefix_len,
+    )?;
+    if observed != authority.binary_identity {
+        return Err("register-args callback differs from its exact external authority".into());
+    }
+    let authenticity_seal = next_receipt_seal()?;
+    let mut manifest = ExpectedExternalCallbackManifest {
+        semantic_id: authority.semantic_id,
+        export_name: authority.export_name,
+        binary_identity: authority.binary_identity,
+        callback_class: ExternalCallbackManifestClass::Win64RegisterArgsOnly,
+        authenticity_seal,
+        authenticity_digest_sha256: [0; 32],
+    };
+    manifest.authenticity_digest_sha256 = authenticated_external_callback_manifest_sha256(manifest);
+    Ok(manifest)
+}
+
+#[cfg(windows)]
+pub fn allocate_canonical_pe64_iat_shim(
+    template: CanonicalPe64IatShimTemplate,
+    expected_callback: ExpectedExternalCallbackManifest,
+    callback_address: usize,
+    original_address: usize,
+) -> Result<SealedExternalDispatchShim, String> {
+    use windows_sys::Win32::System::Memory::{
+        VirtualAlloc, VirtualProtect, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE,
+    };
+    if callback_address == 0 || original_address == 0 || callback_address == original_address {
+        return Err("canonical IAT shim callback/original identity is invalid".into());
+    }
+    if expected_callback.authenticity_seal == 0
+        || expected_callback.authenticity_digest_sha256
+            != authenticated_external_callback_manifest_sha256(expected_callback)
+        || expected_callback.semantic_id.is_empty()
+        || expected_callback.semantic_id.len() > 256
+        || !expected_callback.semantic_id.is_ascii()
+        || expected_callback.export_name.is_empty()
+        || expected_callback.export_name.len() > 256
+        || !expected_callback.export_name.is_ascii()
+        || expected_callback.export_name.as_bytes().contains(&0)
+    {
+        return Err("canonical IAT shim callback manifest identity is invalid".into());
+    }
+    match template {
+        CanonicalPe64IatShimTemplate::D3D11CreateDevice
+            if expected_callback.callback_class
+                == ExternalCallbackManifestClass::D3D11CreateDevice
+                && expected_callback.semantic_id == D3D11_CREATE_DEVICE_CALLBACK_SEMANTIC_ID
+                && expected_callback.export_name == D3D11_CREATE_DEVICE_CALLBACK_EXPORT_NAME => {}
+        CanonicalPe64IatShimTemplate::D3DCompile
+            if expected_callback.callback_class == ExternalCallbackManifestClass::D3DCompile
+                && expected_callback.semantic_id == D3D_COMPILE_CALLBACK_SEMANTIC_ID
+                && expected_callback.export_name == D3D_COMPILE_CALLBACK_EXPORT_NAME => {}
+        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly
+            if expected_callback.callback_class
+                == ExternalCallbackManifestClass::Win64RegisterArgsOnly => {}
+        _ => {
+            return Err(
+                "canonical IAT shim template has no exact admitted callback mapping".into(),
+            );
+        }
+    }
+    let callback_binary_identity = observe_external_callback_binary_identity(
+        callback_address,
+        expected_callback.export_name,
+        expected_callback.binary_identity.entry_prefix_len,
+    )?;
+    if callback_binary_identity != expected_callback.binary_identity {
+        return Err("canonical IAT shim callback differs from the admitted manifest".into());
+    }
+    let callback_manifest_sha256 = external_callback_manifest_sha256(expected_callback);
+    let (template_id, stack_argument_count, expected_len) = match template {
+        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => (
+            WIN64_REGISTER_ARGS_COUNTED_SHIM_TEMPLATE_ID,
+            0usize,
+            0x1fusize,
+        ),
+        CanonicalPe64IatShimTemplate::D3D11CreateDevice => (
+            D3D11_CREATE_DEVICE_COUNTED_SHIM_TEMPLATE_ID,
+            6usize,
+            0x6dusize,
+        ),
+        CanonicalPe64IatShimTemplate::D3DCompile => {
+            (D3D_COMPILE_COUNTED_SHIM_TEMPLATE_ID, 7usize, 0x7ausize)
+        }
+    };
+    let base = unsafe {
+        VirtualAlloc(
+            std::ptr::null(),
+            0x2000,
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_READWRITE,
+        )
+    } as usize;
+    if base == 0 {
+        return Err("canonical IAT shim VirtualAlloc failed".into());
+    }
+    let dispatch_address = base + 0x1000;
+    let counter_address = base + 0x1008;
+    let mut code = Vec::with_capacity(expected_len);
+    code.extend_from_slice(&[0xf0, 0x48, 0xff, 0x05]);
+    push_rip_disp32(&mut code, base, counter_address)?;
+    code.extend_from_slice(&[0x48, 0x83, 0xec, 0x58]);
+    for index in 0..stack_argument_count {
+        code.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]);
+        code.extend_from_slice(&(0x80u32 + index as u32 * 8).to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, 0x20 + index as u8 * 8]);
+    }
+    code.extend_from_slice(&[0xff, 0x15]);
+    push_rip_disp32(&mut code, base, dispatch_address)?;
+    code.extend_from_slice(&[0xf0, 0x48, 0xff, 0x0d]);
+    push_rip_disp32(&mut code, base, counter_address)?;
+    code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x58, 0xc3]);
+    if code.len() != expected_len {
+        return Err(format!(
+            "{template_id} code length mismatch: expected 0x{expected_len:X}, got 0x{:X}",
+            code.len()
+        ));
+    }
+    let entry_sha256: [u8; 32] = Sha256::digest(&code).into();
+    let admitted_entry_sha256 = match template {
+        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => Some(hex_digest(
+            "d1d8825314f716d1388d358f49f4554084c67e6d4c8c562c3b777da84038b10d",
+        )),
+        CanonicalPe64IatShimTemplate::D3D11CreateDevice => Some(hex_digest(
+            "272f0c711fdc64bc425b25ea559fc94e66beef11cfecdfba1e6d35c0b30ffc05",
+        )),
+        CanonicalPe64IatShimTemplate::D3DCompile => Some(hex_digest(
+            "c931ce51ba48d3f94a6bcdbadc568eb4999b158f61e089eca1c74ac37d8ad475",
+        )),
+    };
+    if admitted_entry_sha256.is_some_and(|expected| expected != entry_sha256) {
+        return Err(format!(
+            "{template_id} canonical entry bytes differ from authority"
+        ));
+    }
+    let handler = [
+        0xf7u8, 0x41, 0x04, 0x66, 0x00, 0x00, 0x00, 0x74, 0x08, 0xf0, 0x48, 0xff, 0x0d, 0xf7, 0x0e,
+        0x00, 0x00, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3,
+    ];
+    let unwind = [
+        0x11u8, 0x0c, 0x01, 0x00, 0x0c, 0xa2, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    ];
+    let mut runtime_function = Vec::with_capacity(12);
+    runtime_function.extend_from_slice(&0u32.to_le_bytes());
+    runtime_function.extend_from_slice(&(expected_len as u32).to_le_bytes());
+    runtime_function.extend_from_slice(&0x200u32.to_le_bytes());
+    unsafe {
+        std::ptr::copy_nonoverlapping(code.as_ptr(), base as *mut u8, code.len());
+        std::ptr::copy_nonoverlapping(handler.as_ptr(), (base + 0x100) as *mut u8, handler.len());
+        std::ptr::copy_nonoverlapping(unwind.as_ptr(), (base + 0x200) as *mut u8, unwind.len());
+        std::ptr::copy_nonoverlapping(
+            runtime_function.as_ptr(),
+            (base + 0x210) as *mut u8,
+            runtime_function.len(),
+        );
+        (dispatch_address as *mut AtomicUsize).write(AtomicUsize::new(callback_address));
+        (counter_address as *mut AtomicU64).write(AtomicU64::new(0));
+    }
+    let authenticity_seal = next_receipt_seal()?;
+    let normalized_template_sha256 = canonical_shim_normalized_digest(template, &code);
+    let identity = ExternalDispatchShimIdentity {
+        entry_address: base,
+        entry_len: code.len(),
+        entry_bytes_sha256: entry_sha256,
+        allocation_base: base,
+        allocation_len: 0x2000,
+        dispatch_slot_address: dispatch_address,
+        active_callback_counter_address: counter_address,
+    };
+    let mut shim = SealedExternalDispatchShim {
+        identity,
+        template_id,
+        callback_semantic_id: expected_callback.semantic_id,
+        callback_export_name: expected_callback.export_name,
+        callback_binary_identity,
+        callback_manifest_sha256,
+        normalized_template_sha256,
+        unwind_handler_sha256: Sha256::digest(handler).into(),
+        unwind_info_sha256: Sha256::digest(unwind).into(),
+        runtime_function_sha256: Sha256::digest(&runtime_function).into(),
+        original_address,
+        callback_address,
+        unwind_registered: false,
+        authenticity_seal,
+    };
+    let registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut registry = registry
+        .lock()
+        .map_err(|_| "sealed shim custody registry is poisoned")?;
+    registry.insert(
+        base,
+        SealedShimBinding {
+            shim: shim.clone(),
+            phase: SealedShimLeasePhase::Available,
+        },
+    );
+    let table = (base + 0x210)
+        as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_RUNTIME_FUNCTION_ENTRY;
+    if !unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::RtlAddFunctionTable(table, 1, base as u64)
+    } {
+        return Err(format!(
+            "{template_id} unwind registration failed; allocation retained in provisional custody"
+        ));
+    }
+    shim.unwind_registered = true;
+    registry.insert(
+        base,
+        SealedShimBinding {
+            shim: shim.clone(),
+            phase: SealedShimLeasePhase::Available,
+        },
+    );
+    let mut previous = 0u32;
+    if unsafe {
+        VirtualProtect(
+            base as *const core::ffi::c_void,
+            0x1000,
+            PAGE_EXECUTE_READ,
+            &mut previous,
+        )
+    } == 0
+        || previous != PAGE_READWRITE
+    {
+        return Err(format!(
+            "{template_id} code protection failed; registered allocation retained"
+        ));
+    }
+    if unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::FlushInstructionCache(
+            windows_sys::Win32::System::Threading::GetCurrentProcess(),
+            base as *const core::ffi::c_void,
+            0x1000,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "{template_id} instruction-cache flush failed; registered allocation retained"
+        ));
+    }
+    let mut lookup_base = 0u64;
+    let lookup = unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::RtlLookupFunctionEntry(
+            base as u64,
+            &mut lookup_base,
+            std::ptr::null_mut(),
+        )
+    };
+    if lookup != table as *mut _ || lookup_base != base as u64 {
+        return Err(format!(
+            "{template_id} unwind lookup did not return the registered table/base"
+        ));
+    }
+    registry.insert(
+        base,
+        SealedShimBinding {
+            shim: shim.clone(),
+            phase: SealedShimLeasePhase::Available,
+        },
+    );
+    drop(registry);
+    validate_sealed_external_dispatch_shim(&shim)?;
+    Ok(shim)
+}
+
+fn push_rip_disp32(code: &mut Vec<u8>, base: usize, destination: usize) -> Result<(), String> {
+    let next = base
+        .checked_add(code.len())
+        .and_then(|value| value.checked_add(4))
+        .ok_or("canonical shim RIP address overflow")?;
+    let displacement = (destination as i128) - (next as i128);
+    let displacement = i32::try_from(displacement)
+        .map_err(|_| "canonical shim RIP displacement does not fit i32")?;
+    code.extend_from_slice(&displacement.to_le_bytes());
+    Ok(())
+}
+
+fn canonical_shim_normalized_digest(
+    template: CanonicalPe64IatShimTemplate,
+    code: &[u8],
+) -> [u8; 32] {
+    let mut normalized = code.to_vec();
+    let displacement_offsets: &[usize] = match template {
+        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => &[4, 0x0e, 0x16],
+        CanonicalPe64IatShimTemplate::D3D11CreateDevice => &[4, 0x5c, 0x64],
+        CanonicalPe64IatShimTemplate::D3DCompile => &[4, 0x69, 0x71],
+    };
+    for offset in displacement_offsets {
+        if let Some(bytes) = normalized.get_mut(*offset..*offset + 4) {
+            bytes.fill(0);
+        }
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"hoi4.production_hook.canonical_counted_shim.v1");
+    digest.update([template as u8]);
+    digest.update(normalized);
+    digest.finalize().into()
+}
+
 /// Install one exact PE64 import-address-slot redirection with a naturally
 /// aligned atomic pointer compare/exchange. This function never changes code
 /// bytes and never suspends a target thread.
 #[cfg(windows)]
 pub fn install_pe64_import_address_slot(
     expected: ExpectedPe64ImportAddressSlot,
-    external_shim: ExternalDispatchShimIdentity,
+    sealed_shim: &SealedExternalDispatchShim,
     teardown_owner_token: u64,
 ) -> Result<InstalledPe64ImportAddressSlotReceipt, String> {
     validate_expected_pe64_import_slot(expected)?;
@@ -338,7 +860,14 @@ pub fn install_pe64_import_address_slot(
             expected.logical_name
         ));
     }
-    validate_external_dispatch_shim_identity(external_shim)?;
+    validate_sealed_external_dispatch_shim(sealed_shim)?;
+    if sealed_shim.original_address != expected.expected_original_address {
+        return Err(format!(
+            "{} sealed shim original export mismatch",
+            expected.logical_name
+        ));
+    }
+    let external_shim = sealed_shim.identity;
     let external_shim_address = external_shim.entry_address;
     if external_shim_address == expected.expected_original_address {
         return Err(format!(
@@ -358,13 +887,26 @@ pub fn install_pe64_import_address_slot(
         if *existing_key == key {
             return false;
         }
-        let receipt = match state {
-            Pe64ImportSlotCustodyState::Active(binding) => &binding.receipt,
-            Pe64ImportSlotCustodyState::Terminal(binding) => &binding.installed,
-        };
-        receipt.observed_module_sha256 == module.sha256
-            && receipt.observed_pe_identity_sha256 == module.pe_identity.sha256
-            && receipt.slot_address == slot_address
+        match state {
+            Pe64ImportSlotCustodyState::Provisional(binding) => {
+                binding.slot_address == slot_address
+            }
+            Pe64ImportSlotCustodyState::Active(binding) => {
+                binding.receipt.observed_module_sha256 == module.sha256
+                    && binding.receipt.observed_pe_identity_sha256 == module.pe_identity.sha256
+                    && binding.receipt.slot_address == slot_address
+            }
+            Pe64ImportSlotCustodyState::Terminalizing(binding) => {
+                binding.installed.observed_module_sha256 == module.sha256
+                    && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
+                    && binding.installed.slot_address == slot_address
+            }
+            Pe64ImportSlotCustodyState::Terminal(binding) => {
+                binding.installed.observed_module_sha256 == module.sha256
+                    && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
+                    && binding.installed.slot_address == slot_address
+            }
+        }
     }) {
         return Err(format!(
             "{} import slot already has a different active or terminal lease",
@@ -372,17 +914,44 @@ pub fn install_pe64_import_address_slot(
         ));
     }
     match registry.get(&key) {
+        Some(Pe64ImportSlotCustodyState::Provisional(binding)) => {
+            if binding.expected != expected
+                || binding.external_shim != external_shim
+                || binding.teardown_owner_token != teardown_owner_token
+                || binding.slot_address != slot_address
+            {
+                return Err(format!(
+                    "{} provisional import-slot custody changed",
+                    expected.logical_name
+                ));
+            }
+        }
         Some(Pe64ImportSlotCustodyState::Active(binding)) => {
             validate_installed_pe64_import_slot_binding(expected, &binding.receipt)?;
             if binding.receipt.external_shim_address != external_shim_address
                 || binding.receipt.external_shim != external_shim
+                || binding.receipt.shim_callback_semantic_id != sealed_shim.callback_semantic_id
+                || binding.receipt.shim_callback_export_name != sealed_shim.callback_export_name
+                || binding.receipt.shim_callback_binary_identity
+                    != sealed_shim.callback_binary_identity
+                || binding.receipt.shim_callback_manifest_sha256
+                    != sealed_shim.callback_manifest_sha256
+                || binding.receipt.shim_callback_address != sealed_shim.callback_address
             {
                 return Err(format!(
                     "{} install retry changed external shim identity",
                     expected.logical_name
                 ));
             }
-            validate_external_dispatch_shim_identity(binding.receipt.external_shim)?;
+            validate_sealed_shim_lease_and_live_dispatch(
+                sealed_shim,
+                SealedShimLeasePhase::Pe64ImportSlotActive {
+                    teardown_owner_token,
+                    slot_rva: expected.slot_rva,
+                },
+                sealed_shim.callback_address,
+                false,
+            )?;
             let observed = atomic_load_pointer_slot(slot_address)?;
             if observed != external_shim_address {
                 return Err(format!(
@@ -391,6 +960,12 @@ pub fn install_pe64_import_address_slot(
                 ));
             }
             return Ok(binding.receipt.clone());
+        }
+        Some(Pe64ImportSlotCustodyState::Terminalizing(_)) => {
+            return Err(format!(
+                "{} import-slot lease is already terminalizing",
+                expected.logical_name
+            ));
         }
         Some(Pe64ImportSlotCustodyState::Terminal(_)) => {
             return Err(format!(
@@ -401,12 +976,72 @@ pub fn install_pe64_import_address_slot(
         None => {}
     }
     let slot_spec_sha256 = pe64_import_slot_spec_sha256(expected);
-    let authenticity_seal = next_receipt_seal()?;
-    let cas = atomic_compare_exchange_pointer_slot(
-        slot_address,
-        expected.expected_original_address,
-        external_shim_address,
-    )?;
+    let (authenticity_seal, protection_before) = match registry.get(&key) {
+        Some(Pe64ImportSlotCustodyState::Provisional(binding)) => {
+            validate_sealed_shim_lease_and_live_dispatch(
+                sealed_shim,
+                SealedShimLeasePhase::Pe64ImportSlotInstalling {
+                    teardown_owner_token,
+                    slot_rva: expected.slot_rva,
+                },
+                sealed_shim.callback_address,
+                false,
+            )?;
+            (binding.authenticity_seal, binding.protection_before)
+        }
+        Some(_) => unreachable!("active and terminal custody returned above"),
+        None => {
+            let authenticity_seal = next_receipt_seal()?;
+            let protection_before = pointer_slot_protection(slot_address)?;
+            transition_sealed_shim_lease(
+                sealed_shim,
+                SealedShimLeasePhase::Available,
+                SealedShimLeasePhase::Pe64ImportSlotInstalling {
+                    teardown_owner_token,
+                    slot_rva: expected.slot_rva,
+                },
+                sealed_shim.callback_address,
+                true,
+            )?;
+            registry.insert(
+                key,
+                Pe64ImportSlotCustodyState::Provisional(ProvisionalPe64ImportSlotBinding {
+                    expected,
+                    external_shim,
+                    teardown_owner_token,
+                    slot_address,
+                    protection_before,
+                    authenticity_seal,
+                }),
+            );
+            (authenticity_seal, protection_before)
+        }
+    };
+    let current = atomic_load_pointer_slot(slot_address)?;
+    let cas = if current == external_shim_address {
+        let current_protection = pointer_slot_protection(slot_address)?;
+        if current_protection != protection_before {
+            restore_pointer_slot_protection(slot_address, current_protection, protection_before)?;
+        }
+        AtomicPointerCasObservation {
+            observed_before: expected.expected_original_address,
+            protection_before,
+            protection_temporary: pointer_slot_temporary_protection(protection_before),
+            protection_after: pointer_slot_protection(slot_address)?,
+        }
+    } else {
+        atomic_compare_exchange_pointer_slot(
+            slot_address,
+            expected.expected_original_address,
+            external_shim_address,
+        )?
+    };
+    if cas.protection_before != protection_before || cas.protection_after != protection_before {
+        return Err(format!(
+            "{} provisional import-slot page protection remains unresolved",
+            expected.logical_name
+        ));
+    }
     let observed_before = cas.observed_before;
     if observed_before != expected.expected_original_address {
         return Err(format!(
@@ -437,6 +1072,16 @@ pub fn install_pe64_import_address_slot(
         expected_original_address: expected.expected_original_address,
         external_shim_address,
         external_shim,
+        shim_template_id: sealed_shim.template_id,
+        shim_callback_semantic_id: sealed_shim.callback_semantic_id,
+        shim_callback_export_name: sealed_shim.callback_export_name,
+        shim_callback_binary_identity: sealed_shim.callback_binary_identity,
+        shim_callback_manifest_sha256: sealed_shim.callback_manifest_sha256,
+        shim_callback_address: sealed_shim.callback_address,
+        shim_normalized_template_sha256: sealed_shim.normalized_template_sha256,
+        shim_unwind_handler_sha256: sealed_shim.unwind_handler_sha256,
+        shim_unwind_info_sha256: sealed_shim.unwind_info_sha256,
+        shim_runtime_function_sha256: sealed_shim.runtime_function_sha256,
         observed_before_address: observed_before,
         observed_after_address: observed_after,
         slot_protection_before: cas.protection_before,
@@ -448,6 +1093,19 @@ pub fn install_pe64_import_address_slot(
         installed: true,
         authenticity_seal,
     };
+    transition_sealed_shim_lease(
+        sealed_shim,
+        SealedShimLeasePhase::Pe64ImportSlotInstalling {
+            teardown_owner_token,
+            slot_rva: expected.slot_rva,
+        },
+        SealedShimLeasePhase::Pe64ImportSlotActive {
+            teardown_owner_token,
+            slot_rva: expected.slot_rva,
+        },
+        sealed_shim.callback_address,
+        false,
+    )?;
     registry.insert(
         key,
         Pe64ImportSlotCustodyState::Active(ActivePe64ImportSlotBinding {
@@ -455,6 +1113,64 @@ pub fn install_pe64_import_address_slot(
         }),
     );
     Ok(receipt)
+}
+
+#[cfg(windows)]
+pub fn verify_installed_pe64_import_address_slot(
+    expected: ExpectedPe64ImportAddressSlot,
+    installed: &InstalledPe64ImportAddressSlotReceipt,
+    sealed_shim: &SealedExternalDispatchShim,
+) -> Result<(), String> {
+    validate_expected_pe64_import_slot(expected)?;
+    validate_installed_pe64_import_slot_binding(expected, installed)?;
+    validate_sealed_external_dispatch_shim(sealed_shim)?;
+    if sealed_shim.identity != installed.external_shim
+        || sealed_shim.template_id != installed.shim_template_id
+        || sealed_shim.callback_semantic_id != installed.shim_callback_semantic_id
+        || sealed_shim.callback_export_name != installed.shim_callback_export_name
+        || sealed_shim.callback_binary_identity != installed.shim_callback_binary_identity
+        || sealed_shim.callback_manifest_sha256 != installed.shim_callback_manifest_sha256
+        || sealed_shim.callback_address != installed.shim_callback_address
+        || sealed_shim.original_address != installed.expected_original_address
+    {
+        return Err(format!(
+            "{} active verification changed sealed shim authority",
+            expected.logical_name
+        ));
+    }
+    let module = observe_main_module()?;
+    let slot_address = validate_pe64_import_slot(module, expected)?;
+    if slot_address != installed.slot_address
+        || atomic_load_pointer_slot(slot_address)? != installed.external_shim_address
+    {
+        return Err(format!(
+            "{} active import-slot live pointer changed",
+            expected.logical_name
+        ));
+    }
+    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = registry
+        .lock()
+        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+    let key = (installed.teardown_owner_token, installed.slot_rva);
+    match registry.get(&key) {
+        Some(Pe64ImportSlotCustodyState::Active(binding)) if binding.receipt == *installed => {}
+        _ => {
+            return Err(format!(
+                "{} is not the crate-owned active import-slot lease",
+                expected.logical_name
+            ));
+        }
+    }
+    validate_sealed_shim_lease_and_live_dispatch(
+        sealed_shim,
+        SealedShimLeasePhase::Pe64ImportSlotActive {
+            teardown_owner_token: installed.teardown_owner_token,
+            slot_rva: installed.slot_rva,
+        },
+        sealed_shim.callback_address,
+        false,
+    )
 }
 
 /// Restore one installed PE64 import slot with an atomic pointer CAS after the
@@ -465,10 +1181,29 @@ pub fn install_pe64_import_address_slot(
 pub fn restore_pe64_import_address_slot_process_lifetime(
     expected: ExpectedPe64ImportAddressSlot,
     installed: &InstalledPe64ImportAddressSlotReceipt,
+    sealed_shim: &SealedExternalDispatchShim,
     attestation: Pe64ImportAddressSlotTerminalAttestation,
 ) -> Result<RestoredPe64ImportAddressSlotCustodyReceipt, String> {
     validate_expected_pe64_import_slot(expected)?;
     validate_installed_pe64_import_slot_binding(expected, installed)?;
+    validate_sealed_external_dispatch_shim(sealed_shim)?;
+    if sealed_shim.identity != installed.external_shim
+        || sealed_shim.template_id != installed.shim_template_id
+        || sealed_shim.callback_semantic_id != installed.shim_callback_semantic_id
+        || sealed_shim.callback_export_name != installed.shim_callback_export_name
+        || sealed_shim.callback_binary_identity != installed.shim_callback_binary_identity
+        || sealed_shim.callback_manifest_sha256 != installed.shim_callback_manifest_sha256
+        || sealed_shim.callback_address != installed.shim_callback_address
+        || sealed_shim.normalized_template_sha256 != installed.shim_normalized_template_sha256
+        || sealed_shim.unwind_handler_sha256 != installed.shim_unwind_handler_sha256
+        || sealed_shim.unwind_info_sha256 != installed.shim_unwind_info_sha256
+        || sealed_shim.runtime_function_sha256 != installed.shim_runtime_function_sha256
+    {
+        return Err(format!(
+            "{} restore changed sealed shim authority",
+            expected.logical_name
+        ));
+    }
     let module = observe_main_module()?;
     let slot_address = validate_pe64_import_slot(module, expected)?;
     if slot_address != installed.slot_address {
@@ -483,15 +1218,91 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
     let mut registry = registry
         .lock()
         .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
-    let state = registry.get(&key).ok_or_else(|| {
-        format!(
-            "{} has no crate-owned import-slot custody",
-            expected.logical_name
-        )
-    })?;
-    let active = match state {
-        Pe64ImportSlotCustodyState::Active(binding) => &binding.receipt,
-        Pe64ImportSlotCustodyState::Terminal(binding) => {
+    let terminalizing = match registry.get(&key) {
+        None => {
+            return Err(format!(
+                "{} has no crate-owned import-slot custody",
+                expected.logical_name
+            ));
+        }
+        Some(Pe64ImportSlotCustodyState::Provisional(_)) => {
+            return Err(format!(
+                "{} import-slot install remains provisional",
+                expected.logical_name
+            ));
+        }
+        Some(Pe64ImportSlotCustodyState::Active(binding)) => {
+            if &binding.receipt != installed {
+                return Err(format!(
+                    "{} installed receipt is not the crate-owned import-slot lease",
+                    expected.logical_name
+                ));
+            }
+            let observed_terminal = observe_external_dispatch_terminal(
+                installed.expected_original_address,
+                installed.external_shim_address,
+                attestation,
+                true,
+            )?;
+            if attestation.external_shim != installed.external_shim {
+                return Err(format!(
+                    "{} terminal attestation changed external shim identity",
+                    expected.logical_name
+                ));
+            }
+            let authenticity_seal = next_receipt_seal()? ^ installed.authenticity_seal;
+            if authenticity_seal == 0 {
+                return Err(format!(
+                    "{} terminal authenticity seal is zero",
+                    expected.logical_name
+                ));
+            }
+            let protection_before_restore = pointer_slot_protection(slot_address)?;
+            transition_sealed_shim_lease(
+                sealed_shim,
+                SealedShimLeasePhase::Pe64ImportSlotActive {
+                    teardown_owner_token: installed.teardown_owner_token,
+                    slot_rva: installed.slot_rva,
+                },
+                SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+                    teardown_owner_token: installed.teardown_owner_token,
+                    slot_rva: installed.slot_rva,
+                },
+                installed.expected_original_address,
+                true,
+            )?;
+            let terminalizing = TerminalizingPe64ImportSlotBinding {
+                installed: installed.clone(),
+                attestation,
+                observed_terminal,
+                protection_before_restore,
+                authenticity_seal,
+            };
+            registry.insert(
+                key,
+                Pe64ImportSlotCustodyState::Terminalizing(terminalizing.clone()),
+            );
+            terminalizing
+        }
+        Some(Pe64ImportSlotCustodyState::Terminalizing(binding)) => {
+            if &binding.installed != installed || binding.attestation != attestation {
+                return Err(format!(
+                    "{} terminalizing retry changed custody inputs",
+                    expected.logical_name
+                ));
+            }
+            validate_sealed_shim_lease_and_live_dispatch(
+                sealed_shim,
+                SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+                    teardown_owner_token: installed.teardown_owner_token,
+                    slot_rva: installed.slot_rva,
+                },
+                installed.expected_original_address,
+                false,
+            )?;
+            binding.clone()
+        }
+        Some(Pe64ImportSlotCustodyState::Terminal(binding)) => {
             if &binding.installed != installed {
                 return Err(format!(
                     "{} terminal retry changed installed receipt",
@@ -502,35 +1313,39 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             return Ok(binding.receipt.clone());
         }
     };
-    if active != installed {
+    let current = atomic_load_pointer_slot(slot_address)?;
+    let cas = if current == installed.expected_original_address {
+        let current_protection = pointer_slot_protection(slot_address)?;
+        if current_protection != terminalizing.protection_before_restore {
+            restore_pointer_slot_protection(
+                slot_address,
+                current_protection,
+                terminalizing.protection_before_restore,
+            )?;
+        }
+        AtomicPointerCasObservation {
+            observed_before: installed.external_shim_address,
+            protection_before: terminalizing.protection_before_restore,
+            protection_temporary: pointer_slot_temporary_protection(
+                terminalizing.protection_before_restore,
+            ),
+            protection_after: pointer_slot_protection(slot_address)?,
+        }
+    } else {
+        atomic_compare_exchange_pointer_slot(
+            slot_address,
+            installed.external_shim_address,
+            installed.expected_original_address,
+        )?
+    };
+    if cas.protection_before != terminalizing.protection_before_restore
+        || cas.protection_after != terminalizing.protection_before_restore
+    {
         return Err(format!(
-            "{} installed receipt is not the crate-owned import-slot lease",
+            "{} terminalizing import-slot protection remains unresolved",
             expected.logical_name
         ));
     }
-    let observed_terminal = observe_external_dispatch_terminal(
-        installed.expected_original_address,
-        installed.external_shim_address,
-        attestation,
-    )?;
-    if attestation.external_shim != installed.external_shim {
-        return Err(format!(
-            "{} terminal attestation changed external shim identity",
-            expected.logical_name
-        ));
-    }
-    let authenticity_seal = next_receipt_seal()? ^ installed.authenticity_seal;
-    if authenticity_seal == 0 {
-        return Err(format!(
-            "{} terminal authenticity seal is zero",
-            expected.logical_name
-        ));
-    }
-    let cas = atomic_compare_exchange_pointer_slot(
-        slot_address,
-        installed.external_shim_address,
-        installed.expected_original_address,
-    )?;
     let observed_before = cas.observed_before;
     if observed_before != installed.external_shim_address {
         return Err(format!(
@@ -568,19 +1383,44 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         primitive_id: installed.primitive_id,
         slot_spec_sha256: installed.slot_spec_sha256,
         teardown_owner_token: installed.teardown_owner_token,
-        callbacks_quiesced: attestation.callbacks_quiesced,
+        callbacks_quiesced: terminalizing.attestation.callbacks_quiesced,
         slot_restored: true,
-        retained_until_process_exit: attestation.retained_until_process_exit,
-        policy_id: attestation.policy_id,
-        external_shim: attestation.external_shim,
-        dispatch_slot_sha256: observed_terminal.dispatch_slot_sha256,
-        observed_terminal_dispatch_address: observed_terminal.dispatch_address,
-        active_callback_counter_sha256: observed_terminal.active_counter_sha256,
-        observed_active_callback_count: observed_terminal.active_count,
+        retained_until_process_exit: terminalizing.attestation.retained_until_process_exit,
+        policy_id: terminalizing.attestation.policy_id,
+        external_shim: terminalizing.attestation.external_shim,
+        shim_template_id: installed.shim_template_id,
+        shim_callback_semantic_id: installed.shim_callback_semantic_id,
+        shim_callback_export_name: installed.shim_callback_export_name,
+        shim_callback_binary_identity: installed.shim_callback_binary_identity,
+        shim_callback_manifest_sha256: installed.shim_callback_manifest_sha256,
+        shim_callback_address: installed.shim_callback_address,
+        shim_normalized_template_sha256: installed.shim_normalized_template_sha256,
+        shim_unwind_handler_sha256: installed.shim_unwind_handler_sha256,
+        shim_unwind_info_sha256: installed.shim_unwind_info_sha256,
+        shim_runtime_function_sha256: installed.shim_runtime_function_sha256,
+        dispatch_slot_sha256: terminalizing.observed_terminal.dispatch_slot_sha256,
+        observed_terminal_dispatch_address: terminalizing.observed_terminal.dispatch_address,
+        active_callback_counter_sha256: terminalizing.observed_terminal.active_counter_sha256,
+        observed_active_callback_count: terminalizing.observed_terminal.active_count,
         custody_digest_sha256: [0; 32],
-        authenticity_seal,
+        promotion_digest_sha256: [0; 32],
+        authenticity_seal: terminalizing.authenticity_seal,
     };
     receipt.custody_digest_sha256 = restored_pe64_import_slot_custody_digest(&receipt);
+    receipt.promotion_digest_sha256 = restored_pe64_import_slot_promotion_digest(&receipt);
+    transition_sealed_shim_lease(
+        sealed_shim,
+        SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+            teardown_owner_token: installed.teardown_owner_token,
+            slot_rva: installed.slot_rva,
+        },
+        SealedShimLeasePhase::Pe64ImportSlotTerminal {
+            teardown_owner_token: installed.teardown_owner_token,
+            slot_rva: installed.slot_rva,
+        },
+        installed.expected_original_address,
+        false,
+    )?;
     registry.insert(
         key,
         Pe64ImportSlotCustodyState::Terminal(TerminalPe64ImportSlotBinding {
@@ -600,6 +1440,12 @@ pub fn verify_restored_pe64_import_address_slot_custody(
     if restored_pe64_import_slot_custody_digest(receipt) != receipt.custody_digest_sha256 {
         return Err(format!(
             "{} terminal import-slot custody digest mismatch",
+            receipt.logical_name
+        ));
+    }
+    if restored_pe64_import_slot_promotion_digest(receipt) != receipt.promotion_digest_sha256 {
+        return Err(format!(
+            "{} terminal import-slot promotion digest mismatch",
             receipt.logical_name
         ));
     }
@@ -625,7 +1471,7 @@ pub fn restored_pe64_import_slot_custody_digest(
     receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"hoi4.production_hook.pe64_import_slot_terminal.v1");
+    digest.update(b"hoi4.production_hook.pe64_import_slot_terminal.v2");
     digest_len_prefixed(&mut digest, receipt.logical_name.as_bytes());
     digest.update(receipt.observed_module_sha256);
     digest.update(receipt.observed_pe_identity_sha256);
@@ -652,11 +1498,53 @@ pub fn restored_pe64_import_slot_custody_digest(
     digest.update([receipt.retained_until_process_exit as u8]);
     digest_len_prefixed(&mut digest, receipt.policy_id.as_bytes());
     digest_external_shim_identity(&mut digest, receipt.external_shim);
+    digest_len_prefixed(&mut digest, receipt.shim_template_id.as_bytes());
+    digest_len_prefixed(&mut digest, receipt.shim_callback_semantic_id.as_bytes());
+    digest_len_prefixed(&mut digest, receipt.shim_callback_export_name.as_bytes());
+    digest_external_callback_binary_identity(&mut digest, receipt.shim_callback_binary_identity);
+    digest.update(receipt.shim_callback_manifest_sha256);
+    digest.update((receipt.shim_callback_address as u64).to_le_bytes());
+    digest.update(receipt.shim_normalized_template_sha256);
+    digest.update(receipt.shim_unwind_handler_sha256);
+    digest.update(receipt.shim_unwind_info_sha256);
+    digest.update(receipt.shim_runtime_function_sha256);
     digest.update(receipt.dispatch_slot_sha256);
     digest.update((receipt.observed_terminal_dispatch_address as u64).to_le_bytes());
     digest.update(receipt.active_callback_counter_sha256);
     digest.update(receipt.observed_active_callback_count.to_le_bytes());
     digest.update(receipt.authenticity_seal.to_le_bytes());
+    digest.finalize().into()
+}
+
+pub fn restored_pe64_import_slot_promotion_digest(
+    receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"hoi4.production_hook.pe64_import_slot_promotion.v2");
+    digest_len_prefixed(&mut digest, receipt.logical_name.as_bytes());
+    digest.update(receipt.observed_module_sha256);
+    digest.update(receipt.observed_pe_identity_sha256);
+    digest.update(receipt.observed_pe_timestamp.to_le_bytes());
+    digest.update(receipt.observed_size_of_image.to_le_bytes());
+    digest_len_prefixed(&mut digest, receipt.imported_dll.as_bytes());
+    digest_len_prefixed(&mut digest, receipt.imported_symbol.as_bytes());
+    digest.update(receipt.slot_rva.to_le_bytes());
+    digest.update(receipt.slot_width.to_le_bytes());
+    digest.update(receipt.slot_alignment.to_le_bytes());
+    digest_len_prefixed(&mut digest, receipt.primitive_id.as_bytes());
+    digest.update([receipt.callbacks_quiesced as u8]);
+    digest.update([receipt.slot_restored as u8]);
+    digest.update([receipt.retained_until_process_exit as u8]);
+    digest_len_prefixed(&mut digest, receipt.policy_id.as_bytes());
+    digest_len_prefixed(&mut digest, receipt.shim_template_id.as_bytes());
+    digest_len_prefixed(&mut digest, receipt.shim_callback_semantic_id.as_bytes());
+    digest_len_prefixed(&mut digest, receipt.shim_callback_export_name.as_bytes());
+    digest_external_callback_binary_identity(&mut digest, receipt.shim_callback_binary_identity);
+    digest.update(receipt.shim_callback_manifest_sha256);
+    digest.update(receipt.shim_normalized_template_sha256);
+    digest.update(receipt.shim_unwind_handler_sha256);
+    digest.update(receipt.shim_unwind_info_sha256);
+    digest.update(receipt.shim_runtime_function_sha256);
     digest.finalize().into()
 }
 
@@ -978,6 +1866,54 @@ fn digest_external_shim_identity(digest: &mut Sha256, identity: ExternalDispatch
     digest.update((identity.active_callback_counter_address as u64).to_le_bytes());
 }
 
+fn digest_external_callback_binary_identity(
+    digest: &mut Sha256,
+    identity: ExternalCallbackBinaryIdentity,
+) {
+    digest.update(identity.module_file_sha256);
+    digest.update(identity.module_pe_identity_sha256);
+    digest.update(identity.module_size_of_image.to_le_bytes());
+    digest.update(identity.callback_rva.to_le_bytes());
+    digest.update(identity.entry_prefix_len.to_le_bytes());
+    digest.update(identity.entry_prefix_sha256);
+}
+
+pub fn external_callback_manifest_sha256(manifest: ExpectedExternalCallbackManifest) -> [u8; 32] {
+    external_callback_manifest_fields_sha256(
+        manifest.semantic_id,
+        manifest.export_name,
+        manifest.binary_identity,
+    )
+}
+
+fn external_callback_manifest_fields_sha256(
+    semantic_id: &str,
+    export_name: &str,
+    binary_identity: ExternalCallbackBinaryIdentity,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"hoi4.production_hook.external_callback_manifest.v1");
+    digest_len_prefixed(&mut digest, semantic_id.as_bytes());
+    digest_len_prefixed(&mut digest, export_name.as_bytes());
+    digest_external_callback_binary_identity(&mut digest, binary_identity);
+    digest.finalize().into()
+}
+
+fn authenticated_external_callback_manifest_sha256(
+    manifest: ExpectedExternalCallbackManifest,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"hoi4.production_hook.external_callback_manifest.authenticated.v1");
+    digest.update(external_callback_manifest_sha256(manifest));
+    digest.update([match manifest.callback_class {
+        ExternalCallbackManifestClass::D3D11CreateDevice => 1,
+        ExternalCallbackManifestClass::D3DCompile => 2,
+        ExternalCallbackManifestClass::Win64RegisterArgsOnly => 3,
+    }]);
+    digest.update(manifest.authenticity_seal.to_le_bytes());
+    digest.finalize().into()
+}
+
 #[cfg(windows)]
 fn validate_installed_pe64_import_slot_binding(
     expected: ExpectedPe64ImportAddressSlot,
@@ -996,6 +1932,7 @@ fn validate_installed_pe64_import_slot_binding(
         || receipt.expected_original_address != expected.expected_original_address
         || receipt.external_shim_address == 0
         || receipt.external_shim.entry_address != receipt.external_shim_address
+        || receipt.shim_callback_address == 0
         || receipt.observed_before_address != expected.expected_original_address
         || receipt.observed_after_address != receipt.external_shim_address
         || receipt.slot_protection_before == 0
@@ -1012,7 +1949,41 @@ fn validate_installed_pe64_import_slot_binding(
             expected.logical_name
         ));
     }
-    Ok(())
+    let shim_registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let shim = {
+        let shim_registry = shim_registry
+            .lock()
+            .map_err(|_| "sealed shim custody registry is poisoned")?;
+        match shim_registry.get(&receipt.external_shim.allocation_base) {
+            Some(binding)
+                if binding.shim.identity == receipt.external_shim
+                    && binding.shim.template_id == receipt.shim_template_id
+                    && binding.shim.callback_semantic_id == receipt.shim_callback_semantic_id
+                    && binding.shim.callback_export_name == receipt.shim_callback_export_name
+                    && binding.shim.callback_binary_identity
+                        == receipt.shim_callback_binary_identity
+                    && binding.shim.callback_manifest_sha256
+                        == receipt.shim_callback_manifest_sha256
+                    && binding.shim.callback_address == receipt.shim_callback_address
+                    && binding.shim.original_address == receipt.expected_original_address
+                    && binding.shim.normalized_template_sha256
+                        == receipt.shim_normalized_template_sha256
+                    && binding.shim.unwind_handler_sha256 == receipt.shim_unwind_handler_sha256
+                    && binding.shim.unwind_info_sha256 == receipt.shim_unwind_info_sha256
+                    && binding.shim.runtime_function_sha256
+                        == receipt.shim_runtime_function_sha256 =>
+            {
+                binding.shim.clone()
+            }
+            _ => {
+                return Err(format!(
+                    "{} installed receipt lost sealed shim custody",
+                    expected.logical_name
+                ));
+            }
+        }
+    };
+    validate_sealed_external_dispatch_shim(&shim)
 }
 
 #[cfg(windows)]
@@ -1035,6 +2006,16 @@ fn validate_terminal_receipt_binding(
         || receipt.expected_original_address != installed.expected_original_address
         || receipt.external_shim_address != installed.external_shim_address
         || receipt.external_shim != installed.external_shim
+        || receipt.shim_template_id != installed.shim_template_id
+        || receipt.shim_callback_semantic_id != installed.shim_callback_semantic_id
+        || receipt.shim_callback_export_name != installed.shim_callback_export_name
+        || receipt.shim_callback_binary_identity != installed.shim_callback_binary_identity
+        || receipt.shim_callback_manifest_sha256 != installed.shim_callback_manifest_sha256
+        || receipt.shim_callback_address != installed.shim_callback_address
+        || receipt.shim_normalized_template_sha256 != installed.shim_normalized_template_sha256
+        || receipt.shim_unwind_handler_sha256 != installed.shim_unwind_handler_sha256
+        || receipt.shim_unwind_info_sha256 != installed.shim_unwind_info_sha256
+        || receipt.shim_runtime_function_sha256 != installed.shim_runtime_function_sha256
         || receipt.observed_restore_before_address != installed.external_shim_address
         || receipt.observed_restore_after_address != installed.expected_original_address
         || receipt.slot_protection_before_restore == 0
@@ -1065,6 +2046,7 @@ fn observe_external_dispatch_terminal(
     expected_original_address: usize,
     external_shim_address: usize,
     attestation: Pe64ImportAddressSlotTerminalAttestation,
+    require_quiescent_cutover: bool,
 ) -> Result<ObservedExternalDispatchTerminal, String> {
     if !attestation.callbacks_quiesced
         || !attestation.slot_dispatches_to_original
@@ -1100,7 +2082,7 @@ fn observe_external_dispatch_terminal(
             .try_into()
             .map_err(|_| "external active callback counter width changed")?,
     );
-    if active_count != 0 {
+    if require_quiescent_cutover && active_count != 0 {
         return Err(format!(
             "external dispatch shim still has {active_count} active callbacks"
         ));
@@ -1117,6 +2099,49 @@ fn observe_external_dispatch_terminal(
 fn validate_terminal_pe64_import_slot_live(
     receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
 ) -> Result<(), String> {
+    let shim = {
+        let registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+        let registry = registry
+            .lock()
+            .map_err(|_| "sealed shim custody registry is poisoned")?;
+        match registry.get(&receipt.external_shim.allocation_base) {
+            Some(binding)
+                if binding.shim.identity == receipt.external_shim
+                    && binding.shim.template_id == receipt.shim_template_id
+                    && binding.shim.callback_semantic_id == receipt.shim_callback_semantic_id
+                    && binding.shim.callback_export_name == receipt.shim_callback_export_name
+                    && binding.shim.callback_binary_identity
+                        == receipt.shim_callback_binary_identity
+                    && binding.shim.callback_manifest_sha256
+                        == receipt.shim_callback_manifest_sha256
+                    && binding.shim.callback_address == receipt.shim_callback_address
+                    && binding.shim.original_address == receipt.expected_original_address
+                    && binding.shim.normalized_template_sha256
+                        == receipt.shim_normalized_template_sha256
+                    && binding.shim.unwind_handler_sha256 == receipt.shim_unwind_handler_sha256
+                    && binding.shim.unwind_info_sha256 == receipt.shim_unwind_info_sha256
+                    && binding.shim.runtime_function_sha256
+                        == receipt.shim_runtime_function_sha256 =>
+            {
+                binding.shim.clone()
+            }
+            _ => {
+                return Err(format!(
+                    "{} terminal receipt lost sealed shim custody",
+                    receipt.logical_name
+                ));
+            }
+        }
+    };
+    validate_sealed_shim_lease_and_live_dispatch(
+        &shim,
+        SealedShimLeasePhase::Pe64ImportSlotTerminal {
+            teardown_owner_token: receipt.teardown_owner_token,
+            slot_rva: receipt.slot_rva,
+        },
+        receipt.expected_original_address,
+        false,
+    )?;
     if atomic_load_pointer_slot(receipt.slot_address)? != receipt.expected_original_address {
         return Err(format!(
             "{} restored import slot changed",
@@ -1133,11 +2158,10 @@ fn validate_terminal_pe64_import_slot_live(
             policy_id: receipt.policy_id,
             external_shim: receipt.external_shim,
         },
+        false,
     )?;
     if observed.dispatch_slot_sha256 != receipt.dispatch_slot_sha256
         || observed.dispatch_address != receipt.observed_terminal_dispatch_address
-        || observed.active_counter_sha256 != receipt.active_callback_counter_sha256
-        || observed.active_count != receipt.observed_active_callback_count
     {
         return Err(format!(
             "{} external dispatch terminal identity changed",
@@ -1394,6 +2418,7 @@ struct PeSection {
     virtual_address: usize,
     raw_size: usize,
     raw_offset: usize,
+    characteristics: u32,
 }
 
 #[cfg(windows)]
@@ -1465,6 +2490,125 @@ fn initialize_main_module() -> Result<ObservedMainModule, String> {
         sections,
         size_of_headers,
         _stable_file: stable_file,
+    })
+}
+
+#[cfg(windows)]
+fn observe_external_callback_binary_identity(
+    callback_address: usize,
+    export_name: &str,
+    entry_prefix_len: u16,
+) -> Result<ExternalCallbackBinaryIdentity, String> {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, GetProcAddress};
+    use windows_sys::Win32::System::Memory::{
+        VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_IMAGE, PAGE_EXECUTE,
+        PAGE_EXECUTE_READ, PAGE_GUARD, PAGE_NOACCESS,
+    };
+
+    if !(16..=256).contains(&entry_prefix_len)
+        || export_name.is_empty()
+        || export_name.len() > 256
+        || !export_name.is_ascii()
+        || export_name.as_bytes().contains(&0)
+    {
+        return Err("external callback export manifest is invalid".into());
+    }
+    let mut info = MEMORY_BASIC_INFORMATION::default();
+    let queried = unsafe {
+        VirtualQuery(
+            callback_address as *const core::ffi::c_void,
+            &mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    let executable = matches!(info.Protect & 0xff, PAGE_EXECUTE | PAGE_EXECUTE_READ);
+    let module_base = info.AllocationBase as usize;
+    if callback_address == 0
+        || queried != size_of::<MEMORY_BASIC_INFORMATION>()
+        || info.State != MEM_COMMIT
+        || info.Type != MEM_IMAGE
+        || info.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0
+        || !executable
+        || module_base == 0
+        || callback_address < module_base
+    {
+        return Err("external callback is not executable image memory".into());
+    }
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe {
+        GetModuleFileNameW(
+            module_base as *mut core::ffi::c_void,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    };
+    if length == 0 || length as usize >= buffer.len() {
+        return Err("external callback module path is unavailable".into());
+    }
+    let export_name_c = std::ffi::CString::new(export_name)
+        .map_err(|_| "external callback export contains an interior NUL")?;
+    let export = unsafe {
+        GetProcAddress(
+            module_base as *mut core::ffi::c_void,
+            export_name_c.as_ptr().cast(),
+        )
+    }
+    .map(|function| function as usize)
+    .unwrap_or(0);
+    if export != callback_address {
+        return Err("external callback address is not the admitted exact PE export".into());
+    }
+    buffer.truncate(length as usize);
+    let path = String::from_utf16(&buffer)
+        .map_err(|_| "external callback module path is not valid UTF-16")?;
+    let mut file = std::fs::File::open(&path)
+        .map_err(|error| format!("external callback module open failed: {error}"))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("external callback module read failed: {error}"))?;
+    let module_file_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+    let (pe_identity, sections, _) = parse_file_pe_layout(&bytes)?;
+    if observe_mapped_pe_identity(module_base)? != pe_identity {
+        return Err("external callback mapped/file PE identity mismatch".into());
+    }
+    let callback_rva = callback_address - module_base;
+    let prefix_len = entry_prefix_len as usize;
+    let callback_end_rva = callback_rva
+        .checked_add(prefix_len)
+        .ok_or("external callback prefix range overflow")?;
+    let section = sections.iter().find(|section| {
+        callback_rva >= section.virtual_address
+            && callback_end_rva <= section.virtual_address.saturating_add(section.raw_size)
+            && section.characteristics & 0x2000_0020 == 0x2000_0020
+            && section.characteristics & 0x8000_0000 == 0
+    });
+    let Some(section) = section else {
+        return Err("external callback is not exact file-backed module code".into());
+    };
+    if callback_end_rva > pe_identity.size_of_image as usize {
+        return Err("external callback prefix exceeds the loaded image".into());
+    }
+    let file_offset = section
+        .raw_offset
+        .checked_add(callback_rva - section.virtual_address)
+        .ok_or("external callback file offset overflow")?;
+    let file_end = file_offset
+        .checked_add(prefix_len)
+        .ok_or("external callback file range overflow")?;
+    let file_prefix = bytes
+        .get(file_offset..file_end)
+        .ok_or("external callback file prefix is truncated")?;
+    let mapped_prefix = read_process_bytes(callback_address, prefix_len)?;
+    if mapped_prefix != file_prefix {
+        return Err("external callback mapped entry differs from exact file bytes".into());
+    }
+    Ok(ExternalCallbackBinaryIdentity {
+        module_file_sha256,
+        module_pe_identity_sha256: pe_identity.sha256,
+        module_size_of_image: pe_identity.size_of_image,
+        callback_rva: callback_rva as u64,
+        entry_prefix_len,
+        entry_prefix_sha256: Sha256::digest(file_prefix).into(),
     })
 }
 
@@ -1763,13 +2907,12 @@ fn atomic_compare_exchange_pointer_slot(
     expected: usize,
     replacement: usize,
 ) -> Result<AtomicPointerCasObservation, String> {
-    use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_READWRITE, PAGE_WRITECOPY};
+    use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_READWRITE};
     validate_atomic_pointer_slot_memory(address)?;
     let protection_before = pointer_slot_protection(address)?;
-    let writable = protection_before & (PAGE_READWRITE | PAGE_WRITECOPY) != 0;
-    let protection_temporary = if writable {
-        protection_before
-    } else {
+    let writable = pointer_protection_is_writable(protection_before);
+    let protection_temporary = pointer_slot_temporary_protection(protection_before);
+    if !writable {
         let mut previous = 0u32;
         let changed = unsafe {
             VirtualProtect(
@@ -1796,8 +2939,7 @@ fn atomic_compare_exchange_pointer_slot(
                 "atomic pointer slot page protection observation changed before CAS".into(),
             );
         }
-        PAGE_READWRITE
-    };
+    }
     let slot = unsafe { &*(address as *const AtomicUsize) };
     let observed_before =
         match slot.compare_exchange(expected, replacement, Ordering::SeqCst, Ordering::SeqCst) {
@@ -1883,6 +3025,48 @@ fn pointer_slot_protection(address: usize) -> Result<u32, String> {
 }
 
 #[cfg(windows)]
+fn restore_pointer_slot_protection(
+    address: usize,
+    observed: u32,
+    expected: u32,
+) -> Result<(), String> {
+    use windows_sys::Win32::System::Memory::VirtualProtect;
+    let mut previous = 0u32;
+    let changed = unsafe {
+        VirtualProtect(
+            address as *const core::ffi::c_void,
+            size_of::<usize>(),
+            expected,
+            &mut previous,
+        )
+    };
+    if changed == 0 || previous != observed || pointer_slot_protection(address)? != expected {
+        return Err("atomic pointer slot protection recovery remains unresolved".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn pointer_protection_is_writable(protection: u32) -> bool {
+    use windows_sys::Win32::System::Memory::{
+        PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE, PAGE_WRITECOPY,
+    };
+    matches!(
+        protection & 0xff,
+        PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY
+    )
+}
+
+#[cfg(windows)]
+fn pointer_slot_temporary_protection(protection_before: u32) -> u32 {
+    if pointer_protection_is_writable(protection_before) {
+        protection_before
+    } else {
+        windows_sys::Win32::System::Memory::PAGE_READWRITE
+    }
+}
+
+#[cfg(windows)]
 fn validate_external_dispatch_shim_identity(
     identity: ExternalDispatchShimIdentity,
 ) -> Result<(), String> {
@@ -1949,6 +3133,180 @@ fn validate_external_dispatch_shim_identity(
         return Err("external dispatch shim bytes changed".into());
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn validate_sealed_external_dispatch_shim(shim: &SealedExternalDispatchShim) -> Result<(), String> {
+    if !shim.unwind_registered
+        || shim.authenticity_seal == 0
+        || shim.callback_semantic_id.is_empty()
+        || shim.callback_semantic_id.len() > 256
+        || !shim.callback_semantic_id.is_ascii()
+        || shim.callback_export_name.is_empty()
+        || shim.callback_export_name.len() > 256
+        || !shim.callback_export_name.is_ascii()
+        || shim.callback_export_name.as_bytes().contains(&0)
+        || shim.callback_address == 0
+        || shim.original_address == 0
+        || shim.callback_address == shim.original_address
+        || shim.callback_binary_identity.module_file_sha256 == [0; 32]
+        || shim.callback_binary_identity.module_pe_identity_sha256 == [0; 32]
+        || shim.callback_binary_identity.module_size_of_image == 0
+        || shim.callback_binary_identity.callback_rva
+            >= u64::from(shim.callback_binary_identity.module_size_of_image)
+        || !(16..=256).contains(&shim.callback_binary_identity.entry_prefix_len)
+        || shim.callback_binary_identity.entry_prefix_sha256 == [0; 32]
+        || shim.callback_manifest_sha256
+            != external_callback_manifest_fields_sha256(
+                shim.callback_semantic_id,
+                shim.callback_export_name,
+                shim.callback_binary_identity,
+            )
+    {
+        return Err("sealed external shim lacks unwind/authenticity custody".into());
+    }
+    let template = match shim.template_id {
+        WIN64_REGISTER_ARGS_COUNTED_SHIM_TEMPLATE_ID => {
+            CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly
+        }
+        D3D11_CREATE_DEVICE_COUNTED_SHIM_TEMPLATE_ID => {
+            CanonicalPe64IatShimTemplate::D3D11CreateDevice
+        }
+        D3D_COMPILE_COUNTED_SHIM_TEMPLATE_ID => CanonicalPe64IatShimTemplate::D3DCompile,
+        _ => return Err("sealed external shim template ID is not admitted".into()),
+    };
+    validate_external_dispatch_shim_identity(shim.identity)?;
+    validate_committed_range_in_allocation(
+        shim.identity.allocation_base + 0x100,
+        23,
+        shim.identity.allocation_base,
+        shim.identity.allocation_len,
+        true,
+        false,
+    )?;
+    if pointer_slot_protection(shim.identity.allocation_base)?
+        != windows_sys::Win32::System::Memory::PAGE_EXECUTE_READ
+        || pointer_slot_protection(shim.identity.allocation_base + 0x1000)?
+            != windows_sys::Win32::System::Memory::PAGE_READWRITE
+    {
+        return Err("sealed external shim page protections changed".into());
+    }
+    let code = read_process_bytes(shim.identity.entry_address, shim.identity.entry_len)?;
+    if canonical_shim_normalized_digest(template, &code) != shim.normalized_template_sha256 {
+        return Err("sealed external shim normalized template changed".into());
+    }
+    let handler = read_process_bytes(shim.identity.allocation_base + 0x100, 23)?;
+    let unwind = read_process_bytes(shim.identity.allocation_base + 0x200, 12)?;
+    let runtime = read_process_bytes(shim.identity.allocation_base + 0x210, 12)?;
+    if Sha256::digest(handler).as_slice() != shim.unwind_handler_sha256
+        || shim.unwind_handler_sha256
+            != hex_digest("1aa6940862cf632a41f0b52b8eb3884237cdc78c68d5f5a0004d9e0d45bec655")
+        || Sha256::digest(unwind).as_slice() != shim.unwind_info_sha256
+        || Sha256::digest(runtime).as_slice() != shim.runtime_function_sha256
+    {
+        return Err("sealed external shim unwind metadata changed".into());
+    }
+    let expected_table = (shim.identity.allocation_base + 0x210)
+        as *mut windows_sys::Win32::System::Diagnostics::Debug::IMAGE_RUNTIME_FUNCTION_ENTRY;
+    let mut lookup_base = 0u64;
+    let lookup = unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::RtlLookupFunctionEntry(
+            shim.identity.entry_address as u64,
+            &mut lookup_base,
+            std::ptr::null_mut(),
+        )
+    };
+    if lookup != expected_table || lookup_base != shim.identity.allocation_base as u64 {
+        return Err("sealed external shim unwind registration changed".into());
+    }
+    let registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = registry
+        .lock()
+        .map_err(|_| "sealed shim custody registry is poisoned")?;
+    match registry.get(&shim.identity.allocation_base) {
+        Some(binding) if binding.shim == *shim => Ok(()),
+        _ => Err("sealed external shim is not core-owned custody".into()),
+    }
+}
+
+#[cfg(windows)]
+fn observe_sealed_shim_dispatch(shim: &SealedExternalDispatchShim) -> Result<(usize, u64), String> {
+    let dispatch = atomic_load_pointer_slot(shim.identity.dispatch_slot_address)?;
+    let counter = unsafe {
+        (&*(shim.identity.active_callback_counter_address as *const AtomicU64))
+            .load(Ordering::SeqCst)
+    };
+    Ok((dispatch, counter))
+}
+
+#[cfg(windows)]
+fn validate_sealed_shim_lease_and_live_dispatch(
+    shim: &SealedExternalDispatchShim,
+    expected_phase: SealedShimLeasePhase,
+    expected_dispatch: usize,
+    require_zero_counter: bool,
+) -> Result<(), String> {
+    validate_sealed_external_dispatch_shim(shim)?;
+    let (dispatch, counter) = observe_sealed_shim_dispatch(shim)?;
+    if dispatch != expected_dispatch || (require_zero_counter && counter != 0) {
+        return Err(format!(
+            "sealed external shim live phase mismatch: dispatch=0x{dispatch:X}, counter={counter}"
+        ));
+    }
+    if expected_dispatch == shim.callback_address
+        && observe_external_callback_binary_identity(
+            shim.callback_address,
+            shim.callback_export_name,
+            shim.callback_binary_identity.entry_prefix_len,
+        )? != shim.callback_binary_identity
+    {
+        return Err("sealed external shim callback binary identity changed".into());
+    }
+    let registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = registry
+        .lock()
+        .map_err(|_| "sealed shim custody registry is poisoned")?;
+    match registry.get(&shim.identity.allocation_base) {
+        Some(binding) if binding.shim == *shim && binding.phase == expected_phase => Ok(()),
+        _ => Err("sealed external shim lease phase changed".into()),
+    }
+}
+
+#[cfg(windows)]
+fn transition_sealed_shim_lease(
+    shim: &SealedExternalDispatchShim,
+    expected_phase: SealedShimLeasePhase,
+    next_phase: SealedShimLeasePhase,
+    expected_dispatch: usize,
+    require_zero_counter: bool,
+) -> Result<(), String> {
+    validate_sealed_external_dispatch_shim(shim)?;
+    let (dispatch, counter) = observe_sealed_shim_dispatch(shim)?;
+    if dispatch != expected_dispatch || (require_zero_counter && counter != 0) {
+        return Err(format!(
+            "sealed external shim transition mismatch: dispatch=0x{dispatch:X}, counter={counter}"
+        ));
+    }
+    if expected_dispatch == shim.callback_address
+        && observe_external_callback_binary_identity(
+            shim.callback_address,
+            shim.callback_export_name,
+            shim.callback_binary_identity.entry_prefix_len,
+        )? != shim.callback_binary_identity
+    {
+        return Err("sealed external shim callback binary identity changed".into());
+    }
+    let registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut registry = registry
+        .lock()
+        .map_err(|_| "sealed shim custody registry is poisoned")?;
+    match registry.get_mut(&shim.identity.allocation_base) {
+        Some(binding) if binding.shim == *shim && binding.phase == expected_phase => {
+            binding.phase = next_phase;
+            Ok(())
+        }
+        _ => Err("sealed external shim lease transition is not exact".into()),
+    }
 }
 
 #[cfg(windows)]
@@ -2119,6 +3477,7 @@ fn parse_file_pe_layout(bytes: &[u8]) -> Result<(PeIdentity, Vec<PeSection>, usi
         let virtual_address = read_u32(bytes, offset + 12, "PE section RVA")? as usize;
         let raw_size = read_u32(bytes, offset + 16, "PE section raw size")? as usize;
         let raw_offset = read_u32(bytes, offset + 20, "PE section raw offset")? as usize;
+        let characteristics = read_u32(bytes, offset + 36, "PE section characteristics")?;
         let raw_end = raw_offset
             .checked_add(raw_size)
             .ok_or("production hook PE section file range overflow")?;
@@ -2129,6 +3488,7 @@ fn parse_file_pe_layout(bytes: &[u8]) -> Result<(PeIdentity, Vec<PeSection>, usi
             virtual_address,
             raw_size,
             raw_offset,
+            characteristics,
         });
     }
     Ok((identity, sections, identity.size_of_headers as usize))

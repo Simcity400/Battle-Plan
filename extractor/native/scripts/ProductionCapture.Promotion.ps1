@@ -1,7 +1,8 @@
 Set-StrictMode -Version Latest
 
 $script:ProductionPromotionFailureMask = [uint32]0x13CF
-$script:ProductionPromotionUnknownStatusMask = [uint32]0xFFFFC000
+$script:ProductionPromotionUnknownStatusMask =
+    [uint32]::Parse('FFFFC000', [Globalization.NumberStyles]::HexNumber)
 $script:ProductionPromotionStatuses = @(
     'existing',
     'production_complete',

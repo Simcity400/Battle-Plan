@@ -97,9 +97,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89588d05638b5b4594a3348a2d6c20277e43a7f5c5202b05cc56888475a47b8"
+checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -118,6 +118,7 @@ name = "character_presentation_live_lane"
 version = "0.1.0"
 dependencies = [
  "minhook",
+ "production_hook_receipt",
  "runtime_text_inputs_live_lane",
  "windows-sys",
 ]
@@ -166,6 +167,7 @@ dependencies = [
  "portable_content_manifest",
  "portable_render_stream",
  "power_balance_presentation_live_lane",
+ "production_hook_receipt",
  "production_render_catalog_live_lane",
  "production_render_submit_live_lane",
  "resolved_tooltip_instances_live_lane",
@@ -234,6 +236,7 @@ name = "country_dynamic_modifiers_live_lane"
 version = "0.1.0"
 dependencies = [
  "minhook",
+ "production_hook_receipt",
  "serde",
  "windows-sys",
 ]
@@ -355,18 +358,19 @@ name = "direct_frd_transitions_live"
 version = "0.1.0"
 dependencies = [
  "minhook",
+ "production_hook_receipt",
  "windows-sys",
 ]
 
 [[package]]
 name = "displaydoc"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
+checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -414,6 +418,9 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 name = "fired_event_popups_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
+ "production_hook_receipt",
+ "scripted_state_flags_variables_live_lane",
  "serde",
  "serde_json",
  "sha2",
@@ -534,6 +541,7 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "minhook",
+ "production_hook_receipt",
  "serde_json",
  "snapshot",
  "windows-sys",
@@ -609,6 +617,7 @@ name = "naval_combat_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "production_hook_receipt",
  "serde",
  "serde_json",
  "sha2",
@@ -727,6 +736,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "production_hook_receipt"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "windows-sys",
+]
+
+[[package]]
 name = "production_render_catalog_capture_contract"
 version = "0.1.0"
 dependencies = [
@@ -755,6 +772,7 @@ dependencies = [
  "png",
  "portable_content_manifest",
  "portable_render_stream",
+ "production_hook_receipt",
  "production_render_catalog_capture_contract",
  "runtime_text_inputs_live_lane",
  "serde",
@@ -875,7 +893,9 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "minhook",
+ "production_hook_receipt",
  "runtime_text_inputs_live_lane",
+ "sha2",
  "windows-sys",
 ]
 
@@ -928,6 +948,7 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "minhook",
+ "production_hook_receipt",
  "serde_json",
  "snapshot",
  "windows-sys",
@@ -987,6 +1008,7 @@ dependencies = [
  "compact_contract",
  "minhook",
  "naval_combat_live_lane",
+ "production_hook_receipt",
  "windows-sys",
 ]
 

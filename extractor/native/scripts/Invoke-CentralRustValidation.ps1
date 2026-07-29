@@ -514,7 +514,7 @@ try {
         }
         $featureSelection = @('--features', 'recorder_host/evidence-client-driving')
     }
-    elseif ($Mode -cne 'Evidence' -and ($Bin | Where-Object { $_ -like '*evidence*' }).Count -gt 0) {
+    elseif ($Mode -cne 'Evidence' -and @($Bin | Where-Object { $_ -like '*evidence*' }).Count -gt 0) {
         throw "evidence binaries are accepted only by the explicit Evidence tier"
     }
 
