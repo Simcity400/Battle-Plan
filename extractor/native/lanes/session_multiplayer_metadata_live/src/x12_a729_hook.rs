@@ -547,7 +547,7 @@ fn seal_after_final_drain_and_uninstall_locked(
                         })
                     });
                 if let Some(reservation) = retained_terminal_reservation {
-                    if let Err(error) = validate_reserved_evidence(state, reservation) {
+                    if let Err(error) = validate_reserved_evidence(&state, reservation) {
                         errors.push(format!(
                             "X12 retained terminal evidence changed before hook release: {error}"
                         ));

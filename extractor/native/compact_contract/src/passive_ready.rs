@@ -745,6 +745,13 @@ pub fn hook_install_outcomes_preimage(
             (
                 true,
                 HookTargetV1::Hoi4Rva {
+                    // The Hoi4Rva *binding* carries no observed module-name digest, so there is
+                    // nothing to compare the allowlisted name digest against here. The module is
+                    // pinned below by exact executable content hash
+                    // (`observed_module_sha256 == PINNED_A729_TARGET_EXECUTABLE_SHA256`), which is
+                    // strictly stronger than a name match. The name digest is still covered by the
+                    // allowlist preimage in `hook_allowlist_preimage`, which rejects a zero digest.
+                    module_name_sha256: _,
                     rva,
                     patch_len,
                     primitive_id_sha256,

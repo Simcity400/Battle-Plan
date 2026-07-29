@@ -1884,9 +1884,9 @@ mod streaming_gap_tests {
                 next_block_index: 0,
                 gaps: writer(0),
             };
-            encoder.observe(10, Some(payload.clone())).unwrap();
+            encoder.observe(10, payload.clone()).unwrap();
             encoder.observe_gap(gap).unwrap();
-            encoder.observe(12, Some(payload.clone())).unwrap();
+            encoder.observe(12, payload.clone()).unwrap();
             encoder.finish().unwrap();
 
             let blocks = sink

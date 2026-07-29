@@ -35,6 +35,15 @@ pub const RECORD_ALLOCATOR_RVA: usize = 0x0CC9_F10;
 pub const TERMINAL_RECORD_VTABLE_RVA: usize = 0x0294_6FB8;
 pub const GAME_DATE_VTABLE_RVA: usize = 0x0270_2388;
 pub const TERMINAL_RECORD_LEN: usize = 0x448;
+/// Byte extent of one MinHook x64 relay stub: the `FF 25 00 00 00 00`
+/// RIP-relative indirect jump followed by its 8-byte absolute destination.
+/// This is the MinHook 0.9.0 trampoline layout, not a hoi4.exe constant, and it
+/// is exactly the width both live-relay verifiers already parse -
+/// `verify_live_minhook_rel5` below and `x2_carriers::observe_live_relay` each
+/// check `stub[..6]` against the `FF25` prefix and decode `stub[6..14]` as the
+/// destination. `x2_carriers::receipt_relay_ranges` uses it as the relay's
+/// extent when it censuses relay address ranges.
+pub(crate) const MINHOOK_RELAY_LEN: usize = 14;
 pub const WRITER_KIND_OVERRUN: u32 = 1;
 pub const WRITER_KIND_NORMAL: u32 = 2;
 
@@ -209,8 +218,8 @@ pub(crate) struct ProcessLifetimeDispatchShim {
     code_len: usize,
 }
 
-unsafe impl Send for ProcessLifetimeDetourShim {}
-unsafe impl Sync for ProcessLifetimeDetourShim {}
+unsafe impl Send for ProcessLifetimeDispatchShim {}
+unsafe impl Sync for ProcessLifetimeDispatchShim {}
 
 impl ProcessLifetimeDispatchShim {
     pub(crate) fn allocate(
@@ -984,7 +993,7 @@ fn verify_live_minhook_rel5(
             "terminal live MinHook relay mismatch (0x{relay:X} != 0x{expected_relay:X})"
         ));
     }
-    let relay_stub = read_exact_bytes(relay, 14)?;
+    let relay_stub = read_exact_bytes(relay, MINHOOK_RELAY_LEN)?;
     if relay_stub[..6] != [0xff, 0x25, 0x00, 0x00, 0x00, 0x00] {
         return Err("terminal live MinHook relay stub mismatch".into());
     }
@@ -2279,4 +2288,283 @@ fn read_exact_bytes(address: usize, len: usize) -> Result<Vec<u8>, String> {
         ));
     }
     Ok(actual)
+}
+
+// ---------------------------------------------------------------------------
+// Process-lifetime detour region retention
+// ---------------------------------------------------------------------------
+//
+// Teardown restores the patched target bytes, then retains the trampoline, the
+// relay and any registered unwind entry for the life of the process. Nothing is
+// freed, so there is nothing to prove quiescent.
+//
+// Why: no cheap evidence exists that no thread is still resident in a detour
+// body, a relay or an unwind path. `D55_NONSUSPENDING_HOOK_FEASIBILITY_20260729.md`
+// records that the quiescent boundary is absent from the recovered static
+// evidence, and this policy routes around that absence instead of manufacturing
+// it. Deleting a function-table entry while a thread is unwinding through it is
+// not survivable, and the recorder may not suspend target threads to rule that
+// out. `production_hook_receipt` already ships the same custody decision for its
+// PE64 import-slot route (`retained_until_process_exit: true`).
+//
+// Accepted cost: one small permanent allocation per hook site - a MinHook
+// trampoline slot plus its relay - held until process exit. That is a bounded,
+// deliberate trade, not a leak: the roster is fixed at ten sites, the
+// allocations are recorded below rather than forgotten, and the process is a
+// game client that exits normally.
+//
+// Consequently `MinHook::remove_hook` must not be called on a retained site: it
+// `FreeBuffer`s the trampoline (minhook-0.9.0 `hook.c` `MH_RemoveHook`), which is
+// exactly the operation this policy forbids. `MinHook::disable_hook` is the
+// permitted step - it restores the original target bytes and frees nothing.
+
+#[repr(C)]
+struct RuntimeFunctionEntry {
+    begin_address: u32,
+    end_address: u32,
+    unwind_data: u32,
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn RtlLookupFunctionEntry(
+        control_pc: u64,
+        image_base: *mut u64,
+        history_table: *mut c_void,
+    ) -> *const RuntimeFunctionEntry;
+}
+
+/// One retained code region, recorded at teardown and never released.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedDetourRegion {
+    pub(crate) label: String,
+    /// Half-open `[start, end)` runtime addresses retained for process lifetime.
+    pub(crate) regions: Vec<(usize, usize)>,
+    /// The observed callback counters all read zero, so the roster is closed to
+    /// new entries. This is necessary but NOT sufficient for absence of
+    /// residency - a thread can sit in an out-of-line guard prologue before its
+    /// counter increment, or in an epilogue after its decrement. That gap is
+    /// precisely why the regions below are retained rather than freed.
+    pub(crate) callbacks_closed_to_new_entries: bool,
+    /// Always true. Retained because residency cannot be disproven.
+    pub(crate) retained_for_process_lifetime: bool,
+}
+
+static RETAINED_DETOUR_REGIONS: OnceLock<Mutex<Vec<RetainedDetourRegion>>> = OnceLock::new();
+
+fn retained_detour_regions_slot() -> &'static Mutex<Vec<RetainedDetourRegion>> {
+    RETAINED_DETOUR_REGIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Every region this process has retained, in retention order. Append-only:
+/// there is deliberately no way to clear it, because a cleared entry would
+/// describe memory that is still reachable by a resident thread.
+pub(crate) fn retained_detour_regions() -> Result<Vec<RetainedDetourRegion>, String> {
+    Ok(retained_detour_regions_slot()
+        .lock()
+        .map_err(|_| "retained detour region registry mutex poisoned".to_string())?
+        .clone())
+}
+
+/// Exact runtime extent of one function inside this DLL, read from the PE64
+/// exception directory via `RtlLookupFunctionEntry`.
+///
+/// This is the containing runtime-function interval only. It is not a
+/// transitive closure over outlined guard code, inlined-away helpers or
+/// callees, so a set of these ranges under-approximates "everywhere a thread
+/// could be executing our detour code". Under process-lifetime retention that
+/// under-approximation is harmless - the ranges are a diagnostic record of what
+/// is being kept, not a gate on a free.
+///
+/// Fails closed when the address carries no `.pdata` entry. On x64 a true leaf
+/// function - one that allocates no stack and calls nothing - is emitted without
+/// an unwind entry, so this refuses rather than inventing a range. Every detour
+/// this lane passes here is an `extern "system"` callback with a real prologue,
+/// which is the shape that always carries an entry; `x2_carriers`'
+/// `every_production_detour_has_a_resolvable_runtime_range` pins that.
+pub(crate) fn exact_runtime_function_range(
+    function: usize,
+    label: &str,
+) -> Result<(usize, usize), String> {
+    if function == 0 {
+        return Err(format!("{label} runtime function address is null"));
+    }
+    let mut image_base = 0u64;
+    let entry =
+        unsafe { RtlLookupFunctionEntry(function as u64, &mut image_base, ptr::null_mut()) };
+    if entry.is_null() || image_base == 0 {
+        return Err(format!(
+            "{label} has no PE64 runtime function entry at 0x{function:X}"
+        ));
+    }
+    let entry = unsafe { &*entry };
+    let base = usize::try_from(image_base)
+        .map_err(|_| format!("{label} runtime function image base does not fit usize"))?;
+    let start = base
+        .checked_add(entry.begin_address as usize)
+        .ok_or_else(|| format!("{label} runtime function start overflowed"))?;
+    let end = base
+        .checked_add(entry.end_address as usize)
+        .ok_or_else(|| format!("{label} runtime function end overflowed"))?;
+    if start >= end || function < start || function >= end {
+        return Err(format!(
+            "{label} runtime function range 0x{start:X}..0x{end:X} does not contain 0x{function:X}"
+        ));
+    }
+    Ok((start, end))
+}
+
+/// Close a detour roster to new entries and retain its code regions for the
+/// life of the process.
+///
+/// This deliberately does NOT assert quiescence, and is named accordingly. It
+/// establishes exactly two things: every supplied callback counter reads zero,
+/// so no new callback can be admitted; and the supplied regions are recorded as
+/// retained. Residency is not disproven and is not claimed to be - see the
+/// module comment above for why that proof is unavailable and why retention is
+/// the answer to its absence.
+pub(crate) fn close_callbacks_and_retain_regions(
+    label: &str,
+    counters: &[&AtomicUsize],
+    regions: &[(usize, usize)],
+) -> Result<RetainedDetourRegion, String> {
+    if counters.is_empty() {
+        return Err(format!("{label} supplied no callback counter to close"));
+    }
+    if regions.is_empty() {
+        return Err(format!("{label} supplied no region to retain"));
+    }
+    for (start, end) in regions {
+        if *start == 0 || start >= end {
+            return Err(format!(
+                "{label} retained region 0x{start:X}..0x{end:X} is not a real range"
+            ));
+        }
+    }
+    for counter in counters {
+        let observed = counter.load(Ordering::Acquire);
+        if observed != 0 {
+            return Err(format!(
+                "{label} still admits callbacks: {observed} active at retention"
+            ));
+        }
+    }
+    let retained = RetainedDetourRegion {
+        label: label.to_string(),
+        regions: regions.to_vec(),
+        callbacks_closed_to_new_entries: true,
+        retained_for_process_lifetime: true,
+    };
+    retained_detour_regions_slot()
+        .lock()
+        .map_err(|_| format!("{label} retained detour region registry mutex poisoned"))?
+        .push(retained.clone());
+    Ok(retained)
+}
+
+#[cfg(test)]
+mod minhook_relay_layout_tests {
+    use super::MINHOOK_RELAY_LEN;
+
+    /// Falsifiable: this fails if `MINHOOK_RELAY_LEN` is ever changed away from
+    /// the stub layout the live-relay verifiers actually parse. Both
+    /// `verify_live_minhook_rel5` and `x2_carriers::observe_live_relay` read
+    /// `MINHOOK_RELAY_LEN` bytes and then index `stub[..6]` for the `FF 25`
+    /// RIP-relative prefix and `stub[6..14]` for the absolute destination, so a
+    /// smaller value panics those slices at runtime and a larger one makes
+    /// `x2_carriers::receipt_relay_ranges` census a relay extent wider than the
+    /// stub, over-reporting the quiescence range.
+    #[test]
+    fn relay_len_covers_exactly_the_ff25_prefix_and_its_absolute_destination() {
+        const FF25_RIP_INDIRECT_PREFIX_LEN: usize = 6;
+        assert_eq!(
+            MINHOOK_RELAY_LEN,
+            FF25_RIP_INDIRECT_PREFIX_LEN + core::mem::size_of::<u64>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod retained_detour_region_tests {
+    use super::{
+        close_callbacks_and_retain_regions, exact_runtime_function_range, retained_detour_regions,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Deliberately non-leaf: it allocates a stack buffer and makes an opaque
+    /// call, so the compiler must emit a prologue and therefore a `.pdata`
+    /// unwind entry. A leaf function would have no entry at all, which is the
+    /// case `exact_runtime_function_range` refuses.
+    #[inline(never)]
+    fn sample_non_leaf_function_in_this_image(seed: usize) -> usize {
+        let mut buffer = [0usize; 8];
+        for (index, slot) in buffer.iter_mut().enumerate() {
+            *slot = seed.wrapping_add(index);
+        }
+        buffer.iter().copied().fold(0usize, usize::wrapping_add)
+            + std::hint::black_box(buffer).len()
+    }
+
+    /// Falsifiable: fails if `exact_runtime_function_range` stops converting the
+    /// image-relative `begin_address`/`end_address` from the PE64 exception
+    /// directory into absolute runtime addresses - for example if the
+    /// `image_base` addition is dropped, or if `begin`/`end` are swapped. Either
+    /// change yields a range that does not contain the queried address, which is
+    /// the containment invariant every caller relies on when it pushes the range
+    /// into the retained-region record.
+    #[test]
+    fn runtime_function_range_is_absolute_and_contains_the_queried_address() {
+        let function = sample_non_leaf_function_in_this_image as usize;
+        let (start, end) = exact_runtime_function_range(function, "sample")
+            .expect("a non-leaf function in this DLL has a PE64 unwind entry");
+        assert!(start < end, "range must be non-empty: {start:X}..{end:X}");
+        assert!(
+            (start..end).contains(&function),
+            "0x{function:X} must lie inside 0x{start:X}..0x{end:X}"
+        );
+        // An image-relative range would be far below any real load address.
+        assert!(start > 0x1_0000, "range must be absolute, got 0x{start:X}");
+    }
+
+    /// Falsifiable: fails if the non-zero callback-counter check is removed or
+    /// weakened. Retention is only honest if the roster is genuinely closed to
+    /// new entries at the moment it is recorded; a build that recorded retention
+    /// while callbacks were still being admitted would return `Ok` here.
+    #[test]
+    fn retention_is_refused_while_callbacks_are_still_admitted() {
+        static BUSY: AtomicUsize = AtomicUsize::new(0);
+        BUSY.store(3, Ordering::Release);
+        let error = close_callbacks_and_retain_regions(
+            "test busy roster",
+            &[&BUSY],
+            &[(0x1000, 0x1010)],
+        )
+        .expect_err("a roster with active callbacks must not be recorded as retained");
+        assert!(error.contains("still admits callbacks"), "{error}");
+        assert!(error.contains('3'), "{error}");
+    }
+
+    /// Falsifiable: fails if the function stops recording retention into the
+    /// append-only registry, or if it ever reports a region as freed rather than
+    /// retained. A build that reintroduced a free path - for instance by calling
+    /// `MinHook::remove_hook` and clearing the registry - would not leave this
+    /// entry behind for inspection.
+    #[test]
+    fn closed_roster_is_recorded_as_retained_for_process_lifetime() {
+        static IDLE: AtomicUsize = AtomicUsize::new(0);
+        let regions = [(0x2000usize, 0x2040usize)];
+        let receipt =
+            close_callbacks_and_retain_regions("test idle roster", &[&IDLE], &regions).unwrap();
+        assert!(receipt.callbacks_closed_to_new_entries);
+        assert!(receipt.retained_for_process_lifetime);
+        assert_eq!(receipt.regions, regions.to_vec());
+        assert!(
+            retained_detour_regions()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.label == "test idle roster"
+                    && entry.retained_for_process_lifetime),
+            "retention must be recorded in the append-only registry"
+        );
+    }
 }

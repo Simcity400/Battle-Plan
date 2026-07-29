@@ -640,7 +640,6 @@ name = "occupation_resistance_compliance_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
- "minhook",
  "windows-sys",
 ]
 
@@ -768,7 +767,6 @@ name = "production_render_submit_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
- "minhook",
  "png",
  "portable_content_manifest",
  "portable_render_stream",
