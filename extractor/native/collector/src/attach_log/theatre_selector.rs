@@ -58,8 +58,8 @@ fn frame_error(message: impl Into<String>) -> lane::CarrierError {
 }
 
 /// Distinguishes "the host never supplied a content identity" from every other
-/// frame-level failure, so the known host wiring gap is legible in the
-/// diagnostics instead of looking like a torn read.
+/// frame-level failure, so a missing or unauthentic control block is legible in
+/// the diagnostics instead of looking like a torn read.
 const NO_CONTENT_IDENTITY: &str = "no authenticated theatre-selector content identity";
 
 // ---------------------------------------------------------------------------
@@ -269,32 +269,40 @@ fn alert_categories_by_theatre(
 /// fifty-mod install authenticate through the same path; the layers are
 /// transported as observed.
 ///
-/// WIRING GAP (known, deliberate, and the reason domain 98 is
-/// `ValidatedSliceOpenGaps` rather than production-complete): the Rust recorder
-/// host does not yet write `d98_theatre_selector_content_identity_v1` into
-/// `collector_control.json`. Until it does, scheduling domain 98 through the
-/// ordinary capture path produces the explicit `SourceUnavailable` form on
-/// every frame -- which is the correct fail-closed outcome, not a silent
-/// degradation, and it is reported through the `d98_fail_no_content_identity`
-/// diagnostic unit rather than being lumped in with other source failures.
-///
-/// To close it the host must emit, from one launch-bound observation:
+/// HOST WIRING (closed): the Rust recorder host writes
+/// `d98_theatre_selector_content_identity_v1` into `collector_control.json`
+/// whenever domain 98 is scheduled against a resolved launch. The producer is
+/// `recorder_host::production_content_vfs::
+/// d98_theatre_selector_content_identity_from_resolved_launch`, which emits,
+/// from one launch-bound observation:
 ///   * `language`: `modset::ModsetReport::localisation_language` (never
-///     defaulted -- absence must fail, not fall back to English);
-///   * `layers`: `base`, then each enabled DLC with its
-///     `DlcDescriptorEvidence::descriptor_file_sha256`, then each entry of
-///     `ModsetReport::enabled_mods` in `dlc_load.json` order with its
-///     `ResolvedMod::content_sha256`;
+///     defaulted -- absence fails, it does not fall back to English);
+///   * `layers`: `base` carrying the pinned executable digest, then each
+///     integrated and enabled DLC with its raw descriptor-file SHA-256, then
+///     each entry of `ModsetReport::enabled_mods` in `dlc_load.json` order with
+///     its `ResolvedMod::content_sha256`;
 ///   * `localization_sha256`: a hash over the *localisation content itself*
-///     under the winning effective VFS for that language. This is the one
-///     input `ModsetReport` does not already carry, and it must not be
-///     substituted with a digest of the layer hashes: two different
-///     localisation file sets can share a layer identity when a layer is
-///     edited in place, and the display names are exactly what this hash is
-///     supposed to bind.
+///     under the winning effective VFS for that language -- every
+///     `localisation/**/*.yml` whose path carries the active language token,
+///     each contributing its logical path, byte length and winning payload
+///     digest. This is the one input `ModsetReport` does not already carry, and
+///     it is deliberately not a digest of the layer hashes: two different
+///     localisation file sets can share a layer identity when a layer is edited
+///     in place, and the display names are exactly what this hash binds.
 ///   * `inventory_sha256`: `sha256(serde_json::to_vec(&layers))`, over the
 ///     layers as ordered.
-fn content_identity(
+///
+/// A launch whose localisation identity would depend on a DLC-versus-DLC
+/// precedence with no established a729 read law is refused host-side rather
+/// than guessed, so a block that arrives here always describes an ordering the
+/// producer could prove.
+///
+/// When the block is absent the domain still fails closed on every frame,
+/// reported through the `d98_fail_no_content_identity` diagnostic unit rather
+/// than being lumped in with other source failures.
+// `pub(super)` so the sibling test module can drive the admitted path of this
+// function directly. Nothing outside the collector body can reach it.
+pub(super) fn content_identity(
     control: &CollectorControl,
 ) -> Result<lane::ContentIdentity, lane::CarrierError> {
     let authority = control

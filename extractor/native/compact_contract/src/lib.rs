@@ -1842,15 +1842,16 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // law and every one of those ships as an explicit unavailable variant. See
     // `theatre_selector_live_lane::UNCAPTURED_CONTROLLER_FIELDS`.
     //
-    // Second open gap: the Rust recorder host does not yet write the
-    // `d98_theatre_selector_content_identity_v1` control block, so scheduling
-    // this domain through the ordinary capture path currently yields the
-    // explicit unavailable form on every frame. That is the correct fail-closed
-    // outcome for a missing content identity -- display names must not be
-    // transported without the mod/DLC/language identity that produced them --
-    // but it does mean the admitted path is not yet reachable in the shipped
-    // product. See the wiring note on `content_identity` in
-    // `collector/src/attach_log/theatre_selector.rs`.
+    // The host wiring gap is CLOSED: the Rust recorder now writes the
+    // `d98_theatre_selector_content_identity_v1` control block whenever this
+    // domain is scheduled against a resolved launch, so the admitted path is
+    // reachable through the ordinary capture path. The block carries the active
+    // localisation language, the ordered mod/DLC layers and a digest over the
+    // localisation content those display names were materialized from; a launch
+    // whose localisation precedence cannot be proven is refused host-side rather
+    // than admitted on a guess. Producer:
+    // `recorder_host::production_content_vfs::
+    // d98_theatre_selector_content_identity_from_resolved_launch`.
     domain(
         98,
         "theatre_selector_live",

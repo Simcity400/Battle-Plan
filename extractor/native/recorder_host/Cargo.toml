@@ -55,6 +55,10 @@ wire_product = { path = "../wire_product" }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
 mimalloc = "0.1.52"
+# Needed to read raw archive entry NAMES (case preserved) for the domain-98
+# localisation case-ambiguity refusal; the effective VFS only exposes normalized
+# lowercase logical paths. Same version/features as the shared content crate.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 collector = { path = "../collector", features = ["test-support"] }
