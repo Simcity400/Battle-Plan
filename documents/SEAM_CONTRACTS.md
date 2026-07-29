@@ -91,6 +91,6 @@ The archived rows are not additional seams. Their current dispositions are:
 | old A15 (counter badges) | The legacy umbrella is retired, but its surviving work is re-filed explicitly as A15-orgmax and X-COUNTER-BIND; CAP6 H1..H5 remains external precedence/fidelity evidence rather than a substitute for per-hour typed inputs |
 | old A16 (combat indicators) | Superseded by M02, `PROVEN` with its portable carrier and exact capture |
 | old A17 (world tension) | Superseded by the exact d57 scalar/details carrier, fold, and strict replay presentation |
-| old A18 (alert sub-counts/feed) | Superseded by d79/TBA1 schema 2 active-alert snapshot plus XUI21-E1 for fired-event chronology; the engine has no per-alert fire-time field |
+| old A18 (alert sub-counts/feed) | The legacy umbrella is retired. Fired-event chronology is XUI21-E1, and the engine has no per-alert fire-time field. The d79/TBA1 schema 2 active-alert snapshot is built but deliberately not installed: `install_a729_hud_role_hooks()` is reached only on the `!passive_product_capture` evidence branch in `extractor/native/collector/src/attach_log.rs`, so the shipped passive path skips it, and d79 is absent from the canonical roster in `ProductionHookLeaseRegistry::install`. That is the intended state: d79 alert capture is one of the re-scoped rows above, deferred because a HUD alert snapshot is one client's presentation state rather than authoritative match state, and the replay derives that panel from authoritative domains at render time |
 
 No undeduplicated legacy row remains open.

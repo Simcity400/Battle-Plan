@@ -59,7 +59,7 @@ byte value itself is the printed status code. The player NAME / player_key /
 session_slot / host / connected flags in the domain-57 schema are NOT sourced
 here (see TARGET 3).
 
-### TARGET 2 -- pause state: VALIDATED (flip unverified); game speed: OPEN
+### TARGET 2 -- pause state: VALIDATED (flip unverified); game speed: VALIDATED
 
 Clock/pause singleton: two adjacent static slots `module+0x33172E0` and
 `module+0x33172E8` both point at the SAME object (vtable rva `0x2952510`).
@@ -73,11 +73,31 @@ reads. The flip to `0` (unpause) is NOT verified because the running game must
 not be disturbed (read-only, no unpause). Confidence: high (static getter + live
 paused oracle).
 
-Game SPEED (0..4) is OPEN: the `gamespeed` console command sets speed as
-`arg-1` (0..4) via `set_speed` (`0x140dcb950`) -> a sub-object obtained from a
-getter call-chain (`0x1401ff6f0`), stored by `0x140202250`. It is NOT a fixed
-offset off a static pointer, so no clean live speed root is pinned yet. Needs a
-speed-getter/chain resolution pass.
+Game SPEED is VALIDATED. The read root is the same CGameState singleton as the
+rest of domain 57 (`DOMAIN57_CGAMESTATE_SINGLETON_RVA`, rva `0x3316E90`), with
+the speed index as an i32 at `+0x4BC` and the informational tick fraction at
+`+0x4B8` (`DOMAIN57_CGAMESTATE_GAME_SPEED_INDEX` /
+`DOMAIN57_CGAMESTATE_TICK_PROGRESS` in
+`extractor/native/compact_contract/src/build_profile.rs`). The `gamespeed`
+console command sets that same index as `arg-1` via `set_speed`
+(`0x140dcb950`).
+
+The five UI speeds 1..=5 map to raw 0..=4. `DOMAIN57_MAX_GAME_SPEED = 4` is a
+fail-closed inclusive ceiling: a word outside `0..=4` is treated as a torn read
+and the game-speed field is badged absent, never coerced to a speed. The lane's
+own `gate_payload` rejects a `GameSpeed` event row whose value is outside
+`0..=4`, and the reader is default-on for the exact 870ebf build
+(`DOMAIN57_GAME_SPEED_READER_DEFAULT_ENABLED`). The provenance comment on
+`DOMAIN57_CGAMESTATE_GAME_SPEED_INDEX` records the live acceptance behind the
+mapping — UI speeds 1..=5 producing raw 0..=4 in order, three bracketed reads
+each, with a running/paused/running sequence at raw 2 for pause orthogonality —
+and names its transcript under `extractor/native/runs/`. That run directory is
+not present in this worktree, so the mapping's acceptance is documented but its
+artifact is not retained here.
+
+What remains open is a fresh current-artifact passive speed-five (raw 4)
+capture: `documents/STATUS.md` claims no current Release receipt and no genuine
+speed-five capture.
 
 ### TARGET 3 -- host/lobby/player metadata: SP-LIMITED (fail closed)
 

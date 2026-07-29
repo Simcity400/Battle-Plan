@@ -4846,7 +4846,9 @@ mod tests {
                     speed_rows: vec![
                         recorder_host::domain_data_authority::Domain57ScalarEvidence {
                             event_hour_raw: 100,
-                            value_i32: 5,
+                            // Raw engine speed index, 0..=4 for the five UI
+                            // speeds; 4 is the top valid value.
+                            value_i32: 4,
                         },
                     ],
                     pause_rows: vec![
