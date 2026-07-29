@@ -2124,9 +2124,78 @@ mod tests {
         sequence: &mut u64,
         tick: i32,
     ) -> ((u64, u64), (u64, u64)) {
+        append_stitched_d81_hour_fixture(out, sequence, tick, false)
+    }
+
+    fn append_stitched_d81_hour_with_country_roster(
+        out: &mut Vec<u8>,
+        sequence: &mut u64,
+        tick: i32,
+    ) -> ((u64, u64), (u64, u64)) {
+        append_stitched_d81_hour_fixture(out, sequence, tick, true)
+    }
+
+    fn append_stitched_d81_hour_fixture(
+        out: &mut Vec<u8>,
+        sequence: &mut u64,
+        tick: i32,
+        include_country_roster: bool,
+    ) -> ((u64, u64), (u64, u64)) {
         let mut perf = vec![0u8; 40];
         perf[32..36].copy_from_slice(&0u32.to_le_bytes());
-        let first = push_stitched_wire_record(
+        let mut first = None;
+        if include_country_roster {
+            first = Some(push_stitched_wire_record(
+                out,
+                *sequence,
+                tick,
+                18,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &perf,
+            ));
+            *sequence += 1;
+            // One complete single-country D18 roster. `wire_product::build`
+            // decodes this stream, but the bytes are also kept canonical for the
+            // recorder's own seal-time authority in `domain_data_authority`:
+            // an available CIM1 major status obliges exactly one major row per
+            // roster country, so an all-zero 32-byte tail (major_count = 0
+            // against a one-country roster) would be refused there as an
+            // incomplete major roster even though the laxer product-side
+            // extension check accepts it.
+            let mut countries = Vec::new();
+            countries.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
+            countries.extend_from_slice(&1u32.to_le_bytes()); // row_count
+            countries.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+            countries.extend_from_slice(&0u32.to_le_bytes()); // status: success
+            countries.extend_from_slice(&1u32.to_le_bytes()); // country source id
+            countries.extend_from_slice(&3u16.to_le_bytes());
+            countries.extend_from_slice(b"TST");
+            countries.push(1); // cosmetic marker: no cosmetic override
+            countries.extend_from_slice(b"CIM1");
+            countries.extend_from_slice(&1u16.to_le_bytes()); // CIM1 version
+            countries.extend_from_slice(&40u16.to_le_bytes()); // CIM1 header len
+            countries.extend_from_slice(&0u32.to_le_bytes()); // claims status
+            countries.extend_from_slice(&0u32.to_le_bytes()); // cores status
+            countries.extend_from_slice(&0u32.to_le_bytes()); // major status
+            countries.extend_from_slice(&0u32.to_le_bytes()); // membership states
+            countries.extend_from_slice(&0u32.to_le_bytes()); // expected claims
+            countries.extend_from_slice(&0u32.to_le_bytes()); // expected cores
+            countries.extend_from_slice(&1u32.to_le_bytes()); // major rows
+            countries.extend_from_slice(&0u32.to_le_bytes()); // reserved
+            countries.extend_from_slice(&1u32.to_le_bytes()); // major row: country
+            countries.push(0); // major row: not a major power
+            countries.extend_from_slice(&[0, 0, 0]);
+            push_stitched_wire_record(
+                out,
+                *sequence,
+                tick,
+                18,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &countries,
+            );
+            *sequence += 1;
+        }
+        let d81_first = push_stitched_wire_record(
             out,
             *sequence,
             tick,
@@ -2134,6 +2203,7 @@ mod tests {
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
             &perf,
         );
+        let first = first.unwrap_or(d81_first);
         *sequence += 1;
         let province = compact_contract::rail_replay::RailProvinceState {
             province_id: 1,
@@ -2179,85 +2249,41 @@ mod tests {
             tick,
             compact_contract::COMPACT_DOMAIN_FRAME,
             compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
-            &stitched_wire_frame_end_payload(1, 0),
+            &stitched_wire_frame_end_payload(if include_country_roster { 2 } else { 1 }, 0),
         );
         *sequence += 1;
         (first, last)
     }
 
-    fn append_stitched_no_d81_hour(
+    fn append_stitched_d81_gap(
         out: &mut Vec<u8>,
         sequence: &mut u64,
-        tick: i32,
+        gap: compact_contract::DomainGapRecordV1,
     ) -> ((u64, u64), (u64, u64)) {
-        let mut perf = vec![0u8; 40];
-        perf[32..36].copy_from_slice(&0u32.to_le_bytes());
+        let tick = gap.target_hour_raw;
         let first = push_stitched_wire_record(
             out,
             *sequence,
             tick,
-            18,
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
-            &perf,
-        );
-        *sequence += 1;
-        push_stitched_wire_record(
-            out,
-            *sequence,
-            tick,
-            18,
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &[],
-        );
-        *sequence += 1;
-        let last = push_stitched_wire_record(
-            out,
-            *sequence,
-            tick,
-            compact_contract::COMPACT_DOMAIN_FRAME,
-            compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
-            &stitched_wire_frame_end_payload(1, 0),
-        );
-        *sequence += 1;
-        (first, last)
-    }
-
-    fn append_stitched_d81_coalesced_gap(
-        out: &mut Vec<u8>,
-        sequence: &mut u64,
-        first_tick: i32,
-        closed_tick: i32,
-    ) -> ((u64, u64), (u64, u64)) {
-        let observed = u64::try_from(closed_tick - first_tick + 1).unwrap();
-        let gap = compact_contract::GapRecord {
-            hour_start: first_tick,
-            hour_end: closed_tick,
-            reason: compact_contract::GapReason::Coalesced,
-            domains: vec![compact_contract::rail_replay::DOMAIN_ID],
-            witness: compact_contract::GapWitness::Counter {
-                counter: compact_contract::GapCounter::CoalescedHours,
-                observed,
-            },
-        };
-        let first = push_stitched_wire_record(
-            out,
-            *sequence,
-            closed_tick,
             compact_contract::rail_replay::DOMAIN_ID,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
-            &compact_contract::encode_gap_record(&gap).unwrap(),
+            &gap.encode().unwrap(),
         );
         *sequence += 1;
         let last = push_stitched_wire_record(
             out,
             *sequence,
-            closed_tick,
+            tick,
             compact_contract::COMPACT_DOMAIN_FRAME,
             compact_contract::COMPACT_RECORD_TYPE_FRAME_END,
             &stitched_wire_frame_end_payload(1, 0),
         );
         *sequence += 1;
         (first, last)
+    }
+
+    fn stitched_valid_hour(offset: i32) -> i32 {
+        compact_contract::calendar::DATE_EPOCH_CONST + 1936 * 365 * 24 + offset
     }
 
     fn stitch_inputs() -> StitchRequiredInputs {
@@ -2649,15 +2675,57 @@ mod tests {
             .contains("stored SHA-256 differs"));
     }
 
+    // Falsifiability: changing rebuilt-wire origin derivation to ignore initial
+    // authenticated D81 H4DG coverage makes the first-tick assertions fail.
     #[test]
-    fn stitched_branch_origin_uses_initial_coalesced_h4dg_coverage() {
+    fn stitched_branch_origin_uses_initial_authenticated_h4dg_coverage() {
+        let h0 = stitched_valid_hour(0);
+        let h2 = stitched_valid_hour(2);
+        let h3 = stitched_valid_hour(3);
+        let h2_width = u64::try_from(h2 - h0 + 1).unwrap();
         let mut stream = Vec::new();
         let mut sequence = 1u64;
-        append_stitched_d81_coalesced_gap(&mut stream, &mut sequence, 0, 2);
-        append_stitched_d81_hour(&mut stream, &mut sequence, 3);
+        let h2_first_sequence = sequence;
+        let (h2_first, h2_last) = append_stitched_d81_gap(
+            &mut stream,
+            &mut sequence,
+            compact_contract::DomainGapRecordV1 {
+                part: compact_contract::DomainGapPart::State,
+                reason: compact_contract::DomainGapReason::Overrun,
+                target_hour_raw: h2,
+                range_start_hour_raw: h0,
+                range_end_hour_raw: h2,
+                tick_before: 0,
+                tick_after: h2_width,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: 0,
+            },
+        );
+        let h2_last_sequence = sequence - 1;
+        let h3_first_sequence = sequence;
+        let (h3_first, h3_last) = append_stitched_d81_hour(&mut stream, &mut sequence, h3);
+        let h3_last_sequence = sequence - 1;
         let digest = Sha256::hex(&stream);
 
-        let mut segment = snap_seg(0, 2..=3);
+        let mut segment = snap_seg(0, i64::from(h2)..=i64::from(h3));
+        let h2_observation = segment
+            .observations
+            .get_mut(&i64::from(h2))
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        h2_observation.record_seq_bounds = (h2_first_sequence, h2_last_sequence);
+        h2_observation.byte_bounds = (h2_first.0, h2_last.1);
+        let h3_observation = segment
+            .observations
+            .get_mut(&i64::from(h3))
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        h3_observation.record_seq_bounds = (h3_first_sequence, h3_last_sequence);
+        h3_observation.byte_bounds = (h3_first.0, h3_last.1);
         segment.provenance.source_stored_digest = Some(digest.clone());
         segment.provenance.source_decoded_digest = Some(digest.clone());
         segment.provenance.record_seq_bounds = Some((1, sequence - 1));
@@ -2699,8 +2767,8 @@ mod tests {
         };
         let (branches, routes, first_ticks) =
             derive_rebuilt_wire_plan_from_sessions(&plan, &[session]).unwrap();
-        assert_eq!(branches[0].first_tick, 0);
-        assert_eq!(first_ticks.get(&0), Some(&0));
+        assert_eq!(branches[0].first_tick, u64::try_from(h0).unwrap());
+        assert_eq!(first_ticks.get(&0), Some(&u64::try_from(h0).unwrap()));
         assert!(
             derive_rebuilt_wire_leading_gaps(&plan, &routes, &first_ticks)
                 .unwrap()
@@ -2709,14 +2777,53 @@ mod tests {
         );
     }
 
+    // Falsifiability: changing retained H4CR refolding to derive D81 observations or
+    // gaps outside the exact selected records makes the exact counts or receipt check fail.
     #[test]
     fn stitched_retained_selection_directly_refolds_exact_descriptors_and_gaps() {
+        let h9 = stitched_valid_hour(9);
+        let h10 = stitched_valid_hour(10);
+        let h11 = stitched_valid_hour(11);
+        let h12 = stitched_valid_hour(12);
         let mut stream = Vec::new();
         let mut sequence = 1u64;
-        append_stitched_d81_hour(&mut stream, &mut sequence, 9);
-        let (first, _) = append_stitched_d81_hour(&mut stream, &mut sequence, 10);
-        append_stitched_no_d81_hour(&mut stream, &mut sequence, 11);
-        let (_, last) = append_stitched_no_d81_hour(&mut stream, &mut sequence, 12);
+        append_stitched_d81_hour(&mut stream, &mut sequence, h9);
+        let (first, _) =
+            append_stitched_d81_hour_with_country_roster(&mut stream, &mut sequence, h10);
+        append_stitched_d81_gap(
+            &mut stream,
+            &mut sequence,
+            compact_contract::DomainGapRecordV1 {
+                part: compact_contract::DomainGapPart::State,
+                reason: compact_contract::DomainGapReason::ClockUnreadable,
+                target_hour_raw: h11,
+                range_start_hour_raw: h11,
+                range_end_hour_raw: h11,
+                tick_before: 0,
+                tick_after: 0,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: 0,
+            },
+        );
+        let (_, last) = append_stitched_d81_gap(
+            &mut stream,
+            &mut sequence,
+            compact_contract::DomainGapRecordV1 {
+                part: compact_contract::DomainGapPart::State,
+                reason: compact_contract::DomainGapReason::WorkerPanic,
+                target_hour_raw: h12,
+                range_start_hour_raw: h12,
+                range_end_hour_raw: h12,
+                tick_before: 0,
+                tick_after: 0,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: 1,
+            },
+        );
         let selection = wire_product::H4crSelection {
             first_sequence: 4,
             last_sequence: sequence - 1,
@@ -2741,13 +2848,13 @@ mod tests {
         let branches = [wire_product::BranchSpec {
             branch: 0,
             parent: None,
-            first_tick: 9,
+            first_tick: u64::try_from(h9).unwrap(),
             session_fingerprint: session.stored_sha256,
         }];
         let leading = [wire_product::D81LeadingGap::new(
             0,
-            9,
-            10,
+            u64::try_from(h9).unwrap(),
+            u64::try_from(h10).unwrap(),
             wire_product::D81LeadingGapKind::ExplicitGap,
         )
         .unwrap()];
@@ -2791,7 +2898,10 @@ mod tests {
         .unwrap();
         assert_eq!(verified.branches[0].state_observations, 1);
         assert_eq!(verified.branches[0].gap_hours, 3);
-        assert_eq!(verified.branches[0].last_tick, 12);
+        assert_eq!(
+            verified.branches[0].last_tick,
+            u64::try_from(h12).unwrap()
+        );
 
         let bad_session = OwnedStitchedWireSession {
             selection: wire_product::H4crSelection {
@@ -2806,7 +2916,7 @@ mod tests {
             stored_sha256: session.stored_sha256,
         };
         let bad_sessions = borrowed_wire_sessions(std::slice::from_ref(&bad_session));
-        assert!(wire_product::verify_entry_source_against_h4cr(
+        let error = wire_product::verify_entry_source_against_h4cr(
             &descriptors,
             |path| {
                 fs::read(artifacts.get(path).unwrap()).map_err(|error| error.to_string())
@@ -2817,9 +2927,11 @@ mod tests {
             &bad_sessions,
             &leading,
         )
-        .unwrap_err()
-        .to_string()
-        .contains("byte end disagrees with last sequence"));
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "H4CR selection byte end disagrees with last sequence"
+        );
     }
 
     /// The plan -> pack -> read round-trip on a multi-segment synthetic session:

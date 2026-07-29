@@ -12,14 +12,20 @@ use std::path::{Path, PathBuf};
 const MANIFEST_ALLOW_LIST: &str =
     "# production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure";
 
+// Both status predicates read `decoded.status_flags`, never `header.status_flags`.
+// That spelling is the decode-before-status order this policy exists to pin:
+// d81 decodes the RRL1 payload first and judges status only from the decode
+// result, so a payload that fails to decode can never be silently reclassified
+// as a status outcome. The allow-list previously named the `header.` spelling,
+// which no production line has ever used.
 const ADMITTED_PRODUCTION_LINES: [(&str, usize); 3] = [
     ("use compact_contract::rail_replay as compact;", 1),
     (
-        "let unknown = compact_contract::compact_status_unknown_flags_v1(header.status_flags);",
+        "let unknown = compact_contract::compact_status_unknown_flags_v1(decoded.status_flags);",
         1,
     ),
     (
-        "if compact_contract::compact_status_is_failure(header.status_flags) {",
+        "if compact_contract::compact_status_is_failure(decoded.status_flags) {",
         1,
     ),
 ];

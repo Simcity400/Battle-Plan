@@ -1915,6 +1915,21 @@ mod tests {
         )
     }
 
+    /// A FRAME_END that declares its own emitted/scheduled domain count, for the
+    /// cases that must reach a rule beyond the seal arithmetic.
+    fn frame_end_with_domain_counts(sequence: u64, hour: i32, domains: u32) -> Vec<u8> {
+        let mut payload = [0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
+        payload[16..20].copy_from_slice(&domains.to_le_bytes());
+        payload[20..24].copy_from_slice(&domains.to_le_bytes());
+        record(
+            sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &payload,
+        )
+    }
+
     fn one_hour(payload: &[u8]) -> Vec<u8> {
         let status = u32::from_le_bytes(payload[12..16].try_into().unwrap());
         [perf(1, 10, status), data(2, 10, payload), frame_end(3, 10)].concat()
@@ -2073,14 +2088,22 @@ mod tests {
         )
         .unwrap_err()
         .contains("open at EOF"));
-        assert!(scan_stream(
-            &frame_end(1, 10),
-            &symbols(),
-            StreamIdentityMode::Legacy,
-            "test"
-        )
-        .unwrap_err()
-        .contains("does not close"));
+        // A FRAME_END with nothing open. The shared `frame_end` helper declares
+        // emitted=scheduled=1, so a lone one of those is refused earlier and for
+        // a different reason -- "disagrees with PERF domains" -- and never
+        // reaches the open-hour check this line is here to pin. Declaring zero
+        // domains satisfies the seal arithmetic and leaves the open-hour rule as
+        // the only thing that can reject the record.
+        assert_eq!(
+            scan_stream(
+                &frame_end_with_domain_counts(1, 10, 0),
+                &symbols(),
+                StreamIdentityMode::Legacy,
+                "test"
+            )
+            .unwrap_err(),
+            "FRAME_END at byte 0 does not close its open hour"
+        );
         let skipped_sequence = [perf(2, 10, 0), data(3, 10, &clean), frame_end(4, 10)].concat();
         assert!(scan_stream(
             &skipped_sequence,
@@ -2431,9 +2454,17 @@ mod tests {
         .unwrap_err()
         .contains("H4CR digest"));
 
+        // A DIFFERENT but internally valid finalized manifest. The localisation
+        // language is an input to `computed_selection_sha256`, so changing it
+        // invalidates the recorded selection digest; `with_computed_digest`
+        // validates that selection before computing the manifest digest and was
+        // right to refuse. Recompute the selection first, so this arrives at
+        // `validate_capture_authority` as a well-formed foreign manifest and the
+        // refusal below is about session binding rather than a malformed input.
         let mut other = manifest.clone();
         other.localisation_language = "l_french".into();
         other.manifest_digest_sha256 = None;
+        other.source_profile.selection_sha256 = other.computed_selection_sha256().unwrap();
         other = other.with_computed_digest().unwrap();
         assert!(validate_capture_authority(
             &session,

@@ -1139,6 +1139,8 @@ fn authenticated_h4dg_torn_gap_preserves_tick_witness_and_rebaselines() {
     );
 }
 
+// Falsifiability: mapping authenticated overrun and sink-backpressure H4DG
+// outcomes to the same shared counter makes the exact witness assertion fail.
 #[test]
 fn authenticated_h4dg_overrun_and_backpressure_use_distinct_shared_counters() {
     use compact_contract::{DomainGapReason, DomainGapRecordV1};
@@ -1157,9 +1159,9 @@ fn authenticated_h4dg_overrun_and_backpressure_use_distinct_shared_counters() {
         let mut stream = Vec::new();
         let mut sequence = 1;
         append_d81_hour(&mut stream, &mut sequence, h0, 0, 0);
-        let (queue_capacity, queue_depth, queue_dropped) = match reason {
-            DomainGapReason::Overrun => (0, 0, 0),
-            DomainGapReason::Backpressure => (8, 8, 2),
+        let (tick_before, tick_after, queue_capacity, queue_depth, queue_dropped) = match reason {
+            DomainGapReason::Overrun => (100, 102, 0, 0, 0),
+            DomainGapReason::Backpressure => (100, 100, 8, 8, 2),
             _ => unreachable!(),
         };
         append_d81_gap_hour(
@@ -1171,8 +1173,8 @@ fn authenticated_h4dg_overrun_and_backpressure_use_distinct_shared_counters() {
                 target_hour_raw: h2,
                 range_start_hour_raw: valid_hour(1),
                 range_end_hour_raw: h2,
-                tick_before: 100,
-                tick_after: 102,
+                tick_before,
+                tick_after,
                 queue_capacity,
                 queue_depth,
                 queue_dropped,
@@ -1435,6 +1437,8 @@ fn authenticated_h4dg_ordinals_are_exact_zero_based_per_domain_part() {
     }
 }
 
+// Falsifiability: sharing H4DG ordinal state across domains or parts rejects
+// the independent D18 State/Event/Both ordinal-zero outcomes in this stream.
 #[test]
 fn authenticated_h4dg_parts_have_independent_per_domain_outcome_lanes() {
     use compact_contract::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
@@ -1468,6 +1472,23 @@ fn authenticated_h4dg_parts_have_independent_per_domain_outcome_lanes() {
                 outcome_ordinal: 0,
             },
         );
+        push_d81_gap_record(
+            &mut stream,
+            &mut sequence,
+            DomainGapRecordV1 {
+                part: DomainGapPart::State,
+                reason: DomainGapReason::Torn,
+                target_hour_raw: tick,
+                range_start_hour_raw: tick,
+                range_end_hour_raw: tick,
+                tick_before: 500,
+                tick_after: 501,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: offset as u64,
+            },
+        );
         push_h4cr_record(
             &mut stream,
             sequence,
@@ -1475,7 +1496,7 @@ fn authenticated_h4dg_parts_have_independent_per_domain_outcome_lanes() {
             COMPACT_DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_END,
             0,
-            &frame_end_payload(1, 1, 0),
+            &frame_end_payload(2, 2, 0),
         );
         sequence += 1;
     }

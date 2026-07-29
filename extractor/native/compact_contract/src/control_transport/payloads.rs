@@ -1167,11 +1167,16 @@ mod tests {
     fn passive_capture_ready_rejects_noncanonical_header_reserved_flags_and_tag() {
         let token = b"per-attach CSPRNG token";
         let wire = ready_fields().encode_authenticated(token).unwrap();
+        // A declared-length mutation has to actually change the encoded value.
+        // CAPTURE_READY_LEN is 512, so the low bytes of its little-endian u16
+        // at offset 6 and u32 at offset 8 are already 0x00: overwriting them
+        // with 0 left the wire byte-identical, and the decoder was right to
+        // return the canonical payload. Writing 1 declares 513 in both fields.
         let mutations: &[(usize, u8, PayloadError)] = &[
             (0, b'X', PayloadError::InvalidMagic),
             (4, 1, PayloadError::UnsupportedVersion(1)),
-            (6, 0, PayloadError::InvalidDeclaredLength),
-            (8, 0, PayloadError::InvalidDeclaredLength),
+            (6, 1, PayloadError::InvalidDeclaredLength),
+            (8, 1, PayloadError::InvalidDeclaredLength),
             (20, 1, PayloadError::NonZeroReserved),
             (50, 1, PayloadError::NonZeroReserved),
         ];

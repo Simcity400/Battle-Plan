@@ -2225,6 +2225,22 @@ mod tests {
         }
     }
 
+    /// A session id no other test in this process has already claimed.
+    ///
+    /// `SessionCapability::claim` retains every claimed id for the life of the
+    /// process, so a literal shared by two tests in the same lib-test binary
+    /// makes one of them lose the race and fail with `SessionAlreadyClaimed` --
+    /// the correct production refusal, aimed at the wrong thing. Production
+    /// endpoints live in separate processes and each claims its per-attach id
+    /// exactly once, so only the fixture needs this.
+    fn unique_test_session_bytes() -> [u8; 16] {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(1);
+        let mut bytes = [0xA7u8; 16];
+        bytes[..4].copy_from_slice(&NEXT.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+        bytes
+    }
+
     fn accept(prepared: PreparedAutoAttachDuplex<MockBackend>) -> DuplexWorkerSession<MockIo> {
         prepared
             .commit_single_injection(|_listener_ready, _authority| Ok(()))
@@ -2418,11 +2434,10 @@ mod tests {
             ControlCapabilities::from_bits(ControlCapabilities::CAMPAIGN_IDENTITY).unwrap()
         ));
         let mut remaining_required_bits = required.bits();
-        let mut index = 0u8;
         while remaining_required_bits != 0 {
             let missing = 1u32 << remaining_required_bits.trailing_zeros();
             remaining_required_bits &= !missing;
-            let session_bytes = [0xC0 + index; 16];
+            let session_bytes = unique_test_session_bytes();
             let session_id = SessionId::from_bytes(session_bytes).unwrap();
             let advertised = ControlCapabilities::from_bits(required.bits() & !missing).unwrap();
             let wire = encode_frame(
@@ -2441,15 +2456,14 @@ mod tests {
                 Err(DuplexWorkerError::CollectorHello(_))
             ));
             assert_eq!(session.state(), DuplexWorkerState::Failed);
-            index += 1;
         }
 
         for (session_bytes, payload) in [
             (
-                [0xD0; 16],
+                unique_test_session_bytes(),
                 super::super::proof::collector_hello_payload(&expectation()),
             ),
-            ([0xD1; 16], {
+            (unique_test_session_bytes(), {
                 let mut payload = super::super::proof::collector_hello_with_capabilities_payload(
                     &expectation(),
                     required,
@@ -2457,7 +2471,7 @@ mod tests {
                 payload[68..72].copy_from_slice(&(1u32 << 31).to_le_bytes());
                 payload
             }),
-            ([0xD2; 16], {
+            (unique_test_session_bytes(), {
                 let advertised = ControlCapabilities::from_bits(
                     required.bits() | ControlCapabilities::EARLY_RENDER,
                 )
@@ -2467,7 +2481,7 @@ mod tests {
                     advertised,
                 )
             }),
-            ([0xD3; 16], {
+            (unique_test_session_bytes(), {
                 let advertised =
                     ControlCapabilities::from_bits(required.bits() | ControlCapabilities::STAGE_B)
                         .unwrap();
@@ -2885,7 +2899,7 @@ mod tests {
     /// word, i.e. everything admission judges — passes through untouched.
     #[test]
     fn real_collector_client_hello_is_admitted_by_the_worker_session() {
-        let client_session = [0xD1; 16];
+        let client_session = unique_test_session_bytes();
         let bytes = real_collector_client_hello_bytes(client_session);
 
         // The client framed exactly one CollectorHello at ITS sequence 0.
@@ -2908,7 +2922,7 @@ mod tests {
         assert_eq!(observed, required_auto_attach_duplex_capabilities());
 
         // Full REAL worker-session admission over the identical payload.
-        let worker_session = [0xD2; 16];
+        let worker_session = unique_test_session_bytes();
         let worker_sid = SessionId::from_bytes(worker_session).unwrap();
         let inbound =
             encode_frame(worker_sid, 0, MessageKind::CollectorHello, &frame.payload).unwrap();

@@ -5590,9 +5590,20 @@ mod tests {
 
         let summary = scan_compact_stream(&raw);
         let errors = compact_domain_coverage_errors(&summary, &[10]);
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("fuel_live data_record_count 0 != 1")));
+        // The exact message the current terminal-outcome model emits. The old
+        // probe looked for `fuel_live data_record_count 0 != 1`, wording that
+        // belonged to the pre-terminal-outcome coverage counter and that
+        // production emits nowhere -- a `.contains` check for a string no code
+        // path produces is not coverage, it is a permanently red assertion.
+        // Pinning the whole message also pins WHY the hour is rejected: an
+        // accepted PERF outcome obliges exactly one subordinate DATA record.
+        assert_eq!(
+            errors,
+            vec![
+                "game_hour_raw 100: compact domain fuel_live DATA is nonterminal and must be present exactly once only with an accepted PERF outcome; observed DATA=0, expected 1"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

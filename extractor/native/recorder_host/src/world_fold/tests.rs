@@ -32,8 +32,12 @@ fn d81_v3_fold_keeps_raw_simulation_inputs_and_rejects_presentation_era_v2() {
         pov_country_id: 7,
         province_id: 42,
         province_owner_country_id: 9,
+        // The engine admits exactly two (subtype, route_class) pairs -- (0, 2)
+        // and (1, 1) -- per `compact_contract::rail_replay`'s hub-simulation
+        // validation and the collector read that produces them. (1, 2) is not a
+        // row any capture can carry, so the encoder was right to refuse it.
         subtype: 1,
-        route_class: 2,
+        route_class: 1,
         node_kind: 5,
         node_flag: 1,
         available_raw: 1_250_000,
@@ -94,27 +98,35 @@ fn d81_v3_fold_keeps_raw_simulation_inputs_and_rejects_presentation_era_v2() {
     assert_eq!(rail["derived_visual_frames_captured"], json!(false));
     assert!(rail.get("hub_frames").is_none());
 
-    let legacy = compact_contract::rail_replay::encode_payload_with_hub_frames(
-        &[],
-        &[compact_contract::rail_replay::RailHubFrameState {
-            province_id: 42,
-            subtype: 1,
-            background_button_frame: 5,
-            common_icon_frame: 4,
-            naval_overlay_visible: true,
-        }],
-        11,
-        0,
-        0,
-        0,
-    )
-    .unwrap();
+    // A historical v2 presentation-cache payload, built byte-exactly rather
+    // than through `encode_payload_with_hub_frames`. That encoder is gated on
+    // `HUB_FRAME_V2_ENCODER_PROMOTED`, which is deliberately `false`: the v2
+    // cached-frame source is UI-owned and is not a production authority, so the
+    // contract retains v2 for DECODING historical evidence only and refuses to
+    // mint it. `decode_payload` below is the proof this really is a v2 payload
+    // the fold could be handed, not a shape invented for the test.
+    let mut legacy = vec![0u8; compact_contract::rail_replay::HEADER_LEN];
+    legacy[..4].copy_from_slice(b"RRL1");
+    legacy[4..6].copy_from_slice(&compact_contract::rail_replay::PAYLOAD_VERSION_V2.to_le_bytes());
+    legacy[6..8]
+        .copy_from_slice(&(compact_contract::rail_replay::HEADER_LEN as u16).to_le_bytes());
+    legacy[8..10].copy_from_slice(&(compact_contract::rail_replay::ROW_LEN as u16).to_le_bytes());
+    legacy[32..36].copy_from_slice(
+        &compact_contract::rail_replay::PAYLOAD_FLAG_HUB_FRAMES_COMPLETE.to_le_bytes(),
+    );
+    let decoded_legacy = compact_contract::rail_replay::decode_payload(&legacy).unwrap();
+    assert_eq!(
+        decoded_legacy.payload_version,
+        compact_contract::rail_replay::PAYLOAD_VERSION_V2
+    );
+    assert!(decoded_legacy.hub_frames_complete);
+    assert!(!decoded_legacy.hub_simulation_complete);
     let error = fold
         .fold_rail_replay_state(&legacy)
         .expect_err("legacy presentation cache must not enter production fold");
-    assert!(
-        error.contains("requires v3 raw supply-simulation authority"),
-        "{error}"
+    assert_eq!(
+        error,
+        "rail_replay_state RRL1 rejected: production recorder requires v3 raw supply-simulation authority"
     );
 }
 
