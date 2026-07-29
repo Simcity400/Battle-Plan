@@ -29,6 +29,12 @@ pub const EARLY_DIAGNOSTIC_COM_SELECTOR_WIRE_MASK: u64 =
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
 pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 1_800_000;
+/// Process-environment key the recorder writes into a diagnostic child and the
+/// collector reads back to cross-check its control-block staged-hook
+/// selection. Both ends previously spelled this key as their own literal; it
+/// is a two-party agreement, so it lives with the rest of the early-render
+/// control contract.
+pub const DIAGNOSTIC_STAGE_MASK_ENV: &str = "BATTLE_PLAN_XN15L_DIAGNOSTIC_STAGE_MASK";
 
 /// Typed staged-hook inventory selected for one early-render run.
 ///

@@ -2903,7 +2903,10 @@ mod windows {
 
     fn build_diagnostic_environment_block(mask: u64) -> Result<Vec<u16>, String> {
         staged_hook_count_for_group_mask(mask)?;
-        let diagnostic_key = "BATTLE_PLAN_XN15L_DIAGNOSTIC_STAGE_MASK";
+        // Same constant the collector reads back to cross-check its control
+        // block; the key is a two-party agreement, not a local literal.
+        let diagnostic_key =
+            compact_contract::early_render_control::DIAGNOSTIC_STAGE_MASK_ENV;
         let mut entries = std::env::vars_os()
             .filter(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case(diagnostic_key))
             .collect::<Vec<_>>();
