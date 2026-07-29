@@ -1,9 +1,9 @@
-// Exact-a729 process-local observers for the proven A39 refresh/bind roots.
-//
-// This module intentionally stops before production activation. The callbacks
-// retain only short-lived process-local pointers for an authenticated decoder;
-// no pointer is representable in CPR1. The source remains unauthenticated
-// until the post-hook receipt and required mixed fixtures are admitted.
+//! Exact-a729 process-local observers for the proven A39 refresh/bind roots.
+//!
+//! This module intentionally stops before production activation. The hooks
+//! retain only short-lived process-local pointers for an authenticated decoder;
+//! no pointer is representable in CPR1. The source remains unauthenticated
+//! until the post-hook receipt and required mixed fixtures are admitted.
 
 use crate::{
     validate_snapshot, AceListContext, AcePortraitObservation, CharacterPresentationSnapshot,
@@ -12,6 +12,7 @@ use crate::{
 };
 use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
+use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
     HookPatchPlacement, HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
@@ -31,6 +32,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -191,6 +193,7 @@ const CALLBACK_ACE_REFRESH: u8 = 1 << 1;
 const CALLBACK_ACE_BIND: u8 = 1 << 2;
 const CALLBACK_SPRITE_SET: u8 = 1 << 3;
 const CALLBACK_TRAIT_TOOLTIP_FORMATTER: u8 = 1 << 4;
+const CALLBACK_QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct CallbackEpoch;
 
@@ -908,10 +911,14 @@ pub struct HookDiagnostics {
 
 /// Production entry point. It cannot install until the evidence gate changes.
 pub fn install() -> Result<InstalledAddresses, String> {
-    Err(
-        "A39 production hook activation is not authorized; use the capture harness entry point"
-            .into(),
-    )
+    if !PRODUCTION_ACTIVATION_AUTHORIZED {
+        return Err(
+            "A39 production hook activation is not authorized; use the capture harness entry point"
+                .into(),
+        );
+    }
+    register_decoder(collector_boundary_decoder())?;
+    install_hook_set(true)
 }
 
 #[derive(Clone, Debug)]
@@ -1002,6 +1009,25 @@ pub struct CharacterPresentationCandidateReservation {
     pub snapshot: CharacterPresentationSnapshot,
 }
 
+/// Explicit harness-only entry point for collecting the receipts and mixed
+/// fixtures required to promote d82. Every root is sentinel-gated before any
+/// detour is created, and partial installation is rolled back.
+#[cfg(feature = "a729-fixture-hook")]
+pub fn install_for_fixture_capture(
+    decoder: Arc<dyn ExactA729BoundaryDecoder>,
+) -> Result<InstalledAddresses, String> {
+    register_decoder(decoder)?;
+    let result = install_hook_set(false);
+    if result.is_err() && !HOOK_SET_PRESENT.load(Ordering::Acquire) {
+        if let Some(slot) = FIXTURE_DECODER.get() {
+            if let Ok(mut slot) = slot.lock() {
+                *slot = None;
+            }
+        }
+    }
+    result
+}
+
 fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), String> {
     let slot = FIXTURE_DECODER.get_or_init(|| Mutex::new(None));
     {
@@ -1019,16 +1045,240 @@ fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), St
     Ok(())
 }
 
+fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, String> {
+    let _install_guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A39 install mutex poisoned")?;
+    if INSTALLED.load(Ordering::Acquire)
+        && LIFECYCLE_HEALTHY.load(Ordering::Acquire)
+        && MODULE_BASE.load(Ordering::Acquire) != 0
+        && originals_ready()
+    {
+        let resolved = addresses(MODULE_BASE.load(Ordering::Acquire));
+        if production_receipts {
+            if local_installed_hook_receipts_available() {
+                reobserve_local_install_receipts(resolved)?;
+            } else {
+                observe_install_receipts(resolved)?;
+            }
+        }
+        return Ok(resolved);
+    }
+    if HOOK_SET_PRESENT.load(Ordering::Acquire) {
+        return Err(
+            "A39 hook set is lifecycle-poisoned; complete uninstall before reinstalling".into(),
+        );
+    }
+    if FIXTURE_DECODER
+        .get()
+        .and_then(|slot| slot.lock().ok())
+        .and_then(|slot| slot.as_ref().cloned())
+        .is_none()
+    {
+        return Err("A39 fixture decoder is not registered".into());
+    }
+    if production_receipts {
+        ensure_receipt_install_admissible()?;
+    }
+    let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
+    if base == 0 {
+        return Err("A39 GetModuleHandleW(NULL) returned null".into());
+    }
+    let resolved = addresses(base);
+    for (address, sentinel, label) in [
+        (
+            resolved.trait_refresh,
+            &TRAIT_REFRESH_SENTINEL[..],
+            "trait refresh",
+        ),
+        (
+            resolved.ace_refresh,
+            &ACE_REFRESH_SENTINEL[..],
+            "ace refresh",
+        ),
+        (
+            resolved.ace_row_bind,
+            &ACE_ROW_BIND_SENTINEL[..],
+            "ace row bind",
+        ),
+        (
+            resolved.trait_tooltip_formatter,
+            &TRAIT_TOOLTIP_FORMATTER_SENTINEL[..],
+            "trait tooltip formatter",
+        ),
+    ] {
+        verify_sentinel(address, sentinel, label)?;
+    }
+    let mut shared_runtime_guard = SharedRuntimeObserverGuard::begin(base)?;
+    register_pre_setter_observer(a39_pre_text_setter_observer)
+        .map_err(|error| format!("A39 shared A25 pre-setter observer failed: {error}"))?;
+    register_post_setter_observer(a39_post_text_setter_observer)
+        .map_err(|error| format!("A39 shared A25 post-setter observer failed: {error}"))?;
+    register_sprite_setter_observer(a39_sprite_setter_observer)
+        .map_err(|error| format!("A39 shared sprite observer failed: {error}"))?;
+    let state = STATE.get_or_init(|| Mutex::new(HookState::default()));
+    *state.lock().map_err(|_| "A39 hook state poisoned")? = HookState::default();
+    MODULE_BASE.store(base, Ordering::Release);
+    LIFECYCLE_HEALTHY.store(false, Ordering::Release);
+    let specs = [
+        (
+            resolved.trait_refresh,
+            hook_trait_refresh as *mut c_void,
+            &ORIGINAL_TRAIT_REFRESH,
+        ),
+        (
+            resolved.ace_refresh,
+            hook_ace_refresh as *mut c_void,
+            &ORIGINAL_ACE_REFRESH,
+        ),
+        (
+            resolved.ace_row_bind,
+            hook_ace_row_bind as *mut c_void,
+            &ORIGINAL_ACE_ROW_BIND,
+        ),
+        (
+            resolved.trait_tooltip_formatter,
+            hook_trait_tooltip_formatter as *mut c_void,
+            &ORIGINAL_TRAIT_TOOLTIP_FORMATTER,
+        ),
+    ];
+    HOOK_SET_PRESENT.store(true, Ordering::Release);
+    for (target, detour, original) in specs {
+        match unsafe { MinHook::create_hook(target as *mut c_void, detour) } {
+            Ok(value) => {
+                original.store(value as usize, Ordering::Release);
+            }
+            Err(status) => {
+                TEARDOWN_ACTIVE.store(true, Ordering::Release);
+                HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+                let rollback = disable_and_remove(resolved);
+                if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+                    clear_removed_hook_set();
+                }
+                return Err(match rollback.error {
+                    Some(rollback_error) => {
+                        format!("A39 {target:#x} hook creation failed: {status}; rollback anomaly: {rollback_error}")
+                    }
+                    None => format!("A39 {target:#x} hook creation failed: {status}"),
+                });
+            }
+        }
+    }
+    for target in targets(resolved) {
+        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+            TEARDOWN_ACTIVE.store(true, Ordering::Release);
+            HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+            let rollback = disable_and_remove(resolved);
+            if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+                clear_removed_hook_set();
+            }
+            return Err(match rollback.error {
+                Some(rollback_error) => {
+                    format!("A39 {target:#x} hook enable failed: {status}; rollback anomaly: {rollback_error}")
+                }
+                None => format!("A39 {target:#x} hook enable failed: {status}"),
+            });
+        }
+    }
+    if production_receipts {
+        if let Err(error) = observe_install_receipts(resolved) {
+            TEARDOWN_ACTIVE.store(true, Ordering::Release);
+            HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+            let rollback = disable_and_remove(resolved);
+            let partial_release_error =
+                if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+                    release_partial_local_install_receipts().err()
+                } else {
+                    None
+                };
+            if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+                clear_removed_hook_set();
+            }
+            if let Some(partial_release_error) = partial_release_error {
+                return Err(format!(
+                    "A39 exact installed-hook receipt failed: {error}; partial receipt rollback failed: {partial_release_error}"
+                ));
+            }
+            return Err(match rollback.error {
+                Some(rollback_error) => {
+                    format!("A39 exact installed-hook receipt failed: {error}; rollback anomaly: {rollback_error}")
+                }
+                None => format!("A39 exact installed-hook receipt failed: {error}"),
+            });
+        }
+    }
+    *state.lock().map_err(|_| "A39 hook state poisoned")? = HookState::default();
+    HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+    INSTALLED.store(true, Ordering::Release);
+    LIFECYCLE_HEALTHY.store(true, Ordering::Release);
+    shared_runtime_guard.disarm();
+    Ok(resolved)
+}
+
 pub fn uninstall() -> Result<(), String> {
-    if HOOK_SET_PRESENT.load(Ordering::Acquire)
-        || INSTALLED.load(Ordering::Acquire)
-        || MODULE_BASE.load(Ordering::Acquire) != 0
-        || originals_ready()
+    let _install_guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A39 install mutex poisoned")?;
+    if !HOOK_SET_PRESENT.load(Ordering::Acquire) {
+        // Hook restoration may have succeeded while receipt observation
+        // failed. Preserve retryable custody instead of silently converting
+        // that failure into success on the next teardown call.
+        observe_local_release_receipts_if_owned()?;
+        release_partial_local_install_receipts()?;
+        return Ok(());
+    }
+    let resolved = addresses(MODULE_BASE.load(Ordering::Acquire));
+    // Close admission before inspecting reservation custody. A reserving
+    // caller rechecks these gates while holding STATE, so it cannot enter
+    // after this transition.
+    TEARDOWN_ACTIVE.store(true, Ordering::Release);
+    INSTALLED.store(false, Ordering::Release);
+    LIFECYCLE_HEALTHY.store(false, Ordering::Release);
+    HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+    if STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.component_reservation.as_ref().map(|_| true))
+        .unwrap_or(false)
     {
         return Err(
-            "A39 default production build observed impossible local hook custody; refuse teardown"
-                .into(),
+            "A39 teardown refused while component publication custody is unresolved".into(),
         );
+    }
+    ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
+    unregister_a39_shared_observers();
+    let removal = disable_and_remove(resolved);
+    let in_flight = IN_FLIGHT_CALLBACKS.load(Ordering::Acquire);
+    let release_receipt_error = if removal.all_removed && in_flight == 0 {
+        observe_local_release_receipts_if_owned()
+            .and_then(|_| release_partial_local_install_receipts())
+            .err()
+    } else {
+        None
+    };
+    if removal.all_removed && in_flight == 0 {
+        clear_removed_hook_set();
+        if let Some(state) = STATE.get() {
+            *state.lock().map_err(|_| "A39 hook state poisoned")? = HookState::default();
+        }
+    }
+    if let Some(error) = removal.error {
+        // Keep the trampolines and module base intact: a failed disable/remove
+        // may have left a detour callable unless every remove succeeded.
+        return Err(error);
+    }
+    if let Some(error) = release_receipt_error {
+        return Err(format!(
+            "A39 local hooks were restored but exact release receipt failed: {error}"
+        ));
+    }
+    if in_flight != 0 {
+        return Err(format!(
+            "A39 teardown has {in_flight} in-flight callback(s); retry uninstall after quiescence"
+        ));
+    }
+    if !removal.all_removed {
+        return Err("A39 hook removal was incomplete without a MinHook status".into());
     }
     Ok(())
 }
@@ -2758,6 +3008,72 @@ fn originals_ready() -> bool {
     ]
     .into_iter()
     .all(|original| original.load(Ordering::Acquire) != 0)
+}
+
+struct HookRemovalOutcome {
+    error: Option<String>,
+    all_removed: bool,
+}
+
+fn disable_and_remove(addresses: InstalledAddresses) -> HookRemovalOutcome {
+    let mut first_error = None;
+    let mut all_removed = true;
+    let mut disable_failed = false;
+    for target in targets(addresses) {
+        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            Err(status) => {
+                disable_failed = true;
+                first_error.get_or_insert_with(|| {
+                    format!("A39 {target:#x} hook disable failed: {status}")
+                });
+            }
+        }
+    }
+    if disable_failed {
+        return HookRemovalOutcome {
+            error: first_error,
+            all_removed: false,
+        };
+    }
+    if let Err(error) = wait_for_callback_quiescence(CALLBACK_QUIESCE_TIMEOUT) {
+        first_error.get_or_insert(error);
+        return HookRemovalOutcome {
+            error: first_error,
+            all_removed: false,
+        };
+    }
+    for target in targets(addresses) {
+        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
+            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            Err(status) => {
+                all_removed = false;
+                first_error.get_or_insert_with(|| {
+                    format!("A39 {target:#x} hook removal failed: {status}")
+                });
+            }
+        }
+    }
+    HookRemovalOutcome {
+        error: first_error,
+        all_removed,
+    }
+}
+
+fn wait_for_callback_quiescence(timeout: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        let in_flight = IN_FLIGHT_CALLBACKS.load(Ordering::Acquire);
+        if in_flight == 0 {
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            return Err(format!(
+                "A39 teardown timed out with {in_flight} in-flight callback(s); removal deferred"
+            ));
+        }
+        std::thread::yield_now();
+    }
 }
 
 fn clear_removed_hook_set() {
