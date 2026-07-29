@@ -416,6 +416,32 @@ pub fn status_in_production_profile(status: CompactDomainStatus) -> bool {
     )
 }
 
+/// Domains that carry a production-profile status but that the shipped passive
+/// product refuses to admit.
+///
+/// Production-profile status and passive-product admissibility are two different
+/// questions, and they were previously answered by two authorities that did not
+/// know about each other: `domain_roster` derived its roster purely from
+/// schedulable + production status, while the collector refused these domains at
+/// attach time. The roster therefore always requested a domain the collector was
+/// guaranteed to reject, so every live passive capture failed closed before it
+/// could publish a ready receipt. Anything that builds a passive-product roster
+/// must filter through `passive_production_admits`.
+///
+/// - D71 `dynamic_collection_trace_live`: its only current source is the
+///   noncanonical A28 auxiliary hook owner, which the passive product does not
+///   install.
+/// - D82 `character_presentation_live`: presentation observation, which is
+///   excluded from capture.
+pub const PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS: &[CompactDomainId] = &[71, 82];
+
+/// Whether the shipped passive product can admit this domain. A domain in the
+/// production profile is not automatically admissible; see
+/// [`PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`].
+pub fn passive_production_admits(id: CompactDomainId) -> bool {
+    !PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS.contains(&id)
+}
+
 pub fn is_optional_fail_closed_companion(id: CompactDomainId) -> bool {
     OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS.contains(&id)
 }

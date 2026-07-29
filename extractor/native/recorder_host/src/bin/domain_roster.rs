@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
-    assigned_descriptor_by_id, domain_status_registry_key, status_in_production_profile,
-    CompactDomainId,
+    assigned_descriptor_by_id, domain_status_registry_key, passive_production_admits,
+    status_in_production_profile, CompactDomainId,
 };
 
 fn usage() -> ! {
@@ -104,7 +104,15 @@ fn main() {
             ));
         }
 
-        if schedulable && status_in_production_profile(descriptor.status) {
+        // Production-profile status is not admissibility. The collector refuses
+        // a few production-profile domains outright in the shipped passive
+        // product, and emitting them here produced a roster that every live
+        // passive capture was guaranteed to reject at attach time. The refusal
+        // set is owned by compact_contract so this cannot drift again.
+        if schedulable
+            && status_in_production_profile(descriptor.status)
+            && passive_production_admits(id)
+        {
             roster.insert(id, (name, descriptor.wire_name));
         }
     }
