@@ -19,8 +19,8 @@ use core::ptr;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released,
-    observe_released_set, ExpectedRvaHook, HookTeardownAttestation, InstalledRvaHookReceipt,
-    ReleasedRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    observe_released_set, ExpectedRvaHook, HookTeardownAttestation, InstallAbortDiscard,
+    InstalledRvaHookReceipt, ReleasedRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1540,15 +1540,46 @@ fn reserve_full_terminal_drain_locked(
 
 pub fn commit_sealed_terminal_reservation(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal sealed commit")?;
+    consume_sealed_terminal_reservation(reservation_id, "commit").map(|_| ())
+}
+
+/// Discards the sealed terminal carrier of a production install that could not
+/// finish, and resolves the release custody the hooks already left behind.
+///
+/// [`seal_and_reserve_all_for_uninstall`] has already restored the three
+/// detours and published their release receipts by the time this runs, so this
+/// half only decides the fate of the reserved records. Commit means the sink
+/// accepted them; this means the roster never became installable, so there is
+/// no terminal frame to accept them and the exact reserved prefix is dropped
+/// with a count. Neither half can run without a matching sealed reservation.
+pub fn abort_sealed_terminal_reservation(
+    reservation_id: u64,
+) -> Result<InstallAbortDiscard, String> {
+    let _individual = try_admit_individual_api("terminal sealed install abort")?;
+    consume_sealed_terminal_reservation(reservation_id, "install abort")
+}
+
+/// Seals, physically releases and then discards the whole D55 terminal carrier
+/// in one step, for a production hook registry that could not complete its
+/// install.
+pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
+    let reservation = seal_and_reserve_all_for_uninstall()?;
+    abort_sealed_terminal_reservation(reservation.reservation_id)
+}
+
+fn consume_sealed_terminal_reservation(
+    reservation_id: u64,
+    label: &str,
+) -> Result<InstallAbortDiscard, String> {
     let _guard = INSTALL_LOCK
         .lock()
-        .map_err(|_| "terminal sealed commit mutex poisoned".to_string())?;
+        .map_err(|_| format!("terminal sealed {label} mutex poisoned"))?;
     let state_mutex = STATE
         .get()
-        .ok_or_else(|| "terminal hook state is unavailable during sealed commit".to_string())?;
+        .ok_or_else(|| format!("terminal hook state is unavailable during sealed {label}"))?;
     let mut state = state_mutex
         .lock()
-        .map_err(|_| "terminal hook state mutex poisoned during sealed commit".to_string())?;
+        .map_err(|_| format!("terminal hook state mutex poisoned during sealed {label}"))?;
     let active = matching_sealed_reservation(&state, reservation_id)?;
     validate_reserved_diagnostics(active, reservation_id)?;
     if state.records.len() < active.record_count {
@@ -1557,17 +1588,23 @@ pub fn commit_sealed_terminal_reservation(reservation_id: u64) -> Result<(), Str
     let mut receipts = HOOK_RECEIPTS
         .get_or_init(|| Mutex::new(HookReceiptState::default()))
         .lock()
-        .map_err(|_| "terminal hook receipt mutex poisoned during sealed commit".to_string())?;
+        .map_err(|_| format!("terminal hook receipt mutex poisoned during sealed {label}"))?;
     complete_released_receipts(&receipts)?;
     if receipts.release_delivery_committed {
         return Err("terminal sealed release delivery was already committed".into());
     }
+    let discard = InstallAbortDiscard {
+        retained_rows: active.record_count as u64,
+        reserved_rows: active.record_count as u64,
+        discarded_diagnostics: active.diagnostics.iter().copied().sum(),
+        poisoned: active.diagnostics.iter().any(|count| *count != 0),
+    };
     state.records.drain(..active.record_count);
     subtract_reserved_diagnostics(active);
     state.reservation = None;
     receipts.release_delivery_committed = true;
     MODULE_BASE.store(0, Ordering::Release);
-    Ok(())
+    Ok(discard)
 }
 
 pub fn rollback_sealed_terminal_reservation(reservation_id: u64) -> Result<(), String> {

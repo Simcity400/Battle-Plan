@@ -27,7 +27,7 @@ use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
-    HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    HookTeardownAttestation, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
     MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::collections::HashMap;
@@ -587,6 +587,51 @@ pub fn uninstall() -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    uninstall_locked(None)
+}
+
+/// Discards every retained D45 producer observation and removes the hook set,
+/// for the single case where the production hook registry could not finish
+/// installing its canonical roster.
+///
+/// This is the abort half of the terminal transaction whose commit half is
+/// [`commit_terminal_batch_and_uninstall`]. A partial install can never build
+/// the terminal DATA frame that commit publishes into, so the retained prefix
+/// has no destination and is dropped here — explicitly, with an exact count,
+/// and only after callbacks have been disabled and quiesced. Nothing about
+/// physical hook removal is relaxed: byte restoration, prefix verification and
+/// release-receipt observation run exactly as they do on the normal path.
+pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
+    let mut discard = InstallAbortDiscard::default();
+    uninstall_locked(Some(&mut discard))?;
+    Ok(discard)
+}
+
+/// Records and clears every retained producer custody so a following physical
+/// teardown is not refused by the custody guard.
+///
+/// Callers must have disabled the hook set and waited for callback quiescence
+/// first; otherwise a live callback can append behind the clear.
+fn discard_install_abort_custody_locked(state: &mut HookState) -> InstallAbortDiscard {
+    let discard = InstallAbortDiscard {
+        retained_rows: state.pending_rows.len() as u64,
+        reserved_rows: state
+            .reservation
+            .map_or(0, |reservation| reservation.row_count as u64),
+        discarded_diagnostics: u64::from(state.terminal_custody.is_some()),
+        poisoned: state.current_error.is_some(),
+    };
+    state.pending_rows.clear();
+    state.reservation = None;
+    state.terminal_custody = None;
+    state.current_error = None;
+    discard
+}
+
+fn uninstall_locked(mut discard: Option<&mut InstallAbortDiscard>) -> Result<(), String> {
     if failed_install_cleanup_required() {
         return Err(
             "D45 failed-install hook custody requires retry_failed_install_cleanup".into(),
@@ -626,9 +671,12 @@ pub fn uninstall() -> Result<(), String> {
     QUIESCED.store(true, Ordering::Release);
     wait_for_callback_quiescence()?;
     if let Some(state) = STATE.get() {
-        let state = state
+        let mut state = state
             .lock()
             .map_err(|_| "D45 direct hook state mutex poisoned during teardown accounting")?;
+        if let Some(discard) = discard.as_mut() {
+            **discard = discard_install_abort_custody_locked(&mut state);
+        }
         if !state.pending_rows.is_empty()
             || state.reservation.is_some()
             || state.terminal_custody.is_some()
@@ -2439,6 +2487,40 @@ mod tests {
         let after_rollback = peek_batch_locked(&mut state, 7, false).unwrap();
         assert_eq!(after_rollback.batch.rows, retry.batch.rows);
         assert_eq!(after_rollback.batch.drain_sequence, retry.batch.drain_sequence);
+    }
+
+    #[test]
+    fn install_abort_discard_clears_every_custody_the_teardown_guard_refuses() {
+        let mut state = HookState::fresh();
+        let row = test_focus_row(&mut state, 12);
+        state.capture(row).unwrap();
+        let reservation = peek_batch_locked(&mut state, 7, false).unwrap();
+        assert_eq!(reservation.batch.rows.len(), 1);
+        state.current_error = Some("D45 producer poisoned".into());
+        seal_terminal_custody_locked(&mut state).unwrap();
+
+        let discard = discard_install_abort_custody_locked(&mut state);
+
+        assert_eq!(discard.retained_rows, 1);
+        assert_eq!(discard.reserved_rows, 1);
+        assert_eq!(discard.discarded_diagnostics, 1);
+        assert!(discard.poisoned);
+        assert!(!discard.is_empty());
+        // Every clause of the `uninstall_locked` custody guard must now be
+        // false; anything left set makes physical teardown refuse forever.
+        assert!(state.pending_rows.is_empty());
+        assert!(state.reservation.is_none());
+        assert!(state.terminal_custody.is_none());
+        assert!(state.current_error.is_none());
+    }
+
+    #[test]
+    fn install_abort_discard_reports_nothing_when_no_observation_was_retained() {
+        let mut state = HookState::fresh();
+
+        let discard = discard_install_abort_custody_locked(&mut state);
+
+        assert!(discard.is_empty());
     }
 
     #[test]

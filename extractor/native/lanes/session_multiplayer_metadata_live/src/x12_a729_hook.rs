@@ -9,7 +9,7 @@ use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
-    HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    HookTeardownAttestation, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
     MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::cell::Cell;
@@ -417,7 +417,24 @@ pub fn install() -> Result<InstalledAddresses, String> {
 }
 
 pub fn uninstall() -> Result<(), String> {
-    seal_after_final_drain_and_uninstall_inner(None)
+    seal_after_final_drain_and_uninstall_inner(None, None)
+}
+
+/// Discards every retained D57 mutation and removes the three detours, for the
+/// single case where the production hook registry could not finish installing
+/// its canonical roster.
+///
+/// This is the abort half of the transaction whose commit half is
+/// [`commit_terminal_batch_and_uninstall`]. A partially installed roster can
+/// never assemble the terminal DATA frame that commit publishes into, so the
+/// sealed prefix has nowhere to go and is discarded with an exact count. The
+/// physical half is unchanged: admission close, disable, quiescence wait,
+/// receipt-owned removal and release-receipt observation all still run, and any
+/// of them failing still fails this abort.
+pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
+    let mut discard = InstallAbortDiscard::default();
+    seal_after_final_drain_and_uninstall_inner(None, Some(&mut discard))?;
+    Ok(discard)
 }
 
 /// Close the callback admission gate, remove all three detours, and prove that
@@ -429,20 +446,40 @@ pub fn uninstall() -> Result<(), String> {
 /// that entered before the close to finish, and only then examines the queue
 /// and sticky error state.  Any such late mutation is a terminal capture error.
 pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
-    seal_after_final_drain_and_uninstall_inner(None)
+    seal_after_final_drain_and_uninstall_inner(None, None)
 }
 
 fn seal_after_final_drain_and_uninstall_inner(
     retained_terminal_reservation_id: Option<u64>,
+    discard: Option<&mut InstallAbortDiscard>,
 ) -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "X12 hook lifecycle mutex poisoned".to_string())?;
-    seal_after_final_drain_and_uninstall_locked(retained_terminal_reservation_id)
+    seal_after_final_drain_and_uninstall_locked(retained_terminal_reservation_id, discard)
+}
+
+/// Records and clears every retained D57 evidence custody so the teardown
+/// guard below does not refuse an aborted partial install forever.
+///
+/// Callers must already have closed admission and waited for callback
+/// quiescence; otherwise a live callback can append behind the clear.
+fn discard_install_abort_custody_locked(state: &mut HookState, discard: &mut InstallAbortDiscard) {
+    discard.retained_rows = state.pending.len() as u64;
+    discard.reserved_rows = state
+        .reservation
+        .map_or(0, |reservation| reservation.transition_count as u64);
+    discard.discarded_diagnostics = u64::from(state.pending_baseline.is_some());
+    discard.poisoned |= state.current_error.is_some();
+    state.pending.clear();
+    state.pending_baseline = None;
+    state.reservation = None;
+    state.current_error = None;
 }
 
 fn seal_after_final_drain_and_uninstall_locked(
     retained_terminal_reservation_id: Option<u64>,
+    mut discard: Option<&mut InstallAbortDiscard>,
 ) -> Result<(), String> {
     let was_installed = INSTALLED.swap(false, Ordering::AcqRel);
     let base = MODULE_BASE.load(Ordering::Acquire);
@@ -530,12 +567,25 @@ fn seal_after_final_drain_and_uninstall_locked(
         return Err(errors.join("; "));
     }
     if CALLBACK_FATAL.load(Ordering::Acquire) {
-        errors.push("X12 callback admission/state failed during final teardown".into());
+        match discard.as_mut() {
+            // An install abort has no capture to poison: record the latch and
+            // clear it so the aborted roster leaves no sticky state behind.
+            Some(discard) => {
+                discard.poisoned = true;
+                CALLBACK_FATAL.store(false, Ordering::Release);
+            }
+            None => {
+                errors.push("X12 callback admission/state failed during final teardown".into())
+            }
+        }
     }
     let mut pending_custody = false;
     match STATE.get() {
         Some(state) => match state.lock() {
-            Ok(state) => {
+            Ok(mut state) => {
+                if let Some(discard) = discard.as_mut() {
+                    discard_install_abort_custody_locked(&mut state, discard);
+                }
                 if let Some(error) = &state.current_error {
                     errors.push(format!("X12 final hook state failed: {error}"));
                 }
@@ -822,7 +872,7 @@ pub fn commit_terminal_batch_and_uninstall(reservation_id: u64) -> Result<(), St
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
         .map_err(|_| "X12 hook lifecycle mutex poisoned".to_string())?;
-    seal_after_final_drain_and_uninstall_locked(Some(reservation_id))?;
+    seal_after_final_drain_and_uninstall_locked(Some(reservation_id), None)?;
     update_reservation(reservation_id, EvidenceReservationKind::Terminal, true)
 }
 
@@ -1680,6 +1730,36 @@ mod tests {
                 && expected.primitive_id == MINHOOK_NORMAL_REL5_PRIMITIVE_ID
                 && expected.original_prefix.len() == 16
         }));
+    }
+
+    #[test]
+    fn install_abort_discard_clears_every_custody_the_teardown_guard_refuses() {
+        let mut state = HookState::fresh();
+        state.pending_baseline = Some(SpeedPauseBaseline {
+            game_hour_raw: 10,
+            speed_raw: 2,
+            paused: false,
+            tick_progress_f32_bits: 0x3e80_0000,
+            thread_id: 7,
+        });
+        state.pending.push_back(transition(1, 3));
+        state.pending.push_back(transition(2, 4));
+        reserve_pending_evidence(&mut state, EvidenceReservationKind::Delivery).unwrap();
+        state.current_error = Some("X12 producer poisoned".into());
+        let mut discard = InstallAbortDiscard::default();
+
+        discard_install_abort_custody_locked(&mut state, &mut discard);
+
+        assert_eq!(discard.retained_rows, 2);
+        assert_eq!(discard.reserved_rows, 2);
+        assert_eq!(discard.discarded_diagnostics, 1);
+        assert!(discard.poisoned);
+        // Every clause of the teardown custody guard must now be false, or the
+        // aborted partial install can never physically release its hooks.
+        assert!(state.pending.is_empty());
+        assert!(state.pending_baseline.is_none());
+        assert!(state.reservation.is_none());
+        assert!(state.current_error.is_none());
     }
 
     #[test]

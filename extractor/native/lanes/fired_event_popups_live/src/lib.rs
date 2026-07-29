@@ -237,6 +237,30 @@ impl A729EventLedger {
         }
     }
 
+    /// Drops every retained fired-event row and reports what was discarded.
+    ///
+    /// This exists only for the production install abort: a partially
+    /// installed hook roster can never assemble the terminal DATA frame these
+    /// rows would have been published into, so they are dropped explicitly and
+    /// counted rather than left as unresolved custody blocking hook removal.
+    pub(crate) fn discard_retained_rows(&self) -> production_hook_receipt::InstallAbortDiscard {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let telemetry = state.telemetry.clone();
+        let discard = production_hook_receipt::InstallAbortDiscard {
+            retained_rows: state.rows.len() as u64,
+            reserved_rows: 0,
+            discarded_diagnostics: telemetry
+                .dropped_fire_rows
+                .saturating_add(telemetry.dropped_resolution_rows)
+                .saturating_add(telemetry.correlation_failures)
+                .saturating_add(telemetry.invalid_definition_joins)
+                .saturating_add(telemetry.fired_ledger_shadow_mismatches),
+            poisoned: !telemetry.zero_gap(),
+        };
+        state.rows.clear();
+        discard
+    }
+
     /// Marks the facts proved by successful atomic installation of the pinned
     /// hook roster. `materialisation_hook_installed` is literal: canonical
     /// semantic-only production passes false, while the explicitly unshipped

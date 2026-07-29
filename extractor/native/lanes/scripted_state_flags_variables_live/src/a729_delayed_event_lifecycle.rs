@@ -10,7 +10,7 @@ use core::{cell::RefCell, ffi::c_void, mem, ptr};
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
-    HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    HookTeardownAttestation, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
     MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use sha2::{Digest, Sha256};
@@ -1016,6 +1016,47 @@ pub fn seal_drain_and_uninstall() -> Result<LifecycleDrain, String> {
         return Err("A19 D64 teardown requires the issued D75 detach authority".into());
     }
     seal_drain_and_uninstall_locked()
+}
+
+/// Seals, drains and removes the D64 hook pair for a production hook registry
+/// that could not complete its install, discarding the drained lifecycle
+/// events instead of publishing them.
+///
+/// The D75 producer edge must already be closed: the caller unregisters the
+/// A19 dispatch observer and releases the XUI21 semantic hooks first, so this
+/// drain cannot race a live synchronous dispatch. If a D75 terminal detach
+/// authority was ever issued, this refuses — that capture owns the transition
+/// and must finish it through the authenticated terminal or abort path.
+pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A19 teardown lock poisoned")?;
+    if detach_authority_active()? {
+        return Err(
+            "A19 D64 install abort refuses an issued D75 detach authority; the authenticated \
+             terminal custody owns this transition"
+                .into(),
+        );
+    }
+    if DISPATCH_OBSERVER_REGISTERED.load(Ordering::Acquire) {
+        return Err(
+            "A19 D64 install abort requires the D75 dispatch observer to be unregistered first"
+                .into(),
+        );
+    }
+    let drain = seal_drain_and_uninstall_locked()?;
+    Ok(InstallAbortDiscard {
+        retained_rows: drain.events.len() as u64,
+        reserved_rows: 0,
+        discarded_diagnostics: drain
+            .diagnostics
+            .dropped_reentrant
+            .saturating_add(drain.diagnostics.dropped_unreadable)
+            .saturating_add(drain.diagnostics.dropped_correlation)
+            .saturating_add(drain.diagnostics.dropped_overflow)
+            .saturating_add(drain.diagnostics.dropped_lock_busy),
+        poisoned: drain.diagnostics.completeness_poisoned,
+    })
 }
 
 fn seal_drain_and_uninstall_locked() -> Result<LifecycleDrain, String> {

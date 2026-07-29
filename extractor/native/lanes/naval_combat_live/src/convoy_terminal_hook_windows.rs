@@ -14,7 +14,7 @@ use core::ffi::c_void;
 use core::ptr;
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_rel32_callsite, observe_released, ExpectedRvaHook,
-    HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    HookTeardownAttestation, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
     D90_REL32_CALLSITE_PRIMITIVE_ID,
 };
 use serde::Serialize;
@@ -966,6 +966,46 @@ pub fn commit_convoy_transport_attack_payload(reservation_id: u64) -> Result<(),
 
 pub fn rollback_convoy_transport_attack_payload(reservation_id: u64) -> Result<(), String> {
     rollback_convoy_terminal_events(reservation_id)
+}
+
+/// Seals, restores and discards the whole D90 carrier for a production hook
+/// registry that could not complete its install.
+///
+/// The normal teardown only consumes an empty sealed payload, because a
+/// non-empty one is owed to the terminal DATA frame. A partial install has no
+/// terminal frame and never will, so a non-empty payload is discarded here with
+/// an exact row count rather than refused forever. The physical half — callsite
+/// restoration, quiescence and release-receipt observation — is the same seal
+/// the normal path uses, and a failed discard rolls the reservation back so the
+/// exact carrier stays retryable.
+pub fn abort_partial_install_and_uninstall(
+    max_events: usize,
+) -> Result<InstallAbortDiscard, String> {
+    let reservation = seal_and_drain_convoy_transport_attack_payload(max_events)
+        .map_err(|error| format!("D90 install abort seal failed: {error:?}"))?;
+    let Some(reservation) = reservation else {
+        // The lane held no installed lease; nothing to discard, and the seal
+        // has already finalized any release-only custody.
+        return Ok(InstallAbortDiscard::default());
+    };
+    let decoded = match crate::decode_convoy_transport_attack_batch(&reservation.payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            let _ = rollback_convoy_transport_attack_payload(reservation.reservation_id);
+            return Err(format!("D90 install abort decode failed: {error:?}"));
+        }
+    };
+    let discard = InstallAbortDiscard {
+        retained_rows: decoded.rows.len() as u64,
+        reserved_rows: decoded.rows.len() as u64,
+        discarded_diagnostics: 0,
+        poisoned: !decoded.exact_events_complete,
+    };
+    if let Err(error) = commit_convoy_transport_attack_payload(reservation.reservation_id) {
+        let _ = rollback_convoy_transport_attack_payload(reservation.reservation_id);
+        return Err(format!("D90 install abort discard failed: {error}"));
+    }
+    Ok(discard)
 }
 
 fn encode_convoy_transport_attack_drain(

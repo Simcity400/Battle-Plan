@@ -291,6 +291,46 @@ pub struct HookTeardownAttestation {
     pub relay_freed: bool,
 }
 
+/// Exact accounting of the lane-retained observations a production install
+/// abort discarded.
+///
+/// An install abort is the only transition allowed to consume producer custody
+/// without a sink publication, and it exists solely because a partially
+/// installed production roster can never produce an H4RD frame to publish
+/// into. Every lane abort entry point returns this so the discard is recorded
+/// and reported rather than silently swallowed: a non-zero `retained_rows`
+/// means real observations were dropped, which is correct for an aborted
+/// install and is never correct for a capture that actually ran.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InstallAbortDiscard {
+    /// Producer rows/records/events retained by the lane and discarded here.
+    pub retained_rows: u64,
+    /// Rows that were already inside an uncommitted reservation.
+    pub reserved_rows: u64,
+    /// Non-zero drop/poison diagnostic counters discarded with the rows.
+    pub discarded_diagnostics: u64,
+    /// The lane held a sticky producer error or poisoned completeness latch.
+    pub poisoned: bool,
+}
+
+impl InstallAbortDiscard {
+    pub const fn is_empty(&self) -> bool {
+        self.retained_rows == 0
+            && self.reserved_rows == 0
+            && self.discarded_diagnostics == 0
+            && !self.poisoned
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.retained_rows = self.retained_rows.saturating_add(other.retained_rows);
+        self.reserved_rows = self.reserved_rows.saturating_add(other.reserved_rows);
+        self.discarded_diagnostics = self
+            .discarded_diagnostics
+            .saturating_add(other.discarded_diagnostics);
+        self.poisoned |= other.poisoned;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReleasedRvaHookReceipt {
     pub logical_name: &'static str,

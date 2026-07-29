@@ -68,6 +68,7 @@ pub use convoy_transport_attack::{
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub use convoy_terminal_hook_windows::{
+    abort_partial_install_and_uninstall as abort_partial_convoy_terminal_install,
     capture_h_convoy_control_raw, convoy_terminal_evidence_activation_enabled,
     commit_convoy_terminal_events, commit_convoy_transport_attack_payload,
     convoy_terminal_hook_heartbeat, convoy_terminal_hook_installed,

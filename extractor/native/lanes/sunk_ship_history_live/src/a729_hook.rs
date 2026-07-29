@@ -17,8 +17,8 @@ use core::{cell::Cell, ffi::c_void, mem, ptr};
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released,
-    observe_released_set, ExpectedRvaHook, HookTeardownAttestation, InstalledRvaHookReceipt,
-    ReleasedRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    observe_released_set, ExpectedRvaHook, HookTeardownAttestation, InstallAbortDiscard,
+    InstalledRvaHookReceipt, ReleasedRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -1236,6 +1236,39 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
 /// terminal sink accepts the payload, or roll back on every failure path.
 pub fn seal_reserve_and_uninstall() -> Result<HookDrainReservation, String> {
     seal_reserve_and_uninstall_inner(None, None)
+}
+
+/// Seals, restores and discards the whole D86 carrier for a production hook
+/// registry that could not complete its install.
+///
+/// The normal teardown only consumes an empty reservation, because a non-empty
+/// one means observations that the terminal DATA frame owes to the sink. A
+/// partial install has no terminal frame and never will, so here a non-empty
+/// reservation is discarded with an exact count instead of being refused
+/// forever. Physical restoration, quiescence and release-receipt observation
+/// are unchanged, and a failed discard still rolls the reservation back so the
+/// exact carrier stays retryable.
+pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
+    let reservation = seal_reserve_and_uninstall()?;
+    let discard = InstallAbortDiscard {
+        retained_rows: reservation.drain.events.len() as u64,
+        reserved_rows: reservation.drain.events.len() as u64,
+        discarded_diagnostics: reservation
+            .drain
+            .dropped_unbound
+            .saturating_add(reservation.drain.dropped_reentrant)
+            .saturating_add(reservation.drain.dropped_unreadable)
+            .saturating_add(reservation.drain.dropped_lock_busy)
+            .saturating_add(reservation.drain.dropped_overflow),
+        poisoned: reservation.drain.completeness_poisoned,
+    };
+    if let Err(error) = commit_drain(reservation.reservation_id) {
+        return Err(rollback_drain_error(
+            reservation.reservation_id,
+            format!("A33 install abort discard failed: {error}"),
+        ));
+    }
+    Ok(discard)
 }
 
 /// Complete teardown around an already active reservation. This lets the
