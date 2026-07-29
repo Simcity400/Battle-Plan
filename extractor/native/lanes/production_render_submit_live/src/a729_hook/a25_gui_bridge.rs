@@ -735,6 +735,38 @@ pub(super) fn discard_candidate() {
     ACTIVE_OWNER_RUN.with(|run| *run.borrow_mut() = None);
 }
 
+/// Queues one selected-Present GUI draw with no active Present candidate. That
+/// is a state only an installed bridge can reach, and
+/// [`static_d3d_captures_for_active_candidate`] refuses it rather than reporting
+/// zero rows. Tests use it to prove a caller never reached the bridge at all.
+#[cfg(test)]
+pub(super) fn queue_draw_without_active_candidate_for_test() {
+    let mut state = STATE
+        .get_or_init(|| Mutex::new(BridgeState::default()))
+        .lock()
+        .expect("A25 GUI bridge test state poisoned");
+    state.current_candidate = None;
+    state.selected_present_gui_draws.push(SelectedPresentGuiDrawCapture {
+        candidate_submit_index: 1,
+        candidate_frame_sequence: 1,
+        list_invocation_ordinal: 1,
+        node_ordinal: 0,
+        owner_begin_qpc_ticks: 1,
+        owner_game_hour_raw: None,
+        graphical_node_ptr: 0x1000,
+        runtime_widget_ptr: 0x2000,
+        operation: crate::a25_runtime_text_present::CommonGuiOperationIdentity {
+            engine_instance_token: 1,
+            paint_ordinal: 0,
+        },
+        root: None,
+        authored_node: None,
+        authored_child_path: None,
+        graphical_child_path: None,
+        static_d3d_captures: Vec::new(),
+    });
+}
+
 #[cfg(test)]
 pub(super) fn reset_test_state() {
     INSTALLED.store(false, Ordering::Release);
