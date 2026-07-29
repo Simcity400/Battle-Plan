@@ -15,6 +15,7 @@ pub mod campaign_identity;
 pub mod campaign_rollover;
 pub mod cid1_lifecycle_evidence;
 pub mod control_transport;
+pub mod division_combat_stats;
 pub mod domain_gap;
 pub mod dynamic_modifiers;
 pub mod early_render_content_manifest;
@@ -146,6 +147,7 @@ pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
         51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
         53 => DOMAIN53_LANE_LOCAL_STATUS_MASK,
         60 => DOMAIN60_LANE_LOCAL_STATUS_MASK,
+        99 => crate::division_combat_stats::DOMAIN99_LANE_LOCAL_STATUS_MASK,
         _ => 0,
     }
 }
@@ -281,7 +283,12 @@ pub const PRODUCTION_PROFILE_RULE: &str =
 /// production with an open-gap contract, which is exactly what
 /// `PRODUCTION_PROFILE_RULE` forbids. It stays individually schedulable so the
 /// XUI07 work can capture against it.
-pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] = &[57, 78, 84, 98];
+/// D99 `division_combat_stats_live` is listed defensively. It is currently
+/// `schedulable: false` (it has no producer), so the mandatory-profile filter
+/// already excludes it on that alone; this entry is what keeps a later flip to
+/// schedulable from silently broadening production while its three open gaps
+/// stand.
+pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] = &[57, 78, 84, 98, 99];
 
 // --- Domain descriptors -----------------------------------------------------
 
@@ -1853,6 +1860,30 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // Per-division land-combat stat inputs for the replay UI's combat panel.
+    // DCS1 carries the ENGINE FIELDS behind soft attack, hard attack, defense
+    // and breakthrough — the cached `division+0x138` block members, the four
+    // inline scale fields, the applicable per-combat bonus and the side
+    // discriminator — and never the four displayed values, so the extractor
+    // stays a pure reader and recorded captures survive a formula change. Rows
+    // key byte-identically to the D21 participant key. Registered
+    // ValidatedSliceOpenGaps and NOT schedulable, on three open gaps: the writer
+    // of the `+0x198`/`+0x1A0` base fields is unidentified; the mid-tick
+    // partial-fold hazard has only a per-row detector, not a tick-phase proof;
+    // and there is no producer yet (no collector acquisition path, no world_fold
+    // arm), so scheduling it would request records that cannot exist. The carrier
+    // codec and the documented derivation land first; the producer and the
+    // `wire_format` boundary follow, the latter gated on a dispatched `fold_*`
+    // authority by scripts/verify_world_fold_citations.py.
+    domain(
+        99,
+        "division_combat_stats_live",
+        "division_combat_stats_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        false,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -2192,7 +2223,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 77, 78,
-            79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 1000,
+            79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 1000,
         ];
         for id in expected {
             assert!(
@@ -2478,6 +2509,7 @@ mod tests {
                 51 => (1 << 11) | (1 << 12) | (1 << 13),
                 53 => 0x007F_0000,
                 60 => 0x0003_0000,
+                99 => 0x0003_0000,
                 _ => 0,
             };
             assert_eq!(
@@ -2496,6 +2528,14 @@ mod tests {
         assert_eq!(DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED, 1 << 22);
         assert_eq!(DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR, 1 << 16);
         assert_eq!(DOMAIN60_STATUS_WAR_RESIDUALS_EXACT, 1 << 17);
+        assert_eq!(
+            crate::division_combat_stats::DOMAIN99_STATUS_TORN_ROWS_PRESENT,
+            1 << 16
+        );
+        assert_eq!(
+            crate::division_combat_stats::DOMAIN99_STATUS_STAT_BLOCK_NULL_PRESENT,
+            1 << 17
+        );
         // The two overlap-class masks sit inside the v1 vocabulary (legacy
         // wire compatibility); the two badge-class masks sit wholly outside
         // it (fresh bits, strip-before-classification).
@@ -2515,6 +2555,11 @@ mod tests {
             DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK,
             0
         );
+        assert_eq!(
+            crate::division_combat_stats::DOMAIN99_LANE_LOCAL_STATUS_MASK
+                & COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
         // Registration must never change failure classification: no badge
         // bit may intersect the failure vocabulary.
         assert_eq!(
@@ -2523,6 +2568,11 @@ mod tests {
         );
         assert_eq!(
             DOMAIN60_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
+        assert_eq!(
+            crate::division_combat_stats::DOMAIN99_LANE_LOCAL_STATUS_MASK
+                & COMPACT_STATUS_FAILURE_MASK,
             0
         );
     }
