@@ -69,12 +69,6 @@ test-support = []
 # the passive exact-roster registry, cannot enable these UI/materialisation
 # detours.
 unshipped-a25-runtime-text-evidence = []
-# Compile the A39 fixture installer only for an explicit unshipped evidence
-# artifact. This also enables its required A25 runtime-text owner.
-unshipped-a39-character-presentation-evidence = [
-    "character_presentation_live_lane/a729-fixture-hook",
-    "unshipped-a25-runtime-text-evidence",
-]
 # Compile the A31 focus-item fixture installer only for an explicit unshipped
 # evidence artifact.
 unshipped-a31-focus-presentation-evidence = [

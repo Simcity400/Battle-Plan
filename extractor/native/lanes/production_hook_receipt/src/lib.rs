@@ -189,13 +189,14 @@ pub struct InstalledPe64ImportAddressSlotReceipt {
     authenticity_seal: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Pe64ImportAddressSlotTerminalAttestation {
-    pub callbacks_quiesced: bool,
-    pub slot_dispatches_to_original: bool,
-    pub retained_until_process_exit: bool,
-    pub policy_id: &'static str,
-    pub external_shim: ExternalDispatchShimIdentity,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pe64ImportAddressSlotTerminalPermit {
+    logical_name: &'static str,
+    slot_rva: u64,
+    teardown_owner_token: u64,
+    external_shim: ExternalDispatchShimIdentity,
+    observed_terminal: ObservedExternalDispatchTerminal,
+    authenticity_seal: u64,
 }
 
 /// Terminal custody for a restored PE64 import slot whose external dispatch
@@ -411,7 +412,7 @@ struct TerminalPe64ImportSlotBinding {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TerminalizingPe64ImportSlotBinding {
     installed: InstalledPe64ImportAddressSlotReceipt,
-    attestation: Pe64ImportAddressSlotTerminalAttestation,
+    permit: Pe64ImportAddressSlotTerminalPermit,
     observed_terminal: ObservedExternalDispatchTerminal,
     protection_before_restore: u32,
     authenticity_seal: u64,
@@ -419,9 +420,17 @@ struct TerminalizingPe64ImportSlotBinding {
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct QuiescingPe64ImportSlotBinding {
+    installed: InstalledPe64ImportAddressSlotReceipt,
+    permit: Option<Pe64ImportAddressSlotTerminalPermit>,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Pe64ImportSlotCustodyState {
     Provisional(ProvisionalPe64ImportSlotBinding),
     Active(ActivePe64ImportSlotBinding),
+    Quiescing(QuiescingPe64ImportSlotBinding),
     Terminalizing(TerminalizingPe64ImportSlotBinding),
     Terminal(TerminalPe64ImportSlotBinding),
 }
@@ -896,6 +905,11 @@ pub fn install_pe64_import_address_slot(
                     && binding.receipt.observed_pe_identity_sha256 == module.pe_identity.sha256
                     && binding.receipt.slot_address == slot_address
             }
+            Pe64ImportSlotCustodyState::Quiescing(binding) => {
+                binding.installed.observed_module_sha256 == module.sha256
+                    && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
+                    && binding.installed.slot_address == slot_address
+            }
             Pe64ImportSlotCustodyState::Terminalizing(binding) => {
                 binding.installed.observed_module_sha256 == module.sha256
                     && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
@@ -960,6 +974,12 @@ pub fn install_pe64_import_address_slot(
                 ));
             }
             return Ok(binding.receipt.clone());
+        }
+        Some(Pe64ImportSlotCustodyState::Quiescing(_)) => {
+            return Err(format!(
+                "{} import-slot lease is already quiescing",
+                expected.logical_name
+            ));
         }
         Some(Pe64ImportSlotCustodyState::Terminalizing(_)) => {
             return Err(format!(
@@ -1173,6 +1193,134 @@ pub fn verify_installed_pe64_import_address_slot(
     )
 }
 
+/// Atomically cut one active import-slot shim over to its original export and
+/// mint a private terminal permit only after the collector callback count is
+/// observed at zero. A timed-out call retains resumable crate custody with the
+/// dispatch already pointing at the original.
+#[cfg(windows)]
+pub fn quiesce_pe64_import_address_slot(
+    expected: ExpectedPe64ImportAddressSlot,
+    installed: &InstalledPe64ImportAddressSlotReceipt,
+    sealed_shim: &SealedExternalDispatchShim,
+    max_yields: u32,
+) -> Result<Pe64ImportAddressSlotTerminalPermit, String> {
+    validate_expected_pe64_import_slot(expected)?;
+    validate_installed_pe64_import_slot_binding(expected, installed)?;
+    validate_sealed_external_dispatch_shim(sealed_shim)?;
+    validate_installed_sealed_shim_authority(installed, sealed_shim)?;
+    let module = observe_main_module()?;
+    let slot_address = validate_pe64_import_slot(module, expected)?;
+    if slot_address != installed.slot_address
+        || atomic_load_pointer_slot(slot_address)? != installed.external_shim_address
+    {
+        return Err(format!(
+            "{} cannot quiesce after the active import slot changed",
+            expected.logical_name
+        ));
+    }
+    let key = (installed.teardown_owner_token, installed.slot_rva);
+    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut registry = registry
+        .lock()
+        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+    match registry.get(&key) {
+        Some(Pe64ImportSlotCustodyState::Active(binding)) if binding.receipt == *installed => {
+            transition_sealed_shim_lease(
+                sealed_shim,
+                SealedShimLeasePhase::Pe64ImportSlotActive {
+                    teardown_owner_token: installed.teardown_owner_token,
+                    slot_rva: installed.slot_rva,
+                },
+                SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+                    teardown_owner_token: installed.teardown_owner_token,
+                    slot_rva: installed.slot_rva,
+                },
+                sealed_shim.callback_address,
+                false,
+            )?;
+            registry.insert(
+                key,
+                Pe64ImportSlotCustodyState::Quiescing(QuiescingPe64ImportSlotBinding {
+                    installed: installed.clone(),
+                    permit: None,
+                }),
+            );
+        }
+        Some(Pe64ImportSlotCustodyState::Quiescing(binding)) if binding.installed == *installed => {
+        }
+        Some(Pe64ImportSlotCustodyState::Quiescing(_)) => {
+            return Err(format!(
+                "{} quiescence retry changed installed custody",
+                expected.logical_name
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "{} is not an active or quiescing import-slot lease",
+                expected.logical_name
+            ));
+        }
+    }
+    if let Some(Pe64ImportSlotCustodyState::Quiescing(binding)) = registry.get(&key) {
+        if let Some(permit) = &binding.permit {
+            validate_pe64_import_terminal_permit(installed, sealed_shim, permit)?;
+            return Ok(permit.clone());
+        }
+    }
+    atomic_cutover_external_dispatch_to_original(sealed_shim)?;
+    let mut observed_zero = false;
+    for attempt in 0..=max_yields {
+        let (_, active_count) = observe_sealed_shim_dispatch(sealed_shim)?;
+        if active_count == 0 {
+            observed_zero = true;
+            break;
+        }
+        if attempt != max_yields {
+            std::thread::yield_now();
+        }
+    }
+    if !observed_zero {
+        return Err(format!(
+            "{} collector callbacks did not quiesce within {max_yields} yields; cutover custody retained",
+            expected.logical_name
+        ));
+    }
+    let observed_terminal = observe_external_dispatch_terminal_live(
+        installed.expected_original_address,
+        installed.external_shim,
+        true,
+    )?;
+    let authenticity_seal = next_receipt_seal()? ^ installed.authenticity_seal;
+    if authenticity_seal == 0 {
+        return Err(format!(
+            "{} terminal permit authenticity seal is zero",
+            expected.logical_name
+        ));
+    }
+    let permit = Pe64ImportAddressSlotTerminalPermit {
+        logical_name: installed.logical_name,
+        slot_rva: installed.slot_rva,
+        teardown_owner_token: installed.teardown_owner_token,
+        external_shim: installed.external_shim,
+        observed_terminal,
+        authenticity_seal,
+    };
+    match registry.get_mut(&key) {
+        Some(Pe64ImportSlotCustodyState::Quiescing(binding))
+            if binding.installed == *installed && binding.permit.is_none() =>
+        {
+            binding.permit = Some(permit.clone());
+        }
+        _ => {
+            return Err(format!(
+                "{} quiescence custody changed before permit publication",
+                expected.logical_name
+            ));
+        }
+    }
+    Ok(permit)
+}
+
 /// Restore one installed PE64 import slot with an atomic pointer CAS after the
 /// external shim has switched to the original export and all DLL callbacks are
 /// quiescent. The shim allocation remains process-lifetime custody because a
@@ -1182,7 +1330,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
     expected: ExpectedPe64ImportAddressSlot,
     installed: &InstalledPe64ImportAddressSlotReceipt,
     sealed_shim: &SealedExternalDispatchShim,
-    attestation: Pe64ImportAddressSlotTerminalAttestation,
+    permit: &Pe64ImportAddressSlotTerminalPermit,
 ) -> Result<RestoredPe64ImportAddressSlotCustodyReceipt, String> {
     validate_expected_pe64_import_slot(expected)?;
     validate_installed_pe64_import_slot_binding(expected, installed)?;
@@ -1231,25 +1379,20 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 expected.logical_name
             ));
         }
-        Some(Pe64ImportSlotCustodyState::Active(binding)) => {
-            if &binding.receipt != installed {
+        Some(Pe64ImportSlotCustodyState::Active(_)) => {
+            return Err(format!(
+                "{} must obtain a core-owned terminal permit before restore",
+                expected.logical_name
+            ));
+        }
+        Some(Pe64ImportSlotCustodyState::Quiescing(binding)) => {
+            if &binding.installed != installed || binding.permit.as_ref() != Some(permit) {
                 return Err(format!(
-                    "{} installed receipt is not the crate-owned import-slot lease",
+                    "{} restore changed the core-owned terminal permit",
                     expected.logical_name
                 ));
             }
-            let observed_terminal = observe_external_dispatch_terminal(
-                installed.expected_original_address,
-                installed.external_shim_address,
-                attestation,
-                true,
-            )?;
-            if attestation.external_shim != installed.external_shim {
-                return Err(format!(
-                    "{} terminal attestation changed external shim identity",
-                    expected.logical_name
-                ));
-            }
+            validate_pe64_import_terminal_permit(installed, sealed_shim, permit)?;
             let authenticity_seal = next_receipt_seal()? ^ installed.authenticity_seal;
             if authenticity_seal == 0 {
                 return Err(format!(
@@ -1258,23 +1401,10 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 ));
             }
             let protection_before_restore = pointer_slot_protection(slot_address)?;
-            transition_sealed_shim_lease(
-                sealed_shim,
-                SealedShimLeasePhase::Pe64ImportSlotActive {
-                    teardown_owner_token: installed.teardown_owner_token,
-                    slot_rva: installed.slot_rva,
-                },
-                SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
-                    teardown_owner_token: installed.teardown_owner_token,
-                    slot_rva: installed.slot_rva,
-                },
-                installed.expected_original_address,
-                true,
-            )?;
             let terminalizing = TerminalizingPe64ImportSlotBinding {
                 installed: installed.clone(),
-                attestation,
-                observed_terminal,
+                permit: permit.clone(),
+                observed_terminal: permit.observed_terminal,
                 protection_before_restore,
                 authenticity_seal,
             };
@@ -1285,7 +1415,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             terminalizing
         }
         Some(Pe64ImportSlotCustodyState::Terminalizing(binding)) => {
-            if &binding.installed != installed || binding.attestation != attestation {
+            if &binding.installed != installed || &binding.permit != permit {
                 return Err(format!(
                     "{} terminalizing retry changed custody inputs",
                     expected.logical_name
@@ -1383,11 +1513,11 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         primitive_id: installed.primitive_id,
         slot_spec_sha256: installed.slot_spec_sha256,
         teardown_owner_token: installed.teardown_owner_token,
-        callbacks_quiesced: terminalizing.attestation.callbacks_quiesced,
+        callbacks_quiesced: true,
         slot_restored: true,
-        retained_until_process_exit: terminalizing.attestation.retained_until_process_exit,
-        policy_id: terminalizing.attestation.policy_id,
-        external_shim: terminalizing.attestation.external_shim,
+        retained_until_process_exit: true,
+        policy_id: PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID,
+        external_shim: terminalizing.permit.external_shim,
         shim_template_id: installed.shim_template_id,
         shim_callback_semantic_id: installed.shim_callback_semantic_id,
         shim_callback_export_name: installed.shim_callback_export_name,
@@ -1987,6 +2117,63 @@ fn validate_installed_pe64_import_slot_binding(
 }
 
 #[cfg(windows)]
+fn validate_installed_sealed_shim_authority(
+    installed: &InstalledPe64ImportAddressSlotReceipt,
+    sealed_shim: &SealedExternalDispatchShim,
+) -> Result<(), String> {
+    if sealed_shim.identity != installed.external_shim
+        || sealed_shim.template_id != installed.shim_template_id
+        || sealed_shim.callback_semantic_id != installed.shim_callback_semantic_id
+        || sealed_shim.callback_export_name != installed.shim_callback_export_name
+        || sealed_shim.callback_binary_identity != installed.shim_callback_binary_identity
+        || sealed_shim.callback_manifest_sha256 != installed.shim_callback_manifest_sha256
+        || sealed_shim.callback_address != installed.shim_callback_address
+        || sealed_shim.original_address != installed.expected_original_address
+        || sealed_shim.normalized_template_sha256 != installed.shim_normalized_template_sha256
+        || sealed_shim.unwind_handler_sha256 != installed.shim_unwind_handler_sha256
+        || sealed_shim.unwind_info_sha256 != installed.shim_unwind_info_sha256
+        || sealed_shim.runtime_function_sha256 != installed.shim_runtime_function_sha256
+    {
+        return Err(format!(
+            "{} sealed shim authority differs from installed custody",
+            installed.logical_name
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_pe64_import_terminal_permit(
+    installed: &InstalledPe64ImportAddressSlotReceipt,
+    sealed_shim: &SealedExternalDispatchShim,
+    permit: &Pe64ImportAddressSlotTerminalPermit,
+) -> Result<(), String> {
+    validate_installed_sealed_shim_authority(installed, sealed_shim)?;
+    if permit.logical_name != installed.logical_name
+        || permit.slot_rva != installed.slot_rva
+        || permit.teardown_owner_token != installed.teardown_owner_token
+        || permit.external_shim != installed.external_shim
+        || permit.observed_terminal.dispatch_address != installed.expected_original_address
+        || permit.observed_terminal.active_count != 0
+        || permit.authenticity_seal == 0
+    {
+        return Err(format!(
+            "{} terminal permit does not bind installed custody",
+            installed.logical_name
+        ));
+    }
+    validate_sealed_shim_lease_and_live_dispatch(
+        sealed_shim,
+        SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+            teardown_owner_token: installed.teardown_owner_token,
+            slot_rva: installed.slot_rva,
+        },
+        installed.expected_original_address,
+        false,
+    )
+}
+
+#[cfg(windows)]
 fn validate_terminal_receipt_binding(
     installed: &InstalledPe64ImportAddressSlotReceipt,
     receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
@@ -2042,25 +2229,14 @@ fn validate_terminal_receipt_binding(
 }
 
 #[cfg(windows)]
-fn observe_external_dispatch_terminal(
+fn observe_external_dispatch_terminal_live(
     expected_original_address: usize,
-    external_shim_address: usize,
-    attestation: Pe64ImportAddressSlotTerminalAttestation,
+    external_shim: ExternalDispatchShimIdentity,
     require_quiescent_cutover: bool,
 ) -> Result<ObservedExternalDispatchTerminal, String> {
-    if !attestation.callbacks_quiesced
-        || !attestation.slot_dispatches_to_original
-        || !attestation.retained_until_process_exit
-        || attestation.policy_id != PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID
-        || attestation.external_shim.entry_address != external_shim_address
-    {
-        return Err("PE64 import-slot terminal attestation is incomplete".into());
-    }
-    validate_external_dispatch_shim_identity(attestation.external_shim)?;
-    let dispatch_bytes = read_process_bytes(
-        attestation.external_shim.dispatch_slot_address,
-        size_of::<usize>(),
-    )?;
+    validate_external_dispatch_shim_identity(external_shim)?;
+    let dispatch_bytes =
+        read_process_bytes(external_shim.dispatch_slot_address, size_of::<usize>())?;
     let dispatch_address = usize::from_le_bytes(
         dispatch_bytes
             .as_slice()
@@ -2073,7 +2249,7 @@ fn observe_external_dispatch_terminal(
         ));
     }
     let counter_bytes = read_process_bytes(
-        attestation.external_shim.active_callback_counter_address,
+        external_shim.active_callback_counter_address,
         size_of::<u64>(),
     )?;
     let active_count = u64::from_le_bytes(
@@ -2148,16 +2324,9 @@ fn validate_terminal_pe64_import_slot_live(
             receipt.logical_name
         ));
     }
-    let observed = observe_external_dispatch_terminal(
+    let observed = observe_external_dispatch_terminal_live(
         receipt.expected_original_address,
-        receipt.external_shim_address,
-        Pe64ImportAddressSlotTerminalAttestation {
-            callbacks_quiesced: receipt.callbacks_quiesced,
-            slot_dispatches_to_original: receipt.slot_restored,
-            retained_until_process_exit: receipt.retained_until_process_exit,
-            policy_id: receipt.policy_id,
-            external_shim: receipt.external_shim,
-        },
+        receipt.external_shim,
         false,
     )?;
     if observed.dispatch_slot_sha256 != receipt.dispatch_slot_sha256
@@ -2899,6 +3068,40 @@ fn atomic_load_pointer_slot(address: usize) -> Result<usize, String> {
     validate_atomic_pointer_slot_memory(address)?;
     let slot = unsafe { &*(address as *const AtomicUsize) };
     Ok(slot.load(Ordering::SeqCst))
+}
+
+#[cfg(windows)]
+fn atomic_cutover_external_dispatch_to_original(
+    sealed_shim: &SealedExternalDispatchShim,
+) -> Result<(), String> {
+    validate_sealed_external_dispatch_shim(sealed_shim)?;
+    let dispatch = unsafe { &*(sealed_shim.identity.dispatch_slot_address as *const AtomicUsize) };
+    let current = dispatch.load(Ordering::SeqCst);
+    if current == sealed_shim.callback_address {
+        let observed = match dispatch.compare_exchange(
+            sealed_shim.callback_address,
+            sealed_shim.original_address,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(previous) | Err(previous) => previous,
+        };
+        if observed != sealed_shim.callback_address {
+            return Err(format!(
+                "sealed external dispatch cutover observed 0x{observed:X}, not callback 0x{:X}",
+                sealed_shim.callback_address
+            ));
+        }
+    } else if current != sealed_shim.original_address {
+        return Err(format!(
+            "sealed external dispatch targets unowned address 0x{current:X}"
+        ));
+    }
+    unsafe { windows_sys::Win32::System::Threading::FlushProcessWriteBuffers() };
+    if dispatch.load(Ordering::SeqCst) != sealed_shim.original_address {
+        return Err("sealed external dispatch did not retain the original target".into());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

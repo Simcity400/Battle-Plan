@@ -10,9 +10,8 @@
 use crate::a729_focus_item_producer::{
     materialize_pointer_free_snapshot, ExactA729FocusObservationBoundary,
     ProcessLocalFrameObservation, ProcessLocalItemObservation, VectorHeader,
-    DETAIL_REFRESH_RVA, DYNAMIC_REFRESH_RVA, HIGHLIGHT_PRODUCER_RVA, ITEM_STATE_PRODUCER_RVA,
-    ITEM_STATE_WRITER_RVA,
-    VECTOR_PUBLISHER_RVA, VIEW_VTABLE,
+    DETAIL_REFRESH_RVA, DYNAMIC_REFRESH_RVA, GRAPHICAL_VIEW_VTABLE, HIGHLIGHT_PRODUCER_RVA,
+    ITEM_STATE_PRODUCER_RVA, ITEM_STATE_WRITER_RVA, VECTOR_PUBLISHER_RVA, VIEW_VTABLE,
 };
 use crate::a729_focus_item_inline;
 use compact_contract::national_focus_presentation::{
@@ -567,7 +566,7 @@ pub fn pending_focus_gui_join(
     }
     let graphical_vtable = read_process_usize(candidate.runtime_graphical_root_ptr)
         .ok_or("A31 focus canvas graphical subobject vtable is unreadable")?;
-    authenticate_and_normalize_image_address(graphical_vtable, VIEW_VTABLE)
+    authenticate_and_normalize_image_address(graphical_vtable, GRAPHICAL_VIEW_VTABLE)
         .map_err(|_| "A31 focus canvas graphical subobject vtable is foreign".to_string())?;
     if candidate.focus_gui_items.len() != candidate.snapshot.visible_items.len() {
         return Err("A31 focus GUI item-root frontier is incomplete".into());

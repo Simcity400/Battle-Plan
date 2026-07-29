@@ -25,6 +25,9 @@ pub const HIGHLIGHT_PRODUCER_RVA: usize = 0x0137_7430;
 pub const DISPLAY_PROGRESS_PRODUCER_RVA: usize = 0x01bb_5df0;
 
 pub const VIEW_VTABLE: usize = 0x1429_9d680;
+/// `CNationalFocusView` installs this distinct secondary graphical vtable at
+/// `view+0x30`; it must not be authenticated as the primary `view+0` vtable.
+pub const GRAPHICAL_VIEW_VTABLE: usize = 0x1429_9d728;
 pub const ITEM_PRIMARY_VTABLE: usize = 0x1429_9dd40;
 pub const ITEM_SECONDARY_VTABLE: usize = 0x1429_9dde0;
 pub const ITEM_ALLOCATION_SIZE: usize = 0x550;

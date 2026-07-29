@@ -7,12 +7,6 @@ edition = "2021"
 name = "production_render_submit_live_lane"
 path = "src/lib.rs"
 
-[features]
-default = []
-# Explicitly unshipped access to the historical staged render-observation
-# graph. Canonical collector builds do not enable this feature.
-unshipped-render-evidence = ["dep:minhook"]
-
 [dependencies]
 portable_render_stream = { path = "../../../../portable_replay/native/render_stream" }
 portable_content_manifest = { path = "../../../../portable_replay/native/content_manifest" }
@@ -29,7 +23,6 @@ png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
-minhook = { version = "0.9.0", optional = true }
 winapi = { version = "0.3.9", features = ["d3d11", "d3d11shader", "d3dcommon", "d3dcompiler", "minwindef", "winerror"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
