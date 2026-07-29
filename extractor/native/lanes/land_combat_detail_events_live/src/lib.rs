@@ -8,6 +8,8 @@ pub mod a729_hook;
 pub mod terminal_coordinator;
 #[cfg(windows)]
 pub mod x2_carriers;
+#[cfg(windows)]
+pub mod x2_slot_sites;
 
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 pub const COMPACT_RECORD_VERSION: u16 = 1;

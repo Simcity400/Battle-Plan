@@ -7,8 +7,19 @@
 //! their admitted identities.
 
 mod custody_record;
+pub mod engine_slot;
 
 use custody_record::{perform_recorded_cas, reconcile_recorded_cas};
+pub use engine_slot::{
+    admit_engine_owned_function_pointer_slot_site, admit_engine_owned_slot_site_roster,
+    engine_owned_slot_spec_sha256, slot_enumeration_sha256, AdmittedEngineOwnedSlotRoster,
+    AdmittedEngineOwnedSlotSite, DirectCallBypass, EngineOwnedSlotAdmissionError,
+    EngineOwnedSlotRosterAdmissionError, EngineOwnedSlotSiteRoster,
+    ExpectedEngineOwnedFunctionPointerSlot, OwningStructureIdentity, OwningStructureKind,
+    RosterAdmittedEngineOwnedSlotSite, SlotEnumerationCompleteness, SlotEnumerationEvidence,
+    ENGINE_OWNED_FUNCTION_POINTER_SLOT_PRIMITIVE_ID,
+    ENGINE_OWNED_FUNCTION_POINTER_SLOT_PROCESS_LIFETIME_POLICY_ID, ENGINE_OWNED_SLOT_WIDTH_BYTES,
+};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -50,7 +61,7 @@ static NEXT_RECEIPT_SEAL: AtomicU64 = AtomicU64::new(1);
 #[cfg(windows)]
 static HOOK_CUSTODY: OnceLock<Mutex<BTreeMap<(u64, u64), HookCustodyState>>> = OnceLock::new();
 #[cfg(windows)]
-static PE64_IMPORT_SLOT_CUSTODY: OnceLock<Mutex<BTreeMap<(u64, u64), Pe64ImportSlotCustodyState>>> =
+static POINTER_SLOT_CUSTODY: OnceLock<Mutex<BTreeMap<(u64, u64), PointerSlotCustodyState>>> =
     OnceLock::new();
 #[cfg(windows)]
 static SEALED_SHIM_CUSTODY: OnceLock<Mutex<BTreeMap<usize, SealedShimBinding>>> = OnceLock::new();
@@ -72,6 +83,119 @@ pub struct ExpectedRvaHook {
     pub original_prefix: &'static [u8],
 }
 
+/// Where a pointer slot comes from, and therefore what may be attested about
+/// it.
+///
+/// The lifecycle below -- aligned compare/exchange, sealed counted shim, atomic
+/// disarm, process-lifetime retention -- is identical for both variants. What
+/// differs is how the slot's provenance is proved and what a receipt is allowed
+/// to claim. A PE import slot is proved from the image's own import directory
+/// and attests a DLL and a symbol. An engine-owned slot has no thunk naming
+/// itself, so it is proved from its owning structure and a complete
+/// incoming-edge census, and it must never be attested as an import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlotProvenance {
+    /// A PE64 import address table entry the loader itself wrote.
+    Pe64Import {
+        imported_dll: &'static str,
+        imported_symbol: &'static str,
+    },
+    /// An engine-owned function-pointer or vtable slot inside the target image.
+    ///
+    /// The payload is deliberately opaque. An enum variant's fields are as
+    /// public as the enum, so leaving them inline made the whole attestation
+    /// forgeable by any caller willing to write four plausible-looking values,
+    /// and a validator can only ever check that such values are non-zero --
+    /// which is not a proof of anything. Wrapping them in a type whose fields
+    /// are private means the only way to obtain this variant is to have gone
+    /// through the roster admission that produced the digests.
+    EngineOwnedFunctionPointer(EngineOwnedSlotAttestation),
+}
+
+/// Proof that a slot came from an admitted roster.
+///
+/// Constructible only inside this crate, and inside it only from a
+/// `RosterAdmittedEngineOwnedSlotSite`. Callers read it through the accessors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineOwnedSlotAttestation {
+    owner: OwningStructureIdentity,
+    enumeration_sha256: [u8; 32],
+    roster_sha256: [u8; 32],
+    roster_slot_count: usize,
+}
+
+impl EngineOwnedSlotAttestation {
+    pub(crate) fn from_roster_admitted_site(site: &RosterAdmittedEngineOwnedSlotSite) -> Self {
+        Self {
+            owner: site.expected().owner,
+            enumeration_sha256: site.enumeration_sha256(),
+            roster_sha256: site.roster_sha256(),
+            roster_slot_count: site.roster_slot_count(),
+        }
+    }
+
+    pub fn owner(&self) -> OwningStructureIdentity {
+        self.owner
+    }
+
+    /// Digest of the incoming-edge census this slot rests on, produced by
+    /// `engine_slot::slot_enumeration_sha256`.
+    pub fn enumeration_sha256(&self) -> [u8; 32] {
+        self.enumeration_sha256
+    }
+
+    /// Digest of the admitted roster that proved this target's slot coverage
+    /// complete. Every slot of one target carries the same value.
+    pub fn roster_sha256(&self) -> [u8; 32] {
+        self.roster_sha256
+    }
+
+    pub fn roster_slot_count(&self) -> usize {
+        self.roster_slot_count
+    }
+}
+
+impl SlotProvenance {
+    /// Primitive id this provenance is entitled to attest.
+    pub fn primitive_id(&self) -> &'static str {
+        match self {
+            Self::Pe64Import { .. } => PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID,
+            Self::EngineOwnedFunctionPointer(_) => ENGINE_OWNED_FUNCTION_POINTER_SLOT_PRIMITIVE_ID,
+        }
+    }
+
+    /// Process-lifetime retention policy id this provenance is entitled to
+    /// attest.
+    pub fn policy_id(&self) -> &'static str {
+        match self {
+            Self::Pe64Import { .. } => PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID,
+            Self::EngineOwnedFunctionPointer(_) => {
+                ENGINE_OWNED_FUNCTION_POINTER_SLOT_PROCESS_LIFETIME_POLICY_ID
+            }
+        }
+    }
+
+    /// True only for a genuine PE64 import address slot. Callers that render or
+    /// serialize an import DLL/symbol must gate on this rather than assuming.
+    pub fn is_pe64_import(&self) -> bool {
+        matches!(self, Self::Pe64Import { .. })
+    }
+}
+
+/// One naturally aligned, pointer-sized dispatch slot admitted for redirection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpectedPointerSlot {
+    pub logical_name: &'static str,
+    pub slot_rva: u64,
+    pub provenance: SlotProvenance,
+    /// Exact process-local pointer expected in the slot before installation.
+    /// The compare/exchange is against this value; there is no blind store.
+    pub expected_original_address: usize,
+}
+
+/// PE64 import-address-slot front. The two genuine import sites keep this shape
+/// so their receipts continue to attest a DLL and a symbol; nothing else in the
+/// crate may construct it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedPe64ImportAddressSlot {
     pub logical_name: &'static str,
@@ -80,6 +204,21 @@ pub struct ExpectedPe64ImportAddressSlot {
     pub imported_symbol: &'static str,
     /// Exact current-process export pointer expected before installation.
     pub expected_original_address: usize,
+}
+
+impl ExpectedPe64ImportAddressSlot {
+    /// Widen to the provenance-parameterised form the lifecycle operates on.
+    pub fn generalize(self) -> ExpectedPointerSlot {
+        ExpectedPointerSlot {
+            logical_name: self.logical_name,
+            slot_rva: self.slot_rva,
+            provenance: SlotProvenance::Pe64Import {
+                imported_dll: self.imported_dll,
+                imported_symbol: self.imported_symbol,
+            },
+            expected_original_address: self.expected_original_address,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +267,7 @@ pub struct ExternalCallbackManifestAuthority {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CanonicalPe64IatShimTemplate {
+pub enum CanonicalCountedShimTemplate {
     Win64RegisterArgsOnly,
     D3D11CreateDevice,
     D3DCompile,
@@ -153,15 +292,18 @@ pub struct SealedExternalDispatchShim {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InstalledPe64ImportAddressSlotReceipt {
+pub struct InstalledPointerSlotReceipt {
     pub logical_name: &'static str,
     pub observed_module_name: &'static str,
     pub observed_module_sha256: [u8; 32],
     pub observed_pe_identity_sha256: [u8; 32],
     pub observed_pe_timestamp: u32,
     pub observed_size_of_image: u32,
-    pub imported_dll: &'static str,
-    pub imported_symbol: &'static str,
+    /// How the slot's provenance was proved, and therefore what this receipt
+    /// is entitled to claim. Only `SlotProvenance::Pe64Import` names a DLL and
+    /// a symbol; an engine-owned slot names its owning structure instead and is
+    /// never rendered as an import.
+    pub provenance: SlotProvenance,
     pub slot_rva: u64,
     /// Process-local diagnostic only. Never serialize this field.
     pub slot_address: usize,
@@ -194,7 +336,7 @@ pub struct InstalledPe64ImportAddressSlotReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Pe64ImportAddressSlotTerminalPermit {
+pub struct PointerSlotTerminalPermit {
     logical_name: &'static str,
     slot_rva: u64,
     teardown_owner_token: u64,
@@ -207,15 +349,18 @@ pub struct Pe64ImportAddressSlotTerminalPermit {
 /// allocation remains resident because a thread may already have loaded the
 /// old shim pointer. This is deliberately not `ReleasedRvaHookReceipt`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RestoredPe64ImportAddressSlotCustodyReceipt {
+pub struct RestoredPointerSlotCustodyReceipt {
     pub logical_name: &'static str,
     pub observed_module_name: &'static str,
     pub observed_module_sha256: [u8; 32],
     pub observed_pe_identity_sha256: [u8; 32],
     pub observed_pe_timestamp: u32,
     pub observed_size_of_image: u32,
-    pub imported_dll: &'static str,
-    pub imported_symbol: &'static str,
+    /// How the slot's provenance was proved, and therefore what this receipt
+    /// is entitled to claim. Only `SlotProvenance::Pe64Import` names a DLL and
+    /// a symbol; an engine-owned slot names its owning structure instead and is
+    /// never rendered as an import.
+    pub provenance: SlotProvenance,
     pub slot_rva: u64,
     /// Process-local diagnostic only. Never serialize this field.
     pub slot_address: usize,
@@ -439,14 +584,14 @@ enum HookCustodyState {
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ActivePe64ImportSlotBinding {
-    receipt: InstalledPe64ImportAddressSlotReceipt,
+struct ActivePointerSlotBinding {
+    receipt: InstalledPointerSlotReceipt,
 }
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ProvisionalPe64ImportSlotBinding {
-    expected: ExpectedPe64ImportAddressSlot,
+struct ProvisionalPointerSlotBinding {
+    expected: ExpectedPointerSlot,
     external_shim: ExternalDispatchShimIdentity,
     teardown_owner_token: u64,
     slot_address: usize,
@@ -468,16 +613,16 @@ struct ProvisionalPe64ImportSlotBinding {
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TerminalPe64ImportSlotBinding {
-    installed: InstalledPe64ImportAddressSlotReceipt,
-    receipt: RestoredPe64ImportAddressSlotCustodyReceipt,
+struct TerminalPointerSlotBinding {
+    installed: InstalledPointerSlotReceipt,
+    receipt: RestoredPointerSlotCustodyReceipt,
 }
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TerminalizingPe64ImportSlotBinding {
-    installed: InstalledPe64ImportAddressSlotReceipt,
-    permit: Pe64ImportAddressSlotTerminalPermit,
+struct TerminalizingPointerSlotBinding {
+    installed: InstalledPointerSlotReceipt,
+    permit: PointerSlotTerminalPermit,
     observed_terminal: ObservedExternalDispatchTerminal,
     protection_before_restore: u32,
     /// The restore compare-exchange this crate itself performed, recorded the
@@ -497,19 +642,19 @@ struct TerminalizingPe64ImportSlotBinding {
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct QuiescingPe64ImportSlotBinding {
-    installed: InstalledPe64ImportAddressSlotReceipt,
-    permit: Option<Pe64ImportAddressSlotTerminalPermit>,
+struct QuiescingPointerSlotBinding {
+    installed: InstalledPointerSlotReceipt,
+    permit: Option<PointerSlotTerminalPermit>,
 }
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum Pe64ImportSlotCustodyState {
-    Provisional(ProvisionalPe64ImportSlotBinding),
-    Active(ActivePe64ImportSlotBinding),
-    Quiescing(QuiescingPe64ImportSlotBinding),
-    Terminalizing(TerminalizingPe64ImportSlotBinding),
-    Terminal(TerminalPe64ImportSlotBinding),
+enum PointerSlotCustodyState {
+    Provisional(ProvisionalPointerSlotBinding),
+    Active(ActivePointerSlotBinding),
+    Quiescing(QuiescingPointerSlotBinding),
+    Terminalizing(TerminalizingPointerSlotBinding),
+    Terminal(TerminalPointerSlotBinding),
 }
 
 #[cfg(windows)]
@@ -523,19 +668,19 @@ struct SealedShimBinding {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SealedShimLeasePhase {
     Available,
-    Pe64ImportSlotInstalling {
+    PointerSlotInstalling {
         teardown_owner_token: u64,
         slot_rva: u64,
     },
-    Pe64ImportSlotActive {
+    PointerSlotActive {
         teardown_owner_token: u64,
         slot_rva: u64,
     },
-    Pe64ImportSlotTerminalizing {
+    PointerSlotTerminalizing {
         teardown_owner_token: u64,
         slot_rva: u64,
     },
-    Pe64ImportSlotTerminal {
+    PointerSlotTerminal {
         teardown_owner_token: u64,
         slot_rva: u64,
     },
@@ -558,20 +703,20 @@ pub fn next_teardown_owner_token() -> Result<u64, String> {
 
 #[cfg(windows)]
 pub fn admit_canonical_pe64_iat_callback_manifest(
-    template: CanonicalPe64IatShimTemplate,
+    template: CanonicalCountedShimTemplate,
     admitted_callback_module_sha256: [u8; 32],
     callback_address: usize,
 ) -> Result<ExpectedExternalCallbackManifest, String> {
     let (semantic_id, export_name) = match template {
-        CanonicalPe64IatShimTemplate::D3D11CreateDevice => (
+        CanonicalCountedShimTemplate::D3D11CreateDevice => (
             D3D11_CREATE_DEVICE_CALLBACK_SEMANTIC_ID,
             D3D11_CREATE_DEVICE_CALLBACK_EXPORT_NAME,
         ),
-        CanonicalPe64IatShimTemplate::D3DCompile => (
+        CanonicalCountedShimTemplate::D3DCompile => (
             D3D_COMPILE_CALLBACK_SEMANTIC_ID,
             D3D_COMPILE_CALLBACK_EXPORT_NAME,
         ),
-        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => {
+        CanonicalCountedShimTemplate::Win64RegisterArgsOnly => {
             return Err(
                 "register-args callbacks require an exact external callback authority".into(),
             );
@@ -591,11 +736,11 @@ pub fn admit_canonical_pe64_iat_callback_manifest(
         export_name,
         binary_identity,
         callback_class: match template {
-            CanonicalPe64IatShimTemplate::D3D11CreateDevice => {
+            CanonicalCountedShimTemplate::D3D11CreateDevice => {
                 ExternalCallbackManifestClass::D3D11CreateDevice
             }
-            CanonicalPe64IatShimTemplate::D3DCompile => ExternalCallbackManifestClass::D3DCompile,
-            CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => unreachable!(),
+            CanonicalCountedShimTemplate::D3DCompile => ExternalCallbackManifestClass::D3DCompile,
+            CanonicalCountedShimTemplate::Win64RegisterArgsOnly => unreachable!(),
         },
         authenticity_seal,
         authenticity_digest_sha256: [0; 32],
@@ -648,8 +793,8 @@ pub fn admit_win64_register_args_callback_manifest(
 }
 
 #[cfg(windows)]
-pub fn allocate_canonical_pe64_iat_shim(
-    template: CanonicalPe64IatShimTemplate,
+pub fn allocate_canonical_counted_shim(
+    template: CanonicalCountedShimTemplate,
     expected_callback: ExpectedExternalCallbackManifest,
     callback_address: usize,
     original_address: usize,
@@ -674,16 +819,16 @@ pub fn allocate_canonical_pe64_iat_shim(
         return Err("canonical IAT shim callback manifest identity is invalid".into());
     }
     match template {
-        CanonicalPe64IatShimTemplate::D3D11CreateDevice
+        CanonicalCountedShimTemplate::D3D11CreateDevice
             if expected_callback.callback_class
                 == ExternalCallbackManifestClass::D3D11CreateDevice
                 && expected_callback.semantic_id == D3D11_CREATE_DEVICE_CALLBACK_SEMANTIC_ID
                 && expected_callback.export_name == D3D11_CREATE_DEVICE_CALLBACK_EXPORT_NAME => {}
-        CanonicalPe64IatShimTemplate::D3DCompile
+        CanonicalCountedShimTemplate::D3DCompile
             if expected_callback.callback_class == ExternalCallbackManifestClass::D3DCompile
                 && expected_callback.semantic_id == D3D_COMPILE_CALLBACK_SEMANTIC_ID
                 && expected_callback.export_name == D3D_COMPILE_CALLBACK_EXPORT_NAME => {}
-        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly
+        CanonicalCountedShimTemplate::Win64RegisterArgsOnly
             if expected_callback.callback_class
                 == ExternalCallbackManifestClass::Win64RegisterArgsOnly => {}
         _ => {
@@ -702,17 +847,17 @@ pub fn allocate_canonical_pe64_iat_shim(
     }
     let callback_manifest_sha256 = external_callback_manifest_sha256(expected_callback);
     let (template_id, stack_argument_count, expected_len) = match template {
-        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => (
+        CanonicalCountedShimTemplate::Win64RegisterArgsOnly => (
             WIN64_REGISTER_ARGS_COUNTED_SHIM_TEMPLATE_ID,
             0usize,
             0x1fusize,
         ),
-        CanonicalPe64IatShimTemplate::D3D11CreateDevice => (
+        CanonicalCountedShimTemplate::D3D11CreateDevice => (
             D3D11_CREATE_DEVICE_COUNTED_SHIM_TEMPLATE_ID,
             6usize,
             0x6dusize,
         ),
-        CanonicalPe64IatShimTemplate::D3DCompile => {
+        CanonicalCountedShimTemplate::D3DCompile => {
             (D3D_COMPILE_COUNTED_SHIM_TEMPLATE_ID, 7usize, 0x7ausize)
         }
     };
@@ -751,13 +896,13 @@ pub fn allocate_canonical_pe64_iat_shim(
     }
     let entry_sha256: [u8; 32] = Sha256::digest(&code).into();
     let admitted_entry_sha256 = match template {
-        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => Some(hex_digest(
+        CanonicalCountedShimTemplate::Win64RegisterArgsOnly => Some(hex_digest(
             "d1d8825314f716d1388d358f49f4554084c67e6d4c8c562c3b777da84038b10d",
         )),
-        CanonicalPe64IatShimTemplate::D3D11CreateDevice => Some(hex_digest(
+        CanonicalCountedShimTemplate::D3D11CreateDevice => Some(hex_digest(
             "272f0c711fdc64bc425b25ea559fc94e66beef11cfecdfba1e6d35c0b30ffc05",
         )),
-        CanonicalPe64IatShimTemplate::D3DCompile => Some(hex_digest(
+        CanonicalCountedShimTemplate::D3DCompile => Some(hex_digest(
             "c931ce51ba48d3f94a6bcdbadc568eb4999b158f61e089eca1c74ac37d8ad475",
         )),
     };
@@ -909,14 +1054,14 @@ fn push_rip_disp32(code: &mut Vec<u8>, base: usize, destination: usize) -> Resul
 }
 
 fn canonical_shim_normalized_digest(
-    template: CanonicalPe64IatShimTemplate,
+    template: CanonicalCountedShimTemplate,
     code: &[u8],
 ) -> [u8; 32] {
     let mut normalized = code.to_vec();
     let displacement_offsets: &[usize] = match template {
-        CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly => &[4, 0x0e, 0x16],
-        CanonicalPe64IatShimTemplate::D3D11CreateDevice => &[4, 0x5c, 0x64],
-        CanonicalPe64IatShimTemplate::D3DCompile => &[4, 0x69, 0x71],
+        CanonicalCountedShimTemplate::Win64RegisterArgsOnly => &[4, 0x0e, 0x16],
+        CanonicalCountedShimTemplate::D3D11CreateDevice => &[4, 0x5c, 0x64],
+        CanonicalCountedShimTemplate::D3DCompile => &[4, 0x69, 0x71],
     };
     for offset in displacement_offsets {
         if let Some(bytes) = normalized.get_mut(*offset..*offset + 4) {
@@ -946,16 +1091,16 @@ fn canonical_shim_normalized_digest(
 /// it happened.
 #[cfg(windows)]
 fn confirm_provisional_install_custody_retained(
-    registry: &BTreeMap<(u64, u64), Pe64ImportSlotCustodyState>,
+    registry: &BTreeMap<(u64, u64), PointerSlotCustodyState>,
     key: &(u64, u64),
-    expected: ExpectedPe64ImportAddressSlot,
+    expected: ExpectedPointerSlot,
     external_shim: ExternalDispatchShimIdentity,
     teardown_owner_token: u64,
     slot_address: usize,
     performed: UnconfirmedInstallCas,
 ) -> Result<RecordedInstallCas, String> {
     let retained = match registry.get(key) {
-        Some(Pe64ImportSlotCustodyState::Provisional(binding))
+        Some(PointerSlotCustodyState::Provisional(binding))
             if binding.expected == expected
                 && binding.external_shim == external_shim
                 && binding.teardown_owner_token == teardown_owner_token
@@ -977,15 +1122,15 @@ fn confirm_provisional_install_custody_retained(
 /// The restore direction of [`confirm_provisional_install_custody_retained`].
 #[cfg(windows)]
 fn confirm_terminalizing_restore_custody_retained(
-    registry: &BTreeMap<(u64, u64), Pe64ImportSlotCustodyState>,
+    registry: &BTreeMap<(u64, u64), PointerSlotCustodyState>,
     key: &(u64, u64),
-    expected: ExpectedPe64ImportAddressSlot,
-    installed: &InstalledPe64ImportAddressSlotReceipt,
-    permit: &Pe64ImportAddressSlotTerminalPermit,
+    expected: ExpectedPointerSlot,
+    installed: &InstalledPointerSlotReceipt,
+    permit: &PointerSlotTerminalPermit,
     performed: UnconfirmedRestoreCas,
 ) -> Result<RecordedRestoreCas, String> {
     let retained = match registry.get(key) {
-        Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
+        Some(PointerSlotCustodyState::Terminalizing(binding))
             if binding.installed == *installed && &binding.permit == permit =>
         {
             binding.restore_cas_custody.recorded()
@@ -1001,12 +1146,323 @@ fn confirm_terminalizing_restore_custody_retained(
         .map_err(|error| format!("{} {error}", expected.logical_name))
 }
 
+/// Install one exact PE64 import-address-slot redirection.
+///
+/// Kept as its own front so the two genuine import sites continue to state a
+/// DLL and a symbol at the call site as well as in the receipt. Everything past
+/// the provenance widening is the shared lifecycle.
+#[cfg(windows)]
 pub fn install_pe64_import_address_slot(
     expected: ExpectedPe64ImportAddressSlot,
     sealed_shim: &SealedExternalDispatchShim,
     teardown_owner_token: u64,
-) -> Result<InstalledPe64ImportAddressSlotReceipt, String> {
-    validate_expected_pe64_import_slot(expected)?;
+) -> Result<InstalledPointerSlotReceipt, String> {
+    install_pointer_slot(expected.generalize(), sealed_shim, teardown_owner_token)
+}
+
+/// Install one engine-owned slot of a roster.
+///
+/// Deliberately not public. Admitting a roster proves the target's slot
+/// coverage complete, but installing one site of that roster is still a partial
+/// redirection: calls through the sibling slots keep reaching the target
+/// unobserved, and nothing about a single-site receipt says so. Completeness is
+/// therefore enforced where it lives -- across the roster -- by
+/// [`EngineOwnedSlotRosterInstallation`], which is the only public route in.
+#[cfg(windows)]
+fn install_engine_owned_function_pointer_slot(
+    site: &RosterAdmittedEngineOwnedSlotSite,
+    module_base: usize,
+    sealed_shim: &SealedExternalDispatchShim,
+    teardown_owner_token: u64,
+) -> Result<InstalledPointerSlotReceipt, String> {
+    install_pointer_slot(
+        engine_owned_expected_pointer_slot(site, module_base)?,
+        sealed_shim,
+        teardown_owner_token,
+    )
+}
+
+/// An engine-owned slot roster part-way through installation.
+///
+/// A target whose census lists two dispatch slots is observed completely only
+/// when both are redirected. This type makes that the unit of success: receipts
+/// are handed out only by [`Self::finish`], and only once every enumerated slot
+/// has been redirected under one teardown owner token.
+///
+/// A run that fails part-way does not silently degrade to a partial observer.
+/// `finish` returns [`IncompleteEngineOwnedSlotRosterInstallation`], which
+/// carries the receipts for the slots that *were* redirected precisely so the
+/// caller can tear them down -- they are live redirections and must not be
+/// leaked -- while making it impossible to mistake them for a working observer.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct EngineOwnedSlotRosterInstallation {
+    target_logical_name: &'static str,
+    target_function_rva: u64,
+    roster_sha256: [u8; 32],
+    module_base: usize,
+    teardown_owner_token: u64,
+    required_slot_rvas: Vec<u64>,
+    unresolved_slot_rvas: Vec<u64>,
+    installed: Vec<InstalledPointerSlotReceipt>,
+}
+
+/// A roster whose every slot is redirected. The only form an engine-owned
+/// observer may treat as live.
+///
+/// The fields are private for the same reason
+/// `EngineOwnedSlotAttestation`'s are: a type whose whole meaning is "this
+/// proof was carried out" is worth nothing if anyone can write one down. The
+/// only constructor is [`EngineOwnedSlotRosterInstallation::finish`], and it
+/// only returns this when every enumerated slot of the roster has a receipt.
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompleteEngineOwnedSlotRosterInstallation {
+    target_logical_name: &'static str,
+    target_function_rva: u64,
+    roster_sha256: [u8; 32],
+    teardown_owner_token: u64,
+    receipts: Vec<InstalledPointerSlotReceipt>,
+}
+
+#[cfg(windows)]
+impl CompleteEngineOwnedSlotRosterInstallation {
+    pub fn target_logical_name(&self) -> &'static str {
+        self.target_logical_name
+    }
+
+    pub fn target_function_rva(&self) -> u64 {
+        self.target_function_rva
+    }
+
+    /// Digest of the admitted roster whose coverage this installation
+    /// completed.
+    pub fn roster_sha256(&self) -> [u8; 32] {
+        self.roster_sha256
+    }
+
+    pub fn teardown_owner_token(&self) -> u64 {
+        self.teardown_owner_token
+    }
+
+    /// One receipt per enumerated slot of the roster.
+    pub fn receipts(&self) -> &[InstalledPointerSlotReceipt] {
+        &self.receipts
+    }
+
+    /// Consume the proof and take the receipts, for teardown.
+    pub fn into_receipts(self) -> Vec<InstalledPointerSlotReceipt> {
+        self.receipts
+    }
+}
+
+/// A roster that did not reach full coverage.
+///
+/// `installed` is live redirection that still needs the quiesce/restore path;
+/// `uncovered_slot_rvas` names what was never redirected and therefore what an
+/// observer built on this would have missed.
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncompleteEngineOwnedSlotRosterInstallation {
+    pub target_logical_name: &'static str,
+    pub roster_sha256: [u8; 32],
+    pub teardown_owner_token: u64,
+    pub installed: Vec<InstalledPointerSlotReceipt>,
+    pub uncovered_slot_rvas: Vec<u64>,
+    /// Slots whose install attempt returned an error.
+    ///
+    /// An error is not proof that nothing happened: the exchange is recorded
+    /// before the page-protection cleanup that can fail after it, so one of
+    /// these slots may already be redirected with no receipt yet minted for it.
+    /// The recovery is to retry `install_site` with the same site and shim,
+    /// which replays the recorded exchange and mints the receipt. Until that
+    /// succeeds these slots must be treated as possibly live, and a caller that
+    /// abandons the installation here abandons a redirection it cannot yet tear
+    /// down. Always a subset of `uncovered_slot_rvas`.
+    pub unresolved_slot_rvas: Vec<u64>,
+}
+
+#[cfg(windows)]
+impl EngineOwnedSlotRosterInstallation {
+    /// Begin installing every slot of an admitted roster.
+    ///
+    /// `module_base` is the process-local base the slot RVAs resolve against;
+    /// it derives the expected original pointer, which the shared lifecycle
+    /// then re-proves against both the file image and the live slot.
+    pub fn begin(
+        roster: &AdmittedEngineOwnedSlotRoster,
+        module_base: usize,
+        teardown_owner_token: u64,
+    ) -> Result<Self, String> {
+        if teardown_owner_token == 0 {
+            return Err(format!(
+                "{} engine-owned roster teardown owner token is zero",
+                roster.target_logical_name()
+            ));
+        }
+        if roster.sites().is_empty() {
+            return Err(format!(
+                "{} engine-owned roster has no admitted site",
+                roster.target_logical_name()
+            ));
+        }
+        Ok(Self {
+            target_logical_name: roster.target_logical_name(),
+            target_function_rva: roster.target_function_rva(),
+            roster_sha256: roster.roster_sha256(),
+            module_base,
+            teardown_owner_token,
+            required_slot_rvas: roster
+                .sites()
+                .iter()
+                .map(|site| site.expected().slot_rva)
+                .collect(),
+            unresolved_slot_rvas: Vec::new(),
+            installed: Vec::with_capacity(roster.sites().len()),
+        })
+    }
+
+    /// Slots of this roster that are not yet redirected.
+    pub fn uncovered_slot_rvas(&self) -> &[u64] {
+        &self.required_slot_rvas
+    }
+
+    /// Slots whose install attempt failed and which may already be redirected
+    /// without a receipt. See
+    /// [`IncompleteEngineOwnedSlotRosterInstallation::unresolved_slot_rvas`].
+    pub fn unresolved_slot_rvas(&self) -> &[u64] {
+        &self.unresolved_slot_rvas
+    }
+
+    /// Redirect one slot of this roster.
+    ///
+    /// Refuses a site belonging to a different roster, and refuses a repeat of
+    /// a slot already redirected under this installation.
+    pub fn install_site(
+        &mut self,
+        site: &RosterAdmittedEngineOwnedSlotSite,
+        sealed_shim: &SealedExternalDispatchShim,
+    ) -> Result<(), String> {
+        if site.roster_sha256() != self.roster_sha256 {
+            return Err(format!(
+                "{} site belongs to a different admitted roster",
+                self.target_logical_name
+            ));
+        }
+        let slot_rva = site.expected().slot_rva;
+        let position = self
+            .required_slot_rvas
+            .iter()
+            .position(|required| *required == slot_rva)
+            .ok_or_else(|| {
+                format!(
+                    "{} slot 0x{slot_rva:X} is not an outstanding slot of this roster",
+                    self.target_logical_name
+                )
+            })?;
+        // Record the attempt before making it. An error return does not mean
+        // the slot is untouched, so the attempt has to be visible even if this
+        // call never returns normally.
+        if !self.unresolved_slot_rvas.contains(&slot_rva) {
+            self.unresolved_slot_rvas.push(slot_rva);
+        }
+        let receipt = install_engine_owned_function_pointer_slot(
+            site,
+            self.module_base,
+            sealed_shim,
+            self.teardown_owner_token,
+        )?;
+        self.required_slot_rvas.remove(position);
+        self.unresolved_slot_rvas.retain(|pending| *pending != slot_rva);
+        self.installed.push(receipt);
+        Ok(())
+    }
+
+    /// Complete the installation, or report what was left uncovered.
+    pub fn finish(
+        self,
+    ) -> Result<
+        CompleteEngineOwnedSlotRosterInstallation,
+        IncompleteEngineOwnedSlotRosterInstallation,
+    > {
+        if !self.required_slot_rvas.is_empty() {
+            return Err(IncompleteEngineOwnedSlotRosterInstallation {
+                target_logical_name: self.target_logical_name,
+                roster_sha256: self.roster_sha256,
+                teardown_owner_token: self.teardown_owner_token,
+                installed: self.installed,
+                uncovered_slot_rvas: self.required_slot_rvas,
+                unresolved_slot_rvas: self.unresolved_slot_rvas,
+            });
+        }
+        Ok(CompleteEngineOwnedSlotRosterInstallation {
+            target_logical_name: self.target_logical_name,
+            target_function_rva: self.target_function_rva,
+            roster_sha256: self.roster_sha256,
+            teardown_owner_token: self.teardown_owner_token,
+            receipts: self.installed,
+        })
+    }
+}
+
+/// Widen one roster-admitted engine-owned site into the shared lifecycle's
+/// specification form.
+///
+/// Public because the quiesce and restore paths take the same specification and
+/// a caller must be able to reproduce exactly the one it installed with.
+pub fn engine_owned_expected_pointer_slot(
+    site: &RosterAdmittedEngineOwnedSlotSite,
+    module_base: usize,
+) -> Result<ExpectedPointerSlot, String> {
+    let expected = site.expected();
+    if module_base == 0 {
+        return Err(format!(
+            "{} engine-owned slot module base is zero",
+            expected.logical_name
+        ));
+    }
+    if expected.module_sha256 != A729_EXE_SHA256 {
+        return Err(format!(
+            "{} engine-owned slot is pinned to a module this crate does not admit",
+            expected.logical_name
+        ));
+    }
+    let expected_original_address = usize::try_from(expected.expected_original_target_rva)
+        .ok()
+        .and_then(|rva| module_base.checked_add(rva))
+        .ok_or_else(|| {
+            format!(
+                "{} engine-owned slot target address overflow",
+                expected.logical_name
+            )
+        })?;
+    Ok(ExpectedPointerSlot {
+        logical_name: expected.logical_name,
+        slot_rva: expected.slot_rva,
+        provenance: SlotProvenance::EngineOwnedFunctionPointer(
+            EngineOwnedSlotAttestation::from_roster_admitted_site(site),
+        ),
+        expected_original_address,
+    })
+}
+
+/// The shared install lifecycle.
+///
+/// Deliberately private. Publishing it would re-open single-slot installation
+/// of a multi-slot engine-owned target by the back door: a legitimately
+/// roster-admitted site widens into a perfectly valid `ExpectedPointerSlot`,
+/// and handing that straight to a generic installer produces a receipt for one
+/// slot of a target whose other slots are still dispatching unobserved. The two
+/// public routes in -- `install_pe64_import_address_slot` and
+/// `EngineOwnedSlotRosterInstallation` -- are the two shapes for which a
+/// single-call install is actually complete.
+#[cfg(windows)]
+fn install_pointer_slot(
+    expected: ExpectedPointerSlot,
+    sealed_shim: &SealedExternalDispatchShim,
+    teardown_owner_token: u64,
+) -> Result<InstalledPointerSlotReceipt, String> {
+    validate_expected_pointer_slot(expected)?;
     if teardown_owner_token == 0 {
         return Err(format!(
             "{} teardown owner token is zero",
@@ -1029,37 +1485,37 @@ pub fn install_pe64_import_address_slot(
         ));
     }
     let module = observe_main_module()?;
-    let slot_address = validate_pe64_import_slot(module, expected)?;
+    let slot_address = validate_pointer_slot(module, expected)?;
     validate_atomic_pointer_slot_memory(slot_address)?;
     let key = (teardown_owner_token, expected.slot_rva);
-    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = POINTER_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut registry = registry
         .lock()
-        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+        .map_err(|_| "pointer-slot custody registry is poisoned")?;
     if registry.iter().any(|(existing_key, state)| {
         if *existing_key == key {
             return false;
         }
         match state {
-            Pe64ImportSlotCustodyState::Provisional(binding) => {
+            PointerSlotCustodyState::Provisional(binding) => {
                 binding.slot_address == slot_address
             }
-            Pe64ImportSlotCustodyState::Active(binding) => {
+            PointerSlotCustodyState::Active(binding) => {
                 binding.receipt.observed_module_sha256 == module.sha256
                     && binding.receipt.observed_pe_identity_sha256 == module.pe_identity.sha256
                     && binding.receipt.slot_address == slot_address
             }
-            Pe64ImportSlotCustodyState::Quiescing(binding) => {
+            PointerSlotCustodyState::Quiescing(binding) => {
                 binding.installed.observed_module_sha256 == module.sha256
                     && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
                     && binding.installed.slot_address == slot_address
             }
-            Pe64ImportSlotCustodyState::Terminalizing(binding) => {
+            PointerSlotCustodyState::Terminalizing(binding) => {
                 binding.installed.observed_module_sha256 == module.sha256
                     && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
                     && binding.installed.slot_address == slot_address
             }
-            Pe64ImportSlotCustodyState::Terminal(binding) => {
+            PointerSlotCustodyState::Terminal(binding) => {
                 binding.installed.observed_module_sha256 == module.sha256
                     && binding.installed.observed_pe_identity_sha256 == module.pe_identity.sha256
                     && binding.installed.slot_address == slot_address
@@ -1072,7 +1528,7 @@ pub fn install_pe64_import_address_slot(
         ));
     }
     match registry.get(&key) {
-        Some(Pe64ImportSlotCustodyState::Provisional(binding)) => {
+        Some(PointerSlotCustodyState::Provisional(binding)) => {
             if binding.expected != expected
                 || binding.external_shim != external_shim
                 || binding.teardown_owner_token != teardown_owner_token
@@ -1084,8 +1540,8 @@ pub fn install_pe64_import_address_slot(
                 ));
             }
         }
-        Some(Pe64ImportSlotCustodyState::Active(binding)) => {
-            validate_installed_pe64_import_slot_binding(expected, &binding.receipt)?;
+        Some(PointerSlotCustodyState::Active(binding)) => {
+            validate_installed_pointer_slot_binding(expected, &binding.receipt)?;
             if binding.receipt.external_shim_address != external_shim_address
                 || binding.receipt.external_shim != external_shim
                 || binding.receipt.shim_callback_semantic_id != sealed_shim.callback_semantic_id
@@ -1103,7 +1559,7 @@ pub fn install_pe64_import_address_slot(
             }
             validate_sealed_shim_lease_and_live_dispatch(
                 sealed_shim,
-                SealedShimLeasePhase::Pe64ImportSlotActive {
+                SealedShimLeasePhase::PointerSlotActive {
                     teardown_owner_token,
                     slot_rva: expected.slot_rva,
                 },
@@ -1119,19 +1575,19 @@ pub fn install_pe64_import_address_slot(
             }
             return Ok(binding.receipt.clone());
         }
-        Some(Pe64ImportSlotCustodyState::Quiescing(_)) => {
+        Some(PointerSlotCustodyState::Quiescing(_)) => {
             return Err(format!(
                 "{} import-slot lease is already quiescing",
                 expected.logical_name
             ));
         }
-        Some(Pe64ImportSlotCustodyState::Terminalizing(_)) => {
+        Some(PointerSlotCustodyState::Terminalizing(_)) => {
             return Err(format!(
                 "{} import-slot lease is already terminalizing",
                 expected.logical_name
             ));
         }
-        Some(Pe64ImportSlotCustodyState::Terminal(_)) => {
+        Some(PointerSlotCustodyState::Terminal(_)) => {
             return Err(format!(
                 "{} import-slot lease is irreversible terminal custody",
                 expected.logical_name
@@ -1139,12 +1595,12 @@ pub fn install_pe64_import_address_slot(
         }
         None => {}
     }
-    let slot_spec_sha256 = pe64_import_slot_spec_sha256(expected);
+    let slot_spec_sha256 = pointer_slot_spec_sha256(expected);
     let (authenticity_seal, protection_before, recorded_install_cas) = match registry.get(&key) {
-        Some(Pe64ImportSlotCustodyState::Provisional(binding)) => {
+        Some(PointerSlotCustodyState::Provisional(binding)) => {
             validate_sealed_shim_lease_and_live_dispatch(
                 sealed_shim,
-                SealedShimLeasePhase::Pe64ImportSlotInstalling {
+                SealedShimLeasePhase::PointerSlotInstalling {
                     teardown_owner_token,
                     slot_rva: expected.slot_rva,
                 },
@@ -1164,7 +1620,7 @@ pub fn install_pe64_import_address_slot(
             transition_sealed_shim_lease(
                 sealed_shim,
                 SealedShimLeasePhase::Available,
-                SealedShimLeasePhase::Pe64ImportSlotInstalling {
+                SealedShimLeasePhase::PointerSlotInstalling {
                     teardown_owner_token,
                     slot_rva: expected.slot_rva,
                 },
@@ -1173,7 +1629,7 @@ pub fn install_pe64_import_address_slot(
             )?;
             registry.insert(
                 key,
-                Pe64ImportSlotCustodyState::Provisional(ProvisionalPe64ImportSlotBinding {
+                PointerSlotCustodyState::Provisional(ProvisionalPointerSlotBinding {
                     expected,
                     external_shim,
                     teardown_owner_token,
@@ -1194,7 +1650,7 @@ pub fn install_pe64_import_address_slot(
     // attest an installation this crate never performed, and would make the
     // `observed_before != expected.expected_original_address` check below a
     // tautology on exactly the path where it is the only remaining evidence.
-    let decision = decide_pe64_import_slot_install_cas(
+    let decision = decide_pointer_slot_install_cas(
         current,
         expected.expected_original_address,
         external_shim_address,
@@ -1202,13 +1658,13 @@ pub fn install_pe64_import_address_slot(
     )
     .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let cas = match decision {
-        Pe64ImportSlotInstallCasDecision::PerformCas => {
+        PointerSlotInstallCasDecision::PerformCas => {
             // Resolve the registry slot to write into *before* the exchange.
             // After it, recording is a plain field write on a borrow that
             // already exists, so no early return can stand between the
             // exchange and its record.
             let binding = match registry.get_mut(&key) {
-                Some(Pe64ImportSlotCustodyState::Provisional(binding))
+                Some(PointerSlotCustodyState::Provisional(binding))
                     if binding.expected == expected
                         && binding.external_shim == external_shim
                         && binding.teardown_owner_token == teardown_owner_token
@@ -1263,12 +1719,12 @@ pub fn install_pe64_import_address_slot(
             complete_recorded_install_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-        Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded) => {
+        PointerSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded) => {
             // Resolve the registry slot before the reconciliation runs, for the
             // same reason the `PerformCas` arm does: the write that follows must
             // not be able to fail to find its home.
             let binding = match registry.get_mut(&key) {
-                Some(Pe64ImportSlotCustodyState::Provisional(binding))
+                Some(PointerSlotCustodyState::Provisional(binding))
                     if binding.expected == expected
                         && binding.external_shim == external_shim
                         && binding.teardown_owner_token == teardown_owner_token
@@ -1302,7 +1758,7 @@ pub fn install_pe64_import_address_slot(
             complete_recorded_install_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-        Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(recorded) => {
+        PointerSlotInstallCasDecision::ReplayRecordedCas(recorded) => {
             let protection_after =
                 reconcile_pointer_slot_protection(slot_address, protection_before)?;
             complete_recorded_install_cas_observation(recorded, protection_after)
@@ -1346,15 +1802,14 @@ pub fn install_pe64_import_address_slot(
             expected.logical_name
         ));
     }
-    let receipt = InstalledPe64ImportAddressSlotReceipt {
+    let receipt = InstalledPointerSlotReceipt {
         logical_name: expected.logical_name,
         observed_module_name: BATTLE_PLAN_MODULE_NAME,
         observed_module_sha256: module.sha256,
         observed_pe_identity_sha256: module.pe_identity.sha256,
         observed_pe_timestamp: module.pe_identity.timestamp,
         observed_size_of_image: module.pe_identity.size_of_image,
-        imported_dll: expected.imported_dll,
-        imported_symbol: expected.imported_symbol,
+        provenance: expected.provenance,
         slot_rva: expected.slot_rva,
         slot_address,
         slot_width: usize::BITS as u16 / 8,
@@ -1377,7 +1832,7 @@ pub fn install_pe64_import_address_slot(
         slot_protection_before: cas.protection_before,
         slot_protection_temporary: cas.protection_temporary,
         slot_protection_after: cas.protection_after,
-        primitive_id: PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID,
+        primitive_id: expected.provenance.primitive_id(),
         slot_spec_sha256,
         teardown_owner_token,
         installed: true,
@@ -1385,11 +1840,11 @@ pub fn install_pe64_import_address_slot(
     };
     transition_sealed_shim_lease(
         sealed_shim,
-        SealedShimLeasePhase::Pe64ImportSlotInstalling {
+        SealedShimLeasePhase::PointerSlotInstalling {
             teardown_owner_token,
             slot_rva: expected.slot_rva,
         },
-        SealedShimLeasePhase::Pe64ImportSlotActive {
+        SealedShimLeasePhase::PointerSlotActive {
             teardown_owner_token,
             slot_rva: expected.slot_rva,
         },
@@ -1398,7 +1853,7 @@ pub fn install_pe64_import_address_slot(
     )?;
     registry.insert(
         key,
-        Pe64ImportSlotCustodyState::Active(ActivePe64ImportSlotBinding {
+        PointerSlotCustodyState::Active(ActivePointerSlotBinding {
             receipt: receipt.clone(),
         }),
     );
@@ -1406,13 +1861,13 @@ pub fn install_pe64_import_address_slot(
 }
 
 #[cfg(windows)]
-pub fn verify_installed_pe64_import_address_slot(
-    expected: ExpectedPe64ImportAddressSlot,
-    installed: &InstalledPe64ImportAddressSlotReceipt,
+pub fn verify_installed_pointer_slot(
+    expected: ExpectedPointerSlot,
+    installed: &InstalledPointerSlotReceipt,
     sealed_shim: &SealedExternalDispatchShim,
 ) -> Result<(), String> {
-    validate_expected_pe64_import_slot(expected)?;
-    validate_installed_pe64_import_slot_binding(expected, installed)?;
+    validate_expected_pointer_slot(expected)?;
+    validate_installed_pointer_slot_binding(expected, installed)?;
     validate_sealed_external_dispatch_shim(sealed_shim)?;
     if sealed_shim.identity != installed.external_shim
         || sealed_shim.template_id != installed.shim_template_id
@@ -1429,7 +1884,7 @@ pub fn verify_installed_pe64_import_address_slot(
         ));
     }
     let module = observe_main_module()?;
-    let slot_address = validate_pe64_import_slot(module, expected)?;
+    let slot_address = validate_pointer_slot(module, expected)?;
     if slot_address != installed.slot_address
         || atomic_load_pointer_slot(slot_address)? != installed.external_shim_address
     {
@@ -1438,13 +1893,13 @@ pub fn verify_installed_pe64_import_address_slot(
             expected.logical_name
         ));
     }
-    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = POINTER_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
     let registry = registry
         .lock()
-        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+        .map_err(|_| "pointer-slot custody registry is poisoned")?;
     let key = (installed.teardown_owner_token, installed.slot_rva);
     match registry.get(&key) {
-        Some(Pe64ImportSlotCustodyState::Active(binding)) if binding.receipt == *installed => {}
+        Some(PointerSlotCustodyState::Active(binding)) if binding.receipt == *installed => {}
         _ => {
             return Err(format!(
                 "{} is not the crate-owned active import-slot lease",
@@ -1454,7 +1909,7 @@ pub fn verify_installed_pe64_import_address_slot(
     }
     validate_sealed_shim_lease_and_live_dispatch(
         sealed_shim,
-        SealedShimLeasePhase::Pe64ImportSlotActive {
+        SealedShimLeasePhase::PointerSlotActive {
             teardown_owner_token: installed.teardown_owner_token,
             slot_rva: installed.slot_rva,
         },
@@ -1468,20 +1923,20 @@ pub fn verify_installed_pe64_import_address_slot(
 /// observed at zero. A timed-out call retains resumable crate custody with the
 /// dispatch already pointing at the original.
 #[cfg(windows)]
-pub fn quiesce_pe64_import_address_slot(
-    expected: ExpectedPe64ImportAddressSlot,
-    installed: &InstalledPe64ImportAddressSlotReceipt,
+pub fn quiesce_pointer_slot(
+    expected: ExpectedPointerSlot,
+    installed: &InstalledPointerSlotReceipt,
     sealed_shim: &SealedExternalDispatchShim,
     max_yields: u32,
-) -> Result<Pe64ImportAddressSlotTerminalPermit, String> {
-    validate_expected_pe64_import_slot(expected)?;
-    validate_installed_pe64_import_slot_binding(expected, installed)?;
+) -> Result<PointerSlotTerminalPermit, String> {
+    validate_expected_pointer_slot(expected)?;
+    validate_installed_pointer_slot_binding(expected, installed)?;
     validate_sealed_external_dispatch_shim(sealed_shim)?;
     validate_installed_sealed_shim_authority(installed, sealed_shim)?;
-    let max_yields = validate_pe64_import_slot_quiesce_yields(max_yields)
+    let max_yields = validate_pointer_slot_quiesce_yields(max_yields)
         .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let module = observe_main_module()?;
-    let slot_address = validate_pe64_import_slot(module, expected)?;
+    let slot_address = validate_pointer_slot(module, expected)?;
     if slot_address != installed.slot_address
         || atomic_load_pointer_slot(slot_address)? != installed.external_shim_address
     {
@@ -1491,7 +1946,7 @@ pub fn quiesce_pe64_import_address_slot(
         ));
     }
     let key = (installed.teardown_owner_token, installed.slot_rva);
-    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = POINTER_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
     // Publish `Quiescing` under the guard, then drop it. The cutover and the
     // yield loop below run unlocked: they are the caller-bounded part of the
     // operation and every other import-slot custody call needs this same
@@ -1501,16 +1956,16 @@ pub fn quiesce_pe64_import_address_slot(
     let published_permit = {
         let mut registry = registry
             .lock()
-            .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+            .map_err(|_| "pointer-slot custody registry is poisoned")?;
         match registry.get(&key) {
-            Some(Pe64ImportSlotCustodyState::Active(binding)) if binding.receipt == *installed => {
+            Some(PointerSlotCustodyState::Active(binding)) if binding.receipt == *installed => {
                 transition_sealed_shim_lease(
                     sealed_shim,
-                    SealedShimLeasePhase::Pe64ImportSlotActive {
+                    SealedShimLeasePhase::PointerSlotActive {
                         teardown_owner_token: installed.teardown_owner_token,
                         slot_rva: installed.slot_rva,
                     },
-                    SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+                    SealedShimLeasePhase::PointerSlotTerminalizing {
                         teardown_owner_token: installed.teardown_owner_token,
                         slot_rva: installed.slot_rva,
                     },
@@ -1519,19 +1974,19 @@ pub fn quiesce_pe64_import_address_slot(
                 )?;
                 registry.insert(
                     key,
-                    Pe64ImportSlotCustodyState::Quiescing(QuiescingPe64ImportSlotBinding {
+                    PointerSlotCustodyState::Quiescing(QuiescingPointerSlotBinding {
                         installed: installed.clone(),
                         permit: None,
                     }),
                 );
                 None
             }
-            Some(Pe64ImportSlotCustodyState::Quiescing(binding))
+            Some(PointerSlotCustodyState::Quiescing(binding))
                 if binding.installed == *installed =>
             {
                 binding.permit.clone()
             }
-            Some(Pe64ImportSlotCustodyState::Quiescing(_)) => {
+            Some(PointerSlotCustodyState::Quiescing(_)) => {
                 return Err(format!(
                     "{} quiescence retry changed installed custody",
                     expected.logical_name
@@ -1546,20 +2001,20 @@ pub fn quiesce_pe64_import_address_slot(
         }
     };
     if let Some(permit) = published_permit {
-        validate_pe64_import_terminal_permit(installed, sealed_shim, &permit)?;
+        validate_pointer_slot_terminal_permit(installed, sealed_shim, &permit)?;
         return Ok(permit);
     }
     atomic_cutover_external_dispatch_to_original(sealed_shim)?;
     let started = std::time::Instant::now();
-    let outcome = drive_pe64_import_slot_quiesce_loop(
+    let outcome = drive_pointer_slot_quiesce_loop(
         max_yields,
-        PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET,
+        POINTER_SLOT_QUIESCE_TIME_BUDGET,
         || observe_sealed_shim_dispatch(sealed_shim).map(|(_, active_count)| active_count),
         std::thread::yield_now,
         || started.elapsed(),
     )?;
     if !outcome.observed_zero() {
-        return Err(render_pe64_import_slot_quiesce_timeout(
+        return Err(render_pointer_slot_quiesce_timeout(
             expected.logical_name,
             &outcome,
         ));
@@ -1576,7 +2031,7 @@ pub fn quiesce_pe64_import_address_slot(
             expected.logical_name
         ));
     }
-    let permit = Pe64ImportAddressSlotTerminalPermit {
+    let permit = PointerSlotTerminalPermit {
         logical_name: installed.logical_name,
         slot_rva: installed.slot_rva,
         teardown_owner_token: installed.teardown_owner_token,
@@ -1592,9 +2047,9 @@ pub fn quiesce_pe64_import_address_slot(
     let (published, adopted_racing_permit) = {
         let mut registry = registry
             .lock()
-            .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+            .map_err(|_| "pointer-slot custody registry is poisoned")?;
         match registry.get_mut(&key) {
-            Some(Pe64ImportSlotCustodyState::Quiescing(binding))
+            Some(PointerSlotCustodyState::Quiescing(binding))
                 if binding.installed == *installed =>
             {
                 match &binding.permit {
@@ -1614,7 +2069,7 @@ pub fn quiesce_pe64_import_address_slot(
         }
     };
     if adopted_racing_permit {
-        validate_pe64_import_terminal_permit(installed, sealed_shim, &published)?;
+        validate_pointer_slot_terminal_permit(installed, sealed_shim, &published)?;
     }
     Ok(published)
 }
@@ -1624,14 +2079,14 @@ pub fn quiesce_pe64_import_address_slot(
 /// quiescent. The shim allocation remains process-lifetime custody because a
 /// target thread may already have loaded its old pointer from the import slot.
 #[cfg(windows)]
-pub fn restore_pe64_import_address_slot_process_lifetime(
-    expected: ExpectedPe64ImportAddressSlot,
-    installed: &InstalledPe64ImportAddressSlotReceipt,
+pub fn restore_pointer_slot_process_lifetime(
+    expected: ExpectedPointerSlot,
+    installed: &InstalledPointerSlotReceipt,
     sealed_shim: &SealedExternalDispatchShim,
-    permit: &Pe64ImportAddressSlotTerminalPermit,
-) -> Result<RestoredPe64ImportAddressSlotCustodyReceipt, String> {
-    validate_expected_pe64_import_slot(expected)?;
-    validate_installed_pe64_import_slot_binding(expected, installed)?;
+    permit: &PointerSlotTerminalPermit,
+) -> Result<RestoredPointerSlotCustodyReceipt, String> {
+    validate_expected_pointer_slot(expected)?;
+    validate_installed_pointer_slot_binding(expected, installed)?;
     validate_sealed_external_dispatch_shim(sealed_shim)?;
     if sealed_shim.identity != installed.external_shim
         || sealed_shim.template_id != installed.shim_template_id
@@ -1651,7 +2106,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         ));
     }
     let module = observe_main_module()?;
-    let slot_address = validate_pe64_import_slot(module, expected)?;
+    let slot_address = validate_pointer_slot(module, expected)?;
     if slot_address != installed.slot_address {
         return Err(format!(
             "{} import slot address changed",
@@ -1660,10 +2115,10 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
     }
     validate_atomic_pointer_slot_memory(slot_address)?;
     let key = (installed.teardown_owner_token, installed.slot_rva);
-    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = POINTER_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut registry = registry
         .lock()
-        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+        .map_err(|_| "pointer-slot custody registry is poisoned")?;
     let terminalizing = match registry.get(&key) {
         None => {
             return Err(format!(
@@ -1671,26 +2126,26 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 expected.logical_name
             ));
         }
-        Some(Pe64ImportSlotCustodyState::Provisional(_)) => {
+        Some(PointerSlotCustodyState::Provisional(_)) => {
             return Err(format!(
                 "{} import-slot install remains provisional",
                 expected.logical_name
             ));
         }
-        Some(Pe64ImportSlotCustodyState::Active(_)) => {
+        Some(PointerSlotCustodyState::Active(_)) => {
             return Err(format!(
                 "{} must obtain a core-owned terminal permit before restore",
                 expected.logical_name
             ));
         }
-        Some(Pe64ImportSlotCustodyState::Quiescing(binding)) => {
+        Some(PointerSlotCustodyState::Quiescing(binding)) => {
             if &binding.installed != installed || binding.permit.as_ref() != Some(permit) {
                 return Err(format!(
                     "{} restore changed the core-owned terminal permit",
                     expected.logical_name
                 ));
             }
-            validate_pe64_import_terminal_permit(installed, sealed_shim, permit)?;
+            validate_pointer_slot_terminal_permit(installed, sealed_shim, permit)?;
             let authenticity_seal = next_receipt_seal()? ^ installed.authenticity_seal;
             if authenticity_seal == 0 {
                 return Err(format!(
@@ -1699,7 +2154,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 ));
             }
             let protection_before_restore = pointer_slot_protection(slot_address)?;
-            let terminalizing = TerminalizingPe64ImportSlotBinding {
+            let terminalizing = TerminalizingPointerSlotBinding {
                 installed: installed.clone(),
                 permit: permit.clone(),
                 observed_terminal: permit.observed_terminal,
@@ -1709,11 +2164,11 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             };
             registry.insert(
                 key,
-                Pe64ImportSlotCustodyState::Terminalizing(terminalizing.clone()),
+                PointerSlotCustodyState::Terminalizing(terminalizing.clone()),
             );
             terminalizing
         }
-        Some(Pe64ImportSlotCustodyState::Terminalizing(binding)) => {
+        Some(PointerSlotCustodyState::Terminalizing(binding)) => {
             if &binding.installed != installed || &binding.permit != permit {
                 return Err(format!(
                     "{} terminalizing retry changed custody inputs",
@@ -1722,7 +2177,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             }
             validate_sealed_shim_lease_and_live_dispatch(
                 sealed_shim,
-                SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+                SealedShimLeasePhase::PointerSlotTerminalizing {
                     teardown_owner_token: installed.teardown_owner_token,
                     slot_rva: installed.slot_rva,
                 },
@@ -1731,14 +2186,14 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             )?;
             binding.clone()
         }
-        Some(Pe64ImportSlotCustodyState::Terminal(binding)) => {
+        Some(PointerSlotCustodyState::Terminal(binding)) => {
             if &binding.installed != installed {
                 return Err(format!(
                     "{} terminal retry changed installed receipt",
                     expected.logical_name
                 ));
             }
-            validate_terminal_pe64_import_slot_live(&binding.receipt)?;
+            validate_terminal_pointer_slot_live(&binding.receipt)?;
             return Ok(binding.receipt.clone());
         }
     };
@@ -1748,7 +2203,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
     // compare-exchange is somebody else's restore and is refused outright --
     // synthesizing `observed_before` from `installed` there would attest a
     // transition this crate never witnessed.
-    let decision = decide_pe64_import_slot_restore_cas(
+    let decision = decide_pointer_slot_restore_cas(
         current,
         installed.expected_original_address,
         installed.external_shim_address,
@@ -1756,13 +2211,13 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
     )
     .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let cas = match decision {
-        Pe64ImportSlotRestoreCasDecision::PerformCas => {
+        PointerSlotRestoreCasDecision::PerformCas => {
             // Resolve the registry slot to write into *before* the exchange.
             // After it, recording is a plain field write on a borrow that
             // already exists, so no early return can stand between the
             // exchange and its record.
             let binding = match registry.get_mut(&key) {
-                Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
+                Some(PointerSlotCustodyState::Terminalizing(binding))
                     if binding.installed == *installed && &binding.permit == permit =>
                 {
                     binding
@@ -1813,12 +2268,12 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             complete_recorded_restore_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-        Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded) => {
+        PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded) => {
             // Resolve the registry slot before the reconciliation runs, for the
             // same reason the `PerformCas` arm does: the write that follows must
             // not be able to fail to find its home.
             let binding = match registry.get_mut(&key) {
-                Some(Pe64ImportSlotCustodyState::Terminalizing(binding))
+                Some(PointerSlotCustodyState::Terminalizing(binding))
                     if binding.installed == *installed && &binding.permit == permit =>
                 {
                     binding
@@ -1848,7 +2303,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             complete_recorded_restore_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-        Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(recorded) => {
+        PointerSlotRestoreCasDecision::ReplayRecordedCas(recorded) => {
             let protection_after = reconcile_pointer_slot_protection(
                 slot_address,
                 terminalizing.protection_before_restore,
@@ -1886,15 +2341,14 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
             expected.logical_name
         ));
     }
-    let mut receipt = RestoredPe64ImportAddressSlotCustodyReceipt {
+    let mut receipt = RestoredPointerSlotCustodyReceipt {
         logical_name: installed.logical_name,
         observed_module_name: installed.observed_module_name,
         observed_module_sha256: installed.observed_module_sha256,
         observed_pe_identity_sha256: installed.observed_pe_identity_sha256,
         observed_pe_timestamp: installed.observed_pe_timestamp,
         observed_size_of_image: installed.observed_size_of_image,
-        imported_dll: installed.imported_dll,
-        imported_symbol: installed.imported_symbol,
+        provenance: installed.provenance,
         slot_rva: installed.slot_rva,
         slot_address: installed.slot_address,
         slot_width: installed.slot_width,
@@ -1912,7 +2366,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         callbacks_quiesced: true,
         slot_restored: true,
         retained_until_process_exit: true,
-        policy_id: PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID,
+        policy_id: installed.provenance.policy_id(),
         external_shim: terminalizing.permit.external_shim,
         shim_template_id: installed.shim_template_id,
         shim_callback_semantic_id: installed.shim_callback_semantic_id,
@@ -1932,15 +2386,15 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
         promotion_digest_sha256: [0; 32],
         authenticity_seal: terminalizing.authenticity_seal,
     };
-    receipt.custody_digest_sha256 = restored_pe64_import_slot_custody_digest(&receipt);
-    receipt.promotion_digest_sha256 = restored_pe64_import_slot_promotion_digest(&receipt);
+    receipt.custody_digest_sha256 = restored_pointer_slot_custody_digest(&receipt);
+    receipt.promotion_digest_sha256 = restored_pointer_slot_promotion_digest(&receipt);
     transition_sealed_shim_lease(
         sealed_shim,
-        SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+        SealedShimLeasePhase::PointerSlotTerminalizing {
             teardown_owner_token: installed.teardown_owner_token,
             slot_rva: installed.slot_rva,
         },
-        SealedShimLeasePhase::Pe64ImportSlotTerminal {
+        SealedShimLeasePhase::PointerSlotTerminal {
             teardown_owner_token: installed.teardown_owner_token,
             slot_rva: installed.slot_rva,
         },
@@ -1949,7 +2403,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
     )?;
     registry.insert(
         key,
-        Pe64ImportSlotCustodyState::Terminal(TerminalPe64ImportSlotBinding {
+        PointerSlotCustodyState::Terminal(TerminalPointerSlotBinding {
             installed: installed.clone(),
             receipt: receipt.clone(),
         }),
@@ -1958,30 +2412,30 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
 }
 
 #[cfg(windows)]
-pub fn verify_restored_pe64_import_address_slot_custody(
-    installed: &InstalledPe64ImportAddressSlotReceipt,
-    receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
+pub fn verify_restored_pointer_slot_custody(
+    installed: &InstalledPointerSlotReceipt,
+    receipt: &RestoredPointerSlotCustodyReceipt,
 ) -> Result<(), String> {
     validate_terminal_receipt_binding(installed, receipt)?;
-    if restored_pe64_import_slot_custody_digest(receipt) != receipt.custody_digest_sha256 {
+    if restored_pointer_slot_custody_digest(receipt) != receipt.custody_digest_sha256 {
         return Err(format!(
             "{} terminal import-slot custody digest mismatch",
             receipt.logical_name
         ));
     }
-    if restored_pe64_import_slot_promotion_digest(receipt) != receipt.promotion_digest_sha256 {
+    if restored_pointer_slot_promotion_digest(receipt) != receipt.promotion_digest_sha256 {
         return Err(format!(
             "{} terminal import-slot promotion digest mismatch",
             receipt.logical_name
         ));
     }
-    let registry = PE64_IMPORT_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let registry = POINTER_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
     let registry = registry
         .lock()
-        .map_err(|_| "PE64 import-slot custody registry is poisoned")?;
+        .map_err(|_| "pointer-slot custody registry is poisoned")?;
     let key = (installed.teardown_owner_token, installed.slot_rva);
     match registry.get(&key) {
-        Some(Pe64ImportSlotCustodyState::Terminal(binding))
+        Some(PointerSlotCustodyState::Terminal(binding))
             if binding.installed == *installed && binding.receipt == *receipt => {}
         _ => {
             return Err(format!(
@@ -1990,21 +2444,20 @@ pub fn verify_restored_pe64_import_address_slot_custody(
             ));
         }
     }
-    validate_terminal_pe64_import_slot_live(receipt)
+    validate_terminal_pointer_slot_live(receipt)
 }
 
-pub fn restored_pe64_import_slot_custody_digest(
-    receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
+pub fn restored_pointer_slot_custody_digest(
+    receipt: &RestoredPointerSlotCustodyReceipt,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"hoi4.production_hook.pe64_import_slot_terminal.v2");
+    digest.update(b"hoi4.production_hook.pointer_slot_terminal.v3");
     digest_len_prefixed(&mut digest, receipt.logical_name.as_bytes());
     digest.update(receipt.observed_module_sha256);
     digest.update(receipt.observed_pe_identity_sha256);
     digest.update(receipt.observed_pe_timestamp.to_le_bytes());
     digest.update(receipt.observed_size_of_image.to_le_bytes());
-    digest_len_prefixed(&mut digest, receipt.imported_dll.as_bytes());
-    digest_len_prefixed(&mut digest, receipt.imported_symbol.as_bytes());
+    digest_slot_provenance(&mut digest, receipt.provenance);
     digest.update(receipt.slot_rva.to_le_bytes());
     digest.update((receipt.slot_address as u64).to_le_bytes());
     digest.update(receipt.slot_width.to_le_bytes());
@@ -2042,18 +2495,17 @@ pub fn restored_pe64_import_slot_custody_digest(
     digest.finalize().into()
 }
 
-pub fn restored_pe64_import_slot_promotion_digest(
-    receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
+pub fn restored_pointer_slot_promotion_digest(
+    receipt: &RestoredPointerSlotCustodyReceipt,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"hoi4.production_hook.pe64_import_slot_promotion.v2");
+    digest.update(b"hoi4.production_hook.pointer_slot_promotion.v3");
     digest_len_prefixed(&mut digest, receipt.logical_name.as_bytes());
     digest.update(receipt.observed_module_sha256);
     digest.update(receipt.observed_pe_identity_sha256);
     digest.update(receipt.observed_pe_timestamp.to_le_bytes());
     digest.update(receipt.observed_size_of_image.to_le_bytes());
-    digest_len_prefixed(&mut digest, receipt.imported_dll.as_bytes());
-    digest_len_prefixed(&mut digest, receipt.imported_symbol.as_bytes());
+    digest_slot_provenance(&mut digest, receipt.provenance);
     digest.update(receipt.slot_rva.to_le_bytes());
     digest.update(receipt.slot_width.to_le_bytes());
     digest.update(receipt.slot_alignment.to_le_bytes());
@@ -2349,29 +2801,96 @@ struct ObservedExternalDispatchTerminal {
     active_count: u64,
 }
 
-fn validate_expected_pe64_import_slot(
-    expected: ExpectedPe64ImportAddressSlot,
-) -> Result<(), String> {
+fn validate_expected_pointer_slot(expected: ExpectedPointerSlot) -> Result<(), String> {
     if expected.logical_name.is_empty()
         || expected.slot_rva == 0
-        || expected.imported_dll.is_empty()
-        || expected.imported_symbol.is_empty()
-        || !expected.imported_dll.is_ascii()
-        || !expected.imported_symbol.is_ascii()
+        || expected.slot_rva % ENGINE_OWNED_SLOT_WIDTH_BYTES != 0
         || expected.expected_original_address == 0
     {
-        return Err("PE64 import-slot expected specification is not admitted".into());
+        return Err(format!(
+            "{} pointer-slot expected specification is not admitted",
+            expected.logical_name
+        ));
+    }
+    match expected.provenance {
+        SlotProvenance::Pe64Import {
+            imported_dll,
+            imported_symbol,
+        } => {
+            if imported_dll.is_empty()
+                || imported_symbol.is_empty()
+                || !imported_dll.is_ascii()
+                || !imported_symbol.is_ascii()
+            {
+                return Err("PE64 import-slot expected specification is not admitted".into());
+            }
+        }
+        SlotProvenance::EngineOwnedFunctionPointer(attestation) => {
+            // Reaching here at all means the attestation came from a roster
+            // admission: `EngineOwnedSlotAttestation` has no public
+            // constructor. These are the checks that still have content --
+            // that the specification's slot address was not edited away from
+            // the owner the attestation carries after the fact.
+            if attestation.enumeration_sha256() == [0; 32]
+                || attestation.roster_sha256() == [0; 32]
+                || attestation.roster_slot_count() == 0
+                || attestation.owner().derived_slot_rva() != Some(expected.slot_rva)
+                || attestation.owner().entry_index >= attestation.owner().entry_count
+            {
+                return Err(format!(
+                    "{} engine-owned slot specification is not roster-admitted",
+                    expected.logical_name
+                ));
+            }
+        }
     }
     Ok(())
 }
 
-fn pe64_import_slot_spec_sha256(expected: ExpectedPe64ImportAddressSlot) -> [u8; 32] {
+fn digest_slot_provenance(digest: &mut Sha256, provenance: SlotProvenance) {
+    match provenance {
+        SlotProvenance::Pe64Import {
+            imported_dll,
+            imported_symbol,
+        } => {
+            digest.update([1u8]);
+            digest_len_prefixed(digest, imported_dll.as_bytes());
+            digest_len_prefixed(digest, imported_symbol.as_bytes());
+        }
+        SlotProvenance::EngineOwnedFunctionPointer(attestation) => {
+            digest.update([2u8]);
+            digest.update([match attestation.owner().kind {
+                OwningStructureKind::Vtable => 1u8,
+                OwningStructureKind::FunctionPointerTable => 2u8,
+            }]);
+            digest.update(attestation.owner().base_rva.to_le_bytes());
+            digest.update(attestation.owner().entry_count.to_le_bytes());
+            digest.update(attestation.owner().entry_index.to_le_bytes());
+            digest.update(attestation.enumeration_sha256());
+            digest.update(attestation.roster_sha256());
+            digest.update((attestation.roster_slot_count() as u64).to_le_bytes());
+        }
+    }
+}
+
+fn pointer_slot_spec_sha256(expected: ExpectedPointerSlot) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"hoi4.production_hook.pe64_import_slot_spec.v1");
+    // Domain-separated per provenance, and `digest_slot_provenance` also
+    // prepends a variant tag, so no engine-owned specification can collide with
+    // an import specification however its fields are chosen. Both digests are
+    // process-local receipt content computed by this encoder on every call --
+    // no admitted value is transcribed anywhere against them.
+    match expected.provenance {
+        SlotProvenance::Pe64Import { .. } => {
+            digest.update(b"hoi4.production_hook.pe64_import_slot_spec.v1")
+        }
+        SlotProvenance::EngineOwnedFunctionPointer(_) => {
+            digest.update(b"hoi4.production_hook.engine_owned_function_pointer_slot.v1")
+        }
+    }
     digest_len_prefixed(&mut digest, expected.logical_name.as_bytes());
     digest.update(expected.slot_rva.to_le_bytes());
-    digest_len_prefixed(&mut digest, expected.imported_dll.as_bytes());
-    digest_len_prefixed(&mut digest, expected.imported_symbol.as_bytes());
+    digest_slot_provenance(&mut digest, expected.provenance);
     digest.update((expected.expected_original_address as u64).to_le_bytes());
     digest.update(A729_EXE_SHA256);
     digest.finalize().into()
@@ -2441,15 +2960,14 @@ fn authenticated_external_callback_manifest_sha256(
 }
 
 #[cfg(windows)]
-fn validate_installed_pe64_import_slot_binding(
-    expected: ExpectedPe64ImportAddressSlot,
-    receipt: &InstalledPe64ImportAddressSlotReceipt,
+fn validate_installed_pointer_slot_binding(
+    expected: ExpectedPointerSlot,
+    receipt: &InstalledPointerSlotReceipt,
 ) -> Result<(), String> {
     if receipt.logical_name != expected.logical_name
         || receipt.observed_module_name != BATTLE_PLAN_MODULE_NAME
         || receipt.observed_module_sha256 != A729_EXE_SHA256
-        || receipt.imported_dll != expected.imported_dll
-        || receipt.imported_symbol != expected.imported_symbol
+        || receipt.provenance != expected.provenance
         || receipt.slot_rva != expected.slot_rva
         || receipt.slot_address == 0
         || receipt.slot_width != usize::BITS as u16 / 8
@@ -2464,14 +2982,14 @@ fn validate_installed_pe64_import_slot_binding(
         || receipt.slot_protection_before == 0
         || receipt.slot_protection_temporary == 0
         || receipt.slot_protection_after != receipt.slot_protection_before
-        || receipt.primitive_id != PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID
-        || receipt.slot_spec_sha256 != pe64_import_slot_spec_sha256(expected)
+        || receipt.primitive_id != expected.provenance.primitive_id()
+        || receipt.slot_spec_sha256 != pointer_slot_spec_sha256(expected)
         || receipt.teardown_owner_token == 0
         || !receipt.installed
         || receipt.authenticity_seal == 0
     {
         return Err(format!(
-            "{} installed PE64 import-slot receipt is invalid",
+            "{} installed pointer-slot receipt is invalid",
             expected.logical_name
         ));
     }
@@ -2514,7 +3032,7 @@ fn validate_installed_pe64_import_slot_binding(
 
 #[cfg(windows)]
 fn validate_installed_sealed_shim_authority(
-    installed: &InstalledPe64ImportAddressSlotReceipt,
+    installed: &InstalledPointerSlotReceipt,
     sealed_shim: &SealedExternalDispatchShim,
 ) -> Result<(), String> {
     if sealed_shim.identity != installed.external_shim
@@ -2539,10 +3057,10 @@ fn validate_installed_sealed_shim_authority(
 }
 
 #[cfg(windows)]
-fn validate_pe64_import_terminal_permit(
-    installed: &InstalledPe64ImportAddressSlotReceipt,
+fn validate_pointer_slot_terminal_permit(
+    installed: &InstalledPointerSlotReceipt,
     sealed_shim: &SealedExternalDispatchShim,
-    permit: &Pe64ImportAddressSlotTerminalPermit,
+    permit: &PointerSlotTerminalPermit,
 ) -> Result<(), String> {
     validate_installed_sealed_shim_authority(installed, sealed_shim)?;
     if permit.logical_name != installed.logical_name
@@ -2560,7 +3078,7 @@ fn validate_pe64_import_terminal_permit(
     }
     validate_sealed_shim_lease_and_live_dispatch(
         sealed_shim,
-        SealedShimLeasePhase::Pe64ImportSlotTerminalizing {
+        SealedShimLeasePhase::PointerSlotTerminalizing {
             teardown_owner_token: installed.teardown_owner_token,
             slot_rva: installed.slot_rva,
         },
@@ -2571,8 +3089,8 @@ fn validate_pe64_import_terminal_permit(
 
 #[cfg(windows)]
 fn validate_terminal_receipt_binding(
-    installed: &InstalledPe64ImportAddressSlotReceipt,
-    receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
+    installed: &InstalledPointerSlotReceipt,
+    receipt: &RestoredPointerSlotCustodyReceipt,
 ) -> Result<(), String> {
     if receipt.logical_name != installed.logical_name
         || receipt.observed_module_name != installed.observed_module_name
@@ -2580,8 +3098,7 @@ fn validate_terminal_receipt_binding(
         || receipt.observed_pe_identity_sha256 != installed.observed_pe_identity_sha256
         || receipt.observed_pe_timestamp != installed.observed_pe_timestamp
         || receipt.observed_size_of_image != installed.observed_size_of_image
-        || receipt.imported_dll != installed.imported_dll
-        || receipt.imported_symbol != installed.imported_symbol
+        || receipt.provenance != installed.provenance
         || receipt.slot_rva != installed.slot_rva
         || receipt.slot_address != installed.slot_address
         || receipt.slot_width != installed.slot_width
@@ -2610,14 +3127,14 @@ fn validate_terminal_receipt_binding(
         || !receipt.callbacks_quiesced
         || !receipt.slot_restored
         || !receipt.retained_until_process_exit
-        || receipt.policy_id != PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID
+        || receipt.policy_id != installed.provenance.policy_id()
         || receipt.external_shim.entry_address != installed.external_shim_address
         || receipt.observed_terminal_dispatch_address != installed.expected_original_address
         || receipt.observed_active_callback_count != 0
         || receipt.authenticity_seal == 0
     {
         return Err(format!(
-            "{} terminal PE64 import-slot receipt is invalid",
+            "{} terminal pointer-slot receipt is invalid",
             receipt.logical_name
         ));
     }
@@ -2668,8 +3185,8 @@ fn observe_external_dispatch_terminal_live(
 }
 
 #[cfg(windows)]
-fn validate_terminal_pe64_import_slot_live(
-    receipt: &RestoredPe64ImportAddressSlotCustodyReceipt,
+fn validate_terminal_pointer_slot_live(
+    receipt: &RestoredPointerSlotCustodyReceipt,
 ) -> Result<(), String> {
     let shim = {
         let registry = SEALED_SHIM_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -2707,7 +3224,7 @@ fn validate_terminal_pe64_import_slot_live(
     };
     validate_sealed_shim_lease_and_live_dispatch(
         &shim,
-        SealedShimLeasePhase::Pe64ImportSlotTerminal {
+        SealedShimLeasePhase::PointerSlotTerminal {
             teardown_owner_token: receipt.teardown_owner_token,
             slot_rva: receipt.slot_rva,
         },
@@ -2981,6 +3498,11 @@ struct PeIdentity {
 #[derive(Clone, Copy, Debug)]
 struct PeSection {
     virtual_address: usize,
+    /// `VirtualSize`: the section's extent once loaded. Not interchangeable
+    /// with `raw_size`, which is the initialized on-disk size and may be larger
+    /// after file alignment padding or smaller before zero-fill. Containment in
+    /// the loaded image is a question about this field.
+    virtual_size: usize,
     raw_size: usize,
     raw_offset: usize,
     characteristics: u32,
@@ -3288,12 +3810,279 @@ fn module_file_bytes_at_rva<'a>(
         .ok_or_else(|| "production hook file-backed prefix is truncated".into())
 }
 
+/// Resolve one admitted slot to a process-local address, proving its
+/// provenance against the loaded image first.
+#[cfg(windows)]
+fn validate_pointer_slot(
+    module: &ObservedMainModule,
+    expected: ExpectedPointerSlot,
+) -> Result<usize, String> {
+    match expected.provenance {
+        SlotProvenance::Pe64Import {
+            imported_dll,
+            imported_symbol,
+        } => validate_pe64_import_slot(module, expected, imported_dll, imported_symbol),
+        SlotProvenance::EngineOwnedFunctionPointer(attestation) => {
+            validate_engine_owned_pointer_slot(module, expected, attestation.owner())
+        }
+    }
+}
+
+/// Prove an engine-owned function-pointer or vtable slot from the image alone.
+///
+/// There is no thunk to name the target, so every fact a receipt will carry is
+/// re-derived here from the pinned file image and the live mapping:
+///
+/// * the slot is naturally aligned and inside an initialized, file-backed
+///   section of this module;
+/// * the slot is **not** inside the PE import directory or any import address
+///   table, so an engine-owned receipt can never be minted over a real import
+///   (and, symmetrically, an import can never be laundered as engine-owned);
+/// * the file image's own static initializer at the slot already holds the
+///   declared target, which is what makes the owning-structure claim checkable
+///   rather than asserted;
+/// * the target RVA lies inside an executable section;
+/// * the live mapped slot still holds exactly `expected_original_address`.
+#[cfg(windows)]
+fn validate_engine_owned_pointer_slot(
+    module: &ObservedMainModule,
+    expected: ExpectedPointerSlot,
+    owner: OwningStructureIdentity,
+) -> Result<usize, String> {
+    if owner.derived_slot_rva() != Some(expected.slot_rva) {
+        return Err(format!(
+            "{} engine-owned slot is not its owning structure's declared entry",
+            expected.logical_name
+        ));
+    }
+    let target_rva = expected
+        .expected_original_address
+        .checked_sub(module.base)
+        .ok_or_else(|| {
+            format!(
+                "{} engine-owned slot target is below the module base",
+                expected.logical_name
+            )
+        })? as u64;
+    if !module_rva_is_executable(module, target_rva) {
+        return Err(format!(
+            "{} engine-owned slot target RVA is not inside an executable section",
+            expected.logical_name
+        ));
+    }
+    reject_pe64_import_table_overlap(module, expected)?;
+    let file_slot = module_file_bytes_at_rva(module, expected.slot_rva as usize, size_of::<u64>())?;
+    let file_value = u64::from_le_bytes(file_slot.try_into().unwrap());
+    let expected_file_value = file_preferred_image_base(module)?
+        .checked_add(target_rva)
+        .ok_or("engine-owned slot file value overflow")?;
+    if file_value != expected_file_value {
+        return Err(format!(
+            "{} engine-owned slot file image holds 0x{file_value:X}, not 0x{expected_file_value:X}",
+            expected.logical_name
+        ));
+    }
+    // The owning structure has to be a real, wholly in-image structure too: a
+    // base plus an entry count that runs off the end of the section is not an
+    // identity anything can be reviewed against.
+    let owner_span = u64::from(owner.entry_count)
+        .checked_mul(ENGINE_OWNED_SLOT_WIDTH_BYTES)
+        .ok_or("engine-owned slot owning structure span overflow")?;
+    let owner_span = usize::try_from(owner_span)
+        .map_err(|_| "engine-owned slot owning structure span does not fit usize")?;
+    module_file_bytes_at_rva(module, owner.base_rva as usize, owner_span)?;
+    let slot_address = checked_image_address(module, expected.slot_rva, size_of::<usize>())?;
+    if slot_address % std::mem::align_of::<usize>() != 0 {
+        return Err(format!(
+            "{} engine-owned slot is not naturally pointer-aligned",
+            expected.logical_name
+        ));
+    }
+    // No live-slot comparison here, deliberately. `perform_recorded_cas`
+    // records the exchange before its fallible page-protection cleanup, so an
+    // install can legitimately fail *after* the slot already holds the shim;
+    // recovery is a retry that replays the recorded exchange. A pre-check
+    // demanding the slot still read the original would reject exactly those
+    // retries before `decide_pointer_slot_install_cas` ever sees them, turning
+    // a recoverable partial install into a redirection with no obtainable
+    // receipt and therefore no teardown path. Whether the live slot is
+    // acceptable is the custody state machine's question, and it distinguishes
+    // a replayable record from an unwitnessed foreign write -- which this
+    // check could not. The PE64 import path likewise leaves it alone.
+    Ok(slot_address)
+}
+
+/// True when `rva` lands inside a section carrying `IMAGE_SCN_MEM_EXECUTE`.
+#[cfg(windows)]
+fn module_rva_is_executable(module: &ObservedMainModule, rva: u64) -> bool {
+    rva_is_in_executable_section(&module.sections, rva)
+}
+
+#[cfg(windows)]
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+
+/// Containment against the section's *loaded* extent.
+///
+/// `VirtualSize` and `SizeOfRawData` are different quantities and neither
+/// bounds the other: file alignment pads the raw size upwards, `.bss`-style
+/// zero-fill makes the virtual size the larger one. Only `VirtualSize`
+/// describes what is mapped, so only it answers "is this RVA inside the
+/// section". In a729's `.text` the raw size is 0x1D8 bytes longer than the
+/// virtual size, so using it would accept RVAs past the end of the section.
+#[cfg(windows)]
+fn rva_is_in_executable_section(sections: &[PeSection], rva: u64) -> bool {
+    let rva = match usize::try_from(rva) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    sections.iter().any(|section| {
+        section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0
+            && rva >= section.virtual_address
+            && rva < section.virtual_address.saturating_add(section.virtual_size)
+    })
+}
+
+/// The image base the file's own optional header prefers.
+///
+/// The static initializer stored in an engine-owned slot is an absolute address
+/// relative to *this* base, not to wherever the loader mapped the module, so a
+/// file-image check has to rebase against it.
+#[cfg(windows)]
+fn file_preferred_image_base(module: &ObservedMainModule) -> Result<u64, String> {
+    let pe_offset = read_u32(&module.file_bytes, 0x3c, "file PE header offset")? as usize;
+    let optional = pe_offset
+        .checked_add(24)
+        .ok_or("PE64 optional-header offset overflow")?;
+    let field = optional
+        .checked_add(24)
+        .ok_or("PE64 image base offset overflow")?;
+    let bytes = module
+        .file_bytes
+        .get(field..field + 8)
+        .ok_or("PE64 image base field is truncated")?;
+    Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+/// Refuse an engine-owned admission whose slot lands in the import directory or
+/// in any import address table.
+///
+/// This is the guard that keeps the two attestations from being confused. An
+/// import slot has a loader-owned lifetime and a DLL/symbol identity that an
+/// engine-owned receipt does not carry; redirecting one through the
+/// engine-owned front would attest an owning structure that does not exist and
+/// would omit the import identity that does.
+#[cfg(windows)]
+fn reject_pe64_import_table_overlap(
+    module: &ObservedMainModule,
+    expected: ExpectedPointerSlot,
+) -> Result<(), String> {
+    let slot_rva =
+        usize::try_from(expected.slot_rva).map_err(|_| "engine-owned slot RVA does not fit usize")?;
+    let slot_end = slot_rva
+        .checked_add(size_of::<u64>())
+        .ok_or("engine-owned slot RVA range overflow")?;
+    let pe_offset = read_u32(&module.file_bytes, 0x3c, "file PE header offset")? as usize;
+    let optional = pe_offset
+        .checked_add(24)
+        .ok_or("PE64 optional-header offset overflow")?;
+    let import_directory_rva = read_u32(
+        &module.file_bytes,
+        optional + 112 + 8,
+        "PE64 import directory RVA",
+    )? as usize;
+    let import_directory_size = read_u32(
+        &module.file_bytes,
+        optional + 112 + 12,
+        "PE64 import directory size",
+    )? as usize;
+    if import_directory_rva != 0
+        && import_directory_size != 0
+        && ranges_overlap(
+            slot_rva,
+            slot_end - slot_rva,
+            import_directory_rva,
+            import_directory_size,
+        )?
+    {
+        return Err(format!(
+            "{} engine-owned slot overlaps the PE64 import directory",
+            expected.logical_name
+        ));
+    }
+    let iat_rva = read_u32(&module.file_bytes, optional + 112 + 96, "PE64 IAT RVA")? as usize;
+    let iat_size = read_u32(&module.file_bytes, optional + 112 + 100, "PE64 IAT size")? as usize;
+    if iat_rva != 0
+        && iat_size != 0
+        && ranges_overlap(slot_rva, slot_end - slot_rva, iat_rva, iat_size)?
+    {
+        return Err(format!(
+            "{} engine-owned slot overlaps the PE64 import address table",
+            expected.logical_name
+        ));
+    }
+    if import_directory_rva == 0 || import_directory_size < 20 {
+        return Ok(());
+    }
+    // The IAT data directory is advisory: walk the descriptors and refuse an
+    // overlap with any real first-thunk array as well.
+    let descriptor_count = (import_directory_size / 20).min(4096);
+    for descriptor_index in 0..descriptor_count {
+        let descriptor_rva = import_directory_rva
+            .checked_add(descriptor_index * 20)
+            .ok_or("PE64 import descriptor RVA overflow")?;
+        let descriptor = module_file_bytes_at_rva(module, descriptor_rva, 20)?;
+        let original_first_thunk =
+            u32::from_le_bytes(descriptor[0..4].try_into().unwrap()) as usize;
+        let name_rva = u32::from_le_bytes(descriptor[12..16].try_into().unwrap()) as usize;
+        let first_thunk = u32::from_le_bytes(descriptor[16..20].try_into().unwrap()) as usize;
+        if original_first_thunk == 0 && name_rva == 0 && first_thunk == 0 {
+            break;
+        }
+        if first_thunk == 0 {
+            continue;
+        }
+        let lookup_base = if original_first_thunk != 0 {
+            original_first_thunk
+        } else {
+            first_thunk
+        };
+        for thunk_index in 0..=65_535usize {
+            let offset = thunk_index
+                .checked_mul(size_of::<u64>())
+                .ok_or("PE64 import thunk offset overflow")?;
+            let lookup_rva = lookup_base
+                .checked_add(offset)
+                .ok_or("PE64 import lookup RVA overflow")?;
+            let entry_rva = first_thunk
+                .checked_add(offset)
+                .ok_or("PE64 IAT RVA overflow")?;
+            let lookup = u64::from_le_bytes(
+                module_file_bytes_at_rva(module, lookup_rva, 8)?
+                    .try_into()
+                    .unwrap(),
+            );
+            if lookup == 0 {
+                break;
+            }
+            if entry_rva == slot_rva {
+                return Err(format!(
+                    "{} engine-owned slot is a PE64 import thunk and must not be attested as engine-owned",
+                    expected.logical_name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn validate_pe64_import_slot(
     module: &ObservedMainModule,
-    expected: ExpectedPe64ImportAddressSlot,
+    expected: ExpectedPointerSlot,
+    imported_dll: &'static str,
+    imported_symbol: &'static str,
 ) -> Result<usize, String> {
-    validate_file_pe64_import_slot(module, expected)?;
+    validate_file_pe64_import_slot(module, expected, imported_dll, imported_symbol)?;
     let slot_address = checked_image_address(module, expected.slot_rva, size_of::<usize>())?;
     if slot_address % std::mem::align_of::<usize>() != 0 {
         return Err(format!(
@@ -3301,17 +4090,17 @@ fn validate_pe64_import_slot(
             expected.logical_name
         ));
     }
-    let mut dll_wide: Vec<u16> = expected.imported_dll.encode_utf16().collect();
+    let mut dll_wide: Vec<u16> = imported_dll.encode_utf16().collect();
     dll_wide.push(0);
     let dll =
         unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(dll_wide.as_ptr()) };
     if dll.is_null() {
         return Err(format!(
             "{} imported DLL {} is not loaded",
-            expected.logical_name, expected.imported_dll
+            expected.logical_name, imported_dll
         ));
     }
-    let symbol = std::ffi::CString::new(expected.imported_symbol)
+    let symbol = std::ffi::CString::new(imported_symbol)
         .map_err(|_| "PE64 imported symbol contains an interior NUL")?;
     let export = unsafe {
         windows_sys::Win32::System::LibraryLoader::GetProcAddress(dll, symbol.as_ptr().cast())
@@ -3330,7 +4119,9 @@ fn validate_pe64_import_slot(
 #[cfg(windows)]
 fn validate_file_pe64_import_slot(
     module: &ObservedMainModule,
-    expected: ExpectedPe64ImportAddressSlot,
+    expected: ExpectedPointerSlot,
+    imported_dll: &'static str,
+    imported_symbol: &'static str,
 ) -> Result<(), String> {
     let pe_offset = read_u32(&module.file_bytes, 0x3c, "file PE header offset")? as usize;
     let optional = pe_offset
@@ -3376,7 +4167,7 @@ fn validate_file_pe64_import_slot(
             continue;
         }
         let dll = file_c_string_at_rva(module, name_rva, 260)?;
-        if !dll.eq_ignore_ascii_case(expected.imported_dll) {
+        if !dll.eq_ignore_ascii_case(imported_dll) {
             continue;
         }
         let lookup_base = if original_first_thunk != 0 {
@@ -3414,10 +4205,10 @@ fn validate_file_pe64_import_slot(
             let import_by_name_rva = usize::try_from(lookup)
                 .map_err(|_| "PE64 import-by-name RVA does not fit usize")?;
             let symbol = file_c_string_at_rva(module, import_by_name_rva + 2, 1024)?;
-            if symbol != expected.imported_symbol {
+            if symbol != imported_symbol {
                 return Err(format!(
                     "{} import symbol mismatch: expected {}, observed {symbol}",
-                    expected.logical_name, expected.imported_symbol
+                    expected.logical_name, imported_symbol
                 ));
             }
             return Ok(());
@@ -3425,7 +4216,7 @@ fn validate_file_pe64_import_slot(
     }
     Err(format!(
         "{} slot RVA is not the exact {}!{} PE64 import",
-        expected.logical_name, expected.imported_dll, expected.imported_symbol
+        expected.logical_name, imported_dll, imported_symbol
     ))
 }
 
@@ -3477,7 +4268,7 @@ pub struct AtomicPointerCasObservation {
 /// transition. Typed rather than stringly so a caller -- or a test -- can pin
 /// *which* refusal fired instead of only that one did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pe64ImportSlotRestoreCustodyError {
+pub enum PointerSlotRestoreCustodyError {
     /// The slot already reads the original export, but this crate never
     /// recorded a compare-exchange for it. Some agent outside this crate
     /// performed the transition (a competing hook engine unhooking, a shim
@@ -3527,7 +4318,7 @@ pub enum Pe64ImportSlotRestoreCustodyError {
     },
 }
 
-impl std::fmt::Display for Pe64ImportSlotRestoreCustodyError {
+impl std::fmt::Display for PointerSlotRestoreCustodyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnwitnessedForeignRestore {
@@ -3605,7 +4396,7 @@ pub type UnconfirmedRestoreCas = custody_record::UnconfirmedCas<custody_record::
 
 /// Which arm the restore path takes for one import slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pe64ImportSlotRestoreCasDecision {
+pub enum PointerSlotRestoreCasDecision {
     /// Drive a real compare-exchange and record what it returns.
     PerformCas,
     /// Replay the recorded exchange. Its page protection was already
@@ -3623,15 +4414,15 @@ pub enum Pe64ImportSlotRestoreCasDecision {
 /// `recorded_prior_cas` is `Some` only when this crate's own exchange returned
 /// for this `(teardown_owner_token, slot_rva)`, so neither replay arm is
 /// reachable without that evidence.
-pub fn decide_pe64_import_slot_restore_cas(
+pub fn decide_pointer_slot_restore_cas(
     current_slot_value: usize,
     expected_original_address: usize,
     external_shim_address: usize,
     recorded_prior_cas: Option<RecordedRestoreCas>,
-) -> Result<Pe64ImportSlotRestoreCasDecision, Pe64ImportSlotRestoreCustodyError> {
+) -> Result<PointerSlotRestoreCasDecision, PointerSlotRestoreCustodyError> {
     if external_shim_address == expected_original_address {
         return Err(
-            Pe64ImportSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
+            PointerSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
                 address: external_shim_address,
             },
         );
@@ -3640,27 +4431,27 @@ pub fn decide_pe64_import_slot_restore_cas(
         Some(recorded) => {
             if current_slot_value != expected_original_address {
                 return Err(
-                    Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+                    PointerSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
                         observed_slot_value: current_slot_value,
                         expected_original_address,
                     },
                 );
             }
             if recorded.protection_reconciled() {
-                Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(recorded))
+                Ok(PointerSlotRestoreCasDecision::ReplayRecordedCas(recorded))
             } else {
-                Ok(Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded))
+                Ok(PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded))
             }
         }
         None => {
             if current_slot_value == expected_original_address {
                 return Err(
-                    Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore {
+                    PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
                         observed_slot_value: current_slot_value,
                     },
                 );
             }
-            Ok(Pe64ImportSlotRestoreCasDecision::PerformCas)
+            Ok(PointerSlotRestoreCasDecision::PerformCas)
         }
     }
 }
@@ -3684,11 +4475,11 @@ pub fn decide_pe64_import_slot_restore_cas(
 pub fn release_restore_cas_if_custody_matches(
     observed_custody: Option<RecordedRestoreCas>,
     performed: UnconfirmedRestoreCas,
-) -> Result<RecordedRestoreCas, Pe64ImportSlotRestoreCustodyError> {
+) -> Result<RecordedRestoreCas, PointerSlotRestoreCustodyError> {
     performed
         .release_if_custody_matches(observed_custody)
         .map_err(|mismatch| {
-            Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+            PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
                 retained: mismatch.retained,
                 performed: mismatch.performed,
             }
@@ -3712,10 +4503,10 @@ pub fn release_restore_cas_if_custody_matches(
 pub fn verify_restore_cas_matches_lease_protection(
     lease_protection: u32,
     cas: AtomicPointerCasObservation,
-) -> Result<(), Pe64ImportSlotRestoreCustodyError> {
+) -> Result<(), PointerSlotRestoreCustodyError> {
     if cas.protection_before != lease_protection {
         return Err(
-            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
+            PointerSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
                 lease_protection,
                 cas_protection_before: cas.protection_before,
             },
@@ -3723,7 +4514,7 @@ pub fn verify_restore_cas_matches_lease_protection(
     }
     if cas.protection_after != lease_protection {
         return Err(
-            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
+            PointerSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
                 lease_protection,
                 cas_protection_after: cas.protection_after,
             },
@@ -3739,7 +4530,7 @@ pub fn verify_restore_cas_matches_lease_protection(
 /// is one the loop counted rather than one recomputed from `max_yields`. Kept
 /// pure and separate precisely so a test can assert the *rendered* string and
 /// therefore catch a call site that starts quoting the wrong field.
-pub fn render_pe64_import_slot_quiesce_timeout(
+pub fn render_pointer_slot_quiesce_timeout(
     logical_name: &str,
     outcome: &Pe64ImportSlotQuiesceOutcome,
 ) -> String {
@@ -3758,10 +4549,10 @@ pub fn render_pe64_import_slot_quiesce_timeout(
 pub fn complete_recorded_restore_cas_observation(
     recorded: RecordedRestoreCas,
     protection_after: u32,
-) -> Result<AtomicPointerCasObservation, Pe64ImportSlotRestoreCustodyError> {
+) -> Result<AtomicPointerCasObservation, PointerSlotRestoreCustodyError> {
     if !recorded.protection_reconciled() || protection_after != recorded.protection_before() {
         return Err(
-            Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+            PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
                 protection_before: recorded.protection_before(),
                 protection_after,
             },
@@ -3790,7 +4581,7 @@ pub fn complete_recorded_restore_cas_observation(
 /// transition. Typed rather than stringly so a caller -- or a test -- can pin
 /// *which* refusal fired instead of only that one did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pe64ImportSlotInstallCustodyError {
+pub enum PointerSlotInstallCustodyError {
     /// The slot already reads the external shim, but this crate never recorded
     /// a compare-exchange for it. Whatever put that value there did so outside
     /// this crate's custody (a competing hook engine, a previous process
@@ -3840,7 +4631,7 @@ pub enum Pe64ImportSlotInstallCustodyError {
     },
 }
 
-impl std::fmt::Display for Pe64ImportSlotInstallCustodyError {
+impl std::fmt::Display for PointerSlotInstallCustodyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnwitnessedForeignInstall {
@@ -3919,7 +4710,7 @@ pub type UnconfirmedInstallCas = custody_record::UnconfirmedCas<custody_record::
 
 /// Which arm the install path takes for one import slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pe64ImportSlotInstallCasDecision {
+pub enum PointerSlotInstallCasDecision {
     /// Drive a real compare-exchange and record what it returns.
     PerformCas,
     /// Replay the recorded exchange. Its page protection was already
@@ -3940,15 +4731,15 @@ pub enum Pe64ImportSlotInstallCasDecision {
 /// reading the shim is refused outright rather than adopted: an installation
 /// receipt attests that *this* invocation performed the original -> shim
 /// transition, and there is nothing here to support that claim.
-pub fn decide_pe64_import_slot_install_cas(
+pub fn decide_pointer_slot_install_cas(
     current_slot_value: usize,
     expected_original_address: usize,
     external_shim_address: usize,
     recorded_prior_cas: Option<RecordedInstallCas>,
-) -> Result<Pe64ImportSlotInstallCasDecision, Pe64ImportSlotInstallCustodyError> {
+) -> Result<PointerSlotInstallCasDecision, PointerSlotInstallCustodyError> {
     if external_shim_address == expected_original_address {
         return Err(
-            Pe64ImportSlotInstallCustodyError::IndistinguishableShimAndOriginalAddress {
+            PointerSlotInstallCustodyError::IndistinguishableShimAndOriginalAddress {
                 address: external_shim_address,
             },
         );
@@ -3957,27 +4748,27 @@ pub fn decide_pe64_import_slot_install_cas(
         Some(recorded) => {
             if current_slot_value != external_shim_address {
                 return Err(
-                    Pe64ImportSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
+                    PointerSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
                         observed_slot_value: current_slot_value,
                         external_shim_address,
                     },
                 );
             }
             if recorded.protection_reconciled() {
-                Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(recorded))
+                Ok(PointerSlotInstallCasDecision::ReplayRecordedCas(recorded))
             } else {
-                Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded))
+                Ok(PointerSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded))
             }
         }
         None => {
             if current_slot_value == external_shim_address {
                 return Err(
-                    Pe64ImportSlotInstallCustodyError::UnwitnessedForeignInstall {
+                    PointerSlotInstallCustodyError::UnwitnessedForeignInstall {
                         observed_slot_value: current_slot_value,
                     },
                 );
             }
-            Ok(Pe64ImportSlotInstallCasDecision::PerformCas)
+            Ok(PointerSlotInstallCasDecision::PerformCas)
         }
     }
 }
@@ -3989,11 +4780,11 @@ pub fn decide_pe64_import_slot_install_cas(
 pub fn release_install_cas_if_custody_matches(
     observed_custody: Option<RecordedInstallCas>,
     performed: UnconfirmedInstallCas,
-) -> Result<RecordedInstallCas, Pe64ImportSlotInstallCustodyError> {
+) -> Result<RecordedInstallCas, PointerSlotInstallCustodyError> {
     performed
         .release_if_custody_matches(observed_custody)
         .map_err(|mismatch| {
-            Pe64ImportSlotInstallCustodyError::RecordedInstallCasNotRetained {
+            PointerSlotInstallCustodyError::RecordedInstallCasNotRetained {
                 retained: mismatch.retained,
                 performed: mismatch.performed,
             }
@@ -4009,10 +4800,10 @@ pub fn release_install_cas_if_custody_matches(
 pub fn verify_install_cas_matches_lease_protection(
     lease_protection: u32,
     cas: AtomicPointerCasObservation,
-) -> Result<(), Pe64ImportSlotInstallCustodyError> {
+) -> Result<(), PointerSlotInstallCustodyError> {
     if cas.protection_before != lease_protection {
         return Err(
-            Pe64ImportSlotInstallCustodyError::InstallCasProtectionBeforeDivergedFromLease {
+            PointerSlotInstallCustodyError::InstallCasProtectionBeforeDivergedFromLease {
                 lease_protection,
                 cas_protection_before: cas.protection_before,
             },
@@ -4020,7 +4811,7 @@ pub fn verify_install_cas_matches_lease_protection(
     }
     if cas.protection_after != lease_protection {
         return Err(
-            Pe64ImportSlotInstallCustodyError::InstallCasProtectionAfterDivergedFromLease {
+            PointerSlotInstallCustodyError::InstallCasProtectionAfterDivergedFromLease {
                 lease_protection,
                 cas_protection_after: cas.protection_after,
             },
@@ -4038,10 +4829,10 @@ pub fn verify_install_cas_matches_lease_protection(
 pub fn complete_recorded_install_cas_observation(
     recorded: RecordedInstallCas,
     protection_after: u32,
-) -> Result<AtomicPointerCasObservation, Pe64ImportSlotInstallCustodyError> {
+) -> Result<AtomicPointerCasObservation, PointerSlotInstallCustodyError> {
     if !recorded.protection_reconciled() || protection_after != recorded.protection_before() {
         return Err(
-            Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
+            PointerSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
                 protection_before: recorded.protection_before(),
                 protection_after,
             },
@@ -4074,30 +4865,30 @@ pub fn complete_recorded_install_cas_observation(
 /// reads as hung. Expiry is not data loss -- the function returns its resumable
 /// timeout error with the dispatch already cut over to the original, so the
 /// caller may re-drive it.
-const PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS: u64 = 2_000_000_000;
+const POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS: u64 = 2_000_000_000;
 
-/// See [`PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS`].
-pub const PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET: Duration =
-    Duration::from_nanos(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS);
+/// See [`POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS`].
+pub const POINTER_SLOT_QUIESCE_TIME_BUDGET: Duration =
+    Duration::from_nanos(POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS);
 
 /// Cost this policy assumes one loop iteration cannot go below: a `VirtualQuery`
 /// plus a `SwitchToThread`. It is used only to size the iteration backstop below
 /// so that the backstop sits above what the time budget can admit -- it is not a
 /// claim about how long an iteration takes in practice.
-const PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS: u64 = 1_000;
+const POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS: u64 = 1_000;
 
 /// Ceiling on the caller-supplied yield budget of
-/// [`quiesce_pe64_import_address_slot`].
+/// [`quiesce_pointer_slot`].
 ///
-/// A **backstop**, not the operative bound. [`PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET`]
+/// A **backstop**, not the operative bound. [`POINTER_SLOT_QUIESCE_TIME_BUDGET`]
 /// is what stops a contended loop; this catches a caller asking for an absurd
 /// iteration count and a clock that has stalled or gone backwards. It is derived
 /// from the two policy numbers above -- the iterations the time budget could
 /// admit if every one of them cost only the assumed minimum -- so it sits above
 /// the clock rather than pre-empting it, and it moves when the budget moves.
-pub const MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS: u32 = {
-    let iterations = PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS
-        / PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS;
+pub const MAX_POINTER_SLOT_QUIESCE_YIELDS: u32 = {
+    let iterations = POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS
+        / POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS;
     if iterations > u32::MAX as u64 {
         u32::MAX
     } else {
@@ -4123,13 +4914,13 @@ impl std::fmt::Display for Pe64ImportSlotQuiesceBoundError {
 }
 
 /// Validate a caller-supplied quiescence yield budget against the ceiling.
-pub fn validate_pe64_import_slot_quiesce_yields(
+pub fn validate_pointer_slot_quiesce_yields(
     max_yields: u32,
 ) -> Result<u32, Pe64ImportSlotQuiesceBoundError> {
-    if max_yields > MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS {
+    if max_yields > MAX_POINTER_SLOT_QUIESCE_YIELDS {
         return Err(Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
             requested: max_yields,
-            ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+            ceiling: MAX_POINTER_SLOT_QUIESCE_YIELDS,
         });
     }
     Ok(max_yields)
@@ -4142,7 +4933,7 @@ pub enum Pe64ImportSlotQuiesceStop {
     Quiesced,
     /// The caller-supplied yield budget ran out.
     YieldBudgetExhausted,
-    /// [`PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET`] ran out.
+    /// [`POINTER_SLOT_QUIESCE_TIME_BUDGET`] ran out.
     TimeBudgetExhausted,
 }
 
@@ -4176,7 +4967,7 @@ impl Pe64ImportSlotQuiesceOutcome {
 
 /// The quiescence loop itself.
 ///
-/// This is the loop `quiesce_pe64_import_address_slot` runs -- the observation,
+/// This is the loop `quiesce_pointer_slot` runs -- the observation,
 /// the yield, and both bounds are here, not duplicated at the call site -- so a
 /// test that drives it with its own closures exercises the real control flow.
 /// The `#[cfg(windows)]` caller supplies `observe_active_callback_count`,
@@ -4187,7 +4978,7 @@ impl Pe64ImportSlotQuiesceOutcome {
 /// `max_yields + 1` observations. The time budget is checked after an
 /// observation shows callbacks still active and before the yield that would
 /// follow it, so an already-quiesced slot is never failed for lateness.
-pub fn drive_pe64_import_slot_quiesce_loop<E>(
+pub fn drive_pointer_slot_quiesce_loop<E>(
     max_yields: u32,
     time_budget: Duration,
     mut observe_active_callback_count: impl FnMut() -> Result<u64, E>,
@@ -4594,12 +5385,12 @@ fn validate_sealed_external_dispatch_shim(shim: &SealedExternalDispatchShim) -> 
     }
     let template = match shim.template_id {
         WIN64_REGISTER_ARGS_COUNTED_SHIM_TEMPLATE_ID => {
-            CanonicalPe64IatShimTemplate::Win64RegisterArgsOnly
+            CanonicalCountedShimTemplate::Win64RegisterArgsOnly
         }
         D3D11_CREATE_DEVICE_COUNTED_SHIM_TEMPLATE_ID => {
-            CanonicalPe64IatShimTemplate::D3D11CreateDevice
+            CanonicalCountedShimTemplate::D3D11CreateDevice
         }
-        D3D_COMPILE_COUNTED_SHIM_TEMPLATE_ID => CanonicalPe64IatShimTemplate::D3DCompile,
+        D3D_COMPILE_COUNTED_SHIM_TEMPLATE_ID => CanonicalCountedShimTemplate::D3DCompile,
         _ => return Err("sealed external shim template ID is not admitted".into()),
     };
     validate_external_dispatch_shim_identity(shim.identity)?;
@@ -4901,6 +5692,7 @@ fn parse_file_pe_layout(bytes: &[u8]) -> Result<(PeIdentity, Vec<PeSection>, usi
     let mut sections = Vec::with_capacity(identity.number_of_sections as usize);
     for index in 0..identity.number_of_sections as usize {
         let offset = section_table + index * 40;
+        let virtual_size = read_u32(bytes, offset + 8, "PE section virtual size")? as usize;
         let virtual_address = read_u32(bytes, offset + 12, "PE section RVA")? as usize;
         let raw_size = read_u32(bytes, offset + 16, "PE section raw size")? as usize;
         let raw_offset = read_u32(bytes, offset + 20, "PE section raw offset")? as usize;
@@ -4913,6 +5705,7 @@ fn parse_file_pe_layout(bytes: &[u8]) -> Result<(PeIdentity, Vec<PeSection>, usi
         }
         sections.push(PeSection {
             virtual_address,
+            virtual_size,
             raw_size,
             raw_offset,
             characteristics,
@@ -5106,7 +5899,7 @@ mod pe64_import_slot_custody_decision_tests {
     // ---- Defect A: restore arm selection --------------------------------
 
     // FALSIFIABILITY: delete the `current_slot_value == expected_original_address`
-    // refusal in the `None` branch of `decide_pe64_import_slot_restore_cas` --
+    // refusal in the `None` branch of `decide_pointer_slot_restore_cas` --
     // i.e. restore the pre-fix behaviour where an already-original slot silently
     // took the synthesized-observation arm -- and this test fails: the call
     // returns `Ok(PerformCas)` instead of `Err(UnwitnessedForeignRestore)`.
@@ -5116,11 +5909,11 @@ mod pe64_import_slot_custody_decision_tests {
     // outside this crate performed the transition and no receipt may be minted.
     #[test]
     fn first_attempt_with_slot_already_original_and_no_record_is_refused() {
-        let outcome = decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, None);
+        let outcome = decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, None);
         assert_eq!(
             outcome,
             Err(
-                Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore {
+                PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
                     observed_slot_value: ORIGINAL
                 }
             )
@@ -5134,8 +5927,8 @@ mod pe64_import_slot_custody_decision_tests {
     // be a blanket rejection and still look correct.
     #[test]
     fn first_attempt_with_slot_holding_the_shim_performs_a_real_cas() {
-        let outcome = decide_pe64_import_slot_restore_cas(SHIM, ORIGINAL, SHIM, None);
-        assert_eq!(outcome, Ok(Pe64ImportSlotRestoreCasDecision::PerformCas));
+        let outcome = decide_pointer_slot_restore_cas(SHIM, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(PointerSlotRestoreCasDecision::PerformCas));
     }
 
     // FALSIFIABILITY: change the `Some(recorded)` branch to rebuild the
@@ -5158,13 +5951,13 @@ mod pe64_import_slot_custody_decision_tests {
         assert_ne!(SHIM, ORIGINAL);
 
         let recorded = recorded_cas();
-        let outcome = decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
+        let outcome = decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
         // Field by field rather than against `recorded_cas()`: comparing the
         // decision to the same helper that produced its input would pass for any
         // implementation that echoes its argument, including one that rebuilt the
         // record from the addresses. These four values are the ones a receipt
         // copies.
-        let Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(replayed)) = outcome else {
+        let Ok(PointerSlotRestoreCasDecision::ReplayRecordedCas(replayed)) = outcome else {
             panic!("a reconciled record must select the plain replay arm: {outcome:?}");
         };
         assert_eq!(replayed.observed_before(), RECORDED_SENTINEL_BEFORE);
@@ -5193,7 +5986,7 @@ mod pe64_import_slot_custody_decision_tests {
     // page cleanup is still owed and has to run before a receipt can form.
     #[test]
     fn retry_after_a_cleanup_failure_resumes_the_protection_reconciliation() {
-        let outcome = decide_pe64_import_slot_restore_cas(
+        let outcome = decide_pointer_slot_restore_cas(
             ORIGINAL,
             ORIGINAL,
             SHIM,
@@ -5202,7 +5995,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             outcome,
             Ok(
-                Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(
+                PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(
                     recorded_cas_pending_protection()
                 )
             )
@@ -5221,11 +6014,11 @@ mod pe64_import_slot_custody_decision_tests {
     fn a_recorded_exchange_is_never_mistaken_for_a_foreign_restore() {
         for recorded in [recorded_cas(), recorded_cas_pending_protection()] {
             let outcome =
-                decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
+                decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
             assert!(
                 !matches!(
                     outcome,
-                    Err(Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore { .. })
+                    Err(PointerSlotRestoreCustodyError::UnwitnessedForeignRestore { .. })
                 ),
                 "a recorded exchange ({recorded:?}) was refused as foreign: {outcome:?}"
             );
@@ -5261,9 +6054,9 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(stored.protection_temporary(), PROTECTION_TEMPORARY);
         assert!(!stored.protection_reconciled());
         assert_eq!(
-            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, custody.recorded()),
+            decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, custody.recorded()),
             Ok(
-                Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(stored)
+                PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(stored)
             )
         );
     }
@@ -5333,7 +6126,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             complete_recorded_restore_cas_observation(recorded, protection_after),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
                     protection_after: PROTECTION_TEMPORARY,
                 }
@@ -5417,7 +6210,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             complete_recorded_restore_cas_observation(still_owed, protection_after),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
                     protection_after: PROTECTION_TEMPORARY,
                 }
@@ -5467,7 +6260,7 @@ mod pe64_import_slot_custody_decision_tests {
                 PROTECTION_BEFORE
             ),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
                     protection_after: PROTECTION_BEFORE,
                 }
@@ -5476,7 +6269,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             complete_recorded_restore_cas_observation(recorded_cas(), PROTECTION_TEMPORARY),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+                PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
                     protection_after: PROTECTION_TEMPORARY,
                 }
@@ -5491,11 +6284,11 @@ mod pe64_import_slot_custody_decision_tests {
     #[test]
     fn retry_with_record_but_slot_no_longer_original_is_refused() {
         let outcome =
-            decide_pe64_import_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas()));
+            decide_pointer_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas()));
         assert_eq!(
             outcome,
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+                PointerSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
                     observed_slot_value: SHIM,
                     expected_original_address: ORIGINAL,
                 }
@@ -5504,23 +6297,23 @@ mod pe64_import_slot_custody_decision_tests {
     }
 
     // FALSIFIABILITY: remove the `external_shim_address == expected_original_address`
-    // guard at the top of `decide_pe64_import_slot_restore_cas` and this test
+    // guard at the top of `decide_pointer_slot_restore_cas` and this test
     // fails: with the two addresses equal the `None` case falls through to
     // `UnwitnessedForeignRestore` and the `Some` case to a replay, neither of
     // which is an attestable transition.
     #[test]
     fn shim_sharing_the_original_address_is_refused_with_and_without_a_record() {
         let expected = Err(
-            Pe64ImportSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
+            PointerSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
                 address: ORIGINAL,
             },
         );
         assert_eq!(
-            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, ORIGINAL, None),
+            decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, ORIGINAL, None),
             expected
         );
         assert_eq!(
-            decide_pe64_import_slot_restore_cas(ORIGINAL, ORIGINAL, ORIGINAL, Some(recorded_cas())),
+            decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, ORIGINAL, Some(recorded_cas())),
             expected
         );
     }
@@ -5532,8 +6325,8 @@ mod pe64_import_slot_custody_decision_tests {
     // fails there with the existing "restore CAS expected shim" message.
     #[test]
     fn first_attempt_with_a_third_party_slot_value_still_performs_the_cas() {
-        let outcome = decide_pe64_import_slot_restore_cas(FOREIGN, ORIGINAL, SHIM, None);
-        assert_eq!(outcome, Ok(Pe64ImportSlotRestoreCasDecision::PerformCas));
+        let outcome = decide_pointer_slot_restore_cas(FOREIGN, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(PointerSlotRestoreCasDecision::PerformCas));
     }
 
     // FALSIFIABILITY: any edit that lets the no-record path yield a replay --
@@ -5543,7 +6336,7 @@ mod pe64_import_slot_custody_decision_tests {
     #[test]
     fn replay_arm_is_unreachable_without_a_recorded_cas() {
         for current in [SHIM, ORIGINAL, FOREIGN, 0usize, usize::MAX] {
-            let outcome = decide_pe64_import_slot_restore_cas(current, ORIGINAL, SHIM, None);
+            let outcome = decide_pointer_slot_restore_cas(current, ORIGINAL, SHIM, None);
             // BOTH replay variants, not just the plain one. Rejecting only
             // `ReplayRecordedCas` left `ReconcileProtectionThenReplay` free to
             // be fabricated from `None`, which reaches a receipt through the
@@ -5551,8 +6344,8 @@ mod pe64_import_slot_custody_decision_tests {
             assert!(
                 !matches!(
                     outcome,
-                    Ok(Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(_))
-                        | Ok(Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(_))
+                    Ok(PointerSlotRestoreCasDecision::ReplayRecordedCas(_))
+                        | Ok(PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(_))
                 ),
                 "slot value 0x{current:X} reached a replay arm with no recorded CAS: {outcome:?}"
             );
@@ -5561,7 +6354,7 @@ mod pe64_import_slot_custody_decision_tests {
 
     // ---- Install path: the same defect in the original -> shim direction --
     //
-    // `install_pe64_import_address_slot` used to synthesize its CAS observation
+    // `install_pointer_slot` used to synthesize its CAS observation
     // whenever the slot already read the external shim:
     //
     //     let cas = if current == external_shim_address {
@@ -5616,7 +6409,7 @@ mod pe64_import_slot_custody_decision_tests {
     }
 
     // FALSIFIABILITY: delete the `current_slot_value == external_shim_address`
-    // refusal in the `None` branch of `decide_pe64_import_slot_install_cas` --
+    // refusal in the `None` branch of `decide_pointer_slot_install_cas` --
     // i.e. restore the pre-fix behaviour where an already-shim slot silently
     // took the synthesized-observation arm -- and this test fails: the call
     // returns `Ok(PerformCas)` instead of `Err(UnwitnessedForeignInstall)`.
@@ -5627,11 +6420,11 @@ mod pe64_import_slot_custody_decision_tests {
     // minted for a transition this crate did not perform.
     #[test]
     fn install_first_attempt_with_slot_already_shim_and_no_record_is_refused() {
-        let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, None);
+        let outcome = decide_pointer_slot_install_cas(SHIM, ORIGINAL, SHIM, None);
         assert_eq!(
             outcome,
             Err(
-                Pe64ImportSlotInstallCustodyError::UnwitnessedForeignInstall {
+                PointerSlotInstallCustodyError::UnwitnessedForeignInstall {
                     observed_slot_value: SHIM
                 }
             )
@@ -5645,8 +6438,8 @@ mod pe64_import_slot_custody_decision_tests {
     // be a blanket rejection and still look correct.
     #[test]
     fn install_first_attempt_with_slot_holding_the_original_selects_a_real_cas() {
-        let outcome = decide_pe64_import_slot_install_cas(ORIGINAL, ORIGINAL, SHIM, None);
-        assert_eq!(outcome, Ok(Pe64ImportSlotInstallCasDecision::PerformCas));
+        let outcome = decide_pointer_slot_install_cas(ORIGINAL, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(PointerSlotInstallCasDecision::PerformCas));
     }
 
     // FALSIFIABILITY: change the `Some(recorded)` branch to rebuild the
@@ -5670,12 +6463,12 @@ mod pe64_import_slot_custody_decision_tests {
         assert_ne!(SHIM, ORIGINAL);
 
         let recorded = recorded_install_cas();
-        let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
+        let outcome = decide_pointer_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
         // Field by field rather than against `recorded_install_cas()`: comparing
         // the decision to the same helper that produced its input would pass for
         // any implementation that echoes its argument, including one that
         // rebuilt the record from the addresses.
-        let Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(replayed)) = outcome else {
+        let Ok(PointerSlotInstallCasDecision::ReplayRecordedCas(replayed)) = outcome else {
             panic!("a reconciled record must select the plain replay arm: {outcome:?}");
         };
         assert_eq!(replayed.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
@@ -5702,7 +6495,7 @@ mod pe64_import_slot_custody_decision_tests {
     // cleanup is still owed and has to run before a receipt can form.
     #[test]
     fn install_retry_after_a_cleanup_failure_resumes_the_protection_reconciliation() {
-        let outcome = decide_pe64_import_slot_install_cas(
+        let outcome = decide_pointer_slot_install_cas(
             SHIM,
             ORIGINAL,
             SHIM,
@@ -5711,7 +6504,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             outcome,
             Ok(
-                Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(
+                PointerSlotInstallCasDecision::ReconcileProtectionThenReplay(
                     recorded_install_cas_pending_protection()
                 )
             )
@@ -5732,11 +6525,11 @@ mod pe64_import_slot_custody_decision_tests {
             recorded_install_cas(),
             recorded_install_cas_pending_protection(),
         ] {
-            let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
+            let outcome = decide_pointer_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
             assert!(
                 !matches!(
                     outcome,
-                    Err(Pe64ImportSlotInstallCustodyError::UnwitnessedForeignInstall { .. })
+                    Err(PointerSlotInstallCustodyError::UnwitnessedForeignInstall { .. })
                 ),
                 "a recorded install exchange ({recorded:?}) was refused as foreign: {outcome:?}"
             );
@@ -5774,8 +6567,8 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(stored.protection_temporary(), PROTECTION_TEMPORARY);
         assert!(!stored.protection_reconciled());
         assert_eq!(
-            decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, custody.recorded()),
-            Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(stored))
+            decide_pointer_slot_install_cas(SHIM, ORIGINAL, SHIM, custody.recorded()),
+            Ok(PointerSlotInstallCasDecision::ReconcileProtectionThenReplay(stored))
         );
     }
 
@@ -5914,7 +6707,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             release_install_cas_if_custody_matches(None, performed),
             Err(
-                Pe64ImportSlotInstallCustodyError::RecordedInstallCasNotRetained {
+                PointerSlotInstallCustodyError::RecordedInstallCasNotRetained {
                     retained: None,
                     performed: record,
                 }
@@ -5928,7 +6721,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             release_install_cas_if_custody_matches(Some(stale), performed),
             Err(
-                Pe64ImportSlotInstallCustodyError::RecordedInstallCasNotRetained {
+                PointerSlotInstallCustodyError::RecordedInstallCasNotRetained {
                     retained: Some(stale),
                     performed: record,
                 }
@@ -5955,7 +6748,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             release_restore_cas_if_custody_matches(None, performed),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+                PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
                     retained: None,
                     performed: record,
                 }
@@ -5968,7 +6761,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             release_restore_cas_if_custody_matches(Some(stale), performed),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+                PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
                     retained: Some(stale),
                     performed: record,
                 }
@@ -6014,7 +6807,7 @@ mod pe64_import_slot_custody_decision_tests {
                 cas_observation(EXTERNALLY_REPROTECTED, EXTERNALLY_REPROTECTED),
             ),
             Err(
-                Pe64ImportSlotInstallCustodyError::InstallCasProtectionBeforeDivergedFromLease {
+                PointerSlotInstallCustodyError::InstallCasProtectionBeforeDivergedFromLease {
                     lease_protection: LEASE_PROTECTION,
                     cas_protection_before: EXTERNALLY_REPROTECTED,
                 }
@@ -6032,7 +6825,7 @@ mod pe64_import_slot_custody_decision_tests {
                 cas_observation(LEASE_PROTECTION, EXTERNALLY_REPROTECTED),
             ),
             Err(
-                Pe64ImportSlotInstallCustodyError::InstallCasProtectionAfterDivergedFromLease {
+                PointerSlotInstallCustodyError::InstallCasProtectionAfterDivergedFromLease {
                     lease_protection: LEASE_PROTECTION,
                     cas_protection_after: EXTERNALLY_REPROTECTED,
                 }
@@ -6062,7 +6855,7 @@ mod pe64_import_slot_custody_decision_tests {
                 cas_observation(EXTERNALLY_REPROTECTED, EXTERNALLY_REPROTECTED),
             ),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
+                PointerSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
                     lease_protection: LEASE_PROTECTION,
                     cas_protection_before: EXTERNALLY_REPROTECTED,
                 }
@@ -6074,7 +6867,7 @@ mod pe64_import_slot_custody_decision_tests {
                 cas_observation(LEASE_PROTECTION, EXTERNALLY_REPROTECTED),
             ),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
+                PointerSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
                     lease_protection: LEASE_PROTECTION,
                     cas_protection_after: EXTERNALLY_REPROTECTED,
                 }
@@ -6098,23 +6891,23 @@ mod pe64_import_slot_custody_decision_tests {
     #[test]
     fn a_diverged_slot_is_refused_rather_than_re_exchanged_in_both_directions() {
         assert_eq!(
-            decide_pe64_import_slot_install_cas(
+            decide_pointer_slot_install_cas(
                 ORIGINAL,
                 ORIGINAL,
                 SHIM,
                 Some(recorded_install_cas())
             ),
             Err(
-                Pe64ImportSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
+                PointerSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
                     observed_slot_value: ORIGINAL,
                     external_shim_address: SHIM,
                 }
             )
         );
         assert_eq!(
-            decide_pe64_import_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas())),
+            decide_pointer_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas())),
             Err(
-                Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+                PointerSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
                     observed_slot_value: SHIM,
                     expected_original_address: ORIGINAL,
                 }
@@ -6138,7 +6931,7 @@ mod pe64_import_slot_custody_decision_tests {
                 PROTECTION_BEFORE
             ),
             Err(
-                Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
+                PointerSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
                     protection_after: PROTECTION_BEFORE,
                 }
@@ -6150,7 +6943,7 @@ mod pe64_import_slot_custody_decision_tests {
                 PROTECTION_TEMPORARY
             ),
             Err(
-                Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
+                PointerSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
                     protection_after: PROTECTION_TEMPORARY,
                 }
@@ -6164,7 +6957,7 @@ mod pe64_import_slot_custody_decision_tests {
     // observation and return `Ok`.
     #[test]
     fn install_retry_with_record_but_slot_no_longer_shim_is_refused() {
-        let outcome = decide_pe64_import_slot_install_cas(
+        let outcome = decide_pointer_slot_install_cas(
             ORIGINAL,
             ORIGINAL,
             SHIM,
@@ -6173,7 +6966,7 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(
             outcome,
             Err(
-                Pe64ImportSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
+                PointerSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
                     observed_slot_value: ORIGINAL,
                     external_shim_address: SHIM,
                 }
@@ -6182,23 +6975,23 @@ mod pe64_import_slot_custody_decision_tests {
     }
 
     // FALSIFIABILITY: remove the `external_shim_address == expected_original_address`
-    // guard at the top of `decide_pe64_import_slot_install_cas` and this test
+    // guard at the top of `decide_pointer_slot_install_cas` and this test
     // fails: with the two addresses equal the `None` case falls through to
     // `UnwitnessedForeignInstall` and the `Some` case to a replay, neither of
     // which is an attestable transition.
     #[test]
     fn install_shim_sharing_the_original_address_is_refused_with_and_without_a_record() {
         let expected = Err(
-            Pe64ImportSlotInstallCustodyError::IndistinguishableShimAndOriginalAddress {
+            PointerSlotInstallCustodyError::IndistinguishableShimAndOriginalAddress {
                 address: ORIGINAL,
             },
         );
         assert_eq!(
-            decide_pe64_import_slot_install_cas(ORIGINAL, ORIGINAL, ORIGINAL, None),
+            decide_pointer_slot_install_cas(ORIGINAL, ORIGINAL, ORIGINAL, None),
             expected
         );
         assert_eq!(
-            decide_pe64_import_slot_install_cas(
+            decide_pointer_slot_install_cas(
                 ORIGINAL,
                 ORIGINAL,
                 ORIGINAL,
@@ -6216,8 +7009,8 @@ mod pe64_import_slot_custody_decision_tests {
     // message.
     #[test]
     fn install_first_attempt_with_a_third_party_slot_value_still_selects_a_real_cas() {
-        let outcome = decide_pe64_import_slot_install_cas(FOREIGN, ORIGINAL, SHIM, None);
-        assert_eq!(outcome, Ok(Pe64ImportSlotInstallCasDecision::PerformCas));
+        let outcome = decide_pointer_slot_install_cas(FOREIGN, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(PointerSlotInstallCasDecision::PerformCas));
     }
 
     // FALSIFIABILITY: any edit that lets the no-record path yield a replay --
@@ -6229,7 +7022,7 @@ mod pe64_import_slot_custody_decision_tests {
     #[test]
     fn install_replay_arm_is_unreachable_without_a_recorded_cas() {
         for current in [SHIM, ORIGINAL, FOREIGN, 0usize, usize::MAX] {
-            let outcome = decide_pe64_import_slot_install_cas(current, ORIGINAL, SHIM, None);
+            let outcome = decide_pointer_slot_install_cas(current, ORIGINAL, SHIM, None);
             // BOTH replay variants: rejecting only `ReplayRecordedCas` would
             // leave `ReconcileProtectionThenReplay` free to be fabricated from
             // `None`, which reaches a receipt through the same completion path
@@ -6237,8 +7030,8 @@ mod pe64_import_slot_custody_decision_tests {
             assert!(
                 !matches!(
                     outcome,
-                    Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(_))
-                        | Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(_))
+                    Ok(PointerSlotInstallCasDecision::ReplayRecordedCas(_))
+                        | Ok(PointerSlotInstallCasDecision::ReconcileProtectionThenReplay(_))
                 ),
                 "slot value 0x{current:X} reached an install replay arm with no recorded CAS: {outcome:?}"
             );
@@ -6261,7 +7054,7 @@ mod pe64_import_slot_custody_decision_tests {
             yields_performed: 10,
             elapsed: Duration::from_millis(100),
         };
-        let rendered = render_pe64_import_slot_quiesce_timeout("d90 convoy", &outcome);
+        let rendered = render_pointer_slot_quiesce_timeout("d90 convoy", &outcome);
         assert!(
             rendered.contains(&Pe64ImportSlotQuiesceStop::TimeBudgetExhausted.to_string()),
             "stop reason missing from {rendered:?}"
@@ -6305,54 +7098,54 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(base.stopped_on, more_iterations.stopped_on);
         assert_eq!(base.elapsed, more_iterations.elapsed);
         assert_ne!(
-            render_pe64_import_slot_quiesce_timeout("lane", &base),
-            render_pe64_import_slot_quiesce_timeout("lane", &more_iterations)
+            render_pointer_slot_quiesce_timeout("lane", &base),
+            render_pointer_slot_quiesce_timeout("lane", &more_iterations)
         );
     }
 
     // ---- Defect B1: the yield-budget ceiling ----------------------------
 
     // FALSIFIABILITY: change the comparison in
-    // `validate_pe64_import_slot_quiesce_yields` from `>` to `>=` and this test
+    // `validate_pointer_slot_quiesce_yields` from `>` to `>=` and this test
     // fails -- a budget exactly at the ceiling would be refused.
     #[test]
     fn yield_budget_at_the_ceiling_is_accepted_unchanged() {
         assert_eq!(
-            validate_pe64_import_slot_quiesce_yields(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS),
-            Ok(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS)
+            validate_pointer_slot_quiesce_yields(MAX_POINTER_SLOT_QUIESCE_YIELDS),
+            Ok(MAX_POINTER_SLOT_QUIESCE_YIELDS)
         );
     }
 
     // FALSIFIABILITY: delete the ceiling check in
-    // `validate_pe64_import_slot_quiesce_yields` -- the pre-fix state, where
+    // `validate_pointer_slot_quiesce_yields` -- the pre-fix state, where
     // `max_yields` was never validated at all -- and this test fails: the call
     // returns `Ok` instead of `Err(YieldBudgetAboveCeiling)`.
     #[test]
     fn yield_budget_one_above_the_ceiling_is_refused() {
         assert_eq!(
-            validate_pe64_import_slot_quiesce_yields(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS + 1),
+            validate_pointer_slot_quiesce_yields(MAX_POINTER_SLOT_QUIESCE_YIELDS + 1),
             Err(Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
-                requested: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS + 1,
-                ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+                requested: MAX_POINTER_SLOT_QUIESCE_YIELDS + 1,
+                ceiling: MAX_POINTER_SLOT_QUIESCE_YIELDS,
             })
         );
     }
 
-    // FALSIFIABILITY: raise `MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS` to `u32::MAX`
+    // FALSIFIABILITY: raise `MAX_POINTER_SLOT_QUIESCE_YIELDS` to `u32::MAX`
     // -- the unbounded state this lane exists to close -- and this test fails.
     // It pins the ceiling from above independently of the constant's own value.
     #[test]
     fn a_full_u32_yield_budget_is_refused() {
         assert_eq!(
-            validate_pe64_import_slot_quiesce_yields(u32::MAX),
+            validate_pointer_slot_quiesce_yields(u32::MAX),
             Err(Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
                 requested: u32::MAX,
-                ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+                ceiling: MAX_POINTER_SLOT_QUIESCE_YIELDS,
             })
         );
     }
 
-    // FALSIFIABILITY: lower `MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS` below the
+    // FALSIFIABILITY: lower `MAX_POINTER_SLOT_QUIESCE_YIELDS` below the
     // iterations a tenth of the time budget can admit and this test fails. The
     // number is not free-standing: it is a tenth of the time budget divided by
     // the same assumed per-iteration cost the ceiling itself is derived from, so
@@ -6360,21 +7153,21 @@ mod pe64_import_slot_custody_decision_tests {
     // the backstop.
     #[test]
     fn a_budget_covering_a_fraction_of_the_time_budget_is_accepted() {
-        let tenth_of_the_budget = (PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS
+        let tenth_of_the_budget = (POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS
             / 10
-            / PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS)
+            / POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS)
             as u32;
         assert_eq!(tenth_of_the_budget, 200_000);
         for budget in [0u32, 1, tenth_of_the_budget] {
             assert_eq!(
-                validate_pe64_import_slot_quiesce_yields(budget),
+                validate_pointer_slot_quiesce_yields(budget),
                 Ok(budget),
                 "budget {budget} was refused"
             );
         }
     }
 
-    // FALSIFIABILITY: replace `MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS` with a
+    // FALSIFIABILITY: replace `MAX_POINTER_SLOT_QUIESCE_YIELDS` with a
     // hand-picked literal, or change either policy constant without the ceiling
     // following, and this test fails. The ceiling is a backstop sized from the
     // time budget, not a number chosen on its own, and this pins that
@@ -6383,31 +7176,31 @@ mod pe64_import_slot_custody_decision_tests {
     #[test]
     fn the_yield_ceiling_is_derived_from_the_time_budget() {
         assert_eq!(
-            u64::from(MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS),
-            PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS
-                / PE64_IMPORT_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS
+            u64::from(MAX_POINTER_SLOT_QUIESCE_YIELDS),
+            POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS
+                / POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS
         );
         assert_eq!(
-            PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET,
-            Duration::from_nanos(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET_NANOS)
+            POINTER_SLOT_QUIESCE_TIME_BUDGET,
+            Duration::from_nanos(POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS)
         );
     }
 
-    // FALSIFIABILITY: move `PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET` outside the
+    // FALSIFIABILITY: move `POINTER_SLOT_QUIESCE_TIME_BUDGET` outside the
     // band and this test fails. The budget is a policy choice, so what is pinned
     // is the property the policy has to satisfy, not the literal: below 250 ms a
     // callback that was merely descheduled a few times gets failed as a timeout,
     // above 10 s a teardown reads as hung to whoever is waiting on it.
     #[test]
     fn the_quiesce_time_budget_stays_inside_its_policy_band() {
-        assert!(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET >= Duration::from_millis(250));
-        assert!(PE64_IMPORT_SLOT_QUIESCE_TIME_BUDGET <= Duration::from_secs(10));
+        assert!(POINTER_SLOT_QUIESCE_TIME_BUDGET >= Duration::from_millis(250));
+        assert!(POINTER_SLOT_QUIESCE_TIME_BUDGET <= Duration::from_secs(10));
     }
 
     // ---- Defect B2/B3: the real loop, driven directly --------------------
 
-    /// Drive the production loop -- `drive_pe64_import_slot_quiesce_loop`, the
-    /// same function `quiesce_pe64_import_address_slot` calls -- with scripted
+    /// Drive the production loop -- `drive_pointer_slot_quiesce_loop`, the
+    /// same function `quiesce_pointer_slot` calls -- with scripted
     /// active-callback counts, a counted yield, and a clock this harness
     /// advances. Nothing here re-implements the loop; the control flow under
     /// test is the production control flow.
@@ -6425,7 +7218,7 @@ mod pe64_import_slot_custody_decision_tests {
         let observe_calls = Cell::new(0u64);
         let yield_calls = Cell::new(0u32);
         let clock = Cell::new(Duration::ZERO);
-        let outcome = drive_pe64_import_slot_quiesce_loop(
+        let outcome = drive_pointer_slot_quiesce_loop(
             max_yields,
             time_budget,
             || {
@@ -6490,7 +7283,7 @@ mod pe64_import_slot_custody_decision_tests {
     }
 
     // FALSIFIABILITY: move the time-budget check above the `active_count == 0`
-    // check in `drive_pe64_import_slot_quiesce_loop` and this test fails. The
+    // check in `drive_pointer_slot_quiesce_loop` and this test fails. The
     // budget here is already exhausted at entry, so a slot that is quiescent on
     // its first observation must still be reported as quiesced -- the deadline
     // may not fail an operation that has already succeeded.
@@ -6507,7 +7300,7 @@ mod pe64_import_slot_custody_decision_tests {
     }
 
     // FALSIFIABILITY: delete the time-budget check from
-    // `drive_pe64_import_slot_quiesce_loop` and this test fails -- the loop runs
+    // `drive_pointer_slot_quiesce_loop` and this test fails -- the loop runs
     // to the million-yield budget instead of stopping at 10 yields. This is the
     // Finding-3 property: iterations are a proxy, wall clock is the bound that
     // actually holds, and the yield ceiling must not be able to override it.
@@ -6549,12 +7342,12 @@ mod pe64_import_slot_custody_decision_tests {
     }
 
     // FALSIFIABILITY: swallow the observation error in
-    // `drive_pe64_import_slot_quiesce_loop` -- treat a failed dispatch
+    // `drive_pointer_slot_quiesce_loop` -- treat a failed dispatch
     // observation as a non-zero count and keep looping -- and this test fails.
     // A dispatch observation that cannot be taken is not evidence of activity.
     #[test]
     fn the_real_loop_propagates_a_failed_dispatch_observation() {
-        let outcome = drive_pe64_import_slot_quiesce_loop(
+        let outcome = drive_pointer_slot_quiesce_loop(
             5,
             Duration::from_secs(1),
             || Err::<u64, &str>("dispatch observation failed"),
@@ -6573,46 +7366,46 @@ mod pe64_import_slot_custody_decision_tests {
     // reader of the receipt log has to distinguish them by.
     #[test]
     fn each_custody_refusal_renders_a_distinct_message() {
-        let unwitnessed = Pe64ImportSlotRestoreCustodyError::UnwitnessedForeignRestore {
+        let unwitnessed = PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
             observed_slot_value: ORIGINAL,
         }
         .to_string();
-        let diverged = Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
+        let diverged = PointerSlotRestoreCustodyError::RecordedRestoreCasSlotDiverged {
             observed_slot_value: SHIM,
             expected_original_address: ORIGINAL,
         }
         .to_string();
         let indistinguishable =
-            Pe64ImportSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
+            PointerSlotRestoreCustodyError::IndistinguishableShimAndOriginalAddress {
                 address: ORIGINAL,
             }
             .to_string();
         let unreconciled =
-            Pe64ImportSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+            PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
                 protection_before: PROTECTION_BEFORE,
                 protection_after: PROTECTION_TEMPORARY,
             }
             .to_string();
-        let not_retained = Pe64ImportSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+        let not_retained = PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
             retained: None,
             performed: recorded_cas(),
         }
         .to_string();
         let reprotected_before =
-            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
+            PointerSlotRestoreCustodyError::RestoreCasProtectionBeforeDivergedFromLease {
                 lease_protection: LEASE_PROTECTION,
                 cas_protection_before: EXTERNALLY_REPROTECTED,
             }
             .to_string();
         let reprotected_after =
-            Pe64ImportSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
+            PointerSlotRestoreCustodyError::RestoreCasProtectionAfterDivergedFromLease {
                 lease_protection: LEASE_PROTECTION,
                 cas_protection_after: EXTERNALLY_REPROTECTED,
             }
             .to_string();
         let bound = Pe64ImportSlotQuiesceBoundError::YieldBudgetAboveCeiling {
             requested: 9,
-            ceiling: MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS,
+            ceiling: MAX_POINTER_SLOT_QUIESCE_YIELDS,
         }
         .to_string();
 
@@ -6653,7 +7446,7 @@ mod pe64_import_slot_custody_decision_tests {
         );
         assert!(
             bound.contains('9')
-                && bound.contains(&MAX_PE64_IMPORT_SLOT_QUIESCE_YIELDS.to_string()),
+                && bound.contains(&MAX_POINTER_SLOT_QUIESCE_YIELDS.to_string()),
             "bound message must report both the request and the ceiling: {bound}"
         );
 
@@ -6693,5 +7486,429 @@ mod pe64_import_slot_custody_decision_tests {
                 assert_ne!(rendered[i], rendered[j], "two stop reasons render identically");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pointer_slot_provenance_tests {
+    use super::*;
+    use crate::engine_slot::{
+        admit_engine_owned_slot_site_roster, EngineOwnedSlotSiteRoster,
+        ExpectedEngineOwnedFunctionPointerSlot, SlotEnumerationCompleteness,
+        SlotEnumerationEvidence,
+    };
+
+    const TARGET_RVA: u64 = 0x00C6_E270;
+    const VTABLE_RVA: u64 = 0x0294_3AD0;
+    const SLOT_RVA: u64 = 0x0294_3C40;
+    const MODULE_BASE: usize = 0x1_4000_0000;
+
+    static CENSUS: SlotEnumerationEvidence = SlotEnumerationEvidence {
+        evidence_job_id: "provenance-test",
+        evidence_artifact_sha256: [0x5E; 32],
+        target_function_rva: TARGET_RVA,
+        slot_rvas: &[SLOT_RVA],
+        direct_call_bypasses: &[],
+        unwind_metadata_rvas: &[],
+        completeness: SlotEnumerationCompleteness::Complete,
+    };
+
+    static SITES: [ExpectedEngineOwnedFunctionPointerSlot; 1] =
+        [ExpectedEngineOwnedFunctionPointerSlot {
+            logical_name: "provenance.test.slot",
+            module_sha256: A729_EXE_SHA256,
+            slot_rva: SLOT_RVA,
+            owner: OwningStructureIdentity {
+                kind: OwningStructureKind::Vtable,
+                base_rva: VTABLE_RVA,
+                entry_count: 59,
+                entry_index: 46,
+            },
+            expected_original_target_rva: TARGET_RVA,
+            enumeration: &CENSUS,
+        }];
+
+    fn engine_owned_expected() -> ExpectedPointerSlot {
+        let roster = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
+            target_logical_name: "provenance.test.target",
+            target_function_rva: TARGET_RVA,
+            sites: &SITES,
+        })
+        .expect("the single-site roster covers its census exactly");
+        engine_owned_expected_pointer_slot(&roster.sites()[0], MODULE_BASE)
+            .expect("a roster-admitted site widens")
+    }
+
+    const IMPORT_EXPECTED: ExpectedPe64ImportAddressSlot = ExpectedPe64ImportAddressSlot {
+        logical_name: "provenance.test.import",
+        slot_rva: SLOT_RVA,
+        imported_dll: "d3d11.dll",
+        imported_symbol: "D3D11CreateDevice",
+        expected_original_address: 0x7FFA_1111_0000,
+    };
+
+    // FALSIFIABILITY: make `SlotProvenance::primitive_id` return the PE64
+    // constant for both variants and this fails. It is the "do not attest an
+    // engine-owned slot as a PE import" rule expressed as a test: the two
+    // provenances must not be able to claim each other's primitive or policy
+    // id, and only the import variant may report `is_pe64_import`.
+    #[test]
+    fn an_engine_owned_slot_never_attests_a_pe_import_identity() {
+        let engine_owned = engine_owned_expected();
+        assert!(!engine_owned.provenance.is_pe64_import());
+        assert_eq!(
+            engine_owned.provenance.primitive_id(),
+            ENGINE_OWNED_FUNCTION_POINTER_SLOT_PRIMITIVE_ID
+        );
+        assert_eq!(
+            engine_owned.provenance.policy_id(),
+            ENGINE_OWNED_FUNCTION_POINTER_SLOT_PROCESS_LIFETIME_POLICY_ID
+        );
+        assert_ne!(
+            engine_owned.provenance.primitive_id(),
+            PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID
+        );
+        assert_ne!(
+            engine_owned.provenance.policy_id(),
+            PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID
+        );
+
+        let import = IMPORT_EXPECTED.generalize();
+        assert!(import.provenance.is_pe64_import());
+        assert_eq!(
+            import.provenance.primitive_id(),
+            PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID
+        );
+        assert_eq!(
+            import.provenance.policy_id(),
+            PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID
+        );
+    }
+
+    // The forged-attestation case is closed by construction rather than by a
+    // check: `EngineOwnedSlotAttestation`'s fields are private and its only
+    // constructor is `from_roster_admitted_site`, so no code outside this crate
+    // can build `SlotProvenance::EngineOwnedFunctionPointer` at all. This test
+    // therefore cannot be written from outside; it stands in for the remaining
+    // in-crate hazard, which is a specification edited *after* admission.
+    //
+    // FALSIFIABILITY: delete the `owner().derived_slot_rva()` and
+    // `entry_index >= entry_count` arms of `validate_expected_pointer_slot`'s
+    // `EngineOwnedFunctionPointer` match and this fails -- a specification
+    // whose slot address no longer matches the owner its attestation names
+    // FALSIFIABILITY: make `EngineOwnedSlotRosterInstallation::finish` return
+    // `Ok` regardless of `required_slot_rvas` -- i.e. hand out receipts for a
+    // partially redirected roster -- and this fails. A two-slot target with one
+    // slot redirected is an observer that misses every call through the other
+    // slot, so no usable receipt may exist until coverage is complete.
+    #[cfg(windows)]
+    #[test]
+    fn a_partially_installed_roster_yields_no_receipts() {
+        const SECOND_SLOT: u64 = 0x0294_3C48;
+        static TWO_SLOTS: SlotEnumerationEvidence = SlotEnumerationEvidence {
+            evidence_job_id: "provenance-test",
+            evidence_artifact_sha256: [0x5E; 32],
+            target_function_rva: TARGET_RVA,
+            slot_rvas: &[SLOT_RVA, SECOND_SLOT],
+            direct_call_bypasses: &[],
+            unwind_metadata_rvas: &[],
+            completeness: SlotEnumerationCompleteness::Complete,
+        };
+        static PAIR: [ExpectedEngineOwnedFunctionPointerSlot; 2] = [
+            ExpectedEngineOwnedFunctionPointerSlot {
+                enumeration: &TWO_SLOTS,
+                ..SITES[0]
+            },
+            ExpectedEngineOwnedFunctionPointerSlot {
+                logical_name: "provenance.test.slot.second",
+                slot_rva: SECOND_SLOT,
+                owner: OwningStructureIdentity {
+                    entry_index: 47,
+                    ..SITES[0].owner
+                },
+                enumeration: &TWO_SLOTS,
+                ..SITES[0]
+            },
+        ];
+        let roster = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
+            target_logical_name: "provenance.test.target",
+            target_function_rva: TARGET_RVA,
+            sites: &PAIR,
+        })
+        .expect("the pair covers its census exactly");
+
+        let installation = EngineOwnedSlotRosterInstallation::begin(&roster, MODULE_BASE, 7)
+            .expect("a two-site roster begins");
+        assert_eq!(installation.uncovered_slot_rvas(), &[SLOT_RVA, SECOND_SLOT]);
+        let incomplete = installation
+            .finish()
+            .expect_err("no slot was redirected, so there is no complete installation");
+        assert!(incomplete.installed.is_empty());
+        assert_eq!(incomplete.uncovered_slot_rvas, vec![SLOT_RVA, SECOND_SLOT]);
+        assert_eq!(incomplete.roster_sha256, roster.roster_sha256());
+
+        // A zero teardown token can never own a redirection.
+        assert!(EngineOwnedSlotRosterInstallation::begin(&roster, MODULE_BASE, 0).is_err());
+    }
+
+    // FALSIFIABILITY: delete the `unresolved_slot_rvas.push(slot_rva)` that
+    // `install_site` performs *before* attempting the install, and this fails.
+    // The exchange is recorded before the page-protection cleanup that can fail
+    // after it, so an `Err` from `install_site` does not prove the slot is
+    // untouched. Reporting such a slot as merely "uncovered" would tell a
+    // caller nothing happened when a live redirection may exist with no receipt
+    // and therefore no teardown path.
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_install_attempt_is_reported_as_unresolved_not_merely_uncovered() {
+        let roster = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
+            target_logical_name: "provenance.test.target",
+            target_function_rva: TARGET_RVA,
+            sites: &SITES,
+        })
+        .expect("the single-site roster is admitted");
+        let mut installation = EngineOwnedSlotRosterInstallation::begin(&roster, MODULE_BASE, 11)
+            .expect("the roster begins");
+        assert!(installation.unresolved_slot_rvas().is_empty());
+
+        // A shim that fails its own seal check, so nothing is exchanged -- but
+        // the bookkeeping cannot know that, and must not assume it.
+        installation
+            .install_site(&roster.sites()[0], &foreign_shim())
+            .expect_err("an unsealed shim cannot install");
+        assert_eq!(installation.unresolved_slot_rvas(), &[SLOT_RVA]);
+        assert_eq!(installation.uncovered_slot_rvas(), &[SLOT_RVA]);
+
+        let incomplete = installation.finish().expect_err("nothing was redirected");
+        assert_eq!(incomplete.unresolved_slot_rvas, vec![SLOT_RVA]);
+        assert_eq!(incomplete.uncovered_slot_rvas, vec![SLOT_RVA]);
+        assert!(incomplete.installed.is_empty());
+        // Every unresolved slot is by construction still uncovered.
+        assert!(incomplete
+            .unresolved_slot_rvas
+            .iter()
+            .all(|slot| incomplete.uncovered_slot_rvas.contains(slot)));
+    }
+
+    // FALSIFIABILITY: delete the `site.roster_sha256() != self.roster_sha256`
+    // refusal in `install_site` and a site admitted under one target's coverage
+    // proof counts towards a different target's, which would let a roster
+    // "complete" without its own slots ever being redirected.
+    #[cfg(windows)]
+    #[test]
+    fn a_site_from_another_roster_cannot_satisfy_this_one() {
+        let roster = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
+            target_logical_name: "provenance.test.target",
+            target_function_rva: TARGET_RVA,
+            sites: &SITES,
+        })
+        .expect("the single-site roster is admitted");
+        let other = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
+            target_logical_name: "provenance.test.other-target",
+            target_function_rva: TARGET_RVA,
+            sites: &SITES,
+        })
+        .expect("a differently named roster over the same census is admitted");
+        assert_ne!(roster.roster_sha256(), other.roster_sha256());
+
+        let mut installation = EngineOwnedSlotRosterInstallation::begin(&roster, MODULE_BASE, 9)
+            .expect("the roster begins");
+        // Refused on roster identity, before any process memory is touched.
+        let error = installation
+            .install_site(&other.sites()[0], &foreign_shim())
+            .expect_err("a foreign site cannot count towards this roster");
+        assert!(error.contains("different admitted roster"), "{error}");
+        assert_eq!(installation.uncovered_slot_rvas(), &[SLOT_RVA]);
+    }
+
+    /// A shim value the roster-identity check must reject before ever reading
+    /// it. Never dereferenced: `install_site` returns on the roster mismatch
+    /// above it.
+    #[cfg(windows)]
+    fn foreign_shim() -> SealedExternalDispatchShim {
+        SealedExternalDispatchShim {
+            identity: ExternalDispatchShimIdentity {
+                entry_address: 0,
+                entry_len: 0,
+                entry_bytes_sha256: [0; 32],
+                allocation_base: 0,
+                allocation_len: 0,
+                dispatch_slot_address: 0,
+                active_callback_counter_address: 0,
+            },
+            template_id: WIN64_REGISTER_ARGS_COUNTED_SHIM_TEMPLATE_ID,
+            callback_semantic_id: "provenance.test.callback",
+            callback_export_name: "provenance_test_callback",
+            callback_binary_identity: ExternalCallbackBinaryIdentity {
+                module_file_sha256: [0; 32],
+                module_pe_identity_sha256: [0; 32],
+                module_size_of_image: 0,
+                callback_rva: 0,
+                entry_prefix_len: 0,
+                entry_prefix_sha256: [0; 32],
+            },
+            callback_manifest_sha256: [0; 32],
+            normalized_template_sha256: [0; 32],
+            unwind_handler_sha256: [0; 32],
+            unwind_info_sha256: [0; 32],
+            runtime_function_sha256: [0; 32],
+            original_address: 0,
+            callback_address: 0,
+            unwind_registered: false,
+            authenticity_seal: 0,
+        }
+    }
+
+
+    // FALSIFIABILITY: change `rva_is_in_executable_section` back to bounding
+    // with `raw_size` and this fails. The two sizes are independent: a729's
+    // `.text` pads its raw size 0x1D8 bytes past its virtual size (so raw_size
+    // over-accepts), while a zero-filled section runs the other way (so
+    // raw_size under-accepts and would reject a real code RVA).
+    #[cfg(windows)]
+    #[test]
+    fn executable_containment_uses_the_loaded_extent_not_the_disk_extent() {
+        // a729 `.text`: VirtualSize 0x026EFC28, SizeOfRawData 0x026EFE00.
+        let padded = PeSection {
+            virtual_address: 0x1000,
+            virtual_size: 0x026E_FC28,
+            raw_size: 0x026E_FE00,
+            raw_offset: 0x400,
+            characteristics: IMAGE_SCN_MEM_EXECUTE,
+        };
+        let sections = [padded];
+        assert!(rva_is_in_executable_section(
+            &sections,
+            0x1000 + 0x026E_FC27
+        ));
+        // Inside the raw extent, past the loaded extent: not in the section.
+        assert!(!rva_is_in_executable_section(
+            &sections,
+            0x1000 + 0x026E_FC28
+        ));
+        assert!(!rva_is_in_executable_section(
+            &sections,
+            0x1000 + 0x026E_FDFF
+        ));
+
+        // Zero-filled section: the loaded extent is the larger one.
+        let zero_filled = PeSection {
+            virtual_address: 0x2000,
+            virtual_size: 0x4000,
+            raw_size: 0x1000,
+            raw_offset: 0x400,
+            characteristics: IMAGE_SCN_MEM_EXECUTE,
+        };
+        let sections = [zero_filled];
+        assert!(rva_is_in_executable_section(&sections, 0x2000 + 0x3FFF));
+
+        // A non-executable section never satisfies the predicate.
+        let data = PeSection {
+            characteristics: 0,
+            ..padded
+        };
+        assert!(!rva_is_in_executable_section(&[data], 0x1000));
+    }
+
+    // would reach the compare-exchange, redirecting a slot nothing admitted.
+    #[test]
+    fn an_engine_owned_specification_edited_after_admission_is_refused() {
+        let admitted = engine_owned_expected();
+        assert!(validate_expected_pointer_slot(admitted).is_ok());
+
+        // Same attestation, slot address moved one entry along.
+        let mut moved = admitted;
+        moved.slot_rva += ENGINE_OWNED_SLOT_WIDTH_BYTES;
+        assert!(validate_expected_pointer_slot(moved).is_err());
+
+        // An attestation whose own owner index is outside its structure.
+        let mut out_of_range = admitted;
+        out_of_range.provenance =
+            SlotProvenance::EngineOwnedFunctionPointer(EngineOwnedSlotAttestation {
+                owner: OwningStructureIdentity {
+                    entry_count: 46,
+                    ..SITES[0].owner
+                },
+                enumeration_sha256: [0x11; 32],
+                roster_sha256: [0x22; 32],
+                roster_slot_count: 1,
+            });
+        assert!(validate_expected_pointer_slot(out_of_range).is_err());
+
+        // Zeroed digests and an empty roster never come out of a roster
+        // admission; each is refused on its own.
+        for forged in [
+            EngineOwnedSlotAttestation {
+                owner: SITES[0].owner,
+                enumeration_sha256: [0x11; 32],
+                roster_sha256: [0; 32],
+                roster_slot_count: 1,
+            },
+            EngineOwnedSlotAttestation {
+                owner: SITES[0].owner,
+                enumeration_sha256: [0; 32],
+                roster_sha256: [0x22; 32],
+                roster_slot_count: 1,
+            },
+            EngineOwnedSlotAttestation {
+                owner: SITES[0].owner,
+                enumeration_sha256: [0x11; 32],
+                roster_sha256: [0x22; 32],
+                roster_slot_count: 0,
+            },
+        ] {
+            let mut spec = admitted;
+            spec.provenance = SlotProvenance::EngineOwnedFunctionPointer(forged);
+            assert!(validate_expected_pointer_slot(spec).is_err());
+        }
+    }
+
+    // FALSIFIABILITY: drop the per-provenance domain string and the variant tag
+    // from `pointer_slot_spec_sha256`/`digest_slot_provenance` and these two
+    // specifications -- same name, same slot, same original address -- digest
+    // identically, so one receipt could stand in for the other.
+    #[test]
+    fn the_slot_spec_digest_separates_the_two_provenances() {
+        let engine_owned = engine_owned_expected();
+        let mut import = IMPORT_EXPECTED.generalize();
+        import.logical_name = engine_owned.logical_name;
+        import.slot_rva = engine_owned.slot_rva;
+        import.expected_original_address = engine_owned.expected_original_address;
+        assert_ne!(
+            pointer_slot_spec_sha256(engine_owned),
+            pointer_slot_spec_sha256(import)
+        );
+    }
+
+    // FALSIFIABILITY: delete the `expected.module_sha256 != A729_EXE_SHA256`
+    // refusal in `engine_owned_expected_pointer_slot` and a site pinned to a
+    // different build widens into an installable specification against the
+    // build this crate is compiled for.
+    #[test]
+    fn widening_refuses_a_site_pinned_to_another_build() {
+        static OTHER_BUILD: [ExpectedEngineOwnedFunctionPointerSlot; 1] =
+            [ExpectedEngineOwnedFunctionPointerSlot {
+                module_sha256: [0x5A; 32],
+                ..SITES[0]
+            }];
+        let roster = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
+            target_logical_name: "provenance.test.target",
+            target_function_rva: TARGET_RVA,
+            sites: &OTHER_BUILD,
+        })
+        .expect("admission is build-agnostic; the build pin is checked at widening");
+        assert!(engine_owned_expected_pointer_slot(&roster.sites()[0], MODULE_BASE).is_err());
+        assert!(engine_owned_expected_pointer_slot(&roster.sites()[0], 0).is_err());
+    }
+
+    // FALSIFIABILITY: drop the `slot_rva % ENGINE_OWNED_SLOT_WIDTH_BYTES`
+    // refusal from `validate_expected_pointer_slot` and an unaligned slot
+    // reaches the compare/exchange, where a straddling word is not atomic at
+    // all.
+    #[test]
+    fn an_unaligned_slot_specification_is_refused() {
+        let mut unaligned = IMPORT_EXPECTED.generalize();
+        unaligned.slot_rva = SLOT_RVA + 4;
+        assert!(validate_expected_pointer_slot(unaligned).is_err());
     }
 }
