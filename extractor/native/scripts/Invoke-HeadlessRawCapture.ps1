@@ -542,7 +542,7 @@ function Invoke-BoundedHoi4Control {
         [uint64]$ExpectedCreationFiletimeUtc = 0
     )
 
-    Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+    Assert-Hoi4ClientDrivingOptIn -Caller $PSCommandPath
     if ($ExpectedCreationFiletimeUtc -gt 0) {
         [void](Assert-Hoi4ProcessEpoch `
             -TargetProcessId $TargetProcessId `
@@ -632,7 +632,7 @@ function Invoke-BoundedWmiLaunch {
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 30
     )
 
-    Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+    Assert-Hoi4ClientDrivingOptIn -Caller $PSCommandPath
     $commandLiteral = ConvertTo-PowerShellLiteral -Value $CommandLine
     $directoryLiteral = ConvertTo-PowerShellLiteral -Value $CurrentDirectory
     $expectedExecutableLiteral = ConvertTo-PowerShellLiteral -Value $ExpectedExecutablePath
@@ -860,7 +860,7 @@ if ($EvidenceOnlyDriveGame) {
     if ($UseRunningGame) {
         throw '-UseRunningGame and -EvidenceOnlyDriveGame are mutually exclusive.'
     }
-    Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+    Assert-Hoi4ClientDrivingOptIn -Caller $PSCommandPath
 } elseif ($StopExistingGame -or $KeepGameAfterCapture) {
     throw '-StopExistingGame and -KeepGameAfterCapture require -EvidenceOnlyDriveGame.'
 }
@@ -1468,7 +1468,7 @@ if ($reuseRunningGame) {
             throw "hoi4.exe PID(s) $(@($running.Id) -join ',') are running. Evidence-only launch requires -StopExistingGame; passive default mode reuses exactly one running game."
         }
         foreach ($proc in $running) {
-            Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+            Assert-Hoi4ClientDrivingOptIn -Caller $PSCommandPath
             Write-Host "phase=stop_existing pid=$($proc.Id)"
             if ($DryRun) { continue }
             try { $proc.CloseMainWindow() | Out-Null } catch { }
@@ -1563,6 +1563,18 @@ if ($EvidenceOnlyDriveGame) {
             -RequestedSpeed $Speed `
             -Action Play `
             -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
+        # The game can die mid-loop. Without this guard the next property
+        # access throws PropertyNotFoundStrict and the real event -- the game
+        # process disappearing -- is reported as a PowerShell type error.
+        if ($null -eq $attempt) {
+            $alive = @(Get-Process -Id $gamePid -ErrorAction SilentlyContinue)
+            if ($alive.Count -eq 0) {
+                throw "hoi4.exe PID $gamePid exited during evidence setup; no control sample could be taken."
+            }
+            Write-Host "phase=evidence_setup_retry sample=none pid_alive=True"
+            Start-Sleep -Milliseconds 1000
+            continue
+        }
         if ([int]$attempt.Speed -eq $Speed -and
             -not [bool]$attempt.Paused -and
             [bool]$attempt.Advancing) {
@@ -1974,7 +1986,7 @@ $scriptExitCode = [int]$recorderExit
         (-not $collectorInjectionStarted -or
             ($collectorTeardownAuthenticated -and -not $gradedWindowStarted))) {
         try {
-            Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
+            Assert-Hoi4ClientDrivingOptIn -Caller $PSCommandPath
             $launchedProcess.Refresh()
             if (-not $launchedProcess.HasExited) {
                 try { $launchedProcess.CloseMainWindow() | Out-Null } catch { }
