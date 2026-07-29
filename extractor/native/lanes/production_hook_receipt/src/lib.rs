@@ -399,7 +399,23 @@ struct ProvisionalPe64ImportSlotBinding {
     teardown_owner_token: u64,
     slot_address: usize,
     protection_before: u32,
+    /// The install compare-exchange this crate itself performed, recorded the
+    /// instant the hardware exchange returned and before any fallible cleanup.
+    /// A retry that finds the slot already reading the external shim replays
+    /// these values and, if `protection_reconciled` is still false, finishes the
+    /// page cleanup first. A retry with no record here has no evidence of a
+    /// transition and must not mint a receipt.
+    recorded_install_cas: Option<RecordedInstallCas>,
     authenticity_seal: u64,
+}
+
+#[cfg(windows)]
+impl RecordedInstallCasStorage for ProvisionalPe64ImportSlotBinding {
+    /// The returned borrow is tied to `&mut self`, so this accessor cannot
+    /// return a throwaway local -- the borrow checker rejects it (`E0515`).
+    fn recorded_install_cas_slot(&mut self) -> &mut Option<RecordedInstallCas> {
+        &mut self.recorded_install_cas
+    }
 }
 
 #[cfg(windows)]
@@ -1014,7 +1030,7 @@ pub fn install_pe64_import_address_slot(
         None => {}
     }
     let slot_spec_sha256 = pe64_import_slot_spec_sha256(expected);
-    let (authenticity_seal, protection_before) = match registry.get(&key) {
+    let (authenticity_seal, protection_before, recorded_install_cas) = match registry.get(&key) {
         Some(Pe64ImportSlotCustodyState::Provisional(binding)) => {
             validate_sealed_shim_lease_and_live_dispatch(
                 sealed_shim,
@@ -1025,7 +1041,11 @@ pub fn install_pe64_import_address_slot(
                 sealed_shim.callback_address,
                 false,
             )?;
-            (binding.authenticity_seal, binding.protection_before)
+            (
+                binding.authenticity_seal,
+                binding.protection_before,
+                binding.recorded_install_cas,
+            )
         }
         Some(_) => unreachable!("active and terminal custody returned above"),
         None => {
@@ -1049,37 +1069,130 @@ pub fn install_pe64_import_address_slot(
                     teardown_owner_token,
                     slot_address,
                     protection_before,
+                    recorded_install_cas: None,
                     authenticity_seal,
                 }),
             );
-            (authenticity_seal, protection_before)
+            (authenticity_seal, protection_before, None)
         }
     };
     let current = atomic_load_pointer_slot(slot_address)?;
-    let cas = if current == external_shim_address {
-        let current_protection = pointer_slot_protection(slot_address)?;
-        if current_protection != protection_before {
-            restore_pointer_slot_protection(slot_address, current_protection, protection_before)?;
+    // The arm is chosen by what this crate recorded, not by what the slot
+    // happens to read. A slot already holding the external shim with no
+    // recorded compare-exchange is somebody else's write and is refused
+    // outright -- synthesizing `observed_before` from `expected` there would
+    // attest an installation this crate never performed, and would make the
+    // `observed_before != expected.expected_original_address` check below a
+    // tautology on exactly the path where it is the only remaining evidence.
+    let decision = decide_pe64_import_slot_install_cas(
+        current,
+        expected.expected_original_address,
+        external_shim_address,
+        recorded_install_cas,
+    )
+    .map_err(|error| format!("{} {error}", expected.logical_name))?;
+    let cas = match decision {
+        Pe64ImportSlotInstallCasDecision::PerformCas => {
+            // Resolve the registry slot to write into *before* the exchange.
+            // After it, recording is a plain field write on a borrow that
+            // already exists, so no early return can stand between the
+            // exchange and its record.
+            let binding = match registry.get_mut(&key) {
+                Some(Pe64ImportSlotCustodyState::Provisional(binding))
+                    if binding.expected == expected
+                        && binding.external_shim == external_shim
+                        && binding.teardown_owner_token == teardown_owner_token
+                        && binding.slot_address == slot_address =>
+                {
+                    binding
+                }
+                _ => {
+                    return Err(format!(
+                        "{} provisional import-slot custody changed before the install CAS",
+                        expected.logical_name
+                    ));
+                }
+            };
+            // The ordering lives in `perform_recorded_install_cas`: the record
+            // is written between the exchange and the fallible cleanup, so a
+            // cleanup failure leaves a resumable record instead of losing the
+            // evidence that the exchange happened.
+            let (reconciled, protection_after) = perform_recorded_install_cas(
+                || {
+                    let prepared = begin_atomic_compare_exchange_pointer_slot(slot_address)?;
+                    Ok((
+                        prepared,
+                        prepared.protection_before,
+                        prepared.protection_temporary,
+                    ))
+                },
+                |prepared| {
+                    exchange_pointer_slot(
+                        prepared,
+                        expected.expected_original_address,
+                        external_shim_address,
+                    )
+                },
+                binding,
+                finish_atomic_compare_exchange_pointer_slot,
+            )?;
+            complete_recorded_install_cas_observation(reconciled, protection_after)
+                .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-        AtomicPointerCasObservation {
-            observed_before: expected.expected_original_address,
-            protection_before,
-            protection_temporary: pointer_slot_temporary_protection(protection_before),
-            protection_after: pointer_slot_protection(slot_address)?,
+        Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded) => {
+            let protection_after =
+                reconcile_pointer_slot_protection(slot_address, recorded.protection_before)?;
+            let reconciled = RecordedInstallCas {
+                protection_reconciled: true,
+                ..recorded
+            };
+            match registry.get_mut(&key) {
+                Some(Pe64ImportSlotCustodyState::Provisional(binding))
+                    if binding.expected == expected
+                        && binding.external_shim == external_shim
+                        && binding.teardown_owner_token == teardown_owner_token
+                        && binding.slot_address == slot_address =>
+                {
+                    binding.recorded_install_cas = Some(reconciled);
+                }
+                _ => {
+                    return Err(format!(
+                        "{} provisional import-slot custody changed before the install CAS",
+                        expected.logical_name
+                    ));
+                }
+            }
+            complete_recorded_install_cas_observation(reconciled, protection_after)
+                .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
-    } else {
-        atomic_compare_exchange_pointer_slot(
-            slot_address,
-            expected.expected_original_address,
-            external_shim_address,
-        )?
+        Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(recorded) => {
+            let protection_after =
+                reconcile_pointer_slot_protection(slot_address, protection_before)?;
+            complete_recorded_install_cas_observation(recorded, protection_after)
+                .map_err(|error| format!("{} {error}", expected.logical_name))?
+        }
     };
+    // Both comparisons are against the protection observed when the provisional
+    // binding was created, not against the record's own. KNOWN, DELIBERATE: if
+    // an external agent re-protects the page between that observation and
+    // `begin_atomic_compare_exchange_pointer_slot`, a successful exchange
+    // records the newer value, this check refuses, and the retry cannot satisfy
+    // both this check and `complete_recorded_install_cas_observation` at once --
+    // the lease stays provisional for the process lifetime. That is a liveness
+    // cost, never a forged receipt. The restore path holds the identical
+    // property against `protection_before_restore`; changing the reference
+    // value here alone would desynchronise the two directions, so it is left
+    // for a change that covers both.
     if cas.protection_before != protection_before || cas.protection_after != protection_before {
         return Err(format!(
             "{} provisional import-slot page protection remains unresolved",
             expected.logical_name
         ));
     }
+    // Non-tautological now: `observed_before` is only ever a value some real
+    // compare-exchange returned, replayed verbatim from the record if this is a
+    // retry. Before the fix the already-shim arm defined it to equal the value
+    // this line compares it against.
     let observed_before = cas.observed_before;
     if observed_before != expected.expected_original_address {
         return Err(format!(
@@ -1087,6 +1200,14 @@ pub fn install_pe64_import_address_slot(
             expected.logical_name, expected.expected_original_address
         ));
     }
+    // KNOWN, DELIBERATE: if an external writer puts the slot back to the
+    // original between the exchange and this load, the call fails here and the
+    // retry is refused as `RecordedInstallCasSlotDiverged` rather than driving a
+    // second exchange. The pre-change code recovered from this only by
+    // synthesizing the observation, which is the defect this lane removes; a
+    // record whose slot no longer holds the shim genuinely no longer describes
+    // the live slot, so re-exchanging under the same record would attest a
+    // transition against evidence from a different one.
     let observed_after = atomic_load_pointer_slot(slot_address)?;
     if observed_after != external_shim_address {
         return Err(format!(
@@ -1549,7 +1670,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
         Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded) => {
-            let protection_after = reconcile_restored_pointer_slot_protection(
+            let protection_after = reconcile_pointer_slot_protection(
                 slot_address,
                 recorded.protection_before,
             )?;
@@ -1574,7 +1695,7 @@ pub fn restore_pe64_import_address_slot_process_lifetime(
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
         Pe64ImportSlotRestoreCasDecision::ReplayRecordedCas(recorded) => {
-            let protection_after = reconcile_restored_pointer_slot_protection(
+            let protection_after = reconcile_pointer_slot_protection(
                 slot_address,
                 terminalizing.protection_before_restore,
             )?;
@@ -3436,6 +3557,244 @@ pub fn complete_recorded_restore_cas_observation(
     })
 }
 
+// ---------------------------------------------------------------------------
+// PE64 import-slot install custody decisions.
+//
+// The install direction of the custody problem the restore helpers above solve,
+// deliberately kept as its own record type, decision, storage trait and error
+// rather than sharing theirs. The two directions swap the roles of
+// `expected_original_address` and `external_shim_address`, so a record of one
+// direction is not evidence for the other; keeping the types disjoint means the
+// type system, not a convention, prevents one being replayed as the other.
+// ---------------------------------------------------------------------------
+
+/// Why a PE64 import-slot install refused to attest an original -> shim
+/// transition. Typed rather than stringly so a caller -- or a test -- can pin
+/// *which* refusal fired instead of only that one did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pe64ImportSlotInstallCustodyError {
+    /// The slot already reads the external shim, but this crate never recorded
+    /// a compare-exchange for it. Whatever put that value there did so outside
+    /// this crate's custody (a competing hook engine, a previous process
+    /// lifetime's leftovers, a rewritten slot). Custody is unresolvable: the
+    /// crate cannot attest an installation it did not perform, and an
+    /// installation receipt is exactly that attestation.
+    UnwitnessedForeignInstall { observed_slot_value: usize },
+    /// A prior attempt of this crate recorded a completed compare-exchange, but
+    /// the slot no longer reads the external shim that attempt left in it. The
+    /// recorded observation no longer describes the live slot.
+    RecordedInstallCasSlotDiverged {
+        observed_slot_value: usize,
+        external_shim_address: usize,
+    },
+    /// The external shim and the original export share one address, so "the
+    /// slot reads the original" and "the slot reads the shim" are the same
+    /// observation and no transition is attestable in either direction.
+    IndistinguishableShimAndOriginalAddress { address: usize },
+    /// A recorded compare-exchange was completed, but the page protection it
+    /// left behind has still not been observed back at the value the exchange
+    /// started from. The transition happened; the custody of the page has not
+    /// been resolved, so no receipt may form yet.
+    RecordedInstallProtectionUnreconciled {
+        protection_before: u32,
+        protection_after: u32,
+    },
+}
+
+impl std::fmt::Display for Pe64ImportSlotInstallCustodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnwitnessedForeignInstall {
+                observed_slot_value,
+            } => write!(
+                f,
+                "import slot already reads 0x{observed_slot_value:X} with no install CAS recorded by this crate; custody of the transition is unresolvable"
+            ),
+            Self::RecordedInstallCasSlotDiverged {
+                observed_slot_value,
+                external_shim_address,
+            } => write!(
+                f,
+                "recorded install CAS expected the slot to retain external shim 0x{external_shim_address:X}, observed 0x{observed_slot_value:X}"
+            ),
+            Self::IndistinguishableShimAndOriginalAddress { address } => write!(
+                f,
+                "external shim and original export share address 0x{address:X}; no import-slot transition is attestable"
+            ),
+            Self::RecordedInstallProtectionUnreconciled {
+                protection_before,
+                protection_after,
+            } => write!(
+                f,
+                "recorded install CAS left page protection at 0x{protection_after:X}, not the 0x{protection_before:X} it started from"
+            ),
+        }
+    }
+}
+
+/// What this crate recorded about an install compare-exchange it performed.
+///
+/// Written the instant the hardware `compare_exchange` returns and *before* any
+/// fallible page-protection cleanup, so a failure during that cleanup leaves
+/// evidence of the transition behind instead of losing it. `protection_reconciled`
+/// distinguishes "exchange done, page protection still owed" from "exchange done
+/// and the page is back where it started"; only the latter can form a receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordedInstallCas {
+    /// The value the compare-exchange actually returned.
+    pub observed_before: usize,
+    /// Page protection observed before the exchange.
+    pub protection_before: u32,
+    /// Protection the exchange temporarily installed. Equals
+    /// `protection_before` when the page was already writable.
+    pub protection_temporary: u32,
+    /// False until the page protection has been observed back at
+    /// `protection_before`.
+    pub protection_reconciled: bool,
+}
+
+/// Which arm the install path takes for one import slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pe64ImportSlotInstallCasDecision {
+    /// Drive a real compare-exchange and record what it returns.
+    PerformCas,
+    /// Replay the recorded exchange. Its page protection was already
+    /// reconciled, so only the live protection has to be re-observed.
+    ReplayRecordedCas(RecordedInstallCas),
+    /// Replay the recorded exchange, but finish the page-protection
+    /// reconciliation the earlier attempt failed to complete before returning.
+    /// This is the resumable state an exchange followed by a failed protection
+    /// restore leaves behind.
+    ReconcileProtectionThenReplay(RecordedInstallCas),
+}
+
+/// Choose the install arm from recorded custody, never from the slot alone.
+///
+/// `recorded_prior_cas` is `Some` only when this crate's own exchange returned
+/// for this `(teardown_owner_token, slot_rva)`, so neither replay arm is
+/// reachable without that evidence. A first attempt that finds the slot already
+/// reading the shim is refused outright rather than adopted: an installation
+/// receipt attests that *this* invocation performed the original -> shim
+/// transition, and there is nothing here to support that claim.
+pub fn decide_pe64_import_slot_install_cas(
+    current_slot_value: usize,
+    expected_original_address: usize,
+    external_shim_address: usize,
+    recorded_prior_cas: Option<RecordedInstallCas>,
+) -> Result<Pe64ImportSlotInstallCasDecision, Pe64ImportSlotInstallCustodyError> {
+    if external_shim_address == expected_original_address {
+        return Err(
+            Pe64ImportSlotInstallCustodyError::IndistinguishableShimAndOriginalAddress {
+                address: external_shim_address,
+            },
+        );
+    }
+    match recorded_prior_cas {
+        Some(recorded) => {
+            if current_slot_value != external_shim_address {
+                return Err(
+                    Pe64ImportSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
+                        observed_slot_value: current_slot_value,
+                        external_shim_address,
+                    },
+                );
+            }
+            if recorded.protection_reconciled {
+                Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(recorded))
+            } else {
+                Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded))
+            }
+        }
+        None => {
+            if current_slot_value == external_shim_address {
+                return Err(
+                    Pe64ImportSlotInstallCustodyError::UnwitnessedForeignInstall {
+                        observed_slot_value: current_slot_value,
+                    },
+                );
+            }
+            Ok(Pe64ImportSlotInstallCasDecision::PerformCas)
+        }
+    }
+}
+
+/// Sequence one install compare-exchange so that its result is persisted before
+/// anything that can fail runs after it.
+///
+/// Same ordering contract as [`perform_recorded_restore_cas`], in the install
+/// direction: `prepare` holds everything fallible that must precede the
+/// exchange, `exchange` is infallible by construction, the record is persisted,
+/// and only then does `finish` run the fallible cleanup. Nothing fallible sits
+/// between the exchange and the record, so a completed exchange can never be
+/// lost -- a `finish` failure leaves behind evidence that the transition
+/// happened and that the page is still owed.
+///
+/// The sink is reached through [`RecordedInstallCasStorage`] rather than as a
+/// bare `&mut Option`, and that is the point: an implementor's accessor returns
+/// a borrow tied to `&mut self`, so it cannot hand back a throwaway local. A
+/// bare `Option` does not implement the trait, so it cannot reach the
+/// production call site either.
+fn perform_recorded_install_cas<P, E>(
+    prepare: impl FnOnce() -> Result<(P, u32, u32), E>,
+    exchange: impl FnOnce(&P) -> usize,
+    storage: &mut impl RecordedInstallCasStorage,
+    finish: impl FnOnce(P) -> Result<u32, E>,
+) -> Result<(RecordedInstallCas, u32), E> {
+    let (prepared, protection_before, protection_temporary) = prepare()?;
+    let observed_before = exchange(&prepared);
+    let recorded = RecordedInstallCas {
+        observed_before,
+        protection_before,
+        protection_temporary,
+        protection_reconciled: false,
+    };
+    // Between the exchange above and this line there is nothing fallible.
+    *storage.recorded_install_cas_slot() = Some(recorded);
+    let protection_after = finish(prepared)?;
+    let reconciled = RecordedInstallCas {
+        protection_reconciled: true,
+        ..recorded
+    };
+    *storage.recorded_install_cas_slot() = Some(reconciled);
+    Ok((reconciled, protection_after))
+}
+
+/// Owner of the slot an install compare-exchange records itself into.
+///
+/// Deliberately not implemented for `Option<RecordedInstallCas>`: the whole
+/// value of the trait is that the only implementors are types that *own*
+/// durable custody storage, so the record cannot be pointed at something that
+/// dies with the call.
+trait RecordedInstallCasStorage {
+    fn recorded_install_cas_slot(&mut self) -> &mut Option<RecordedInstallCas>;
+}
+
+/// Turn a recorded install exchange plus the live page protection into the
+/// complete observation a receipt is minted from.
+///
+/// Refuses unless the page is back at the protection the exchange started from,
+/// so an unreconciled record can never reach a receipt no matter which arm
+/// produced it.
+pub fn complete_recorded_install_cas_observation(
+    recorded: RecordedInstallCas,
+    protection_after: u32,
+) -> Result<AtomicPointerCasObservation, Pe64ImportSlotInstallCustodyError> {
+    if !recorded.protection_reconciled || protection_after != recorded.protection_before {
+        return Err(
+            Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
+                protection_before: recorded.protection_before,
+                protection_after,
+            },
+        );
+    }
+    Ok(AtomicPointerCasObservation {
+        observed_before: recorded.observed_before,
+        protection_before: recorded.protection_before,
+        protection_temporary: recorded.protection_temporary,
+        protection_after,
+    })
+}
+
 /// Wall-clock budget for the quiescence loop. **This is an operational policy
 /// limit, not a derivation** -- nothing about the loop bounds how long a
 /// collector callback takes to leave the shim.
@@ -3760,27 +4119,11 @@ fn finish_atomic_compare_exchange_pointer_slot(
     Ok(protection_after)
 }
 
-/// Prepare, exchange and finish in one call, for callers that have nothing to
-/// persist between the exchange and the cleanup. Behaviourally identical to the
-/// single function this replaced.
-#[cfg(windows)]
-fn atomic_compare_exchange_pointer_slot(
-    address: usize,
-    expected: usize,
-    replacement: usize,
-) -> Result<AtomicPointerCasObservation, String> {
-    let prepared = begin_atomic_compare_exchange_pointer_slot(address)?;
-    let observed_before = exchange_pointer_slot(&prepared, expected, replacement);
-    let protection_before = prepared.protection_before;
-    let protection_temporary = prepared.protection_temporary;
-    let protection_after = finish_atomic_compare_exchange_pointer_slot(prepared)?;
-    Ok(AtomicPointerCasObservation {
-        observed_before,
-        protection_before,
-        protection_temporary,
-        protection_after,
-    })
-}
+// The "prepare, exchange and finish in one call" wrapper that used to live here
+// was deleted with the install path's last non-recording caller. Both remaining
+// compare-exchange call sites have to persist the exchange result before the
+// fallible cleanup runs, which is precisely what the wrapper could not do; a
+// second sequencing of the same three steps is a drift hazard with no user.
 
 #[cfg(windows)]
 fn validate_atomic_pointer_slot_memory(address: usize) -> Result<(), String> {
@@ -3832,11 +4175,12 @@ fn pointer_slot_protection(address: usize) -> Result<u32, String> {
     Ok(info.Protect)
 }
 
-/// Put a restored slot's page protection back at `expected` if it has drifted,
-/// then report what it actually reads. Used by both replay arms so the retry
-/// path finishes the cleanup a failed attempt left owed.
+/// Put a slot's page protection back at `expected` if it has drifted, then
+/// report what it actually reads. Used by the replay arms of both the install
+/// and the restore path -- the operation is the same in either direction -- so
+/// a retry finishes the cleanup a failed attempt left owed.
 #[cfg(windows)]
-fn reconcile_restored_pointer_slot_protection(
+fn reconcile_pointer_slot_protection(
     address: usize,
     expected: u32,
 ) -> Result<u32, String> {
@@ -4797,6 +5141,405 @@ mod pe64_import_slot_custody_decision_tests {
                         | Ok(Pe64ImportSlotRestoreCasDecision::ReconcileProtectionThenReplay(_))
                 ),
                 "slot value 0x{current:X} reached a replay arm with no recorded CAS: {outcome:?}"
+            );
+        }
+    }
+
+    // ---- Install path: the same defect in the original -> shim direction --
+    //
+    // `install_pe64_import_address_slot` used to synthesize its CAS observation
+    // whenever the slot already read the external shim:
+    //
+    //     let cas = if current == external_shim_address {
+    //         AtomicPointerCasObservation { observed_before: expected.expected_original_address, .. }
+    //     } else { atomic_compare_exchange_pointer_slot(..) };
+    //
+    // and then checked `cas.observed_before != expected.expected_original_address`
+    // -- a tautology on that arm, because the value had just been *defined* to
+    // be the value it was checked against. An installation receipt could
+    // therefore be minted with no evidence that this crate ever performed the
+    // installing exchange.
+
+    /// `observed_before` here is deliberately *not* `ORIGINAL`. The pre-fix
+    /// install code synthesized `observed_before` as
+    /// `expected.expected_original_address`, so any test whose recorded value
+    /// equals `ORIGINAL` cannot tell a replay from a reconstruction. This
+    /// sentinel can. Held separate from the restore side's sentinel so editing
+    /// one cannot silently change what the other proves.
+    const INSTALL_RECORDED_SENTINEL_BEFORE: usize = 0x0000_7777_8000;
+
+    /// An install exchange this crate performed whose page cleanup completed.
+    fn recorded_install_cas() -> RecordedInstallCas {
+        RecordedInstallCas {
+            observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+            protection_before: PROTECTION_BEFORE,
+            protection_temporary: PROTECTION_TEMPORARY,
+            protection_reconciled: true,
+        }
+    }
+
+    /// An install exchange that completed but whose page cleanup then failed.
+    fn recorded_install_cas_pending_protection() -> RecordedInstallCas {
+        RecordedInstallCas {
+            protection_reconciled: false,
+            ..recorded_install_cas()
+        }
+    }
+
+    /// Test-side owner of an install-CAS slot.
+    ///
+    /// Exists so the tests drive `perform_recorded_install_cas` through the SAME
+    /// `RecordedInstallCasStorage` trait production uses, rather than through a
+    /// bare `&mut Option` production could never pass.
+    #[derive(Debug, Default, Eq, PartialEq)]
+    struct TestInstallCasStorage(Option<RecordedInstallCas>);
+
+    impl RecordedInstallCasStorage for TestInstallCasStorage {
+        fn recorded_install_cas_slot(&mut self) -> &mut Option<RecordedInstallCas> {
+            &mut self.0
+        }
+    }
+
+    // FALSIFIABILITY: delete the `current_slot_value == external_shim_address`
+    // refusal in the `None` branch of `decide_pe64_import_slot_install_cas` --
+    // i.e. restore the pre-fix behaviour where an already-shim slot silently
+    // took the synthesized-observation arm -- and this test fails: the call
+    // returns `Ok(PerformCas)` instead of `Err(UnwitnessedForeignInstall)`.
+    //
+    // This is the forged-attestation case. On a first attempt the crate has
+    // recorded no CAS; if the slot already reads the shim then something
+    // outside this crate put it there, and no installation receipt may be
+    // minted for a transition this crate did not perform.
+    #[test]
+    fn install_first_attempt_with_slot_already_shim_and_no_record_is_refused() {
+        let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, None);
+        assert_eq!(
+            outcome,
+            Err(
+                Pe64ImportSlotInstallCustodyError::UnwitnessedForeignInstall {
+                    observed_slot_value: SHIM
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: make the `None` branch refuse unconditionally, or invert
+    // its comparison to `current_slot_value != external_shim_address`, and this
+    // test fails: the genuine first attempt no longer reaches `PerformCas`.
+    // This is the negative arm of the test above -- without it the refusal could
+    // be a blanket rejection and still look correct.
+    #[test]
+    fn install_first_attempt_with_slot_holding_the_original_selects_a_real_cas() {
+        let outcome = decide_pe64_import_slot_install_cas(ORIGINAL, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(Pe64ImportSlotInstallCasDecision::PerformCas));
+    }
+
+    // FALSIFIABILITY: change the `Some(recorded)` branch to rebuild the
+    // observation from the caller-supplied addresses -- e.g. return an
+    // observation with `observed_before: expected_original_address`, which is
+    // exactly what the pre-fix install code did -- and this test fails on
+    // `observed_before`, because the replayed value would become `ORIGINAL`
+    // instead of the recorded sentinel.
+    //
+    // This is the property the whole lane exists for: the retry arm reports what
+    // the earlier CAS actually returned, never a value reconstructed from
+    // `expected`.
+    #[test]
+    fn install_retry_replays_the_recorded_observation_verbatim() {
+        // The sentinel is load-bearing test data, so pin it here. Set it equal
+        // to `ORIGINAL` and the assertions below pass against the pre-fix
+        // reconstruction as well -- the test would go vacuous with nothing
+        // going red anywhere.
+        assert_ne!(INSTALL_RECORDED_SENTINEL_BEFORE, ORIGINAL);
+        assert_ne!(INSTALL_RECORDED_SENTINEL_BEFORE, SHIM);
+        assert_ne!(SHIM, ORIGINAL);
+
+        let recorded = recorded_install_cas();
+        let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
+        assert_eq!(
+            outcome,
+            Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(
+                RecordedInstallCas {
+                    observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+                    protection_before: PROTECTION_BEFORE,
+                    protection_temporary: PROTECTION_TEMPORARY,
+                    protection_reconciled: true,
+                }
+            ))
+        );
+        // ...and the value that reaches the receipt is that same recorded one.
+        assert_eq!(
+            complete_recorded_install_cas_observation(recorded, PROTECTION_BEFORE),
+            Ok(AtomicPointerCasObservation {
+                observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+                protection_before: PROTECTION_BEFORE,
+                protection_temporary: PROTECTION_TEMPORARY,
+                protection_after: PROTECTION_BEFORE,
+            })
+        );
+    }
+
+    // FALSIFIABILITY: make the `Some(recorded)` branch return `ReplayRecordedCas`
+    // regardless of `protection_reconciled` -- i.e. collapse the two replay
+    // variants into one -- and this test fails. It is the sequencing decision
+    // for the state a successful exchange followed by a failed page cleanup
+    // leaves behind: the exchange happened and must be replayed, but the page
+    // cleanup is still owed and has to run before a receipt can form.
+    #[test]
+    fn install_retry_after_a_cleanup_failure_resumes_the_protection_reconciliation() {
+        let outcome = decide_pe64_import_slot_install_cas(
+            SHIM,
+            ORIGINAL,
+            SHIM,
+            Some(recorded_install_cas_pending_protection()),
+        );
+        assert_eq!(
+            outcome,
+            Ok(
+                Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(
+                    recorded_install_cas_pending_protection()
+                )
+            )
+        );
+    }
+
+    // FALSIFIABILITY: delete the record-back between `exchange_pointer_slot` and
+    // `finish_atomic_compare_exchange_pointer_slot` in the install `PerformCas`
+    // arm -- i.e. record only after the fallible cleanup returned -- and the
+    // state this test describes becomes `None` instead, which
+    // `install_first_attempt_with_slot_already_shim_and_no_record_is_refused`
+    // shows is refused as `UnwitnessedForeignInstall`. This test names the
+    // outcome that refusal would wrongly produce for a caller who genuinely did
+    // perform the transition, i.e. requirement 3: idempotent retry survives.
+    #[test]
+    fn a_recorded_install_exchange_is_never_mistaken_for_a_foreign_install() {
+        for recorded in [
+            recorded_install_cas(),
+            recorded_install_cas_pending_protection(),
+        ] {
+            let outcome = decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
+            assert!(
+                !matches!(
+                    outcome,
+                    Err(Pe64ImportSlotInstallCustodyError::UnwitnessedForeignInstall { .. })
+                ),
+                "a recorded install exchange ({recorded:?}) was refused as foreign: {outcome:?}"
+            );
+        }
+    }
+
+    // FALSIFIABILITY: move the first `*storage.recorded_install_cas_slot() =
+    // Some(recorded)` write in `perform_recorded_install_cas` to after
+    // `finish(prepared)?` and this test fails: `sink.0` comes back `None`. That
+    // empty state is what would leave a caller who genuinely did perform the
+    // installing exchange refused as `UnwitnessedForeignInstall` on the retry,
+    // and the last assertion here is the retry it must get instead.
+    #[test]
+    fn a_cleanup_failure_after_the_install_exchange_still_leaves_the_exchange_recorded() {
+        let mut sink = TestInstallCasStorage::default();
+        let outcome = perform_recorded_install_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
+            &mut sink,
+            |_: ()| Err("page protection restoration failed"),
+        );
+        assert_eq!(outcome, Err("page protection restoration failed"));
+        // The sink is the same storage production hands in -- the provisional
+        // binding held in the custody registry, not a test-local recorder -- so
+        // this pins the write production actually performs.
+        assert_eq!(
+            sink.0,
+            Some(RecordedInstallCas {
+                observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+                protection_before: PROTECTION_BEFORE,
+                protection_temporary: PROTECTION_TEMPORARY,
+                protection_reconciled: false,
+            })
+        );
+        assert_eq!(
+            decide_pe64_import_slot_install_cas(SHIM, ORIGINAL, SHIM, sink.0),
+            Ok(
+                Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(
+                    RecordedInstallCas {
+                        observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+                        protection_before: PROTECTION_BEFORE,
+                        protection_temporary: PROTECTION_TEMPORARY,
+                        protection_reconciled: false,
+                    }
+                )
+            )
+        );
+    }
+
+    // FALSIFIABILITY: drop the second `*storage.recorded_install_cas_slot() =
+    // Some(reconciled)` write in `perform_recorded_install_cas` and this test
+    // fails -- the sink would still hold the unreconciled record, so a fully
+    // completed install would stay marked as owing page cleanup forever and
+    // `complete_recorded_install_cas_observation` would refuse it. The companion
+    // property -- that the *first* write lands before the fallible cleanup -- is
+    // pinned by
+    // `a_cleanup_failure_after_the_install_exchange_still_leaves_the_exchange_recorded`,
+    // the only path on which that intermediate write is observable.
+    //
+    // The exchange and the cleanup here are injected closures, so what this
+    // pins is `perform_recorded_install_cas`'s ordering contract -- not that a
+    // hardware compare-exchange swapped anything. The name says so.
+    #[test]
+    fn an_install_exchange_whose_injected_cleanup_succeeds_is_recorded_as_reconciled() {
+        let mut sink = TestInstallCasStorage::default();
+        let outcome = perform_recorded_install_cas(
+            || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
+            |_: &()| INSTALL_RECORDED_SENTINEL_BEFORE,
+            &mut sink,
+            |_: ()| Ok(PROTECTION_BEFORE),
+        );
+        let reconciled = RecordedInstallCas {
+            observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
+            protection_before: PROTECTION_BEFORE,
+            protection_temporary: PROTECTION_TEMPORARY,
+            protection_reconciled: true,
+        };
+        assert_eq!(outcome, Ok((reconciled, PROTECTION_BEFORE)));
+        assert_eq!(sink.0, Some(reconciled));
+    }
+
+    // FALSIFIABILITY: drop the `?` on `prepare()` in
+    // `perform_recorded_install_cas` and this test panics in the `exchange`
+    // closure -- the slot would be exchanged after the page could not be made
+    // writable. The panicking closures are the negative arm: they assert the
+    // failed prepare short-circuits rather than merely that an error came back.
+    #[test]
+    fn a_failure_before_the_install_exchange_records_nothing() {
+        let mut sink = TestInstallCasStorage::default();
+        let outcome = perform_recorded_install_cas::<(), &str>(
+            || Err("page protection change failed"),
+            |_| panic!("must not exchange after a failed prepare"),
+            &mut sink,
+            |_| panic!("must not run cleanup after a failed prepare"),
+        );
+        assert_eq!(outcome, Err("page protection change failed"));
+        assert_eq!(sink.0, None);
+    }
+
+    // FALSIFIABILITY: drop the `!recorded.protection_reconciled` clause from
+    // `complete_recorded_install_cas_observation` and the first assertion fails:
+    // an exchange whose page cleanup never completed would mint a receipt. Drop
+    // the `protection_after != recorded.protection_before` clause and the second
+    // fails.
+    #[test]
+    fn an_unreconciled_install_record_cannot_form_a_receipt_observation() {
+        // The second assertion is only a test of the protection comparison if
+        // the two constants differ; equal, it would duplicate the first.
+        assert_ne!(PROTECTION_BEFORE, PROTECTION_TEMPORARY);
+        assert_eq!(
+            complete_recorded_install_cas_observation(
+                recorded_install_cas_pending_protection(),
+                PROTECTION_BEFORE
+            ),
+            Err(
+                Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
+                    protection_before: PROTECTION_BEFORE,
+                    protection_after: PROTECTION_BEFORE,
+                }
+            )
+        );
+        assert_eq!(
+            complete_recorded_install_cas_observation(
+                recorded_install_cas(),
+                PROTECTION_TEMPORARY
+            ),
+            Err(
+                Pe64ImportSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
+                    protection_before: PROTECTION_BEFORE,
+                    protection_after: PROTECTION_TEMPORARY,
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: delete the `current_slot_value != external_shim_address`
+    // check in the `Some(recorded)` branch and this test fails: a slot rewritten
+    // back to the original since the recorded CAS would replay the stale
+    // observation and return `Ok`.
+    #[test]
+    fn install_retry_with_record_but_slot_no_longer_shim_is_refused() {
+        let outcome = decide_pe64_import_slot_install_cas(
+            ORIGINAL,
+            ORIGINAL,
+            SHIM,
+            Some(recorded_install_cas()),
+        );
+        assert_eq!(
+            outcome,
+            Err(
+                Pe64ImportSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
+                    observed_slot_value: ORIGINAL,
+                    external_shim_address: SHIM,
+                }
+            )
+        );
+    }
+
+    // FALSIFIABILITY: remove the `external_shim_address == expected_original_address`
+    // guard at the top of `decide_pe64_import_slot_install_cas` and this test
+    // fails: with the two addresses equal the `None` case falls through to
+    // `UnwitnessedForeignInstall` and the `Some` case to a replay, neither of
+    // which is an attestable transition.
+    #[test]
+    fn install_shim_sharing_the_original_address_is_refused_with_and_without_a_record() {
+        let expected = Err(
+            Pe64ImportSlotInstallCustodyError::IndistinguishableShimAndOriginalAddress {
+                address: ORIGINAL,
+            },
+        );
+        assert_eq!(
+            decide_pe64_import_slot_install_cas(ORIGINAL, ORIGINAL, ORIGINAL, None),
+            expected
+        );
+        assert_eq!(
+            decide_pe64_import_slot_install_cas(
+                ORIGINAL,
+                ORIGINAL,
+                ORIGINAL,
+                Some(recorded_install_cas())
+            ),
+            expected
+        );
+    }
+
+    // FALSIFIABILITY: broaden the `None` branch to refuse anything other than
+    // the original -- e.g. `if current_slot_value != expected_original_address
+    // { Err(..) }` -- and this test fails. The refusal must be specific to the
+    // already-shim case; a third-party value is still a case the real CAS
+    // resolves, and it fails there with the existing "import slot CAS expected"
+    // message.
+    #[test]
+    fn install_first_attempt_with_a_third_party_slot_value_still_selects_a_real_cas() {
+        let outcome = decide_pe64_import_slot_install_cas(FOREIGN, ORIGINAL, SHIM, None);
+        assert_eq!(outcome, Ok(Pe64ImportSlotInstallCasDecision::PerformCas));
+    }
+
+    // FALSIFIABILITY: any edit that lets the no-record path yield a replay --
+    // for instance defaulting `recorded_prior_cas` to a synthesized observation
+    // when it is `None` -- makes this test fail. This states the lane's core
+    // property directly: an installation receipt's `observed_before` can only
+    // come from a real exchange, and the only arm that does not run one is
+    // unreachable without recorded evidence.
+    #[test]
+    fn install_replay_arm_is_unreachable_without_a_recorded_cas() {
+        for current in [SHIM, ORIGINAL, FOREIGN, 0usize, usize::MAX] {
+            let outcome = decide_pe64_import_slot_install_cas(current, ORIGINAL, SHIM, None);
+            // BOTH replay variants: rejecting only `ReplayRecordedCas` would
+            // leave `ReconcileProtectionThenReplay` free to be fabricated from
+            // `None`, which reaches a receipt through the same completion path
+            // and is the identical defect.
+            assert!(
+                !matches!(
+                    outcome,
+                    Ok(Pe64ImportSlotInstallCasDecision::ReplayRecordedCas(_))
+                        | Ok(Pe64ImportSlotInstallCasDecision::ReconcileProtectionThenReplay(_))
+                ),
+                "slot value 0x{current:X} reached an install replay arm with no recorded CAS: {outcome:?}"
             );
         }
     }
