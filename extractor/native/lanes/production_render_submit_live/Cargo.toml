@@ -7,6 +7,24 @@ edition = "2021"
 name = "production_render_submit_live_lane"
 path = "src/lib.rs"
 
+[features]
+# Declared, never enabled, and deliberately empty in the production workspace.
+#
+# `src/a729_hook/a25_gui_bridge.rs` is shared verbatim with the standalone
+# reverse-engineering harness at
+# `extractor/re_evidence/PRODUCTION_RENDER_SUBMIT_INLINE_HOOKS/hook_harness/`.
+# The inline-hook installer in that file (`install`, `uninstall`, and the four
+# `hook_*` trampolines) is RE evidence and is gated behind this feature so it
+# compiles only in the harness. Declaring the feature here keeps the `cfg`
+# known to rustc (no `unexpected_cfgs` warning) while guaranteeing the gated
+# code is absent from every shipped artifact.
+#
+# Enabling this feature in the production workspace is unsupported and will not
+# compile: the minhook-backed `unshipped_inline_hooks` backend that the gated
+# code calls into lives only in the harness, and this crate has no `minhook`
+# dependency.
+unshipped-render-evidence = []
+
 [dependencies]
 portable_render_stream = { path = "../../../../portable_replay/native/render_stream" }
 portable_content_manifest = { path = "../../../../portable_replay/native/content_manifest" }

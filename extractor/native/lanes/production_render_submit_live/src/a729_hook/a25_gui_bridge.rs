@@ -490,6 +490,14 @@ struct PointerFreeCap6PayloadBinding {
     descriptor_sha256: Option<String>,
 }
 
+/// Inline-hook installation for the A25 common-GUI owner bridge. This is
+/// reverse-engineering evidence, not shipped behaviour: it is compiled only in
+/// the standalone `re_evidence` hook harness, which is the sole owner of the
+/// minhook-backed `unshipped_inline_hooks` backend. The production workspace
+/// never enables `unshipped-render-evidence`, so this function does not exist
+/// in any shipped artifact. Production drives the passive draw accounting in
+/// this module directly from the render-submit path instead.
+#[cfg(feature = "unshipped-render-evidence")]
 pub(super) fn install(module_base: usize) -> Result<(), String> {
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(());
@@ -588,6 +596,8 @@ pub(super) fn install(module_base: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Teardown counterpart of [`install`]. Evidence-only for the same reason.
+#[cfg(feature = "unshipped-render-evidence")]
 pub(super) fn uninstall() -> Result<(), String> {
     if !INSTALLED.load(Ordering::Acquire) {
         return Ok(());
@@ -1241,6 +1251,10 @@ fn maybe_allocate_common_gui_operation(
     allocate_common_gui_operation(pending, list_invocation_ordinal, node_ordinal).map(Some)
 }
 
+/// Trampoline for the evidence-only inline hook installed by [`install`].
+/// Compiled only in the `re_evidence` hook harness; never present in a
+/// shipped artifact. See [`install`] for the full rationale.
+#[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_gui_list_consumer(graphics: usize, list: usize) {
     let _callback = CallbackFlight::enter();
     let original_address = ORIGINAL_GUI_LIST_CONSUMER.load(Ordering::Acquire);
@@ -1337,6 +1351,10 @@ unsafe extern "system" fn hook_gui_list_consumer(graphics: usize, list: usize) {
     finish_list(invocation_ordinal, query_performance_counter().unwrap_or(0));
 }
 
+/// Trampoline for the evidence-only inline hook installed by [`install`].
+/// Compiled only in the `re_evidence` hook harness; never present in a
+/// shipped artifact. See [`install`] for the full rationale.
+#[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_instant_text_render(
     layout_object: usize,
     graphics: usize,
@@ -1457,6 +1475,10 @@ fn begin_production_owner_scope(
     )
 }
 
+/// Trampoline for the evidence-only inline hook installed by [`install`].
+/// Compiled only in the `re_evidence` hook harness; never present in a
+/// shipped artifact. See [`install`] for the full rationale.
+#[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_units_stack_update(
     stack: usize,
     selected_unit: usize,
@@ -1475,6 +1497,10 @@ unsafe extern "system" fn hook_units_stack_update(
     }
 }
 
+/// Trampoline for the evidence-only inline hook installed by [`install`].
+/// Compiled only in the `re_evidence` hook harness; never present in a
+/// shipped artifact. See [`install`] for the full rationale.
+#[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_generic_sprite_render(
     layout_object: usize,
     graphics: usize,
