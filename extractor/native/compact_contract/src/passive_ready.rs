@@ -366,6 +366,16 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         D90_CONVOY_REL32_CALLSITE,
         "afeccd1f65e76fb2b10c56bb28c56c4ee84e4d10d36b0f6e74c6e6c8d4c80e99"
     ),
+    // D94's producer detour. The proof digest is the FOW1 evidence receipt the
+    // recorder host publishes in the authority block and the replay core
+    // refuses any other value for.
+    pinned_rva!(
+        "gameplay.d94.pov_province_visibility_producer",
+        0x1606EA0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "77e4a1c964f868a7109cead30bc7df64860f2ff5097ff4849fede855b5d9e261"
+    ),
 ];
 
 /// Derived from the sole explicit roster authority above. Never hardcode a
@@ -378,7 +388,7 @@ pub const PINNED_PRODUCTION_HOOK_COUNT_V1: u16 = PINNED_PRODUCTION_HOOK_SPECS_V1
 /// reimplementing the Rust encoding. Any roster edit must update the literal
 /// and pass the equality test below.
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
-    digest_from_hex("231475ccc3e8da1296bac399642260c810e79686d94422794c03f5cbaa6e9947");
+    digest_from_hex("1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
