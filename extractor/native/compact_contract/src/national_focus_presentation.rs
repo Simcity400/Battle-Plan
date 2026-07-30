@@ -756,10 +756,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<Frame, CarrierError> {
 }
 
 fn valid_tag(value: &str) -> bool {
-    value.len() == 3
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+    crate::country_tag::is_engine_country_tag(value)
 }
 
 fn valid_text(value: &str) -> bool {

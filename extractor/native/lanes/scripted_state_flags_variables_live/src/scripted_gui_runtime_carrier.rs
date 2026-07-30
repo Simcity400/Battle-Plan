@@ -275,11 +275,7 @@ fn validate_result<T>(result: &EngineResult<T>, label: &str) -> Result<(), Carri
 }
 
 fn validate_country_tag(tag: &str) -> Result<(), CarrierError> {
-    if tag.len() != 3
-        || !tag
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-    {
+    if !compact_contract::country_tag::is_engine_country_tag(tag) {
         return invalid("country tag is not a canonical three-byte tag");
     }
     Ok(())

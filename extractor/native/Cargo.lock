@@ -742,6 +742,7 @@ dependencies = [
 name = "power_balance_presentation_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "minhook",
  "windows-sys",
 ]

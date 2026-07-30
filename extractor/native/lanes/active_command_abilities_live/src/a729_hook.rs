@@ -906,8 +906,7 @@ fn validate_identity_catalog(catalog: &ExactA729PortableIdentityCatalog) -> Resu
     for (runtime, context) in &catalog.contexts_by_runtime {
         if *runtime == 0
             || context.stable_id == 0
-            || context.country_tag.len() != 3
-            || !context.country_tag.bytes().all(|byte| byte.is_ascii_uppercase())
+            || !compact_contract::country_tag::is_engine_country_tag(&context.country_tag)
             || !context_ids.insert((context.country_tag.clone(), context.kind.wire(), context.stable_id))
         {
             return Err("A36 exact root catalog carries an invalid or duplicate context identity".into());
@@ -931,9 +930,10 @@ fn validate_context_identity(
     context: &PortableContextIdentity,
     controller: &ControllerObservation,
 ) -> Result<(), String> {
+    // A36 contexts belong to a real country; the no-country sentinel is not one.
+    // Dynamic tags are ordinary countries — see `compact_contract::country_tag`.
     if context.stable_id == 0
-        || context.country_tag.len() != 3
-        || !context.country_tag.bytes().all(|byte| byte.is_ascii_uppercase())
+        || !compact_contract::country_tag::is_engine_country_tag(&context.country_tag)
     {
         return Err("A36 exact context catalog carries an invalid portable identity".into());
     }

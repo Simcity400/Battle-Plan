@@ -701,10 +701,13 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
 }
 
 fn validate_country_tag(tag: &str) -> Result<(), CarrierError> {
-    if tag.len() == 3 && tag.bytes().all(|byte| byte.is_ascii_uppercase()) && tag != "---" {
+    // A power balance belongs to a real country, so the no-country sentinel
+    // stays refused. Dynamic tags such as `D04` are ordinary countries and a
+    // civil-war faction can own a balance; see `compact_contract::country_tag`.
+    if compact_contract::country_tag::is_engine_country_tag(tag) {
         Ok(())
     } else {
-        invalid("country tag is not a stable uppercase tag")
+        invalid("country tag is not a canonical three-byte engine tag")
     }
 }
 

@@ -830,7 +830,10 @@ fn opt_nonempty(v: Option<&str>, l: &str) -> Result<(), CarrierError> {
     v.map_or(Ok(()), |v| nonempty(v, l))
 }
 fn tag(v: &str) -> Result<(), CarrierError> {
-    if v.len() == 3 && v.bytes().all(|b| b.is_ascii_uppercase()) && v != "---" {
+    // A D75 recipient is a real country, so the no-country sentinel stays
+    // refused. Dynamic tags such as `D04` are ordinary countries; see
+    // `compact_contract::country_tag` for the engine rule and its evidence.
+    if compact_contract::country_tag::is_engine_country_tag(v) {
         Ok(())
     } else {
         invalid("recipient tag invalid")

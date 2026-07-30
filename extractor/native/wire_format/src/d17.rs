@@ -383,11 +383,24 @@ pub fn enemy_tag_string(word: u64, token_len: u32) -> String {
 }
 
 /// Whether a token is one the collector could have written: `token_len == 3`,
-/// three `[A-Z0-9]` bytes with at least one alphabetic, and five zero pad bytes
+/// three `[A-Z0-9]` bytes, and five zero pad bytes
 /// (`attach_log.rs:86687`-`:86693`, `:71935`-`:71942`).
 ///
 /// Reported by the measurement harness; nothing enforces it, because nothing
 /// stores these rows.
+///
+/// The character class is an independent restatement of the collector's
+/// `compact_contract::country_tag::is_engine_country_tag`, not an import: this
+/// crate's compact-authority allow-list (see `Cargo.toml`) admits only d81's
+/// rail payload and two status predicates, so a reference decoder may not reach
+/// into a collector contract module for it. That module carries the evidence —
+/// the engine fixes the length at 3, applies no character-class test of its
+/// own, and decides dynamic-ness by database index rather than by spelling.
+///
+/// This previously also required at least one alphabetic byte. That mirrored a
+/// guess the collector used to make, and it went stale the moment the collector
+/// dropped it: an all-digit tag would have been counted here as a token the
+/// collector could not have produced.
 pub fn enemy_tag_is_collector_shaped(word: u64, token_len: u32) -> bool {
     let bytes = enemy_tag_token(word);
     token_len == COLLECTOR_TOKEN_LEN
@@ -395,7 +408,6 @@ pub fn enemy_tag_is_collector_shaped(word: u64, token_len: u32) -> bool {
         && bytes[..3]
             .iter()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-        && bytes[..3].iter().any(|b| b.is_ascii_alphabetic())
 }
 
 /// One compact row of the `countries` table, as the collector emits it today,
@@ -885,9 +897,16 @@ mod tests {
         assert!(enemy_tag_is_collector_shaped(u64::from_le_bytes(padded), 3));
         assert!(!enemy_tag_is_collector_shaped(u64::from_le_bytes(token), 8), "8 chars");
         assert!(!enemy_tag_is_collector_shaped(u64::from_le_bytes(padded), 8), "wrong len");
+        // A dynamic country tag is an ordinary tag the collector writes like any
+        // other, so counting one as non-collector-shaped would misreport the
+        // census. Goes red if the alphabetic-byte requirement comes back.
         assert!(
-            !enemy_tag_is_collector_shaped(u64::from_le_bytes([b'1', b'2', b'3', 0, 0, 0, 0, 0]), 3),
-            "digits only: `is_country_tag` requires an alphabetic byte"
+            enemy_tag_is_collector_shaped(u64::from_le_bytes([b'D', b'0', b'4', 0, 0, 0, 0, 0]), 3),
+            "D04 is a dynamic country tag, not a malformed token"
+        );
+        assert!(
+            enemy_tag_is_collector_shaped(u64::from_le_bytes([b'9', b'9', b'9', 0, 0, 0, 0, 0]), 3),
+            "the engine applies no character-class rule, so an all-digit tag is admissible"
         );
         assert!(
             !enemy_tag_is_collector_shaped(u64::from_le_bytes([b'g', b'e', b'r', 0, 0, 0, 0, 0]), 3),

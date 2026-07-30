@@ -1463,10 +1463,11 @@ fn validate_string_ref(
 }
 
 fn valid_country_tag(value: &str) -> bool {
-    value.len() == 3
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
+    // A D57 player row may legitimately carry the no-country sentinel for a
+    // slot with no country yet, so this admits it — exactly as the previous
+    // `-`-permitting spelling did. Dynamic tags are ordinary countries; see
+    // `compact_contract::country_tag` for the engine rule and its evidence.
+    compact_contract::country_tag::is_engine_country_tag_or_no_country_sentinel(value)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {

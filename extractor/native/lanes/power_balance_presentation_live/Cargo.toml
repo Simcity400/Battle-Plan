@@ -7,6 +7,9 @@ edition = "2021"
 name = "power_balance_presentation_live_lane"
 path = "src/lib.rs"
 
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
+
 [target.'cfg(windows)'.dependencies]
 minhook = "0.9.0"
 windows-sys = { version = "0.61.2", features = [

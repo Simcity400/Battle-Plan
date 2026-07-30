@@ -637,8 +637,10 @@ fn validate_witnesses(value: &Cid1Witnesses) -> Result<(), Cid1Error> {
         }
         let mut previous: Option<&str> = None;
         for tag in tags {
-            if tag.len() != CID1_ROSTER_TAG_LEN
-                || !tag.bytes().all(|byte| byte.is_ascii_uppercase())
+            // The roster carries whatever countries the humans actually played,
+            // and a released or civil-war faction is an ordinary one. See
+            // `crate::country_tag` for the engine rule this defers to.
+            if !crate::country_tag::is_engine_country_tag(tag)
                 || previous.is_some_and(|prior| prior >= tag.as_str())
             {
                 return Err(Cid1Error::InvalidWitness("roster"));
