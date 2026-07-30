@@ -660,7 +660,13 @@ fn complete_released_receipts(
 /// The production hook registry consults this before accepting that there is
 /// nothing to release.
 pub fn terminal_release_pending() -> bool {
-    INSTALLED.load(Ordering::Acquire) || STATE.get().is_some()
+    // `STATE` is a OnceLock initialized BEFORE the first fallible create and
+    // never cleared, so using it here reported "may be patched" forever after a
+    // clean first-create failure -- turning an isolatable unit failure into a
+    // registry-wide abort. `CREATED_HOOK_MASK` is the real custody: a bit is
+    // set only after a site is actually created, and cleared only when that
+    // site is proved removed.
+    INSTALLED.load(Ordering::Acquire) || CREATED_HOOK_MASK.load(Ordering::Acquire) != 0
 }
 
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 3], String> {
