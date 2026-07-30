@@ -10,7 +10,8 @@ use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, CombatParticipantEvent, CombatRow, ConvoyLossRow,
     ConvoyD70MutationKindExact, ConvoyRouteEndpointKindExact, ConvoyRouteProducerKindExact,
     ConvoyTransportAttackExactRow, ConvoyTransportAttackExactView, DiplomacyView, EndedCombatRow,
-    LandCombatSideDetail, Leaf, NavalCombatRow, SunkShipEventExact, ViewStatus, WarObjectRow,
+    LandCombatSideDetail, Leaf, NavalCombatRow, SunkShipEventExact, SunkShipTextUnavailable,
+    ViewStatus, WarObjectRow,
     WarRelationRow, WorldFrame,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -1305,10 +1306,30 @@ fn validate_war_participants(
     Ok(())
 }
 
+/// Exactly one side of a D86 exact-text value/reason pair is populated. D86
+/// admits a record whose text will not decode rather than refusing the record,
+/// so a missing name with a reason beside it is a valid row; a missing name
+/// with no reason, or a present-but-empty required name, is not.
+fn valid_exact_text(
+    text: &Option<String>,
+    unavailable: &Option<SunkShipTextUnavailable>,
+    required: bool,
+) -> bool {
+    match (text, unavailable) {
+        (Some(text), None) => {
+            text.len() <= 4_096 && (!required || !text.is_empty()) && !text.as_bytes().contains(&0)
+        }
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
 fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, GateFailure> {
     let rows = required(rows, "sunk_ships")?;
-    let mut sequences = BTreeSet::new();
-    let mut prior_sequence = 0u64;
+    // The producer numbers this history contiguously from 2. A merely
+    // increasing order accepts [2, 4], which is what a dropped sinking leaves.
+    let expected_sequence =
+        |index: usize| u64::try_from(index).ok().and_then(|index| index.checked_add(2));
     for (index, row) in rows.iter().enumerate() {
         let combat_join_valid = if row.combat_join_present {
             row.combat_id != 0
@@ -1327,24 +1348,28 @@ fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, Ga
             || row.killed == row.assisted_kill
             || (row.cause_record_flag && row.assisted_kill)
             || row.victim_ship_reference_raw == [0, 0]
-            || row.ship_name.is_empty()
-            || row.ship_class_name.is_empty()
-            || row.ship_name.len() > 4_096
-            || row.ship_class_name.len() > 4_096
-            || row.attribution_source_name.len() > 4_096
-            || row.attribution_source_class_name.len() > 4_096
-            || row.ship_name.as_bytes().contains(&0)
-            || row.ship_class_name.as_bytes().contains(&0)
-            || row.attribution_source_name.as_bytes().contains(&0)
-            || row.attribution_source_class_name.as_bytes().contains(&0)
-            || row.event_sequence <= prior_sequence
-            || !sequences.insert(row.event_sequence)
+            || !valid_exact_text(&row.ship_name, &row.ship_name_unavailable, true)
+            || !valid_exact_text(
+                &row.ship_class_name,
+                &row.ship_class_name_unavailable,
+                true,
+            )
+            || !valid_exact_text(
+                &row.attribution_source_name,
+                &row.attribution_source_name_unavailable,
+                false,
+            )
+            || !valid_exact_text(
+                &row.attribution_source_class_name,
+                &row.attribution_source_class_name_unavailable,
+                false,
+            )
+            || Some(row.event_sequence) != expected_sequence(index)
         {
             return Err(invalid(format!(
                 "sunk_ships[{index}] exact writer identity/content is invalid"
             )));
         }
-        prior_sequence = row.event_sequence;
     }
     Ok(rows.len())
 }

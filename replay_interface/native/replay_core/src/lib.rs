@@ -277,7 +277,7 @@ pub use world::{
     PeaceConferenceReferenceExact,
     ShipCompositionRow, SnowMudCell, SnowMudView, SpeedEvent, SpottedUnitsView, StateBuildings,
     SubjectAutonomyCurrentRow, SubjectAutonomyDirection,
-    SunkShipEventExact, SunkShipHistoryExact, SunkShipHistoryExactView,
+    SunkShipEventExact, SunkShipHistoryExact, SunkShipHistoryExactView, SunkShipTextUnavailable,
     TechnologyCanvasAuthority, TechnologyCanvasAxisState, TechnologyCanvasBoundary,
     TechnologyCanvasDrawable, TechnologyCanvasDrawableKind, TechnologyCanvasObservation,
     TechnologyCanvasSourceItem, TechnologyCanvasView, TimelineConfig, TimelineLookup,

@@ -16,5 +16,9 @@ minhook = "0.9.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
+    # Reserving a two-page region and committing only the first is how the
+    # tests place a std::string across a real readable/unreadable boundary,
+    # which is the only way to reach the capacity-word refusal exactly.
+    "Win32_System_Memory",
     "Win32_System_Threading",
 ] }

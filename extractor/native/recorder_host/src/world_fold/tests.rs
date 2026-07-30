@@ -19397,10 +19397,14 @@ fn a33_domain86_folds_receipt_bound_writer_rows_without_pointer_identity() {
         status_flags: 0,
         authority: sunk86_lane::AuthorityState::StaticExact20Receipt,
         snapshot: Some(sunk86_lane::SunkShipSnapshot {
-            source_sequence: 9,
+            // Sequence 1 is the authenticated empty baseline, so a one-row
+            // history is numbered 2. A history that starts anywhere else is
+            // one that dropped its earlier sinkings.
+            source_sequence: 2,
             producer_complete: true,
+            records_with_unavailable_text: 0,
             events: vec![sunk86_lane::SunkShipEvent {
-                event_sequence: 9,
+                event_sequence: 2,
                 combat_join_present: true,
                 combat_id: 44,
                 combat_generation: 3,
@@ -19426,7 +19430,8 @@ fn a33_domain86_folds_receipt_bound_writer_rows_without_pointer_identity() {
     let baseline_source = payload.clone();
     let snapshot = snapshot_for_domain_records(vec![(sunk86_lane::DOMAIN_ID, payload)]);
     let view = &snapshot["_r2_sunk_ship_history_live"];
-    assert_eq!(view["schema_version"], json!(3));
+    assert_eq!(view["schema_version"], json!(4));
+    assert_eq!(view["records_with_unavailable_text"], json!(0));
     assert_eq!(view["authority"], json!("exact_a729_sunk_ship_writer"));
     assert_eq!(view["events"][0]["combat_join_present"], json!(true));
     assert_eq!(view["events"][0]["combat_generation"], json!(3));
@@ -19435,6 +19440,10 @@ fn a33_domain86_folds_receipt_bound_writer_rows_without_pointer_identity() {
     assert_eq!(view["events"][0]["victim_ship_reference_raw"], json!([11, 12]));
     assert_eq!(view["events"][0]["damage_source_reference_raw"], json!([13, 14]));
     assert_eq!(view["events"][0]["attribution_source_name"], json!("KMS Exact"));
+    // Present text folds as the text, with a null reason beside it.
+    assert_eq!(view["events"][0]["ship_name"], json!("HMS Exact"));
+    assert_eq!(view["events"][0]["ship_name_unavailable"], Value::Null);
+    assert_eq!(view["events"][0]["attribution_source_name_unavailable"], Value::Null);
     assert_eq!(view["events"][0]["task_force_id_raw"], json!(15));
     assert_eq!(view["events"][0]["terminal_context_raw"], json!([16, 17]));
     assert_eq!(
@@ -19462,6 +19471,34 @@ fn a33_domain86_folds_receipt_bound_writer_rows_without_pointer_identity() {
     assert_eq!(baseline_event["combat_generation"], json!(0));
     assert_eq!(baseline_event["victim_member_battle_slot_index"], json!(0));
     assert_eq!(baseline_event["victim_ship_reference_raw"], json!([11, 12]));
+
+    // A record the engine left unnamed must reach the replay JSON as an
+    // explicit typed absence with its reason, and must be accounted for. The
+    // install that motivated this refused the whole 373-record history, and
+    // with it all 73 production hook groups, rather than fold one such row.
+    let mut unnamed = sunk86_lane::decode_payload(&baseline_source).unwrap();
+    let unnamed_snapshot = unnamed.snapshot.as_mut().unwrap();
+    unnamed_snapshot.events[0].ship_name =
+        sunk86_lane::ExactText::Unavailable(sunk86_lane::TextUnavailable::EngineEmpty);
+    unnamed_snapshot.records_with_unavailable_text = 1;
+    let unnamed_view = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk86_lane::encode_payload(&unnamed).expect("an unnamed record is admitted"),
+    )]);
+    let unnamed_history = &unnamed_view["_r2_sunk_ship_history_live"];
+    assert_eq!(unnamed_history["records_with_unavailable_text"], json!(1));
+    assert_eq!(unnamed_history["producer_complete"], json!(true));
+    assert_eq!(unnamed_history["events"][0]["ship_name"], Value::Null);
+    assert_eq!(
+        unnamed_history["events"][0]["ship_name_unavailable"],
+        json!("engine_empty"),
+        "the reason must survive the fold, or the replay side cannot tell an          engine-normal unnamed record from a torn one"
+    );
+    assert_eq!(
+        unnamed_history["events"][0]["ship_class_name"],
+        json!("Destroyer"),
+        "the other fields of the same record are untouched"
+    );
 }
 
 #[test]

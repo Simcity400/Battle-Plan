@@ -3,7 +3,8 @@ use game_ui::combat_detail_losses::{
 };
 use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, AirRegionDamageRow, EndedCombatRow, LandCombatSideDetail,
-    LandCombatTacticIdentity, Leaf, NavalCombatMemberRow, NavalCombatRow, SunkShipEventExact, WarObjectRow,
+    LandCombatTacticIdentity, Leaf, NavalCombatMemberRow, NavalCombatRow, SunkShipEventExact,
+    SunkShipTextUnavailable, WarObjectRow,
     WarParticipantOverviewRow, WarParticipationBreakdown,
 };
 
@@ -254,10 +255,14 @@ fn exact_binding() -> Xui20CombatDetailLosses {
             task_force_id_raw: 11,
             terminal_context_raw: [12, 13],
             cause_record_flag: false,
-            ship_name: "HMS Exact".into(),
-            ship_class_name: "Destroyer".into(),
-            attribution_source_name: "KMS Exact".into(),
-            attribution_source_class_name: "Cruiser".into(),
+            ship_name: Some("HMS Exact".into()),
+            ship_name_unavailable: None,
+            ship_class_name: Some("Destroyer".into()),
+            ship_class_name_unavailable: None,
+            attribution_source_name: Some("KMS Exact".into()),
+            attribution_source_name_unavailable: None,
+            attribution_source_class_name: Some("Cruiser".into()),
+            attribution_source_class_name_unavailable: None,
         }]),
         wars: Leaf::Measured(vec![war()]),
         war_relations: Leaf::Measured(Vec::new()),
@@ -351,6 +356,91 @@ fn attach_baseline_sunk_rows_admit_only_with_explicitly_absent_combat_join() {
         admit_xui20_replay(&binding).naval_terminal,
         Xui20SurfaceState::Rejected { .. }
     ));
+}
+
+// A gap in the sequence is what a dropped sinking leaves behind, and the
+// surface must not admit a history that still claims to be complete.
+#[test]
+fn sunk_rows_reject_a_gap_in_the_history_sequence() {
+    let mut binding = exact_binding();
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    let mut second = rows[0].clone();
+    second.event_sequence = 3;
+    rows.push(second);
+    assert_eq!(
+        admit_xui20_replay(&binding).naval_terminal,
+        Xui20SurfaceState::Admitted { row_count: 2 },
+        "a contiguous two-row history is the control"
+    );
+
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[1].event_sequence = 4;
+    assert!(
+        matches!(
+            admit_xui20_replay(&binding).naval_terminal,
+            Xui20SurfaceState::Rejected { .. }
+        ),
+        "a history that skips sequence 3 is still strictly increasing"
+    );
+}
+
+// D86 admits a sinking whose exact text will not decode rather than refusing
+// the record, so the replay surface must admit that row too -- and must still
+// reject a row that claims a missing name with no reason for it, or a present
+// name that is empty.
+#[test]
+fn sunk_rows_admit_an_explicitly_unavailable_name_but_not_an_unexplained_one() {
+    let mut binding = exact_binding();
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[0].ship_name = None;
+    rows[0].ship_name_unavailable = Some(SunkShipTextUnavailable::EngineEmpty);
+    assert_eq!(
+        admit_xui20_replay(&binding).naval_terminal,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[0].ship_name_unavailable = None;
+    assert!(
+        matches!(
+            admit_xui20_replay(&binding).naval_terminal,
+            Xui20SurfaceState::Rejected { .. }
+        ),
+        "an absent name with no reason beside it is not an admitted absence"
+    );
+
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[0].ship_name = Some(String::new());
+    assert!(
+        matches!(
+            admit_xui20_replay(&binding).naval_terminal,
+            Xui20SurfaceState::Rejected { .. }
+        ),
+        "emptiness is carried as a reason, never as an empty present name"
+    );
+
+    let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+        panic!("sunk ships")
+    };
+    rows[0].ship_name = Some("HMS Exact".into());
+    rows[0].ship_name_unavailable = Some(SunkShipTextUnavailable::PayloadUnreadable);
+    assert!(
+        matches!(
+            admit_xui20_replay(&binding).naval_terminal,
+            Xui20SurfaceState::Rejected { .. }
+        ),
+        "a row cannot carry both a name and a reason it is missing"
+    );
 }
 
 #[test]
