@@ -43,6 +43,7 @@ pub mod status_origins;
 pub mod stream_validator;
 pub mod tactic_weight;
 pub mod tech_sharing_groups;
+pub mod worker_error_record;
 
 pub use domain_gap::{DomainGapError, DomainGapPart, DomainGapReason, DomainGapRecordV1};
 pub use gap_record::{
