@@ -666,7 +666,22 @@ pub fn terminal_release_pending() -> bool {
     // registry-wide abort. `CREATED_HOOK_MASK` is the real custody: a bit is
     // set only after a site is actually created, and cleared only when that
     // site is proved removed.
-    INSTALLED.load(Ordering::Acquire) || CREATED_HOOK_MASK.load(Ordering::Acquire) != 0
+    terminal_release_pending_from(
+        INSTALLED.load(Ordering::Acquire),
+        CREATED_HOOK_MASK.load(Ordering::Acquire),
+    )
+}
+
+/// The state logic of [`terminal_release_pending`], separated from the process
+/// globals it reads so it can be exercised offline.
+///
+/// `created_mask` must be the count of sites actually created and not yet
+/// proved removed -- NOT any "we got as far as initializing" flag. A flag set
+/// before the first fallible create and never cleared reports "may be patched"
+/// forever after a clean first-create failure, which converts an isolatable
+/// unit failure into a registry-wide abort.
+pub fn terminal_release_pending_from(installed: bool, created_mask: usize) -> bool {
+    installed || created_mask != 0
 }
 
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 3], String> {
