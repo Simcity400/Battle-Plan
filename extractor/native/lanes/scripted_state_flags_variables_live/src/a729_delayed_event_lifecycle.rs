@@ -493,6 +493,17 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+/// Whether the A19 dispatch observer is currently registered.
+///
+/// The collector's production hook registry needs a LANE-owned answer to
+/// "is the D75 producer edge still open". Its own install bookkeeping is not
+/// one: the flag is set at install and cleared only by the abort path, so a
+/// capture that released through the typed terminal transaction leaves it
+/// permanently true.
+pub fn dispatch_observer_registered() -> bool {
+    DISPATCH_OBSERVER_REGISTERED.load(Ordering::Acquire)
+}
+
 pub fn set_dispatch_observer_registered(registered: bool) {
     let _mutation = LifecycleMutationGuard::enter();
     DISPATCH_OBSERVER_REGISTERED.store(registered, Ordering::Release);

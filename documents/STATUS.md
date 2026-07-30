@@ -47,6 +47,21 @@ interaction closure. Evidence client-driving is separately named and excluded
 from the package. This paragraph records the implementation boundary only: no
 current Release receipt or genuine speed-five capture is claimed here.
 
+A paused game is a recordable state. the game auto-pauses constantly in ordinary
+play — events, decisions, focus completion, war declarations, peace conferences
+— so the capture harness treats a pause as a classified observation rather than
+as client drift. The zero-client-writes guarantee rests on game-speed invariance
+alone, which the engine's pause path provably never touches; clock movement is a
+budgeted rate observation whose sustained absence is reported as a hang under its
+own name. `extractor/native/lanes/passive_clock_witness` is the verdict
+authority, and each run writes `PASSIVE_CLOCK_INTERVALS_V1.json` so a consumer
+divides a rate by active time rather than by wall time. On the collector side a
+capture window that observed nothing releases its hooks through a reason that
+refuses any lane surrendering a non-empty discard, so an empty window is proved
+by every lane's own sealed drain instead of inferred from a missing terminal
+frame — the inference a lane that lost its observations would satisfy equally
+well.
+
 One named defect stands open in that hook machinery. The A31 inline patcher's
 `SuspendedOtherThreads::capture`
 (`extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs:126`)

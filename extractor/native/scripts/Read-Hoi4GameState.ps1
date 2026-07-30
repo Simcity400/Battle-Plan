@@ -1,8 +1,22 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter()]
     [ValidateRange(1, 2147483647)]
-    [int]$TargetPid
+    [int]$TargetPid,
+
+    # How long to keep looking for the engine's hour to move before reporting
+    # that it did not. The previous fixed 750 ms single-shot window decided
+    # "advancing" from one strict inequality; at UI speed 5 the observed hour
+    # delta over such a window ranged 3..11, so 0 sat inside the ordinary
+    # distribution and a healthy game was regularly declared stopped. This is a
+    # budget, not a dwell: the loop returns the instant the hour moves, so a
+    # healthy sample is now faster than the old fixed window, and only a clock
+    # that really is not moving pays the full budget.
+    [ValidateRange(250, 60000)]
+    [int]$ClockProgressBudgetMs = 3000,
+
+    [ValidateRange(1, 1000)]
+    [int]$ClockProgressPollMs = 25
 )
 
 Set-StrictMode -Version Latest
@@ -11,11 +25,22 @@ $ErrorActionPreference = 'Stop'
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $gameStateSingletonRva = 0x3316E90L
 $gameHourOffset = 0x468L
+$gameTickProgressOffset = 0x4B8L
 $gameSpeedOffset = 0x4BCL
+# Byte gate on the tick-dispatch branch of the pacing function FUN_1401F0210:
+#   if (*(char *)(CGameState + 0x4C0) == 0 && 1.0f <= progress) { dispatch tick }
+# Non-zero holds the hour still while pause (CInGameIdler+0x6C1) stays clear, so
+# it is a distinct engine state from a pause and must be sampled separately.
+$gameTickInhibitOffset = 0x4C0L
 $clockSingletonARva = 0x33172E0L
 $clockSingletonBRva = 0x33172E8L
 $clockVtableRva = 0x2952510L
 $clockPausedOffset = 0x6C1L
+# The engine's forced-pause flag. FUN_140DBE260 and the forced arm of
+# FUN_140DC6520 set +0x6C1 and +0x6C3 together; the player's own toggle arm of
+# FUN_140DC6520 runs only when +0x6C3 is clear and moves +0x6C1 alone. So
+# paused && forced is an engine-initiated pause, and paused && !forced is not.
+$clockPauseForcedOffset = 0x6C3L
 
 $nativeSource = @'
 using System;
@@ -155,29 +180,158 @@ try {
             $expectedClockVtable, $clockVtable)
     }
 
+    # Two timers, because two different questions are being asked.
+    #
+    # The BRACKET timer says which stretch of wall clock this sample's evidence
+    # covers. It opens before the first read that feeds the sample and closes
+    # after the last one, so a hold raised outside the window can never be
+    # attributed to it and the sample has one timing basis rather than one per
+    # reader.
+    #
+    # The PROGRESS timer enforces the clock-progress budget and starts only
+    # once the hour and accumulator baselines exist. Spending that budget on the
+    # setup reads would let a slow scheduler exhaust it before there was
+    # anything to compare, and report a healthy advancing game as stalled
+    # without ever taking a second clock reading.
+    $windowStartedAt = [DateTimeOffset]::UtcNow
+    $bracketStopwatch = [Diagnostics.Stopwatch]::StartNew()
     $initialSpeedRaw = Read-RemoteInt32 `
         $processHandle `
         ($gameState + $gameSpeedOffset)
     $initialPaused = Read-RemoteByte `
         $processHandle `
         ($clockA + $clockPausedOffset)
+    $initialPauseForced = Read-RemoteByte `
+        $processHandle `
+        ($clockA + $clockPauseForcedOffset)
+    $initialTickInhibit = Read-RemoteByte `
+        $processHandle `
+        ($gameState + $gameTickInhibitOffset)
     if ($initialSpeedRaw -lt 0 -or $initialSpeedRaw -gt 4) {
         throw "Game speed field is outside the authenticated 0..4 range: $initialSpeedRaw."
     }
     if ($initialPaused -gt 1) {
         throw "Pause field is outside the authenticated 0..1 range: $initialPaused."
     }
+    if ($initialPauseForced -gt 1) {
+        throw "Forced-pause field is outside the authenticated 0..1 range: $initialPauseForced."
+    }
 
-    Start-Sleep -Milliseconds 250
+    # Budgeted rate observation. The hour is the finest-grained progress signal
+    # available at UI speed 5: FUN_1401F0210 selects a zero-second interval for
+    # the fastest slot, pins f32[CGameState+0x4B8] at 1.0f, and dispatches a
+    # tick on every frame, so at speed 5 the hour IS the frame counter and
+    # +0x4B8 is constant. At the four slower slots the reverse holds -- +0x4B8
+    # accumulates every frame while the hour moves rarely -- so both are
+    # sampled and either one moving proves the pacing block ran.
+    #
+    # Every hold flag is sampled on every poll, not only at the two ends. A
+    # pause that begins and ends inside the window is invisible to the endpoint
+    # reads alone, and the window would then be reported as an unexplained
+    # stall - which is how a run of such windows would become a false hang
+    # report.
     $hourA = Read-RemoteInt32 $processHandle ($gameState + $gameHourOffset)
-    Start-Sleep -Milliseconds 750
-    $hourB = Read-RemoteInt32 $processHandle ($gameState + $gameHourOffset)
+    $tickProgressBitsA = Read-RemoteInt32 `
+        $processHandle `
+        ($gameState + $gameTickProgressOffset)
+    $progressStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $hourB = $hourA
+    $tickProgressBitsB = $tickProgressBitsA
+    $observedPaused = $initialPaused
+    $observedPauseForced = $initialPauseForced
+    $observedTickInhibit = $initialTickInhibit
+    $pausedInWindow = ($initialPaused -ne 0)
+    $pauseForcedInWindow = ($initialPauseForced -ne 0)
+    $tickInhibitedInWindow = ($initialTickInhibit -ne 0)
+    while ($progressStopwatch.ElapsedMilliseconds -lt $ClockProgressBudgetMs) {
+        if ($hourB -ne $hourA -or $tickProgressBitsB -ne $tickProgressBitsA) {
+            break
+        }
+        # A paused engine will not move either field for as long as the pause
+        # lasts, and a pause is ordinary the game behaviour rather than a fault, so
+        # stop spending the budget the moment the engine says it is paused.
+        if ($observedPaused -ne 0) { break }
+        # Sleep no further than the budget allows, and re-check after waking.
+        # An unconditional full-poll sleep lets a caller whose poll interval is
+        # longer than its budget accept movement that happened well outside the
+        # window it is about to report.
+        $remainingBudgetMs = $ClockProgressBudgetMs - [int]$progressStopwatch.ElapsedMilliseconds
+        if ($remainingBudgetMs -le 0) { break }
+        Start-Sleep -Milliseconds ([Math]::Min($ClockProgressPollMs, $remainingBudgetMs))
+        if ($progressStopwatch.ElapsedMilliseconds -ge $ClockProgressBudgetMs) { break }
+        # Read into candidates first. A deadline check taken BEFORE the reads
+        # only proves the poll was authorised to start: the thread can be
+        # descheduled between the check and the reads, and the values that come
+        # back would then describe engine state from outside the budget this
+        # sample is about to report. They are accepted only if the monotonic
+        # clock is still inside the budget afterwards.
+        $candidateHour = Read-RemoteInt32 $processHandle ($gameState + $gameHourOffset)
+        $candidateTickProgressBits = Read-RemoteInt32 `
+            $processHandle `
+            ($gameState + $gameTickProgressOffset)
+        $candidatePaused = Read-RemoteByte `
+            $processHandle `
+            ($clockA + $clockPausedOffset)
+        $candidatePauseForced = Read-RemoteByte `
+            $processHandle `
+            ($clockA + $clockPauseForcedOffset)
+        $candidateTickInhibit = Read-RemoteByte `
+            $processHandle `
+            ($gameState + $gameTickInhibitOffset)
+        if ($progressStopwatch.ElapsedMilliseconds -gt $ClockProgressBudgetMs) { break }
+        if ($candidatePaused -gt 1) {
+            throw "Pause field is outside the authenticated 0..1 range: $candidatePaused."
+        }
+        if ($candidatePauseForced -gt 1) {
+            throw "Forced-pause field is outside the authenticated 0..1 range: $candidatePauseForced."
+        }
+        $hourB = $candidateHour
+        $tickProgressBitsB = $candidateTickProgressBits
+        $observedPaused = $candidatePaused
+        $observedPauseForced = $candidatePauseForced
+        $observedTickInhibit = $candidateTickInhibit
+        if ($observedPaused -ne 0) { $pausedInWindow = $true }
+        if ($observedPauseForced -ne 0) { $pauseForcedInWindow = $true }
+        if ($observedTickInhibit -ne 0) { $tickInhibitedInWindow = $true }
+    }
+    # Stop the progress timer with the loop it measures. Letting it run through
+    # the closing speed and hold reads would charge those to the budgeted wait,
+    # which is a different quantity from how long the sample looked for the
+    # clock to move.
+    $progressStopwatch.Stop()
     $finalSpeedRaw = Read-RemoteInt32 `
         $processHandle `
         ($gameState + $gameSpeedOffset)
     $finalPaused = Read-RemoteByte `
         $processHandle `
         ($clockA + $clockPausedOffset)
+    $finalPauseForced = Read-RemoteByte `
+        $processHandle `
+        ($clockA + $clockPauseForcedOffset)
+    $finalTickInhibit = Read-RemoteByte `
+        $processHandle `
+        ($gameState + $gameTickInhibitOffset)
+    if ($finalPaused -gt 1) {
+        throw "Pause field is outside the authenticated 0..1 range: $finalPaused."
+    }
+    if ($finalPauseForced -gt 1) {
+        throw "Forced-pause field is outside the authenticated 0..1 range: $finalPauseForced."
+    }
+    if ($finalPaused -ne 0) { $pausedInWindow = $true }
+    if ($finalPauseForced -ne 0) { $pauseForcedInWindow = $true }
+    if ($finalTickInhibit -ne 0) { $tickInhibitedInWindow = $true }
+    $bracketStopwatch.Stop()
+    # The measured duration is the monotonic stopwatch; both wall-clock
+    # endpoints are read from the wall clock. Synthesising the end as
+    # start-plus-elapsed assumed the two clocks were started at the same
+    # instant, and a scheduling gap between them would report a later
+    # observation as having happened earlier than it did, which distorts the
+    # spans the stall escalation reasons about. The wall span may therefore
+    # exceed the measured duration, and the consumer treats the difference as
+    # unobserved rather than as evidence.
+    $observedWindowMs = [int]$bracketStopwatch.ElapsedMilliseconds
+    $clockProgressWaitedMs = [int]$progressStopwatch.ElapsedMilliseconds
+    $observedAt = [DateTimeOffset]::UtcNow
     $finalGameState = Read-RemoteInt64 `
         $processHandle `
         ($moduleBase + $gameStateSingletonRva)
@@ -192,6 +346,12 @@ try {
         $finalClockB -ne $clockA) {
         throw 'Engine singleton identity changed during read-only observation.'
     }
+    # Process CPU time is deliberately NOT a memory read: it answers a
+    # different question from every field above -- whether the process is
+    # executing at all -- and is the only signal here that survives a game
+    # whose engine state has stopped being updated.
+    $process.Refresh()
+    $processorMilliseconds = [int64]$process.TotalProcessorTime.TotalMilliseconds
 
     [pscustomobject]@{
         Pid = $TargetPid
@@ -202,10 +362,38 @@ try {
         InitialSpeed = $initialSpeedRaw + 1
         Paused = [bool]$finalPaused
         Speed = $finalSpeedRaw + 1
+        InitialPauseForced = [bool]$initialPauseForced
+        PauseForced = [bool]$finalPauseForced
+        InitialTickInhibited = [bool]$initialTickInhibit
+        TickInhibited = [bool]$finalTickInhibit
+        # Sampled on every poll, so a hold that begins and ends between the two
+        # endpoint reads is still reported. These are what the verdict
+        # authority classifies on; the endpoint fields are kept as evidence.
+        PausedInWindow = [bool]$pausedInWindow
+        PauseForcedInWindow = [bool]$pauseForcedInWindow
+        TickInhibitedInWindow = [bool]$tickInhibitedInWindow
         HourA = $hourA
         HourB = $hourB
         HourDelta = $hourB - $hourA
-        Advancing = $hourB -ne $hourA
+        TickProgressBitsA = $tickProgressBitsA
+        TickProgressBitsB = $tickProgressBitsB
+        WindowStartedAtUtc = $windowStartedAt.UtcDateTime.ToString('o')
+        WindowStartedAtUnixMs = [int64]$windowStartedAt.ToUnixTimeMilliseconds()
+        # The window END, taken from the same basis as its start. A caller that
+        # timestamps the sample when the observer subprocess returns is
+        # measuring process teardown as well, and no measured window can span
+        # that.
+        ObservedAtUtc = $observedAt.UtcDateTime.ToString('o')
+        ObservedAtUnixMs = [int64]$observedAt.ToUnixTimeMilliseconds()
+        ObservedWindowMs = $observedWindowMs
+        ClockProgressWaitedMs = $clockProgressWaitedMs
+        ClockProgressBudgetMs = $ClockProgressBudgetMs
+        ProcessorMilliseconds = $processorMilliseconds
+        # True when the engine's pacing block ran at least once inside the
+        # budget. Kept named `Advancing` because callers already read it, but
+        # it is now a budgeted rate observation rather than one strict
+        # inequality over a fixed 750 ms.
+        Advancing = ($hourB -ne $hourA) -or ($tickProgressBitsB -ne $tickProgressBitsA)
     }
 } finally {
     [void][Hoi4ReadOnlyStateNative]::CloseHandle($processHandle)

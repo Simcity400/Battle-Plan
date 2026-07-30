@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Passive, uncompressed, no-debug-scaffolding recorder test loop.
 
@@ -73,6 +73,20 @@ param(
     # recorder attach, capture, and teardown.
     [ValidateRange(2, 60)]
     [int]$WitnessIntervalSeconds = 5,
+
+    # How much unexplained clock silence is a hung engine rather than a slow
+    # frame. Both must be met before the run stops. A window in which the
+    # engine reports a pause or a tick-dispatch hold is an explanation, so it
+    # interrupts the run rather than counting toward it.
+    #
+    # The engine dispatches a tick per frame at UI speed 5, so the default -- 3
+    # consecutive silent windows spanning at least 30 s -- is dozens of missing
+    # frames, not one unlucky sample.
+    [ValidateRange(2, 100)]
+    [int]$StallEscalationSamples = 3,
+
+    [ValidateRange(5, 3600)]
+    [int]$StallEscalationSeconds = 30,
 
     # Compatibility spelling for the now-default passive mode. The harness
     # always reuses one already-running game unless -EvidenceOnlyDriveGame is
@@ -585,7 +599,11 @@ if (`$null -eq `$result) { throw 'Control-Hoi4Game returned no state.' }
 function Invoke-BoundedHoi4Observation {
     param(
         [Parameter(Mandatory = $true)][int]$TargetProcessId,
-        [ValidateRange(1, 60)][int]$TimeoutSeconds = 10,
+        # Read-Hoi4GameState.ps1 spends up to its own clock-progress budget
+        # looking for movement before it reports none, so this bound must clear
+        # that budget plus PowerShell start-up or a stalled clock is reported as
+        # a harness timeout instead of as the stall it is.
+        [ValidateRange(1, 120)][int]$TimeoutSeconds = 30,
         [uint64]$ExpectedCreationFiletimeUtc = 0
     )
 
@@ -874,6 +892,9 @@ $collectorDll = Join-Path $releaseRoot 'collector.dll'
 $collectorRecord = Join-Path $releaseRoot 'collector_record.exe'
 $headlessControl = Join-Path $scriptDir 'Control-Hoi4Game.ps1'
 $readOnlyObserver = Join-Path $scriptDir 'Read-Hoi4GameState.ps1'
+# The verdict authority for everything the read-only observer reports. The
+# harness records observations; this decides what they mean.
+$passiveClockWitnessTool = Join-Path $releaseRoot 'passive_clock_witness.exe'
 $streamReport = Join-Path $scriptDir 'report_raw_capture.py'
 $gameDefsOut = Join-Path $repoRoot 'extractor\game_defs\out'
 # Get-Command can return several python.exe entries (real install plus the
@@ -889,7 +910,7 @@ $staticCatalogs = [ordered]@{
     '--static-gfx-icon-manifest'           = Join-Path $gameDefsOut 'gfx_icon_manifest\gfx_icon_asset_manifest_static\gfx_icon_manifest_catalog.json'
 }
 
-foreach ($path in @($Hoi4Exe, $PdxUserDir, $collectorDll, $collectorRecord, $headlessControl, $readOnlyObserver)) {
+foreach ($path in @($Hoi4Exe, $PdxUserDir, $collectorDll, $collectorRecord, $headlessControl, $readOnlyObserver, $passiveClockWitnessTool)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required path is missing: $path" }
 }
 $headlessControlSha256 = (
@@ -999,9 +1020,14 @@ $readyPipeTokenSha256 = $null
 $sharedReadyAuthority = $null
 $sharedTeardownAuthority = $null
 $gradedWindowStarted = $false
+$clientDrivingOptInSuspended = $null
 $recorderDeadline = $null
 $scriptExitCode = 1
 $passiveWitnessPath = Join-Path $OutDir 'passive_speed5_witness.jsonl'
+# Consumer-facing split of the graded window into advancing, paused, and
+# tick-held intervals. A consumer averaging a rate over the capture must divide
+# by active time, and a paused world is not slow -- it is stopped, on purpose.
+$passiveClockIntervalsPath = Join-Path $OutDir 'PASSIVE_CLOCK_INTERVALS_V1.json'
 
 function Write-PassiveWitnessSample {
     param(
@@ -1013,42 +1039,97 @@ function Write-PassiveWitnessSample {
 
     $state = Invoke-BoundedHoi4Observation `
         -TargetProcessId $TargetProcessId `
-        -TimeoutSeconds 10 `
+        -TimeoutSeconds 30 `
         -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc
-    if ([int]$state.InitialSpeed -ne $ExpectedSpeed -or
-        [int]$state.Speed -ne $ExpectedSpeed -or
-        [bool]$state.InitialPaused -or
-        [bool]$state.Paused -or
-        -not [bool]$state.Advancing) {
-        throw (
-            "Passive witness rejected phase '$Phase': " +
-            "initial_speed=$($state.InitialSpeed) speed=$($state.Speed) " +
-            "initial_paused=$($state.InitialPaused) paused=$($state.Paused) " +
-            "advancing=$($state.Advancing)."
-        )
-    }
+    # Both ends of the bracket come from the observer, which is the only place
+    # that knows when its own window opened and closed. Timestamping here would
+    # add this process's subprocess teardown to the interval and make the
+    # bracket unsatisfiable.
     $sample = [ordered]@{
-        schema                         = 'hoi4-passive-client-state-witness-v1'
-        observed_at_utc                = [DateTime]::UtcNow.ToString('o')
+        schema                         = 'hoi4-passive-client-state-witness-v2'
+        observed_at_utc                = [string]$state.ObservedAtUtc
+        observed_at_unix_ms            = [int64]$state.ObservedAtUnixMs
         phase                          = $Phase
         pid                            = $TargetProcessId
         process_creation_filetime_utc  = $ExpectedCreationFiletimeUtc
         exe_sha256                     = [string]$state.ExeSha256
         observer_sha256                = $readOnlyObserverSha256
         access                         = 'PROCESS_QUERY_INFORMATION|PROCESS_VM_READ'
+        expected_speed                 = $ExpectedSpeed
         speed_initial                  = [int]$state.InitialSpeed
         speed_final                    = [int]$state.Speed
         paused_initial                 = [bool]$state.InitialPaused
         paused_final                   = [bool]$state.Paused
+        pause_forced_initial           = [bool]$state.InitialPauseForced
+        pause_forced_final             = [bool]$state.PauseForced
+        tick_inhibited_initial         = [bool]$state.InitialTickInhibited
+        tick_inhibited_final           = [bool]$state.TickInhibited
+        paused_in_window               = [bool]$state.PausedInWindow
+        pause_forced_in_window         = [bool]$state.PauseForcedInWindow
+        tick_inhibited_in_window       = [bool]$state.TickInhibitedInWindow
         hour_a                         = [int]$state.HourA
         hour_b                         = [int]$state.HourB
         hour_delta                     = [int]$state.HourDelta
+        tick_progress_bits_a           = [int]$state.TickProgressBitsA
+        tick_progress_bits_b           = [int]$state.TickProgressBitsB
+        window_started_at_utc          = [string]$state.WindowStartedAtUtc
+        window_started_at_unix_ms      = [int64]$state.WindowStartedAtUnixMs
+        observed_window_ms             = [int64]$state.ObservedWindowMs
+        clock_progress_waited_ms       = [int64]$state.ClockProgressWaitedMs
+        clock_progress_budget_ms       = [int64]$state.ClockProgressBudgetMs
+        processor_milliseconds         = [int64]$state.ProcessorMilliseconds
         advancing                      = [bool]$state.Advancing
     }
+    # Record BEFORE deciding. The previous order threw on rejection and wrote
+    # the sample afterwards, so the witness file was structurally incapable of
+    # holding the one observation that ended a run: every surviving sample was
+    # a success and the abort was reconstructed from a message string. Two
+    # confidently wrong diagnoses of run 20260730-postmerge-04 came from that.
     ($sample | ConvertTo-Json -Compress -Depth 8) |
         Add-Content -LiteralPath $passiveWitnessPath -Encoding UTF8
-    Write-Host "phase=passive_witness witness_phase=$Phase speed=$($state.Speed) paused=$($state.Paused) hour_a=$($state.HourA) hour_b=$($state.HourB)"
+    Write-Host (
+        "phase=passive_witness witness_phase=$Phase speed=$($state.Speed) " +
+        "paused=$($state.Paused) pause_forced=$($state.PauseForced) " +
+        "tick_inhibited=$($state.TickInhibited) advancing=$($state.Advancing) " +
+        "hour_a=$($state.HourA) hour_b=$($state.HourB) " +
+        "window_ms=$($state.ObservedWindowMs)"
+    )
+    Assert-PassiveWitnessVerdict
     return $state
+}
+
+# Asks the verdict authority whether the accumulated witness permits the run to
+# continue. The three questions the old single boolean conflated -- did the
+# recorder write to the client, is the engine executing, is anything worth
+# recording happening -- are answered separately there, with named failures,
+# and under Rust tests. The harness holds no opinion of its own.
+function Assert-PassiveWitnessVerdict {
+    if (-not (Test-Path -LiteralPath $passiveClockWitnessTool -PathType Leaf)) {
+        throw "The passive witness verdict authority is missing: '$passiveClockWitnessTool'. Build the native workspace before capturing."
+    }
+    $verdictArgs = @(
+        '--witness', $passiveWitnessPath,
+        '--intervals-out', $passiveClockIntervalsPath,
+        '--stall-samples', "$StallEscalationSamples",
+        '--stall-span-ms', "$($StallEscalationSeconds * 1000)"
+    )
+    $result = Invoke-BoundedNativeCapture `
+        -FilePath $passiveClockWitnessTool `
+        -Arguments $verdictArgs `
+        -TimeoutSeconds 30 `
+        -Purpose 'passive witness verdict' `
+        -AllowNonzeroExit
+    if ([int]$result.ExitCode -eq 0) {
+        if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) {
+            Write-Host $result.Stdout.Trim()
+        }
+        return
+    }
+    $reason = $result.Stderr.Trim()
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        $reason = "the verdict authority exited $($result.ExitCode) without a reason"
+    }
+    throw "Passive capture stopped. $reason"
 }
 
 function Confirm-CollectorTeardownReceipt {
@@ -1431,7 +1512,7 @@ function Wait-Hoi4WorldReady {
             $remainingSeconds = [Math]::Max(
                 1,
                 [Math]::Min(
-                    10,
+                    30,
                     [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
                 )
             )
@@ -1591,49 +1672,70 @@ if ($EvidenceOnlyDriveGame) {
     $controlPath = Join-Path $OutDir 'evidence_only_pre_window_control.json'
     ($control | ConvertTo-Json -Depth 8) |
         Set-Content -LiteralPath $controlPath -Encoding UTF8
-} elseif ([int]$readyState.Speed -ne $Speed -or
-    [bool]$readyState.Paused -or
-    -not [bool]$readyState.Advancing) {
+} elseif ([int]$readyState.Speed -ne $Speed) {
     throw (
-        "Passive capture requires the user-owned game already advancing at speed $Speed; " +
-        "observed speed=$($readyState.Speed) paused=$($readyState.Paused) advancing=$($readyState.Advancing). " +
-        "Configure the game before invoking the harness."
+        "Passive capture requires the user-owned game already at speed $Speed; " +
+        "observed speed=$($readyState.Speed). Configure the game before invoking the harness."
     )
 }
 
-# Require the clock to keep advancing for the whole settle window. A single
-# advancing sample only proves the save finished loading, not that the engine's
-# parallel post-load work has drained -- and it is that work that the injection
-# race kills the game in.
+# Settle exists for one reason: injecting while the engine is still finishing
+# its parallel post-load work has crashed the game, and observed advancement is
+# the evidence that work has drained.
+#
+# It used to demand advancement from EVERY sample, which made an ordinary
+# auto-pause -- the game raises one for events, decisions, focus completion, war
+# declarations and peace conferences -- indistinguishable from the post-load
+# race it was built to avoid. It now requires a CUMULATIVE amount of observed
+# advancement inside a hard deadline instead. A paused or tick-held sample
+# neither counts toward the requirement nor fails it: it simply does not
+# advance the settle, and the hard deadline still terminates the phase.
 if ($SettleSeconds -gt 0) {
     Write-Host "phase=settle seconds=$SettleSeconds"
     $settleStarted = [DateTime]::UtcNow
-    $settleDeadline = $settleStarted.AddSeconds($SettleSeconds)
-    # A bad sample may restart the required continuous-good window, but it may
-    # never extend this phase forever. Two minutes of recovery headroom is
-    # enough for one full control retry window and leaves a deterministic hard
-    # stop for unattended captures.
+    # Requiring the same number of advancing samples the old loop would have
+    # taken keeps the mitigation's strength while removing its pause fragility.
+    $settleSamplesRequired = [Math]::Max(1, [int][Math]::Floor($SettleSeconds / 10))
+    $settleSamplesObserved = 0
+    # A pause may delay the settle but it may never extend this phase forever.
+    # Two minutes of recovery headroom is enough for one full control retry
+    # window and leaves a deterministic hard stop for unattended captures.
     $settleHardDeadline = $settleStarted.AddSeconds($SettleSeconds + 120)
-    while ([DateTime]::UtcNow -lt $settleDeadline) {
+    while ($settleSamplesObserved -lt $settleSamplesRequired) {
+        if ([DateTime]::UtcNow -ge $settleHardDeadline) {
+            throw (
+                "Passive settle observed $settleSamplesObserved of $settleSamplesRequired required " +
+                "advancing samples before its hard deadline. The engine spent the settle window " +
+                "paused, held, or stopped; the harness will not repair client state."
+            )
+        }
         Start-Sleep -Seconds 10
         $sample = Invoke-BoundedHoi4Observation `
             -TargetProcessId $gamePid `
             -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
-        $now = [DateTime]::UtcNow
-        $stableRemaining = [Math]::Max(
-            0,
-            [Math]::Ceiling(($settleDeadline - $now).TotalSeconds)
-        )
+        # Speed is the one settle observation that is still fatal on sight: the
+        # engine's pause path provably never writes CGameState+0x4BC, so a
+        # changed speed is a write by something other than the engine.
+        if ([int]$sample.Speed -ne $Speed) {
+            throw (
+                "Passive settle observed a game-speed change: expected $Speed, observed " +
+                "$($sample.Speed). The harness will not repair client state."
+            )
+        }
+        if ([bool]$sample.Advancing) {
+            $settleSamplesObserved++
+        }
         $hardRemaining = [Math]::Max(
             0,
-            [Math]::Ceiling(($settleHardDeadline - $now).TotalSeconds)
+            [Math]::Ceiling(($settleHardDeadline - [DateTime]::UtcNow).TotalSeconds)
         )
-        Write-Host "phase=settle_progress speed=$($sample.Speed) advancing=$($sample.Advancing) stable_remaining_s=$stableRemaining hard_remaining_s=$hardRemaining"
-        if (-not $sample.Advancing -or
-            [int]$sample.Speed -ne $Speed -or
-            [bool]$sample.Paused) {
-            throw "Passive settle observed client drift: speed=$($sample.Speed) paused=$($sample.Paused) advancing=$($sample.Advancing). The harness will not repair client state."
-        }
+        Write-Host (
+            "phase=settle_progress speed=$($sample.Speed) advancing=$($sample.Advancing) " +
+            "paused=$($sample.Paused) pause_forced=$($sample.PauseForced) " +
+            "tick_inhibited=$($sample.TickInhibited) " +
+            "advancing_samples=$settleSamplesObserved/$settleSamplesRequired " +
+            "hard_remaining_s=$hardRemaining"
+        )
     }
     Write-Host 'phase=settled'
 }
@@ -1642,6 +1744,31 @@ if ($SettleSeconds -gt 0) {
 # until authenticated collector teardown, this script performs only read-only
 # status observations against HOI4. It never pauses, resumes, changes speed,
 # launches, stops, focuses, minimizes, or otherwise drives the client.
+# Withdraw the client-driving authority for the whole graded window.
+#
+# The passive default never grants it, but -EvidenceOnlyDriveGame does, and the
+# token was previously left set for the rest of the process. The sharp control
+# helper would then still have authorized a pause or a speed write inside the
+# window -- and a pause write is invisible to the witness, because writing
+# CInGameIdler+0x6C1 leaves the speed selector untouched and looks exactly like
+# the game pausing itself. So the structural control has to be real rather than
+# assumed: the token is removed here and restored only after the window closes.
+$clientDrivingOptInSuspended = [Environment]::GetEnvironmentVariable(
+    'BATTLE_PLAN_CLIENT_DRIVING_OPT_IN',
+    [EnvironmentVariableTarget]::Process
+)
+[Environment]::SetEnvironmentVariable(
+    'BATTLE_PLAN_CLIENT_DRIVING_OPT_IN',
+    $null,
+    [EnvironmentVariableTarget]::Process
+)
+if ($null -ne [Environment]::GetEnvironmentVariable(
+        'BATTLE_PLAN_CLIENT_DRIVING_OPT_IN',
+        [EnvironmentVariableTarget]::Process
+    )) {
+    throw 'The graded window cannot open while the client-driving opt-in token is still set.'
+}
+
 [void](Write-PassiveWitnessSample `
     -Phase 'pre_attach' `
     -TargetProcessId $gamePid `
@@ -1696,9 +1823,12 @@ $recorderProcess = Start-Process -FilePath $collectorRecord `
     -NoNewWindow -PassThru `
     -RedirectStandardOutput $stdoutPath `
     -RedirectStandardError $stderrPath
+# Immediately after the process exists, and before anything that can throw:
+# from here on there may be a recorder holding hook custody, and every cleanup
+# decision below turns on knowing that.
+$collectorInjectionStarted = $true
 $recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
 $recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
-$collectorInjectionStarted = $true
 [void](Write-PassiveWitnessSample `
     -Phase 'attach_started' `
     -TargetProcessId $gamePid `
@@ -1980,6 +2110,30 @@ $scriptExitCode = [int]$recorderExit
         -not $collectorTeardownAuthenticated -and
         $null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
         Write-SettingsGuardNonThrowingWarning -Message "Reused the game PID $gamePid survived capture without an authenticated teardown receipt. The harness made no client-state change and will not stop or otherwise drive the user-owned process."
+    }
+    # A failure between the graded boundary and the recorder starting leaves the
+    # window open with nothing in it: no recorder, no injection, no hook custody
+    # to authenticate. Holding it open then serves no purpose and does real
+    # harm, because it suppresses the token restore below and a game this
+    # harness launched can no longer be stopped. Close it explicitly.
+    if ($gradedWindowStarted -and -not $collectorInjectionStarted) {
+        $gradedWindowStarted = $false
+        Write-Host 'phase=graded_window_closed_without_injection'
+    }
+    # Give the evidence-mode client-driving authority back, but only now: this
+    # sits after every assignment above that can close the graded window --
+    # including the late teardown authentication -- and immediately before the
+    # one cleanup step that needs it. Restoring at the top of this block would
+    # run while a late-authenticating window was still nominally open, and then
+    # never run again. The token is only ever restored to what it held before.
+    if (-not $gradedWindowStarted -and
+        $null -ne $clientDrivingOptInSuspended) {
+        [Environment]::SetEnvironmentVariable(
+            'BATTLE_PLAN_CLIENT_DRIVING_OPT_IN',
+            $clientDrivingOptInSuspended,
+            [EnvironmentVariableTarget]::Process
+        )
+        $clientDrivingOptInSuspended = $null
     }
     if ($null -ne $launchedProcess -and
         (-not $captureSucceeded -or -not $KeepGameAfterCapture) -and
