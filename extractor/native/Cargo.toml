@@ -26,6 +26,7 @@ members = [
     "lanes/event_timeline_change_log_live",
     "lanes/direct_frd_transitions_live",
     "lanes/focus_research_decisions_depth_live",
+    "lanes/division_combat_stats_live",
     "lanes/fow_visibility_live",
     "lanes/spotted_units_live",
     "lanes/land_combat_detail_events_live",

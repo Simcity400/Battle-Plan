@@ -48,6 +48,7 @@ country_army_upgrade_requests_live_lane = { path = "../lanes/country_army_upgrad
 country_economy_production_stockpile_live_lane = { path = "../lanes/country_economy_production_stockpile_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
+division_combat_stats_live_lane = { package = "division_combat_stats_live", path = "../lanes/division_combat_stats_live" }
 fow_visibility_live_lane = { package = "fow_visibility_live", path = "../lanes/fow_visibility_live" }
 spotted_units_live_lane = { package = "spotted_units_live", path = "../lanes/spotted_units_live" }
 supply_logistics_attrition_live_lane = { path = "../lanes/supply_logistics_attrition_live" }
@@ -77,4 +78,7 @@ unshipped-a31-focus-presentation-evidence = [
 ]
 
 [dev-dependencies]
+# `test-support` enables the lane's lifecycle-claiming helper for tests only.
+# A production `cargo build -p collector` does not carry it.
+division_combat_stats_live_lane = { package = "division_combat_stats_live", path = "../lanes/division_combat_stats_live", features = ["test-support"] }
 compact_contract = { path = "../compact_contract", features = ["test-support"] }

@@ -62,6 +62,7 @@ pub mod d92;
 pub mod d94;
 pub mod d95;
 pub mod d96;
+pub mod d99;
 pub mod derived;
 pub mod events;
 pub mod frame;

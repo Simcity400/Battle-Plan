@@ -1,0 +1,27 @@
+[package]
+name = "division_combat_stats_live"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Compiles `force_lifecycle_installed_for_test`, which lets a test claim the
+# lifecycle without a patched hoi4.exe. Enabled ONLY through the collector's
+# dev-dependency, so `cargo build -p collector` does not compile it at all and no
+# production caller can reach it — `#[doc(hidden)]` alone is documentation
+# metadata, not a boundary.
+test-support = []
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
+production_hook_receipt = { path = "../production_hook_receipt" }
+
+[target.'cfg(windows)'.dependencies]
+minhook = "0.9.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }

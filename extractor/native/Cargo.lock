@@ -152,6 +152,7 @@ dependencies = [
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
  "direct_frd_transitions_live",
+ "division_combat_stats_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
  "focus_research_decisions_depth_live",
@@ -372,6 +373,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "division_combat_stats_live"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "minhook",
+ "production_hook_receipt",
+ "windows-sys",
 ]
 
 [[package]]

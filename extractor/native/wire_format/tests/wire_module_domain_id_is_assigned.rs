@@ -85,12 +85,16 @@ fn every_wire_module_domain_id_matches_its_filename_and_is_assigned() {
         "expected the full dNN module set, found only {} — the scan is not matching",
         checked.len()
     );
-    // d99 `division_combat_stats_live` deliberately has NO wire module yet: that
-    // boundary is gated on a dispatched `fold_*` authority by
-    // `scripts/verify_world_fold_citations.py`, and it has no producer. It joins
-    // this scan when the fold lands.
+    // d99 `division_combat_stats_live` now HAS a wire module: it has a producer
+    // (the combat-round entry detour), a dispatched `fold_division_combat_stats`,
+    // and therefore a world-fold authority marker that
+    // `scripts/verify_world_fold_citations.py` re-derives. Asserting its presence
+    // here is what keeps the module and its descriptor from being removed
+    // independently; the marker itself is the gate script's business, not this
+    // test's.
     assert!(
-        !checked.iter().any(|(id, _)| *id == 99),
-        "d99 gained a wire module — it now needs a world-fold authority marker too"
+        checked.iter().any(|(id, name)| *id == 99
+            && *name == "division_combat_stats_live"),
+        "d99 lost its wire module or its descriptor name changed"
     );
 }

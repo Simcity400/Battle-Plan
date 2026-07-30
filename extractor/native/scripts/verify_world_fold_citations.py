@@ -73,6 +73,15 @@ REQUIRED_LANE_AUTHORITIES = frozenset(
             "domain44_compact.rs",
             "decode_payload",
         ),
+        # d99's wire module carries no `compact_contract` dependency (the
+        # `compact_contract_dependency_policy` boundary admits only d81), so it
+        # transcribes the DCS1 decoder instead of calling it. This marker pins the
+        # ORIGINAL, exactly as d51's and d52's do.
+        (
+            99,
+            "extractor/native/compact_contract/src/division_combat_stats.rs",
+            "decode_payload",
+        ),
     }
 )
 
