@@ -47,7 +47,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DOMAIN_ID: u16 = 98;
 pub const DOMAIN_NAME: &str = "theatre_selector_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
-pub const SCHEMA_VERSION: u32 = 2;
+/// Bumped to 3 when `ContentIdentity` gained the engine-held mod/DLC roster.
+/// Encoder and decoder move together in this file, so an older payload is
+/// rejected outright rather than partially understood.
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const MAX_COUNTRIES: usize = 4_096;
 pub const MAX_THEATRES_PER_SECTION: usize = 16_384;
@@ -217,6 +220,7 @@ impl ContentLayerKind {
 }
 
 pub mod engine_localisation_provenance;
+pub mod engine_modset_provenance;
 
 /// Producer-observed identity of everything that can change an
 /// engine-materialized display string. Replay must independently resolve its
@@ -228,9 +232,80 @@ pub struct ContentIdentity {
     /// Hash over the producer-observed localization content that backs every
     /// engine-materialized display name in this frame.
     pub localization_content_sha256: [u8; 32],
-    /// Ordered engine mod/DLC content layers, ascending by `ordinal` with no
-    /// gaps.
+    /// The **intended** content stack, ordered, as the host resolved it from
+    /// `dlc_load.json` and the descriptors on disk. Ascending by `ordinal` with
+    /// no gaps.
+    ///
+    /// This is a hypothesis about what the game would load. It is kept because
+    /// only the host can supply content digests and the executable's identity,
+    /// and because it is the record of what was *asked for*.
     pub ordered_layers: Vec<ContentLayer>,
+    /// What the **running engine** actually held for mods and DLC.
+    ///
+    /// Carried alongside `ordered_layers` rather than replacing it, because the
+    /// two answer different questions and the interesting cases are the ones
+    /// where they disagree — see [`EngineContentRoster`].
+    pub engine_roster: EngineContentRoster,
+}
+
+/// The engine's own mod and DLC state, read out of the running game.
+///
+/// # Reading a disagreement off this
+///
+/// Nothing here is reconciled against [`ContentIdentity::ordered_layers`]. Both
+/// sides travel intact so a consumer can *see* the difference rather than be
+/// told about it. Three kinds of disagreement are directly visible:
+///
+/// * A `requested_mods` entry with no matching `discovered` entry — the
+///   launcher selected a mod the engine never found.
+/// * A `discovered` entry with `selected` set and `mounted` clear — the engine
+///   found it, would have used it, and the mount failed.
+/// * An `ordered_layers` entry naming a mod that `discovered` does not — the
+///   host's disk scan and the engine's enumeration disagree about what exists.
+///
+/// None of these is an error. A recording of a half-broken install is a valid
+/// recording of a half-broken install, and refusing it would throw away exactly
+/// the evidence that makes the recording worth having.
+///
+/// # What is deliberately not here
+///
+/// Absolute local paths. The engine's PhysicsFS search path is what proves
+/// `mounted` and it is full of machine-specific directories, so it stays in the
+/// producer and only the per-entry conclusion crosses the wire.
+///
+/// An engine load *ordinal*. The engine frees its sorted array before
+/// returning, so no live structure holds one; inventing one would mean
+/// reproducing the comparator, which is the mistake this roster exists to
+/// retire. `kind` is the priority class the engine sorts on, which is the part
+/// that is real.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EngineContentRoster {
+    /// `dlc_load.json`'s `enabled_mods`, in file order, as the engine parsed it.
+    pub requested_mods: Vec<String>,
+    /// `dlc_load.json`'s `disabled_dlcs`, in file order, as the engine parsed it.
+    pub requested_disabled_dlcs: Vec<String>,
+    /// Everything the engine found, in the producer's canonical order.
+    pub discovered: Vec<EngineRosterEntry>,
+    /// The producer's digest over this roster's portable content.
+    pub roster_sha256: [u8; 32],
+}
+
+/// One mod or DLC the engine held live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineRosterEntry {
+    /// `Dlc` or `Mod`. `Base` and `IntegratedDlc` never appear here: the
+    /// engine's own tag distinguishes only those two.
+    pub kind: ContentLayerKind,
+    /// The `dlc_load.json`-relative descriptor entry, e.g. `mod/example.mod`.
+    /// Empty when the engine holds none, which is why it is length-prefixed
+    /// with a presence flag rather than required to be non-empty.
+    pub descriptor_entry: String,
+    /// The engine's canonical name for the entry, empty when it holds none.
+    pub name: String,
+    /// Whether the engine's own selection predicate would have used this entry.
+    pub selected: bool,
+    /// Whether this entry's location is in the engine's search path.
+    pub mounted: bool,
 }
 
 /// Where a carried display string came from.
@@ -540,6 +615,46 @@ fn validate_content_identity(identity: &ContentIdentity) -> Result<(), CarrierEr
             return invalid("THS2 content layer identity is invalid or duplicated");
         }
     }
+    validate_engine_roster(&identity.engine_roster)
+}
+
+/// Bound the engine roster without inventing rules about its contents.
+///
+/// Deliberately absent: any uniqueness requirement, and any requirement that a
+/// roster entry line up with `ordered_layers`. The engine keys its two maps
+/// independently and nothing stops two entries sharing a descriptor entry, so a
+/// uniqueness rule here would refuse launches the engine itself runs. And the
+/// whole point of carrying both sides is that they are allowed to disagree --
+/// cross-checking them here would turn the signal into a refusal.
+fn validate_engine_roster(roster: &EngineContentRoster) -> Result<(), CarrierError> {
+    if roster.requested_mods.len() > MAX_CONTENT_LAYERS
+        || roster.requested_disabled_dlcs.len() > MAX_CONTENT_LAYERS
+        || roster.discovered.len() > MAX_CONTENT_LAYERS
+    {
+        return invalid("THS2 engine roster exceeds its transport bound");
+    }
+    for requested in roster
+        .requested_mods
+        .iter()
+        .chain(roster.requested_disabled_dlcs.iter())
+    {
+        // These come straight out of `dlc_load.json`, where an empty entry is
+        // not a thing the launcher writes; the wire codec cannot carry one
+        // either, so an empty value here means a producer bug.
+        if requested.is_empty() || requested.len() > MAX_TOKEN_BYTES {
+            return invalid("THS2 engine roster requested entry is invalid");
+        }
+    }
+    for entry in &roster.discovered {
+        if !matches!(entry.kind, ContentLayerKind::Dlc | ContentLayerKind::Mod) {
+            return invalid("THS2 engine roster entry kind is not a DLC or a mod");
+        }
+        if entry.descriptor_entry.len() > MAX_TOKEN_BYTES
+            || entry.name.len() > MAX_DISPLAY_NAME_BYTES
+        {
+            return invalid("THS2 engine roster entry string exceeds its bound");
+        }
+    }
     Ok(())
 }
 
@@ -795,6 +910,24 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
         out.extend_from_slice(&layer.content_sha256);
     }
 
+    let roster = &identity.engine_roster;
+    for list in [&roster.requested_mods, &roster.requested_disabled_dlcs] {
+        u32v(&mut out, list.len() as u32);
+        for item in list {
+            string(&mut out, item);
+        }
+    }
+    u32v(&mut out, roster.discovered.len() as u32);
+    for entry in &roster.discovered {
+        out.push(entry.kind as u8);
+        out.push(u8::from(entry.selected));
+        out.push(u8::from(entry.mounted));
+        out.push(0);
+        opt_string(&mut out, &entry.descriptor_entry);
+        opt_string(&mut out, &entry.name);
+    }
+    out.extend_from_slice(&roster.roster_sha256);
+
     u32v(&mut out, snapshot.census.len() as u32);
     for &owner in &snapshot.census {
         u32v(&mut out, owner);
@@ -918,6 +1051,52 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
             });
         }
 
+        let mut requested = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let count = reader.u32()? as usize;
+            if count > MAX_CONTENT_LAYERS {
+                return invalid("THS2 engine roster requested count exceeds bound");
+            }
+            let mut list = Vec::with_capacity(count);
+            for _ in 0..count {
+                list.push(reader.string()?);
+            }
+            requested.push(list);
+        }
+        let requested_disabled_dlcs = requested.pop().expect("two requested lists");
+        let requested_mods = requested.pop().expect("two requested lists");
+
+        let discovered_count = reader.u32()? as usize;
+        if discovered_count > MAX_CONTENT_LAYERS {
+            return invalid("THS2 engine roster entry count exceeds bound");
+        }
+        let mut discovered = Vec::with_capacity(discovered_count);
+        for _ in 0..discovered_count {
+            let kind = ContentLayerKind::from_raw(reader.byte()?)?;
+            if !matches!(kind, ContentLayerKind::Dlc | ContentLayerKind::Mod) {
+                return invalid("THS2 engine roster entry kind is not a DLC or a mod");
+            }
+            let selected = reader.bool()?;
+            let mounted = reader.bool()?;
+            if reader.byte()? != 0 {
+                return invalid("THS2 engine roster reserved byte is nonzero");
+            }
+            discovered.push(EngineRosterEntry {
+                kind,
+                descriptor_entry: reader.opt_string()?,
+                name: reader.opt_string()?,
+                selected,
+                mounted,
+            });
+        }
+        let roster_sha256: [u8; 32] = reader.bytes(32)?.try_into().expect("32 byte hash");
+        let engine_roster = EngineContentRoster {
+            requested_mods,
+            requested_disabled_dlcs,
+            discovered,
+            roster_sha256,
+        };
+
         let census_count = reader.u32()? as usize;
         if census_count > MAX_COUNTRIES {
             return invalid("THS2 census count exceeds bound");
@@ -1034,6 +1213,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
                 language,
                 localization_content_sha256,
                 ordered_layers,
+                engine_roster,
             }),
             Some(TheatreSelectorSnapshot {
                 census,
@@ -1075,6 +1255,18 @@ fn u64v(out: &mut Vec<u8>, value: u64) {
 fn string(out: &mut Vec<u8>, value: &str) {
     u32v(out, value.len() as u32);
     out.extend_from_slice(value.as_bytes());
+}
+/// A string that may legitimately be empty.
+///
+/// The plain `string` codec rejects a zero length, which is right for tokens
+/// that must exist. An engine roster entry can genuinely hold an empty name, so
+/// presence is flagged separately instead of an empty value being made illegal.
+fn opt_string(out: &mut Vec<u8>, value: &str) {
+    out.push(u8::from(!value.is_empty()));
+    out.extend_from_slice(&[0; 3]);
+    if !value.is_empty() {
+        string(out, value);
+    }
 }
 fn provenance(out: &mut Vec<u8>, value: &NameProvenance) {
     match value {
@@ -1142,6 +1334,17 @@ impl<'a> Reader<'a> {
         }
         String::from_utf8(self.bytes(len)?.to_vec())
             .map_err(|_| CarrierError::Invalid("THS2 string is not UTF-8".into()))
+    }
+    fn opt_string(&mut self) -> Result<String, CarrierError> {
+        let present = self.bool()?;
+        if self.bytes(3)? != [0, 0, 0] {
+            return invalid("THS2 optional string reserved bytes are nonzero");
+        }
+        if present {
+            self.string()
+        } else {
+            Ok(String::new())
+        }
     }
     fn provenance(&mut self) -> Result<NameProvenance, CarrierError> {
         let tag = self.byte()?;

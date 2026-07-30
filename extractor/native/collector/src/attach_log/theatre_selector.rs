@@ -302,22 +302,22 @@ fn alert_categories_by_theatre(
 pub(super) fn content_identity(
     control: &CollectorControl,
 ) -> Result<lane::ContentIdentity, lane::CarrierError> {
-    content_identity_with(control, engine_localization_digest)
+    content_identity_with(control, engine_localization_digest, engine_content_roster)
 }
 
-/// The body of [`content_identity`], with the localisation digest source given
-/// explicitly.
+/// The body of [`content_identity`], with both engine sources given explicitly.
 ///
-/// The digest now comes from the running engine, so the admitted path would
-/// otherwise be unreachable in a unit test — there is no the game in a test process.
-/// Taking the source as a parameter keeps every layer-transport and
-/// cross-binding guarantee testable while leaving production on the real engine
-/// read. The parameter also lets the failure direction be exercised, which
-/// matters more here than usual: this is the path that must fail the frame
-/// closed rather than invent an identity.
+/// Both the localisation digest and the mod/DLC roster now come from the running
+/// engine, so the admitted path would otherwise be unreachable in a unit test —
+/// there is no the game in a test process. Taking them as parameters keeps every
+/// transport and cross-binding guarantee testable while leaving production on
+/// the real engine reads. The parameters also let the failure directions be
+/// exercised, which matters more here than usual: this is the path that must
+/// fail the frame closed rather than invent an identity.
 pub(super) fn content_identity_with(
     control: &CollectorControl,
     localization_digest: impl Fn(&str) -> Result<[u8; 32], String>,
+    engine_roster: impl Fn() -> Result<lane::EngineContentRoster, String>,
 ) -> Result<lane::ContentIdentity, lane::CarrierError> {
     let authority = control
         .d98_theatre_selector_content_identity
@@ -349,6 +349,88 @@ pub(super) fn content_identity_with(
         localization_content_sha256: localization_digest(&authority.language)
             .map_err(|error| frame_error(format!("engine localisation: {error}")))?,
         ordered_layers,
+        // Note what does NOT happen here: the roster is not compared against
+        // `ordered_layers`, and a disagreement between them does not refuse the
+        // frame. The host block says what the launcher intended; this says what
+        // the engine held. A capture of an install where a mod failed to load is
+        // a capture worth having, and reconciling the two here would destroy the
+        // only evidence that it happened.
+        engine_roster: engine_roster()
+            .map_err(|error| frame_error(format!("engine mod/DLC roster: {error}")))?,
+    })
+}
+
+/// The engine-held mod and DLC roster, read fresh for every frame.
+///
+/// # Why this is not cached, when the localisation digest next door is
+///
+/// It would be tempting to cache: mounting happens once during startup, so the
+/// answer should not change. But "should not change" is an assumption about the
+/// engine's lifecycle, and the failure it admits is bad — a roster read before
+/// mounting finished would report every entry as unmounted, and a cache would
+/// then serve that wrong answer for the entire capture, in a field whose whole
+/// purpose is to say what did and did not load.
+///
+/// Reading per frame removes the assumption instead of documenting it. Each
+/// frame's roster is then a true statement about that frame, which is also the
+/// honest reading of "the engine is the source of truth": if an early frame did
+/// catch a partial mount, that frame says so and later frames say otherwise,
+/// rather than one early frame deciding for all of them.
+///
+/// The two reads are in different cost regimes, which is why they differ. The
+/// localisation walk is 158 ms over a 129,097-entry table and must be cached.
+/// This one is measured at 1.4 ms base-only and 2.0 ms with forty mods
+/// (`engine_localisation_reader::tests::engine_modset_read_cost`), against a
+/// per-game-hour frame. That is affordable, and correctness is worth more than
+/// the microseconds.
+fn engine_content_roster() -> Result<lane::EngineContentRoster, String> {
+    let module_base = unsafe { crate::attach_log::GetModuleHandleW(core::ptr::null()) } as u64;
+    if module_base == 0 {
+        return Err("GetModuleHandleW(NULL) failed".to_string());
+    }
+    // Two passes, each through a FRESH reader, for the same reason the
+    // localisation read does it: the reader caches 64 KiB blocks, so running
+    // both passes through one instance would serve the second pass the first
+    // pass's bytes and make the comparison agree by construction.
+    let read = |image: &crate::engine_localisation_reader::InProcessEngineImage| {
+        lane::engine_modset_provenance::read_engine_modset_provenance_once(image, module_base)
+    };
+    let first = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
+    let second = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
+    if first != second {
+        return Err("engine mod/DLC roster changed between two consecutive reads".to_string());
+    }
+    wire_roster(&first)
+}
+
+/// Project the engine reading onto the wire shape.
+///
+/// The absolute paths and the PhysicsFS search path do not survive this step.
+/// They are what proved `mounted`, and they name directories on the recording
+/// machine, so only the conclusion crosses the wire.
+fn wire_roster(
+    provenance: &lane::engine_modset_provenance::EngineModsetProvenance,
+) -> Result<lane::EngineContentRoster, String> {
+    use lane::engine_modset_provenance::EngineContentKind;
+    Ok(lane::EngineContentRoster {
+        requested_mods: provenance.requested_mods.clone(),
+        requested_disabled_dlcs: provenance.requested_disabled_dlcs.clone(),
+        discovered: provenance
+            .discovered
+            .iter()
+            .map(|entry| lane::EngineRosterEntry {
+                kind: match entry.kind {
+                    EngineContentKind::Dlc => lane::ContentLayerKind::Dlc,
+                    EngineContentKind::Mod => lane::ContentLayerKind::Mod,
+                },
+                descriptor_entry: entry.descriptor_entry.clone(),
+                name: entry.name.clone(),
+                selected: entry.selected,
+                mounted: entry.mounted,
+            })
+            .collect(),
+        roster_sha256: sha256_hex_to_bytes(&provenance.provenance_sha256)
+            .ok_or("engine roster digest is not a sha256")?,
     })
 }
 

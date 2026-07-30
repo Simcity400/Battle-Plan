@@ -55,6 +55,24 @@ fn identity() -> ContentIdentity {
                 content_sha256: [2; 32],
             },
         ],
+        engine_roster: engine_roster(),
+    }
+}
+
+/// An engine roster that AGREES with the layer stack above: the one mod the
+/// host resolved is the one mod the engine found, selected and mounted.
+fn engine_roster() -> EngineContentRoster {
+    EngineContentRoster {
+        requested_mods: vec!["ugc_1234".into()],
+        requested_disabled_dlcs: vec!["dlc/quiet/quiet.dlc".into()],
+        discovered: vec![EngineRosterEntry {
+            kind: ContentLayerKind::Mod,
+            descriptor_entry: "ugc_1234".into(),
+            name: "Example Mod".into(),
+            selected: true,
+            mounted: true,
+        }],
+        roster_sha256: [9; 32],
     }
 }
 
@@ -912,4 +930,174 @@ fn every_contract_template_family_is_declared_uncaptured() {
 fn all_country_frame_round_trips_exactly() {
     let frame = exact_frame();
     assert_eq!(reencode(&frame).unwrap(), frame);
+}
+
+// ---------------------------------------------------------------------------
+// The engine-held mod/DLC roster
+// ---------------------------------------------------------------------------
+
+/// The gap the whole roster exists to make visible: `dlc_load.json` asked for a
+/// mod, the host resolved it into the intended layer stack, and the engine
+/// either never found it or never mounted it.
+///
+/// The load-bearing assertion is that this **encodes**. A capture of a
+/// half-broken install is a valid capture of a half-broken install, and a
+/// carrier that refused it would destroy the only evidence the mod failed.
+#[test]
+fn a_disagreement_between_the_disk_stack_and_the_engine_survives_the_wire() {
+    let mut frame = exact_frame();
+    let identity = frame.content_identity.as_mut().unwrap();
+    // The host still says this mod is part of the intended stack...
+    assert!(identity
+        .ordered_layers
+        .iter()
+        .any(|layer| layer.layer_id == "ugc_1234"));
+    // ...while the engine found it, would have used it, and did not mount it.
+    identity.engine_roster.discovered[0].mounted = false;
+    // ...and a second requested mod the engine never discovered at all.
+    identity
+        .engine_roster
+        .requested_mods
+        .push("mod/vanished.mod".into());
+
+    let decoded = reencode(&frame).expect("a disagreement is recordable, never an error");
+    assert_eq!(decoded, frame);
+
+    let roster = &decoded.content_identity.as_ref().unwrap().engine_roster;
+    assert!(
+        roster.discovered.iter().any(|e| e.selected && !e.mounted),
+        "selected-but-unmounted must be readable off the wire"
+    );
+    let discovered: Vec<&str> = roster
+        .discovered
+        .iter()
+        .map(|e| e.descriptor_entry.as_str())
+        .collect();
+    assert!(
+        !discovered.contains(&"mod/vanished.mod"),
+        "requested-but-undiscovered must be readable as a request with no entry"
+    );
+    assert!(roster.requested_mods.contains(&"mod/vanished.mod".to_string()));
+}
+
+#[test]
+fn an_empty_engine_roster_round_trips() {
+    // A base-only launch has no mods and no disabled DLC. Empty lists must be a
+    // representable state, not an encoding error.
+    let mut frame = exact_frame();
+    frame.content_identity.as_mut().unwrap().engine_roster =
+        EngineContentRoster::default();
+    assert_eq!(reencode(&frame).unwrap(), frame);
+}
+
+#[test]
+fn a_roster_entry_may_carry_an_empty_name_or_descriptor_entry() {
+    // The engine can hold an entry with neither string populated. The plain
+    // string codec rejects a zero length, so these two fields are presence-
+    // flagged; without that an ordinary launch would fail to encode.
+    let mut frame = exact_frame();
+    let entry = &mut frame
+        .content_identity
+        .as_mut()
+        .unwrap()
+        .engine_roster
+        .discovered[0];
+    entry.name = String::new();
+    entry.descriptor_entry = String::new();
+    let decoded = reencode(&frame).expect("empty engine strings are representable");
+    assert_eq!(decoded, frame);
+    assert!(decoded.content_identity.unwrap().engine_roster.discovered[0]
+        .name
+        .is_empty());
+}
+
+#[test]
+fn a_roster_entry_claiming_to_be_a_base_or_integrated_layer_is_refused() {
+    // The engine's own tag distinguishes only DLC from mod. A base or
+    // integrated-DLC roster entry did not come from the engine reader, and
+    // admitting one would put a layer kind on the wire that the source cannot
+    // produce.
+    for kind in [ContentLayerKind::Base, ContentLayerKind::IntegratedDlc] {
+        let mut frame = exact_frame();
+        frame
+            .content_identity
+            .as_mut()
+            .unwrap()
+            .engine_roster
+            .discovered[0]
+            .kind = kind;
+        assert!(
+            encode_payload(&frame).is_err(),
+            "{kind:?} must not be a roster entry kind"
+        );
+    }
+}
+
+#[test]
+fn two_roster_entries_may_share_a_descriptor_entry() {
+    // The engine keys its DLC and mod maps independently, so nothing stops the
+    // same descriptor entry appearing twice. A uniqueness rule here would refuse
+    // a launch the engine itself runs.
+    let mut frame = exact_frame();
+    let roster = &mut frame.content_identity.as_mut().unwrap().engine_roster;
+    let twin = roster.discovered[0].clone();
+    roster.discovered.push(twin);
+    assert_eq!(reencode(&frame).unwrap(), frame);
+}
+
+#[test]
+fn an_over_long_roster_string_is_refused() {
+    let mut frame = exact_frame();
+    frame
+        .content_identity
+        .as_mut()
+        .unwrap()
+        .engine_roster
+        .discovered[0]
+        .descriptor_entry = "m".repeat(MAX_TOKEN_BYTES + 1);
+    assert!(encode_payload(&frame).is_err());
+}
+
+#[test]
+fn an_empty_requested_entry_is_refused() {
+    // dlc_load.json does not contain empty entries, and the wire codec cannot
+    // carry one, so an empty value here means the producer is broken.
+    let mut frame = exact_frame();
+    frame
+        .content_identity
+        .as_mut()
+        .unwrap()
+        .engine_roster
+        .requested_mods
+        .push(String::new());
+    assert!(encode_payload(&frame).is_err());
+}
+
+#[test]
+fn a_payload_from_the_previous_schema_is_rejected_rather_than_misread() {
+    // Schema 2 had no roster. Its bytes would decode as a shorter frame and the
+    // reader would run off the end into the census; the version gate is what
+    // stops that, so it has to actually reject.
+    let mut payload = encode_payload(&exact_frame()).unwrap();
+    payload[4..8].copy_from_slice(&2u32.to_le_bytes());
+    assert!(matches!(
+        decode_payload(&payload),
+        Err(CarrierError::Invalid(_))
+    ));
+}
+
+#[test]
+fn the_roster_digest_travels_byte_for_byte() {
+    let mut frame = exact_frame();
+    frame
+        .content_identity
+        .as_mut()
+        .unwrap()
+        .engine_roster
+        .roster_sha256 = [0xab; 32];
+    let decoded = reencode(&frame).unwrap();
+    assert_eq!(
+        decoded.content_identity.unwrap().engine_roster.roster_sha256,
+        [0xab; 32]
+    );
 }

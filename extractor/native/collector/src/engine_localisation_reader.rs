@@ -238,4 +238,200 @@ mod tests {
         let image = InProcessEngineImage::new();
         assert!(image.read(0x1000, 0).is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // Cost of one engine mod/DLC roster read
+    // -----------------------------------------------------------------------
+
+    /// Writes engine-shaped structures into a flat buffer.
+    ///
+    /// Addresses are `image_base + offset`, which is how the reader addresses
+    /// everything, so the buffer stands in for the mapped image.
+    struct Bump {
+        bytes: Vec<u8>,
+        at: usize,
+        base: u64,
+    }
+
+    impl Bump {
+        fn alloc(&mut self, len: usize) -> usize {
+            let at = (self.at + 0x3f) & !0x3f;
+            self.at = at + len;
+            assert!(self.at < self.bytes.len(), "measurement buffer overflow");
+            at
+        }
+
+        fn u64(&mut self, off: usize, value: u64) {
+            self.bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn u32(&mut self, off: usize, value: u32) {
+            self.bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn addr(&mut self, off: usize, target: usize) {
+            let value = self.base + target as u64;
+            self.u64(off, value);
+        }
+
+        /// An MSVC `std::string`, always heap-allocated so the reader takes the
+        /// two-read path a real long name would.
+        fn string(&mut self, off: usize, text: &str) {
+            let heap = self.alloc(text.len() + 1);
+            self.bytes[heap..heap + text.len()].copy_from_slice(text.as_bytes());
+            self.addr(off, heap);
+            self.u64(off + 0x10, text.len() as u64);
+            self.u64(off + 0x18, text.len() as u64 | 0x40);
+        }
+
+        fn string_vector(&mut self, off: usize, items: &[String]) {
+            let data = self.alloc(items.len().max(1) * 0x20);
+            for (index, item) in items.iter().enumerate() {
+                self.string(data + index * 0x20, item);
+            }
+            self.addr(off, data);
+            self.u32(off + 0x08, items.len() as u32);
+            self.u32(off + 0x0c, items.len() as u32);
+        }
+
+        fn c_string(&mut self, text: &str) -> usize {
+            let at = self.alloc(text.len() + 1);
+            self.bytes[at..at + text.len()].copy_from_slice(text.as_bytes());
+            at
+        }
+    }
+
+    /// What one engine mod/DLC roster read costs through the real reader.
+    ///
+    /// A measurement, not a gate, so it is `#[ignore]`d: a wall-clock assertion
+    /// on a shared build machine is a flake generator. Run it with
+    /// `cargo test -p collector -- --ignored --nocapture engine_modset_read_cost`.
+    ///
+    /// What it measures and what it cannot. It drives the production path
+    /// exactly — [`InProcessEngineImage`], the same 64 KiB block cache, the same
+    /// `ReadProcessMemory` syscalls, the same parser — over a roster the size of
+    /// a heavily modded install. What it cannot do is read the game, so the bytes
+    /// live in this process's heap rather than the game's. The syscall count and
+    /// the parse work are real; only the target process differs.
+    #[test]
+    #[ignore = "measurement harness, not a gate"]
+    fn engine_modset_read_cost() {
+        // Base-only is the common capture; the modded shape is the upper bound.
+        measure_engine_modset_read(0);
+        measure_engine_modset_read(40);
+    }
+
+    fn measure_engine_modset_read(mod_count: u64) {
+        use theatre_selector_live_lane::engine_modset_provenance as modset;
+
+        // Buffer offset IS the RVA, so the span has to reach past the higher of
+        // the two fixed slots (0x35caf10, about 54 MiB) with working room after
+        // it. The real image is far larger still; this only has to cover the
+        // range the reader addresses.
+        const SPAN: usize = 96 << 20;
+        let bytes = vec![0u8; SPAN];
+        let origin = bytes.as_ptr() as u64;
+        let mut image = Bump {
+            bytes,
+            // Everything the parser walks goes past both fixed slot addresses.
+            at: modset::VFS_SEARCH_PATH_CACHE_RVA as usize + 0x1000,
+            // Buffer offset is the RVA, so the buffer's start IS the image base.
+            base: origin,
+        };
+        let image_base = image.base;
+
+        let dlcs: Vec<String> = (0..24)
+            .map(|index| format!("dlc/dlc{index:03}_name/dlc{index:03}.dlc"))
+            .collect();
+        let mods: Vec<String> = (0..mod_count)
+            .map(|index| format!("mod/ugc_{}.mod", 2_000_000_000u64 + index))
+            .collect();
+
+        let manager = image.alloc(0xc8);
+        image.addr(modset::DLC_MANAGER_RVA as usize, manager);
+        image.string_vector(manager + 0x50, &dlcs[..4]);
+        image.string_vector(manager + 0x68, &mods);
+
+        for (field, entries, kind) in [(0xa0usize, &dlcs, 1u32), (0xb0usize, &mods, 2u32)] {
+            let head = image.alloc(0x2e0);
+            image.bytes[head + 0x19] = 1;
+            let nodes: Vec<usize> = entries.iter().map(|_| image.alloc(0x2e0)).collect();
+            if nodes.is_empty() {
+                image.addr(head + 0x08, head);
+                image.addr(manager + field, head);
+                image.u64(manager + field + 8, 0);
+                continue;
+            }
+            for (index, entry) in entries.iter().enumerate() {
+                let node = nodes[index];
+                image.bytes[node + 0x19] = 0;
+                image.addr(node, head);
+                image.addr(node + 0x10, *nodes.get(index + 1).unwrap_or(&head));
+                image.string(node + 0x20, entry);
+                let value = node + 0x40;
+                image.string(value + 0x08, &format!("Name of {entry}"));
+                image.string(value + 0x28, &format!("Logged {entry}"));
+                image.string(value + 0x48, entry);
+                image.string(value + 0x68, entry.trim_end_matches(".mod"));
+                image.string(value + 0x88, "");
+                image.string(value + 0x118, "");
+                let deps: Vec<String> =
+                    (0..2).map(|k| format!("dependency_{k}_of_{entry}")).collect();
+                let replace: Vec<String> =
+                    (0..3).map(|k| format!("replace/path_{k}")).collect();
+                image.string_vector(value + 0xa8, &deps);
+                image.string_vector(value + 0xc0, &replace);
+                image.u32(value + 0x248, kind);
+                image.bytes[value + 0x298] = 1;
+            }
+            image.addr(head + 0x08, nodes[0]);
+            image.addr(manager + field, head);
+            image.u64(manager + field + 8, entries.len() as u64);
+        }
+
+        let roots: Vec<String> = std::iter::once("d:/steam/the game".to_string())
+            .chain(dlcs.iter().chain(mods.iter()).map(|entry| {
+                format!(
+                    "d:/steam/the game/{}",
+                    entry.trim_end_matches(".mod")
+                )
+            }))
+            .collect();
+        let list = image.alloc((roots.len() + 1) * 8);
+        for (index, root) in roots.iter().enumerate() {
+            let text = image.c_string(root);
+            image.addr(list + index * 8, text);
+        }
+        image.u64(list + roots.len() * 8, 0);
+        image.addr(modset::VFS_SEARCH_PATH_CACHE_RVA as usize, list);
+
+        let once = || {
+            modset::read_engine_modset_provenance_once(&InProcessEngineImage::new(), image_base)
+                .expect("measurement image parses")
+        };
+        let expected = 24 + mod_count as usize;
+        let warm = once();
+        assert_eq!(warm.discovered.len(), expected, "24 DLC plus the mods");
+        assert_eq!(warm.requested_mods.len(), mod_count as usize);
+        assert_eq!(
+            warm.discovered.iter().filter(|entry| entry.mounted).count(),
+            expected,
+            "every entry has a matching search root"
+        );
+
+        const RUNS: u32 = 25;
+        let start = std::time::Instant::now();
+        for _ in 0..RUNS {
+            // Production runs two passes with a fresh reader each; measure that.
+            let _ = once();
+            let _ = once();
+        }
+        let each = start.elapsed() / RUNS;
+        println!(
+            "engine modset roster: {expected} entries ({mod_count} mods), {} search roots -- two-pass read {:?} ({:?} per pass)",
+            roots.len(),
+            each,
+            each / 2
+        );
+    }
 }
