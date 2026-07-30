@@ -216,6 +216,8 @@ impl ContentLayerKind {
     }
 }
 
+pub mod engine_localisation_provenance;
+
 /// Producer-observed identity of everything that can change an
 /// engine-materialized display string. Replay must independently resolve its
 /// own winning effective VFS and refuse when these do not match.

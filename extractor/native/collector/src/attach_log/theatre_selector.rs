@@ -273,29 +273,26 @@ fn alert_categories_by_theatre(
 /// `d98_theatre_selector_content_identity_v1` into `collector_control.json`
 /// whenever domain 98 is scheduled against a resolved launch. The producer is
 /// `recorder_host::production_content_vfs::
-/// d98_theatre_selector_content_identity_from_resolved_launch`, which emits,
-/// from one launch-bound observation:
+/// d98_theatre_selector_content_identity_from_resolved_launch`, which emits:
 ///   * `language`: `modset::ModsetReport::localisation_language` (never
 ///     defaulted -- absence fails, it does not fall back to English);
 ///   * `layers`: `base` carrying the pinned executable digest, then each
 ///     integrated and enabled DLC with its raw descriptor-file SHA-256, then
 ///     each entry of `ModsetReport::enabled_mods` in `dlc_load.json` order with
 ///     its `ResolvedMod::content_sha256`;
-///   * `localization_sha256`: a hash over the *localisation content itself*
-///     under the winning effective VFS for that language -- every
-///     `localisation/**/*.yml` whose path carries the active language token,
-///     each contributing its logical path, byte length and winning payload
-///     digest. This is the one input `ModsetReport` does not already carry, and
-///     it is deliberately not a digest of the layer hashes: two different
-///     localisation file sets can share a layer identity when a layer is edited
-///     in place, and the display names are exactly what this hash binds.
 ///   * `inventory_sha256`: `sha256(serde_json::to_vec(&layers))`, over the
 ///     layers as ordered.
 ///
-/// A launch whose localisation identity would depend on a DLC-versus-DLC
-/// precedence with no established a729 read law is refused host-side rather
-/// than guessed, so a block that arrives here always describes an ordering the
-/// producer could prove.
+/// The localisation digest is NOT among them. The host cannot know what the
+/// engine loaded — only what it would predict from disk — so the collector reads
+/// the engine's own resolved localisation table in-process and digests that.
+/// The two sides bind each other: the host supplies the launch-bound language
+/// from `settings.txt`, and the engine read is refused unless the engine's own
+/// active language matches it. Neither side can forge the other's half.
+///
+/// A control block that still carries the retired `localization_sha256` is
+/// refused outright rather than parsed and ignored, so a stale host cannot ship
+/// a digest that no longer means anything.
 ///
 /// When the block is absent the domain still fails closed on every frame,
 /// reported through the `d98_fail_no_content_identity` diagnostic unit rather
@@ -304,6 +301,23 @@ fn alert_categories_by_theatre(
 // function directly. Nothing outside the collector body can reach it.
 pub(super) fn content_identity(
     control: &CollectorControl,
+) -> Result<lane::ContentIdentity, lane::CarrierError> {
+    content_identity_with(control, engine_localization_digest)
+}
+
+/// The body of [`content_identity`], with the localisation digest source given
+/// explicitly.
+///
+/// The digest now comes from the running engine, so the admitted path would
+/// otherwise be unreachable in a unit test — there is no the game in a test process.
+/// Taking the source as a parameter keeps every layer-transport and
+/// cross-binding guarantee testable while leaving production on the real engine
+/// read. The parameter also lets the failure direction be exercised, which
+/// matters more here than usual: this is the path that must fail the frame
+/// closed rather than invent an identity.
+pub(super) fn content_identity_with(
+    control: &CollectorControl,
+    localization_digest: impl Fn(&str) -> Result<[u8; 32], String>,
 ) -> Result<lane::ContentIdentity, lane::CarrierError> {
     let authority = control
         .d98_theatre_selector_content_identity
@@ -332,10 +346,60 @@ pub(super) fn content_identity(
     }
     Ok(lane::ContentIdentity {
         language: authority.language.clone(),
-        localization_content_sha256: sha256_hex_to_bytes(&authority.localization_sha256)
-            .ok_or_else(|| frame_error("localization hash is not a sha256"))?,
+        localization_content_sha256: localization_digest(&authority.language)
+            .map_err(|error| frame_error(format!("engine localisation: {error}")))?,
         ordered_layers,
     })
+}
+
+/// The engine-held localisation digest for this process, computed once.
+///
+/// # Why this is cached, and why caching is not a shortcut
+///
+/// `content_identity` runs inside the per-frame build, and the walk costs about
+/// 160 ms over the 129,097-entry table a729 loads. Recomputing it per frame
+/// would be absurd — but the reason caching is *correct* rather than merely fast
+/// is that this identity is launch-bound: the engine populates its localisation
+/// database during startup and does not reload it during play, so one reading
+/// per process is the whole truth there is to have.
+///
+/// Only success is cached. A failure is retried on the next frame, so a domain
+/// that asked too early (root still null) recovers instead of being poisoned,
+/// while every frame in between still fails closed.
+fn engine_localization_digest(expected_language: &str) -> Result<[u8; 32], String> {
+    static CACHE: std::sync::Mutex<Option<(String, [u8; 32])>> = std::sync::Mutex::new(None);
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((language, digest)) = cache.as_ref() {
+            if language == expected_language {
+                return Ok(*digest);
+            }
+        }
+    }
+    let module_base = unsafe { crate::attach_log::GetModuleHandleW(core::ptr::null()) } as u64;
+    if module_base == 0 {
+        return Err("GetModuleHandleW(NULL) failed".to_string());
+    }
+    // Two passes, each through a FRESH reader. The reader caches 64 KiB blocks,
+    // so running both passes through one instance would serve the second pass
+    // the first pass's bytes and make the comparison agree by construction.
+    let read = |image: &crate::engine_localisation_reader::InProcessEngineImage| {
+        lane::engine_localisation_provenance::read_engine_localisation_provenance_once(
+            image,
+            module_base,
+            expected_language,
+        )
+    };
+    let first = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
+    let second = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
+    if first != second {
+        return Err("engine localisation changed between two consecutive reads".to_string());
+    }
+    let digest = sha256_hex_to_bytes(&first.provenance_sha256)
+        .ok_or("engine localisation digest is not a sha256")?;
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((expected_language.to_string(), digest));
+    }
+    Ok(digest)
 }
 
 fn sha256_hex_to_bytes(text: &str) -> Option<[u8; 32]> {

@@ -1049,6 +1049,9 @@ dependencies = [
 [[package]]
 name = "theatre_selector_live_lane"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "thiserror"
