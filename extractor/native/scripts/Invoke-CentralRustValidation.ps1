@@ -411,7 +411,7 @@ try {
         $interactionClosureResult = (($interactionClosureOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$interactionClosureResult.schema -cne 'battle-plan.production_interaction_closure_test.v1' -or
             [string]$interactionClosureResult.status -cne 'PASS' -or
-            [int]$interactionClosureResult.cases -ne 28 -or
+            [int]$interactionClosureResult.cases -ne 30 -or
             [string]$interactionClosureResult.policy -cne 'passive_injected_observer') {
             throw "production interaction-closure source tests returned no authority"
         }

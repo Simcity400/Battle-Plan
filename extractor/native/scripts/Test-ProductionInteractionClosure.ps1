@@ -33,13 +33,19 @@ $retiredLatchPath = Join-Path $repoRoot 'extractor\native\collector\src\hour_lat
 . $attestationPath
 . $interactionClosureHelperPath
 
+# Failures are collected rather than thrown at the first hit. Throwing hid
+# every case after the first one, which is how a case that could never pass sat
+# in front of the rest of the file unnoticed; a closure test is only useful if
+# it reports the whole state of the tree in one run.
+$failedCases = [System.Collections.Generic.List[string]]::new()
+
 function Assert-ClosureCase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][bool]$Condition
     )
     if (-not $Condition) {
-        throw "production interaction-closure test failed: $Name"
+        $script:failedCases.Add($Name)
     }
 }
 
@@ -197,7 +203,13 @@ Assert-ClosureCase 'pinned hook roster is a digest-visible source-derived contra
     $passiveReady.Contains(
         'pub const PINNED_PRODUCTION_HOOK_COUNT_V1: u16 = PINNED_PRODUCTION_HOOK_SPECS_V1.len() as u16;'
     ) -and
-    $hostMain.Contains('PINNED_PRODUCTION_HOOK_COUNT_V1') -and
+    # The recorder binds to the roster through the checked accessor, not the
+    # bare constant: pinned_production_hook_count_v1() is what re-derives the
+    # count from PINNED_PRODUCTION_HOOK_SPECS_V1 and can report a digest
+    # failure. .Contains is ordinal and therefore case-sensitive, so asserting
+    # the constant's spelling here could never have matched main.rs and was
+    # asserting nothing.
+    $hostMain.Contains('pinned_production_hook_count_v1()') -and
     $hostMain.Contains('pinned_production_hook_allowlist_sha256_v1()')
 )
 $cases++
@@ -288,11 +300,6 @@ Assert-ClosureCase 'interaction helper structurally closes dependency features a
     $interactionClosureHelper.Contains('[IO.FileAttributes]::ReparsePoint') -and
     $interactionClosureHelper.Contains('[IO.Path]::GetFullPath($earlyRenderEvidencePath)') -and
     $interactionClosureHelper.Contains('Assert-ProductionInteractionSourceTreeClosure') -and
-    $interactionClosureHelper.Contains("'minhook::'") -and
-    $interactionClosureHelper.Contains("'MinHook::'") -and
-    $interactionClosureHelper.Contains("'MinHook::enable_hook'") -and
-    $interactionClosureHelper.Contains("'MinHook::disable_hook'") -and
-    $interactionClosureHelper.Contains("'MinHook::remove_hook'") -and
     $interactionClosureHelper.Contains("'CreateProcessW'") -and
     $interactionClosureHelper.Contains("'TerminateProcess'") -and
     $interactionClosureHelper.Contains("'PostMessageW'") -and
@@ -302,6 +309,79 @@ Assert-ClosureCase 'interaction helper structurally closes dependency features a
     $interactionClosureHelper.Contains("'AssignProcessToJobObject'") -and
     $interactionClosureHelper.Contains("'SetInformationJobObject'") -and
     $interactionClosureHelper.Contains("'QueryInformationJobObject'")
+)
+$cases++
+
+Assert-ClosureCase 'code-mutation closure is keyed on behaviour, not on a vendor name' (
+    $interactionClosureHelper.Contains('Get-ProductionThreadSuspensionEntryPoints') -and
+    $interactionClosureHelper.Contains('Get-ProductionCodeMutationEntryPoints') -and
+    $interactionClosureHelper.Contains('Get-ProductionCapabilityEvidence') -and
+    $interactionClosureHelper.Contains('Get-ProductionCrateSourceCapabilityScan') -and
+    $interactionClosureHelper.Contains('Get-ProductionDependencyCodeMutationClassification') -and
+    $interactionClosureHelper.Contains('Get-ProductionSuspendingCodeMutationFindings') -and
+    $interactionClosureHelper.Contains("'Wow64SuspendThread'") -and
+    $interactionClosureHelper.Contains("'NtSuspendThread'") -and
+    $interactionClosureHelper.Contains("'VirtualProtect'") -and
+    $interactionClosureHelper.Contains("'VirtualProtectEx'") -and
+    $interactionClosureHelper.Contains("'NtProtectVirtualMemory'") -and
+    $interactionClosureHelper.Contains("'FlushInstructionCache'") -and
+    # Every local spelling the fixed export can be reached under has to be
+    # followed, or the roster is one rename away from being evadable again.
+    $interactionClosureHelper.Contains('link_name') -and
+    $interactionClosureHelper.Contains("'alias_call'") -and
+    $interactionClosureHelper.Contains("'capability_reference'") -and
+    $interactionClosureHelper.Contains('Test-ProductionExportResolverCall') -and
+    # Run-time lookups are matched against lexed string literals, never the raw
+    # text, so a comment that quotes an API name cannot fire the gate; and the
+    # name has to be passed to something, so a diagnostic constant holding the
+    # same text cannot either.
+    $interactionClosureHelper.Contains('Get-RustStringLiteralValues') -and
+    $interactionClosureHelper.Contains('Test-ProductionCallArgumentContext') -and
+    # Declaring an ABI is not exercising it, in either language, and importing it
+    # is not exercising it either.
+    $interactionClosureHelper.Contains('Test-ProductionCapabilityDeclaration') -and
+    $interactionClosureHelper.Contains('Get-RustImportItemRanges') -and
+    # The vendor-name filter this replaced could be satisfied by moving the
+    # same behaviour onto any other primitive, so it must not come back.
+    -not $interactionClosureHelper.Contains("'minhook::'") -and
+    -not $interactionClosureHelper.Contains("'MinHook::create_hook'") -and
+    -not $interactionClosureHelper.Contains("'MH_CreateHook'")
+)
+$cases++
+
+# This tree does perform thread-suspending code mutation: four lanes install
+# detours into live game code while suspending the game's other threads, and
+# every MinHook-backed lane delegates the same behaviour to a primitive that
+# patches even when its suspend attempt failed. Those sites are pinned as an
+# accepted inventory rather than asserted away, so the case fails when a NEW
+# patcher appears, when a unit starts suspending, when a site moves to another
+# file, or when a pinned site is gone. The roster is printed either way -
+# accepting these sites is not the same as hiding them.
+$suspendingCodeMutationFindings = Get-ProductionSuspendingCodeMutationFindings `
+    -RepoRoot $repoRoot `
+    -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $repoRoot)
+Write-Host (Format-ProductionSuspendingCodeMutationFindings `
+    -Findings $suspendingCodeMutationFindings)
+$measuredSuspendingBaseline = Get-ProductionSuspendingCodeMutationBaseline `
+    -Findings $suspendingCodeMutationFindings
+$suspendingBaselinePath =
+    Get-ProductionSuspendingCodeMutationBaselinePath -RepoRoot $repoRoot
+$suspendingBaselineDifferences = @(
+    try {
+        Compare-ProductionSuspendingCodeMutationBaseline `
+            -Measured $measuredSuspendingBaseline `
+            -Pinned (Read-ProductionSuspendingCodeMutationBaseline `
+                -Path $suspendingBaselinePath)
+    }
+    catch {
+        $_.Exception.Message
+    }
+)
+foreach ($difference in $suspendingBaselineDifferences) {
+    Write-Host "  baseline drift: $difference"
+}
+Assert-ClosureCase 'thread-suspending code mutation matches the accepted baseline' (
+    $suspendingBaselineDifferences.Count -eq 0
 )
 $cases++
 
@@ -418,6 +498,21 @@ Assert-ClosureCase 'isolation document binds injected observation and minimal ho
     $isolation.Contains('zero client mutation')
 )
 $cases++
+
+if ($failedCases.Count -ne 0) {
+    [pscustomobject]@{
+        schema = 'battle-plan.production_interaction_closure_test.v1'
+        status = 'FAIL'
+        cases = $cases
+        failed_cases = @($failedCases)
+        driver = [IO.Path]::GetFullPath($driverPath)
+        policy = 'passive_injected_observer'
+    } | ConvertTo-Json -Depth 4
+    throw (
+        'production interaction-closure test failed: ' +
+        (($failedCases | ForEach-Object { "`n  - $_" }) -join '')
+    )
+}
 
 [pscustomobject]@{
     schema = 'battle-plan.production_interaction_closure_test.v1'

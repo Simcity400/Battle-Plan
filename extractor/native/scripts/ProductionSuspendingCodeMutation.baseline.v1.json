@@ -1,0 +1,434 @@
+﻿{
+    "schema":  "hoi4.production-suspending-code-mutation-baseline.v1",
+    "units":  [
+                  {
+                      "unit":  "extractor/native/collector",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/active_command_abilities_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/character_presentation_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/country_dynamic_modifiers_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/decision_panel_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/design_catalog_context_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/diplomacy_intel_operatives_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/direct_frd_transitions_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/dynamic_collection_trace_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/fired_event_popups_live",
+                      "performs_suspending_code_mutation":  true,
+                      "delegates_suspending_code_mutation":  false,
+                      "direct_evidence":  [
+                                              {
+                                                  "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
+                                                  "capability":  "FlushInstructionCache",
+                                                  "kind":  "direct_call",
+                                                  "count":  3
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
+                                                  "capability":  "ResumeThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
+                                                  "capability":  "SuspendThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  4
+                                              }
+                                          ],
+                      "delegated_patchers":  [
+
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/focus_research_decisions_depth_live",
+                      "performs_suspending_code_mutation":  true,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+                                              {
+                                                  "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
+                                                  "capability":  "FlushInstructionCache",
+                                                  "kind":  "direct_call",
+                                                  "count":  2
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
+                                                  "capability":  "ResumeThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
+                                                  "capability":  "SuspendThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  3
+                                              }
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/fow_visibility_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/hud_role_observer_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/land_combat_detail_events_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/naval_combat_live",
+                      "performs_suspending_code_mutation":  true,
+                      "delegates_suspending_code_mutation":  false,
+                      "direct_evidence":  [
+                                              {
+                                                  "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
+                                                  "capability":  "FlushInstructionCache",
+                                                  "kind":  "direct_call",
+                                                  "count":  3
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
+                                                  "capability":  "ResumeThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
+                                                  "capability":  "SuspendThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  3
+                                              }
+                                          ],
+                      "delegated_patchers":  [
+
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/power_balance_presentation_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/resolved_tooltip_instances_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/runtime_text_inputs_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/scripted_state_flags_variables_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/session_multiplayer_metadata_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/spotted_units_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/sunk_ship_history_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
+                      "unit":  "extractor/native/lanes/supply_logistics_attrition_live",
+                      "performs_suspending_code_mutation":  true,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+                                              {
+                                                  "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
+                                                  "capability":  "FlushInstructionCache",
+                                                  "kind":  "direct_call",
+                                                  "count":  3
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
+                                                  "capability":  "ResumeThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
+                                                  "capability":  "SuspendThread",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  5
+                                              }
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  }
+              ]
+}
