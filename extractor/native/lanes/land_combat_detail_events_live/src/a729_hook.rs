@@ -650,6 +650,19 @@ fn complete_released_receipts(
     }
 }
 
+/// Whether the D55 terminal writer may still have a detour in the executable.
+///
+/// `STATE` is initialized before the first fallible MinHook create and retains
+/// per-site bits even for a creation that was left disabled, so its presence is
+/// what says "this lane touched the executable", independently of `INSTALLED`
+/// -- which is only set after a complete install.
+///
+/// The production hook registry consults this before accepting that there is
+/// nothing to release.
+pub fn terminal_release_pending() -> bool {
+    INSTALLED.load(Ordering::Acquire) || STATE.get().is_some()
+}
+
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 3], String> {
     let state = HOOK_RECEIPTS
         .get_or_init(|| Mutex::new(HookReceiptState::default()))
