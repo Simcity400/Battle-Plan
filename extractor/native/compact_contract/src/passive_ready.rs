@@ -49,6 +49,33 @@ pub struct HookAllowlistEntryV1 {
     pub identity_sha256: [u8; 32],
     pub target: HookTargetV1,
     pub proof_sha256: [u8; 32],
+    /// Whether this hook failing to install voids the entire capture.
+    ///
+    /// This is the ONE place that question is answered, and it is answered as
+    /// a declared property of the roster rather than as a consequence of which
+    /// code path happened to run. [`hook_install_outcomes_preimage`] enforces
+    /// it: an outcome roster in which a mandatory entry is anything other than
+    /// `Installed` is refused, so a mandatory hook can never be reported
+    /// unavailable and have the capture stand.
+    ///
+    /// The two bootstrap import hooks are mandatory. They are installed before
+    /// the registry owns a single gameplay hook, so there is nothing yet to
+    /// isolate them from, and the registry's own shape checks require exactly
+    /// two of them.
+    ///
+    /// Every gameplay-domain producer detour is NOT mandatory. One domain's
+    /// producer failing to patch costs that domain's observations and nothing
+    /// else, and a run in which 72 of 73 domains recorded is worth
+    /// incomparably more than no run at all. It is also the only way the
+    /// remaining install defects are found in one pass instead of one per game
+    /// launch — three separate validators each took the whole 73-domain
+    /// registry down on a single day, each found only by launching the game.
+    ///
+    /// What this does NOT relax is anything about a domain that DID install.
+    /// Its terminal custody, release accounting, and zero-observation
+    /// admission are untouched. And [`HookInstallStatus::Failed`] is
+    /// admissible only with [`HookInstallBindingV1::None`], so no lane can
+    /// report itself unavailable while still claiming an observed patch.
     pub mandatory: bool,
 }
 
@@ -111,6 +138,10 @@ macro_rules! pinned_import {
     };
 }
 
+/// Every entry built by this macro is a single gameplay domain's producer
+/// detour, and every one of them is `mandatory: false`. See
+/// [`HookAllowlistEntryV1::mandatory`] for why, and for what that does not
+/// relax.
 macro_rules! pinned_rva {
     ($name:literal, $rva:literal, $len:literal, $primitive:expr, $proof:literal) => {
         PinnedProductionHookSpecV1 {
@@ -122,7 +153,7 @@ macro_rules! pinned_rva {
                 primitive_id: $primitive,
             },
             proof_sha256: digest_from_hex($proof),
-            mandatory: true,
+            mandatory: false,
         }
     };
 }
@@ -407,9 +438,16 @@ pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     // two bootstrap import entries were corrected from the retired inline
     // primitive (patch_len 5, minhook-0.9.0.normal-jmp-rel5) to the primitive
     // the provider actually installs (patch_len 8,
-    // pe64.import-address-slot.atomic-cas.v1). Prior value for this roster:
-    // 1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6.
-    digest_from_hex("a260ad650825273f860d7e181627411e6004d480ef19ccfaafde77d54daaeb91");
+    // pe64.import-address-slot.atomic-cas.v1), and again when the gameplay
+    // producer detours became non-mandatory so one domain's install failure
+    // marks that domain unavailable instead of voiding the capture. The
+    // mandatory bit is part of the allowlist preimage, so the digest moves with
+    // it and no consumer can be handed a roster whose isolation policy differs
+    // from the one it verified.
+    // Prior values for this roster, newest first:
+    //   a260ad650825273f860d7e181627411e6004d480ef19ccfaafde77d54daaeb91
+    //   1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6
+    digest_from_hex("4f04dec77336c7991950910aea92bc8eb1f47b55dcf8335076ac81dd9c5acc90");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
@@ -1330,9 +1368,13 @@ mod tests {
         assert!(PINNED_PRODUCTION_HOOK_SPECS_V1
             .windows(2)
             .all(|pair| pair[0].logical_name < pair[1].logical_name));
+        // Which entries are mandatory is the install-isolation policy and is
+        // asserted on its own in `only_the_bootstrap_hooks_void_the_capture`.
+        // What every entry must carry, whatever that policy says, is a proof
+        // digest.
         assert!(PINNED_PRODUCTION_HOOK_SPECS_V1
             .iter()
-            .all(|spec| spec.mandatory && spec.proof_sha256 != [0; 32]));
+            .all(|spec| spec.proof_sha256 != [0; 32]));
 
         let common_fire = PINNED_PRODUCTION_HOOK_SPECS_V1
             .iter()
@@ -1366,7 +1408,20 @@ mod tests {
         assert!(allowlist
             .windows(2)
             .all(|pair| pair[0].identity_sha256 < pair[1].identity_sha256));
-        assert!(allowlist.iter().all(|entry| entry.mandatory));
+        // The mandatory bit must survive the spec -> allowlist encoding, since
+        // it is the install-isolation policy and part of the digest preimage.
+        for spec in PINNED_PRODUCTION_HOOK_SPECS_V1 {
+            let identity = hook_identity_sha256(spec.logical_name).unwrap();
+            let entry = allowlist
+                .iter()
+                .find(|entry| entry.identity_sha256 == identity)
+                .unwrap_or_else(|| panic!("{} is absent from the allowlist", spec.logical_name));
+            assert_eq!(
+                entry.mandatory, spec.mandatory,
+                "{} lost its mandatory bit in the allowlist encoding",
+                spec.logical_name
+            );
+        }
         assert_eq!(
             pinned_production_hook_allowlist_sha256_v1().unwrap(),
             hook_allowlist_sha256(&allowlist).unwrap()
@@ -1448,10 +1503,146 @@ mod tests {
 #[cfg(test)]
 mod pinned_bootstrap_import_primitive {
     use super::{
-        pinned_production_hook_allowlist_v1, PinnedHookTargetSpecV1,
-        PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS, PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH,
-        PINNED_PRODUCTION_HOOK_SPECS_V1,
+        hook_install_outcomes_preimage, pinned_production_hook_allowlist_v1, HookAllowlistEntryV1,
+        HookInstallBindingV1, HookInstallOutcomeV1, HookInstallStatus, HookPatchPlacementV1,
+        HookTargetV1, PinnedHookTargetSpecV1, PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS,
+        PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH, PINNED_PRODUCTION_HOOK_SPECS_V1,
     };
+
+    /// The install-isolation policy, declared once and pinned here.
+    ///
+    /// Bootstrap is installed before the registry owns any gameplay hook, so
+    /// there is nothing to isolate it from. Every gameplay-domain producer
+    /// detour is isolatable: losing it costs that domain and nothing else.
+    ///
+    /// Goes red if a gameplay hook is made mandatory again — restoring the
+    /// one-defect-per-game-launch behaviour this exists to end — or if
+    /// bootstrap is made optional.
+    #[test]
+    fn only_the_bootstrap_hooks_void_the_capture() {
+        let mut bootstrap = 0;
+        let mut gameplay = 0;
+        for spec in PINNED_PRODUCTION_HOOK_SPECS_V1 {
+            if spec.logical_name.starts_with("bootstrap.") {
+                bootstrap += 1;
+                assert!(
+                    spec.mandatory,
+                    "{} is installed before the registry owns a gameplay hook, so there is \
+                     nothing to isolate it from",
+                    spec.logical_name
+                );
+            } else {
+                gameplay += 1;
+                assert!(
+                    spec.logical_name.starts_with("gameplay."),
+                    "{} is neither a bootstrap nor a gameplay hook, so this policy does not \
+                     classify it",
+                    spec.logical_name
+                );
+                assert!(
+                    !spec.mandatory,
+                    "{} is one domain's producer; its failure must mark that domain \
+                     unavailable, not void the other 72",
+                    spec.logical_name
+                );
+            }
+        }
+        assert_eq!(bootstrap, 2);
+        assert!(gameplay > 0);
+        assert_eq!(bootstrap + gameplay, PINNED_PRODUCTION_HOOK_SPECS_V1.len());
+    }
+
+    /// The enforcement half of that policy, exercised on the real roster.
+    ///
+    /// A mandatory hook may not be reported anything but `Installed`. A
+    /// non-mandatory hook reported `Failed` must carry NO binding, so a lane
+    /// can never claim to be unavailable while still claiming an observed
+    /// patch — which is "a failed install must still release" enforced at the
+    /// digest rather than by convention.
+    #[test]
+    fn the_outcome_digest_decides_which_hooks_may_be_reported_unavailable() {
+        let allowlist = pinned_production_hook_allowlist_v1().unwrap();
+        let installed_all = allowlist
+            .iter()
+            .map(|entry| HookInstallOutcomeV1 {
+                identity_sha256: entry.identity_sha256,
+                status: HookInstallStatus::Installed,
+                binding: installed_binding_for(entry),
+            })
+            .collect::<Vec<_>>();
+        assert!(hook_install_outcomes_preimage(&allowlist, &installed_all).is_ok());
+
+        let mut mandatory_seen = 0;
+        let mut optional_seen = 0;
+        for (index, entry) in allowlist.iter().enumerate() {
+            let mut failed = installed_all.clone();
+            failed[index] = HookInstallOutcomeV1 {
+                identity_sha256: entry.identity_sha256,
+                status: HookInstallStatus::Failed,
+                binding: HookInstallBindingV1::None,
+            };
+            let admitted = hook_install_outcomes_preimage(&allowlist, &failed).is_ok();
+            assert_eq!(
+                admitted,
+                !entry.mandatory,
+                "entry {index} (mandatory={}) was {}admitted as Failed",
+                entry.mandatory,
+                if admitted { "" } else { "not " }
+            );
+            if entry.mandatory {
+                mandatory_seen += 1;
+            } else {
+                optional_seen += 1;
+            }
+
+            // Failed-but-still-bound is refused whatever the mandatory bit says.
+            let mut still_bound = installed_all.clone();
+            still_bound[index] = HookInstallOutcomeV1 {
+                identity_sha256: entry.identity_sha256,
+                status: HookInstallStatus::Failed,
+                binding: installed_binding_for(entry),
+            };
+            assert!(
+                hook_install_outcomes_preimage(&allowlist, &still_bound).is_err(),
+                "entry {index} was admitted as Failed while still carrying a binding"
+            );
+        }
+        // Both arms were actually exercised, so this cannot pass by covering
+        // only one kind of entry.
+        assert_eq!(mandatory_seen, 2);
+        assert!(optional_seen > 0);
+    }
+
+    fn installed_binding_for(entry: &HookAllowlistEntryV1) -> HookInstallBindingV1 {
+        match entry.target {
+            HookTargetV1::ImportExport {
+                module_name_sha256,
+                symbol_name_sha256,
+                patch_len,
+                primitive_id_sha256,
+            } => HookInstallBindingV1::ImportExport {
+                observed_module_name_sha256: module_name_sha256,
+                observed_symbol_name_sha256: symbol_name_sha256,
+                observed_module_sha256: [7; 32],
+                observed_export_rva: 0x1000,
+                observed_patch_len: patch_len,
+                observed_primitive_id_sha256: primitive_id_sha256,
+                observed_placement: HookPatchPlacementV1::NormalTarget,
+            },
+            HookTargetV1::Hoi4Rva {
+                rva,
+                patch_len,
+                primitive_id_sha256,
+                ..
+            } => HookInstallBindingV1::Hoi4Rva {
+                observed_module_sha256: super::PINNED_A729_TARGET_EXECUTABLE_SHA256,
+                observed_rva: rva,
+                observed_patch_len: patch_len,
+                observed_primitive_id_sha256: primitive_id_sha256,
+                observed_placement: HookPatchPlacementV1::NormalTarget,
+            },
+        }
+    }
 
     /// The two pinned bootstrap sites are import-address-slot stores, not
     /// inline code patches. The retired inline primitive id and its 5-byte
