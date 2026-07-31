@@ -510,8 +510,99 @@ pub struct ReleasedRvaHookReceipt {
     pub callbacks_quiesced: bool,
     pub hook_removed: bool,
     pub relay_freed: bool,
+    /// The relay/trampoline allocation was NOT freed: it stays mapped and
+    /// executable for the life of the process. Exactly one of this and
+    /// [`Self::relay_freed`] is ever true, and [`Self::teardown_policy_id`]
+    /// names which route minted the receipt.
+    ///
+    /// This exists because "the callback counter read zero" is necessary but
+    /// not sufficient for absence of residency: a thread can have branched into
+    /// a detour and not yet executed its first instruction. A lane that cannot
+    /// disprove residency must not free the code that thread is about to run,
+    /// and the receipt has to say so rather than attest a free that did not
+    /// happen. The same custody decision is already shipped by the PE64
+    /// import-slot route (`retained_until_process_exit`) and by
+    /// `production_render_submit_live`'s bootstrap shim
+    /// (`external_shim_retained_until_process_exit`).
+    pub relay_retained_until_process_exit: bool,
+    /// Which teardown route produced this receipt. See
+    /// [`MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID`] and
+    /// [`MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID`].
+    pub teardown_policy_id: &'static str,
     pub released: bool,
     authenticity_seal: u64,
+}
+
+/// Teardown policy: the target prefix is restored, the MinHook entry is
+/// removed, and the relay/trampoline allocation is freed with it. Minted by
+/// [`observe_released`] / [`observe_released_set`].
+pub const MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID: &str =
+    "minhook-normal-rel5.remove-hook.relay-freed.v1";
+
+/// Teardown policy: the target prefix is restored by `MH_DisableHook`, which
+/// frees nothing, and the relay/trampoline allocation is deliberately retained,
+/// mapped and executable, for the life of the process. Minted by
+/// [`observe_released_with_retained_relay`].
+///
+/// `MH_RemoveHook` must never be called on a site released under this policy --
+/// it `FreeBuffer`s the trampoline, which is exactly the operation the policy
+/// exists to forbid.
+pub const MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID: &str =
+    "minhook-normal-rel5.disable-only.relay-process-lifetime.v1";
+
+/// Which of the two relay dispositions a release is being minted under.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RelayDisposition {
+    Freed,
+    RetainedUntilProcessExit,
+}
+
+#[cfg(windows)]
+impl RelayDisposition {
+    const fn policy_id(self) -> &'static str {
+        match self {
+            Self::Freed => MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
+            Self::RetainedUntilProcessExit => MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID,
+        }
+    }
+}
+
+/// Dev-only installed-receipt constructor, the exact pair of
+/// [`mint_test_released_receipt`]: every field the collector's release
+/// validation compares across the two matches by construction, so a test can
+/// vary ONE field and know that field is what the validation answered to.
+/// Unavailable from every default/shipped build, and it deliberately bypasses
+/// the process registry.
+#[cfg(feature = "test-support")]
+pub fn mint_test_installed_receipt(
+    expected: ExpectedRvaHook,
+    teardown_owner_token: u64,
+) -> InstalledRvaHookReceipt {
+    let original_prefix_sha256: [u8; 32] = Sha256::digest(expected.original_prefix).into();
+    InstalledRvaHookReceipt {
+        logical_name: expected.logical_name,
+        observed_module_name: BATTLE_PLAN_MODULE_NAME,
+        observed_module_sha256: A729_EXE_SHA256,
+        observed_pe_identity_sha256: [0xA7; 32],
+        observed_pe_timestamp: 1,
+        observed_size_of_image: 1,
+        requested_rva: expected.requested_rva,
+        observed_rva: expected.requested_rva,
+        observed_runtime_address: usize::try_from(expected.requested_rva).unwrap_or(1).max(1),
+        target_patch_len: expected.target_patch_len,
+        primitive_id: expected.primitive_id,
+        hook_spec_sha256: hook_spec_sha256(expected),
+        original_prefix_len: expected.original_prefix.len() as u16,
+        original_prefix_sha256,
+        observed_relay_address: 1,
+        observed_detour_address: 1,
+        placement: HookPatchPlacement::NormalTarget,
+        patch_above: false,
+        enabled: true,
+        teardown_owner_token,
+        authenticity_seal: 1,
+    }
 }
 
 /// Dev-only receipt constructor for dependent lane tests. It is unavailable
@@ -545,6 +636,8 @@ pub fn mint_test_released_receipt(
         callbacks_quiesced: true,
         hook_removed: true,
         relay_freed: true,
+        relay_retained_until_process_exit: false,
+        teardown_policy_id: MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
         released: true,
         authenticity_seal: 1,
     }
@@ -2661,6 +2754,46 @@ pub fn observe_released(
     Ok(released)
 }
 
+/// Mint a release receipt for a site whose relay/trampoline is RETAINED for the
+/// life of the process instead of freed.
+///
+/// Same evidence as [`observe_released`] for everything the target owns: the
+/// exact original prefix must have returned to the target and the receipt must
+/// still identify this exact a729 site. What differs is the disposition of the
+/// code the lane allocated, and the attestation says so exactly:
+///
+/// * `callbacks_quiesced` means admission was closed and the active-callback
+///   counter was observed at zero. That is necessary but NOT sufficient for
+///   absence of residency -- a thread can have branched into the detour and not
+///   yet executed its first instruction -- and that insufficiency is precisely
+///   why the relay is retained rather than freed.
+/// * `hook_removed` means the target's own bytes are the engine's again, which
+///   this function re-reads from process memory rather than taking on trust.
+///   The MinHook entry itself stays created-and-disabled; `MH_RemoveHook` is
+///   the call that frees the trampoline and it must never run on this site.
+/// * `relay_freed` must be FALSE. A caller that claims a free here is refused,
+///   because the receipt would then attest an operation nobody performed.
+#[cfg(windows)]
+pub fn observe_released_with_retained_relay(
+    expected: ExpectedRvaHook,
+    installed: InstalledRvaHookReceipt,
+    attestation: HookTeardownAttestation,
+) -> Result<ReleasedRvaHookReceipt, String> {
+    if attestation.relay_freed {
+        return Err(format!(
+            "{} retained-relay teardown attested a relay free it did not perform",
+            expected.logical_name
+        ));
+    }
+    let [released] = observe_released_set_with_disposition(
+        [expected],
+        [installed],
+        [attestation],
+        RelayDisposition::RetainedUntilProcessExit,
+    )?;
+    Ok(released)
+}
+
 /// Atomically transition a set of restored hooks from active custody to
 /// released custody. A retry with the exact same opaque receipts returns the
 /// already-minted receipts; it never mints a second release or reactivates a
@@ -2670,6 +2803,16 @@ pub fn observe_released_set<const N: usize>(
     expected: [ExpectedRvaHook; N],
     installed: [InstalledRvaHookReceipt; N],
     attestations: [HookTeardownAttestation; N],
+) -> Result<[ReleasedRvaHookReceipt; N], String> {
+    observe_released_set_with_disposition(expected, installed, attestations, RelayDisposition::Freed)
+}
+
+#[cfg(windows)]
+fn observe_released_set_with_disposition<const N: usize>(
+    expected: [ExpectedRvaHook; N],
+    installed: [InstalledRvaHookReceipt; N],
+    attestations: [HookTeardownAttestation; N],
+    relay: RelayDisposition,
 ) -> Result<[ReleasedRvaHookReceipt; N], String> {
     if N == 0 {
         return Err("production hook release set is empty".into());
@@ -2686,7 +2829,17 @@ pub fn observe_released_set<const N: usize>(
         let expected = expected[index];
         let installed = installed[index];
         let attestation = attestations[index];
-        if !attestation.callbacks_quiesced || !attestation.hook_removed || !attestation.relay_freed
+        // The relay disposition the caller attested must be exactly the one
+        // this route mints. `Freed` demands the free actually happened;
+        // `RetainedUntilProcessExit` refuses a claimed free, because a receipt
+        // that attests a free nobody performed is worse than no receipt.
+        let relay_attestation_matches_route = match relay {
+            RelayDisposition::Freed => attestation.relay_freed,
+            RelayDisposition::RetainedUntilProcessExit => !attestation.relay_freed,
+        };
+        if !attestation.callbacks_quiesced
+            || !attestation.hook_removed
+            || !relay_attestation_matches_route
         {
             return Err(format!(
                 "{} teardown attestation is incomplete",
@@ -2769,6 +2922,11 @@ pub fn observe_released_set<const N: usize>(
                     callbacks_quiesced: attestation.callbacks_quiesced,
                     hook_removed: attestation.hook_removed,
                     relay_freed: attestation.relay_freed,
+                    relay_retained_until_process_exit: matches!(
+                        relay,
+                        RelayDisposition::RetainedUntilProcessExit
+                    ),
+                    teardown_policy_id: relay.policy_id(),
                     released: true,
                     authenticity_seal: release_seal ^ active.authenticity_seal,
                 }
@@ -7910,5 +8068,95 @@ mod pointer_slot_provenance_tests {
         let mut unaligned = IMPORT_EXPECTED.generalize();
         unaligned.slot_rva = SLOT_RVA + 4;
         assert!(validate_expected_pointer_slot(unaligned).is_err());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod retained_relay_release_tests {
+    use super::{
+        observe_released_with_retained_relay, ExpectedRvaHook, HookPatchPlacement,
+        HookTeardownAttestation, InstalledRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
+        MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID,
+    };
+
+    /// A syntactically well-formed installed receipt that owns no crate custody
+    /// whatsoever. It exists only to give the call a second argument: every
+    /// assertion below is about a refusal that happens strictly before this is
+    /// read.
+    fn a_receipt_that_owns_nothing() -> InstalledRvaHookReceipt {
+        InstalledRvaHookReceipt {
+            logical_name: SOME_HOOK.logical_name,
+            observed_module_name: "hoi4.exe",
+            observed_module_sha256: [0; 32],
+            observed_pe_identity_sha256: [0; 32],
+            observed_pe_timestamp: 1,
+            observed_size_of_image: 1,
+            requested_rva: SOME_HOOK.requested_rva,
+            observed_rva: SOME_HOOK.requested_rva,
+            observed_runtime_address: 0x1000,
+            target_patch_len: SOME_HOOK.target_patch_len,
+            primitive_id: SOME_HOOK.primitive_id,
+            hook_spec_sha256: [0; 32],
+            original_prefix_len: SOME_HOOK.original_prefix.len() as u16,
+            original_prefix_sha256: [0; 32],
+            observed_relay_address: 1,
+            observed_detour_address: 1,
+            placement: HookPatchPlacement::NormalTarget,
+            patch_above: false,
+            enabled: true,
+            teardown_owner_token: 1,
+            authenticity_seal: 1,
+        }
+    }
+
+    const SOME_HOOK: ExpectedRvaHook = ExpectedRvaHook {
+        logical_name: "gameplay.test.retained_relay",
+        requested_rva: 0x1000,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &[0x40, 0x53, 0x56, 0x57, 0x41],
+    };
+
+    /// Falsifiable: fails if the retained-relay route stops refusing a claimed
+    /// free.
+    ///
+    /// The whole reason this route exists is that the lane using it did NOT
+    /// free its relay. A receipt minted here with `relay_freed: true` would
+    /// attest an operation nobody performed, which is the one thing a custody
+    /// receipt may never do -- so the refusal has to come BEFORE any module
+    /// observation, and it does: this test process is not `hoi4.exe` and would
+    /// otherwise fail with a module-identity message instead.
+    #[test]
+    fn a_retained_relay_release_refuses_a_claimed_free() {
+        let error = observe_released_with_retained_relay(
+            SOME_HOOK,
+            a_receipt_that_owns_nothing(),
+            HookTeardownAttestation {
+                callbacks_quiesced: true,
+                hook_removed: true,
+                relay_freed: true,
+            },
+        )
+        .expect_err("a retained relay was not freed and may not attest that it was");
+        assert!(
+            error.contains("attested a relay free it did not perform"),
+            "expected the claimed-free refusal, got {error}"
+        );
+        assert!(error.contains(SOME_HOOK.logical_name), "{error}");
+    }
+
+    /// Falsifiable: fails if the two teardown policies ever become the same
+    /// string. They are what an auditor reads to tell "the allocation is gone"
+    /// from "the allocation is still mapped and executable", and a receipt that
+    /// cannot distinguish those two is not evidence of either.
+    #[test]
+    fn the_two_teardown_policies_are_distinguishable() {
+        assert_ne!(
+            MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
+            MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID
+        );
+        assert!(MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID.contains("process-lifetime"));
+        assert!(MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID.contains("relay-freed"));
     }
 }

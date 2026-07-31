@@ -82,3 +82,6 @@ unshipped-a31-focus-presentation-evidence = [
 # A production `cargo build -p collector` does not carry it.
 division_combat_stats_live_lane = { package = "division_combat_stats_live", path = "../lanes/division_combat_stats_live", features = ["test-support"] }
 compact_contract = { path = "../compact_contract", features = ["test-support"] }
+# `test-support` mints the matched installed/released receipt pair that
+# `validate_released_standard_receipts` is exercised with. Tests only.
+production_hook_receipt = { path = "../lanes/production_hook_receipt", features = ["test-support"] }
