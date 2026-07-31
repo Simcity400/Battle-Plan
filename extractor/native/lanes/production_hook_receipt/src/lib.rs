@@ -8301,6 +8301,30 @@ mod retained_relay_release_tests {
             &claims_neither,
             RelayDisposition::RetainedUntilProcessExit
         ));
+
+        // The policy id is checked on BOTH routes, not only the retained one.
+        // Testing the mislabelled retained receipt alone left a live mutation:
+        // a predicate that compared the id only for `RetainedUntilProcessExit`
+        // and admitted the freed route on its booleans passed every assertion
+        // above, and would then let a freed receipt wearing any label answer a
+        // freed-route retry.
+        let mut freed_wearing_retained_label = freed;
+        freed_wearing_retained_label.teardown_policy_id =
+            MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID;
+        assert!(
+            !released_matches_relay_disposition(
+                &freed_wearing_retained_label,
+                RelayDisposition::Freed
+            ),
+            "a freed receipt wearing the retained label answers no route"
+        );
+
+        let mut freed_unlabelled = freed;
+        freed_unlabelled.teardown_policy_id = "";
+        assert!(
+            !released_matches_relay_disposition(&freed_unlabelled, RelayDisposition::Freed),
+            "the policy id is not free text on the freed route either"
+        );
     }
 
     /// Falsifiable: fails if the two teardown policies ever become the same
