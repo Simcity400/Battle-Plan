@@ -1571,6 +1571,7 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
 fn reserve_full_terminal_drain_locked(
     state: &mut HookState,
 ) -> Result<SealedTerminalReservation, String> {
+    require_no_retained_consumption(state)?;
     let reservation_id = next_terminal_reservation_id()?;
     let diagnostics = diagnostic_snapshot();
     let record_count = state.records.len();
@@ -1587,7 +1588,6 @@ fn reserve_full_terminal_drain_locked(
         diagnostics,
         sealed_terminal: true,
     });
-    state.reservation_consumption = None;
     Ok(SealedTerminalReservation {
         reservation_id,
         drain,
@@ -1968,6 +1968,20 @@ fn diagnostic_snapshot() -> [u64; 4] {
     diagnostic_counters().map(|counter| counter.load(Ordering::Acquire))
 }
 
+/// A consumption declaration lives and dies with its reservation, and every
+/// disposition that ends a reservation clears it. Reserving therefore REFUSES a
+/// retained declaration rather than clearing it: silently absorbing one would
+/// hide a disposition that failed to release its own state, and a second clear
+/// here would make the release-side clears untestable.
+fn require_no_retained_consumption(state: &HookState) -> Result<(), String> {
+    match &state.reservation_consumption {
+        Some((reservation_id, _)) => Err(format!(
+            "terminal hook retains consumption declared by reservation {reservation_id} with no reservation to match"
+        )),
+        None => Ok(()),
+    }
+}
+
 fn next_terminal_reservation_id() -> Result<u64, String> {
     let reservation_id = NEXT_RECORD_RESERVATION_ID
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -2029,6 +2043,7 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
     if state.reservation.is_some() {
         return Err("terminal hook already has an active record reservation".into());
     }
+    require_no_retained_consumption(&state)?;
     let records = state.records.iter().cloned().collect::<Vec<_>>();
     let diagnostics = diagnostic_snapshot();
     if records.is_empty() && diagnostics.iter().all(|count| *count == 0) {
@@ -2042,7 +2057,6 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
         diagnostics,
         sealed_terminal: false,
     });
-    state.reservation_consumption = None;
     Ok(Some(TerminalRecordReservation {
         reservation_id,
         drain: TerminalDrain {
