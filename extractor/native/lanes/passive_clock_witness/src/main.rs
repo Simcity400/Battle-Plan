@@ -145,14 +145,13 @@ fn main() -> ExitCode {
             println!(
                 "phase=passive_witness_verdict samples={} measured_advancing_ms={} \
                  measured_advancing_with_hold_ms={} measured_paused_by_engine_ms={} measured_paused_unforced_ms={} \
-                 measured_tick_inhibited_ms={} measured_stalled_ms={} \
+                 measured_stalled_ms={} \
                  unobserved_ms={} wall_clock_ms={} observed_game_hours={}",
                 report.samples,
                 report.advancing_ms,
                 report.advancing_with_hold_ms,
                 report.paused_by_engine_ms,
                 report.paused_unforced_ms,
-                report.tick_inhibited_ms,
                 report.stalled_ms,
                 report.unobserved_ms,
                 report.wall_clock_ms,

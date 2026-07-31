@@ -2083,6 +2083,53 @@ pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
     }
 }
 
+/// Release a reservation whose frame was rejected by its own drop diagnostics,
+/// consuming the diagnostic snapshot but leaving the reserved record queued.
+///
+/// This is the disposition for "the frame is incomplete, and the record has not
+/// been judged". The drop counters are cumulative and only a consuming
+/// transition subtracts them, so a frame that failed *because* a drop was
+/// counted must consume that snapshot or every later frame is handed the same
+/// non-zero counters and can never publish again. The record is a separate
+/// question, and deliberately an open one: it was never projected, so its
+/// validity is unknown, and popping it here would destroy a record whose
+/// matching END row may simply not have arrived yet. It is left at the front to
+/// be judged by a later frame. That is a retention, not a guarantee of
+/// delivery: once custody is released, an append into a full queue may still
+/// evict the front record, which is counted as a drop exactly as it is after a
+/// rollback.
+///
+/// `commit_record_reservation` is not a substitute: it pops the record.
+/// `rollback_record_reservation` is not a substitute: it leaves the counters.
+pub fn release_record_reservation_diagnostics(reservation_id: u64) -> Result<(), String> {
+    let _individual = try_admit_individual_api("terminal record diagnostic release")?;
+    let mut state = STATE
+        .get_or_init(|| Mutex::new(HookState::default()))
+        .lock()
+        .map_err(|_| "terminal hook diagnostic release mutex poisoned".to_string())?;
+    let active = match state.reservation {
+        Some(active) if active.reservation_id == reservation_id => active,
+        Some(active) => {
+            return Err(format!(
+                "terminal hook diagnostic release id mismatch ({reservation_id} != {})",
+                active.reservation_id
+            ));
+        }
+        None => {
+            return Err("terminal hook diagnostic release without an active reservation".into());
+        }
+    };
+    if active.sealed_terminal {
+        return Err(
+            "terminal hook sealed reservation requires commit_sealed_terminal_reservation".into(),
+        );
+    }
+    validate_reserved_diagnostics(active, reservation_id)?;
+    subtract_reserved_diagnostics(active);
+    state.reservation = None;
+    Ok(())
+}
+
 pub fn requeue(records: Vec<RawTerminalRecordCapture>) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record requeue")?;
     if records.is_empty() {
@@ -2627,6 +2674,72 @@ pub(crate) fn close_callbacks_and_retain_regions(
         .map_err(|_| format!("{label} retained detour region registry mutex poisoned"))?
         .push(retained.clone());
     Ok(retained)
+}
+
+#[cfg(test)]
+mod terminal_diagnostic_release_tests {
+    use super::*;
+
+    /// A frame rejected by its own drop diagnostics must be able to clear those
+    /// diagnostics WITHOUT destroying the record it never projected.
+    ///
+    /// The two pre-existing dispositions each get exactly one of those halves
+    /// wrong. `commit_record_reservation` clears the counters but pops the front
+    /// record -- and since projection is skipped entirely when the diagnostics
+    /// failed, that record was never examined, so popping it destroys a record
+    /// whose matching END row may simply belong to a later frame.
+    /// `rollback_record_reservation` keeps the record but leaves the counters,
+    /// which re-reports the same drop to every later frame and keeps projection
+    /// disabled forever. Neither can be used for this case.
+    ///
+    /// FALSIFIABILITY: make `release_record_reservation_diagnostics` pop the
+    /// record the way commit does and the surviving-record assertion fails;
+    /// drop its `subtract_reserved_diagnostics` call the way rollback does and
+    /// the cleared-counter assertion fails.
+    #[test]
+    fn releasing_poisoned_diagnostics_keeps_the_unprojected_record() {
+        let mut state = STATE
+            .get_or_init(|| Mutex::new(HookState::default()))
+            .lock()
+            .expect("terminal state");
+        state.records.clear();
+        state.reservation = None;
+        state.reservation_admission_sealed = false;
+        state.records.push_back(RawTerminalRecordCapture {
+            combat_id: 7,
+            generation: 3,
+            record_index: 0,
+            writer_kind: 0,
+            record_bytes: [0u8; TERMINAL_RECORD_LEN],
+        });
+        // One unreadable drop, exactly as the live run reported.
+        DROPPED_UNREADABLE.store(1, Ordering::Release);
+        state.reservation = Some(ActiveTerminalReservation {
+            reservation_id: 4_242,
+            record_count: 1,
+            diagnostics: [0, 0, 1, 0],
+            sealed_terminal: false,
+        });
+        drop(state);
+
+        release_record_reservation_diagnostics(4_242).expect("diagnostic release");
+
+        assert_eq!(
+            DROPPED_UNREADABLE.load(Ordering::Acquire),
+            0,
+            "the drop snapshot must be consumed or every later frame re-reports it"
+        );
+        let mut state = STATE.get().expect("terminal state").lock().expect("lock");
+        assert_eq!(
+            state.records.len(),
+            1,
+            "the record was never projected, so it must still be offered next frame"
+        );
+        assert_eq!(state.records[0].combat_id, 7);
+        assert!(state.reservation.is_none(), "custody must be released");
+        state.records.clear();
+        DROPPED_UNREADABLE.store(0, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

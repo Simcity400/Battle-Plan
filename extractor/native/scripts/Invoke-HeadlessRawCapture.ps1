@@ -76,8 +76,8 @@ param(
 
     # How much unexplained clock silence is a hung engine rather than a slow
     # frame. Both must be met before the run stops. A window in which the
-    # engine reports a pause or a tick-dispatch hold is an explanation, so it
-    # interrupts the run rather than counting toward it.
+    # engine reports a pause is an explanation, so it interrupts the run rather
+    # than counting toward it.
     #
     # The engine dispatches a tick per frame at UI speed 5, so the default -- 3
     # consecutive silent windows spanning at least 30 s -- is dozens of missing
@@ -1027,7 +1027,7 @@ $passiveWitnessPath = Join-Path $OutDir 'passive_speed5_witness.jsonl'
 # Consumer-facing split of the graded window into advancing, paused, and
 # tick-held intervals. A consumer averaging a rate over the capture must divide
 # by active time, and a paused world is not slow -- it is stopped, on purpose.
-$passiveClockIntervalsPath = Join-Path $OutDir 'PASSIVE_CLOCK_INTERVALS_V1.json'
+$passiveClockIntervalsPath = Join-Path $OutDir 'PASSIVE_CLOCK_INTERVALS_V2.json'
 
 function Write-PassiveWitnessSample {
     param(

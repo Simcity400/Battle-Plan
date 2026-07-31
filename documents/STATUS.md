@@ -54,13 +54,37 @@ as client drift. The zero-client-writes guarantee rests on game-speed invariance
 alone, which the engine's pause path provably never touches; clock movement is a
 budgeted rate observation whose sustained absence is reported as a hang under its
 own name. `extractor/native/lanes/passive_clock_witness` is the verdict
-authority, and each run writes `PASSIVE_CLOCK_INTERVALS_V1.json` so a consumer
+authority, and each run writes `PASSIVE_CLOCK_INTERVALS_V2.json` so a consumer
 divides a rate by active time rather than by wall time. On the collector side a
 capture window that observed nothing releases its hooks through a reason that
 refuses any lane surrendering a non-empty discard, so an empty window is proved
 by every lane's own sealed drain instead of inferred from a missing terminal
 frame — the inference a lane that lost its observations would satisfy equally
 well.
+
+The evidence-only control path mirrors an engine pause routine rather than one
+byte of its result. Clearing `CInGameIdler+0x6C1` alone let the simulation run
+while the rest of the pause state stayed set, which is a configuration ordinary
+play cannot produce: the pause overlay stayed lit on the date button while the
+calendar ticked. The cluster is enumerated from the binary — `+0x6C0` route,
+`+0x6C1` latch, `+0x6C2` kind, `+0x6C3` forced, plus two heap-allocating
+`std::string` assignments, `+0x800`, `+0x808` and the global at `0x1433723EC` —
+by searching `.text` for each offset's exact little-endian `disp32`. That is
+exhaustive for a direct access from the object pointer and does not cover an
+interior pointer, an overlapping store or a bulk copy, so it is the enumerated
+writer set rather than a proved exhaustive one. `Control-Hoi4Game.ps1` mirrors one named routine per
+case and refuses states from which no engine routine makes the requested
+transition.
+
+**A write-only control path cannot reach the engine's full post-state, and the
+script says so rather than reporting a partial transition as a complete one.**
+interface handler's GUI update, and the transitions assign MSVC `std::string`s
+that allocate in the target heap. `WriteProcessMemory` performs neither. The
+data state is mirrored; the UI state is not.
+
+`CGameState+0x4C0` is a diagnostic and classifies nothing. Reading it as a
+clock hold was refuted by observation: a live capture reported it non-zero on
+every sample while the hour advanced in every window.
 
 One named defect stands open in that hook machinery. The A31 inline patcher's
 `SuspendedOtherThreads::capture`
