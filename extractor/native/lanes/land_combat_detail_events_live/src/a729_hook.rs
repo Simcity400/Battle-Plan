@@ -3347,6 +3347,49 @@ mod terminal_reservation_consumption_tests {
         rollback_record_reservation(fourth.reservation_id).expect("rollback");
     }
 
+    /// Reserving refuses a retained declaration rather than clearing it.
+    ///
+    /// The dispositions own the declaration's lifetime. One that outlived its
+    /// reservation means a disposition failed to release its own state, and
+    /// clearing it here would absorb that silently -- and would also make the
+    /// disposition-side clears untestable, because either half alone keeps the
+    /// observable behaviour identical.
+    ///
+    /// FALSIFIABILITY: replace `require_no_retained_consumption` in
+    /// `reserve_pending_records` with a clear and this fails.
+    #[test]
+    fn reserving_refuses_a_declaration_that_outlived_its_reservation() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(50, 1)]);
+        {
+            let mut state = STATE
+                .get()
+                .expect("terminal state")
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // Exactly the state a disposition that forgot to clear would leave.
+            state.reservation_consumption = Some((9_999, vec![0]));
+        }
+
+        assert!(
+            reserve_pending_records().is_err(),
+            "a declaration with no reservation is a released-state bug and must fail closed"
+        );
+
+        let mut state = STATE
+            .get()
+            .expect("terminal state")
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        assert!(
+            state.reservation.is_none(),
+            "the refused reservation must not have taken custody"
+        );
+        state.reservation_consumption = None;
+    }
+
     /// The declaration cannot reach past what was reserved, cannot repeat, and
     /// is exactly what the commit removes.
     ///
