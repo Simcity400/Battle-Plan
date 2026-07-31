@@ -336,6 +336,53 @@ impl ReadOnlyScheduler {
         }
     }
 
+    /// Resolve a whole-frame in-flight request whose frame will NOT be published.
+    ///
+    /// The missing other half of [`Self::accept_request`].
+    /// [`Self::take_current_request`] refuses while ANY slot still holds
+    /// `in_flight`, and only `accept_request` cleared it -- so a frame that was
+    /// taken and then refused left every slot wedged for the rest of the
+    /// capture, and every later hour was evicted into a backpressure gap.
+    /// Measured on four consecutive live runs: `accepted_hours=0` with
+    /// `gapped_domain_hours` exactly one hour short of `scheduled_hours`.
+    ///
+    /// The capture loop's own comment already required this -- "the in-flight
+    /// request still owns the final assembled DATA frame and must be accepted or
+    /// rejected after its sink outcome is known" -- but there was no reject to
+    /// call.
+    ///
+    /// `force_baseline` is set so the next observation re-establishes a baseline
+    /// instead of assuming continuity across the hole. The refused hour itself is
+    /// accounted for by the frame-level H4FR record, not by per-domain gaps.
+    ///
+    /// Returns the number of domain slots released, so a caller can distinguish
+    /// a real release from a no-op without inspecting private state.
+    pub fn reject_request(&mut self, request: CaptureRequest) -> usize {
+        let rejected: Vec<u16> = self
+            .domain_requests
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.in_flight == Some(request))
+            .map(|(index, _)| self.domains[index])
+            .collect();
+        if rejected.is_empty() {
+            self.telemetry.terminal = Some(TerminalOutcome::CounterAnomaly);
+            return 0;
+        }
+        for slot in &mut self.domain_requests {
+            if slot.in_flight == Some(request) {
+                slot.in_flight = None;
+            }
+        }
+        // No per-domain gaps here. The refused hour is accounted for by the
+        // frame-level H4FR record the caller publishes, which names the hour and
+        // the domains that forced it. Emitting gaps as well would double-report
+        // the hour and would tell a consumer the queue lost throughput, which is
+        // not what happened.
+        self.force_baseline = true;
+        rejected.len()
+    }
+
     pub fn reject_domain(&mut self, domain_id: u16, request: CaptureRequest, kind: GapKind) {
         if let Ok(index) = self.domains.binary_search(&domain_id) {
             if self.domain_requests[index].in_flight == Some(request) {
@@ -708,6 +755,65 @@ mod tests {
 
     fn scheduler(domains: &[u16], request_cap: usize, control_cap: usize) -> ReadOnlyScheduler {
         ReadOnlyScheduler::new(domains.to_vec(), request_cap, control_cap).unwrap()
+    }
+
+    /// The wedge, and that rejecting clears it.
+    ///
+    /// This is the live failure reproduced in miniature. A frame is taken and
+    /// then refused (incomplete), so it is never accepted. Before
+    /// `reject_request` existed there was no way to release it, and
+    /// `take_current_request` refuses while ANY slot holds `in_flight` -- so
+    /// every later hour was evicted into a backpressure gap and the capture
+    /// produced nothing for the rest of its window. Measured live four times:
+    /// `accepted_hours=0`, `gapped_domain_hours` exactly one hour short of
+    /// `scheduled_hours`.
+    ///
+    /// Mutation proof: delete the `slot.in_flight = None` loop from
+    /// `reject_request` and the "must service the next hour" assertion fails --
+    /// the scheduler stays wedged exactly as it did in production.
+    #[test]
+    fn a_refused_frame_releases_its_request_instead_of_wedging_the_scheduler() {
+        let mut s = scheduler(&[10, 11, 12], 1, 64);
+
+        s.observe_stable(100, 1);
+        let first = s.take_current_request().expect("hour 100 must be takeable");
+
+        // The frame built from `first` is judged incomplete, so it is never
+        // accepted. A later hour arrives.
+        s.observe_stable(101, 2);
+
+        // THE WEDGE: without a release, no later hour can ever be taken.
+        assert_eq!(
+            s.take_current_request(),
+            None,
+            "an unaccepted in-flight request must block later takes -- if this \
+             ever passes, the wedge premise is wrong and this test is worthless"
+        );
+
+        // Release it the way a refusal now does.
+        let released = s.reject_request(first);
+        assert_eq!(released, 3, "every domain slot holding the request is released");
+
+        // THE FIX: the next hour is takeable again.
+        let second = s
+            .take_current_request()
+            .expect("after a reject the scheduler must service the next hour");
+        assert_ne!(second, first, "the next hour is a distinct request");
+
+        let telemetry = s.telemetry();
+        assert_eq!(telemetry.accepted_hours, 0, "nothing was published");
+        // Deliberately NO per-domain gaps: the refused hour is accounted for by
+        // the frame-level H4FR record the caller publishes. Emitting gaps here
+        // as well would double-report the hour and would tell a consumer the
+        // queue lost throughput, which is not what happened.
+        assert_eq!(
+            telemetry.gapped_domain_hours, 0,
+            "a refusal is not a throughput gap"
+        );
+
+        // And a reject of something not in flight is a no-op that says so,
+        // rather than silently releasing an unrelated request.
+        assert_eq!(s.reject_request(first), 0);
     }
 
     #[test]

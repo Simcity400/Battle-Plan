@@ -28,7 +28,8 @@ use compact_contract::stream_validator::{
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -476,7 +477,48 @@ impl BoundaryTracker {
                 self.data_domains.clear();
                 self.last_closed_hour = Some(header.game_hour_raw);
             }
-            _ => {}
+            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+                // A refused frame IS a closed frame -- it closed without
+                // publishing. It therefore clears the per-hour sets exactly as
+                // FRAME_END does. Leaving them populated (what the old `_ => {}`
+                // did) made hour N's outcomes bleed into hour N+1 and fired a
+                // FALSE "duplicate terminal outcome" violation on the first real
+                // refusal stream.
+                //
+                // Two things FRAME_END requires are deliberately NOT required
+                // here: there is no seal to validate, because nothing was
+                // published; and the hour needs no separate terminal domain
+                // outcome, because the refusal record IS that outcome and it
+                // names every domain responsible.
+                if let Some(last_closed) = self.last_closed_hour {
+                    if header.game_hour_raw <= last_closed {
+                        self.violation = Some(format!(
+                            "non-monotonic FRAME_REFUSED at byte {at_byte}: closed hour \
+                             {last_closed}, then {}",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                }
+                self.open_hour = None;
+                self.pending_perf_hour = None;
+                self.terminal_outcome_domains.clear();
+                self.gap_domains.clear();
+                self.data_domains.clear();
+                self.last_closed_hour = Some(header.game_hour_raw);
+            }
+            // Not a frame-boundary record: it carries campaign identity and is
+            // validated where identity is folded, not here.
+            compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER => {}
+            // A record type this fold has not been taught is a violation, not a
+            // skip. Silence here is how a consumer drifts out of date while
+            // still reporting success.
+            other => {
+                self.violation = Some(format!(
+                    "unknown compact record type {other} at byte {at_byte}: this fold \
+                     has not been taught to close, count, or ignore it"
+                ));
+            }
         }
     }
 
@@ -495,11 +537,17 @@ impl BoundaryTracker {
             return Err(format!("game hour {open} left open at EOF"));
         }
         if self.last_closed_hour.is_none() {
-            return Err("stream closes no game hour (no FRAME_END records)".to_string());
+            return Err("stream closes no game hour (no FRAME_END or FRAME_REFUSED records)".to_string());
         }
-        if self.last_record_kind != Some(COMPACT_RECORD_TYPE_FRAME_END) {
+        // A stream may legitimately end on a refusal: that hour was closed, it
+        // simply closed without publishing. Requiring FRAME_END here would call
+        // an honestly-refused stream malformed.
+        if !matches!(
+            self.last_record_kind,
+            Some(COMPACT_RECORD_TYPE_FRAME_END) | Some(COMPACT_RECORD_TYPE_FRAME_REFUSED)
+        ) {
             return Err(format!(
-                "stream ends after record type {}; final record must be canonical FRAME_END",
+                "stream ends after record type {}; final record must be a canonical FRAME_END or FRAME_REFUSED boundary",
                 self.last_record_kind
                     .map_or_else(|| "none".to_string(), |kind| kind.to_string())
             ));
@@ -1233,6 +1281,108 @@ mod tests {
         }
     }
 
+    /// A refusal stream must fold cleanly, and a record type this fold has not
+    /// been taught must be a violation rather than a skip.
+    ///
+    /// Both halves reproduce real defects. The fold dispatched on record type
+    /// with a bare `_ => {}`, so FRAME_REFUSED was invisible -- and because only
+    /// FRAME_END cleared the per-hour sets, hour N's gap for a domain survived
+    /// into hour N+1 and tripped "duplicate terminal outcome": a FALSE violation
+    /// reported against a perfectly honest stream. This is the exact shape of
+    /// the production stream that first carried refusals (348 refusals, 146
+    /// gaps, 2 frame ends).
+    ///
+    /// Mutation proof: put `_ => {}` back in place of the FRAME_REFUSED arm and
+    /// the first assertion fails with that duplicate-terminal-outcome message;
+    /// put it back in place of the `other =>` arm and the last assertion fails.
+    #[test]
+    fn a_refusal_closes_its_hour_and_an_untaught_type_is_a_violation() {
+        let gap_for = |hour: i32| {
+            compact_contract::DomainGapRecordV1 {
+                part: compact_contract::DomainGapPart::Both,
+                reason: compact_contract::DomainGapReason::ClockUnreadable,
+                target_hour_raw: hour,
+                range_start_hour_raw: hour,
+                range_end_hour_raw: hour,
+                tick_before: 0,
+                tick_after: 0,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: 0,
+            }
+            .encode()
+            .expect("canonical gap fixture")
+        };
+        let refusal_for = |hour: i32| {
+            compact_contract::frame_refusal::FrameRefusalRecordV1 {
+                refused_hour: hour,
+                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                    domain_id: 64,
+                    status_flags: 0x0000_0100,
+                    non_tolerated_flags: 0x0000_0100,
+                    reason: "d64_rejected_timed_effect_frames=1".to_string(),
+                }],
+            }
+            .encode()
+            .expect("canonical refusal fixture")
+        };
+
+        // The SAME domain gapped in two consecutive hours, each hour closed by a
+        // refusal rather than a FRAME_END.
+        let mut tracker = BoundaryTracker::default();
+        let mut seq = 1u64;
+        for hour_index in [HOUR_A, HOUR_B] {
+            let hour = raw_for(hour_index);
+            let gap = gap_for(hour);
+            tracker.observe(
+                &boundary_header(seq, hour, 64, COMPACT_RECORD_TYPE_DOMAIN_GAP, gap.len(), 0),
+                &gap,
+                0,
+            );
+            seq += 1;
+            let refusal = refusal_for(hour);
+            tracker.observe(
+                &boundary_header(
+                    seq,
+                    hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                    refusal.len(),
+                    0,
+                ),
+                &refusal,
+                0,
+            );
+            seq += 1;
+        }
+        assert!(
+            tracker.violation.is_none(),
+            "an honest refusal stream must fold clean, got {:?}",
+            tracker.violation
+        );
+
+        // And it ends at a closed boundary: the hour WAS closed, it simply
+        // closed without publishing.
+        assert!(
+            tracker.eof_check(0).is_ok(),
+            "a stream ending on a refusal ended at a closed boundary, got {:?}",
+            tracker.eof_check(0)
+        );
+
+        // An undefined record type is NOT skipped.
+        let mut untaught = BoundaryTracker::default();
+        untaught.observe(&boundary_header(1, raw_for(HOUR_A), 64, 61, 0, 0), &[], 0);
+        assert!(
+            untaught
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("unknown compact record type")),
+            "an untaught record type must be a violation, got {:?}",
+            untaught.violation
+        );
+    }
+
     fn raw_for(hour_index: i64) -> i32 {
         DATE_EPOCH_CONST + hour_index as i32
     }
@@ -1726,7 +1876,7 @@ mod tests {
             );
             let err = tracker.eof_check(0).unwrap_err();
             assert!(
-                err.contains("final record must be canonical FRAME_END"),
+                err.contains("final record must be a canonical FRAME_END or FRAME_REFUSED"),
                 "{err}"
             );
         }

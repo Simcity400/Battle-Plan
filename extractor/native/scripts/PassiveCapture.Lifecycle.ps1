@@ -278,6 +278,27 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
     )) {
         $primitiveIds[$match.Groups[1].Value] = $match.Groups[2].Value
     }
+    # Import-slot primitive and width, PARSED rather than assumed. This encoder
+    # is a deliberately independent re-derivation of the Rust roster digest, and
+    # independence is only worth something while it tracks the contract. It did
+    # not: when the two bootstrap entries were corrected from the retired inline
+    # primitive (minhook-0.9.0.normal-jmp-rel5, 5 bytes) to the one the provider
+    # actually installs (pe64.import-address-slot.atomic-cas.v1, 8 bytes), this
+    # file and its Python twin (verify_sink_reconciliation.py) were left behind
+    # and went on silently producing the pre-correction digest
+    # 1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6.
+    $importPrimitiveId = [string]$primitiveIds['PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS']
+    if ([string]::IsNullOrEmpty($importPrimitiveId)) {
+        throw 'Pinned import-slot primitive id is not declared by the canonical roster source.'
+    }
+    $importWidthMatch = [regex]::Match(
+        $ContractSource,
+        'pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH: u16 = (\d+);'
+    )
+    if (-not $importWidthMatch.Success) {
+        throw 'Pinned import-slot patch width is not declared by the canonical roster source.'
+    }
+    $importPatchLen = [uint16]$importWidthMatch.Groups[1].Value
     $importPattern =
         'pinned_import!\(\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([0-9a-f]{64})"\s*\)'
     foreach ($match in [regex]::Matches(
@@ -296,11 +317,11 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
             $match.Groups[3].Value
         $primitiveSha = Get-PassiveNamedValueSha256 `
             'battle-plan.capture_ready.hook_primitive_id.v1' `
-            'minhook-0.9.0.normal-jmp-rel5'
+            $importPrimitiveId
         $entry = [Collections.Generic.List[byte]]::new()
         Add-PassiveSha256Bytes $entry $identitySha
         Add-PassiveLittleEndianBytes $entry u16 ([uint16]1)
-        Add-PassiveLittleEndianBytes $entry u16 ([uint16]5)
+        Add-PassiveLittleEndianBytes $entry u16 $importPatchLen
         Add-PassiveSha256Bytes $entry $moduleSha
         Add-PassiveSha256Bytes $entry $symbolSha
         Add-PassiveSha256Bytes $entry $primitiveSha

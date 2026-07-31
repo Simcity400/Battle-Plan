@@ -5,6 +5,11 @@ pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
 pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 /// Ordinary control record reporting one acquisition outcome with no data.
 pub const COMPACT_RECORD_TYPE_DOMAIN_GAP: u16 = 5;
+/// Frame-level record: this hour was assembled and REFUSED, naming the
+/// domains that forced it. Not a per-domain outcome -- a refused frame is one
+/// event with a list of offenders, which is why it is not a DOMAIN_GAP. Type 4
+/// is STREAM_HEADER (campaign_identity.rs), hence 6.
+pub const COMPACT_RECORD_TYPE_FRAME_REFUSED: u16 = 6;
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -98,6 +103,14 @@ pub fn validate_compact_record_semantics(
             Ok(())
         }
         COMPACT_RECORD_TYPE_DOMAIN_DATA => Ok(()),
+        COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "FRAME_REFUSED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::frame_refusal::validate_frame_refusal_payload(payload)
+        }
         COMPACT_RECORD_TYPE_DOMAIN_GAP => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {
                 return Err(format!(

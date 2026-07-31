@@ -253,6 +253,28 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
             source,
         )
     }
+    # The import-slot patch width, parsed rather than assumed. This encoder is a
+    # deliberately INDEPENDENT re-derivation of the Rust roster digest, which is
+    # why it is allowed to disagree -- but independence is only worth something
+    # while it tracks the contract, and it did not. When the two bootstrap
+    # entries were corrected from the retired inline primitive
+    # (minhook-0.9.0.normal-jmp-rel5, 5 bytes) to the one the provider actually
+    # installs (pe64.import-address-slot.atomic-cas.v1, 8 bytes), this file and
+    # its PowerShell twin were left on the old encoding and went on silently
+    # producing the pre-correction digest
+    # 1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6.
+    import_width_match = re.search(
+        r"pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH:\s*u16\s*=\s*(\d+)\s*;",
+        source,
+    )
+    require(
+        import_width_match is not None,
+        "canonical_hook_authority_import_width_missing",
+        problems,
+    )
+    if import_width_match is None:
+        return 0, None
+    import_patch_len = int(import_width_match.group(1))
     roster_source = roster_match.group(1)
     import_rows = re.findall(
         r'pinned_import!\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*'
@@ -292,13 +314,13 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
         identity = named_digest(
             "battle-plan.capture_ready.hook_identity.v1", logical_name
         )
-        primitive = constants.get("MINHOOK_NORMAL_REL5")
+        primitive = constants.get("PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS")
         if primitive is None:
-            problems.append("canonical_hook_authority_minhook_primitive_missing")
+            problems.append("canonical_hook_authority_import_primitive_missing")
             continue
         body = (
             identity
-            + struct.pack("<HH", 1, 5)
+            + struct.pack("<HH", 1, import_patch_len)
             + named_digest(
                 "battle-plan.capture_ready.hook_target_name.v1", module_name
             )

@@ -1024,6 +1024,10 @@ $clientDrivingOptInSuspended = $null
 $recorderDeadline = $null
 $scriptExitCode = 1
 $passiveWitnessPath = Join-Path $OutDir 'passive_speed5_witness.jsonl'
+# The hooks-free paired control, written during settle only. Separate file from
+# the witness so the verdict authority's schema and its stall policy stay
+# untouched by evidence that is deliberately not gated.
+$settleControlPath = Join-Path $OutDir 'settle_control.jsonl'
 # Consumer-facing split of the graded window into advancing, paused, and
 # tick-held intervals. A consumer averaging a rate over the capture must divide
 # by active time, and a paused world is not slow -- it is stopped, on purpose.
@@ -1725,6 +1729,42 @@ if ($SettleSeconds -gt 0) {
         if ([bool]$sample.Advancing) {
             $settleSamplesObserved++
         }
+        # RECORD the settle observation. It is the only hooks-free measurement
+        # of this exact process on this exact save at this exact speed that the
+        # run ever takes, which makes it the paired control for everything
+        # observed after injection -- same process, same save, same speed, no
+        # collector. Runs 20260730-postmerge-04 and 20260731-postmerge-06 took
+        # these samples and threw them away, so their post-attach CPU and clock
+        # numbers had nothing to be compared against and could not, on their
+        # own, indicate anything.
+        #
+        # Deliberately NOT routed through Write-PassiveWitnessSample: that calls
+        # the witness verdict authority, which would let a settle-phase stall
+        # abort the run. Settle legitimately tolerates pauses; this is evidence
+        # collection, not a gate, and it must not change what the harness does.
+        $settleControl = [ordered]@{
+            schema                        = 'hoi4-settle-control-sample-v1'
+            observed_at_utc               = [string]$sample.ObservedAtUtc
+            observed_at_unix_ms           = [int64]$sample.ObservedAtUnixMs
+            phase                         = 'settle_no_collector'
+            pid                           = $gamePid
+            process_creation_filetime_utc = $gameCreationFiletimeUtc
+            expected_speed                = $Speed
+            speed_final                   = [int]$sample.Speed
+            paused_final                  = [bool]$sample.Paused
+            pause_forced_final            = [bool]$sample.PauseForced
+            tick_inhibited_final          = [bool]$sample.TickInhibited
+            hour_a                        = [int]$sample.HourA
+            hour_b                        = [int]$sample.HourB
+            hour_delta                    = [int]$sample.HourDelta
+            tick_progress_bits_a          = [int]$sample.TickProgressBitsA
+            tick_progress_bits_b          = [int]$sample.TickProgressBitsB
+            observed_window_ms            = [int64]$sample.ObservedWindowMs
+            processor_milliseconds        = [int64]$sample.ProcessorMilliseconds
+            advancing                     = [bool]$sample.Advancing
+        }
+        ($settleControl | ConvertTo-Json -Compress -Depth 8) |
+            Add-Content -LiteralPath $settleControlPath -Encoding UTF8
         $hardRemaining = [Math]::Max(
             0,
             [Math]::Ceiling(($settleHardDeadline - [DateTime]::UtcNow).TotalSeconds)
@@ -1733,6 +1773,9 @@ if ($SettleSeconds -gt 0) {
             "phase=settle_progress speed=$($sample.Speed) advancing=$($sample.Advancing) " +
             "paused=$($sample.Paused) pause_forced=$($sample.PauseForced) " +
             "tick_inhibited=$($sample.TickInhibited) " +
+            "hour_a=$($sample.HourA) hour_b=$($sample.HourB) " +
+            "window_ms=$($sample.ObservedWindowMs) " +
+            "cpu_ms=$($sample.ProcessorMilliseconds) " +
             "advancing_samples=$settleSamplesObserved/$settleSamplesRequired " +
             "hard_remaining_s=$hardRemaining"
         )

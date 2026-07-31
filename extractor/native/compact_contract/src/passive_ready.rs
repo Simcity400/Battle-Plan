@@ -273,6 +273,33 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         "b17fdbf47dfb9f150b9dd55018b81765b8e3777c42cf64b96bf04a7f3e6cd1fb"
     ),
     pinned_rva!(
+        "gameplay.d55.panel_leader_resolver",
+        0x129E190,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "cbbed7de3e640c8cf0f5e941b35be61b6c2f25dc113b4a10d4a7016929103d95"
+    ),
+    pinned_rva!(
+        "gameplay.d55.panel_modifier_append",
+        0x15BBF00,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "bbc4acfda31f32b5bdc627bd8e530bcda20726e5871b934879bc61024b110051"
+    ),
+    // The `StandardHookReceiptGroup::D55Panel` trio. Found by a live run, not by
+    // reading: with D99 pinned, capture 20260731-d99fix-01 got one step further
+    // and the refusal named these three. The prefix-based guard could not see
+    // them -- `gameplay.d55.` was already covered by the other seven D55 specs,
+    // so a whole receipt group hid behind a satisfied prefix. That is why the
+    // guard below now compares exact per-group name sets.
+    pinned_rva!(
+        "gameplay.d55.panel_side_materializer",
+        0x15C9860,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a37bc314eac46e705d27cbdf932dafe32b3fc38289cc001d8dc72310aee19c71"
+    ),
+    pinned_rva!(
         "gameplay.d55.participant_lifecycle_loss_writer",
         0x1299850,
         5,
@@ -422,6 +449,37 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         MINHOOK_NORMAL_REL5,
         "77e4a1c964f868a7109cead30bc7df64860f2ff5097ff4849fede855b5d9e261"
     ),
+    // D99's combat-resolution round detour. The production hook registry
+    // installs this site unconditionally (it is `StandardHookReceiptGroup::D99`)
+    // and `collect_installed_standard_receipts` collects its receipt, so a
+    // roster that omits it is not describing production truth: every capture
+    // then dies in `outcomes()` with "installed production hook receipt roster
+    // has unpinned entries", which is exactly what killed runs
+    // 20260730-postmerge-04 and 20260731-postmerge-06.
+    //
+    // The RVA is spelled as a NUMERIC LITERAL on purpose, and must stay one.
+    // Two independent out-of-tree parsers re-derive this roster by regex --
+    // `scripts/PassiveCapture.Lifecycle.ps1` and
+    // `scripts/verify_sink_reconciliation.py` -- and both accept only
+    // `0x[0-9A-Fa-f]+|\d+` in this position. Writing it as
+    // `crate::division_combat_stats::COMBAT_ROUND_RVA as u64` reads better, and
+    // was this entry's first form, but it made both parsers silently skip the
+    // entry and see 37 of 38 specs, failing the harness's post-capture READY
+    // authority with `canonical_hook_authority_roster_count_mismatch`.
+    //
+    // The value is held equal to that constant -- and to the lane's whole hook
+    // authority -- by the collector-side
+    // `pinned_d99_spec_matches_the_lane_hook_authority`, which is the crate
+    // that can see this roster and the lane at once, and is where the equality
+    // belongs anyway. The proof digest is SHA-256 over the lane's
+    // the five-byte REL5 patch lands on; the same test binds it.
+    pinned_rva!(
+        "gameplay.d99.land_combat_round_entry",
+        0x12A3220,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e7f71427c3057c7ade226615453c6858a15c7ba1b80737aebe47b7a64e6cba2a"
+    ),
 ];
 
 /// Derived from the sole explicit roster authority above. Never hardcode a
@@ -435,19 +493,37 @@ pub const PINNED_PRODUCTION_HOOK_COUNT_V1: u16 = PINNED_PRODUCTION_HOOK_SPECS_V1
 /// and pass the equality test below.
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     // Recomputed by this crate's own `hook_allowlist_sha256` encoder after the
-    // two bootstrap import entries were corrected from the retired inline
-    // primitive (patch_len 5, minhook-0.9.0.normal-jmp-rel5) to the primitive
-    // the provider actually installs (patch_len 8,
-    // pe64.import-address-slot.atomic-cas.v1), and again when the gameplay
-    // producer detours became non-mandatory so one domain's install failure
-    // marks that domain unavailable instead of voiding the capture. The
-    // mandatory bit is part of the allowlist preimage, so the digest moves with
-    // it and no consumer can be handed a roster whose isolation policy differs
-    // from the one it verified.
+    // roster took BOTH of the 2026-07-31 changes, so NEITHER parent branch's
+    // digest describes the merged allowlist:
+    //   * the four missing gameplay sites were pinned --
+    //     `gameplay.d99.land_combat_round_entry` plus the three
+    //     `gameplay.d55.panel_*` sites. The production hook registry installs
+    //     all four, so a roster without them described a process that does not
+    //     exist.
+    //   * the gameplay producer detours became non-mandatory, so one domain's
+    //     install failure marks that domain unavailable instead of voiding the
+    //     capture. The mandatory bit is part of the allowlist preimage, so the
+    //     digest moves with it and no consumer can be handed a roster whose
+    //     isolation policy differs from the one it verified.
+    // This literal was recomputed by this crate's own `hook_allowlist_sha256`
+    // encoder over the merged spec list. It is deliberately neither parent's
+    // value; taking either would have described a roster nobody runs.
     // Prior values for this roster, newest first:
+    //   4f04dec77336c7991950910aea92bc8eb1f47b55dcf8335076ac81dd9c5acc90
+    //     (producers non-mandatory, D99 and the D55 panel sites not yet pinned)
+    //   b100b582f946788d45d66a4ee9192ac506a5498148582815476642c2010ce2dd
+    //     (D99 and the D55 panel sites pinned, producers still mandatory)
+    //   c4030f53c1bbe0127ccc8f0201f96f467f0b003711696d65758019562280383c
+    //     (D99 pinned, D55 panel still missing)
     //   a260ad650825273f860d7e181627411e6004d480ef19ccfaafde77d54daaeb91
+    //     (before D99)
     //   1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6
-    digest_from_hex("4f04dec77336c7991950910aea92bc8eb1f47b55dcf8335076ac81dd9c5acc90");
+    //     (before the two bootstrap import entries were corrected from the
+    //     retired inline primitive, patch_len 5
+    //     minhook-0.9.0.normal-jmp-rel5, to the primitive the provider
+    //     actually installs, patch_len 8
+    //     pe64.import-address-slot.atomic-cas.v1)
+    digest_from_hex("2e16bec7755fc97a40076b06e131622417281e5e321ceb80418dbbcbe389748a");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
