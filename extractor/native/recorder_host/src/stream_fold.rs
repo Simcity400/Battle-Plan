@@ -1491,7 +1491,32 @@ mod tests {
             abandons.violation
         );
 
-        // Refusing the hour that IS open is the ordinary shape and stays clean.
+        // The ORDINARY production shape: the collector drops the staged frame
+        // and writes a refusal-only buffer, so nothing for that hour was ever
+        // published and neither `open_hour` nor `pending_perf_hour` is set. The
+        // `None` arm exists for exactly this, and it must certify.
+        let mut refusal_only = BoundaryTracker::default();
+        let refusal = refusal_for(open);
+        refusal_only.observe(
+            &boundary_header(
+                1,
+                open,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            0,
+        );
+        assert!(
+            refusal_only.violation.is_none(),
+            "a refusal for an hour that published nothing is the ordinary shape, got {:?}",
+            refusal_only.violation
+        );
+        assert_eq!(refusal_only.eof_check(0), Ok(()));
+
+        // Refusing the hour that IS open is the other accepted shape.
         let mut closes = BoundaryTracker::default();
         observe_zero_payload(
             &mut closes,
