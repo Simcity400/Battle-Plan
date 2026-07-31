@@ -745,6 +745,59 @@ fn a_stream_that_ends_on_a_canonical_frame_refused_certifies() {
         .expect("a stream ending on a canonical FRAME_REFUSED closes cleanly");
 }
 
+/// And the limit of that: a refusal closes the hour that is OPEN, never a
+/// different one.
+///
+/// This cursor used to carry its own FRAME_END-only final-record check, which
+/// refused every refused stream and so happened to refuse this one too --
+/// for the wrong reason, and only on this path; the spooled fold never had the
+/// duplicate and accepted these bytes. With the duplicate gone the rule is
+/// asked once, of `BoundaryTracker`, and it has to be the real rule: an hour
+/// that published DOMAIN_DATA and was then abandoned by a refusal naming a
+/// LATER hour is not a closed stream, it is a lost hour.
+#[test]
+fn a_refusal_naming_a_later_hour_cannot_close_an_open_one() {
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(HOUR_A + 1),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 64,
+            status_flags: 0x0000_0100,
+            non_tolerated_flags: 0x0000_0100,
+            reason: "d64_rejected_timed_effect_frames=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+    let mut abandons = Vec::new();
+    push_record(
+        &mut abandons,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut abandons,
+        2,
+        raw_for(HOUR_A + 1),
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    let mut cursor = open_reader(
+        Cursor::new(abandons.clone()),
+        abandons.len() as u64,
+        "fold_check",
+    );
+    cursor.by_ref().for_each(drop);
+    let err = cursor
+        .stats()
+        .certification_verdict()
+        .expect_err("an abandoned open hour must fail certification");
+    assert!(err.contains("mismatched FRAME_REFUSED"), "{err}");
+}
+
 /// The checked-in legacy `.battleplan` opens as a container source, and its one
 /// folded hour matches a reference fold of the same verified stream bytes.
 #[test]

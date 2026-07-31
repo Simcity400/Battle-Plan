@@ -490,6 +490,49 @@ impl BoundaryTracker {
                 // published; and the hour needs no separate terminal domain
                 // outcome, because the refusal record IS that outcome and it
                 // names every domain responsible.
+                //
+                // What IS required, exactly as for FRAME_END: a refusal may only
+                // close the hour that is actually open. Without this a refusal
+                // naming hour C while hour B was still open silently discarded
+                // B -- the stream certified while an hour that had already
+                // published DOMAIN_DATA was neither closed nor accounted for.
+                // `None` is admissible here and is not for FRAME_END: an hour
+                // that published nothing at all is the ORDINARY shape of a
+                // refusal, and there is nothing to abandon.
+                match self.open_hour.or(self.pending_perf_hour) {
+                    Some(open) if open == header.game_hour_raw => {}
+                    Some(open) => {
+                        self.violation = Some(format!(
+                            "mismatched FRAME_REFUSED at byte {at_byte}: refuses hour {} \
+                             while hour {open} is open",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                    None => {}
+                }
+                // And the record must refuse the hour its own envelope names.
+                // The payload's `refused_hour` is what a consumer reads to learn
+                // WHICH hour was refused; the envelope hour is what this fold
+                // accounts. Nothing else compares them, so a record disagreeing
+                // with itself would account for one hour and report another.
+                match compact_contract::frame_refusal::FrameRefusalRecordV1::decode(payload) {
+                    Ok(record) if record.refused_hour == header.game_hour_raw => {}
+                    Ok(record) => {
+                        self.violation = Some(format!(
+                            "FRAME_REFUSED at byte {at_byte} is framed for hour {} but its \
+                             payload refuses hour {}",
+                            header.game_hour_raw, record.refused_hour
+                        ));
+                        return;
+                    }
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "FRAME_REFUSED payload at byte {at_byte} is unreadable: {reason}"
+                        ));
+                        return;
+                    }
+                }
                 if let Some(last_closed) = self.last_closed_hour {
                     if header.game_hour_raw <= last_closed {
                         self.violation = Some(format!(
@@ -1380,6 +1423,124 @@ mod tests {
                 .is_some_and(|v| v.contains("unknown compact record type")),
             "an untaught record type must be a violation, got {:?}",
             untaught.violation
+        );
+    }
+
+    /// Law: a refusal closes the hour that is OPEN, and refuses the hour its
+    /// own envelope names.
+    ///
+    /// The refusal arm clears `open_hour` unconditionally. On its own that
+    /// means a refusal naming a later hour silently discards the open one: the
+    /// stream then certifies while an hour that had already published
+    /// DOMAIN_DATA is neither closed nor accounted for anywhere. FRAME_END has
+    /// carried the matching rule since it existed; this is the same rule, minus
+    /// the seal and the terminal-outcome requirement a refusal has no reason to
+    /// meet.
+    ///
+    /// The envelope/payload agreement is the second half. `refused_hour` is
+    /// what a consumer reads to learn WHICH hour was refused and the envelope
+    /// hour is what this fold accounts; nothing else compares them.
+    ///
+    /// Mutation proof: delete either added `match` in the FRAME_REFUSED arm and
+    /// the corresponding half of this test fails.
+    #[test]
+    fn a_refusal_closes_the_open_hour_and_refuses_the_hour_it_is_framed_for() {
+        let refusal_for = |hour: i32| {
+            compact_contract::frame_refusal::FrameRefusalRecordV1 {
+                refused_hour: hour,
+                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                    domain_id: 64,
+                    status_flags: 0x0000_0100,
+                    non_tolerated_flags: 0x0000_0100,
+                    reason: "d64_rejected_timed_effect_frames=1".to_string(),
+                }],
+            }
+            .encode()
+            .expect("canonical refusal fixture")
+        };
+        let open = raw_for(HOUR_A);
+        let later = raw_for(HOUR_A + 1);
+
+        // An hour with published DOMAIN_DATA may not be abandoned by a refusal
+        // that names a different hour.
+        let mut abandons = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut abandons,
+            boundary_header(1, open, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        let refusal = refusal_for(later);
+        abandons.observe(
+            &boundary_header(
+                2,
+                later,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            32,
+        );
+        assert!(
+            abandons
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("mismatched FRAME_REFUSED")),
+            "a refusal must not silently discard an open hour, got {:?}",
+            abandons.violation
+        );
+
+        // Refusing the hour that IS open is the ordinary shape and stays clean.
+        let mut closes = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut closes,
+            boundary_header(1, open, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        let refusal = refusal_for(open);
+        closes.observe(
+            &boundary_header(
+                2,
+                open,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            32,
+        );
+        assert!(
+            closes.violation.is_none(),
+            "a refusal closing its own open hour is honest, got {:?}",
+            closes.violation
+        );
+        assert_eq!(closes.eof_check(0), Ok(()));
+
+        // And a record whose envelope and payload name different hours is
+        // refused even when nothing is open.
+        let mut disagrees = BoundaryTracker::default();
+        let refusal = refusal_for(later);
+        disagrees.observe(
+            &boundary_header(
+                1,
+                open,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            0,
+        );
+        assert!(
+            disagrees
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("payload refuses hour")),
+            "a refusal must agree with its own envelope, got {:?}",
+            disagrees.violation
         );
     }
 
