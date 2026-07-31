@@ -542,7 +542,8 @@ pub const MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID: &str =
 /// Teardown policy: the target prefix is restored by `MH_DisableHook`, which
 /// frees nothing, and the relay/trampoline allocation is deliberately retained,
 /// mapped and executable, for the life of the process. Minted by
-/// [`observe_released_with_retained_relay`].
+/// [`observe_released_with_retained_relay`] and
+/// [`observe_released_set_with_retained_relay`].
 ///
 /// `MH_RemoveHook` must never be called on a site released under this policy --
 /// it `FreeBuffer`s the trampoline, which is exactly the operation the policy
@@ -2807,19 +2808,45 @@ pub fn observe_released_with_retained_relay(
     installed: InstalledRvaHookReceipt,
     attestation: HookTeardownAttestation,
 ) -> Result<ReleasedRvaHookReceipt, String> {
-    if attestation.relay_freed {
-        return Err(format!(
-            "{} retained-relay teardown attested a relay free it did not perform",
-            expected.logical_name
-        ));
-    }
-    let [released] = observe_released_set_with_disposition(
-        [expected],
-        [installed],
-        [attestation],
-        RelayDisposition::RetainedUntilProcessExit,
-    )?;
+    let [released] =
+        observe_released_set_with_retained_relay([expected], [installed], [attestation])?;
     Ok(released)
+}
+
+/// The set form of [`observe_released_with_retained_relay`]: atomically release
+/// N sites whose relays/trampolines are ALL retained for the life of the
+/// process rather than freed.
+///
+/// Every rule of the single-site route applies per element, including the
+/// refusal of a claimed relay free. A lane that tears down a roster in one
+/// atomic transition (`observe_released_set`) and retains its trampolines needs
+/// this rather than N single releases, because the set route is what makes the
+/// custody transition all-or-nothing.
+///
+/// The refusal below is deliberately separate from the generic
+/// "attestation is incomplete" check inside
+/// `observe_released_set_with_disposition`: this one names the actual mistake,
+/// and it names the element that made it.
+#[cfg(windows)]
+pub fn observe_released_set_with_retained_relay<const N: usize>(
+    expected: [ExpectedRvaHook; N],
+    installed: [InstalledRvaHookReceipt; N],
+    attestations: [HookTeardownAttestation; N],
+) -> Result<[ReleasedRvaHookReceipt; N], String> {
+    for index in 0..N {
+        if attestations[index].relay_freed {
+            return Err(format!(
+                "{} retained-relay teardown attested a relay free it did not perform",
+                expected[index].logical_name
+            ));
+        }
+    }
+    observe_released_set_with_disposition(
+        expected,
+        installed,
+        attestations,
+        RelayDisposition::RetainedUntilProcessExit,
+    )
 }
 
 /// Atomically transition a set of restored hooks from active custody to
@@ -8121,10 +8148,10 @@ mod pointer_slot_provenance_tests {
 #[cfg(all(test, windows))]
 mod retained_relay_release_tests {
     use super::{
-        observe_released_with_retained_relay, released_matches_relay_disposition,
-        ExpectedRvaHook, HookPatchPlacement, HookTeardownAttestation, InstalledRvaHookReceipt,
-        RelayDisposition, ReleasedRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
-        MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
+        observe_released_set_with_retained_relay, observe_released_with_retained_relay,
+        released_matches_relay_disposition, ExpectedRvaHook, HookPatchPlacement,
+        HookTeardownAttestation, InstalledRvaHookReceipt, RelayDisposition, ReleasedRvaHookReceipt,
+        MINHOOK_NORMAL_REL5_PRIMITIVE_ID, MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
         MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID,
     };
 
@@ -8192,6 +8219,54 @@ mod retained_relay_release_tests {
             "expected the claimed-free refusal, got {error}"
         );
         assert!(error.contains(SOME_HOOK.logical_name), "{error}");
+    }
+
+    /// Falsifiable: fails if the retained-relay SET route stops refusing a
+    /// claimed free, or stops checking every element.
+    ///
+    /// The element that lies here is the LAST one, and the first two are
+    /// honest. A per-set check that only inspected element zero -- or that
+    /// leaned on `observe_released_set_with_disposition`'s generic
+    /// "attestation is incomplete" message -- would not produce this error, and
+    /// a route that skipped the check entirely would reach `observe_main_module`
+    /// and fail with a module-identity message instead, since this test process
+    /// is not `hoi4.exe`.
+    #[test]
+    fn a_retained_relay_release_set_refuses_a_claimed_free_in_any_element() {
+        const OTHER_HOOK: ExpectedRvaHook = ExpectedRvaHook {
+            logical_name: "gameplay.test.retained_relay.second",
+            requested_rva: 0x2000,
+            target_patch_len: 5,
+            primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+            original_prefix: &[0x40, 0x53, 0x56, 0x57, 0x41],
+        };
+        let honest = HookTeardownAttestation {
+            callbacks_quiesced: true,
+            hook_removed: true,
+            relay_freed: false,
+        };
+        let claims_a_free = HookTeardownAttestation {
+            relay_freed: true,
+            ..honest
+        };
+        let error = observe_released_set_with_retained_relay(
+            [SOME_HOOK, SOME_HOOK, OTHER_HOOK],
+            [
+                a_receipt_that_owns_nothing(),
+                a_receipt_that_owns_nothing(),
+                a_receipt_that_owns_nothing(),
+            ],
+            [honest, honest, claims_a_free],
+        )
+        .expect_err("a retained relay was not freed and may not attest that it was");
+        assert!(
+            error.contains("attested a relay free it did not perform"),
+            "expected the claimed-free refusal, got {error}"
+        );
+        assert!(
+            error.contains(OTHER_HOOK.logical_name),
+            "the refusal must name the element that lied, got {error}"
+        );
     }
 
     /// A release receipt shaped exactly as the freeing route mints one. It owns

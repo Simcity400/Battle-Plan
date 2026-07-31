@@ -2380,14 +2380,39 @@ fn read_exact_bytes(address: usize, len: usize) -> Result<Vec<u8>, String> {
 //
 // Accepted cost: one small permanent allocation per hook site - a MinHook
 // trampoline slot plus its relay - held until process exit. That is a bounded,
-// deliberate trade, not a leak: the roster is fixed at ten sites, the
-// allocations are recorded below rather than forgotten, and the process is a
-// game client that exits normally.
+// deliberate trade, not a leak: the roster is fixed, the allocations are
+// recorded below rather than forgotten, and the process is a game client that
+// exits normally.
 //
 // Consequently `MinHook::remove_hook` must not be called on a retained site: it
 // `FreeBuffer`s the trampoline (minhook-0.9.0 `hook.c` `MH_RemoveHook`), which is
 // exactly the operation this policy forbids. `MinHook::disable_hook` is the
 // permitted step - it restores the original target bytes and frees nothing.
+//
+// WHICH SITES THIS GOVERNS TODAY, exactly - the ten-site D55 roster is NOT yet
+// uniform, and this comment previously read as though it were:
+//
+// * The seven `x2_carriers` sites (two width, two loss, three panel) are
+//   retained. They record their relay and detour ranges here, they release
+//   through `production_hook_receipt`'s retained route with `relay_freed: false`,
+//   and `x2_carriers::require_retained_relay_census` refuses to mint such a
+//   receipt for a region this census does not hold. `MinHook::remove_hook` is
+//   absent from that file and a source-law test keeps it absent.
+//
+// * The three terminal-writer sites owned by THIS module (normal writer,
+//   overrun writer, record allocator) still remove-and-free. `rollback_failed_install`
+//   and the terminal release both call `MinHook::remove_hook`, and
+//   `completed_teardown_attestation` correspondingly attests `relay_freed: true`.
+//   Their record and their behaviour agree, so this is not the receipt
+//   contradiction the seven sites had - but they are NOT covered by the
+//   retention above, and they never enter this census. `rollback_failed_install`
+//   additionally collects `rollback_relays` and then discards the list
+//   (`let _retained_relays = ...`) before removing, so the relays it lists as
+//   retained for rollback custody are the ones it frees moments later.
+//
+// Converting those three is a separate change: their teardown owns a different
+// quiescence path and a `CREATED_HOOK_MASK` that the release gate requires to
+// reach zero, which removal is currently what clears. OPEN.
 
 #[repr(C)]
 struct RuntimeFunctionEntry {
@@ -2435,6 +2460,55 @@ pub(crate) fn retained_detour_regions() -> Result<Vec<RetainedDetourRegion>, Str
         .lock()
         .map_err(|_| "retained detour region registry mutex poisoned".to_string())?
         .clone())
+}
+
+/// Refuse to attest process-lifetime retention over a region the census does
+/// not record.
+///
+/// This is what stops the census being decorative. Every teardown that mints a
+/// `relay_retained_until_process_exit` receipt must first show that the exact
+/// range it is about to describe was actually pushed here by
+/// [`close_callbacks_and_retain_regions`]. A teardown that skipped the
+/// retention step, or that recorded a different range than the one it attests,
+/// cannot mint the receipt at all.
+///
+/// # What this does not establish
+///
+/// **That the bytes are still mapped.** The census records the decision not to
+/// free them; proving residency of the mapping after teardown needs a live
+/// patched `hoi4.exe` and no offline test can do it. What this closes is the
+/// contradiction the record itself can contain -- a receipt claiming retention
+/// for a region no retention step ever recorded.
+pub(crate) fn require_regions_recorded_retained(
+    label: &str,
+    regions: &[(usize, usize)],
+) -> Result<(), String> {
+    if regions.is_empty() {
+        return Err(format!(
+            "{label} attested process-lifetime retention over no region at all"
+        ));
+    }
+    let census = retained_detour_regions()?;
+    for (start, end) in regions {
+        if *start == 0 || start >= end {
+            return Err(format!(
+                "{label} attested retention over 0x{start:X}..0x{end:X}, which is not a real range"
+            ));
+        }
+        let recorded = census.iter().any(|entry| {
+            entry.retained_for_process_lifetime
+                && entry.regions.iter().any(|(recorded_start, recorded_end)| {
+                    recorded_start == start && recorded_end == end
+                })
+        });
+        if !recorded {
+            return Err(format!(
+                "{label} would attest process-lifetime retention for 0x{start:X}..0x{end:X}, \
+                 which the retention census does not record"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Exact runtime extent of one function inside this DLL, read from the PE64
@@ -2558,7 +2632,8 @@ mod minhook_relay_layout_tests {
 #[cfg(test)]
 mod retained_detour_region_tests {
     use super::{
-        close_callbacks_and_retain_regions, exact_runtime_function_range, retained_detour_regions,
+        close_callbacks_and_retain_regions, exact_runtime_function_range,
+        require_regions_recorded_retained, retained_detour_regions,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2637,5 +2712,50 @@ mod retained_detour_region_tests {
                     && entry.retained_for_process_lifetime),
             "retention must be recorded in the append-only registry"
         );
+    }
+
+    /// Falsifiable: fails if `require_regions_recorded_retained` stops consulting
+    /// the census -- for instance if it were reduced to `Ok(())`, or if it
+    /// matched an entry loosely (by containment, or ignoring
+    /// `retained_for_process_lifetime`) instead of on the exact recorded range.
+    ///
+    /// This is the check that makes the census load-bearing: the teardown paths
+    /// in `x2_carriers` call it for every relay they are about to attest as
+    /// retained, so a teardown that skipped its
+    /// `close_*_detours_and_retain_regions` step can no longer mint a
+    /// retained-relay receipt.
+    #[test]
+    fn attesting_retention_requires_the_census_to_record_that_exact_region() {
+        static IDLE: AtomicUsize = AtomicUsize::new(0);
+        // Distinctive addresses: the census is process-global and append-only,
+        // so these must not collide with any other test's regions.
+        let recorded = (0x5100_0000usize, 0x5100_0040usize);
+        let never_recorded = (0x5200_0000usize, 0x5200_0040usize);
+
+        require_regions_recorded_retained("census probe", &[recorded])
+            .expect_err("an unrecorded region must not be attestable as retained");
+
+        close_callbacks_and_retain_regions("census probe roster", &[&IDLE], &[recorded]).unwrap();
+
+        require_regions_recorded_retained("census probe", &[recorded])
+            .expect("the census now records this exact region");
+
+        let error = require_regions_recorded_retained("census probe", &[never_recorded])
+            .expect_err("a region the census never saw must still be refused");
+        assert!(
+            error.contains("the retention census does not record"),
+            "{error}"
+        );
+
+        // A neighbouring range that the census does NOT hold is refused even
+        // though a recorded region overlaps it: retention is recorded per exact
+        // range, and a loose match would let a teardown attest more than was kept.
+        let overlapping = (recorded.0, recorded.1 + 0x10);
+        require_regions_recorded_retained("census probe", &[overlapping])
+            .expect_err("only the exact recorded range may be attested");
+
+        // An empty attestation is not a vacuous success.
+        require_regions_recorded_retained("census probe", &[])
+            .expect_err("attesting retention over nothing must be refused");
     }
 }
