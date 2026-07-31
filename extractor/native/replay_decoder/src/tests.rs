@@ -669,10 +669,80 @@ fn sequence_starts_at_one_never_wraps_and_stream_ends_on_frame_end() {
         .stats()
         .certification_verdict()
         .expect_err("trailing PERF must fail final-boundary certification");
+    // The canonical terminal boundary is FRAME_END *or* FRAME_REFUSED: a stream
+    // may legitimately end on a refusal, because that hour was closed, it simply
+    // closed without publishing. A trailing DOMAIN_PERF is neither, so it is
+    // still refused -- and the refusal has to name both admissible boundaries,
+    // or a reader is told to look for a FRAME_END that was never owed.
     assert!(
-        err.contains("final record must be canonical FRAME_END"),
+        err.contains("final record must be a canonical FRAME_END or FRAME_REFUSED boundary"),
         "{err}"
     );
+}
+
+/// The other half of that rule: a stream whose final record IS a canonical
+/// `FRAME_REFUSED` closes cleanly and certifies.
+///
+/// `sequence_starts_at_one_never_wraps_and_stream_ends_on_frame_end` only ever
+/// proved the negative, so a boundary rule that had quietly narrowed back to
+/// FRAME_END-only would still have passed it. This is the positive that pins
+/// the widening.
+#[test]
+fn a_stream_that_ends_on_a_canonical_frame_refused_certifies() {
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(HOUR_A + 1),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 64,
+            status_flags: 0x0000_0100,
+            non_tolerated_flags: 0x0000_0100,
+            reason: "d64_rejected_timed_effect_frames=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+    let mut refused = Vec::new();
+    push_record(
+        &mut refused,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut refused,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut refused,
+        3,
+        raw_for(HOUR_A + 1),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut refused,
+        4,
+        raw_for(HOUR_A + 1),
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    let mut cursor = open_reader(
+        Cursor::new(refused.clone()),
+        refused.len() as u64,
+        "fold_check",
+    );
+    assert_eq!(cursor.by_ref().count(), 1);
+    cursor
+        .stats()
+        .certification_verdict()
+        .expect("a stream ending on a canonical FRAME_REFUSED closes cleanly");
 }
 
 /// The checked-in legacy `.battleplan` opens as a container source, and its one

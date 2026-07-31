@@ -1943,11 +1943,12 @@ pub struct HourCursor {
     boundary_tracker: BoundaryTracker,
     /// Decoder-owned strict certification state. The production tracker is
     /// intentionally tolerant of legacy streams; extractor certification is
-    /// stricter: sequence starts at one and never wraps, every FRAME_END closes
-    /// an open DATA hour, and the final record is FRAME_END.
+    /// stricter: sequence starts at one and never wraps and every FRAME_END
+    /// closes an open DATA hour. The terminal-boundary rule is NOT here: it is
+    /// asked of `BoundaryTracker::eof_check`, which is the one place that knows
+    /// a canonical FRAME_REFUSED closes a stream as legitimately as a FRAME_END.
     strict_previous_sequence: Option<u64>,
     strict_open_hour: Option<i32>,
-    strict_last_record_type: Option<u16>,
     strict_validation_error: Option<String>,
     /// Digest of every decoded source byte pulled from the reader. It is only
     /// published after EOF and strict certification, never for a valid prefix.
@@ -2047,7 +2048,6 @@ impl HourCursor {
             boundary_tracker: BoundaryTracker::default(),
             strict_previous_sequence: None,
             strict_open_hour: None,
-            strict_last_record_type: None,
             strict_validation_error: None,
             source_hasher: Sha256::new(),
             index_source,
@@ -2384,16 +2384,18 @@ impl HourCursor {
             );
         }
         if self.strict_validation_error.is_none() {
-            self.strict_validation_error = shared_boundary_error.or_else(|| {
-                (self.strict_last_record_type != Some(COMPACT_RECORD_TYPE_FRAME_END)).then(|| {
-                    match self.strict_last_record_type {
-                        Some(record_type) => {
-                            format!("stream final record type {record_type} is not FRAME_END")
-                        }
-                        None => "stream contains no records".to_string(),
-                    }
-                })
-            });
+            // The terminal-boundary rule is asked of `BoundaryTracker::eof_check`
+            // and NOWHERE else. This used to carry a second copy of it, keyed on
+            // this cursor's own last-record-type field, that admitted only
+            // FRAME_END. When the shared rule was widened to accept a canonical
+            // FRAME_REFUSED -- a refused hour IS closed, it simply closed
+            // without publishing -- the copy here was not, so this crate's
+            // cursor path refused every honestly-refused stream while its own
+            // spooled path (which only ever consulted the tracker) accepted the
+            // same bytes. The tracker subsumes both arms of the copy: a
+            // non-terminal final record is "stream ends after record type N",
+            // and a stream with no records is "stream closes no game hour".
+            self.strict_validation_error = shared_boundary_error;
         }
         self.stats.boundary_error = self.strict_validation_error.take();
         self.stats.ends_at_frame_end = self.stats.boundary_error.is_none();
@@ -2433,8 +2435,6 @@ impl HourCursor {
             },
             _ => None,
         };
-        self.strict_last_record_type = Some(header.record_type);
-
         if self.strict_validation_error.is_none() {
             self.strict_validation_error = sequence_error.or(boundary_error);
         }
