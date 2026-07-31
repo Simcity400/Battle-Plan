@@ -544,7 +544,7 @@ pub fn install() -> Result<InstalledRoots, String> {
         "targeted decision remove effect",
         "targeted decision timeout effect",
     ]).enumerate() {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             let cleanup = rollback(&targets)
                 .err()
                 .map(|cleanup| format!("; rollback failed: {cleanup}"))
@@ -999,7 +999,7 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
             if let Ok(hook_targets) = targets(base) {
                 for (index, (target, name)) in hook_targets.into_iter().zip(names).enumerate() {
                     if disabled[index] {
-                        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+                        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
                             failures.push(format!("restore {name}: {status}"));
                         }
                     }

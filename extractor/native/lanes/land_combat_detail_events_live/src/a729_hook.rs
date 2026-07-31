@@ -903,7 +903,7 @@ pub fn install() -> Result<InstalledHookAddresses, String> {
         sites.overrun_writer,
         sites.normal_writer,
     ] {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             return Err(fail_open_install(
                 sites,
                 format!("terminal hook enable failed at 0x{target:X}: {status}"),

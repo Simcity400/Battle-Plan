@@ -16,6 +16,7 @@ snapshot = { path = "../../snapshot" }
 portable_render_stream = { path = "../../../../portable_replay/native/render_stream" }
 
 [target.'cfg(windows)'.dependencies]
+inline_detour = { path = "../../inline_detour" }
 minhook = "0.9.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",

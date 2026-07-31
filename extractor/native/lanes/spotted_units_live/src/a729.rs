@@ -152,7 +152,7 @@ pub fn install() -> Result<(), String> {
     *latest = LatestFrames::default();
     drop(latest);
     for target in &created {
-        if let Err(status) = unsafe { MinHook::enable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
             rollback(&created);
             clear_originals();
             MODULE_BASE.store(0, Ordering::Release);

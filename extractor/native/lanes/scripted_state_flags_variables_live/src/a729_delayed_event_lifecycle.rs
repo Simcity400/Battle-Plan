@@ -634,7 +634,7 @@ fn install_hooks() -> Result<InstalledHookAddresses, String> {
     };
     ORIGINAL_DEFINITION_CANCEL.store(original_cancel as usize, Ordering::Release);
     for target in [sites.definition_cancel, sites.hourly_update] {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             if let Err(cleanup) = cleanup_hooks(sites) {
                 INSTALLED.store(true, Ordering::Release);
                 return Err(format!(

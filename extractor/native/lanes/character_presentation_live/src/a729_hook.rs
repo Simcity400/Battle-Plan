@@ -1165,7 +1165,7 @@ fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, Str
         }
     }
     for target in targets(resolved) {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             TEARDOWN_ACTIVE.store(true, Ordering::Release);
             HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
             let rollback = disable_and_remove(resolved);

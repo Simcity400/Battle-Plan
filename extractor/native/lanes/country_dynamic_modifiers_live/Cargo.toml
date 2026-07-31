@@ -11,6 +11,7 @@ production_hook_receipt = { path = "../production_hook_receipt" }
 serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
+inline_detour = { path = "../../inline_detour" }
 minhook = "0.9.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",

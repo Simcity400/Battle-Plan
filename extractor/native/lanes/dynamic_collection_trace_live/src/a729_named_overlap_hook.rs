@@ -253,13 +253,13 @@ impl A729NamedOverlapHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         // Enable the shared consumer first. Foreign layout calls are ignored,
         // while every subsequently enabled owner registration is observable.
-        if let Err(status) = unsafe { MinHook::enable_hook(targets[5] as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(targets[5] as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
             remove_created(&targets, &originals, targets.len());
             return Err(format!("named-overlap layout hook enable failed: {status}"));
         }
         for index in 0..5 {
-            if let Err(status) = unsafe { MinHook::enable_hook(targets[index] as *mut c_void) } {
+            if let Err(status) = unsafe { inline_detour::enable(targets[index] as *mut c_void) } {
                 CALLBACKS_OPEN.store(false, Ordering::Release);
                 for target in targets.iter().take(index) {
                     let _ = unsafe { MinHook::disable_hook(*target as *mut c_void) };

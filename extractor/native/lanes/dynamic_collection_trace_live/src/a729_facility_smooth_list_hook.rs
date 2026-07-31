@@ -137,7 +137,7 @@ impl A729FacilitySmoothListHookOwner {
         ORIGINAL_SETUP.store(original as usize, Ordering::Release);
         MODULE_BASE.store(base, Ordering::Release);
         CALLBACKS_OPEN.store(true, Ordering::Release);
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
             let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
             ORIGINAL_SETUP.store(0, Ordering::Release);

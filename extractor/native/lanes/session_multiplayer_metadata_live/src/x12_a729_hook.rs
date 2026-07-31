@@ -403,7 +403,7 @@ pub fn install() -> Result<InstalledAddresses, String> {
         (addresses.pause_toggle, "pause-toggle"),
         (addresses.pause_forced, "forced-pause"),
     ] {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             let reason = format!("X12 {name} hook enable failed: {status}");
             return Err(with_rollback_result(reason, rollback_enabled(&addresses)));
         }
@@ -560,7 +560,7 @@ fn seal_after_final_drain_and_uninstall_locked(
         let mut fully_reenabled = true;
         for (index, (target, name)) in targets.iter().copied().enumerate() {
             if disabled[index] {
-                if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+                if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
                     fully_reenabled = false;
                     errors.push(format!("restore {name} after partial disable: {status}"));
                 }
@@ -877,7 +877,7 @@ pub fn seal_and_reserve_terminal_batch() -> Result<SpeedPauseDrainReservation, S
             let mut restored = true;
             for (index, (target, name)) in targets.iter().copied().enumerate() {
                 if disabled[index] {
-                    if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+                    if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
                         restored = false;
                         failures.push(format!("restore {name}: {status}"));
                     }

@@ -266,7 +266,7 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
         created.push(target);
     }
     for target in &created {
-        if let Err(status) = unsafe { MinHook::enable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
             let mut cleanup_failures = Vec::new();
             for rollback in created.iter().rev() {
                 match unsafe { MinHook::disable_hook(*rollback as *mut c_void) } {

@@ -12,6 +12,7 @@ default = []
 a729-fixture-hook = []
 
 [target.'cfg(windows)'.dependencies]
+inline_detour = { path = "../../inline_detour" }
 minhook = "0.9.0"
 production_hook_receipt = { path = "../production_hook_receipt" }
 runtime_text_inputs_live_lane = { path = "../runtime_text_inputs_live" }

@@ -1101,7 +1101,7 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
         }
     }
     for target in targets(resolved) {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             return rollback_install(resolved, format!("A31 hook enable failed at {target:#x}: {status}"));
         }
     }

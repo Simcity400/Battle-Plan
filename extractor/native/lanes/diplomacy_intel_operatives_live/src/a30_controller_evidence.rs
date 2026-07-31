@@ -495,7 +495,7 @@ fn install_hooks(evidence_install: bool) -> Result<InstalledHookAddresses, Strin
     // Nested observers become active first; an outer hook is never able to
     // publish a record while its inner observation boundary is absent.
     for target in [sites.agency_owner_resolver, sites.agency_filter, sites.agency_materializer, sites.cipher_row, sites.agency_outer, sites.cipher_outer] {
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             if let Err(cleanup) = rollback_created(&created) {
                 INSTALLED.store(true, Ordering::Release);
                 return Err(format!(

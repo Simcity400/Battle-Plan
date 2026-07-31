@@ -210,7 +210,7 @@ pub(crate) fn install(module_base: usize) -> Result<(), String> {
         }
     }
     for (enabled, (target, _, _)) in specs.iter().enumerate() {
-        if let Err(status) = unsafe { MinHook::enable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
             let rollback = rollback(&specs, created, enabled);
             return Err(format!(
                 "X15 activation hook enable failed at 0x{target:X}: {status}{rollback}"

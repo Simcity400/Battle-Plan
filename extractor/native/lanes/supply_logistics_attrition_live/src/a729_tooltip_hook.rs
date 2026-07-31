@@ -117,7 +117,7 @@ pub fn install() -> Result<(), String> {
     ORIGINAL_FORMATTER.store(formatter_original as usize, Ordering::Release);
     // Enable the nested sink before the outer producer so no opened trace can
     // run without its authenticated sink.
-    if let Err(status) = unsafe { MinHook::enable_hook(formatter as *mut c_void) } {
+    if let Err(status) = unsafe { inline_detour::enable(formatter as *mut c_void) } {
         let _ = unsafe { MinHook::remove_hook(formatter as *mut c_void) };
         let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
@@ -125,7 +125,7 @@ pub fn install() -> Result<(), String> {
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("supply tooltip formatter hook enable failed: {status}"));
     }
-    if let Err(status) = unsafe { MinHook::enable_hook(producer as *mut c_void) } {
+    if let Err(status) = unsafe { inline_detour::enable(producer as *mut c_void) } {
         let _ = unsafe { MinHook::disable_hook(formatter as *mut c_void) };
         let _ = unsafe { MinHook::remove_hook(formatter as *mut c_void) };
         let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };

@@ -1168,7 +1168,7 @@ mod installed_owner {
         .map_err(|status| format!("A37 hook creation failed: {status}"))?;
         ORIGINAL_POST_REFRESH.store(original as usize, Ordering::Release);
         MODULE_BASE.store(base, Ordering::Release);
-        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
             MODULE_BASE.store(0, Ordering::Release);
             ORIGINAL_POST_REFRESH.store(0, Ordering::Release);

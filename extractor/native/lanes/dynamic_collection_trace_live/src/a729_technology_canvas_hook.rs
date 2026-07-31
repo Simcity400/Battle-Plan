@@ -264,7 +264,7 @@ impl A729TechnologyCanvasHookOwner {
             (refresh_target, "refresh"),
             (population_target, "population"),
         ] {
-            if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+            if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
                 OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
                 COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
                 for rollback in [refresh_target, population_target, owner_target] {
@@ -282,7 +282,7 @@ impl A729TechnologyCanvasHookOwner {
             }
         }
         OWNER_CALLBACKS_OPEN.store(true, Ordering::Release);
-        if let Err(status) = unsafe { MinHook::enable_hook(owner_target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::enable(owner_target as *mut c_void) } {
             OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
             COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
             for rollback in [refresh_target, population_target, owner_target] {

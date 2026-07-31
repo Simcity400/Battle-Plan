@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "inline_detour",
     "wire_format",
     "wire_product",
     "compact_stream",
