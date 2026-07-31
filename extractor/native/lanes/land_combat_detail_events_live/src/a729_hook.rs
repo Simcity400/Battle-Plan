@@ -546,6 +546,36 @@ pub struct SealedTerminalReservation {
     pub drain: TerminalDrain,
 }
 
+/// Position-independent identity of one queued capture, used to prove at commit
+/// time that a declared index still names the record the reservation handed
+/// over.
+type ReservedRecordIdentity = (u32, u64, u32, u32);
+
+fn reserved_record_identity(record: &RawTerminalRecordCapture) -> ReservedRecordIdentity {
+    (
+        record.combat_id,
+        record.generation,
+        record.record_index,
+        record.writer_kind,
+    )
+}
+
+/// Publisher-side bookkeeping for one non-sealed record reservation.
+///
+/// Lives and dies with its reservation: every disposition that ends one clears
+/// this, and reserving REFUSES a retained one rather than clearing it, so a
+/// declaration can never be applied to records it was not made against.
+struct ReservedRecordCustody {
+    reservation_id: u64,
+    /// Identity of every reserved record, in queue order, taken at reservation.
+    /// A commit re-checks these against the live queue: an index alone is not
+    /// evidence that it still names the same record.
+    identities: Vec<ReservedRecordIdentity>,
+    /// Indices the publisher declared it decided. `None` until it declares, and
+    /// a commit refuses while it is `None` rather than guessing.
+    consumed: Option<Vec<usize>>,
+}
+
 #[derive(Clone, Copy)]
 struct ActiveTerminalReservation {
     reservation_id: u64,
@@ -560,13 +590,8 @@ struct HookState {
     bindings: BTreeMap<usize, (u32, u64)>,
     records: VecDeque<RawTerminalRecordCapture>,
     reservation: Option<ActiveTerminalReservation>,
-    /// `(reservation_id, indices)` -- which of the reserved records a commit
-    /// removes, as indices into the reservation's handed-over slice. Set once,
-    /// by `declare_record_reservation_consumption`, and required before a
-    /// non-sealed commit so a publisher can never consume a record it did not
-    /// judge. Carrying the id makes a stale declaration unusable rather than
-    /// silently applicable to the next reservation.
-    reservation_consumption: Option<(u64, Vec<usize>)>,
+    /// Publisher-side bookkeeping for the active non-sealed reservation.
+    reserved_custody: Option<ReservedRecordCustody>,
     reservation_admission_sealed: bool,
 }
 
@@ -600,7 +625,7 @@ impl Default for HookState {
             // terminal callback never grows the carrier heap.
             records: VecDeque::with_capacity(MAX_PENDING_RECORDS),
             reservation: None,
-            reservation_consumption: None,
+            reserved_custody: None,
             reservation_admission_sealed: true,
         }
     }
@@ -1571,7 +1596,7 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
 fn reserve_full_terminal_drain_locked(
     state: &mut HookState,
 ) -> Result<SealedTerminalReservation, String> {
-    require_no_retained_consumption(state)?;
+    require_no_retained_custody(state)?;
     let reservation_id = next_terminal_reservation_id()?;
     let diagnostics = diagnostic_snapshot();
     let record_count = state.records.len();
@@ -1658,7 +1683,7 @@ fn consume_sealed_terminal_reservation(
     state.records.drain(..active.record_count);
     subtract_reserved_diagnostics(active);
     state.reservation = None;
-    state.reservation_consumption = None;
+    state.reserved_custody = None;
     receipts.release_delivery_committed = true;
     MODULE_BASE.store(0, Ordering::Release);
     Ok(discard)
@@ -1677,7 +1702,7 @@ pub fn rollback_sealed_terminal_reservation(reservation_id: u64) -> Result<(), S
         .map_err(|_| "terminal hook state mutex poisoned during sealed rollback".to_string())?;
     matching_sealed_reservation(&state, reservation_id)?;
     state.reservation = None;
-    state.reservation_consumption = None;
+    state.reserved_custody = None;
     Ok(())
 }
 
@@ -1739,7 +1764,7 @@ pub(crate) fn commit_combined_preflighted(reservation_id: u64) {
     state.records.drain(..active.record_count);
     subtract_reserved_diagnostics(active);
     state.reservation = None;
-    state.reservation_consumption = None;
+    state.reserved_custody = None;
     let receipt_mutex = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
     let mut receipts = match receipt_mutex.lock() {
         Ok(receipts) => receipts,
@@ -1795,7 +1820,7 @@ pub(crate) fn rollback_combined_preflighted(reservation_id: u64) {
     debug_assert!(active.sealed_terminal);
     debug_assert!(state.reservation_admission_sealed);
     state.reservation = None;
-    state.reservation_consumption = None;
+    state.reserved_custody = None;
 }
 
 fn matching_sealed_reservation(
@@ -1973,10 +1998,11 @@ fn diagnostic_snapshot() -> [u64; 4] {
 /// retained declaration rather than clearing it: silently absorbing one would
 /// hide a disposition that failed to release its own state, and a second clear
 /// here would make the release-side clears untestable.
-fn require_no_retained_consumption(state: &HookState) -> Result<(), String> {
-    match &state.reservation_consumption {
-        Some((reservation_id, _)) => Err(format!(
-            "terminal hook retains consumption declared by reservation {reservation_id} with no reservation to match"
+fn require_no_retained_custody(state: &HookState) -> Result<(), String> {
+    match &state.reserved_custody {
+        Some(custody) => Err(format!(
+            "terminal hook retains record custody from reservation {} with no reservation to match",
+            custody.reservation_id
         )),
         None => Ok(()),
     }
@@ -2043,7 +2069,7 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
     if state.reservation.is_some() {
         return Err("terminal hook already has an active record reservation".into());
     }
-    require_no_retained_consumption(&state)?;
+    require_no_retained_custody(&state)?;
     let records = state.records.iter().cloned().collect::<Vec<_>>();
     let diagnostics = diagnostic_snapshot();
     if records.is_empty() && diagnostics.iter().all(|count| *count == 0) {
@@ -2056,6 +2082,11 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
         record_count,
         diagnostics,
         sealed_terminal: false,
+    });
+    state.reserved_custody = Some(ReservedRecordCustody {
+        reservation_id,
+        identities: records.iter().map(reserved_record_identity).collect(),
+        consumed: None,
     });
     Ok(Some(TerminalRecordReservation {
         reservation_id,
@@ -2110,7 +2141,11 @@ pub fn declare_record_reservation_consumption(
     if active.sealed_terminal {
         return Err("terminal hook sealed reservation has no publisher declaration".into());
     }
-    if state.reservation_consumption.is_some() {
+    let custody = match state.reserved_custody.as_mut() {
+        Some(custody) if custody.reservation_id == reservation_id => custody,
+        _ => return Err("terminal hook reservation consumption has no matching custody".into()),
+    };
+    if custody.consumed.is_some() {
         return Err("terminal hook reservation consumption is already declared".into());
     }
     if consumed.windows(2).any(|pair| pair[0] >= pair[1])
@@ -2123,7 +2158,7 @@ pub fn declare_record_reservation_consumption(
             active.record_count
         ));
     }
-    state.reservation_consumption = Some((reservation_id, consumed.to_vec()));
+    custody.consumed = Some(consumed.to_vec());
     Ok(())
 }
 
@@ -2157,22 +2192,43 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
     // Fail closed on an undeclared commit rather than guessing. Consuming
     // everything would destroy records the publisher never judged, and
     // consuming nothing would silently stop the queue draining.
-    let consumed = match state.reservation_consumption.take() {
-        Some((declared_id, consumed)) if declared_id == reservation_id => consumed,
-        Some(other) => {
-            state.reservation_consumption = Some(other);
-            return Err("terminal hook reservation commit consumption id mismatch".into());
+    match state.reserved_custody.as_ref() {
+        Some(custody) if custody.reservation_id != reservation_id => {
+            return Err("terminal hook reservation commit custody id mismatch".into())
         }
-        None => {
+        Some(custody) if custody.consumed.is_none() => {
             return Err("terminal hook reservation commit without a declared consumption".into())
         }
-    };
-    if consumed.last().is_some_and(|index| {
-        *index >= active.record_count || *index >= state.records.len()
-    }) {
-        state.reservation_consumption = Some((reservation_id, consumed));
-        return Err("terminal hook reserved records disappeared before commit".into());
+        Some(_) => {}
+        None => return Err("terminal hook reservation commit has no record custody".into()),
     }
+    // An index is not on its own evidence that it still names the record the
+    // reservation handed over, so re-check every reserved position by identity
+    // before removing anything. If the queue moved under the reservation, a
+    // declared index could otherwise remove a record the publisher never
+    // judged. No production path moves it today -- a full queue drops the
+    // incoming record while a reservation is held, and requeue refuses one
+    // outright -- so this makes that a proof rather than an assumption.
+    let custody = state
+        .reserved_custody
+        .as_ref()
+        .expect("record custody was just matched");
+    if state.records.len() < custody.identities.len()
+        || custody
+            .identities
+            .iter()
+            .enumerate()
+            .any(|(index, identity)| {
+                state.records.get(index).map(reserved_record_identity) != Some(*identity)
+            })
+    {
+        return Err("terminal hook reserved records moved before commit".into());
+    }
+    let consumed = state
+        .reserved_custody
+        .take()
+        .and_then(|custody| custody.consumed)
+        .expect("declared consumption was just matched");
     // Highest index first so the lower ones stay valid as the queue shrinks.
     for index in consumed.iter().rev() {
         state.records.remove(*index);
@@ -2199,7 +2255,7 @@ pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
                 );
             }
             state.reservation = None;
-            state.reservation_consumption = None;
+            state.reserved_custody = None;
             Ok(())
         }
         Some(active) => Err(format!(
@@ -2252,7 +2308,7 @@ pub fn release_record_reservation_diagnostics(reservation_id: u64) -> Result<(),
     validate_reserved_diagnostics(active, reservation_id)?;
     subtract_reserved_diagnostics(active);
     state.reservation = None;
-    state.reservation_consumption = None;
+    state.reserved_custody = None;
     Ok(())
 }
 
@@ -3306,7 +3362,7 @@ mod terminal_reservation_consumption_tests {
     /// refuse as already-declared and its commit refuse on the id mismatch --
     /// fail-closed, but permanently, which is the absorbing state again.
     ///
-    /// FALSIFIABILITY: drop the `reservation_consumption = None` from
+    /// FALSIFIABILITY: drop the `reserved_custody = None` from
     /// `rollback_record_reservation` or from
     /// `release_record_reservation_diagnostics` and the retry's declaration is
     /// refused.
@@ -3355,7 +3411,7 @@ mod terminal_reservation_consumption_tests {
     /// disposition-side clears untestable, because either half alone keeps the
     /// observable behaviour identical.
     ///
-    /// FALSIFIABILITY: replace `require_no_retained_consumption` in
+    /// FALSIFIABILITY: replace `require_no_retained_custody` in
     /// `reserve_pending_records` with a clear and this fails.
     #[test]
     fn reserving_refuses_a_declaration_that_outlived_its_reservation() {
@@ -3370,7 +3426,11 @@ mod terminal_reservation_consumption_tests {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             // Exactly the state a disposition that forgot to clear would leave.
-            state.reservation_consumption = Some((9_999, vec![0]));
+            state.reserved_custody = Some(ReservedRecordCustody {
+                reservation_id: 9_999,
+                identities: vec![(50, 1, 0, WRITER_KIND_NORMAL)],
+                consumed: Some(vec![0]),
+            });
         }
 
         assert!(
@@ -3387,7 +3447,81 @@ mod terminal_reservation_consumption_tests {
             state.reservation.is_none(),
             "the refused reservation must not have taken custody"
         );
-        state.reservation_consumption = None;
+
+        // The sealed constructor is the other reservation entry and must refuse
+        // the same state; it is exercised directly because its public callers
+        // require an installed, quiesced, admission-sealed carrier.
+        state.reserved_custody = Some(ReservedRecordCustody {
+            reservation_id: 9_999,
+            identities: Vec::new(),
+            consumed: None,
+        });
+        assert!(
+            reserve_full_terminal_drain_locked(&mut state).is_err(),
+            "the sealed constructor must refuse retained custody too"
+        );
+        assert!(
+            state.reservation.is_none(),
+            "the refused sealed reservation must not have taken custody"
+        );
+        state.reserved_custody = None;
+    }
+
+    /// A declared index is not evidence that it still names the record the
+    /// reservation handed over.
+    ///
+    /// If the queue moved under a held reservation, index 1 of [A, B, C] and
+    /// index 1 of [B, C] are different records, and the commit would remove one
+    /// the publisher never judged while keeping the one it decided. Position
+    /// checks alone cannot see that: both indices are in range. No production
+    /// path moves the queue under a reservation today, which is exactly why the
+    /// check has to be an identity check rather than a bounds check -- a bounds
+    /// check would be satisfied by the corrupted state.
+    ///
+    /// FALSIFIABILITY: replace the identity comparison in
+    /// `commit_record_reservation` with a `state.records.len()` bound and the
+    /// commit succeeds, removing the wrong record.
+    #[test]
+    fn a_commit_refuses_when_the_reserved_records_moved_underneath_it() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(60, 1), (61, 1), (62, 1)]);
+
+        let reservation = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        declare_record_reservation_consumption(reservation.reservation_id, &[1])
+            .expect("declare the middle record");
+        {
+            // The front record disappears and a new one arrives at the back, so
+            // every declared index is still inside the queue and inside the
+            // reserved count -- and every index now names a different record.
+            let mut state = STATE
+                .get()
+                .expect("terminal state")
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            state.records.pop_front();
+            state.records.push_back(RawTerminalRecordCapture {
+                combat_id: 63,
+                generation: 1,
+                record_index: 0,
+                writer_kind: WRITER_KIND_NORMAL,
+                record_bytes: [0u8; TERMINAL_RECORD_LEN],
+            });
+        }
+
+        assert!(
+            commit_record_reservation(reservation.reservation_id).is_err(),
+            "a commit whose reserved records moved must refuse rather than remove by index"
+        );
+        assert_eq!(
+            queued_epochs(),
+            vec![(61, 1), (62, 1), (63, 1)],
+            "a refused commit must remove nothing"
+        );
+        rollback_record_reservation(reservation.reservation_id).expect("rollback");
     }
 
     /// The declaration cannot reach past what was reserved, cannot repeat, and
