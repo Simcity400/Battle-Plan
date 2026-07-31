@@ -198,14 +198,61 @@ const BANNED_CALL_FRAGMENTS: &[(&str, &str)] = &[
     ("MinHook::", "queue_enable_hook("),
 ];
 
+/// Collapse whitespace around `::` so `MinHook :: enable_hook` cannot slip past
+/// a substring match, and normalise any local alias of `MinHook` back to the
+/// real name so `use minhook::MinHook as MH; MH::enable_hook(..)` is caught too.
+///
+/// Deliberately crude rather than a real parser: a parser would be a second
+/// thing to get wrong, and every bypass this normalisation does not catch --
+/// a macro that assembles the path, the raw `minhook::ffi` symbol, a different
+/// hooking library -- requires an edit that is visible in review. What is
+/// closed here is the reachable-today path of writing the call.
+#[cfg(test)]
+fn normalize_for_scan(text: &str) -> String {
+    let mut out = text.to_string();
+    while out.contains(" ::") || out.contains(":: ") {
+        out = out.replace(" ::", "::").replace(":: ", "::");
+    }
+    let mut aliases = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("use minhook::MinHook as ") {
+            if let Some(alias) = rest.split(|c: char| c == ';' || c.is_whitespace()).next() {
+                if !alias.is_empty() {
+                    aliases.push(alias.to_string());
+                }
+            }
+        }
+    }
+    for alias in aliases {
+        out = out.replace(&format!("{alias}::"), "MinHook::");
+    }
+    out
+}
+
+/// Every line of `text` that enables an inline detour without the wrapper.
+#[cfg(test)]
+fn scan_source_for_direct_enable(text: &str) -> Vec<usize> {
+    let normalized = normalize_for_scan(text);
+    let banned: Vec<String> = BANNED_CALL_FRAGMENTS
+        .iter()
+        .map(|(prefix, call)| format!("{prefix}{call}"))
+        .collect();
+    normalized
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| banned.iter().any(|b| line.contains(b.as_str())))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
 #[cfg(test)]
 mod source_ban_tests {
-    use super::BANNED_CALL_FRAGMENTS;
+    use super::{scan_source_for_direct_enable, BANNED_CALL_FRAGMENTS};
     use std::path::{Path, PathBuf};
 
     /// Every `.rs` file in the extractor workspace except this crate's own.
     fn workspace_sources() -> Vec<PathBuf> {
-        // `inline_detour/` sits directly under the workspace root.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("inline_detour has a parent directory")
@@ -249,26 +296,21 @@ mod source_ban_tests {
     /// THE ENFORCEMENT. Fails if any crate patches a target without going
     /// through [`super::enable`].
     ///
-    /// The invariant this protects is not local: a detour enabled outside this
-    /// crate is a detour enabled in a module that was never pinned, so the
-    /// collector can later unload itself out from under a thread poised in that
-    /// detour's body. Twelve of the twenty-two crates that own detours have no
-    /// other reason to depend on the receipt crate, so there is no smaller
-    /// choke point that covers them -- a rule enforced anywhere else would
-    /// leave that gap while reading as though it did not exist.
+    /// A detour enabled outside this crate is a detour enabled in a module that
+    /// was never pinned, so the collector can later unload itself out from under
+    /// a thread poised in that detour's body. Twelve of the twenty-two crates
+    /// that own detours have no other reason to depend on the receipt crate, so
+    /// there is no smaller choke point that covers them.
     ///
-    /// Deliberately a source scan rather than a type-system fence: MinHook is a
-    /// third-party crate any workspace member can name directly, so nothing in
-    /// Rust's visibility rules can stop a new lane calling it. The tree already
-    /// uses source scanning for ordering laws it cannot otherwise state
-    /// (`division_combat_stats_live/src/a729_hook.rs` asserts its rollback
-    /// waits before it frees, by reading its own source).
+    /// Deliberately a source scan: MinHook is a third-party crate any workspace
+    /// member can name directly, so nothing in Rust's visibility rules can stop
+    /// a new lane calling it. The tree already uses source scanning for ordering
+    /// laws it cannot otherwise state (`division_combat_stats_live`).
     ///
-    /// It cannot catch a detour enabled through the raw `minhook::ffi`
-    /// `MH_EnableHook` symbol, or through a different hooking library
-    /// altogether. Both would need a new dependency to appear, which is
-    /// reviewable; what this closes is the reachable-today path of calling the
-    /// wrapper everyone already has.
+    /// SCOPE, stated because it is narrower than the invariant: this walks
+    /// `extractor/native` only. `replay_interface/native/terrain_capture` is a
+    /// separately injected DLL with its own MinHook detours and its own pin,
+    /// and it is NOT covered here or by `inline_detour::enable`.
     #[test]
     fn no_direct_minhook_enable_outside_this_crate() {
         let mut violations = Vec::new();
@@ -279,52 +321,73 @@ mod source_ban_tests {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            for (prefix, call) in BANNED_CALL_FRAGMENTS {
-                let banned = format!("{prefix}{call}");
-                for (index, line) in text.lines().enumerate() {
-                    if line.contains(&banned) {
-                        violations.push(format!(
-                            "{}:{}: {}",
-                            path.display(),
-                            index + 1,
-                            line.trim()
-                        ));
-                    }
-                }
+            for line in scan_source_for_direct_enable(&text) {
+                violations.push(format!("{}:{}", path.display(), line));
             }
         }
         assert!(
             violations.is_empty(),
-            "inline detours must be enabled through `inline_detour::enable`, which pins              this module against unload first. Enabling directly leaves a detour live in              a module the collector can still unload, and a thread poised in that detour              body then resumes on unmapped memory.
-{}",
-            violations.join("
-")
+            "inline detours must be enabled through `inline_detour::enable`, which pins this module against unload first. Enabling directly leaves a detour live in a module the collector can still unload, and a thread poised in that detour body then resumes on unmapped memory.\n{}",
+            violations.join("\n")
         );
     }
 
-    /// Falsifiable guard ON THE GUARD: proves the scan can actually see a
-    /// violation. A source scan that never observes one is the easiest kind of
-    /// test to get wrong -- a bad root, a bad skip list, or a typo in the
-    /// pattern all produce a permanently green test that checks nothing.
+    /// THE GUARD ON THE GUARD, and it now runs the real scanner.
+    ///
+    /// The previous version asserted that a planted string contained the banned
+    /// substring, which is a property of the string and not of the scanner:
+    /// deleting the violation-collection branch left it green. This feeds
+    /// planted sources through `scan_source_for_direct_enable` itself.
+    ///
+    /// The alias and whitespace cases are here because they were real bypasses:
+    /// `use minhook::MinHook as MH; MH::enable_hook(t)` and
+    /// `MinHook :: enable_hook(t)` both defeated the plain substring match the
+    /// first version used, and every lane already depends on MinHook so neither
+    /// needs a new dependency to reach.
     #[test]
-    fn the_scan_detects_a_violation_when_one_exists() {
-        let sources = workspace_sources();
+    fn the_scanner_catches_direct_aliased_and_whitespace_split_calls() {
         let (prefix, call) = BANNED_CALL_FRAGMENTS[0];
-        let banned = format!("{prefix}{call}");
-        let planted = format!("    unsafe {{ {banned}target) }};");
-        assert!(
-            planted.contains(&banned),
-            "the pattern the scan looks for must match a real call"
+        let direct = format!("fn f() {{ unsafe {{ {prefix}{call}t) }}; }}");
+        assert_eq!(
+            scan_source_for_direct_enable(&direct),
+            vec![1],
+            "the plain call must be caught"
         );
-        // And the scan reaches the crates that actually own detours: if the
-        // walk ever stopped covering them, every future violation would pass.
-        let owners = [
+
+        let spaced = format!("fn f() {{ unsafe {{ MinHook :: {call}t) }}; }}");
+        assert_eq!(
+            scan_source_for_direct_enable(&spaced),
+            vec![1],
+            "whitespace around :: must not defeat the scan"
+        );
+
+        let aliased = format!(
+            "use minhook::MinHook as MH;\nfn f() {{ unsafe {{ MH::{call}t) }}; }}"
+        );
+        assert_eq!(
+            scan_source_for_direct_enable(&aliased),
+            vec![2],
+            "an aliased import must not defeat the scan"
+        );
+
+        let clean = "fn f() { unsafe { inline_detour::enable(t) }; }";
+        assert!(
+            scan_source_for_direct_enable(clean).is_empty(),
+            "the wrapper call is not a violation"
+        );
+    }
+
+    /// The walk must actually reach the crates that own detours; if it ever
+    /// stopped, every future violation would pass unnoticed.
+    #[test]
+    fn the_scan_reaches_the_crates_that_own_detours() {
+        let sources = workspace_sources();
+        for owner in [
             "fow_visibility_live",
             "land_combat_detail_events_live",
             "dynamic_collection_trace_live",
             "collector",
-        ];
-        for owner in owners {
+        ] {
             assert!(
                 sources.iter().any(|p| p.to_string_lossy().contains(owner)),
                 "the scan must reach {owner}, which owns inline detours"
