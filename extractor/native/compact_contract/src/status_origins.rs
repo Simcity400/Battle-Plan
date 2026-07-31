@@ -19,8 +19,11 @@
 //! exactly as before; the fold ignores PERF records and the coverage/
 //! perf-count gates exclude the probe domain.
 //!
-//! Concurrency: relaxed atomics, recorded from worker threads, drained by the
-//! frame thread (same contract as [`crate::bound_trips`]).
+//! Concurrency: lock-free atomics, recorded from worker threads, drained by
+//! the frame thread (same contract as [`crate::bound_trips`]). A recorder
+//! publishes with Release and a reservation reads with Acquire; everything a
+//! drain decides from lives in ONE word per site, so a reservation can never
+//! observe a count and its sample evidence out of step. See `ORIGIN_PACKED`.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -177,23 +180,113 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
-/// Packed per-id word: low 63 bits = introduction count since last drain,
-/// bit 63 = "a sample was recorded in this batch". Count and sample-flag MUST
-/// live in ONE atomic (R2-gate finding-1 fix round, second iteration): with a
-/// separate flag cell, a drain racing a recorder could consume the flag
-/// against the WRONG count batch — either a count=0 drain stealing a fresh
-/// flag, or a fresh flag being consumed by an older batch's drain, leaving
-/// the next drain to report counted sample-recordings with no sample. A
-/// single swapped word makes (count, flag) inseparable.
+/// Packed per-id word — the SINGLE cell every drain decision is derived from.
+///
+/// * bits 0..32  — introductions recorded since the last commit;
+/// * bits 32..64 — how many of those carried a sample.
+///
+/// Count and sample evidence MUST be inseparable (R2-gate finding-1 fix
+/// round, second iteration): with a separate flag cell, a drain racing a
+/// recorder could consume the flag against the WRONG count batch, leaving the
+/// next drain to report counted sample-recordings with no sample.
+///
+/// The first repair kept the flag in this word but added a SEPARATE
+/// `ORIGIN_SAMPLE_GENERATIONS` cell so `commit` could tell "the samples I
+/// reserved" from "a sample recorded after I reserved". That re-introduced
+/// exactly the defect it was meant to close, one level down, because a
+/// recorder bumps the generation BEFORE it publishes the count: a reservation
+/// that read the packed word and THEN the generation could capture a
+/// generation belonging to an introduction its own count snapshot had not yet
+/// seen. `commit` then compared equal generations, concluded "no new sample",
+/// and cleared the flag over a still-queued sampled introduction — the next
+/// drain published a count with no sample, and the collector emitted
+/// `so_<name>` with no `so_<name>_sample` beside it (attach_log.rs). Reading
+/// the generation first does not help: the recorder can be preempted between
+/// its generation bump and its count publish, so no read order of two cells is
+/// safe. The generation is therefore folded INTO this word as an exact
+/// sampled-introduction count, which `commit` subtracts atomically together
+/// with the plain count. There is no second cell left to skew.
+///
+/// The count field saturates instead of carrying into the sampled field: an
+/// overflowing count must never fabricate sample evidence. 2^32-1 unread
+/// introductions for a single site between two frame drains is not reachable
+/// in the collector (every frame reserves), and under-reporting fails safe
+/// where field corruption would not.
 static ORIGIN_PACKED: [AtomicU64; STATUS_ORIGIN_ID_COUNT] = [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
 static ORIGIN_SAMPLES: [AtomicU64; STATUS_ORIGIN_ID_COUNT] = [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
-static ORIGIN_SAMPLE_GENERATIONS: [AtomicU64; STATUS_ORIGIN_ID_COUNT] =
-    [ATOMIC_ZERO; STATUS_ORIGIN_ID_COUNT];
 static ACTIVE_FRAME_RESERVATION: AtomicU64 = AtomicU64::new(0);
 static NEXT_FRAME_RESERVATION: AtomicU64 = AtomicU64::new(1);
 
-const SAMPLE_FLAG: u64 = 1 << 63;
-const COUNT_MASK: u64 = SAMPLE_FLAG - 1;
+const COUNT_BITS: u32 = 32;
+const COUNT_MASK: u64 = (1u64 << COUNT_BITS) - 1;
+/// Adding this bumps the sampled-introduction field by one.
+const SAMPLED_UNIT: u64 = 1u64 << COUNT_BITS;
+
+const fn packed_count(packed: u64) -> u64 {
+    packed & COUNT_MASK
+}
+
+const fn packed_sampled(packed: u64) -> u64 {
+    packed >> COUNT_BITS
+}
+
+/// Stage this frame's deciding raw word for site `id`. Must happen BEFORE the
+/// introduction publishes; [`publish_introduction`]'s Release RMW is what
+/// makes it visible to an Acquire reservation.
+fn stage_sample_value(id: usize, sample: u64) {
+    ORIGIN_SAMPLES[id].store(sample, Ordering::Relaxed);
+}
+
+// Observation point between staging a sample value and publishing its
+// introduction. Compiles to nothing outside the crate's own test build; it
+// exists so `sample_value_is_staged_before_its_introduction_publishes` can
+// prove the staging comes FIRST — a reservation taken at this point must not
+// yet see the introduction, and therefore cannot claim a value that is still
+// the previous frame's.
+//
+// Thread-local rather than a lock: an observer must not add synchronisation to
+// the recorder path even in a test build, or the concurrent stress test would
+// be measuring the hook's latency instead of the registry's.
+#[cfg(test)]
+thread_local! {
+    static MID_RECORD_OBSERVER: core::cell::Cell<Option<fn(usize)>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// See `MID_RECORD_OBSERVER`. A no-op outside the crate's own test build.
+#[cfg(test)]
+fn observe_between_staging_and_publish(id: usize) {
+    if let Some(hook) = MID_RECORD_OBSERVER.with(|slot| slot.get()) {
+        hook(id);
+    }
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn observe_between_staging_and_publish(_id: usize) {}
+
+/// Publish one introduction at site `id` — the single atomic event that makes
+/// the introduction, and (when `sampled`) its evidence, visible to a drain.
+fn publish_introduction(id: usize, sampled: bool) {
+    let delta = if sampled { SAMPLED_UNIT | 1 } else { 1 };
+    let mut current = ORIGIN_PACKED[id].load(Ordering::Relaxed);
+    loop {
+        if packed_count(current) == COUNT_MASK {
+            // Saturated: drop the introduction rather than carry into the
+            // sampled field and fabricate evidence for it.
+            return;
+        }
+        match ORIGIN_PACKED[id].compare_exchange_weak(
+            current,
+            current + delta,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
 
 /// Count one introduction of a status bit at site `id`. Out-of-range ids are
 /// ignored (defensive; callers use the constants).
@@ -201,35 +294,22 @@ pub fn record_status_origin(id: usize) {
     if id >= STATUS_ORIGIN_ID_COUNT {
         return;
     }
-    ORIGIN_PACKED[id].fetch_add(1, Ordering::Release);
+    publish_introduction(id, false);
 }
 
 /// Count one introduction AND attach this frame's deciding raw word (flags,
 /// reason hash, packed counts). Last value wins within a frame.
 ///
-/// The sample value is stored BEFORE the packed count+flag publishes
-/// (Release); the drain swaps the packed word with Acquire — so a drain
-/// observing the flagged count also observes a genuine sample value.
+/// The sample value is staged BEFORE the packed word publishes (Release); a
+/// reservation loads that word with Acquire — so a reservation that counts a
+/// sampled introduction also observes a genuine sample value.
 pub fn record_status_origin_sample(id: usize, sample: u64) {
     if id >= STATUS_ORIGIN_ID_COUNT {
         return;
     }
-    ORIGIN_SAMPLES[id].store(sample, Ordering::Relaxed);
-    ORIGIN_SAMPLE_GENERATIONS[id].fetch_add(1, Ordering::Relaxed);
-    // CAS loop: increment the count AND set the flag in one atomic word.
-    let mut current = ORIGIN_PACKED[id].load(Ordering::Relaxed);
-    loop {
-        let next = (current.wrapping_add(1)) | SAMPLE_FLAG;
-        match ORIGIN_PACKED[id].compare_exchange_weak(
-            current,
-            next,
-            Ordering::Release,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break,
-            Err(observed) => current = observed,
-        }
-    }
+    stage_sample_value(id, sample);
+    observe_between_staging_and_publish(id);
+    publish_introduction(id, true);
 }
 
 /// Immutable frame-scoped view of status-origin introductions. The represented
@@ -239,7 +319,11 @@ pub fn record_status_origin_sample(id: usize, sample: u64) {
 pub struct StatusOriginFrameReservation {
     reservation_id: u64,
     snapshot: [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT],
-    sample_generations: [u64; STATUS_ORIGIN_ID_COUNT],
+    /// The exact packed words this reservation read — both fields, as one
+    /// value. `commit` subtracts these, so the counts it consumes and the
+    /// sampled-introduction credit it consumes can never come from different
+    /// observations of the registry.
+    reserved_packed: [u64; STATUS_ORIGIN_ID_COUNT],
     active: bool,
 }
 
@@ -249,38 +333,36 @@ impl StatusOriginFrameReservation {
     }
 
     /// Consume only the snapshotted counter prefix. Introductions recorded
-    /// after the snapshot remain queued. A post-snapshot sampled introduction
-    /// retains the packed sample flag for that next frame.
+    /// after the snapshot remain queued, and a post-snapshot SAMPLED
+    /// introduction keeps its sampled credit in the packed word, so the next
+    /// frame reports it with its sample.
     pub fn commit(mut self) -> Result<(), String> {
         ensure_active_reservation(self.reservation_id)?;
-        for (id, (reserved, _)) in self.snapshot.iter().copied().enumerate() {
-            let current = ORIGIN_PACKED[id].load(Ordering::Acquire) & COUNT_MASK;
-            if current < reserved {
+        for (id, reserved) in self.reserved_packed.iter().copied().enumerate() {
+            let current = ORIGIN_PACKED[id].load(Ordering::Acquire);
+            if packed_count(current) < packed_count(reserved)
+                || packed_sampled(current) < packed_sampled(reserved)
+            {
                 return Err(format!(
-                    "status-origin reservation {} counter {} regressed from {} to {}",
-                    self.reservation_id, id, reserved, current
+                    "status-origin reservation {} counter {} regressed from {}/{} to {}/{}",
+                    self.reservation_id,
+                    id,
+                    packed_count(reserved),
+                    packed_sampled(reserved),
+                    packed_count(current),
+                    packed_sampled(current)
                 ));
             }
         }
-        for (id, (reserved, _)) in self.snapshot.iter().copied().enumerate() {
-            let reserved_generation = self.sample_generations[id];
-            let mut current = ORIGIN_PACKED[id].load(Ordering::Acquire);
-            loop {
-                let current_count = current & COUNT_MASK;
-                let remaining_count = current_count - reserved;
-                let current_generation = ORIGIN_SAMPLE_GENERATIONS[id].load(Ordering::Acquire);
-                let keep_sample = remaining_count != 0 && current_generation != reserved_generation;
-                let next = remaining_count | if keep_sample { SAMPLE_FLAG } else { 0 };
-                match ORIGIN_PACKED[id].compare_exchange_weak(
-                    current,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break,
-                    Err(observed) => current = observed,
-                }
-            }
+        for (id, reserved) in self.reserved_packed.iter().copied().enumerate() {
+            // One RMW consumes the reserved prefix of BOTH fields. Neither
+            // field can be consumed against a different observation of the
+            // other, and whatever a concurrent recorder adds — count and its
+            // sampled credit together — survives untouched into the next
+            // frame. Both fields only grow between commits and the guard
+            // above proved `current >= reserved` in each, so the subtraction
+            // cannot borrow across the field boundary.
+            ORIGIN_PACKED[id].fetch_sub(reserved, Ordering::AcqRel);
         }
         release_active_reservation(self.reservation_id)?;
         self.active = false;
@@ -336,27 +418,34 @@ pub fn reserve_frame_origins() -> Result<StatusOriginFrameReservation, String> {
         .compare_exchange(0, reservation_id, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|active| format!("status-origin frame reservation already active: {}", active))?;
     let mut snapshot = [(0u64, None); STATUS_ORIGIN_ID_COUNT];
-    let mut sample_generations = [0u64; STATUS_ORIGIN_ID_COUNT];
+    let mut reserved_packed = [0u64; STATUS_ORIGIN_ID_COUNT];
     for (id, slot) in snapshot.iter_mut().enumerate() {
+        // ONE load decides both the reserved count and whether the reserved
+        // prefix contains sample evidence. No second cell is consulted, so
+        // there is no window in which the two can disagree.
         let packed = ORIGIN_PACKED[id].load(Ordering::Acquire);
-        let generation = ORIGIN_SAMPLE_GENERATIONS[id].load(Ordering::Relaxed);
         let sample =
-            (packed & SAMPLE_FLAG != 0).then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
-        *slot = (packed & COUNT_MASK, sample);
-        sample_generations[id] = generation;
+            (packed_sampled(packed) != 0).then(|| ORIGIN_SAMPLES[id].load(Ordering::Relaxed));
+        *slot = (packed_count(packed), sample);
+        reserved_packed[id] = packed;
     }
     Ok(StatusOriginFrameReservation {
         reservation_id,
         snapshot,
-        sample_generations,
+        reserved_packed,
         active: true,
     })
 }
 
 /// Drain this frame's introductions: per id, (count since last drain,
 /// Some(sample) if a sample was recorded since last drain). Index-aligned
-/// with [`STATUS_ORIGIN_UNITS`]. Counts and the sample-set flag reset on
-/// drain; a racing record lands in the next frame's drain (never lost).
+/// with [`STATUS_ORIGIN_UNITS`]. Both fields of the packed word — the count
+/// and the sampled-introduction tally — are consumed by exactly the drained
+/// prefix; a racing record lands in the next frame's drain, still paired with
+/// its sample, never orphaned. It is also never lost EXCEPT at count
+/// saturation, where `publish_introduction` drops the introduction outright
+/// rather than corrupt the sampled tally; see `ORIGIN_PACKED` for why that
+/// bound is not reachable in the collector.
 pub fn drain_frame_origins() -> [(u64, Option<u64>); STATUS_ORIGIN_ID_COUNT] {
     let reservation =
         reserve_frame_origins().expect("status-origin compatibility drain reservation");
@@ -439,11 +528,210 @@ mod tests {
         assert_eq!(drain_frame_origins()[id], (1, Some(0)));
     }
 
+    /// Where one recorder step lands relative to a frame reservation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum At {
+        BeforeReserve,
+        DuringReservation,
+        AfterCommit,
+    }
+
+    /// One introduction: where its sample value is staged (`None` = an
+    /// unsampled `record_status_origin`) and where it publishes.
+    #[derive(Clone, Copy, Debug)]
+    struct Intro {
+        stage: Option<(At, u64)>,
+        publish: At,
+    }
+
+    /// Drive one interleaving and return
+    /// `(reservation snapshot for id, next drain for id)`.
+    ///
+    /// The recorder's two steps are the SAME private functions
+    /// `record_status_origin_sample` itself calls — `stage_sample_value` and
+    /// `publish_introduction` — not reimplementations of them, so a change to
+    /// the recorder's publish mechanics is exercised here rather than shadowed
+    /// by a stale copy.
+    fn run_interleaving(id: usize, intros: &[Intro]) -> ((u64, Option<u64>), (u64, Option<u64>)) {
+        fn emit(id: usize, intros: &[Intro], at: At) {
+            for intro in intros {
+                if let Some((stage_at, value)) = intro.stage {
+                    if stage_at == at {
+                        stage_sample_value(id, value);
+                    }
+                }
+                if intro.publish == at {
+                    publish_introduction(id, intro.stage.is_some());
+                }
+            }
+        }
+        drain_frame_origins(); // clean slate
+        emit(id, intros, At::BeforeReserve);
+        let reservation = reserve_frame_origins().unwrap();
+        let reserved = reservation.snapshot()[id];
+        emit(id, intros, At::DuringReservation);
+        reservation.commit().unwrap();
+        emit(id, intros, At::AfterCommit);
+        (reserved, drain_frame_origins()[id])
+    }
+
+    #[test]
+    fn every_publish_position_around_a_reservation_keeps_count_and_evidence_together() {
+        // The deterministic guard for "a count is never published without its
+        // sample". The concurrent stress test below can only reach the defect
+        // by luck — it needs a recorder preempted at one specific instruction
+        // AND no later introduction to repair the corrupted word before the
+        // next drain, which is why it failed roughly 1 run in 6 on a loaded
+        // machine and passed in isolation. Here each recorder step is placed by
+        // hand at each of the three phases a reservation defines, so the
+        // pairing is re-proved on every run instead of when scheduling obliges.
+        //
+        // Case 2 is the one that was broken: a sample staged before the
+        // reservation whose count publishes during it. The generation-cell
+        // design cleared the sample flag over that still-queued introduction
+        // and the next drain reported a count with no evidence.
+        //
+        // What this does NOT cover, so nobody reads more into a green run than
+        // it earns: CAS contention between concurrent recorders, the timing
+        // between commit's guard loop and its subtraction, ids progressing at
+        // different rates, and the source order inside
+        // `record_status_origin_sample` itself — that last one is pinned by
+        // `sample_value_is_staged_before_its_introduction_publishes`.
+        use At::*;
+        let _guard = lock_registry();
+        let id = SO_D53_POSTBUILD_GATE;
+
+        let sampled = |stage_at, publish, value| Intro {
+            stage: Some((stage_at, value)),
+            publish,
+        };
+        let plain = |publish| Intro {
+            stage: None,
+            publish,
+        };
+
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, Vec<Intro>, (u64, Option<u64>), (u64, Option<u64>))] = &[
+            (
+                "1: staged and published before the reservation",
+                vec![sampled(BeforeReserve, BeforeReserve, 0xA1)],
+                (1, Some(0xA1)),
+                (0, None),
+            ),
+            (
+                "2: staged before the reservation, published during it",
+                vec![sampled(BeforeReserve, DuringReservation, 0xA2)],
+                (0, None),
+                (1, Some(0xA2)),
+            ),
+            (
+                "3: staged before the reservation, published after commit",
+                vec![sampled(BeforeReserve, AfterCommit, 0xA3)],
+                (0, None),
+                (1, Some(0xA3)),
+            ),
+            (
+                "4: staged and published during the reservation",
+                vec![sampled(DuringReservation, DuringReservation, 0xA4)],
+                (0, None),
+                (1, Some(0xA4)),
+            ),
+            (
+                "5: staged during the reservation, published after commit",
+                vec![sampled(DuringReservation, AfterCommit, 0xA5)],
+                (0, None),
+                (1, Some(0xA5)),
+            ),
+            (
+                "6: staged and published after commit",
+                vec![sampled(AfterCommit, AfterCommit, 0xA6)],
+                (0, None),
+                (1, Some(0xA6)),
+            ),
+            (
+                "7: unsampled introduction before the reservation",
+                vec![plain(BeforeReserve)],
+                (1, None),
+                (0, None),
+            ),
+            (
+                "8: unsampled introduction during the reservation",
+                vec![plain(DuringReservation)],
+                (0, None),
+                (1, None),
+            ),
+            (
+                // The case the retired generation cell existed for: the
+                // reserved prefix carried the only sample, so the remaining
+                // unsampled introduction must NOT inherit it.
+                "9: reserved sample, then an unsampled introduction",
+                vec![
+                    sampled(BeforeReserve, BeforeReserve, 0xB1),
+                    plain(DuringReservation),
+                ],
+                (1, Some(0xB1)),
+                (1, None),
+            ),
+            (
+                "10: reserved unsampled introduction, then a sampled one",
+                vec![
+                    plain(BeforeReserve),
+                    sampled(DuringReservation, DuringReservation, 0xB2),
+                ],
+                (1, None),
+                (1, Some(0xB2)),
+            ),
+            (
+                // Known last-value imprecision, pinned rather than glossed:
+                // the second introduction stages its value before the
+                // reservation reads it but publishes its count afterwards, so
+                // BOTH frames report 0xC2. The invariant under test is that a
+                // count always has SOME genuine recorded sample beside it, not
+                // that the sample belongs to that exact introduction.
+                "11: a later introduction's value staged before the reservation",
+                vec![
+                    sampled(BeforeReserve, BeforeReserve, 0xC1),
+                    sampled(BeforeReserve, DuringReservation, 0xC2),
+                ],
+                (1, Some(0xC2)),
+                (1, Some(0xC2)),
+            ),
+        ];
+
+        for (label, intros, expect_reserved, expect_next) in cases {
+            let (reserved, next) = run_interleaving(id, intros);
+            assert_eq!(reserved, *expect_reserved, "{label}: reservation snapshot");
+            assert_eq!(next, *expect_next, "{label}: next drain");
+            let sampled_intros = intros.iter().filter(|i| i.stage.is_some()).count() as u64;
+            assert_eq!(
+                reserved.0 + next.0,
+                intros.len() as u64,
+                "{label}: every introduction must be counted exactly once"
+            );
+            if sampled_intros != 0 {
+                assert!(
+                    reserved.1.is_some() || next.1.is_some(),
+                    "{label}: a sampled introduction was counted with no sample anywhere"
+                );
+            }
+        }
+    }
+
     #[test]
     fn concurrent_drain_never_sees_count_without_sample() {
         // Sample-publish ordering (R2 gate finding 1 twin): every recording
         // here carries a sample, so a drained (count>0, None) pair means a
         // consumed count whose deciding word was lost.
+        //
+        // This is a stress test, NOT the proof — reaching the defect depends
+        // on scheduling, which is why it failed roughly 1 run in 6 on a loaded
+        // machine and passed in isolation. The deterministic proofs are
+        // `every_publish_position_around_a_reservation_keeps_count_and_evidence_together`
+        // and `sample_value_is_staged_before_its_introduction_publishes`.
+        // The drained value is checked against the set the recorder actually
+        // wrote; that catches a corrupted or uninitialised sample cell, but it
+        // is NOT a reliable detector of a reordered recorder (measured: 0
+        // catches in 40 runs) — that order is pinned deterministically above.
         let _guard = lock_registry();
         drain_frame_origins(); // clean slate
         let id = SO_D48_PARTIAL_HARD_OR_GATE;
@@ -453,13 +741,22 @@ mod tests {
             }
         });
         let mut drained_total = 0u64;
+        let check = |count: u64, sample: Option<u64>| {
+            assert!(
+                sample.is_some(),
+                "drained counted sample-recordings without their sample"
+            );
+            let value = sample.unwrap();
+            assert!(
+                (0x1000..=0x1004).contains(&value),
+                "drained sample {value:#x} was never recorded (count {count} published \
+                 ahead of its staged value)"
+            );
+        };
         loop {
             let (count, sample) = drain_frame_origins()[id];
             if count != 0 {
-                assert!(
-                    sample.is_some(),
-                    "drained counted sample-recordings without their sample"
-                );
+                check(count, sample);
                 drained_total += count;
             }
             if recorder.is_finished() {
@@ -469,10 +766,91 @@ mod tests {
         recorder.join().unwrap();
         let (count, sample) = drain_frame_origins()[id];
         if count != 0 {
-            assert!(sample.is_some());
+            check(count, sample);
             drained_total += count;
         }
         assert_eq!(drained_total, 20_000, "no incidence count may be lost");
+    }
+
+    #[test]
+    fn sample_value_is_staged_before_its_introduction_publishes() {
+        // A count that publishes ahead of its value lets a reservation land in
+        // between and report the count with the PREVIOUS frame's word — a
+        // sample the recorder never wrote for that introduction. That is the
+        // same integrity failure as a missing sample, only harder to spot,
+        // and no stress test detects it: the two steps are nanoseconds apart,
+        // so a racing drain effectively never lands between them (measured:
+        // the concurrent stress test caught a reordered recorder 0 times in 40
+        // runs). Pin the order directly instead.
+        let _guard = lock_registry();
+        drain_frame_origins(); // clean slate
+        let id = SO_D65_SOURCE_NO_SCALAR;
+
+        // Seed a previous frame's value so a premature publish has something
+        // stale to be caught claiming.
+        record_status_origin_sample(id, 0xDEAD);
+        assert_eq!(drain_frame_origins()[id], (1, Some(0xDEAD)));
+
+        thread_local! {
+            static OBSERVED: core::cell::RefCell<Vec<(u64, Option<u64>)>> =
+                const { core::cell::RefCell::new(Vec::new()) };
+        }
+        OBSERVED.with(|seen| seen.borrow_mut().clear());
+
+        fn observer(id: usize) {
+            // Reserve from inside the recorder, at the point between its two
+            // steps. Correct code has published nothing yet.
+            let reservation = reserve_frame_origins().expect("mid-record reservation");
+            let seen = reservation.snapshot()[id];
+            reservation.rollback().expect("mid-record rollback");
+            OBSERVED.with(|slot| slot.borrow_mut().push(seen));
+        }
+
+        MID_RECORD_OBSERVER.with(|slot| slot.set(Some(observer as fn(usize))));
+        record_status_origin_sample(id, 0xBEEF);
+        MID_RECORD_OBSERVER.with(|slot| slot.set(None));
+
+        let observed = OBSERVED.with(|slot| slot.borrow().clone());
+        assert_eq!(observed.len(), 1, "observer must run exactly once");
+        assert_eq!(
+            observed[0],
+            (0, None),
+            "the introduction must not be visible until AFTER its value is staged; \
+             a reservation here saw a count claiming a sample the recorder had not \
+             yet written for it"
+        );
+        // And the completed recording is intact.
+        assert_eq!(drain_frame_origins()[id], (1, Some(0xBEEF)));
+    }
+
+    #[test]
+    fn saturated_count_never_carries_into_the_sample_field() {
+        // The count and the sampled-introduction tally share one word. If the
+        // count could overflow its field it would increment the sampled tally
+        // and fabricate evidence for introductions that never carried any.
+        let _guard = lock_registry();
+        drain_frame_origins(); // clean slate
+        let id = SO_D43_SOURCE_EMPTY_COLD;
+        // Park the count one below its field maximum without the 2^32-1
+        // increments it would take to get there honestly.
+        ORIGIN_PACKED[id].store(COUNT_MASK - 1, Ordering::Release);
+        record_status_origin(id); // reaches the maximum
+        assert_eq!(packed_sampled(ORIGIN_PACKED[id].load(Ordering::Acquire)), 0);
+        record_status_origin(id); // saturates: dropped, not carried
+        record_status_origin_sample(id, 0xDEAD); // also dropped
+        let packed = ORIGIN_PACKED[id].load(Ordering::Acquire);
+        assert_eq!(packed_count(packed), COUNT_MASK, "count must saturate");
+        assert_eq!(
+            packed_sampled(packed),
+            0,
+            "a saturating count must never manufacture sample evidence"
+        );
+        assert_eq!(
+            drain_frame_origins()[id],
+            (COUNT_MASK, None),
+            "no sample may be reported for introductions that carried none"
+        );
+        assert_eq!(drain_frame_origins()[id], (0, None));
     }
 
     #[test]
