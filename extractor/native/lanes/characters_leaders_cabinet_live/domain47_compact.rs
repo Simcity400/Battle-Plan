@@ -1596,6 +1596,69 @@ mod tests {
         assert_eq!(CHARACTER_PORTRAIT_ROW_LEN, 24);
     }
 
+    /// The end of the chain that run 20260731-deflist-16 broke at the start
+    /// of. The collector census now ADMITS country_tag_db_id == 0 (the
+    /// engine's constructor default, meaning "no country"), so the wire
+    /// format has to keep accepting it -- and the collector-side tests
+    /// cannot see this file. Flipping the character row's
+    /// `validate_country(.., nonzero)` to true re-breaks zero-tag output
+    /// while every collector test stays green.
+    #[test]
+    fn a_character_with_no_country_survives_encode_and_decode() {
+        let rows = vec![
+            CharacterLaneRow::Character(CharacterRow {
+                country_tag_db_id: 0,
+                char_id: 4711,
+                name: Some("Unaffiliated Character"),
+                token: Some("generic_unaffiliated"),
+            }),
+            // An unassigned leader is the same shape one level down, and is
+            // permitted for the same reason.
+            CharacterLaneRow::UnitLeader(UnitLeaderRow {
+                country_tag_db_id: 0,
+                unit_leader_id: 991,
+                char_id: 4711,
+                leader_kind: UNIT_LEADER_ARMY,
+                skill: Some(3),
+                experience_raw: Some(0),
+                attack: Some(1),
+                defense: Some(1),
+                planning: Some(1),
+                logistics: Some(1),
+                maneuvering: None,
+                coordination: None,
+                token: Some("generic_unaffiliated"),
+                name: Some("Unaffiliated Character"),
+                trait_count: 0,
+            }),
+        ];
+        let payload = encode_payload(1, 0, SCHEMA_ROOTS_VALIDATED, &rows);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "a character with no country must encode and decode cleanly: {:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.row_count_total, 2);
+        assert_eq!(summary.unit_leader_rows, 1);
+
+        // And the ceiling above it is still enforced, so the two ends of the
+        // range cannot drift apart: this is where an over-ceiling tag is
+        // caught, which is why the census reports kind 32 rather than
+        // silently handing the encoder a tag the profile forbids.
+        let over = vec![CharacterLaneRow::Character(CharacterRow {
+            country_tag_db_id: MAX_TAG_DB_ID + 1,
+            char_id: 4712,
+            name: None,
+            token: None,
+        })];
+        let over_summary = decode_payload(0, &encode_payload(2, 0, SCHEMA_ROOTS_VALIDATED, &over));
+        assert!(
+            !over_summary.parse_errors.is_empty(),
+            "a tag over the profile ceiling must not validate"
+        );
+    }
+
     #[test]
     fn encodes_full_character_leader_cabinet_slice() {
         let rows = vec![
