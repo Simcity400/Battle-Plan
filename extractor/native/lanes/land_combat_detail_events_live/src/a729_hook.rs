@@ -519,8 +519,8 @@ pub struct TerminalDrain {
 /// A bounded, non-destructive publication view of the pending terminal records
 /// in queue order, plus all current diagnostics. Every reserved record remains
 /// in place until the matching reservation is committed, and a commit removes
-/// only the leading run the publisher declared through
-/// [`restrict_record_reservation_to_prefix`]. A failed publication must roll
+/// only the records the publisher declared through
+/// [`declare_record_reservation_consumption`]. A failed publication must roll
 /// the reservation back.
 ///
 /// The whole pending queue is offered, not just its front, because a terminal
@@ -549,13 +549,9 @@ pub struct SealedTerminalReservation {
 #[derive(Clone, Copy)]
 struct ActiveTerminalReservation {
     reservation_id: u64,
-    /// Records handed to the publisher, counted from the queue front. The
-    /// front `record_count` entries are pinned for the reservation's lifetime.
+    /// Records handed to the publisher, counted from the queue front. Those
+    /// `record_count` entries are pinned for the reservation's lifetime.
     record_count: usize,
-    /// Front records a commit removes. Starts equal to `record_count` and can
-    /// only be narrowed, by `restrict_record_reservation_to_prefix`, once the
-    /// publisher knows how far it judged.
-    consumed_count: usize,
     diagnostics: [u64; 4],
     sealed_terminal: bool,
 }
@@ -564,6 +560,13 @@ struct HookState {
     bindings: BTreeMap<usize, (u32, u64)>,
     records: VecDeque<RawTerminalRecordCapture>,
     reservation: Option<ActiveTerminalReservation>,
+    /// `(reservation_id, indices)` -- which of the reserved records a commit
+    /// removes, as indices into the reservation's handed-over slice. Set once,
+    /// by `declare_record_reservation_consumption`, and required before a
+    /// non-sealed commit so a publisher can never consume a record it did not
+    /// judge. Carrying the id makes a stale declaration unusable rather than
+    /// silently applicable to the next reservation.
+    reservation_consumption: Option<(u64, Vec<usize>)>,
     reservation_admission_sealed: bool,
 }
 
@@ -597,6 +600,7 @@ impl Default for HookState {
             // terminal callback never grows the carrier heap.
             records: VecDeque::with_capacity(MAX_PENDING_RECORDS),
             reservation: None,
+            reservation_consumption: None,
             reservation_admission_sealed: true,
         }
     }
@@ -1580,10 +1584,10 @@ fn reserve_full_terminal_drain_locked(
     state.reservation = Some(ActiveTerminalReservation {
         reservation_id,
         record_count,
-        consumed_count: record_count,
         diagnostics,
         sealed_terminal: true,
     });
+    state.reservation_consumption = None;
     Ok(SealedTerminalReservation {
         reservation_id,
         drain,
@@ -1654,6 +1658,7 @@ fn consume_sealed_terminal_reservation(
     state.records.drain(..active.record_count);
     subtract_reserved_diagnostics(active);
     state.reservation = None;
+    state.reservation_consumption = None;
     receipts.release_delivery_committed = true;
     MODULE_BASE.store(0, Ordering::Release);
     Ok(discard)
@@ -1672,6 +1677,7 @@ pub fn rollback_sealed_terminal_reservation(reservation_id: u64) -> Result<(), S
         .map_err(|_| "terminal hook state mutex poisoned during sealed rollback".to_string())?;
     matching_sealed_reservation(&state, reservation_id)?;
     state.reservation = None;
+    state.reservation_consumption = None;
     Ok(())
 }
 
@@ -1733,6 +1739,7 @@ pub(crate) fn commit_combined_preflighted(reservation_id: u64) {
     state.records.drain(..active.record_count);
     subtract_reserved_diagnostics(active);
     state.reservation = None;
+    state.reservation_consumption = None;
     let receipt_mutex = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
     let mut receipts = match receipt_mutex.lock() {
         Ok(receipts) => receipts,
@@ -1788,6 +1795,7 @@ pub(crate) fn rollback_combined_preflighted(reservation_id: u64) {
     debug_assert!(active.sealed_terminal);
     debug_assert!(state.reservation_admission_sealed);
     state.reservation = None;
+    state.reservation_consumption = None;
 }
 
 fn matching_sealed_reservation(
@@ -1998,9 +2006,9 @@ fn subtract_reserved_diagnostics(active: ActiveTerminalReservation) {
 /// is pending. Only one reservation may exist so a publisher cannot overtake an
 /// older record while hook callbacks append newer records at the back.
 ///
-/// The publisher declares how far it actually judged with
-/// [`restrict_record_reservation_to_prefix`]; a commit then removes exactly
-/// that leading run and leaves the rest queued in order.
+/// The publisher names exactly which reserved records it decided, with
+/// [`declare_record_reservation_consumption`]; a commit then removes exactly
+/// those and leaves the rest queued in their relative order.
 ///
 /// This offers the whole queue rather than only its front because each terminal
 /// record has exactly one payload it may legally appear in -- the one carrying
@@ -2031,10 +2039,10 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
     state.reservation = Some(ActiveTerminalReservation {
         reservation_id,
         record_count,
-        consumed_count: record_count,
         diagnostics,
         sealed_terminal: false,
     });
+    state.reservation_consumption = None;
     Ok(Some(TerminalRecordReservation {
         reservation_id,
         drain: TerminalDrain {
@@ -2047,54 +2055,67 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
     }))
 }
 
-/// Narrow the active reservation's consuming prefix to `consumed` records.
+/// Declare exactly which of the reserved records a commit will remove, as
+/// indices into the slice the reservation handed over.
 ///
-/// A reservation starts out consuming everything it handed over. The publisher
-/// walks the reserved records in order and stops at the first one it cannot yet
-/// decide; `consumed` is how many it decided. A later commit removes exactly
-/// that many front records and leaves the undecided tail queued, in order, for
-/// the frame that can decide it.
+/// The publisher judges every reserved record and names the ones it decided.
+/// The declaration is deliberately NOT a prefix. Queue order is capture order,
+/// which is not the same as the order the combats leave the roster, so a record
+/// whose one publishable frame is still ahead can sit in front of one whose
+/// frame is NOW. Letting the undecided record block its successor would spend
+/// that successor's only opportunity -- the head-of-line defect in a different
+/// costume.
 ///
-/// The prefix may only ever shrink. Growing it would let a publisher commit
-/// records it never judged, which is the data-destroying half of the two
-/// dispositions this exists to avoid.
-pub fn restrict_record_reservation_to_prefix(
+/// Fails closed: the indices must be strictly increasing and inside the
+/// reserved range, and a reservation may be declared only once, so a publisher
+/// can never consume a record it did not judge. Undeclared records keep their
+/// places and their relative order.
+pub fn declare_record_reservation_consumption(
     reservation_id: u64,
-    consumed: usize,
+    consumed: &[usize],
 ) -> Result<(), String> {
-    let _individual = try_admit_individual_api("terminal record prefix restriction")?;
+    let _individual = try_admit_individual_api("terminal record consumption declaration")?;
     let mut state = STATE
         .get_or_init(|| Mutex::new(HookState::default()))
         .lock()
-        .map_err(|_| "terminal hook reservation prefix mutex poisoned".to_string())?;
-    let active = match state.reservation.as_mut() {
+        .map_err(|_| "terminal hook reservation consumption mutex poisoned".to_string())?;
+    let active = match state.reservation {
         Some(active) if active.reservation_id == reservation_id => active,
         Some(active) => {
             return Err(format!(
-                "terminal hook reservation prefix id mismatch ({reservation_id} != {})",
+                "terminal hook reservation consumption id mismatch ({reservation_id} != {})",
                 active.reservation_id
             ));
         }
         None => {
-            return Err("terminal hook reservation prefix without an active reservation".into());
+            return Err(
+                "terminal hook reservation consumption without an active reservation".into(),
+            );
         }
     };
     if active.sealed_terminal {
-        return Err("terminal hook sealed reservation has no publisher-declared prefix".into());
+        return Err("terminal hook sealed reservation has no publisher declaration".into());
     }
-    if consumed > active.consumed_count {
+    if state.reservation_consumption.is_some() {
+        return Err("terminal hook reservation consumption is already declared".into());
+    }
+    if consumed.windows(2).any(|pair| pair[0] >= pair[1])
+        || consumed
+            .last()
+            .is_some_and(|index| *index >= active.record_count)
+    {
         return Err(format!(
-            "terminal hook reservation prefix {consumed} exceeds the reserved prefix {}",
-            active.consumed_count
+            "terminal hook reservation consumption is not strictly increasing inside 0..{}",
+            active.record_count
         ));
     }
-    active.consumed_count = consumed;
+    state.reservation_consumption = Some((reservation_id, consumed.to_vec()));
     Ok(())
 }
 
 /// Commit the exact active reservation after its projected rows have been
-/// durably published. Exactly the declared leading run is removed; every record
-/// behind it keeps its place and its order.
+/// durably published. Exactly the declared records are removed; every other
+/// reserved record keeps its place and its relative order.
 pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record commit")?;
     let mut state = STATE
@@ -2119,13 +2140,29 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
         );
     }
     validate_reserved_diagnostics(active, reservation_id)?;
-    if active.consumed_count > active.record_count {
-        return Err("terminal hook reservation consumes more than it reserved".into());
-    }
-    if state.records.len() < active.consumed_count {
+    // Fail closed on an undeclared commit rather than guessing. Consuming
+    // everything would destroy records the publisher never judged, and
+    // consuming nothing would silently stop the queue draining.
+    let consumed = match state.reservation_consumption.take() {
+        Some((declared_id, consumed)) if declared_id == reservation_id => consumed,
+        Some(other) => {
+            state.reservation_consumption = Some(other);
+            return Err("terminal hook reservation commit consumption id mismatch".into());
+        }
+        None => {
+            return Err("terminal hook reservation commit without a declared consumption".into())
+        }
+    };
+    if consumed.last().is_some_and(|index| {
+        *index >= active.record_count || *index >= state.records.len()
+    }) {
+        state.reservation_consumption = Some((reservation_id, consumed));
         return Err("terminal hook reserved records disappeared before commit".into());
     }
-    state.records.drain(..active.consumed_count);
+    // Highest index first so the lower ones stay valid as the queue shrinks.
+    for index in consumed.iter().rev() {
+        state.records.remove(*index);
+    }
     subtract_reserved_diagnostics(active);
     state.reservation = None;
     Ok(())
@@ -2148,6 +2185,7 @@ pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
                 );
             }
             state.reservation = None;
+            state.reservation_consumption = None;
             Ok(())
         }
         Some(active) => Err(format!(
@@ -2172,7 +2210,7 @@ pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
 /// which is counted as a drop exactly as it is after a rollback.
 ///
 /// `commit_record_reservation` is not a substitute: it pops the declared
-/// prefix. `rollback_record_reservation` is not a substitute: it leaves the
+/// records. `rollback_record_reservation` is not a substitute: it leaves the
 /// counters.
 pub fn release_record_reservation_diagnostics(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record diagnostic release")?;
@@ -2200,6 +2238,7 @@ pub fn release_record_reservation_diagnostics(reservation_id: u64) -> Result<(),
     validate_reserved_diagnostics(active, reservation_id)?;
     subtract_reserved_diagnostics(active);
     state.reservation = None;
+    state.reservation_consumption = None;
     Ok(())
 }
 
@@ -2906,7 +2945,6 @@ mod terminal_diagnostic_release_tests {
         state.reservation = Some(ActiveTerminalReservation {
             reservation_id: 4_242,
             record_count: 1,
-            consumed_count: 1,
             diagnostics: [0, 0, 1, 0],
             sealed_terminal: false,
         });
@@ -3076,7 +3114,7 @@ mod terminal_record_verdict_tests {
 }
 
 #[cfg(test)]
-mod terminal_reservation_prefix_tests {
+mod terminal_reservation_consumption_tests {
     use super::*;
 
     struct InstalledGuard;
@@ -3145,8 +3183,8 @@ mod terminal_reservation_prefix_tests {
     ///
     /// FALSIFIABILITY: make `reserve_pending_records` offer only
     /// `state.records.front()` and the second epoch is never seen; make
-    /// `commit_record_reservation` pop one record instead of the declared
-    /// prefix and the queue is not drained.
+    /// `commit_record_reservation` remove one record instead of the declared
+    /// set and the queue is not drained as declared.
     #[test]
     fn the_whole_queue_is_offered_so_a_decided_front_cannot_strand_the_rest() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3173,27 +3211,90 @@ mod terminal_reservation_prefix_tests {
             "reserving must not remove or reorder anything"
         );
 
-        // The publisher decided the first two and stopped at the third.
-        restrict_record_reservation_to_prefix(reservation.reservation_id, 2)
-            .expect("declared prefix");
+        // The publisher decided the first two and could not decide the third.
+        declare_record_reservation_consumption(reservation.reservation_id, &[0, 1])
+            .expect("declared consumption");
         commit_record_reservation(reservation.reservation_id).expect("commit");
         assert_eq!(
             queued_epochs(),
             vec![(3, 1)],
-            "exactly the decided prefix is removed and the rest keeps its order"
+            "exactly the decided records are removed and the rest keeps its order"
         );
     }
 
-    /// The declared prefix may shrink but never grow, and a commit removes
-    /// exactly it.
+    /// An undecided record must not block the record BEHIND it.
     ///
-    /// Growing it would let a publisher consume records it never judged, which
-    /// is precisely the data destruction the third disposition exists to avoid.
+    /// Queue order is capture order, which is not the order the combats leave
+    /// the roster, so the queue can hold [still-live, ends-now]. Each record has
+    /// exactly one frame it may publish in, so making the second wait for the
+    /// first spends the second's only opportunity -- the head-of-line defect
+    /// again, one record further along. The declaration is therefore a set, not
+    /// a prefix.
     ///
-    /// FALSIFIABILITY: drop the `consumed > active.consumed_count` refusal, or
-    /// make the commit drain `record_count` instead of `consumed_count`.
+    /// FALSIFIABILITY: make the declaration reject a set that does not start at
+    /// zero, or make the commit remove a prefix of the same length, and the
+    /// surviving epochs are the wrong ones.
     #[test]
-    fn the_declared_prefix_only_shrinks_and_bounds_the_commit() {
+    fn a_record_that_cannot_be_decided_does_not_block_the_one_behind_it() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(20, 1), (21, 1), (22, 1)]);
+
+        let reservation = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        // Only the middle record could be decided; the outer two are still live.
+        declare_record_reservation_consumption(reservation.reservation_id, &[1])
+            .expect("declared consumption");
+        commit_record_reservation(reservation.reservation_id).expect("commit");
+        assert_eq!(
+            queued_epochs(),
+            vec![(20, 1), (22, 1)],
+            "only the decided record leaves, and the undecided ones keep their order"
+        );
+    }
+
+    /// A commit with no declaration must fail rather than guess.
+    ///
+    /// Guessing "everything" destroys records the publisher never judged;
+    /// guessing "nothing" silently stops the queue draining. Both are the exact
+    /// failure modes this disposition exists to prevent.
+    ///
+    /// FALSIFIABILITY: default an undeclared commit to either guess.
+    #[test]
+    fn an_undeclared_commit_is_refused_and_changes_nothing() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(30, 1), (31, 1)]);
+
+        let reservation = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        assert!(
+            commit_record_reservation(reservation.reservation_id).is_err(),
+            "an undeclared commit must fail closed"
+        );
+        assert_eq!(
+            queued_epochs(),
+            vec![(30, 1), (31, 1)],
+            "a refused commit must not remove anything"
+        );
+        rollback_record_reservation(reservation.reservation_id).expect("rollback");
+    }
+
+    /// The declaration cannot reach past what was reserved, cannot repeat, and
+    /// is exactly what the commit removes.
+    ///
+    /// Reaching past the reservation would consume records the publisher never
+    /// saw; redeclaring would let a second, wider claim replace a narrow one.
+    ///
+    /// FALSIFIABILITY: drop the range check, drop the canonical-order check,
+    /// drop the already-declared refusal, or make the commit remove
+    /// `record_count` records instead of the declared ones.
+    #[test]
+    fn the_declaration_is_bounded_single_shot_and_exactly_what_the_commit_removes() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -3202,16 +3303,24 @@ mod terminal_reservation_prefix_tests {
         let reservation = reserve_pending_records()
             .expect("reservation")
             .expect("records are pending");
-        restrict_record_reservation_to_prefix(reservation.reservation_id, 1).expect("narrow");
         assert!(
-            restrict_record_reservation_to_prefix(reservation.reservation_id, 2).is_err(),
-            "a publisher must not be able to widen its own consuming prefix"
+            declare_record_reservation_consumption(reservation.reservation_id, &[0, 3]).is_err(),
+            "a publisher must not name a record outside its own reservation"
+        );
+        assert!(
+            declare_record_reservation_consumption(reservation.reservation_id, &[1, 0]).is_err(),
+            "the declaration must be canonical so the commit's removal order is defined"
+        );
+        declare_record_reservation_consumption(reservation.reservation_id, &[0]).expect("declare");
+        assert!(
+            declare_record_reservation_consumption(reservation.reservation_id, &[0, 1]).is_err(),
+            "a publisher must not be able to widen its claim by redeclaring"
         );
         commit_record_reservation(reservation.reservation_id).expect("commit");
         assert_eq!(
             queued_epochs(),
             vec![(5, 2), (6, 2)],
-            "the commit must honour the narrowed prefix, not the reserved count"
+            "the commit must honour the declaration, not the reserved count"
         );
     }
 
