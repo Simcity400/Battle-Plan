@@ -100,6 +100,11 @@ function Get-PassiveBytesSha256 {
 function Add-PassiveLittleEndianBytes {
     param(
         [Parameter(Mandatory = $true)]
+        # A mandatory collection parameter also rejects an EMPTY collection in
+        # Windows PowerShell, and every caller passes a freshly-created empty
+        # List[byte] on its first append. Without this the whole passive READY
+        # digest path threw on its first call and could never run.
+        [AllowEmptyCollection()]
         [Collections.Generic.List[byte]]$Destination,
         [Parameter(Mandatory = $true)]
         [ValidateSet('u16', 'u32', 'u64', 'i32')]
@@ -367,7 +372,10 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
         Add-PassiveLittleEndianBytes `
             $entry u16 ([uint16]::Parse($match.Groups[3].Value))
         Add-PassiveSha256Bytes $entry $moduleSha
-        Add-PassiveLittleEndianBytes $entry u64 (
+        # $( ) not ( ): in argument position a bare parenthesis begins an
+        # expression, so `if` was parsed as a command name and every call threw
+        # "The term 'if' is not recognized". A subexpression admits statements.
+        Add-PassiveLittleEndianBytes $entry u64 $(
             if ($match.Groups[2].Value.StartsWith('0x')) {
                 [Convert]::ToUInt64($match.Groups[2].Value.Substring(2), 16)
             } else {
@@ -447,6 +455,11 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
 function Add-PassiveSha256Bytes {
     param(
         [Parameter(Mandatory = $true)]
+        # A mandatory collection parameter also rejects an EMPTY collection in
+        # Windows PowerShell, and every caller passes a freshly-created empty
+        # List[byte] on its first append. Without this the whole passive READY
+        # digest path threw on its first call and could never run.
+        [AllowEmptyCollection()]
         [Collections.Generic.List[byte]]$Destination,
         [Parameter(Mandatory = $true)][string]$Value
     )
@@ -457,6 +470,11 @@ function Add-PassiveSha256Bytes {
 function Add-PassiveHmacSha256 {
     param(
         [Parameter(Mandatory = $true)]
+        # A mandatory collection parameter also rejects an EMPTY collection in
+        # Windows PowerShell, and every caller passes a freshly-created empty
+        # List[byte] on its first append. Without this the whole passive READY
+        # digest path threw on its first call and could never run.
+        [AllowEmptyCollection()]
         [Collections.Generic.List[byte]]$Destination,
         [Parameter(Mandatory = $true)][string]$Token
     )
@@ -625,7 +643,11 @@ function Assert-PassiveReadySourceContractParity {
     $contract = Get-Content -LiteralPath $contractPath -Raw
     $profile = Get-Content -LiteralPath $profilePath -Raw
     $payload = Get-Content -LiteralPath $payloadPath -Raw
-    $host = Get-Content -LiteralPath $hostPath -Raw
+    # NOT $host: that is a read-only PowerShell automatic variable, so assigning
+    # it threw SessionStateUnauthorizedAccessException and every capture died
+    # here -- after the recorder had already injected -- leaving the graded
+    # window open, the settings guard applied, and no manifest on disk.
+    $hostSource = Get-Content -LiteralPath $hostPath -Raw
     $requiredContractFragments = @(
         'pub const PASSIVE_READY_DIGEST_VERSION: u16 = 1;',
         'pub const PRODUCTION_DOMAIN_QUEUE_CAPACITY_V1: u32 = 1;',
@@ -711,7 +733,7 @@ function Assert-PassiveReadySourceContractParity {
         }
         $previousOffset = $offset
     }
-    if (-not $host.Contains(
+    if (-not $hostSource.Contains(
         '"clock_observation_ordinal": ready.clock_observation_ordinal'
     )) {
         throw 'Passive READY receipt producer no longer emits clock_observation_ordinal.'
@@ -848,7 +870,8 @@ function Test-PassiveCaptureReadyReceipt {
         }
     }
 
-    $pid = ConvertTo-PassiveReceiptInteger $ready.pid u32 'pid'
+    # NOT $pid: read-only PowerShell automatic variable, same failure as $host.
+    $receiptPid = ConvertTo-PassiveReceiptInteger $ready.pid u32 'pid'
     $creation = ConvertTo-PassiveReceiptInteger `
         $ready.process_creation_filetime_utc u64 `
         'process_creation_filetime_utc'
@@ -964,7 +987,7 @@ function Test-PassiveCaptureReadyReceipt {
         [string]$ready.status -cne 'ready' -or
         $ready.capture_policy -isnot [string] -or
         [string]$ready.capture_policy -cne 'passive-observer-only' -or
-        $pid -ne $TargetPid -or
+        $receiptPid -ne $TargetPid -or
         $creation -ne $TargetCreationFiletimeUtc -or
         $ready.session_id -isnot [string] -or
         [string]$ready.session_id -cne $SessionId -or
@@ -1070,7 +1093,8 @@ function Test-PassiveCaptureTeardownReceipt {
         -Value $teardown `
         -Expected $teardownProperties `
         -Label 'capture teardown receipt'
-    $pid = ConvertTo-PassiveReceiptInteger $teardown.pid u32 'teardown.pid'
+    # NOT $pid: read-only PowerShell automatic variable, same failure as $host.
+    $receiptPid = ConvertTo-PassiveReceiptInteger $teardown.pid u32 'teardown.pid'
     $creation = ConvertTo-PassiveReceiptInteger `
         $teardown.process_creation_filetime_utc u64 `
         'teardown.process_creation_filetime_utc'
@@ -1083,7 +1107,7 @@ function Test-PassiveCaptureTeardownReceipt {
         [string]$teardown.status -cne 'collector-unloaded' -or
         $teardown.capture_policy -isnot [string] -or
         [string]$teardown.capture_policy -cne 'passive-observer-only' -or
-        $pid -ne $TargetPid -or
+        $receiptPid -ne $TargetPid -or
         $creation -ne $TargetCreationFiletimeUtc -or
         $teardown.session_id -isnot [string] -or
         [string]$teardown.session_id -cne $SessionId -or
