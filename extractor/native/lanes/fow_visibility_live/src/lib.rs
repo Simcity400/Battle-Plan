@@ -15,6 +15,7 @@ mod a729;
 #[cfg(windows)]
 pub use a729::{
     drain_latest, failed_install_removal_unproved, install, installed, installed_hook_receipts,
+    post_close_refused_observations,
     invocation_counts, take_released_hook_receipts, uninstall, PovVisibilityDrainError,
     PovVisibilityHookError, PovVisibilityInvocationCounts, PovVisibilityInvocationOutcome,
     HOOK_RECEIPT_COUNT, PRODUCER_LOGICAL_NAME, PRODUCER_RVA,
