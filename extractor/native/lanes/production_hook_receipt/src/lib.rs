@@ -558,6 +558,34 @@ enum RelayDisposition {
     RetainedUntilProcessExit,
 }
 
+/// Whether an already-minted release receipt describes exactly the route now
+/// being asked for: both disposition booleans and the policy id.
+///
+/// Pure, so the rule can be exercised over every combination without a live
+/// custody registry. Its single caller is the already-`Released` retry arm of
+/// `observe_released_set_with_disposition`.
+///
+/// THE WIRING IS NOT TESTED AND CANNOT BE, offline. Reaching that arm needs a
+/// crate-owned custody entry already in the `Released` state, which needs an
+/// `observe_main_module()` that resolves to the exact-a729 `hoi4.exe` -- no test
+/// process is one. A build that deleted the call site would therefore stay
+/// green: what a test can fail on here is the rule, not its use. Closing that
+/// needs the release path exercised inside a live patched game, or a custody
+/// seam this crate does not currently expose.
+#[cfg(windows)]
+fn released_matches_relay_disposition(
+    receipt: &ReleasedRvaHookReceipt,
+    relay: RelayDisposition,
+) -> bool {
+    let (expected_freed, expected_retained) = match relay {
+        RelayDisposition::Freed => (true, false),
+        RelayDisposition::RetainedUntilProcessExit => (false, true),
+    };
+    receipt.relay_freed == expected_freed
+        && receipt.relay_retained_until_process_exit == expected_retained
+        && receipt.teardown_policy_id == relay.policy_id()
+}
+
 #[cfg(windows)]
 impl RelayDisposition {
     const fn policy_id(self) -> &'static str {
@@ -2898,7 +2926,26 @@ fn observe_released_set_with_disposition<const N: usize>(
             ));
         }
         let released = match state {
-            HookCustodyState::Released(released) => released.receipt,
+            // A retry with the same receipts returns the already-minted release
+            // rather than minting a second one -- but only if it is asking for
+            // the SAME teardown route. Without this check a lane that released
+            // through the freeing route could call the retained route and get
+            // back a receipt saying `relay_freed: true`, or the reverse: the
+            // retry would silently answer a question nobody asked, and the
+            // caller would ship a receipt attesting a disposition it did not
+            // perform. That is precisely the overclaim the retained route
+            // exists to prevent, so a route mismatch is refused.
+            HookCustodyState::Released(released) => {
+                if !released_matches_relay_disposition(&released.receipt, relay) {
+                    return Err(format!(
+                        "{} was already released under {}, not {}",
+                        expected.logical_name,
+                        released.receipt.teardown_policy_id,
+                        relay.policy_id()
+                    ));
+                }
+                released.receipt
+            }
             HookCustodyState::Active(_) => {
                 let release_seal = next_receipt_seal()?;
                 ReleasedRvaHookReceipt {
@@ -8074,8 +8121,9 @@ mod pointer_slot_provenance_tests {
 #[cfg(all(test, windows))]
 mod retained_relay_release_tests {
     use super::{
-        observe_released_with_retained_relay, ExpectedRvaHook, HookPatchPlacement,
-        HookTeardownAttestation, InstalledRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        observe_released_with_retained_relay, released_matches_relay_disposition,
+        ExpectedRvaHook, HookPatchPlacement, HookTeardownAttestation, InstalledRvaHookReceipt,
+        RelayDisposition, ReleasedRvaHookReceipt, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
         MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
         MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID,
     };
@@ -8144,6 +8192,115 @@ mod retained_relay_release_tests {
             "expected the claimed-free refusal, got {error}"
         );
         assert!(error.contains(SOME_HOOK.logical_name), "{error}");
+    }
+
+    /// A release receipt shaped exactly as the freeing route mints one. It owns
+    /// no custody; only its disposition fields are read below.
+    fn a_freed_release_receipt() -> ReleasedRvaHookReceipt {
+        let installed = a_receipt_that_owns_nothing();
+        ReleasedRvaHookReceipt {
+            logical_name: installed.logical_name,
+            observed_module_name: installed.observed_module_name,
+            observed_module_sha256: installed.observed_module_sha256,
+            observed_pe_identity_sha256: installed.observed_pe_identity_sha256,
+            observed_pe_timestamp: installed.observed_pe_timestamp,
+            observed_size_of_image: installed.observed_size_of_image,
+            observed_rva: installed.observed_rva,
+            observed_runtime_address: installed.observed_runtime_address,
+            target_patch_len: installed.target_patch_len,
+            primitive_id: installed.primitive_id,
+            hook_spec_sha256: installed.hook_spec_sha256,
+            original_prefix_len: installed.original_prefix_len,
+            original_prefix_sha256: installed.original_prefix_sha256,
+            observed_relay_address: installed.observed_relay_address,
+            observed_detour_address: installed.observed_detour_address,
+            teardown_owner_token: installed.teardown_owner_token,
+            restored_prefix_sha256: installed.original_prefix_sha256,
+            callbacks_quiesced: true,
+            hook_removed: true,
+            relay_freed: true,
+            relay_retained_until_process_exit: false,
+            teardown_policy_id: MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID,
+            released: true,
+            authenticity_seal: 1,
+        }
+    }
+
+    /// Falsifiable: fails if the already-released retry stops checking that the
+    /// route being asked for is the route the receipt was minted under.
+    ///
+    /// `observe_released_set_with_disposition` answers a retry from custody
+    /// instead of minting twice. Without this predicate a lane that released
+    /// through the freeing route could call the retained route and be handed
+    /// back a `relay_freed: true` receipt -- and would then ship it as evidence
+    /// of a retention it never performed, or the reverse. The registry check
+    /// itself needs a live exact-a729 custody entry, so the rule it consults is
+    /// exercised here directly over every combination.
+    #[test]
+    fn an_already_released_receipt_only_answers_its_own_route() {
+        let freed = a_freed_release_receipt();
+        assert!(freed.relay_freed && !freed.relay_retained_until_process_exit);
+        assert!(released_matches_relay_disposition(
+            &freed,
+            RelayDisposition::Freed
+        ));
+        assert!(
+            !released_matches_relay_disposition(&freed, RelayDisposition::RetainedUntilProcessExit),
+            "the freed receipt must not answer a retained-route retry"
+        );
+
+        let mut retained = freed;
+        retained.relay_freed = false;
+        retained.relay_retained_until_process_exit = true;
+        retained.teardown_policy_id = MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID;
+        assert!(released_matches_relay_disposition(
+            &retained,
+            RelayDisposition::RetainedUntilProcessExit
+        ));
+        assert!(
+            !released_matches_relay_disposition(&retained, RelayDisposition::Freed),
+            "the retained receipt must not answer a freed-route retry"
+        );
+
+        // The policy id is checked too, not only the booleans: a receipt whose
+        // label disagrees with its own flags answers neither route.
+        let mut mislabelled = retained;
+        mislabelled.teardown_policy_id = MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID;
+        assert!(!released_matches_relay_disposition(
+            &mislabelled,
+            RelayDisposition::RetainedUntilProcessExit
+        ));
+        assert!(!released_matches_relay_disposition(
+            &mislabelled,
+            RelayDisposition::Freed
+        ));
+
+        // Both booleans are checked independently, not one inferred from the
+        // other. On a well-formed receipt they are always opposites, which
+        // makes either check alone look sufficient; a SELF-CONTRADICTORY
+        // receipt is what tells them apart, and one must answer no route at all
+        // rather than whichever route its first field happens to agree with.
+        let mut claims_both = freed;
+        claims_both.relay_retained_until_process_exit = true;
+        assert!(
+            !released_matches_relay_disposition(&claims_both, RelayDisposition::Freed),
+            "a receipt claiming both dispositions answers neither"
+        );
+        assert!(!released_matches_relay_disposition(
+            &claims_both,
+            RelayDisposition::RetainedUntilProcessExit
+        ));
+
+        let mut claims_neither = freed;
+        claims_neither.relay_freed = false;
+        assert!(
+            !released_matches_relay_disposition(&claims_neither, RelayDisposition::Freed),
+            "a receipt claiming no disposition answers neither"
+        );
+        assert!(!released_matches_relay_disposition(
+            &claims_neither,
+            RelayDisposition::RetainedUntilProcessExit
+        ));
     }
 
     /// Falsifiable: fails if the two teardown policies ever become the same
