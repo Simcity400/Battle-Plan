@@ -2633,7 +2633,8 @@ mod minhook_relay_layout_tests {
 mod retained_detour_region_tests {
     use super::{
         close_callbacks_and_retain_regions, exact_runtime_function_range,
-        require_regions_recorded_retained, retained_detour_regions,
+        require_regions_recorded_retained, retained_detour_regions, retained_detour_regions_slot,
+        RetainedDetourRegion,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2757,5 +2758,27 @@ mod retained_detour_region_tests {
         // An empty attestation is not a vacuous success.
         require_regions_recorded_retained("census probe", &[])
             .expect_err("attesting retention over nothing must be refused");
+
+        // A census entry that records the range but does NOT claim retention
+        // must not satisfy a retention attestation. This can only be reached by
+        // writing the registry directly, because close_callbacks_and_retain_regions
+        // always records true -- which is exactly why the check on that field
+        // would otherwise be untestable, and therefore deletable, dead weight.
+        let recorded_but_not_retained = (0x5400_0000usize, 0x5400_0040usize);
+        retained_detour_regions_slot()
+            .lock()
+            .expect("retention census is not poisoned")
+            .push(RetainedDetourRegion {
+                label: "census probe without retention".to_string(),
+                regions: vec![recorded_but_not_retained],
+                callbacks_closed_to_new_entries: true,
+                retained_for_process_lifetime: false,
+            });
+        let error = require_regions_recorded_retained("census probe", &[recorded_but_not_retained])
+            .expect_err("a census entry that claims no retention cannot back a retained receipt");
+        assert!(
+            error.contains("the retention census does not record"),
+            "{error}"
+        );
     }
 }

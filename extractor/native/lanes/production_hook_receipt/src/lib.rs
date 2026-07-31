@@ -8267,6 +8267,13 @@ mod retained_relay_release_tests {
             error.contains(OTHER_HOOK.logical_name),
             "the refusal must name the element that lied, got {error}"
         );
+
+        // An empty set is not a vacuous success: the delegated route refuses it
+        // before observing any module, so a caller cannot mint "nothing was
+        // released" as a release.
+        let empty = observe_released_set_with_retained_relay([], [], [])
+            .expect_err("an empty release set is not a release");
+        assert!(empty.contains("release set is empty"), "{empty}");
     }
 
     /// A release receipt shaped exactly as the freeing route mints one. It owns
