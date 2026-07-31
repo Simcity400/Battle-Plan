@@ -3284,6 +3284,55 @@ mod terminal_reservation_consumption_tests {
         rollback_record_reservation(reservation.reservation_id).expect("rollback");
     }
 
+    /// A declaration must not outlive the reservation it belongs to.
+    ///
+    /// Sink failure is the reachable case: the frame declares, the sink fails,
+    /// the reservation rolls back, and the NEXT frame reserves the same records
+    /// again. A surviving declaration would make that frame's own declaration
+    /// refuse as already-declared and its commit refuse on the id mismatch --
+    /// fail-closed, but permanently, which is the absorbing state again.
+    ///
+    /// FALSIFIABILITY: drop the `reservation_consumption = None` from
+    /// `rollback_record_reservation` or from
+    /// `release_record_reservation_diagnostics` and the retry's declaration is
+    /// refused.
+    #[test]
+    fn a_declaration_does_not_survive_its_reservation() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(40, 1), (41, 1)]);
+
+        let first = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        declare_record_reservation_consumption(first.reservation_id, &[0]).expect("declare");
+        rollback_record_reservation(first.reservation_id).expect("rollback");
+
+        let second = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        declare_record_reservation_consumption(second.reservation_id, &[1])
+            .expect("a rolled-back declaration must not block the retry");
+        commit_record_reservation(second.reservation_id).expect("commit");
+        assert_eq!(queued_epochs(), vec![(40, 1)]);
+
+        // The diagnostic release is the other non-committing disposition and
+        // must clear the declaration the same way.
+        DROPPED_UNREADABLE.store(1, Ordering::Release);
+        let third = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        declare_record_reservation_consumption(third.reservation_id, &[0]).expect("declare");
+        release_record_reservation_diagnostics(third.reservation_id).expect("release");
+        let fourth = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        declare_record_reservation_consumption(fourth.reservation_id, &[0])
+            .expect("a released declaration must not block the retry");
+        rollback_record_reservation(fourth.reservation_id).expect("rollback");
+    }
+
     /// The declaration cannot reach past what was reserved, cannot repeat, and
     /// is exactly what the commit removes.
     ///
