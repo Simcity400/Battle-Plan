@@ -516,15 +516,26 @@ pub struct TerminalDrain {
     pub dropped_overflow: u64,
 }
 
-/// A bounded, non-destructive publication view of at most the oldest terminal
-/// record plus all current diagnostics. Any record remains at the queue front
-/// until the matching reservation is committed. A failed publication must roll
+/// A bounded, non-destructive publication view of the pending terminal records
+/// in queue order, plus all current diagnostics. Every reserved record remains
+/// in place until the matching reservation is committed, and a commit removes
+/// only the leading run the publisher declared through
+/// [`restrict_record_reservation_to_prefix`]. A failed publication must roll
 /// the reservation back.
+///
+/// The whole pending queue is offered, not just its front, because a terminal
+/// record has exactly ONE frame in which it may be published: the payload that
+/// also carries its `EVENT_PHASE_ENDED` row (enforced by
+/// `validate_payload_referential_consistency`), and the transition tracker
+/// emits that row exactly once, in the frame where the epoch leaves the combat
+/// roster. Two combats ending in the same frame therefore have exactly one
+/// shared opportunity, so a front-only view would strand every record but the
+/// first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRecordReservation {
     pub reservation_id: u64,
-    /// Publishable reservation payload. `records` contains at most one row,
-    /// while the diagnostic fields are exact non-destructive counter
+    /// Publishable reservation payload. `records` holds the pending queue in
+    /// order, while the diagnostic fields are exact non-destructive counter
     /// snapshots taken at the same reservation boundary.
     pub drain: TerminalDrain,
 }
@@ -538,7 +549,13 @@ pub struct SealedTerminalReservation {
 #[derive(Clone, Copy)]
 struct ActiveTerminalReservation {
     reservation_id: u64,
+    /// Records handed to the publisher, counted from the queue front. The
+    /// front `record_count` entries are pinned for the reservation's lifetime.
     record_count: usize,
+    /// Front records a commit removes. Starts equal to `record_count` and can
+    /// only be narrowed, by `restrict_record_reservation_to_prefix`, once the
+    /// publisher knows how far it judged.
+    consumed_count: usize,
     diagnostics: [u64; 4],
     sealed_terminal: bool,
 }
@@ -1563,6 +1580,7 @@ fn reserve_full_terminal_drain_locked(
     state.reservation = Some(ActiveTerminalReservation {
         reservation_id,
         record_count,
+        consumed_count: record_count,
         diagnostics,
         sealed_terminal: true,
     });
@@ -1924,7 +1942,7 @@ pub(crate) fn publish_combined_final_bindings(bindings: &[CombatBinding]) -> Res
 
 pub fn drain() -> Result<TerminalDrain, String> {
     Err(
-        "terminal drain is disabled; use reserve_next_record with explicit commit/rollback custody"
+        "terminal drain is disabled; use reserve_pending_records with explicit commit/rollback custody"
             .into(),
     )
 }
@@ -1974,12 +1992,21 @@ fn subtract_reserved_diagnostics(active: ActiveTerminalReservation) {
     }
 }
 
-/// Reserve a clone of the oldest terminal record without removing or moving
-/// it, together with exact snapshots of every diagnostic counter. A
-/// diagnostic-only reservation is returned when no record is pending. Only one
-/// reservation may exist so a publisher cannot overtake an older record while
-/// hook callbacks append newer records at the back.
-pub fn reserve_next_record() -> Result<Option<TerminalRecordReservation>, String> {
+/// Reserve clones of every pending terminal record, in queue order, without
+/// removing or moving any of them, together with exact snapshots of every
+/// diagnostic counter. A diagnostic-only reservation is returned when no record
+/// is pending. Only one reservation may exist so a publisher cannot overtake an
+/// older record while hook callbacks append newer records at the back.
+///
+/// The publisher declares how far it actually judged with
+/// [`restrict_record_reservation_to_prefix`]; a commit then removes exactly
+/// that leading run and leaves the rest queued in order.
+///
+/// This offers the whole queue rather than only its front because each terminal
+/// record has exactly one payload it may legally appear in -- the one carrying
+/// its `EVENT_PHASE_ENDED` row -- and several combats can end in the same
+/// frame. A front-only view gives those records no second chance.
+pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, String> {
     let _individual = try_admit_individual_api("terminal record reservation")?;
     if !INSTALLED.load(Ordering::Acquire) {
         return Err("terminal hook record reservation requires installed hooks".into());
@@ -1994,23 +2021,24 @@ pub fn reserve_next_record() -> Result<Option<TerminalRecordReservation>, String
     if state.reservation.is_some() {
         return Err("terminal hook already has an active record reservation".into());
     }
-    let record = state.records.front().cloned();
+    let records = state.records.iter().cloned().collect::<Vec<_>>();
     let diagnostics = diagnostic_snapshot();
-    if record.is_none() && diagnostics.iter().all(|count| *count == 0) {
+    if records.is_empty() && diagnostics.iter().all(|count| *count == 0) {
         return Ok(None);
     }
     let reservation_id = next_terminal_reservation_id()?;
-    let record_count = usize::from(record.is_some());
+    let record_count = records.len();
     state.reservation = Some(ActiveTerminalReservation {
         reservation_id,
         record_count,
+        consumed_count: record_count,
         diagnostics,
         sealed_terminal: false,
     });
     Ok(Some(TerminalRecordReservation {
         reservation_id,
         drain: TerminalDrain {
-            records: record.into_iter().collect(),
+            records,
             dropped_lock_busy: diagnostics[0],
             dropped_unbound: diagnostics[1],
             dropped_unreadable: diagnostics[2],
@@ -2019,8 +2047,54 @@ pub fn reserve_next_record() -> Result<Option<TerminalRecordReservation>, String
     }))
 }
 
-/// Commit the exact active reservation after its projected row has been
-/// durably published. The reserved front record is the only record removed.
+/// Narrow the active reservation's consuming prefix to `consumed` records.
+///
+/// A reservation starts out consuming everything it handed over. The publisher
+/// walks the reserved records in order and stops at the first one it cannot yet
+/// decide; `consumed` is how many it decided. A later commit removes exactly
+/// that many front records and leaves the undecided tail queued, in order, for
+/// the frame that can decide it.
+///
+/// The prefix may only ever shrink. Growing it would let a publisher commit
+/// records it never judged, which is the data-destroying half of the two
+/// dispositions this exists to avoid.
+pub fn restrict_record_reservation_to_prefix(
+    reservation_id: u64,
+    consumed: usize,
+) -> Result<(), String> {
+    let _individual = try_admit_individual_api("terminal record prefix restriction")?;
+    let mut state = STATE
+        .get_or_init(|| Mutex::new(HookState::default()))
+        .lock()
+        .map_err(|_| "terminal hook reservation prefix mutex poisoned".to_string())?;
+    let active = match state.reservation.as_mut() {
+        Some(active) if active.reservation_id == reservation_id => active,
+        Some(active) => {
+            return Err(format!(
+                "terminal hook reservation prefix id mismatch ({reservation_id} != {})",
+                active.reservation_id
+            ));
+        }
+        None => {
+            return Err("terminal hook reservation prefix without an active reservation".into());
+        }
+    };
+    if active.sealed_terminal {
+        return Err("terminal hook sealed reservation has no publisher-declared prefix".into());
+    }
+    if consumed > active.consumed_count {
+        return Err(format!(
+            "terminal hook reservation prefix {consumed} exceeds the reserved prefix {}",
+            active.consumed_count
+        ));
+    }
+    active.consumed_count = consumed;
+    Ok(())
+}
+
+/// Commit the exact active reservation after its projected rows have been
+/// durably published. Exactly the declared leading run is removed; every record
+/// behind it keeps its place and its order.
 pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record commit")?;
     let mut state = STATE
@@ -2045,19 +2119,20 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
         );
     }
     validate_reserved_diagnostics(active, reservation_id)?;
-    match active.record_count {
-        0 => {}
-        1 if state.records.pop_front().is_some() => {}
-        1 => return Err("terminal hook reserved record disappeared before commit".into()),
-        _ => return Err("terminal hook reservation record count exceeds one".into()),
+    if active.consumed_count > active.record_count {
+        return Err("terminal hook reservation consumes more than it reserved".into());
     }
+    if state.records.len() < active.consumed_count {
+        return Err("terminal hook reserved records disappeared before commit".into());
+    }
+    state.records.drain(..active.consumed_count);
     subtract_reserved_diagnostics(active);
     state.reservation = None;
     Ok(())
 }
 
-/// Roll back a failed publication. The front record remains in place and will
-/// be offered again before every record appended while it was reserved.
+/// Roll back a failed publication. Every reserved record remains in place and
+/// will be offered again before every record appended while it was reserved.
 pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record rollback")?;
     let mut state = STATE
@@ -2084,23 +2159,21 @@ pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
 }
 
 /// Release a reservation whose frame was rejected by its own drop diagnostics,
-/// consuming the diagnostic snapshot but leaving the reserved record queued.
+/// consuming the diagnostic snapshot but leaving every reserved record queued.
 ///
-/// This is the disposition for "the frame is incomplete, and the record has not
-/// been judged". The drop counters are cumulative and only a consuming
-/// transition subtracts them, so a frame that failed *because* a drop was
-/// counted must consume that snapshot or every later frame is handed the same
-/// non-zero counters and can never publish again. The record is a separate
-/// question, and deliberately an open one: it was never projected, so its
-/// validity is unknown, and popping it here would destroy a record whose
-/// matching END row may simply not have arrived yet. It is left at the front to
-/// be judged by a later frame. That is a retention, not a guarantee of
-/// delivery: once custody is released, an append into a full queue may still
-/// evict the front record, which is counted as a drop exactly as it is after a
-/// rollback.
+/// This is the disposition for "the frame counted a drop, and it consumed none
+/// of the reserved records". The drop counters are cumulative and only a
+/// consuming transition subtracts them, so a frame that reported a drop must
+/// consume that snapshot or every later frame is handed the same non-zero
+/// counters and re-reports them forever. The records are a separate question:
+/// none of them was consumed, so all of them stay queued to be judged by a
+/// later frame. That is a retention, not a guarantee of delivery: once custody
+/// is released, an append into a full queue may still evict the front record,
+/// which is counted as a drop exactly as it is after a rollback.
 ///
-/// `commit_record_reservation` is not a substitute: it pops the record.
-/// `rollback_record_reservation` is not a substitute: it leaves the counters.
+/// `commit_record_reservation` is not a substitute: it pops the declared
+/// prefix. `rollback_record_reservation` is not a substitute: it leaves the
+/// counters.
 pub fn release_record_reservation_diagnostics(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record diagnostic release")?;
     let mut state = STATE
@@ -2156,6 +2229,113 @@ pub fn requeue(records: Vec<RawTerminalRecordCapture>) -> Result<(), String> {
         state.records.push_front(record);
     }
     Ok(())
+}
+
+/// Why a captured terminal record can never be published.
+///
+/// Every variant is a PROOF, not an expiry. Nothing here is decided by how long
+/// a record has waited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalRecordUnpublishable {
+    /// The record's epoch is neither ended in this frame nor present in this
+    /// frame's authoritative combat roster.
+    ///
+    /// A terminal record row is only valid in a payload that also carries the
+    /// `EVENT_PHASE_ENDED` row for its epoch, and the transition tracker emits
+    /// that row exactly once -- in the single frame where the epoch leaves the
+    /// roster. An epoch that is absent from both sets has therefore either
+    /// already had its one ended frame, or never entered an observed roster at
+    /// all, so no future frame can carry a legal home for this record.
+    EndedPhaseUnreachable,
+    /// The captured bytes failed class/date-vtable or writer/result-byte
+    /// authentication.
+    ///
+    /// [`project_pointer_free_record`] is a pure function of the capture's
+    /// immutable `record_bytes` and `MODULE_BASE`, and `MODULE_BASE` is written
+    /// once per install and cleared only on uninstall, so while the hooks that
+    /// let this record be reserved stay installed the same call returns the
+    /// same refusal on every future frame.
+    AuthenticationFailed,
+    /// The record authenticated, its epoch's ended-phase row is in THIS frame,
+    /// and the two disagree about the combat's location.
+    ///
+    /// Both operands are fixed: the row's location comes from the capture's
+    /// immutable bytes, and the ended-phase row is the only one this epoch will
+    /// ever get. This frame was the record's one opportunity and it failed.
+    LocationDisagreesWithEndedPhase,
+}
+
+impl TerminalRecordUnpublishable {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::EndedPhaseUnreachable => "ended_phase_unreachable",
+            Self::AuthenticationFailed => "authentication_failed",
+            Self::LocationDisagreesWithEndedPhase => "location_disagrees_with_ended_phase",
+        }
+    }
+
+    /// Stable wire-ish code for the status-origin sample word.
+    pub const fn code(self) -> u64 {
+        match self {
+            Self::EndedPhaseUnreachable => 1,
+            Self::AuthenticationFailed => 2,
+            Self::LocationDisagreesWithEndedPhase => 3,
+        }
+    }
+}
+
+/// The three genuinely different outcomes of judging one captured record
+/// against one frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalRecordVerdict {
+    /// This frame is the record's ended frame and the record authenticated
+    /// against it.
+    Publishable(crate::TerminalCombatRecordRow),
+    /// The epoch is still live in this frame's authoritative roster, so its
+    /// ended-phase row is still ahead. Retain and re-judge; this is an ordinary
+    /// one-frame lead, not a failure, and it must not badge the frame.
+    EndedPhasePending,
+    /// Proven to have no publishable frame left, ever.
+    Unpublishable(TerminalRecordUnpublishable),
+}
+
+/// Decide a captured terminal record against exactly one frame.
+///
+/// `ended_location` is `Some(location)` when this frame's event rows carry the
+/// `EVENT_PHASE_ENDED` row for the capture's epoch (the inner `Option` is that
+/// row's own optional location), and `None` when they do not. `epoch_is_live`
+/// is whether this frame's authoritative combat roster still lists the epoch.
+///
+/// The two inputs are complementary by construction: the tracker builds the
+/// ended set as `previous \ current` and the roster is `current`, so no epoch
+/// is in both.
+pub fn judge_terminal_record(
+    capture: &RawTerminalRecordCapture,
+    ended_location: Option<Option<u32>>,
+    epoch_is_live: bool,
+) -> TerminalRecordVerdict {
+    let Some(expected_location) = ended_location else {
+        return if epoch_is_live {
+            TerminalRecordVerdict::EndedPhasePending
+        } else {
+            TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::EndedPhaseUnreachable)
+        };
+    };
+    let Ok(row) = project_pointer_free_record(capture) else {
+        return TerminalRecordVerdict::Unpublishable(
+            TerminalRecordUnpublishable::AuthenticationFailed,
+        );
+    };
+    if expected_location
+        .map(|location| location == row.location)
+        .unwrap_or(true)
+    {
+        TerminalRecordVerdict::Publishable(row)
+    } else {
+        TerminalRecordVerdict::Unpublishable(
+            TerminalRecordUnpublishable::LocationDisagreesWithEndedPhase,
+        )
+    }
 }
 
 pub fn project_pointer_free_record(
@@ -2676,6 +2856,12 @@ pub(crate) fn close_callbacks_and_retain_regions(
     Ok(retained)
 }
 
+/// Serialises tests that drive the process-wide terminal hook statics
+/// (`STATE`, `INSTALLED`, `MODULE_BASE`, the drop counters). They are one
+/// shared resource, and cargo runs the tests in this binary concurrently.
+#[cfg(test)]
+static TERMINAL_HOOK_STATIC_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod terminal_diagnostic_release_tests {
     use super::*;
@@ -2698,6 +2884,9 @@ mod terminal_diagnostic_release_tests {
     /// the cleared-counter assertion fails.
     #[test]
     fn releasing_poisoned_diagnostics_keeps_the_unprojected_record() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut state = STATE
             .get_or_init(|| Mutex::new(HookState::default()))
             .lock()
@@ -2717,6 +2906,7 @@ mod terminal_diagnostic_release_tests {
         state.reservation = Some(ActiveTerminalReservation {
             reservation_id: 4_242,
             record_count: 1,
+            consumed_count: 1,
             diagnostics: [0, 0, 1, 0],
             sealed_terminal: false,
         });
@@ -2739,6 +2929,323 @@ mod terminal_diagnostic_release_tests {
         assert!(state.reservation.is_none(), "custody must be released");
         state.records.clear();
         DROPPED_UNREADABLE.store(0, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod terminal_record_verdict_tests {
+    use super::*;
+
+    const TEST_BASE: usize = 0x1_0000_0000;
+
+    fn authentic_capture(
+        combat_id: u32,
+        generation: u64,
+        record_index: u32,
+        location: u32,
+    ) -> RawTerminalRecordCapture {
+        let mut record_bytes = [0u8; TERMINAL_RECORD_LEN];
+        record_bytes[0..8].copy_from_slice(
+            &(TEST_BASE.saturating_add(TERMINAL_RECORD_VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        let date_vtable = (TEST_BASE.saturating_add(GAME_DATE_VTABLE_RVA) as u64).to_le_bytes();
+        record_bytes[0x428..0x430].copy_from_slice(&date_vtable);
+        record_bytes[0x438..0x440].copy_from_slice(&date_vtable);
+        record_bytes[0x440..0x444].copy_from_slice(&location.to_le_bytes());
+        // The only (writer_kind, result_selector) pairing the projector admits
+        // for a normal writer.
+        record_bytes[0x446] = 1;
+        RawTerminalRecordCapture {
+            combat_id,
+            generation,
+            record_index,
+            writer_kind: WRITER_KIND_NORMAL,
+            record_bytes,
+        }
+    }
+
+    struct BaseGuard;
+
+    impl Drop for BaseGuard {
+        fn drop(&mut self) {
+            MODULE_BASE.store(0, Ordering::Release);
+        }
+    }
+
+    fn publish_test_module_base() -> BaseGuard {
+        MODULE_BASE.store(TEST_BASE, Ordering::Release);
+        BaseGuard
+    }
+
+    /// "Its ended row has not arrived yet" and "its ended row can never arrive"
+    /// are different facts and the queue depends on telling them apart.
+    ///
+    /// The transition tracker emits `EVENT_PHASE_ENDED` for an epoch exactly
+    /// once -- in the frame where the epoch leaves the roster -- and the payload
+    /// validator only accepts a terminal row alongside that ended row. So while
+    /// the epoch is still listed in the roster its one chance is ahead of it,
+    /// and once it is in neither set its one chance is behind it. Nothing here
+    /// is a timeout.
+    ///
+    /// FALSIFIABILITY: return `Unpublishable` for a live epoch, or
+    /// `EndedPhasePending` for an absent one, and this fails.
+    #[test]
+    fn a_live_epoch_is_pending_and_an_absent_one_is_proven_unreachable() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _base = publish_test_module_base();
+        let capture = authentic_capture(11, 4, 0, 77);
+
+        assert_eq!(
+            judge_terminal_record(&capture, None, true),
+            TerminalRecordVerdict::EndedPhasePending,
+            "an epoch the roster still lists has its one publishable frame ahead of it"
+        );
+        assert_eq!(
+            judge_terminal_record(&capture, None, false),
+            TerminalRecordVerdict::Unpublishable(
+                TerminalRecordUnpublishable::EndedPhaseUnreachable
+            ),
+            "an epoch in neither set has already spent its one publishable frame"
+        );
+    }
+
+    /// A capture that fails its own class/date/writer authentication is decided,
+    /// not deferred: the bytes are an immutable snapshot and `MODULE_BASE` is
+    /// fixed while the hooks stay installed, so the same call refuses it on
+    /// every future frame.
+    ///
+    /// FALSIFIABILITY: route the projection error to `EndedPhasePending` and
+    /// this fails.
+    #[test]
+    fn a_capture_that_fails_authentication_is_decided_not_deferred() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _base = publish_test_module_base();
+        let mut capture = authentic_capture(11, 4, 0, 77);
+        // Break exactly one authenticator: the record class vtable.
+        capture.record_bytes[0] ^= 0xFF;
+
+        assert_eq!(
+            judge_terminal_record(&capture, Some(None), false),
+            TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::AuthenticationFailed),
+        );
+
+        // ...and the writer/result pairing is the other authenticator.
+        let mut capture = authentic_capture(11, 4, 0, 77);
+        capture.record_bytes[0x446] = 0;
+        assert_eq!(
+            judge_terminal_record(&capture, Some(None), false),
+            TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::AuthenticationFailed),
+        );
+    }
+
+    /// The ended row present in this frame is the only one this epoch will ever
+    /// get, so a location disagreement with it is final.
+    ///
+    /// FALSIFIABILITY: drop the location comparison and the disagreeing capture
+    /// becomes `Publishable`.
+    #[test]
+    fn a_location_disagreement_with_the_only_ended_row_is_final() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _base = publish_test_module_base();
+        let capture = authentic_capture(11, 4, 0, 77);
+
+        assert_eq!(
+            judge_terminal_record(&capture, Some(Some(77)), false),
+            TerminalRecordVerdict::Publishable(
+                project_pointer_free_record(&capture).expect("authentic capture projects")
+            ),
+        );
+        assert_eq!(
+            judge_terminal_record(&capture, Some(Some(78)), false),
+            TerminalRecordVerdict::Unpublishable(
+                TerminalRecordUnpublishable::LocationDisagreesWithEndedPhase
+            ),
+        );
+        // An ended row that carries no location cannot disagree with one.
+        assert!(matches!(
+            judge_terminal_record(&capture, Some(None), false),
+            TerminalRecordVerdict::Publishable(_)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod terminal_reservation_prefix_tests {
+    use super::*;
+
+    struct InstalledGuard;
+
+    impl Drop for InstalledGuard {
+        fn drop(&mut self) {
+            INSTALLED.store(false, Ordering::Release);
+            if let Some(state) = STATE.get() {
+                let mut state = state.lock().unwrap_or_else(|p| p.into_inner());
+                state.records.clear();
+                state.reservation = None;
+                state.reservation_admission_sealed = true;
+            }
+            for counter in diagnostic_counters() {
+                counter.store(0, Ordering::Release);
+            }
+        }
+    }
+
+    fn queue(captures: &[(u32, u64)]) -> InstalledGuard {
+        let guard = InstalledGuard;
+        {
+            let mut state = STATE
+                .get_or_init(|| Mutex::new(HookState::default()))
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            state.records.clear();
+            state.reservation = None;
+            state.reservation_admission_sealed = false;
+            for (combat_id, generation) in captures {
+                state.records.push_back(RawTerminalRecordCapture {
+                    combat_id: *combat_id,
+                    generation: *generation,
+                    record_index: 0,
+                    writer_kind: WRITER_KIND_NORMAL,
+                    record_bytes: [0u8; TERMINAL_RECORD_LEN],
+                });
+            }
+        }
+        for counter in diagnostic_counters() {
+            counter.store(0, Ordering::Release);
+        }
+        INSTALLED.store(true, Ordering::Release);
+        guard
+    }
+
+    fn queued_epochs() -> Vec<(u32, u64)> {
+        STATE
+            .get()
+            .expect("terminal state")
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .records
+            .iter()
+            .map(|record| (record.combat_id, record.generation))
+            .collect()
+    }
+
+    /// A record the frame cannot publish must not hide the records behind it.
+    ///
+    /// Each terminal record has exactly ONE frame it may be published in, so a
+    /// front record that keeps being re-offered does not merely delay itself --
+    /// it spends the single opportunity of every record queued behind it. The
+    /// reservation therefore offers the whole queue, and a commit removes
+    /// exactly the leading run the publisher decided.
+    ///
+    /// FALSIFIABILITY: make `reserve_pending_records` offer only
+    /// `state.records.front()` and the second epoch is never seen; make
+    /// `commit_record_reservation` pop one record instead of the declared
+    /// prefix and the queue is not drained.
+    #[test]
+    fn the_whole_queue_is_offered_so_a_decided_front_cannot_strand_the_rest() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(1, 1), (2, 1), (3, 1)]);
+
+        let reservation = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        assert_eq!(
+            reservation
+                .drain
+                .records
+                .iter()
+                .map(|record| (record.combat_id, record.generation))
+                .collect::<Vec<_>>(),
+            vec![(1, 1), (2, 1), (3, 1)],
+            "every queued record must be offered, in order"
+        );
+        assert_eq!(
+            queued_epochs(),
+            vec![(1, 1), (2, 1), (3, 1)],
+            "reserving must not remove or reorder anything"
+        );
+
+        // The publisher decided the first two and stopped at the third.
+        restrict_record_reservation_to_prefix(reservation.reservation_id, 2)
+            .expect("declared prefix");
+        commit_record_reservation(reservation.reservation_id).expect("commit");
+        assert_eq!(
+            queued_epochs(),
+            vec![(3, 1)],
+            "exactly the decided prefix is removed and the rest keeps its order"
+        );
+    }
+
+    /// The declared prefix may shrink but never grow, and a commit removes
+    /// exactly it.
+    ///
+    /// Growing it would let a publisher consume records it never judged, which
+    /// is precisely the data destruction the third disposition exists to avoid.
+    ///
+    /// FALSIFIABILITY: drop the `consumed > active.consumed_count` refusal, or
+    /// make the commit drain `record_count` instead of `consumed_count`.
+    #[test]
+    fn the_declared_prefix_only_shrinks_and_bounds_the_commit() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(4, 2), (5, 2), (6, 2)]);
+
+        let reservation = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        restrict_record_reservation_to_prefix(reservation.reservation_id, 1).expect("narrow");
+        assert!(
+            restrict_record_reservation_to_prefix(reservation.reservation_id, 2).is_err(),
+            "a publisher must not be able to widen its own consuming prefix"
+        );
+        commit_record_reservation(reservation.reservation_id).expect("commit");
+        assert_eq!(
+            queued_epochs(),
+            vec![(5, 2), (6, 2)],
+            "the commit must honour the narrowed prefix, not the reserved count"
+        );
+    }
+
+    /// A rollback returns every reserved record, in order, and a frame that
+    /// decided nothing consumes nothing.
+    ///
+    /// FALSIFIABILITY: make `rollback_record_reservation` drop the reserved
+    /// prefix and this fails.
+    #[test]
+    fn a_rollback_returns_every_reserved_record_in_order() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _installed = queue(&[(7, 3), (8, 3)]);
+
+        let reservation = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        rollback_record_reservation(reservation.reservation_id).expect("rollback");
+        assert_eq!(queued_epochs(), vec![(7, 3), (8, 3)]);
+
+        let again = reserve_pending_records()
+            .expect("reservation")
+            .expect("records are pending");
+        assert_eq!(
+            again
+                .drain
+                .records
+                .iter()
+                .map(|record| (record.combat_id, record.generation))
+                .collect::<Vec<_>>(),
+            vec![(7, 3), (8, 3)],
+        );
+        rollback_record_reservation(again.reservation_id).expect("rollback");
     }
 }
 

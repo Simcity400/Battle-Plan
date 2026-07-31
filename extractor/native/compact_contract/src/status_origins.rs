@@ -106,7 +106,22 @@ pub const SO_D48_LANE_SKIPPED_RESOURCE_ROWS: usize = 41;
 /// read was torn or structurally invalid.  The row set must be retained as
 /// partial rather than interpreted as authoritative deletion.
 pub const SO_D65_PARTIAL_WALK_FAILURE: usize = 42;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 43;
+/// d55 discarded a captured terminal combat record it PROVED has no publishable
+/// frame left, and introduced PARTIAL_DATA for it.
+///
+/// A terminal record row is legal only in the payload that also carries its
+/// `EVENT_PHASE_ENDED` row, and that row is emitted exactly once. When the
+/// record cannot go there — its ended frame has passed, its bytes fail
+/// authentication, or it disagrees with the ended row that is present — the
+/// record is real data that will never be published, so the deciding frame says
+/// PARTIAL_DATA once and drops it, rather than re-offering a decided record
+/// forever. NOT `SOURCE_UNAVAILABLE`: the read completed, and this verdict is
+/// its result.
+///
+/// Sample word: `(reason_code << 32) | discarded_this_frame`, where the reason
+/// code is the LAST reason decided in the frame.
+pub const SO_D55_TERMINAL_RECORD_UNPUBLISHABLE: usize = 43;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 44;
 
 /// Unit names, index-aligned with the ids. `<name>` counts introductions
 /// (summed in the recorder); `<name>_sample` (emitted only when a site
@@ -157,6 +172,7 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d48_lane_skipped_building_rows",
     "so_d48_lane_skipped_resource_rows",
     "so_d65_partial_walk_failure",
+    "so_d55_terminal_record_unpublishable",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -568,6 +584,10 @@ mod tests {
                 "so_d48_lane_skipped_resource_rows",
             ),
             (SO_D65_PARTIAL_WALK_FAILURE, "so_d65_partial_walk_failure"),
+            (
+                SO_D55_TERMINAL_RECORD_UNPUBLISHABLE,
+                "so_d55_terminal_record_unpublishable",
+            ),
         ];
         for (id, name) in expected {
             assert_eq!(
