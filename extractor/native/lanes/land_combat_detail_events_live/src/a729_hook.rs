@@ -2444,6 +2444,17 @@ pub(crate) struct RetainedDetourRegion {
     pub(crate) callbacks_closed_to_new_entries: bool,
     /// Always true. Retained because residency cannot be disproven.
     pub(crate) retained_for_process_lifetime: bool,
+    /// The teardown owner token of the receipt roster this retention belongs
+    /// to, when the recording lane had one.
+    ///
+    /// Without this the census is only a record that SOME lifecycle once
+    /// retained a range. Because teardown keeps the MinHook entry, a later
+    /// install adopts the same entry and therefore the same relay address -- so
+    /// an entry recorded by the FIRST teardown would otherwise satisfy a second
+    /// teardown that never ran its own retention step. The token changes on
+    /// every install (`next_teardown_owner_token`), which is what makes the
+    /// check per-teardown rather than per-address.
+    pub(crate) teardown_owner_token: Option<u64>,
 }
 
 static RETAINED_DETOUR_REGIONS: OnceLock<Mutex<Vec<RetainedDetourRegion>>> = OnceLock::new();
@@ -2478,9 +2489,16 @@ pub(crate) fn retained_detour_regions() -> Result<Vec<RetainedDetourRegion>, Str
 /// free them; proving residency of the mapping after teardown needs a live
 /// patched `hoi4.exe` and no offline test can do it. What this closes is the
 /// contradiction the record itself can contain -- a receipt claiming retention
-/// for a region no retention step ever recorded.
+/// for a region THIS teardown never recorded.
+///
+/// The owner token is what makes that "this teardown" rather than "some
+/// teardown". Retention keeps the MinHook entry alive, so the next install
+/// adopts it and gets the same relay address; matching on the address alone
+/// would let the first lifecycle's census entry answer for a second lifecycle
+/// that skipped its own retention step.
 pub(crate) fn require_regions_recorded_retained(
     label: &str,
+    teardown_owner_token: u64,
     regions: &[(usize, usize)],
 ) -> Result<(), String> {
     if regions.is_empty() {
@@ -2497,14 +2515,16 @@ pub(crate) fn require_regions_recorded_retained(
         }
         let recorded = census.iter().any(|entry| {
             entry.retained_for_process_lifetime
+                && entry.teardown_owner_token == Some(teardown_owner_token)
                 && entry.regions.iter().any(|(recorded_start, recorded_end)| {
                     recorded_start == start && recorded_end == end
                 })
         });
         if !recorded {
             return Err(format!(
-                "{label} would attest process-lifetime retention for 0x{start:X}..0x{end:X}, \
-                 which the retention census does not record"
+                "{label} would attest process-lifetime retention for 0x{start:X}..0x{end:X} \
+                 under teardown owner {teardown_owner_token}, which the retention census does \
+                 not record"
             ));
         }
     }
@@ -2570,6 +2590,7 @@ pub(crate) fn exact_runtime_function_range(
 /// the answer to its absence.
 pub(crate) fn close_callbacks_and_retain_regions(
     label: &str,
+    teardown_owner_token: Option<u64>,
     counters: &[&AtomicUsize],
     regions: &[(usize, usize)],
 ) -> Result<RetainedDetourRegion, String> {
@@ -2599,6 +2620,7 @@ pub(crate) fn close_callbacks_and_retain_regions(
         regions: regions.to_vec(),
         callbacks_closed_to_new_entries: true,
         retained_for_process_lifetime: true,
+        teardown_owner_token,
     };
     retained_detour_regions_slot()
         .lock()
@@ -2683,6 +2705,7 @@ mod retained_detour_region_tests {
         BUSY.store(3, Ordering::Release);
         let error = close_callbacks_and_retain_regions(
             "test busy roster",
+            Some(1),
             &[&BUSY],
             &[(0x1000, 0x1010)],
         )
@@ -2701,7 +2724,9 @@ mod retained_detour_region_tests {
         static IDLE: AtomicUsize = AtomicUsize::new(0);
         let regions = [(0x2000usize, 0x2040usize)];
         let receipt =
-            close_callbacks_and_retain_regions("test idle roster", &[&IDLE], &regions).unwrap();
+            close_callbacks_and_retain_regions("test idle roster", Some(7), &[&IDLE], &regions)
+                .unwrap();
+        assert_eq!(receipt.teardown_owner_token, Some(7));
         assert!(receipt.callbacks_closed_to_new_entries);
         assert!(receipt.retained_for_process_lifetime);
         assert_eq!(receipt.regions, regions.to_vec());
@@ -2732,16 +2757,36 @@ mod retained_detour_region_tests {
         // so these must not collide with any other test's regions.
         let recorded = (0x5100_0000usize, 0x5100_0040usize);
         let never_recorded = (0x5200_0000usize, 0x5200_0040usize);
+        const OWNER: u64 = 0x5100;
 
-        require_regions_recorded_retained("census probe", &[recorded])
+        require_regions_recorded_retained("census probe", OWNER, &[recorded])
             .expect_err("an unrecorded region must not be attestable as retained");
 
-        close_callbacks_and_retain_regions("census probe roster", &[&IDLE], &[recorded]).unwrap();
+        close_callbacks_and_retain_regions(
+            "census probe roster",
+            Some(OWNER),
+            &[&IDLE],
+            &[recorded],
+        )
+        .unwrap();
 
-        require_regions_recorded_retained("census probe", &[recorded])
+        require_regions_recorded_retained("census probe", OWNER, &[recorded])
             .expect("the census now records this exact region");
 
-        let error = require_regions_recorded_retained("census probe", &[never_recorded])
+        // THE ADOPTION CASE. Teardown keeps the MinHook entry, so the next
+        // install adopts it and sees the SAME relay address. A census entry from
+        // the previous lifecycle must not answer for this one: without the owner
+        // token, a teardown that skipped its own retention step would be handed
+        // the earlier teardown's evidence and mint a receipt on it.
+        let error = require_regions_recorded_retained("census probe", OWNER + 1, &[recorded])
+            .expect_err("another lifecycle's retention must not answer for this one");
+        assert!(
+            error.contains("the retention census does not record"),
+            "{error}"
+        );
+        assert!(error.contains(&(OWNER + 1).to_string()), "{error}");
+
+        let error = require_regions_recorded_retained("census probe", OWNER, &[never_recorded])
             .expect_err("a region the census never saw must still be refused");
         assert!(
             error.contains("the retention census does not record"),
@@ -2752,11 +2797,11 @@ mod retained_detour_region_tests {
         // though a recorded region overlaps it: retention is recorded per exact
         // range, and a loose match would let a teardown attest more than was kept.
         let overlapping = (recorded.0, recorded.1 + 0x10);
-        require_regions_recorded_retained("census probe", &[overlapping])
+        require_regions_recorded_retained("census probe", OWNER, &[overlapping])
             .expect_err("only the exact recorded range may be attested");
 
         // An empty attestation is not a vacuous success.
-        require_regions_recorded_retained("census probe", &[])
+        require_regions_recorded_retained("census probe", OWNER, &[])
             .expect_err("attesting retention over nothing must be refused");
 
         // A census entry that records the range but does NOT claim retention
@@ -2773,9 +2818,13 @@ mod retained_detour_region_tests {
                 regions: vec![recorded_but_not_retained],
                 callbacks_closed_to_new_entries: true,
                 retained_for_process_lifetime: false,
+                teardown_owner_token: Some(OWNER),
             });
-        let error = require_regions_recorded_retained("census probe", &[recorded_but_not_retained])
-            .expect_err("a census entry that claims no retention cannot back a retained receipt");
+        let error =
+            require_regions_recorded_retained("census probe", OWNER, &[recorded_but_not_retained])
+                .expect_err(
+                    "a census entry that claims no retention cannot back a retained receipt",
+                );
         assert!(
             error.contains("the retention census does not record"),
             "{error}"
