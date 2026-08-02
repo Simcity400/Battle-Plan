@@ -123,10 +123,19 @@ impl EffectiveVfs {
                 }
             };
             let mut replace_paths = BTreeSet::new();
+            let mut replace_path_collisions = BTreeSet::new();
             for path in mount.replace_paths {
                 let normalized = normalize_game_relative_path(&path)?;
+                // REPETITION is decided on the Windows collision key (the
+                // previous `to_ascii_lowercase` was a no-op on an already
+                // ASCII-lowercased canonical form, so `gfx/entities` and
+                // `gfx/entities.` -- one directory on the host -- both mounted).
+                // The set kept for LOOKUP stays canonical: `resolve` matches a
+                // declared prefix against a logical parent, and a matching rule
+                // must not inherit the collision key's deliberate over-folding.
                 if normalized != path.replace('\\', "/")
-                    || !replace_paths.insert(normalized.to_ascii_lowercase())
+                    || !replace_path_collisions.insert(crate::windows_collision_key(&normalized)?)
+                    || !replace_paths.insert(normalized)
                 {
                     return Err("effective VFS layer has invalid or repeated replace_path".into());
                 }
@@ -597,6 +606,41 @@ mod tests {
             fs::remove_dir_all(root).unwrap();
         }
         assert_eq!(resolved[0], resolved[1]);
+    }
+
+    /// A mounted layer may not declare one directory twice, and "twice" is a
+    /// Windows filesystem question: `gfx/replace` and `gfx/replace.` are one
+    /// directory on the playback host (measured: `gfx./u.asset` opened
+    /// `gfx/u.asset`). The old check lowercased an already-lowercased canonical
+    /// form, which was a no-op, so both mounted and the second declaration was
+    /// silently free.
+    #[test]
+    fn a_layer_declaring_one_directory_under_two_windows_spellings_is_refused() {
+        // NOT "gfx/replace " -- normalize_game_relative_path trims the whole
+        // string, so that spelling is refused by the already-canonical check
+        // and would exercise the wrong branch.
+        for alias in ["gfx/replace.", "gfx/replace..", "gfx /replace"] {
+            let root = temp("alias-replace");
+            write(&root.join("game"), "gfx/fx/shared.shader", b"base");
+            write(&root.join("mod"), "gfx/fx/shared.shader", b"override");
+            let mut mounts = mounts(&root);
+            mounts[1].replace_paths = vec!["gfx/replace".into(), alias.into()];
+            let error = EffectiveVfs::new("a".repeat(64), mounts)
+                .expect_err("two spellings of one directory must be refused");
+            assert!(
+                error.contains("invalid or repeated replace_path"),
+                "{alias:?}: {error}"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+        // ... while two genuinely different directories still mount.
+        let root = temp("distinct-replace");
+        write(&root.join("game"), "gfx/fx/shared.shader", b"base");
+        write(&root.join("mod"), "gfx/fx/shared.shader", b"override");
+        let mut mounts = mounts(&root);
+        mounts[1].replace_paths = vec!["gfx/replace".into(), "gfx/other".into()];
+        EffectiveVfs::new("a".repeat(64), mounts).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

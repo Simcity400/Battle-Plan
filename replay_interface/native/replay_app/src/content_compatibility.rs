@@ -168,14 +168,53 @@ pub fn compatibility_summary(
         text.push('\n');
     }
     text.push_str(&format!(
-        "Required DLC: {required_dlcs}; selected but unused/optional DLC: {optional_dlcs} (optional items do not block playback).\nChange the playback profile with replay_app --configure, then reopen the replay."
+        "Required DLC: {required_dlcs}; selected but unused/optional DLC: {optional_dlcs} (optional items do not block playback)."
     ));
+    // The default remediation assumes the replay is fine and the SELECTION is
+    // wrong. Two classes break that assumption and need their own sentence, or
+    // the operator reconfigures a profile that was never the problem.
+    if report
+        .issues
+        .iter()
+        .any(|issue| issue.code == ContentIssueCode::InvalidPlaybackInventory)
+    {
+        text.push_str(
+            "\nThe local installation/profile inventory is itself malformed (not the replay): repair or reselect the installation, then reopen the replay.",
+        );
+    }
+    // When the ONLY defect is the replay's own manifest, the generic
+    // profile-remediation sentence contradicts the line above it and sends the
+    // operator to reconfigure an installation that is not at fault.
+    let only_invalid_manifest = !report.issues.is_empty()
+        && report
+            .issues
+            .iter()
+            .all(|issue| issue.code == ContentIssueCode::InvalidManifest);
+    if only_invalid_manifest {
+        text.push_str(
+            "\nThe replay's own content manifest is malformed: no local installation or profile can play it back, and reconfiguring will not help. Obtain an intact recording.",
+        );
+        return text;
+    }
+    if report
+        .issues
+        .iter()
+        .any(|issue| issue.code == ContentIssueCode::InvalidManifest)
+    {
+        text.push_str(
+            "\nThe replay's own content manifest is malformed: that part cannot be fixed by any local installation or profile.",
+        );
+    }
+    text.push_str(
+        "\nChange the playback profile with replay_app --configure, then reopen the replay.",
+    );
     text
 }
 
 fn issue_label(code: ContentIssueCode) -> &'static str {
     match code {
         ContentIssueCode::InvalidManifest => "invalid replay content manifest",
+        ContentIssueCode::InvalidPlaybackInventory => "invalid local content inventory",
         ContentIssueCode::GameVersionMismatch => "wrong game version",
         ContentIssueCode::ExecutableMismatch => "wrong game executable/build hash",
         ContentIssueCode::BuildProfileMismatch => "wrong game build profile",
@@ -418,6 +457,14 @@ mod tests {
     #[test]
     fn incompatible_summary_names_each_fail_closed_class() {
         let codes = [
+            ContentIssueCode::InvalidManifest,
+            ContentIssueCode::InvalidPlaybackInventory,
+            ContentIssueCode::ExecutableMismatch,
+            ContentIssueCode::BuildProfileMismatch,
+            ContentIssueCode::ProfileMismatch,
+            ContentIssueCode::LayerIdentityMismatch,
+            ContentIssueCode::SourceHashMismatch,
+            ContentIssueCode::PayloadLengthMismatch,
             ContentIssueCode::GameVersionMismatch,
             ContentIssueCode::MissingLayer,
             ContentIssueCode::RequiredDlcMismatch,
@@ -443,6 +490,20 @@ mod tests {
         };
         let text = compatibility_summary(&manifest(), &report);
         for needle in [
+            // The two malformation classes name OPPOSITE subjects and carry
+            // opposite remediations. Collapsing them sends the operator to
+            // reconfigure a local profile over a defect in the recording, or
+            // to blame a recording for a broken local install.
+            "invalid replay content manifest",
+            "invalid local content inventory",
+            "The local installation/profile inventory is itself malformed",
+            "The replay's own content manifest is malformed",
+            "wrong game executable/build hash",
+            "wrong game build profile",
+            "wrong launcher profile/playset",
+            "wrong mod/DLC identity",
+            "source container/file hash mismatch",
+            "resolved payload length mismatch",
             "wrong game version",
             "missing required mod/DLC layer",
             "missing or disabled required DLC",
@@ -458,6 +519,50 @@ mod tests {
         }
         assert!(text.contains("No missing DLC, mod, file, or setting will be silently substituted"));
         assert!(text.contains("--configure"));
+    }
+
+    /// When the recording itself is the only defect, the summary must not also
+    /// tell the operator to reconfigure a playback profile that is not at
+    /// fault -- the two sentences contradicted each other.
+    #[test]
+    fn a_manifest_only_failure_does_not_advise_reconfiguring_the_profile() {
+        let report = ContentValidationReport {
+            compatible: false,
+            verified_required_content: 0,
+            issues: vec![ContentIssue {
+                code: ContentIssueCode::InvalidManifest,
+                subject: "manifest".into(),
+                message: "content manifest digest mismatch".into(),
+            }],
+        };
+        let text = compatibility_summary(&manifest(), &report);
+        assert!(text.contains("invalid replay content manifest"), "{text}");
+        assert!(text.contains("reconfiguring will not help"), "{text}");
+        assert!(
+            !text.contains("--configure"),
+            "the profile remediation contradicts the sentence above it: {text}"
+        );
+
+        // ... but a report that ALSO carries a local-profile defect still says
+        // how to fix that one.
+        let mixed = ContentValidationReport {
+            compatible: false,
+            verified_required_content: 0,
+            issues: vec![
+                ContentIssue {
+                    code: ContentIssueCode::InvalidManifest,
+                    subject: "manifest".into(),
+                    message: "content manifest digest mismatch".into(),
+                },
+                ContentIssue {
+                    code: ContentIssueCode::RequiredDlcMismatch,
+                    subject: "dlc:used".into(),
+                    message: "required enabled state is true".into(),
+                },
+            ],
+        };
+        let text = compatibility_summary(&manifest(), &mixed);
+        assert!(text.contains("--configure"), "{text}");
     }
 
     #[test]

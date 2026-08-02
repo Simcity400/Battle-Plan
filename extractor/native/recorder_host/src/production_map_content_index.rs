@@ -6,7 +6,9 @@
 //! selected launch VFS before promotion.
 
 use portable_content_manifest::effective_vfs::EffectiveVfs;
-use portable_content_manifest::{normalize_game_relative_path, ContentManifest, UsedContentKey};
+use portable_content_manifest::{
+    normalize_game_relative_path, windows_collision_key, ContentManifest, UsedContentKey,
+};
 use portable_render_stream::{
     BufferSource, ProductionRenderFrame, RenderTargetDesc, RenderTargetInitialSource,
     StaticGeometrySource, StaticMapCommand, StaticMapPassProgram, StaticShaderResourceSource,
@@ -249,7 +251,11 @@ fn resolve_program_closure(
     let mut seen_content = BTreeSet::new();
     for key in &program.ordered_content_keys {
         let normalized = normalize_game_relative_path(key)?;
-        if normalized != *key || !seen_paths.insert(normalized.clone()) {
+        // "Repeats" is a Windows filesystem question, so it is asked on the
+        // collision key. The canonical form is a recorded identity and
+        // under-approximates NTFS, so two spellings of one file used to enter
+        // the closure as two entries.
+        if normalized != *key || !seen_paths.insert(windows_collision_key(&normalized)?) {
             return Err(format!(
                 "static program {} repeats or does not canonically name content path {key}",
                 program.payload_sha256
