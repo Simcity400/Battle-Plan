@@ -516,7 +516,11 @@ impl BoundaryTracker {
                 // WHICH hour was refused; the envelope hour is what this fold
                 // accounts. Nothing else compares them, so a record disagreeing
                 // with itself would account for one hour and report another.
-                match compact_contract::frame_refusal::FrameRefusalRecordV1::decode(payload) {
+                // Either refusal version: version 2 is what the current
+                // collector writes, version 1 is what retained streams hold.
+                // Decoding only one would report every record of the other
+                // version as a violation and abandon the fold.
+                match compact_contract::frame_refusal::decode_frame_refusal_any_version(payload) {
                     Ok(record) if record.refused_hour == header.game_hour_raw => {}
                     Ok(record) => {
                         self.violation = Some(format!(

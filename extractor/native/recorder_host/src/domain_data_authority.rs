@@ -146,8 +146,15 @@ pub const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FA
 pub const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const COMPACT_STATUS_CONTROL_INVALID: u32 = compact_contract::COMPACT_STATUS_CONTROL_INVALID;
-pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
-pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
+// Re-exported, not re-declared. A local copy of a wire constant drifts the
+// moment the contract moves, and this file held one that silently pinned the
+// diagnostic trailer to version 1 after the producer began writing version 2.
+pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] =
+    compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC;
+pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 =
+    compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION;
+pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2: u16 =
+    compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2;
 pub const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
 pub const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
 pub const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;

@@ -15,6 +15,78 @@ use super::*;
 
 const TEST_HOUR: i32 = 60_831_436;
 
+/// The completeness walk gained a producer-outcome ledger when the producer
+/// migration landed, and these hand-assembled frames have to answer for it.
+///
+/// An EMPTY ledger is NOT the faithful lift, which is worth stating because it
+/// is the obvious one. Domains 18, 29 and 47 are all in `MIGRATED_OUTCOME_DOMAINS`,
+/// and a migrated site records an outcome on its FAILURE path by construction --
+/// so a failing migrated domain with no ledger entry means the site was
+/// bypassed, which the walk correctly reports as a frame-level
+/// `migrated_site_published_outcome` finding and which correctly REFUSES the
+/// frame. Passing an empty ledger here would therefore not be "these tests do
+/// not care about outcomes"; it would silently convert every per-domain fault
+/// in this module into a frame fault and test the opposite of what these tests
+/// are named for.
+///
+/// So the ledger is built to match the frame: every domain the frame shows
+/// FAILING gets the failure outcome its producer would have recorded. Clean
+/// domains get nothing, exactly as a passing read leaves nothing to diagnose.
+///
+/// Falsifiability is unchanged -- these tests assert the DEGRADED/REFUSED split
+/// and the notice's contents, and breaking the split turns them red. What the
+/// ledger removes is a second, unrelated reason for them to be red.
+fn outcomes_for(
+    failing_domains: &[(u16, u32)],
+) -> compact_contract::domain_outcome::DomainOutcomeLedger {
+    use compact_contract::domain_outcome::{
+        read_predicate, AnswerExtent, ClockPresence, DomainOutcome, DomainOutcomeLedger,
+        ReadCompletion, READ_PREDICATE_PAYLOAD_ENCODED,
+    };
+    let mut ledger = DomainOutcomeLedger::new();
+    for (domain_id, status_flags) in failing_domains {
+        // The outcome must DERIVE the bits the record publishes, not merely
+        // exist. `audit_published_status` raises a frame-level
+        // `published_status_matches_outcome` finding when an offender's word
+        // carries less than its outcome claims, and that finding refuses the
+        // frame -- so a fixture whose ledger and PERF word disagree would test
+        // the audit rather than the degraded/refused split these tests name.
+        let completion = if status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE != 0 {
+            ReadCompletion::DidNotComplete
+        } else {
+            ReadCompletion::Completed
+        };
+        let extent = if status_flags & COMPACT_STATUS_PARTIAL_DATA != 0 {
+            AnswerExtent::Incomplete
+        } else {
+            AnswerExtent::Whole
+        };
+        let clock = if status_flags & COMPACT_STATUS_NO_CLOCK != 0 {
+            ClockPresence::Unreadable
+        } else {
+            ClockPresence::Readable
+        };
+        ledger.record(
+            DomainOutcome::failed(
+                *domain_id,
+                read_predicate(READ_PREDICATE_PAYLOAD_ENCODED)
+                    .expect("payload_encoded is a read predicate"),
+                completion,
+                extent,
+                "test fixture: this domain's read did not answer in whole",
+            )
+            .with_clock(clock),
+        );
+    }
+    ledger
+}
+
+/// For a frame with no failing domain at all: nothing failed, so nothing was
+/// diagnosed, and the empty ledger is the honest state.
+fn no_outcomes() -> compact_contract::domain_outcome::DomainOutcomeLedger {
+    outcomes_for(&[])
+}
+
 fn perf_payload_with_status(status_flags: u32) -> Vec<u8> {
     let mut payload = vec![0u8; 40];
     payload[32..36].copy_from_slice(&status_flags.to_le_bytes());
@@ -91,11 +163,19 @@ fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them(
         (29, COMPACT_STATUS_PARTIAL_DATA),
         (47, COMPACT_STATUS_SOURCE_UNAVAILABLE),
     ]);
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR);
+    let findings = compact_frame_completeness_findings(
+        &records,
+        TEST_HOUR,
+        &outcomes_for(&[
+            (29, COMPACT_STATUS_PARTIAL_DATA),
+            (47, COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        ]),
+    );
     assert_eq!(
         findings.len(),
         2,
-        "both failing domains must object, and the clean one must not"
+        "both failing domains must object, and the clean one must not; findings: {:?}",
+        findings.iter().map(|f| f.text.as_str()).collect::<Vec<_>>()
     );
 
     let FrameCompletenessVerdict::Degraded(domains) = classify_frame_completeness(&findings) else {
@@ -156,7 +236,7 @@ fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them(
 fn a_tolerated_partial_leaves_the_frame_complete_and_produces_no_notice() {
     for tolerance in compact_contract::COMPACT_EXPECTED_PARTIAL_TOLERANCES {
         let (records, _) = assembled_frame(&[(18, 0), (tolerance.domain_id, tolerance.tolerated_flags)]);
-        let findings = compact_frame_completeness_findings(&records, TEST_HOUR);
+        let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &no_outcomes());
         assert!(
             findings.is_empty(),
             "domain {} inside its tolerance must not object",
@@ -178,7 +258,7 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
     // 1. A record stamped with a different hour than the frame: the frame's
     //    identity is not trustworthy.
     let (records, _) = assembled_frame(&[(18, 0)]);
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR + 1);
+    let findings = compact_frame_completeness_findings(&records, TEST_HOUR + 1, &no_outcomes());
     assert!(!findings.is_empty());
     assert!(
         matches!(
@@ -199,7 +279,7 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
         0,
         &perf_payload_with_status(0),
     );
-    let findings = compact_frame_completeness_findings(&headless, TEST_HOUR);
+    let findings = compact_frame_completeness_findings(&headless, TEST_HOUR, &no_outcomes());
     assert!(matches!(
         classify_frame_completeness(&findings),
         FrameCompletenessVerdict::Refused
@@ -228,7 +308,7 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
         0,
         &frame_end,
     );
-    let findings = compact_frame_completeness_findings(&bad_frame_end, TEST_HOUR);
+    let findings = compact_frame_completeness_findings(&bad_frame_end, TEST_HOUR, &no_outcomes());
     assert!(matches!(
         classify_frame_completeness(&findings),
         FrameCompletenessVerdict::Refused
@@ -247,10 +327,11 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
 #[test]
 fn a_framing_fault_refuses_even_when_per_domain_faults_could_have_degraded() {
     let (records, _) = assembled_frame(&[(18, 0), (29, COMPACT_STATUS_PARTIAL_DATA)]);
+    let outcomes = outcomes_for(&[(29, COMPACT_STATUS_PARTIAL_DATA)]);
     // Walking against the wrong hour makes EVERY record raise a framing
     // finding, while domain 29 also raises its per-domain objection. The
     // per-domain half must not be able to carry the frame.
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR + 1);
+    let findings = compact_frame_completeness_findings(&records, TEST_HOUR + 1, &outcomes);
     assert!(
         findings.iter().any(|finding| finding.offender.is_none()),
         "the mismatched hour must raise a framing finding"
@@ -293,7 +374,7 @@ fn a_perf_record_too_short_to_carry_a_status_refuses_rather_than_guessing() {
         0,
         &frame_end_payload(),
     );
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR);
+    let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &no_outcomes());
     assert!(!findings.is_empty());
     assert!(
         matches!(
@@ -304,23 +385,103 @@ fn a_perf_record_too_short_to_carry_a_status_refuses_rather_than_guessing() {
     );
 }
 
-/// A failing domain that emitted no diagnostic units still gets a typed reason.
+/// A failing domain that says nothing still gets a non-empty, countable reason.
 ///
-/// Some scheduled domains attach no units at all. Their failures used to arrive
-/// as a bare status bit, and an entry with an empty reason is refused by the
-/// codec -- so without one shared name for the condition, a silent domain would
-/// have made its whole frame unpublishable. The shared name makes the silence
-/// countable instead of fatal, and it is the SAME name for every domain.
+/// Some scheduled domains attach no diagnostic units at all. Their failures
+/// used to arrive as a bare status bit, and an entry with an EMPTY reason is
+/// refused by the codec -- so without a name for the condition, a silent domain
+/// would have made its whole frame unpublishable. That is still the property,
+/// and it is still what this test is for.
+///
+/// REWRITTEN twice over by the producer migration, in both its subject and its
+/// literal, and neither change weakens it:
+///
+/// * SUBJECT. Domain 29 is in `MIGRATED_OUTCOME_DOMAINS`, and a migrated site
+///   records an outcome on its failure path by construction -- so a failing
+///   migrated domain that says nothing is a producer regression, which the walk
+///   now reports as a frame-level finding and which REFUSES the frame. That is
+///   correct, and it means "a silent domain degrades" is no longer a thing that
+///   can be asked of a migrated domain at all. It is still exactly the question
+///   for a domain the migration has not reached, so the test asks it there, and
+///   asserts the domain's non-migrated status so that migrating it later turns
+///   this red rather than silently retargeting the test.
+/// * LITERAL. The shared name is no longer the string
+///   `FRAME_DEGRADED_REASON_UNDIAGNOSED` composed by the collector; it is the
+///   reserved `Predicate::undeclared()` the offender carries, rendered into the
+///   reason. The property -- one SHARED, non-empty, countable marker, the same
+///   for every silent domain -- is asserted directly instead of through the
+///   literal, which is what it was standing in for.
 #[test]
 fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
-    let (records, _) = assembled_frame(&[(29, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR);
+    // Not migrated, and asserted rather than assumed: the whole scenario is
+    // "the producer declared nothing", which for a migrated domain is a frame
+    // fault instead.
+    const SILENT_DOMAIN: u16 = 19;
+    const OTHER_SILENT_DOMAIN: u16 = 25;
+    for domain_id in [SILENT_DOMAIN, OTHER_SILENT_DOMAIN] {
+        assert!(
+            !MIGRATED_OUTCOME_DOMAINS.contains(&domain_id),
+            "domain {domain_id} has been migrated; this test needs a domain whose producer              genuinely declares nothing, so pick another one -- do not delete the assertion"
+        );
+        assert!(
+            compact_contract::expected_partial_tolerance(domain_id).is_none(),
+            "domain {domain_id} now tolerates partials; its failure would not degrade"
+        );
+    }
+
+    let (records, _) = assembled_frame(&[(SILENT_DOMAIN, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+    let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &no_outcomes());
     let FrameCompletenessVerdict::Degraded(domains) = classify_frame_completeness(&findings) else {
         panic!("a lone per-domain fault must degrade");
     };
+    // Non-empty: an empty reason is what the codec refuses, and refusing it
+    // here is what would have re-deadlocked the frame.
+    assert!(
+        !domains[0].reason.is_empty(),
+        "a silent domain must still carry a reason"
+    );
+    // SHARED: a second, different silent domain must produce the SAME marker,
+    // because that is what makes the silence countable in one pass over a
+    // stream rather than a per-domain string a consumer has to enumerate.
+    let (other_records, _) =
+        assembled_frame(&[(OTHER_SILENT_DOMAIN, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+    let other_findings =
+        compact_frame_completeness_findings(&other_records, TEST_HOUR, &no_outcomes());
+    let FrameCompletenessVerdict::Degraded(other_domains) =
+        classify_frame_completeness(&other_findings)
+    else {
+        panic!("a lone per-domain fault must degrade");
+    };
+    // Two places carry the marker, and both are asserted because they are read
+    // by different consumers. The OFFENDER carries the reserved predicate, which
+    // is the machine-countable form; the DEGRADED entry carries the reason text,
+    // which is what an existing consumer logs.
+    let undeclared = compact_contract::diagnostic_channel::Predicate::undeclared();
+    for (label, found) in [("first", &findings), ("second", &other_findings)] {
+        let offender = found
+            .iter()
+            .find_map(|finding| finding.offender.as_ref())
+            .unwrap_or_else(|| panic!("the {label} silent domain must produce an offender"));
+        assert_eq!(
+            offender.predicate, undeclared,
+            "a producer that declared nothing must be stamped with the reserved              undeclared predicate, which is what makes the silence countable"
+        );
+    }
+    // SHARED: strip the per-domain prefix and the two reasons must be the SAME
+    // string. Asserting equality rather than a literal is deliberate -- it is
+    // the property ("one name for every silent domain") rather than today's
+    // spelling of it, so rewording the marker keeps this green while giving any
+    // ONE domain its own variant turns it red.
+    let strip = |domain_id: u16, reason: &str| {
+        reason
+            .strip_prefix(&format!("domain {domain_id}: "))
+            .unwrap_or(reason)
+            .to_string()
+    };
     assert_eq!(
-        domains[0].reason,
-        compact_contract::frame_degraded::FRAME_DEGRADED_REASON_UNDIAGNOSED
+        strip(SILENT_DOMAIN, &domains[0].reason),
+        strip(OTHER_SILENT_DOMAIN, &other_domains[0].reason),
+        "every silent domain must be named by the SAME marker, not a per-domain one"
     );
     // And it is publishable: a silent domain must not be able to re-deadlock a
     // whole frame just by failing to explain itself.
@@ -435,7 +596,7 @@ fn a_gapped_domain_is_accounted_by_its_gap_record_and_never_by_the_notice() {
         0,
         &frame_end_payload(),
     );
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR);
+    let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &no_outcomes());
     assert!(
         findings.is_empty(),
         "a gapped domain raises no completeness finding; its H4DG record is its account"
@@ -459,8 +620,38 @@ fn a_gapped_domain_is_accounted_by_its_gap_record_and_never_by_the_notice() {
 fn one_domain_objecting_twice_is_a_frame_fault_not_a_merged_entry() {
     let (records, _) =
         assembled_frame(&[(29, COMPACT_STATUS_PARTIAL_DATA), (29, COMPACT_STATUS_NO_CLOCK)]);
-    let findings = compact_frame_completeness_findings(&records, TEST_HOUR);
-    assert_eq!(findings.len(), 2);
+    // The ledger holds ONE outcome per domain, which is the production shape:
+    // a domain reads once and diagnoses once. That is exactly why this frame is
+    // broken, and it is why the count below is no longer pinned -- see the
+    // assertion's own comment.
+    let findings = compact_frame_completeness_findings(
+        &records,
+        TEST_HOUR,
+        &outcomes_for(&[(29, COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_NO_CLOCK)]),
+    );
+    // The exact COUNT is deliberately not asserted any more. It used to be 2 --
+    // one objection per duplicated PERF record -- and the producer migration
+    // legitimately adds more: each duplicate also publishes a status word that
+    // disagrees with the domain's single outcome, which `audit_published_status`
+    // reports as its own frame-level finding. Pinning the count would make this
+    // test fail whenever the walk gains a NEW true thing to say about the same
+    // broken frame, which is not what it is for.
+    //
+    // What it is for is asserted below, and neither half is weakened: both
+    // duplicated objections are still raised as per-domain offenders, and the
+    // verdict is still REFUSED rather than a merged degradation.
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding
+                .offender
+                .as_ref()
+                .is_some_and(|offender| offender.domain_id == 29))
+            .count(),
+        2,
+        "both of domain 29's objections must survive as offenders, unmerged; findings: {:?}",
+        findings.iter().map(|f| f.text.as_str()).collect::<Vec<_>>()
+    );
     assert!(matches!(
         classify_frame_completeness(&findings),
         FrameCompletenessVerdict::Refused

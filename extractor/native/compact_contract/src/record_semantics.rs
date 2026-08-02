@@ -37,6 +37,16 @@ pub const DOMAIN_GAP_PART_EVENT: u16 = 1;
 pub const DOMAIN_GAP_PART_BOTH: u16 = 2;
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
+/// Trailer version written by the current producer.
+///
+/// Identical layout to version 1 with ONE change: the two bytes that version 1
+/// reserved and required to be zero now carry the unit's
+/// [`crate::diagnostic_channel::UnitRole`] and
+/// [`crate::diagnostic_channel::UnitPresence`], both non-zero. Version 1 stays
+/// legal on the wire and still requires those bytes to be zero, so retained
+/// telemetry from earlier recorder builds is unaffected and a version-1 unit
+/// lifts to `Undeclared`/`Undeclared` rather than to a fabricated declaration.
+pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2: u16 = 2;
 
 /// Whether one ordinary record is the terminal outcome for a scheduled domain.
 ///
@@ -116,7 +126,11 @@ pub fn validate_compact_record_semantics(
                     "FRAME_REFUSED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
                 ));
             }
-            crate::frame_refusal::validate_frame_refusal_payload(payload)
+            // Both refusal versions are legal on the wire: version 2 is what
+            // the current producer writes, version 1 is what retained
+            // telemetry from earlier recorder builds holds. Validating only
+            // one would report every record of the other version as corrupt.
+            crate::frame_refusal::validate_frame_refusal_payload_any_version(payload)
         }
         COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
             if domain_id != COMPACT_DOMAIN_FRAME {
@@ -329,9 +343,13 @@ fn validate_domain_perf(record_flags: u32, payload: &[u8]) -> Result<(), String>
             .try_into()
             .expect("fixed PERF trailer version slice"),
     );
-    if version != COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION {
+    if version != COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION
+        && version != COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2
+    {
         return Err(format!(
-            "DOMAIN_PERF diagnostic trailer version {version} is not {COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION}"
+            "DOMAIN_PERF diagnostic trailer version {version} is neither \
+             {COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION} nor \
+             {COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2}"
         ));
     }
     let unit_count = u16::from_le_bytes(
@@ -356,10 +374,30 @@ fn validate_domain_perf(record_flags: u32, payload: &[u8]) -> Result<(), String>
                 .try_into()
                 .expect("fixed PERF unit reserved slice"),
         );
-        if reserved != 0 {
-            return Err(format!(
-                "DOMAIN_PERF diagnostic unit {unit_index} reserved field is nonzero"
-            ));
+        if version == COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION {
+            if reserved != 0 {
+                return Err(format!(
+                    "DOMAIN_PERF diagnostic unit {unit_index} reserved field is nonzero"
+                ));
+            }
+        } else {
+            // Version 2 spends those two bytes on the unit's declaration. Both
+            // halves must be DEFINED codes: a zero here would be a unit that
+            // says nothing about itself while claiming to be self-describing,
+            // which is the shape the version bump exists to eliminate.
+            let role = (reserved & 0x00FF) as u8;
+            let presence = (reserved >> 8) as u8;
+            if crate::diagnostic_channel::UnitRole::from_code(role).is_none() {
+                return Err(format!(
+                    "DOMAIN_PERF diagnostic unit {unit_index} has undefined role code {role}"
+                ));
+            }
+            if crate::diagnostic_channel::UnitPresence::from_code(presence).is_none() {
+                return Err(format!(
+                    "DOMAIN_PERF diagnostic unit {unit_index} has undefined presence code \
+                     {presence}"
+                ));
+            }
         }
         cursor += UNIT_HEADER_LEN;
         if payload.len().saturating_sub(cursor) < name_len {
@@ -553,20 +591,86 @@ mod tests {
         }
     }
 
+    /// This test used to assert that trailer version 2 is refused. Version 2
+    /// is now a DEFINED version -- same layout, with the two bytes version 1
+    /// reserved carrying the unit's role and presence -- so that assertion
+    /// was asserting the absence of a contract that now exists. The test keeps
+    /// its whole job: an undefined version is still refused loudly, and a
+    /// silently-skipped unknown version is still impossible. What changed is
+    /// which number is undefined.
     #[test]
-    fn rejects_bad_pdu1_magic_and_version() {
+    fn rejects_bad_pdu1_magic_and_undefined_version() {
         let mut bad_magic = perf_with_trailer(None, 0);
         bad_magic[COMPACT_DOMAIN_PERF_BASE_LEN] = b'X';
         let err = perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &bad_magic)
-            .expect_err("bad PDU1 magic must fail");
+            .expect_err("bad PDU magic must fail");
         assert!(err.contains("magic is invalid"), "{err}");
 
-        let mut bad_version = perf_with_trailer(None, 0);
-        bad_version[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
-            .copy_from_slice(&2u16.to_le_bytes());
-        let err = perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &bad_version)
-            .expect_err("bad PDU1 version must fail");
-        assert!(err.contains("version 2 is not 1"), "{err}");
+        for version in [0u16, 3, 9, u16::MAX] {
+            let mut bad_version = perf_with_trailer(None, 0);
+            bad_version[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
+                .copy_from_slice(&version.to_le_bytes());
+            let err = perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &bad_version)
+                .expect_err("an undefined trailer version must fail");
+            assert!(
+                err.contains(&format!("version {version} is neither")),
+                "{err}"
+            );
+        }
+
+        // Both DEFINED versions are accepted through the same dispatch.
+        for version in [
+            COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION,
+            COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2,
+        ] {
+            let mut good = perf_with_trailer(None, 0);
+            good[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
+                .copy_from_slice(&version.to_le_bytes());
+            perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &good)
+                .unwrap_or_else(|error| panic!("version {version} must validate: {error}"));
+        }
+    }
+
+    /// Version 2 spends version 1's reserved word on the unit's declaration,
+    /// and both halves must be DEFINED codes. A unit that claims to be
+    /// self-describing while describing nothing is the exact shape the version
+    /// bump exists to remove, so it fails closed.
+    #[test]
+    fn a_version_two_unit_must_declare_a_defined_role_and_presence() {
+        use crate::diagnostic_channel::{UnitPresence, UnitRole};
+        let declaration =
+            |role: u8, presence: u8| -> u16 { u16::from(role) | (u16::from(presence) << 8) };
+        let mut good = perf_with_trailer(
+            Some(b"d44_country_supply_failure_stage"),
+            declaration(UnitRole::Deciding.code(), UnitPresence::Observed.code()),
+        );
+        good[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
+            .copy_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2.to_le_bytes());
+        perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &good)
+            .expect("a fully declared version 2 unit must validate");
+
+        for (role, presence, expected) in [
+            (0u8, UnitPresence::Observed.code(), "undefined role code 0"),
+            (99, UnitPresence::Observed.code(), "undefined role code 99"),
+            (UnitRole::Deciding.code(), 0, "undefined presence code 0"),
+            (UnitRole::Deciding.code(), 99, "undefined presence code 99"),
+        ] {
+            let mut bad = perf_with_trailer(Some(b"x"), declaration(role, presence));
+            bad[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
+                .copy_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2.to_le_bytes());
+            let err = perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &bad)
+                .expect_err("an undeclared version 2 unit must fail");
+            assert!(err.contains(expected), "{err}");
+        }
+
+        // And version 1 still requires those bytes to be zero, so retained
+        // telemetry is validated exactly as it was.
+        let mut legacy = perf_with_trailer(Some(b"x"), 1);
+        legacy[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
+            .copy_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes());
+        let err = perf_result(COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, &legacy)
+            .expect_err("version 1 reserved bytes must stay zero");
+        assert!(err.contains("reserved field is nonzero"), "{err}");
     }
 
     #[test]

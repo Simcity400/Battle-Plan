@@ -702,9 +702,20 @@ fn parse_domain_perf_evidence(
         ));
     }
     if has_trailer {
+        // Both defined trailer versions are accepted. Pinning this proof to
+        // version 1 would have rejected every record the current collector
+        // writes.
+        let trailer_version = if payload.len() >= BASE_LEN + TRAILER_HEADER_LEN {
+            read_u16(payload, BASE_LEN + 4)
+        } else {
+            0
+        };
         if payload.len() < BASE_LEN + TRAILER_HEADER_LEN
             || &payload[BASE_LEN..BASE_LEN + 4] != b"PDU1"
-            || read_u16(payload, BASE_LEN + 4) != 1
+            || (trailer_version
+                != compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION
+                && trailer_version
+                    != compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2)
         {
             return Err(format!(
                 "first world-record proof rejected domain {} PERF diagnostic trailer",

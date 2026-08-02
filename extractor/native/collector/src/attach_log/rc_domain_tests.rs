@@ -136,7 +136,11 @@ fn scheduler_probe_is_inserted_before_physical_final_frame_end() {
     assert_eq!(final_header.record_type, COMPACT_RECORD_TYPE_FRAME_END);
     assert_eq!(final_header.sequence, 8);
     assert_eq!(final_offset + final_header.record_len(), records.len());
-    assert!(compact_frame_complete_for_scheduler(&records, hour));
+    assert!(compact_frame_complete_for_scheduler(
+        &records,
+        hour,
+        &compact_contract::domain_outcome::DomainOutcomeLedger::new(),
+    ));
 }
 
 // Serializes the tests in this module: they toggle the process-global

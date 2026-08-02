@@ -445,13 +445,23 @@ impl FrameOutcome {
             .map(|record| DomainPerfView::parse(&record.payload))
     }
 
-    /// Hold this file's PDU1 decoder to the production one.
+    /// Hold this file's PDU decoder to the production one.
     ///
-    /// `compact_perf_diagnostic_unit_names` is the shipped reader of the
-    /// same trailer; it emits `name=value` for NON-ZERO units only, up to
-    /// six. Every non-zero unit this fixture decoded for `domain_id` must
-    /// appear there in the same order, so the two decoders cannot disagree
-    /// about the part they both cover.
+    /// REWRITTEN when the production reader became
+    /// `compact_perf_diagnostic_units`. The old premise -- "it emits
+    /// `name=value` for NON-ZERO units only, up to six" -- described two
+    /// behaviours the producer migration removed as defects: dropping zeros
+    /// made a domain whose failure stage genuinely is `0` indistinguishable
+    /// from one that emitted nothing, and keeping the FIRST six chose the
+    /// survivors by statement order in the producer. Selection now happens
+    /// once, later, over every offender at the same time, and this reader's
+    /// only job is to read the trailer faithfully.
+    ///
+    /// So the two decoders are now compared over their WHOLE output rather
+    /// than over a filtered prefix, which is a stronger agreement than the
+    /// one this assertion used to make. It stays falsifiable: change either
+    /// decoder's field widths, unit ordering, name slicing, or its handling
+    /// of a zero-valued unit, and the two lists stop matching.
     pub(super) fn assert_diagnostics_agree_with_production(&self, domain_id: u16) {
         let record = self
             .record(domain_id, COMPACT_RECORD_TYPE_DOMAIN_PERF)
@@ -459,14 +469,15 @@ impl FrameOutcome {
         let mine = DomainPerfView::parse(&record.payload)
             .diagnostics
             .into_iter()
-            .filter(|(_, value)| *value != 0)
             .map(|(name, value)| format!("{name}={value}"))
-            .take(6)
             .collect::<Vec<_>>();
-        let production = compact_perf_diagnostic_unit_names(&record.payload);
+        let production = compact_perf_diagnostic_units(&record.payload)
+            .into_iter()
+            .map(|unit| format!("{}={}", unit.name, unit.value))
+            .collect::<Vec<_>>();
         assert_eq!(
             mine, production,
-            "the fixture's PDU1 decode must agree with the production reader              on domain {domain_id}"
+            "the fixture's PDU decode must agree with the production reader on domain {domain_id}"
         );
     }
 

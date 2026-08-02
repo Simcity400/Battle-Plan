@@ -28,7 +28,8 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
-use compact_contract::frame_refusal::FrameRefusalOffender;
+use compact_contract::diagnostic_channel::{Authority, Predicate, TruncationAccount};
+use compact_contract::frame_refusal::{FrameRefusalFinding, FrameRefusalOffenderV2};
 use compact_contract::stream_validator::{StatefulStreamValidator, StreamValidationError};
 
 use super::*;
@@ -176,15 +177,42 @@ fn published_at(cursor_after_committed_prefix: u64) -> PublishedSequence {
     cursor
 }
 
-fn offenders(count: usize) -> Vec<FrameRefusalOffender> {
+/// Ported from `FrameRefusalOffender` (V1) when the record became V2.
+///
+/// Every test in this module is about CURSOR DISCIPLINE -- which sequence a
+/// published refusal is numbered from -- so the offender is payload whose only
+/// relevant property is that it substantiates the record and that its size
+/// varies with `count`. The fields V2 added are therefore filled with the
+/// declared-nothing values a producer that has not migrated would emit:
+/// `Predicate::undeclared()`, `Authority::SelfDomain`, no locator, no units.
+/// That keeps these tests measuring the cursor and nothing else, and it is a
+/// shape the encoder accepts -- `check_reason_names_its_units` only constrains
+/// an offender that CARRIES units, and this one carries none.
+fn offenders(count: usize) -> Vec<FrameRefusalOffenderV2> {
     (0..count)
-        .map(|index| FrameRefusalOffender {
+        .map(|index| FrameRefusalOffenderV2 {
             domain_id: 10 + index as u16,
             status_flags: compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
             non_tolerated_flags: compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            predicate: Predicate::undeclared(),
+            authority: Authority::SelfDomain,
+            locator: Vec::new(),
+            units: Vec::new(),
+            truncation: TruncationAccount::complete(0),
+            off_frame: None,
             reason: format!("d{}_source_unavailable=1", 10 + index),
+            reason_units_named: 0,
         })
         .collect()
+}
+
+/// The frame-level substantiation channel V2 added. These tests never exercise
+/// it -- they pass `no_frame_findings()` everywhere -- because a frame finding
+/// changes only WHAT the record says, never which sequence it is numbered from.
+/// It exists so the cursor tests state that choice rather than hiding it inside
+/// an inline `Vec::new()`.
+fn no_frame_findings() -> Vec<FrameRefusalFinding> {
+    Vec::new()
 }
 
 /// Reproduces the captured prefix exactly: 73 gaps on 1..=73, FRAME_END on 74.
@@ -242,6 +270,7 @@ fn refused_hours_take_consecutive_published_sequences_and_the_stream_certifies()
             &mut cursor,
             MEASURED_FIRST_REFUSED_HOUR + index as i32,
             offenders(offender_count),
+            no_frame_findings(),
         )
         .expect("refusal publishes");
         assert_eq!(outcome, FrameRefusalPublication::Published);
@@ -293,6 +322,7 @@ fn a_refused_hour_between_two_published_frames_keeps_the_chain_unbroken() {
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(3),
+        no_frame_findings(),
     )
     .expect("refusal publishes");
 
@@ -310,6 +340,7 @@ fn a_refused_hour_between_two_published_frames_keeps_the_chain_unbroken() {
         &mut cursor,
         60_831_002,
         offenders(9),
+        no_frame_findings(),
     )
     .expect("second refusal publishes");
     drop(transport);
@@ -349,6 +380,7 @@ fn a_refusal_no_sink_accepted_does_not_advance_the_published_cursor() {
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(4),
+        no_frame_findings(),
     )
     .expect("an incomplete write is an outcome, not an error");
 
@@ -365,10 +397,20 @@ fn a_refusal_no_sink_accepted_does_not_advance_the_published_cursor() {
     );
 }
 
-/// A refusal that cannot be stated is refused outright rather than published as
-/// an empty assertion, and it spends no sequence on the way out.
+/// A refusal that SUBSTANTIATES NOTHING is refused outright rather than
+/// published as an empty assertion, and it spends no sequence on the way out.
+///
+/// UPDATED, not weakened, when the record became V2. The old name and the old
+/// assertion both said "names no offender", which was the whole of the
+/// substantiation test while `offenders` was the only channel. V2 adds
+/// `frame_findings` for a fault that belongs to the frame rather than to any
+/// domain, so "no offender" is no longer the same condition as "says nothing" --
+/// and the difference is the entire point of the change. Testing only the old
+/// half would have left the widening unmeasured, so BOTH halves are asserted:
+/// the empty record is still refused, and a record whose only substantiation is
+/// a frame-level finding is now published, on exactly one sequence.
 #[test]
-fn a_refusal_naming_no_offender_is_rejected_and_spends_no_sequence() {
+fn a_refusal_substantiating_nothing_is_rejected_and_spends_no_sequence() {
     let path = temp_stream_path("no_offender");
     let mut transport = file_transport(&path);
     let mut cursor = published_at(MEASURED_PUBLISHED_CURSOR);
@@ -378,16 +420,88 @@ fn a_refusal_naming_no_offender_is_rejected_and_spends_no_sequence() {
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         Vec::new(),
+        no_frame_findings(),
     )
-    .expect_err("a refusal naming nobody is incoherent");
+    .expect_err("a refusal substantiating nothing is incoherent");
 
     assert!(
-        error.contains("names no offending domain"),
+        error.contains("names neither an offending domain nor a frame-level finding"),
         "unexpected error: {error}"
     );
     assert_eq!(cursor.get(), MEASURED_PUBLISHED_CURSOR);
     drop(transport);
     assert!(read_stream(&path).is_empty());
+}
+
+/// The gap that V1 could not close: an hour refused for a fault belonging to no
+/// domain is now ACCOUNTED FOR on the stream, and still spends exactly one
+/// sequence taken from the published cursor.
+///
+/// Under V1 this hour published nothing at all. The chain stayed intact -- no
+/// sequence was spent -- but the stream never said the hour had been attempted,
+/// so a consumer could not tell it apart from throughput that was simply lost.
+///
+/// FALSIFIABILITY: narrow the producer's guard back to `!offenders.is_empty()`
+/// and the record is never built, so the stream comes back empty and the cursor
+/// does not move. Number the record from the staged cursor instead of
+/// `session_sequence` and the sequence assertion fails.
+#[test]
+fn a_refusal_substantiated_only_by_a_frame_finding_publishes_on_one_sequence() {
+    use compact_contract::domain_outcome::{read_predicate, READ_PREDICATE_PAYLOAD_ENCODED};
+
+    let path = temp_stream_path("frame_finding_only");
+    let mut transport = file_transport(&path);
+    let mut cursor = published_at(MEASURED_PUBLISHED_CURSOR);
+
+    let finding = FrameRefusalFinding {
+        predicate: read_predicate(READ_PREDICATE_PAYLOAD_ENCODED)
+            .expect("payload_encoded is a read predicate"),
+        authority: Authority::SelfDomain,
+        locator: Vec::new(),
+        reason: "the frame carried no FRAME_END".to_string(),
+    };
+
+    let outcome = publish_frame_refusal_record(
+        &mut transport,
+        &mut cursor,
+        MEASURED_FIRST_REFUSED_HOUR,
+        Vec::new(),
+        vec![finding],
+    )
+    .expect("a frame-level finding substantiates the refusal");
+
+    assert_eq!(outcome, FrameRefusalPublication::Published);
+    assert_eq!(
+        cursor.get(),
+        MEASURED_PUBLISHED_CURSOR + 1,
+        "an hour refused for a frame-level fault spends exactly one published sequence"
+    );
+    drop(transport);
+    let bytes = read_stream(&path);
+    assert!(
+        !bytes.is_empty(),
+        "the refused hour must leave a record on the stream, not just a log line"
+    );
+    // The header is parsed directly rather than run through `certify`. The
+    // stateful validator checks chain CONTINUITY from sequence one, and this
+    // test deliberately writes only the refusal onto a cursor standing at 75 --
+    // the committed prefix is modelled by `published_at`, not written. What is
+    // under test is which number the record carries, and that is this header.
+    let header = compact_contract::parse_compact_record_header(&bytes)
+        .expect("the published refusal is walkable");
+    assert_eq!(
+        bytes.len(),
+        compact_contract::record_header::COMPACT_RECORD_HEADER_LEN + header.payload_len,
+        "exactly one record"
+    );
+    assert_eq!(
+        header.sequence, MEASURED_PUBLISHED_CURSOR,
+        "the record carries the PUBLISHED cursor, never a staged one"
+    );
+    assert_eq!(
+        header.record_type,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED
+    );
 }
 
 /// The producer refuses to write the hole it was about to write.
@@ -420,6 +534,7 @@ fn a_legacy_sink_refuses_a_compact_batch_that_does_not_continue_the_chain() {
         &mut staged_cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(28),
+        no_frame_findings(),
     )
     .expect_err("the sink must refuse a record that does not continue the chain");
 
@@ -448,8 +563,9 @@ fn a_legacy_sink_refuses_a_batch_whose_own_records_are_not_contiguous() {
     let path = temp_stream_path("batch_gate");
     let mut transport = file_transport(&path);
 
-    let payload = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+    let payload = compact_contract::frame_refusal::FrameRefusalRecordV2 {
         refused_hour: MEASURED_FIRST_REFUSED_HOUR,
+        frame_findings: no_frame_findings(),
         offenders: offenders(2),
     }
     .encode()
@@ -513,8 +629,9 @@ fn the_captured_streams_staged_numbering_is_what_the_chain_check_refuses() {
     let (mut stream, cursor) = gap_frame(60_830_999, 1, &mut ordinals);
     assert_eq!(cursor, MEASURED_PUBLISHED_CURSOR);
 
-    let payload = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+    let payload = compact_contract::frame_refusal::FrameRefusalRecordV2 {
         refused_hour: MEASURED_FIRST_REFUSED_HOUR,
+        frame_findings: no_frame_findings(),
         offenders: offenders(28),
     }
     .encode()
@@ -690,6 +807,7 @@ fn a_refusal_that_could_not_be_numbered_next_writes_no_bytes_at_all() {
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(2),
+        no_frame_findings(),
     )
     .expect_err("a record whose successor has no number must not be published");
     // Assert the PRODUCER's own refusal, not merely "some overflow error".
@@ -897,6 +1015,7 @@ fn a_refusal_re_attempts_across_an_uncertain_boundary_and_still_spends_one_seque
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(28),
+        no_frame_findings(),
     )
     .expect("an uncertain identity is not a failure");
 
@@ -939,6 +1058,7 @@ fn a_refusal_gives_up_on_an_identity_that_never_settles_and_spends_no_sequence()
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(2),
+        no_frame_findings(),
     )
     .expect_err("an hour that cannot be stated must stop the run");
 
@@ -969,6 +1089,7 @@ fn a_sink_refusal_is_terminal_on_the_first_attempt_and_is_not_retried() {
         &mut cursor,
         MEASURED_FIRST_REFUSED_HOUR,
         offenders(2),
+        no_frame_findings(),
     )
     .expect("an incomplete write is an outcome, not an error");
 
