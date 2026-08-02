@@ -6,7 +6,7 @@
 //! Derived from `world_fold.rs:22210`-`:22300`
 //! (`fold_army_battleplans_depth`, dispatched at `:4729`), its payload decoder
 // @world-fold-authority domain=54 functions=fold_army_battleplans_depth lines=22210-22300 sha256=f752d50d046cee152e2b3475343ad5655e37daa8b01944eb7769c75cb1360a1d
-//! `decode_army_battleplans_depth_payload` (`:25647`-`:25836`), the accumulator
+//! `decode_army_battleplans_depth_payload` (`world_fold.rs::decode_army_battleplans_depth_payload`), the accumulator
 //! types at `:23877`-`:23917` and their JSON projection (`:8282`-`:8414`), the
 //! shipping row grammar in
 //! `extractor/native/lanes/army_battleplans_depth_live/src/lib.rs` (constants at
@@ -19,7 +19,7 @@
 //!
 //! # The fold's call order, and where the two decoders sit
 //!
-//! `fold_army_battleplans_depth` runs, in this order (`world_fold.rs:21762`-`:21847`):
+//! `fold_army_battleplans_depth` runs, in this order (`world_fold.rs::fold_army_battleplans_depth`):
 //!
 //! 1. `battleplans54::decode_depth_payload` — the lane's own validator. Its
 //!    `parse_errors` become the fold's `Err`, **before any status is read**, so a
@@ -57,7 +57,7 @@
 //! rows — and then, optionally, the `OGS1` orders-group extension. The
 //! **length up to the end of the assigned table is the legacy payload**; anything
 //! past it is the extension, and its absence is a legacy frame
-//! (`world_fold.rs:25679`-`:25692`).
+//! (`world_fold.rs::decode_army_battleplans_depth_payload`).
 //!
 //! | offset | width | header word | enforced by [`split_payload`] |
 //! |---|---|---|---|
@@ -77,7 +77,7 @@
 //! | `+56` | u32 | `identity_or_active_omitted_rows`| parsed, never enforced (diagnostic) |
 //!
 //! Order row, 88 bytes (`lane lib.rs:740`-`:772`, decoded at
-//! `world_fold.rs:25697`-`:25721`):
+//! `world_fold.rs::decode_army_battleplans_depth_payload`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
@@ -189,7 +189,7 @@
 //!
 //! Exactly one field in this domain reaches an empty state, and it is the same
 //! one d27 analysed: `target_declared_count`. The fold stores it as an `Option`
-//! gated by `FLAG_TARGET_STATE_COUNT` (`world_fold.rs:25776`-`:25777`) and the
+//! gated by `FLAG_TARGET_STATE_COUNT` (`world_fold.rs::decode_army_battleplans_depth_payload`) and the
 //! producer is `read_type5_target_states` (`lane lib.rs:350`-`:369`):
 //!
 //! * `order_type != ORDER_TYPE_AREA_DEFENSE` returns `(vec![], None, UNSUPPORTED)`
@@ -233,7 +233,7 @@
 //! `FLAG_TARGET_STATES` is the one flag bit that is **not** recoverable and is
 //! still not carried: the validator permits it with `child_count == 0`
 //! (`:1017`-`:1032`), and the fold then stores the same empty `Vec` it stores
-//! without the flag (`world_fold.rs:25740`-`:25765`). The distinction does not
+//! without the flag (`world_fold.rs::decode_army_battleplans_depth_payload`). The distinction does not
 //! survive into the fold's state, so mirroring the fold loses nothing.
 //!
 //! The two flag bits that ARE independent data are carried as Booleans:
@@ -249,13 +249,13 @@
 //! type-53 reference table: one row per `COrdersGroup` army with three exact
 //! scalars, plus the strict-sorted ids of every `CArmyGroup`
 //! (`orders_group_live.rs:398`-`:487`). The fold keeps it in its own accumulator
-//! (`world_fold.rs:21825`-`:21831`) and publishes it beside the orders
-//! (`:8364`-`:8397`). Both id lists are **strict-sorted and disjoint**, enforced
+//! (`world_fold.rs::fold_army_battleplans_depth`) and publishes it beside the orders
+//! (`world_fold.rs::army_battleplans_depth_extra_json`). Both id lists are **strict-sorted and disjoint**, enforced
 //! by the decoder, so both are ordinary keyed sets with no ordering problem.
 //!
 //! A **legacy frame carries no extension at all**, and the fold's rule is that it
 //! must not inherit one: `army_orders_group_manager = None`, `known = false`
-//! (`:21828`-`:21831`). Three per-hour states therefore exist, and the
+//! (`world_fold.rs::fold_army_battleplans_depth`). Three per-hour states therefore exist, and the
 //! [`ORDERS_GROUP_MANAGER`] singleton (d52's `SINGLETON_KEY_COMPONENT`
 //! convention, `d52.rs:401`-`:412`) is what keeps them apart in a keyed set:
 //!
@@ -853,7 +853,7 @@ pub fn parse_order_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
     let has_path = flags & FLAG_PATH_GEOMETRY != 0;
     let has_assigned = flags & FLAG_ASSIGNED_DIVISIONS != 0;
     let has_active = flags & FLAG_ACTIVE_VALUE != 0;
-    // `:942`-`:946`, and `world_fold.rs:25726`-`:25731`: the two child ranges
+    // `:942`-`:946`, and `world_fold.rs::decode_army_battleplans_depth_payload`: the two child ranges
     // share one `(first, count)` pair, so a row cannot claim both.
     if has_targets && has_path {
         return Err("battleplans row has both target and path children".into());
@@ -882,7 +882,7 @@ pub fn parse_order_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
     {
         return Err("battleplans deleted row carries child fields".into());
     }
-    // `:974`-`:978`, and the fold's own second decode (`world_fold.rs:25722`).
+    // `:974`-`:978`, and the fold's own second decode (`world_fold.rs::decode_army_battleplans_depth_payload`).
     if !matches!(
         owner_kind,
         ORDER_OWNER_KIND_ARMY | ORDER_OWNER_KIND_ARMY_GROUP
@@ -1121,7 +1121,7 @@ pub struct Split<'a> {
     pub path_table: &'a [u8],
     pub assigned_table: &'a [u8],
     /// `None` on a legacy frame — and a legacy frame must NOT inherit a prior
-    /// record's manager (`world_fold.rs:21828`-`:21831`).
+    /// record's manager (`world_fold.rs::fold_army_battleplans_depth`).
     pub extension: Option<OrdersGroupExtension>,
 }
 
@@ -1148,12 +1148,12 @@ impl Split<'_> {
 ///
 /// This is `battleplans54::decode_depth_payload` (`lane lib.rs:797`-`:1136`),
 /// which is BOTH the first thing the fold runs — before it reads any status word
-/// (`world_fold.rs:21762`-`:21765`) — and production's status-independent DATA
+/// (`world_fold.rs::fold_army_battleplans_depth`) — and production's status-independent DATA
 /// authority (`domain_data_authority.rs:8317`-`:8325`). So it runs on every
 /// record whatever the status, and any refusal here is a **stream rejection**,
 /// never an excluded hour.
 ///
-/// The fold's own second decoder (`world_fold.rs:25647`) re-reads the same bytes
+/// The fold's own second decoder (`world_fold.rs::decode_army_battleplans_depth_payload`) re-reads the same bytes
 /// after the status gates; every refusal it makes is also made here, so its
 /// later position is unobservable — see
 /// [`the_world_fold_decoder_adds_no_refusal_of_its_own`].
@@ -1376,7 +1376,7 @@ fn check_collection(collection: &Collection, expected: u32) -> core::result::Res
 /// is taken and ignored — every domain's mapper has the same shape.
 ///
 /// A **deleted** row is a tombstone and has no record: it removes its key from
-/// the accumulator (`world_fold.rs:25836`-`:25842`). Calling this with one is a
+/// the accumulator (`world_fold.rs::decode_army_battleplans_depth_payload`). Calling this with one is a
 /// caller error and is refused rather than mapped, because a tombstone's value
 /// words are all forced to zero by the grammar and mapping them would publish
 /// "slot 0, order type 0, status none" as measurement.
@@ -1544,7 +1544,7 @@ pub fn record_from_army_group_id(
 /// layer earlier and on every record whatever its status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldOutcome {
-    /// The frame folded (`world_fold.rs:21825`-`:21846`).
+    /// The frame folded (`world_fold.rs::fold_army_battleplans_depth`).
     Applied,
     /// `COMPACT_STATUS_FAILURE_MASK & !PARTIAL_DATA` (`:21776`-`:21791`).
     FailureStatus,
@@ -1564,8 +1564,8 @@ pub enum FoldOutcome {
 ///
 /// Two accumulators, and they advance on **different** conditions, exactly as the
 /// fold's do: the order map is cleared only by a non-delta frame
-/// (`world_fold.rs:21833`-`:21837`), while the orders-group census is
-/// **replaced or cleared on every folded frame** (`:21825`-`:21832`) — a legacy
+/// (`world_fold.rs::fold_army_battleplans_depth`), while the orders-group census is
+/// **replaced or cleared on every folded frame** (`world_fold.rs::fold_army_battleplans_depth`) — a legacy
 /// frame that carries no `OGS1` must not inherit the previous one's authority.
 /// The three child collections are not separate accumulators: they are the order
 /// values' own `Vec`s flattened, so they follow their parent exactly.
@@ -1585,7 +1585,7 @@ pub struct State {
     pub orders_group_armies: KeyedState,
     /// Collection [`ORDERS_GROUP_ARMY_GROUPS`], keyed by `army_group_id`.
     pub orders_group_army_groups: KeyedState,
-    /// `delta_baselines_seen.contains(&54)` (`world_fold.rs:21794`, `:21835`).
+    /// `delta_baselines_seen.contains(&54)` (`world_fold.rs::fold_army_battleplans_depth`).
     baseline_seen: bool,
 }
 
@@ -1636,12 +1636,12 @@ impl State {
     }
 
     /// Fold one d54 DATA payload, reproducing `fold_army_battleplans_depth`
-    /// (`world_fold.rs:21761`-`:21847`) exit for exit and in its own order.
+    /// (`world_fold.rs::fold_army_battleplans_depth`) exit for exit and in its own order.
     ///
     /// **Error contract**: all-or-nothing. `split_payload` runs first and its
     /// `Err` leaves this state untouched, which is what the fold does — its own
     /// first statement is the same decode, and it returns `Err` before it has
-    /// written anything (`:21762`-`:21765`).
+    /// written anything (`world_fold.rs::fold_army_battleplans_depth`).
     ///
     /// `failure_status` is the caller's classification of the record's status word
     /// against `compact_status_failure_flags_after_expected_partial_tolerance`,
@@ -2669,7 +2669,7 @@ mod tests {
 
     #[test]
     fn the_world_fold_decoder_adds_no_refusal_of_its_own() {
-        // `decode_army_battleplans_depth_payload` (`world_fold.rs:25647`) runs
+        // `decode_army_battleplans_depth_payload` (`world_fold.rs::decode_army_battleplans_depth_payload`) runs
         // AFTER the status gates, so a refusal only it makes would be an excluded
         // hour rather than a stream rejection. It makes none: its five checks are
         // a short payload, a bad OGS1 extension, an unknown owner kind, a child
@@ -2926,7 +2926,7 @@ mod tests {
 
     #[test]
     fn a_legacy_frame_clears_the_census_rather_than_inheriting_it() {
-        // `world_fold.rs:21828`-`:21831`. The three per-hour states stay apart:
+        // `world_fold.rs::fold_army_battleplans_depth`. The three per-hour states stay apart:
         // the singleton row is simply absent, which is what distinguishes "no
         // manager this hour" from "a measured empty census".
         let schema = schema();
@@ -2971,7 +2971,7 @@ mod tests {
     #[test]
     fn a_duplicate_key_in_one_frame_is_last_writer_wins() {
         // The fold enforces no key uniqueness inside a frame
-        // (`world_fold.rs:21839`-`:21846`), so this port must not either —
+        // (`world_fold.rs::fold_army_battleplans_depth`), so this port must not either —
         // refusing would reject a payload the recorder folds.
         let schema = schema();
         let mut first = RawOrder::live();

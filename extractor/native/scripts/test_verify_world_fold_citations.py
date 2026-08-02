@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 import sys
 import tempfile
 import unittest
@@ -132,7 +134,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=()
                 ),
-                (1, 0),
+                (1, 0, 0),
             )
 
     def test_rejects_line_drift_even_when_function_is_unchanged(self) -> None:
@@ -224,7 +226,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=()
                 ),
-                (2, 0),
+                (2, 0, 0),
             )
 
     def test_multi_function_authority_pins_the_whole_envelope(self) -> None:
@@ -237,7 +239,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=()
                 ),
-                (1, 0),
+                (1, 0, 0),
             )
 
     def test_missing_marker_fails_closed(self) -> None:
@@ -267,7 +269,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=(key,)
                 ),
-                (1, 1),
+                (1, 1, 0),
             )
             authority = fixture.root / key[1]
             authority.write_text(
@@ -283,6 +285,128 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=(key,)
                 )
+
+    # --- the free-text line-number ratchet ---------------------------------
+
+    def _append_comment(self, fixture: CitationFixture, domain: int, text: str) -> None:
+        module = fixture.wire_dir / f"d{domain}.rs"
+        with module.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+
+    def _write_allowance(self, fixture: CitationFixture, modules: dict) -> None:
+        path = fixture.root / VERIFY.PROSE_ALLOWANCE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"modules": modules}), encoding="utf-8", newline="\n"
+        )
+
+    def test_rejects_a_new_free_text_line_number(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._append_comment(fixture, 1, "// see `world_fold.rs:123`\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"`world_fold\.rs:123` is a free-text"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_grandfathered_line_number_is_allowed_exactly_once(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._append_comment(fixture, 1, "// see `world_fold.rs:123`\n")
+            self._write_allowance(fixture, {"d1.rs": [123]})
+            self.assertEqual(
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
+                (1, 0, 1),
+            )
+            # A second use of the same number is still a NEW reference.
+            self._append_comment(fixture, 1, "// and again `world_fold.rs:123`\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"`world_fold\.rs:123` is a free-text"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_the_allowance_may_shrink_but_swapping_fails(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._write_allowance(fixture, {"d1.rs": [123, 456]})
+            # Citing neither is fine: the ratchet only ever turns one way.
+            self.assertEqual(
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
+                (1, 0, 0),
+            )
+            # Trading a listed number for an unlisted one is not shrinking.
+            self._append_comment(fixture, 1, "// see `world_fold.rs:789`\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"`world_fold\.rs:789` is a free-text"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_the_gated_citation_is_never_counted_as_free_text(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            # The fixture module carries only its gated `world_fold.rs:S`-`:E`
+            # citation, and no allowance file exists at all.
+            self.assertEqual(
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
+                (1, 0, 0),
+            )
+
+    def test_a_missing_allowance_file_grandfathers_nothing(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._append_comment(fixture, 1, "// see `world_fold.rs:123`\n")
+            self.assertFalse((fixture.root / VERIFY.PROSE_ALLOWANCE).exists())
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"`world_fold\.rs:123` is a free-text"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_second_copy_of_the_gated_citation_is_not_a_second_exemption(
+        self,
+    ) -> None:
+        # Found by review: if every occurrence of the gated text counted as
+        # owned, pasting a second unpaired copy would smuggle two unchecked line
+        # numbers past the ratchet.  The digest backs one citation.
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            module = fixture.wire_dir / "d1.rs"
+            source = module.read_text(encoding="utf-8")
+            citation = re.search(
+                r"`world_fold\.rs:\d+`-`:\d+`", source
+            ).group(0)
+            self._append_comment(fixture, 1, f"// a second copy: {citation}\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                "expected exactly one human authority citation",
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+            # And the extraction itself must see the copy's numbers as free text.
+            marker = VERIFY.WORLD_MARKER_RE.search(
+                module.read_text(encoding="utf-8")
+            )
+            found = VERIFY.ungated_prose_references(
+                module.read_text(encoding="utf-8"), marker
+            )
+            self.assertEqual(len(found), 1, found)
+
+    def test_a_corrupt_allowance_file_fails_rather_than_opens_the_gate(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            path = fixture.root / VERIFY.PROSE_ALLOWANCE
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{not json", encoding="utf-8", newline="\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "cannot read the prose-reference allowance"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
 
 
 if __name__ == "__main__":

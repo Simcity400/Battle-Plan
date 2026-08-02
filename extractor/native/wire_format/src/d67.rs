@@ -15,11 +15,11 @@
 //!
 //! d67 carries **two** payload grammars and the discriminator is not in the
 //! payload: it is the H4CR **record-header** flag
-//! `COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2` (`world_fold.rs:9680`). Set → the
-//! `DMI2` instance grammar (`:9687`); clear → the legacy v1 id-set grammar
-//! (`:9696`-`:9831`), which carries only definition ids, no per-instance values,
+//! `COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2` (`world_fold.rs::fold_country_dynamic_modifiers`). Set → the
+//! `DMI2` instance grammar (`world_fold.rs::fold_country_dynamic_modifiers`); clear → the legacy v1 id-set grammar
+//! (`world_fold.rs::fold_country_dynamic_modifiers`), which carries only definition ids, no per-instance values,
 //! no counter, and which the fold treats as a *different* history: folding one
-//! invalidates the v2 lifecycle continuity outright (`:9689`-`:9695`).
+//! invalidates the v2 lifecycle continuity outright (`world_fold.rs::fold_country_dynamic_modifiers`).
 //!
 //! **This port implements the v2 grammar only, and refuses a v1 record rather
 //! than mapping it.** The reasons, in the recipe's terms:
@@ -87,7 +87,7 @@
 //! **No field is scaled at this boundary, and that is the fold's own choice.**
 //! The values are `i64` fixed-point over a `VALUE_SCALE` of `100_000`
 //! (`dynamic_modifiers.rs:27`), and the fold emits them **raw**, carrying the
-//! scale beside them as a constant (`world_fold.rs:10008`-`:10009`:
+//! scale beside them as a constant (`world_fold.rs::fold_country_dynamic_modifier_instances`:
 //! `"values_raw": instance.values_raw, "value_scale": dmi::VALUE_SCALE`). This is
 //! the recipe's "fields emitted raw with no scale at all" case (d20's
 //! `move_progress`), so [`field::VALUE_RAW`] is a `Signed` integer carrying the
@@ -127,7 +127,7 @@
 //! identity — `(owner_tag_db_id, modifier_id)`, unique by the decoder's own
 //! `DuplicateIdentity` check (`dynamic_modifiers.rs:274`-`:281`) — and nothing
 //! else ranks them, which is d11's production-lines case (`d11.rs:537`). The
-//! fold carries it (`world_fold.rs:10003`-`:10005`, the `enumerate` index within
+//! fold carries it (`world_fold.rs::fold_country_dynamic_modifier_instances`, the `enumerate` index within
 //! the owner's group in payload order) and it is **not** redundant with key
 //! order: in 25,825 of the capture's 48,551 owner-hours the payload's
 //! modifier-id sequence within one owner is *not* ascending, so dropping
@@ -153,7 +153,7 @@
 //!   modifier has no expiry countdown, so the concept does not apply to that row
 //!   — d20's `move_target_province` on a division that is not moving, not d20's
 //!   `owner` pointing at no country. The fold's JSON says `null` for it
-//!   (`world_fold.rs:10010`, `Option<u32>` serialized), which per §3 decides
+//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`, `Option<u32>` serialized), which per §3 decides
 //!   value-vs-nothing and nothing else; the three-way choice is made here.
 //!
 //! Every other field is concrete in every row the grammar admits, so **no field
@@ -166,7 +166,7 @@
 //!   happened-at-tick history — a synchronous zero observed inside the engine's
 //!   erase path before the row is destroyed (`dynamic_modifiers.rs:60`-`:63`) —
 //!   admitted only against the frame's own hour and against a lifecycle prior
-//!   (`world_fold.rs:9894`-`:9917`). The §9 event codec is available, but this
+//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`). The §9 event codec is available, but this
 //!   d67 event sub-stream remains independently unported and unevidenced.
 //!   [`fold_payload`] therefore **refuses** a frame carrying one instead of
 //!   dropping the events silently:
@@ -175,7 +175,7 @@
 //!   in 1033 hours, so no measured hour is lost to the refusal.
 //! - **`LifecycleTracker` transitions are not fields.** The fold derives them
 //!   from consecutive observations of the carried state
-//!   (`world_fold.rs:9917`-`:9925`, `dynamic_modifiers.rs:560`-`:628`), so they
+//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`, `dynamic_modifiers.rs:560`-`:628`), so they
 //!   are the recipe's "value the fold hard-enforces as a function of carried
 //!   state": a reader recomputes them from this schema's own instance sequence.
 //!   The one input they need that state does not carry is the *continuity* flag,
@@ -187,9 +187,9 @@
 //! # Hard d18 dependency
 //!
 //! The fold refuses a DMI2 frame outright unless the **current hour's** d18
-//! `country_identity` roster has been folded (`world_fold.rs:9869`-`:9874`), and
+//! `country_identity` roster has been folded (`world_fold.rs::fold_country_dynamic_modifier_instances`), and
 //! then refuses it again if any instance's owner is missing from that roster
-//! (`:9878`-`:9883`). Both are modelled here rather than assumed: [`CountryRoster`]
+//! (`world_fold.rs::fold_country_dynamic_modifier_instances`). Both are modelled here rather than assumed: [`CountryRoster`]
 //! is a typed input to [`record_from_instance_row`] and to [`fold_payload`], and
 //! `None` reproduces "no roster this hour". The capture carries d18 on
 //! 1033/1033 hours.
@@ -251,7 +251,7 @@ pub const HEADER_LEN: usize = 104;
 pub const ROW_LEN: usize = 28;
 /// `dynamic_modifiers.rs:27`. The denominator the raw `i64` values are stored
 /// over. It is **not** applied here — the fold emits the raw word and carries
-/// this constant beside it (`world_fold.rs:10008`-`:10009`).
+/// this constant beside it (`world_fold.rs::fold_country_dynamic_modifier_instances`).
 pub const VALUE_SCALE: i64 = 100_000;
 /// `dynamic_modifiers.rs:28`.
 pub const MAX_INSTANCES: usize = 262_144;
@@ -378,10 +378,10 @@ impl Symbols {
 
 /// The current hour's d18 `country_identity` roster, reduced to the one column
 /// d67's admission reads: the set of live `tag_db_id`s
-/// (`world_fold.rs:9878`, `WorldFold::tag_by_db_id`).
+/// (`world_fold.rs::fold_country_dynamic_modifier_instances`, `WorldFold::tag_by_db_id`).
 ///
 /// It is an **input**, never re-derived: d67's fold hard-requires a
-/// current-hour roster (`:9869`-`:9874`) and a caller that guessed one would
+/// current-hour roster (`world_fold.rs::fold_country_dynamic_modifier_instances`) and a caller that guessed one would
 /// admit instances the recorder refuses.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryRoster {
@@ -415,7 +415,7 @@ pub fn schema() -> Schema {
 
     let instances = Collection {
         collection_id: INSTANCES,
-        // Full replace every frame (`world_fold.rs:9983`-`:9993` clears every
+        // Full replace every frame (`world_fold.rs::fold_country_dynamic_modifier_instances` clears every
         // known country's list before writing the measured ones), but
         // `(owner_tag_db_id, modifier_id)` is a stable identity that persists
         // across hours — which is what a keyed set needs, and only a keyed set
@@ -432,7 +432,7 @@ pub fn schema() -> Schema {
             // example).
             Field::new(f::MODIFIER_ID, Kind::ContentId).key(1),
             // The instance's position in its owner's emission order
-            // (`world_fold.rs:10003`). A concrete required field beside the
+            // (`world_fold.rs::fold_country_dynamic_modifier_instances`). A concrete required field beside the
             // fold-enforced key — d11's `line_ordinal` case (`d11.rs:537`).
             Field::new(f::SOURCE_ORDINAL, Kind::Unsigned),
             // `SDynamicModifierEntry+0x20`, exactly 0 or 1 or the read fails
@@ -459,7 +459,7 @@ pub fn schema() -> Schema {
             // `Unsigned`: it is an array index, not content.
             Field::new(f::VALUE_ORDINAL, Kind::Unsigned).key(2),
             // The engine's raw fixed-point word, emitted unscaled by the fold
-            // (`world_fold.rs:10008`). `Signed` carries the whole `i64` range
+            // (`world_fold.rs::fold_country_dynamic_modifier_instances`). `Signed` carries the whole `i64` range
             // losslessly; there is no quantization decision to make because the
             // field is not `Continuous`. Measured range on the capture:
             // -1,500,000 .. 20,000,000 over 65 distinct values.
@@ -471,7 +471,7 @@ pub fn schema() -> Schema {
         domain: DOMAIN,
         // Hourly, like every other compact lane: one DATA record per game hour,
         // and the fold enforces at most one DMI2 frame per hour
-        // (`world_fold.rs:9844`-`:9847`).
+        // (`world_fold.rs::fold_country_dynamic_modifier_instances`).
         cadence_log2: 0,
         collections: vec![instances, values],
         // §9 event bodies have no implementation in this crate (`lib.rs:13`) and
@@ -531,14 +531,14 @@ pub struct Frame {
 ///
 /// The recipe's header splitter exists so a caller can *classify* a record
 /// without paying for its body. d67's fold cannot be split that way: it decodes
-/// the entire payload (`world_fold.rs:9848`) and checks the producer authority
-/// (`:9850`) **before** it consults the status word (`:9853`), which is d83's
+/// the entire payload (`world_fold.rs::fold_country_dynamic_modifier_instances`) and checks the producer authority
+/// (`world_fold.rs::fold_country_dynamic_modifier_instances`) **before** it consults the status word (`world_fold.rs::fold_country_dynamic_modifier_instances`), which is d83's
 /// shape. So the structural boundary here is a full decode, there is
 /// deliberately no header-only entry point, and a malformed payload is a refused
 /// stream whatever its status.
 ///
 /// `schema_v2` is the caller's reading of the H4CR record header's
-/// `COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2` bit (`world_fold.rs:9680`). It is a
+/// `COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2` bit (`world_fold.rs::fold_country_dynamic_modifiers`). It is a
 /// parameter rather than a bit tested here because that constant belongs to
 /// `compact_contract`, which this crate's library half deliberately does not
 /// depend on — d22's ruling (`d22.rs:470`). A clear flag selects the legacy v1
@@ -551,7 +551,7 @@ pub fn decode_payload(
     schema_v2: bool,
 ) -> core::result::Result<Frame, String> {
     if !schema_v2 {
-        // `world_fold.rs:9696`-`:9831`. Not an hour to skip and not a row to
+        // `world_fold.rs::fold_country_dynamic_modifiers`. Not an hour to skip and not a row to
         // map: a grammar this port does not carry.
         return Err(
             "country_dynamic_modifiers record does not carry COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2; \
@@ -571,7 +571,7 @@ pub fn decode_payload(
             payload.len()
         ));
     }
-    // `world_fold.rs:9684` and `dynamic_modifiers.rs:136`: the magic is checked,
+    // `world_fold.rs::fold_country_dynamic_modifiers` and `dynamic_modifiers.rs:136`: the magic is checked,
     // but it never *selects* the grammar — the record flag did that.
     if &payload[..4] != MAGIC.as_slice() {
         return Err("country_dynamic_modifiers schema-v2 record omitted DMI2 magic".to_string());
@@ -603,7 +603,7 @@ pub fn decode_payload(
              {AUTHORITY_KIND_EXACT_A729}"
         ));
     }
-    // `dynamic_modifiers.rs:168`-`:174`, and again at `world_fold.rs:9850`: any
+    // `dynamic_modifiers.rs:168`-`:174`, and again at `world_fold.rs::fold_country_dynamic_modifier_instances`: any
     // other producer authority is refused outright.
     if payload[40..72] != A729_EXECUTABLE_SHA256 || payload[72..104] != STATIC_AUTHORITY_RECEIPT_SHA256
     {
@@ -821,7 +821,7 @@ pub fn decode_payload(
 
 /// The key of one instance: `(owner_tag_db_id, modifier_id)`, the identity the
 /// decoder enforces as unique (`dynamic_modifiers.rs:274`-`:281`) and the fold
-/// groups by (`world_fold.rs:9884`-`:9888`).
+/// groups by (`world_fold.rs::fold_country_dynamic_modifier_instances`).
 pub fn key_from_instance_row(
     instance: &Instance,
     symbols: &Symbols,
@@ -869,10 +869,10 @@ fn symbol_id(modifier_id: &str, symbols: &Symbols) -> core::result::Result<u64, 
 ///
 /// - `source_ordinal` — the instance's position within its owner's group in
 ///   payload order, which the fold carries as data
-///   (`world_fold.rs:10003`-`:10005`). Generated at the boundary and counted in
+///   (`world_fold.rs::fold_country_dynamic_modifier_instances`). Generated at the boundary and counted in
 ///   exactly one place, so no caller re-derives it (recipe step 5).
 /// - `roster` — the current hour's d18 `country_identity` roster. The fold
-///   refuses an instance whose owner is not in it (`:9878`-`:9883`).
+///   refuses an instance whose owner is not in it (`world_fold.rs::fold_country_dynamic_modifier_instances`).
 ///
 /// `frame_tick` is §6's derived-field input; d67 declares no derived field, so
 /// it is taken and ignored — every domain's mapper has the same shape.
@@ -897,7 +897,7 @@ pub fn record_from_instance_row(
         ));
     }
     check_instance(instance)?;
-    // `world_fold.rs:9878`-`:9883`.
+    // `world_fold.rs::fold_country_dynamic_modifier_instances`.
     if !roster.contains(instance.owner_tag_db_id) {
         return Err(format!(
             "country_dynamic_modifiers DMI2 instance owner {} has no current country_identity \
@@ -936,7 +936,7 @@ pub fn record_from_instance_row(
 ///
 /// `value_ordinal` indexes the instance's `values_raw` vector; the slot's raw
 /// `i64` is carried unscaled, exactly as the fold emits it
-/// (`world_fold.rs:10008`).
+/// (`world_fold.rs::fold_country_dynamic_modifier_instances`).
 pub fn record_from_value_row(
     collection: &Collection,
     instance: &Instance,
@@ -1019,7 +1019,7 @@ fn check_instance(instance: &Instance) -> core::result::Result<(), String> {
 /// The state one d67 hour holds: the two collections, in schema order.
 ///
 /// d67 is **full replace** — the fold clears every known country's lists and
-/// writes the measured ones (`world_fold.rs:9983`-`:10023`) — so one usable
+/// writes the measured ones (`world_fold.rs::fold_country_dynamic_modifier_instances`) — so one usable
 /// record *is* one state and there is no accumulator to carry across hours. The
 /// nested walk still lives here rather than in the measurement harness so the
 /// tests, the harness and any future caller share one derivation of it.
@@ -1052,7 +1052,7 @@ impl State {
 }
 
 /// Fold one **clean** decoded d67 frame into its hour's state, exactly as
-/// `fold_country_dynamic_modifier_instances` does from `world_fold.rs:9867`
+/// `fold_country_dynamic_modifier_instances` does from `world_fold.rs::fold_country_dynamic_modifier_instances`
 /// onward.
 ///
 /// **The caller applies the failure-status exclusion first.**
@@ -1065,17 +1065,17 @@ impl State {
 /// Typed inputs, each mirroring something the fold reads:
 ///
 /// - `frame_hour` — the fold's **own clock**, `hour_index_from_raw(game_hour_raw)`
-///   as `apply_domain_data` computes it (`world_fold.rs:4791`-`:4795`), not §6's
+///   as `apply_domain_data` computes it (`world_fold.rs::apply_domain_data`), not §6's
 ///   `frame_tick`. `None` reproduces the fold's own refusal (`:9867`-`:9868`),
 ///   which is also what the generic `fold_domain_data` dispatcher hands it
-///   (`:4729`).
+///   (`world_fold.rs::fold_domain_data`).
 /// - `roster` — the current hour's d18 roster; `None` reproduces "no d18 record
 ///   folded this hour" (`:9869`-`:9874`).
 /// - `symbols` — §5 symbol resolution for the content-defined `modifier_id`.
 ///
 /// **Error contract: all-or-nothing.** The returned state is built in full
 /// before anything is published, mirroring the fold, whose own errors all
-/// precede its first mutation (`:9867`-`:9977` vs `:9983`).
+/// precede its first mutation (`world_fold.rs::fold_country_dynamic_modifier_instances` vs `world_fold.rs::fold_country_dynamic_modifier_instances`).
 pub fn fold_payload(
     schema: &Schema,
     frame: &Frame,
@@ -1090,7 +1090,7 @@ pub fn fold_payload(
             schema.collections.len()
         ));
     }
-    // `world_fold.rs:9867`-`:9868`.
+    // `world_fold.rs::fold_country_dynamic_modifier_instances`.
     let frame_hour = frame_hour
         .ok_or_else(|| "country_dynamic_modifiers DMI2 has invalid frame hour".to_string())?;
     // `:9869`-`:9874`.
@@ -1462,7 +1462,7 @@ mod tests {
     fn no_field_is_quantized_or_derived() {
         // Step 4's "quantization saves bytes" test does not apply: d67 has **no
         // continuous field at all**. The only fixed-point quantity, `values_raw`,
-        // is emitted raw by the fold (`world_fold.rs:10008`-`:10009`, which
+        // is emitted raw by the fold (`world_fold.rs::fold_country_dynamic_modifier_instances`, which
         // carries `value_scale` beside it as a constant), so it travels as a
         // `Signed` integer — lossless over the whole i64 range, with no
         // quantization decision to make.
@@ -1708,7 +1708,7 @@ mod tests {
 
     #[test]
     fn source_ordinal_is_the_payload_order_within_the_owner() {
-        // `world_fold.rs:10000`-`:10013`. The payload's within-owner order here
+        // `world_fold.rs::fold_country_dynamic_modifier_instances`. The payload's within-owner order here
         // is NOT the key order, which is the whole reason the field exists.
         let s = schema();
         let payload = raw_payload(
@@ -1779,7 +1779,7 @@ mod tests {
 
     #[test]
     fn a_legacy_v1_record_is_refused_with_its_reason() {
-        // The record-header flag is the discriminator (`world_fold.rs:9680`).
+        // The record-header flag is the discriminator (`world_fold.rs::fold_country_dynamic_modifiers`).
         // A clear flag is the legacy grammar, which this port does not carry, so
         // it is an Err — a stream rejection, never a silently skipped hour.
         let payload = raw_payload(0, &[instance(7, "alpha", None, vec![1])], &[]);
@@ -1811,7 +1811,7 @@ mod tests {
         assert!(err.contains("zero-removal"), "{err}");
 
         // The fold's own admission is mirrored first, so a malformed event is
-        // diagnosed as the fold diagnoses it (`world_fold.rs:9894`-`:9905`).
+        // diagnosed as the fold diagnoses it (`world_fold.rs::fold_country_dynamic_modifier_instances`).
         for bad in [
             // Owner not in the roster.
             ZeroRemoval { owner_tag_db_id: 9, ..event.clone() },
@@ -1838,7 +1838,7 @@ mod tests {
         let s = schema();
         let payload = raw_payload(0, &[instance(7, "alpha", None, vec![1])], &[]);
         let frame = decode_payload(&payload, true).expect("decodes");
-        // No roster at all this hour (`world_fold.rs:9869`).
+        // No roster at all this hour (`world_fold.rs::fold_country_dynamic_modifier_instances`).
         let err = fold_payload(&s, &frame, Some(TEST_HOUR), None, &symbols(), 0).expect_err("refused");
         assert!(err.contains("country_identity roster"), "{err}");
         // A roster that does not carry the owner (`:9878`).

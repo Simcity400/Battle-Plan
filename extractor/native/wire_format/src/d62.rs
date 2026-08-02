@@ -28,15 +28,15 @@
 //! | `+12` | u32 | `state_id`           | raw | none (`1..=20000`, `lib.rs:346`) |
 //! | `+16` | u32 | `record_index`       | raw | none |
 //! | `+20` | u32 | `map_entry_index`    | raw | none |
-//! | `+24` | u32 | `motorization_level` | raw | none (`1..=2`, `lib.rs:352`, `world_fold.rs:15946`) |
+//! | `+24` | u32 | `motorization_level` | raw | none (`1..=2`, `lib.rs:352`, `world_fold.rs::fold_hub_motorization`) |
 //! | `+28` | u32 | `flags`              | —   | — (see below) |
 //!
 //! **No scale factor anywhere.** Every one of the eight words is an integer the
-//! fold and the JSON emitter pass through unchanged (`world_fold.rs:9203`-`:9210`).
+//! fold and the JSON emitter pass through unchanged (`world_fold.rs::insert_hub_motorization`).
 //! The one number in this domain that looks like a fixed-point quantity —
 //! `truck_fraction_raw`, 50 000 or 100 000 — is not a payload field at all: the
 //! emitter computes it from the level with a two-armed conditional
-//! (`world_fold.rs:9211`), so it is a pure function of `motorization_level` and
+//! (`world_fold.rs::insert_hub_motorization`), so it is a pure function of `motorization_level` and
 //! carrying it would be a second encoding of the same fact.
 //!
 //! **No field can be absent, null or unknown, and the schema declares no
@@ -58,11 +58,11 @@
 //! on the wire.** `validate_row` (`lib.rs:358`-`:368`) rejects a row that carries
 //! any bit outside the five AND a row that is missing any of the five; either
 //! rejection makes `decode_payload_rows` return `Err`, which the fold turns into
-//! a domain-unknown hour that folds nothing (`world_fold.rs:15925`-`:15935`).
+//! a domain-unknown hour that folds nothing (`world_fold.rs::fold_hub_motorization`).
 //! So on the whole set of rows this schema can ever describe, `flags` is the
 //! constant `0b11111` — it has no state to encode. The fold agrees in its own
 //! output: it emits `"node_motorized": true` as a **literal**
-//! (`world_fold.rs:9212`) rather than reading `flags & ROW_FLAG_NODE_MOTORIZED`,
+//! (`world_fold.rs::insert_hub_motorization`) rather than reading `flags & ROW_FLAG_NODE_MOTORIZED`,
 //! and emits no other flag-derived field. The mapper enforces the invariant the
 //! omission rests on (any other flags word is an `Err`, never a coerced value),
 //! and the grammar is version-pinned — a collector that gave the bits per-row
@@ -134,7 +134,7 @@ pub const REQUIRED_FLAGS: u32 = ROW_FLAG_COUNTRY_VERIFIED
     | ROW_FLAG_LEVEL_VERIFIED;
 
 /// The lowest and highest motorization level the engine persists
-/// (`lib.rs:352`, `world_fold.rs:15946`, dossier "Persisted levels are exact").
+/// (`lib.rs:352`, `world_fold.rs::fold_hub_motorization`, dossier "Persisted levels are exact").
 pub const MIN_MOTORIZATION_LEVEL: u32 = 1;
 pub const MAX_MOTORIZATION_LEVEL: u32 = 2;
 
@@ -145,7 +145,7 @@ pub const MAX_MOTORIZATION_LEVEL: u32 = 2;
 /// (dossier line 45, `lib.rs:644`-`:647`), which in a keyed set is the absence of
 /// the row, not a code the row can hold. Declaring `enum_card(3)` to keep the raw
 /// engine number would therefore make `Enum(0)` a decodable value meaning a level
-/// the fold rejects (`world_fold.rs:15946`) — a record that passes
+/// the fold rejects (`world_fold.rs::fold_hub_motorization`) — a record that passes
 /// `Record::validate` carrying data no capture can produce — and would cost two
 /// packed bits per row instead of one (`record.rs:334`). The mapping is a
 /// bijection onto the legal levels and is applied in exactly one place, by
@@ -177,8 +177,8 @@ pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
         // The key is the fold's own tuple, in the fold's own order:
-        // `(owner_tag_db_id, province_id, actor_tag_db_id)` (`world_fold.rs:15957`).
-        // A duplicate is a rejected frame there (`:15962`-`:15971`), never a
+        // `(owner_tag_db_id, province_id, actor_tag_db_id)` (`world_fold.rs::fold_hub_motorization`).
+        // A duplicate is a rejected frame there (`world_fold.rs::fold_hub_motorization`), never a
         // last-writer-wins overwrite, which is what makes it a real identity.
         //
         // All three are `ContentId`: each is an id whose meaning a content
@@ -207,7 +207,7 @@ pub fn schema() -> Schema {
         Field::new(f::RECORD_INDEX, Kind::Unsigned),
         Field::new(f::MAP_ENTRY_INDEX, Kind::Unsigned),
         // The one non-identity measurement in the domain, and a natural enum:
-        // the fold constrains it to `1..=2` (`world_fold.rs:15946`). See
+        // the fold constrains it to `1..=2` (`world_fold.rs::fold_hub_motorization`). See
         // `MOTORIZATION_LEVEL_CARDINALITY` for why the cardinality is 2.
         Field::new(f::MOTORIZATION_LEVEL, Kind::Enum).enum_card(MOTORIZATION_LEVEL_CARDINALITY),
     ];
@@ -218,7 +218,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: MOTORIZATION_ENTRIES,
-            // Full replace each frame (`world_fold.rs:15984` assigns the whole
+            // Full replace each frame (`world_fold.rs::fold_hub_motorization` assigns the whole
             // fresh map), but the key triple is a stable identity that persists
             // across hours — measured churn on the real capture is under one
             // insert and one delete per hour against ~518 rows — and only a
@@ -246,7 +246,7 @@ pub struct PayloadHeader {
 
 /// Split a d62 DATA payload into its header and its rows slice, applying the
 /// codec's and the fold's **structural** checks (`lib.rs:255`-`:304`,
-/// `world_fold.rs:15973`-`:15983`). Per-row semantics stay in
+/// `world_fold.rs::fold_hub_motorization`). Per-row semantics stay in
 /// [`record_from_row`].
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
@@ -303,7 +303,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
             payload.len()
         ));
     }
-    // `lib.rs:299` and `world_fold.rs:15973`: the codec counts one map entry per
+    // `lib.rs:299` and `world_fold.rs::fold_hub_motorization`: the codec counts one map entry per
     // emitted row and the fold counts them again, so the header's total is the
     // row count. A mismatch means rows were dropped between collection and
     // emission — the fold marks the hour unknown for exactly this.
@@ -317,7 +317,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// The key of one compact row: the fold's `(owner_tag_db_id, province_id,
-/// actor_tag_db_id)` triple (`world_fold.rs:15957`), in the fold's order.
+/// actor_tag_db_id)` triple (`world_fold.rs::fold_hub_motorization`), in the fold's order.
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     let (owner, province, actor) = key_fields_of_row(row)?;
     Ok(key(&[owner as u64, province as u64, actor as u64]))
@@ -366,7 +366,7 @@ pub fn record_from_row(
     let state_id = u32_at(row, 12);
     check_range(state_id, 1, MAX_STATE_ID, "state_id")?;
 
-    // `lib.rs:352` and `world_fold.rs:15946`. Rejected, never clamped: a level
+    // `lib.rs:352` and `world_fold.rs::fold_hub_motorization`. Rejected, never clamped: a level
     // outside `1..=2` is a row the fold refuses, and coercing it would publish
     // a motorization level the engine never persisted.
     let level_code = level_to_code(u32_at(row, 24))?;
@@ -541,7 +541,7 @@ mod tests {
         // (`lib.rs:327`); nothing is gated. A failed read never becomes a row —
         // the collector fails the whole CCSS object (`lib.rs:528`) and a payload
         // that will not decode makes the whole domain-hour unknown with the
-        // previous accumulator retained (`world_fold.rs:15926`-`:15935`), which
+        // previous accumulator retained (`world_fold.rs::fold_hub_motorization`), which
         // is an absent hour, not an empty field.
         let c = collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
@@ -843,7 +843,7 @@ mod tests {
             wrong[24..28].copy_from_slice(&row_len.to_le_bytes());
             assert!(split_payload(&wrong).is_err(), "row_len {row_len}");
         }
-        // total_map_entries != row_count (`world_fold.rs:15973`).
+        // total_map_entries != row_count (`world_fold.rs::fold_hub_motorization`).
         for total in [0u32, 2, u32::MAX] {
             let mut wrong = payload.clone();
             wrong[28..32].copy_from_slice(&total.to_le_bytes());

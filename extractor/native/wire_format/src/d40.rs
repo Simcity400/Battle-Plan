@@ -5,11 +5,11 @@
 //! byte-for-byte with d39 `air_variant_upgrades`. The shared fold is
 //! `world_fold.rs:16283`-`:16364`; dispatch lines 4714 and 4715 call it for both
 //! domains, and the
-//! only divergences inside it are the accumulator it writes (`:15575`-`:15579`)
-//! and the name in its error strings (`:15506`-`:15510`). Read that module for
+//! only divergences inside it are the accumulator it writes (`world_fold.rs::fold_variant_upgrades`)
+//! and the name in its error strings (`world_fold.rs::fold_variant_upgrades`). Read that module for
 // @world-fold-authority domain=40 functions=fold_variant_upgrades lines=16283-16364 sha256=c8dd403bda7ec0313372fdfe81ec3ff275289d4884eeaa2c4279c1e63eb9e781
 //! the payload tables, the four-state decision (none: `flags` must be exactly
-//! zero, `:15546`), the upsert-only fold, and the one place the mapping is
+//! zero, `world_fold.rs::fold_variant_upgrades`), the upsert-only fold, and the one place the mapping is
 //! stricter than the fold.
 //!
 //! This module is the **domain identity**: §11 assigns field ids per domain, so
@@ -32,11 +32,11 @@ use crate::record::Record;
 use crate::schema::{Collection, Schema};
 use crate::variant_upgrades::{self as shared, Domain, PayloadHeader, State, Tables};
 
-/// `STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID`, `world_fold.rs:645`.
+/// `STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID`, `world_fold.rs::STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID`.
 pub const DOMAIN: u32 = 40;
 
 /// The fold's own name for this domain in its diagnostics
-/// (`world_fold.rs:15509`).
+/// (`world_fold.rs::fold_variant_upgrades`).
 pub const NAME: &str = "stockpile_variant_upgrades";
 
 /// The descriptor every shared entry point takes. Nothing else constructs one.

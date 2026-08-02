@@ -3,9 +3,9 @@
 //!
 //! Authority, in the recipe's precedence order:
 //! `world_fold.rs:19360`-`:19542`'s `fold_scripted_state` (dispatched
-//! at `:4726`), its row validator `validate_scripted_state_row` (`:30173`), its
-//! accumulator writer `apply_scripted_state_row` (`:19110`) and its clear
-//! `clear_scripted_state_accumulators` (`:19095`). There is no dossier for this
+//! at `:4726`), its row validator `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`), its
+//! accumulator writer `apply_scripted_state_row` (`world_fold.rs::apply_scripted_state_row`) and its clear
+//! `clear_scripted_state_accumulators` (`world_fold.rs::clear_scripted_state_accumulators`). There is no dossier for this
 // @world-fold-authority domain=51 functions=fold_scripted_state lines=19360-19542 sha256=82071a58072d303dafd6ef8cfc8d9b0423c94452e89d99c21ef372f6a06d48bb
 // @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=209-641 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
 //! domain; the fold is sufficient. The lane's own payload decoder
@@ -23,7 +23,7 @@
 //! which is therefore modelled explicitly here:
 //!
 //! * a **non-delta** frame clears ALL FIVE accumulators (`:19067` →
-//!   `clear_scripted_state_accumulators`, `:19095`-`:19108`);
+//!   `clear_scripted_state_accumulators`, `world_fold.rs::clear_scripted_state_accumulators`);
 //! * a **delta** frame clears the opaque-badge and delayed-event sub-maps and
 //!   ONLY those (`:19069`-`:19072`).
 //!
@@ -38,11 +38,11 @@
 //!
 //! | kind | fold destination | this module |
 //! |---|---|---|
-//! | 1 `VARIABLE_FIXED_I64` | `scripted_world_variables` / country `extra._r2_script_variables` / state `_r2_scripted_state.variables` (`:19116`-`:19181`) | [`VARIABLES`] |
-//! | 2 `FLAG_NAMED` | `scripted_world_flags` / country `extra.script_flags` / state `.flags` (`:19183`-`:19229`) | [`NAMED_FLAGS`] |
-//! | 3 `FLAG_TOKEN_ONLY` | `scripted_world_token_only_flags` / `extra._r2_token_only_flags` / state `.token_only_flags` (`:19231`-`:19277`) | [`TOKEN_FLAGS`] |
-//! | 4 `DELAYED_EVENT_OPAQUE`, 5 `SCRIPTED_GUI_OPAQUE` | `scripted_world_opaque_badges: Vec` (`:19279`-`:19288`) | [`OPAQUE_BADGES`] |
-//! | 6 `DELAYED_EVENT` | `scripted_world_delayed_events: BTreeMap<(u32,u32,u64),_>` (`:19290`-`:19317`) | [`DELAYED_EVENTS`] |
+//! | 1 `VARIABLE_FIXED_I64` | `scripted_world_variables` / country `extra._r2_script_variables` / state `_r2_scripted_state.variables` (`world_fold.rs::apply_scripted_state_row`) | [`VARIABLES`] |
+//! | 2 `FLAG_NAMED` | `scripted_world_flags` / country `extra.script_flags` / state `.flags` (`world_fold.rs::apply_scripted_state_row`) | [`NAMED_FLAGS`] |
+//! | 3 `FLAG_TOKEN_ONLY` | `scripted_world_token_only_flags` / `extra._r2_token_only_flags` / state `.token_only_flags` (`world_fold.rs::apply_scripted_state_row`) | [`TOKEN_FLAGS`] |
+//! | 4 `DELAYED_EVENT_OPAQUE`, 5 `SCRIPTED_GUI_OPAQUE` | `scripted_world_opaque_badges: Vec` (`world_fold.rs::apply_scripted_state_row`) | [`OPAQUE_BADGES`] |
+//! | 6 `DELAYED_EVENT` | `scripted_world_delayed_events: BTreeMap<(u32,u32,u64),_>` (`world_fold.rs::apply_scripted_state_row`) | [`DELAYED_EVENTS`] |
 //!
 //! The three scopes (`GLOBAL`/`COUNTRY`/`STATE`) are three storage locations
 //! inside each of those families, keyed by `owner_id`, so `scope_kind` and
@@ -89,7 +89,7 @@
 //! # Four-state decisions
 //!
 //! * [`VARIABLES`]`::VALUE_RAW` — required and concrete. `validate_scripted_state_row`
-//!   refuses a live variable row without `VALUE_PRESENT` (`world_fold.rs:30222`),
+//!   refuses a live variable row without `VALUE_PRESENT` (`world_fold.rs::validate_scripted_state_row`),
 //!   so the gate can never be clear on a row the fold folds. No capability.
 //! * [`NAMED_FLAGS`] / [`TOKEN_FLAGS`] `VALUE_RAW`, `DATE_HOUR_RAW` — **Unknown**
 //!   on a clear gate. The fold stores `Option` and publishes JSON `null`
@@ -115,7 +115,7 @@
 //! # Values that are not fields
 //!
 //! * The delayed-event row's `date_hour_raw` slot carries the **scope tag**, and
-//!   the fold requires it to equal `owner_id` (`world_fold.rs:30263`-`:30274`).
+//!   the fold requires it to equal `owner_id` (`world_fold.rs::validate_scripted_state_row`).
 //!   A value the fold hard-enforces as a function of carried state is not a field:
 //!   it is enforced in [`parse_row`] and pinned by
 //!   [`the_delayed_event_scope_tag_is_owner_and_is_not_re_encoded`].
@@ -124,11 +124,11 @@
 //! # Tombstones
 //!
 //! `deleted = (raw_value_kind & 1<<31) != 0 || (flags & ROW_FLAG_DELETED) != 0`
-//! (`world_fold.rs:19010`-`:19011`). Only the value-kind form is refused outside a
-//! delta frame (`:19055`-`:19060`); a `ROW_FLAG_DELETED` tombstone inside a
+//! (`world_fold.rs::fold_scripted_state`). Only the value-kind form is refused outside a
+//! delta frame (`world_fold.rs::fold_scripted_state`); a `ROW_FLAG_DELETED` tombstone inside a
 //! baseline frame is accepted by both the fold and the payload authority, and
 //! removes a key from the just-cleared accumulator. Kinds 4, 5 and 6 have no
-//! tombstone form at all — `validate_scripted_state_row` refuses one (`:30214`).
+//! tombstone form at all — `validate_scripted_state_row` refuses one (`world_fold.rs::validate_scripted_state_row`).
 //!
 //! # The one place this port refuses what the fold accepts
 //!
@@ -216,11 +216,11 @@ pub mod field {
 // (`scripted_state_compact.rs:3`-`:74`) as the second copy. The transcription is
 // pinned field-by-field by [`the_transcribed_grammar_constants_match_the_fold`].
 
-/// `SCRIPTED_STATE_HEADER_LEN`, `world_fold.rs:921`.
+/// `SCRIPTED_STATE_HEADER_LEN`, `world_fold.rs::SCRIPTED_STATE_HEADER_LEN`.
 pub const HEADER_LEN: usize = 64;
-/// `SCRIPTED_STATE_ROW_LEN`, `world_fold.rs:926`. Fixed; there is no legacy form.
+/// `SCRIPTED_STATE_ROW_LEN`, `world_fold.rs::SCRIPTED_STATE_ROW_LEN`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 48;
-/// `SCRIPTED_STATE_SCHEMA_VERSION`, `world_fold.rs:925`. The fold refuses any
+/// `SCRIPTED_STATE_SCHEMA_VERSION`, `world_fold.rs::SCRIPTED_STATE_SCHEMA_VERSION`. The fold refuses any
 /// other version BEFORE it classifies the status word, so [`peek_header`] does.
 pub const SCHEMA_VERSION: u32 = 2;
 
@@ -240,7 +240,7 @@ pub const VALUE_FLAG_TOKEN_ONLY: u32 = 3;
 pub const VALUE_DELAYED_EVENT_OPAQUE: u32 = 4;
 pub const VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
 pub const VALUE_DELAYED_EVENT: u32 = 6;
-/// `SCRIPTED_STATE_VALUE_KIND_DELETED`, `world_fold.rs:947`. The high bit of the
+/// `SCRIPTED_STATE_VALUE_KIND_DELETED`, `world_fold.rs::SCRIPTED_STATE_VALUE_KIND_DELETED`. The high bit of the
 /// value-kind word is one of the two tombstone encodings.
 pub const VALUE_KIND_DELETED: u32 = 1 << 31;
 
@@ -250,7 +250,7 @@ pub const ROW_FLAG_VALUE_PRESENT: u32 = 1 << 2;
 pub const ROW_FLAG_DATE_PRESENT: u32 = 1 << 3;
 pub const ROW_FLAG_DELETED: u32 = 1 << 4;
 pub const ROW_FLAG_DELAYED_DUE_PRESENT: u32 = 1 << 5;
-/// `SCRIPTED_STATE_ROW_KNOWN_FLAGS`, `world_fold.rs:960`-`:965`. Any other bit is
+/// `SCRIPTED_STATE_ROW_KNOWN_FLAGS`, `world_fold.rs::SCRIPTED_STATE_ROW_KNOWN_FLAGS`. Any other bit is
 /// a hard error (`:18966`).
 pub const ROW_KNOWN_FLAGS: u32 = ROW_FLAG_KEY_PRESENT
     | ROW_FLAG_TOKEN_PRESENT
@@ -279,7 +279,7 @@ pub const MAX_DELAYED_EVENT_ID: u32 = 100_000 * 42_949;
 /// fold at `world_fold.rs:958`.
 pub const MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
 /// `MAX_COMPACT_OWNER_TAG_DB_ID` (`build_profile.rs:45`). A **fold** bound only
-/// for kind-6 rows (`world_fold.rs:30256`); the payload authority applies it to
+/// for kind-6 rows (`world_fold.rs::validate_scripted_state_row`); the payload authority applies it to
 /// every country-scoped row, which is [`check_authority_payload`]'s business.
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = 2_048;
 /// `MAX_STATE_ID` (`scripted_state_compact.rs:62`) — authority-only, never a
@@ -411,7 +411,7 @@ pub fn schema() -> Schema {
     // `state_id`, and §5 names both as content-defined in as many words, so a
     // manifest must resolve it for the row to keep its meaning under another mod
     // set (d63's `tag_db_id` key and d52's `state_id` key are the precedents).
-    // On GLOBAL the fold hard-enforces `owner_id == 0` (`world_fold.rs:30180`),
+    // On GLOBAL the fold hard-enforces `owner_id == 0` (`world_fold.rs::validate_scripted_state_row`),
     // which is the "no owner" sentinel rather than a content reference. This is a
     // ContentId KEY — the heavier §13 retrofit class — and it is flagged as such
     // in the deliverable, twice over: the retrofit needs a scope-selected
@@ -428,7 +428,7 @@ pub fn schema() -> Schema {
         Field::new(f::VARIABLE_NAME, Kind::ContentId).key(2),
         // Required and concrete: `validate_scripted_state_row` refuses a live
         // variable row whose `VALUE_PRESENT` gate is clear
-        // (`world_fold.rs:30219`-`:30224`), so no folded row can lack it.
+        // (`world_fold.rs::validate_scripted_state_row`), so no folded row can lack it.
         // `Signed`, carried raw — see the module docs for why not `Fixed(5)`.
         Field::new(f::VARIABLE_VALUE_RAW, Kind::Signed),
     ]);
@@ -474,7 +474,7 @@ pub fn schema() -> Schema {
 
     let delayed_event_fields = vec![
         // The fold keys this accumulator `(owner_id, combined_event_id,
-        // scope_random)` (`world_fold.rs:19305`-`:19309`), so the port does.
+        // scope_random)` (`world_fold.rs::apply_scripted_state_row`), so the port does.
         Field::new(f::DELAYED_OWNER_TAG_DB_ID, Kind::ContentId).key(0),
         // `ContentId`: the combined id is `namespace * 100_000 + index`
         // (`scripted_state_compact.rs:34`-`:36`) and an event namespace is
@@ -526,7 +526,7 @@ pub fn schema() -> Schema {
 }
 
 /// The fold's own kind-1 projection, pinned in exactly one place so no consumer
-/// re-derives the divisor (`world_fold.rs:19172`-`:19175`). Kinds 2 and 3 have no
+/// re-derives the divisor (`world_fold.rs::apply_scripted_state_row`). Kinds 2 and 3 have no
 /// divisor and must never be passed through this.
 pub fn variable_display_value(value_raw: i64, fixed_scale: u32) -> f64 {
     value_raw as f64 / fixed_scale as f64
@@ -534,7 +534,7 @@ pub fn variable_display_value(value_raw: i64, fixed_scale: u32) -> f64 {
 
 // --- Header and payload split ------------------------------------------------
 
-/// The 64-byte payload header (`world_fold.rs:18912`-`:18921`,
+/// The 64-byte payload header (`world_fold.rs::fold_scripted_state`,
 /// `scripted_state_compact.rs:207`-`:222`). Every word is parsed; the fold reads
 /// only `row_count`, `key_bytes_len`, `status_flags`, `fixed_scale` and
 /// `schema_version`, and the rest are reported, never enforced here.
@@ -582,13 +582,13 @@ fn i64_at(payload: &[u8], offset: usize) -> i64 {
 }
 
 /// Read the header alone, and apply the two checks the fold runs BEFORE it
-/// classifies the status word: the header length (`world_fold.rs:18912`) and the
-/// schema version (`:18918`-`:18921`).
+/// classifies the status word: the header length (`world_fold.rs::fold_scripted_state`) and the
+/// schema version (`world_fold.rs::fold_scripted_state`).
 ///
 /// The split matters and is this fold's own call order. Everything else the fold
 /// checks — the exact payload length and `fixed_scale` — runs AFTER both the
-/// failure-status exit (`:18930`-`:18935`) and the delta-before-baseline exit
-/// (`:18937`-`:18943`), so enforcing them here would refuse records the recorder
+/// failure-status exit (`world_fold.rs::fold_scripted_state`) and the delta-before-baseline exit
+/// (`world_fold.rs::fold_scripted_state`), so enforcing them here would refuse records the recorder
 /// accepts and folds nothing from.
 pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String> {
     if payload.len() < HEADER_LEN {
@@ -702,7 +702,7 @@ impl ParsedRow {
 
 /// Decode and validate one 48-byte row against its payload's key table, exactly
 /// as the fold's row loop does (`world_fold.rs:18957`-`:19062`) followed by
-/// `validate_scripted_state_row` (`:30173`-`:30296`).
+/// `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`).
 ///
 /// `is_delta` is a typed input because one of the fold's row rules is
 /// frame-relative: a tombstone carried in the VALUE-KIND high bit outside a delta
@@ -743,7 +743,7 @@ pub fn parse_row(
         )
     } else {
         // The fold checks the LENGTH word only, not the offset word
-        // (`world_fold.rs:18985`-`:18989`).
+        // (`world_fold.rs::fold_scripted_state`).
         if u32_at(row, 20) != 0 {
             return Err("scripted_state row has key_len without key flag".to_string());
         }
@@ -795,7 +795,7 @@ pub fn parse_row(
         deleted,
         delayed_due_hours: has_delayed_due.then_some(reserved0),
     };
-    // `world_fold.rs:19055`-`:19060`: only the VALUE-KIND tombstone form is
+    // `world_fold.rs::fold_scripted_state`: only the VALUE-KIND tombstone form is
     // frame-gated. This sits between the row build and the row validation in the
     // fold, and so does here.
     if raw_value_kind & VALUE_KIND_DELETED != 0 && !is_delta {
@@ -805,7 +805,7 @@ pub fn parse_row(
     Ok(parsed)
 }
 
-/// `validate_scripted_state_row` (`world_fold.rs:30173`-`:30296`), verbatim in
+/// `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`), verbatim in
 /// order.
 fn validate_parsed_row(row: &ParsedRow) -> core::result::Result<(), String> {
     if row.delayed_due_hours.is_some() && row.value_kind != VALUE_DELAYED_EVENT {
@@ -884,7 +884,7 @@ fn validate_parsed_row(row: &ParsedRow) -> core::result::Result<(), String> {
                 _ => return Err("scripted_state delayed-event row has invalid event id".to_string()),
             }
             // The scope tag rides the date slot and MUST equal the owner
-            // (`world_fold.rs:30263`-`:30274`) — the identity that makes it a
+            // (`world_fold.rs::validate_scripted_state_row`) — the identity that makes it a
             // derived value rather than a field.
             match row.date_hour_raw {
                 Some(scope_tag)
@@ -976,7 +976,7 @@ pub fn key_from_badge_row(parsed: &ParsedRow) -> Key {
 }
 
 /// The key of a `DELAYED_EVENTS` row: the fold's own accumulator key
-/// `(owner_id, combined_event_id, scope_random)` (`world_fold.rs:19305`-`:19309`).
+/// `(owner_id, combined_event_id, scope_random)` (`world_fold.rs::apply_scripted_state_row`).
 pub fn key_from_delayed_event_row(parsed: &ParsedRow) -> core::result::Result<Key, String> {
     let event_id = parsed
         .token_id
@@ -1097,7 +1097,7 @@ pub fn record_from_badge_row(
     let _ = frame_tick;
     check_collection(collection, OPAQUE_BADGES)?;
     // A badge row can never be a tombstone: `validate_scripted_state_row` refuses
-    // one (`world_fold.rs:30214`). Checked rather than assumed.
+    // one (`world_fold.rs::validate_scripted_state_row`). Checked rather than assumed.
     if parsed.deleted {
         return Err("scripted_state badge row cannot be a tombstone".to_string());
     }
@@ -1171,12 +1171,12 @@ pub enum FoldOutcome {
     /// A delta frame: three accumulators were patched, two were replaced.
     Delta,
     /// `DELTA_DATA` before any baseline (`world_fold.rs:18937`-`:18943` →
-    /// `reject_delta_before_baseline`, `:2905`-`:2928`). The fold marks the
+    /// `reject_delta_before_baseline`, `world_fold.rs::reject_delta_before_baseline`). The fold marks the
     /// domain-hour unknown and returns before the payload-length check, the
     /// `fixed_scale` check and the whole row loop; nothing is written. The
     /// recorder then publishes the WHOLE d51 surface as `Null` for that hour —
     /// world (`:3872`-`:3902`), country (`:5175` → `mask_scripted_country_extra`,
-    /// `:27022`) and state (`:5393`-`:5397`) — so unlike d52 this really is an
+    /// `world_fold.rs::mask_scripted_country_extra`) and state (`:5393`-`:5397`) — so unlike d52 this really is an
     /// excluded hour with nothing of the domain surviving it.
     DeltaBeforeBaseline,
 }
@@ -1245,11 +1245,11 @@ pub struct State {
     pub variables: KeyedState,
     pub named_flags: KeyedState,
     pub token_flags: KeyedState,
-    /// Full replace on EVERY frame (`world_fold.rs:19070`).
+    /// Full replace on EVERY frame (`world_fold.rs::fold_scripted_state`).
     pub opaque_badges: KeyedState,
-    /// Full replace on EVERY frame (`world_fold.rs:19071`).
+    /// Full replace on EVERY frame (`world_fold.rs::fold_scripted_state`).
     pub delayed_events: KeyedState,
-    /// `delta_baselines_seen.contains(&51)` (`world_fold.rs:18933`, `:19068`).
+    /// `delta_baselines_seen.contains(&51)` (`world_fold.rs::fold_scripted_state`).
     baseline_seen: bool,
 }
 
@@ -1276,13 +1276,13 @@ impl State {
     }
 
     /// Fold one d51 DATA payload exactly as `fold_scripted_state` folds it
-    /// (`world_fold.rs:18911`-`:19093`), in the fold's own order.
+    /// (`world_fold.rs::fold_scripted_state`), in the fold's own order.
     ///
     /// The caller owns the **failure-status** exclusion, because the predicate is
     /// `compact_contract`'s
     /// (`compact_status_failure_flags_after_expected_partial_tolerance`) and this
     /// crate's library half must neither depend on that crate nor copy its mask.
-    /// The fold consults it at `:18928`-`:18935` — after the header length and
+    /// The fold consults it at `world_fold.rs::fold_scripted_state` — after the header length and
     /// schema-version checks and before everything else — so a caller that gets
     /// the order right calls [`peek_header`], excludes on status, and only then
     /// calls this. Note d51's failure predicate is EXACTLY
@@ -1290,7 +1290,7 @@ impl State {
     /// (`compact_status_for_global_interpretation` strips the three lane-local
     /// badges, of which bit 12 is otherwise `CONTROL_INVALID` and inside the
     /// failure mask), which is what the fold's hand-written expression at
-    /// `:18928`-`:18932` computes; `bin/bench_real_d51.rs` pins the agreement.
+    /// `world_fold.rs::fold_scripted_state` computes; `bin/bench_real_d51.rs` pins the agreement.
     ///
     /// The **delta-before-baseline** exclusion is handled here, because it needs
     /// no vocabulary this crate lacks.
@@ -1329,7 +1329,7 @@ impl State {
         }
 
         if delta {
-            // `world_fold.rs:19069`-`:19072` — the partial clear.
+            // `world_fold.rs::fold_scripted_state` — the partial clear.
             self.opaque_badges.clear();
             self.delayed_events.clear();
         } else {
@@ -1368,7 +1368,7 @@ impl State {
         if delta {
             Ok(FoldOutcome::Delta)
         } else {
-            // `world_fold.rs:19068`.
+            // `world_fold.rs::fold_scripted_state`.
             self.baseline_seen = true;
             Ok(FoldOutcome::Baseline)
         }
@@ -2356,7 +2356,7 @@ mod tests {
     #[test]
     fn the_variable_display_value_is_the_folds_own_projection() {
         // The float the fold publishes is a pure function of the raw and the
-        // header scale (`world_fold.rs:19172`-`:19175`), pinned in one place.
+        // header scale (`world_fold.rs::apply_scripted_state_row`), pinned in one place.
         assert_eq!(variable_display_value(5_250_000, FIXED_SCALE_RAW), 52.5);
         assert_eq!(variable_display_value(-100_000, FIXED_SCALE_RAW), -1.0);
         assert_eq!(variable_display_value(0, FIXED_SCALE_RAW), 0.0);
@@ -2484,7 +2484,7 @@ mod tests {
     #[test]
     fn the_reserved_slot_is_dual_purpose_and_reading_it_unconditionally_is_refused() {
         // The hazard: `reserved0` carries the delayed-event due hours under bit 5
-        // and MUST be zero otherwise (`world_fold.rs:18999`-`:19004`). A mapper
+        // and MUST be zero otherwise (`world_fold.rs::fold_scripted_state`). A mapper
         // that read it unconditionally would publish garbage on every other row.
         let mut spec = variable_row(SCOPE_GLOBAL, 0, "alpha", 5);
         spec.reserved0 = 9;
@@ -2505,7 +2505,7 @@ mod tests {
         let payload = build_payload(0, &[variable_row(SCOPE_GLOBAL, 0, "alpha", 1)]);
         assert!(split_payload(&payload).is_ok());
         // One trailing byte is not a shorter well-formed payload: the fold
-        // requires equality (`world_fold.rs:18947`).
+        // requires equality (`world_fold.rs::fold_scripted_state`).
         let mut longer = payload.clone();
         longer.push(0);
         assert!(split_payload(&longer).is_err());
@@ -2527,7 +2527,7 @@ mod tests {
         // The VARIABLES collection declares NO capability: its one value field is
         // required, concrete and never null or unknown, because
         // `validate_scripted_state_row` refuses a live variable row without
-        // `VALUE_PRESENT` (`world_fold.rs:30219`-`:30224`). So there is no
+        // `VALUE_PRESENT` (`world_fold.rs::validate_scripted_state_row`). So there is no
         // Absent/Null/Unknown case to build here — a real zero and full values are
         // the whole state space.
         assert!(c.value_fields().all(|f| !f.optional && !f.nullable && !f.unknown_capable));
@@ -2636,7 +2636,7 @@ mod tests {
             key_from_badge_row(&parsed),
             key(&[SCOPE_GLOBAL as u64, 0, VALUE_DELAYED_EVENT_OPAQUE as u64])
         );
-        // The fold requires nothing of a badge key (`world_fold.rs:30240`), so a
+        // The fold requires nothing of a badge key (`world_fold.rs::validate_scripted_state_row`), so a
         // keyless badge is a row it folds and this port maps — Null, because the
         // string is a producer marker and not a read that can fail.
         let payload = build_payload(
@@ -2683,7 +2683,7 @@ mod tests {
     #[test]
     fn the_delayed_event_scope_tag_is_owner_and_is_not_re_encoded() {
         // A value the fold hard-enforces as a function of carried state is not a
-        // field (`world_fold.rs:30263`-`:30274`). Enforced here, and absent from
+        // field (`world_fold.rs::validate_scripted_state_row`). Enforced here, and absent from
         // the schema.
         let mut spec = delayed_event_row(9, MIN_DELAYED_EVENT_ID, 1, None);
         spec.date_hour_raw = 10;
@@ -2816,7 +2816,7 @@ mod tests {
 
     #[test]
     fn a_baseline_clears_all_five_accumulators_and_a_delta_clears_only_two() {
-        // `world_fold.rs:19067`-`:19072` — the partial clear the recipe has no
+        // `world_fold.rs::fold_scripted_state` — the partial clear the recipe has no
         // name for. Three collections survive a delta; two do not.
         let schema = schema();
         let symbols = symbols();
@@ -2949,7 +2949,7 @@ mod tests {
 
     #[test]
     fn a_repeated_identity_inside_one_frame_is_last_writer_wins() {
-        // The fold's own `insert` is last-writer-wins (`world_fold.rs:19157`),
+        // The fold's own `insert` is last-writer-wins (`world_fold.rs::apply_scripted_state_row`),
         // so the keyed set reproduces its stored state exactly. The payload
         // authority is what rejects the duplicate, and it is tested separately.
         let schema = schema();
@@ -2971,7 +2971,7 @@ mod tests {
     #[test]
     fn two_badge_rows_with_one_identity_are_refused() {
         // The one place this port refuses what the fold accepts. The fold PUSHes
-        // both into a `Vec` (`world_fold.rs:19280`); a keyed set would silently
+        // both into a `Vec` (`world_fold.rs::apply_scripted_state_row`); a keyed set would silently
         // keep one. See the module docs for the producer evidence.
         let schema = schema();
         let payload = build_payload(

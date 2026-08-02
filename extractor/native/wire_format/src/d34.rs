@@ -10,7 +10,7 @@
 //! `:56098`-`:56200`, `:71573`-`:71606`). `extractor/documents/domains/` carries
 //! no d34 dossier, so the fold and the collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:15140`-`:15168`, writer at
+//! **Payload grammar** (`world_fold.rs::fold_air_base_status`, writer at
 //! `attach_log.rs:71582`-`:71590`): a 36-byte header followed by `row_count`
 //! fixed 32-byte rows. There is no legacy short row — the fold requires
 //! `payload.len() == 36 + row_count * 32` exactly (`:15161`-`:15168`), so the
@@ -71,14 +71,14 @@
 //! record sets `COMPACT_STATUS_DELTA_DATA`.
 //!
 //! **`self.air_base_status` has exactly one writer.** `world_fold.rs` touches it
-//! at `:15171` (clear), `:15189` (remove) and `:15192` (insert) and nowhere
+//! at `world_fold.rs::fold_air_base_status` (clear), `world_fold.rs::fold_air_base_status` (remove) and `world_fold.rs::fold_air_base_status` (insert) and nowhere
 //! else; the only other mentions are the two read sites and the field
 //! declaration. Unlike d26 there is no cross-domain pruner to model.
 //!
 //! # Four-state semantics
 //!
 //! **`province_id == 0` is `unknown`, and the fold says so in words.**
-//! `world_fold.rs:15181`-`:15184`: *"A7 exact-a729 placement closure reuses the
+//! `world_fold.rs::fold_air_base_status`: *"A7 exact-a729 placement closure reuses the
 //! former reserved word for the pointer-free CAirBase -> CProvince id. Zero
 //! remains accepted for older recordings and means province unobtained."* That
 //! is recipe step-2 case 3 — the value existed and the recording could not carry
@@ -104,12 +104,12 @@
 //! **Nothing else reaches an empty state.** `state_id`, `capacity`,
 //! `building_level`, `based_wing_count` and `based_plane_count` are read
 //! unconditionally with no gate, no range check and no sentinel
-//! (`:15176`, `:15198`-`:15201`); a zero in any of them is a real measured
+//! (`world_fold.rs::fold_air_base_status`); a zero in any of them is a real measured
 //! value — an air base with no wings based on it reads `0` and that is a fact,
 //! not a missing reading. So the schema declares `unknown_capable` on
 //! `province_id` and **no** `optional` and **no** `nullable` field at all.
 //!
-//! **`flags` is not a field.** Its only legal bit is DELETED (`:15178`-`:15180`
+//! **`flags` is not a field.** Its only legal bit is DELETED (`world_fold.rs::fold_air_base_status`
 //! rejects every other bit), and DELETED is a wire tombstone — a removal, not a
 //! row of data. [`record_from_row`] refuses a deleted row for the same reason
 //! d26's mapper does; the removal is expressed by [`Accumulator`] dropping the
@@ -140,22 +140,22 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:985`-`:986`, `:758`, `:499`. --------
 
-/// `AIR_BASE_STATUS_HEADER_LEN`, `world_fold.rs:985`.
+/// `AIR_BASE_STATUS_HEADER_LEN`, `world_fold.rs::AIR_BASE_STATUS_HEADER_LEN`.
 pub const HEADER_LEN: usize = 36;
-/// `AIR_BASE_STATUS_ROW_LEN`, `world_fold.rs:986`. Fixed; no legacy form.
+/// `AIR_BASE_STATUS_ROW_LEN`, `world_fold.rs::AIR_BASE_STATUS_ROW_LEN`. Fixed; no legacy form.
 pub const ROW_LEN: usize = 32;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`. The **only** legal flag bit:
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`. The **only** legal flag bit:
 /// `flags & !ROW_FLAG_DELETED_LOW_BIT != 0` is a hard error (`:15178`-`:15180`).
 pub const ROW_FLAG_DELETED: u32 = 1;
 
-/// `SUPPLY_MAX_PROVINCE_ID`, `world_fold.rs:499`. A row whose province id
+/// `SUPPLY_MAX_PROVINCE_ID`, `world_fold.rs::SUPPLY_MAX_PROVINCE_ID`. A row whose province id
 /// exceeds this is rejected (`:15185`-`:15187`) — checked **before** the delete
 /// branch, so it applies to tombstones too.
 pub const MAX_PROVINCE_ID: u32 = 13_413;
 
 /// The sentinel the fold documents as "province unobtained"
-/// (`world_fold.rs:15181`-`:15184`). Mapped to [`Value::Unknown`].
+/// (`world_fold.rs::fold_air_base_status`). Mapped to [`Value::Unknown`].
 pub const PROVINCE_ID_UNOBTAINED: u32 = 0;
 
 pub fn schema() -> Schema {
@@ -168,7 +168,7 @@ pub fn schema() -> Schema {
         // and §5's deciding question ("must a manifest resolve this for it to
         // keep its meaning under another mod set?") answers no.
         Field::new(f::AIR_BASE_ID, Kind::Unsigned).key(0),
-        // The owning state's id (`world_fold.rs:15176`). `ContentId`: a state is
+        // The owning state's id (`world_fold.rs::fold_air_base_status`). `ContentId`: a state is
         // defined by map content, so state 1081 is whatever state the mod set
         // defines — the same call d22 makes for `province_state_id`.
         Field::new(f::STATE_ID, Kind::ContentId),
@@ -211,7 +211,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 36-byte payload header (`world_fold.rs:15140`-`:15150`, writer at
+/// The 36-byte payload header (`world_fold.rs::fold_air_base_status`, writer at
 /// `attach_log.rs:71583`-`:71590`). Every word is carried, including the four
 /// the fold never reads, so a caller can report them without re-deriving offsets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,7 +246,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             payload.len()
         ));
     }
-    // `world_fold.rs:15147`-`:15150`: the trailing header word must be zero.
+    // `world_fold.rs::fold_air_base_status`: the trailing header word must be zero.
     let reserved = u32_at(payload, 32);
     if reserved != 0 {
         return Err(format!(
@@ -265,7 +265,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 }
 
 /// Split a d34 DATA payload into its header and its rows slice, applying the
-/// fold's structural checks (`world_fold.rs:15140`-`:15168`).
+/// fold's structural checks (`world_fold.rs::fold_air_base_status`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -294,7 +294,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// One compact row, parsed and validated exactly as the fold's row loop does
-/// (`world_fold.rs:15173`-`:15203`) — including the order of its checks.
+/// (`world_fold.rs::fold_air_base_status`) — including the order of its checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AirBaseRow {
     pub air_base_id: u32,
@@ -327,7 +327,7 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<AirBaseRow, String> {
     let air_base_id = u32_at(row, 0);
     let state_id = u32_at(row, 4);
     let flags = u32_at(row, 8);
-    // `world_fold.rs:15178`-`:15180`: DELETED is the only bit this grammar has.
+    // `world_fold.rs::fold_air_base_status`: DELETED is the only bit this grammar has.
     if flags & !ROW_FLAG_DELETED != 0 {
         return Err(format!(
             "air_base_status row {air_base_id} has unknown flags {flags:#x}"
@@ -461,7 +461,7 @@ impl Accumulator {
     }
 
     /// Whether a replacing record has been folded — `delta_baselines_seen`
-    /// membership in `world_fold.rs:2947`-`:2960`, which is what decides both
+    /// membership in `world_fold.rs::replace_or_sparse_after_first`, which is what decides both
     /// whether an arriving DELTA is data and whether the next record clears.
     pub fn baseline_seen(&self) -> bool {
         self.baseline_seen
@@ -502,7 +502,7 @@ impl Accumulator {
         payload: &[u8],
         is_delta: bool,
     ) -> core::result::Result<FoldOutcome, String> {
-        // `world_fold.rs:15154`-`:15160`, BEFORE the length check at `:15161`.
+        // `world_fold.rs::fold_air_base_status`, BEFORE the length check at `world_fold.rs::fold_air_base_status`.
         peek_header(payload)?;
         if is_delta && !self.baseline_seen {
             return Ok(FoldOutcome::DeltaBeforeBaseline);
@@ -781,7 +781,7 @@ mod tests {
     fn there_is_no_continuous_field_to_quantize() {
         // Step 4's "quantization saves bytes" test does not apply and cannot: d34
         // has no `Kind::Continuous` field at all, because the fold applies no
-        // scale factor to anything (`world_fold.rs:15192`-`:15203` stores six
+        // scale factor to anything (`world_fold.rs::fold_air_base_status` stores six
         // u32 words verbatim, and the header carries no scale word to assert).
         // Every value is an exact integer count or id, so there is nothing that
         // is "drawn rather than interpolated".
@@ -930,7 +930,7 @@ mod tests {
             assert!(parse_row(&row).is_err(), "length {len}");
             assert!(key_from_row(&row).is_err(), "length {len}");
         }
-        // Every flag bit that is not DELETED (`world_fold.rs:15178`), one at a
+        // Every flag bit that is not DELETED (`world_fold.rs::fold_air_base_status`), one at a
         // time, with and without DELETED also set.
         for bit in 1..32u32 {
             for base in [0u32, ROW_FLAG_DELETED] {
@@ -990,7 +990,7 @@ mod tests {
         let mut over = p.clone();
         over.push(0);
         assert!(split_payload(&over).is_err());
-        // A non-zero reserved word (`world_fold.rs:15147`-`:15150`), every bit.
+        // A non-zero reserved word (`world_fold.rs::fold_air_base_status`), every bit.
         for bit in 0..32u32 {
             let mut bad = p.clone();
             bad[32..36].copy_from_slice(&(1u32 << bit).to_le_bytes());
@@ -1099,7 +1099,7 @@ mod tests {
         assert!(acc.bases.contains_key(&make_key(&[2])));
 
         // A second non-delta record does NOT clear: only the FIRST one does
-        // (`world_fold.rs:2954`-`:2959`). This is the property that separates
+        // (`world_fold.rs::replace_or_sparse_after_first`). This is the property that separates
         // `replace_or_sparse_after_first` from d22's clear-on-every-baseline.
         let fifth = payload(0, &[raw_row(3, 30, 0, 1, 1, 1, 1, 503)]);
         acc.fold_payload(&c, &fifth, false).expect("folds");

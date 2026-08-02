@@ -3,14 +3,14 @@
 //! Derived from `world_fold.rs:23009`-`:23096`
 //! (`fold_map_control`), its row-length constants at `:386`-`:387`, the projection
 // @world-fold-authority domain=22 functions=fold_map_control lines=23009-23096 sha256=545b9dbb5ca3c89e7723111fcfe7a379078d06e63ef353cf97d4bffeff37b0f3
-//! that merges its output into the shared state/province objects (`:5338`-`:5420`),
+//! that merges its output into the shared state/province objects (`world_fold.rs::build_snapshot`),
 //! and the collector read and payload writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:59480`-`:59538`,
 //! `:59540`-`:59665` and `:71678`-`:71727`).
 //! `domains/UNDOCUMENTED_DOMAINS.md` lists d22 with no dossier; the fold and the
 //! collector read are the whole basis, which the recipe treats as sufficient.
 //!
-//! **Payload grammar** (`world_fold.rs:22230`-`:22237`, writer at
+//! **Payload grammar** (`world_fold.rs::fold_map_control`, writer at
 //! `attach_log.rs:71687`-`:71699`): a 32-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `state_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `province_count` u32 at `+20`,
@@ -69,7 +69,7 @@
 //! so a single unreadable word fails the whole sample; `read_compact_map_control`
 //! then returns zero rows with `COMPACT_STATUS_SOURCE_UNAVAILABLE`
 //! (`:58552`-`:58566`), which is a domain-hour failure status the fold handles at
-//! `world_fold.rs:22238` — not a row with a clear flag. Uncaptured is a
+//! `world_fold.rs::fold_map_control` — not a row with a clear flag. Uncaptured is a
 //! whole-hour state in this domain, never a per-field one.
 //!
 //! It is also not **absent**: `world_fold.rs:5350` and `:5403` insert these keys
@@ -92,13 +92,13 @@
 //! d22 is the first fan-out domain whose *shipping* payload is itself incremental,
 //! so the two layers have to be kept apart.
 //!
-//! *Shipping layer* (`world_fold.rs:22246`-`:22256`, `:22312`-`:22314`): a record
+//! *Shipping layer* (`world_fold.rs::fold_map_control`): a record
 //! with `COMPACT_STATUS_DELTA_DATA` clear is a BASELINE — the fold **clears both
 //! maps** and then inserts every row in the payload. With the bit set it is a
 //! DELTA — the fold upserts only the rows present and touches nothing else. There
 //! is no delete row in either form, so **within a run of shipping deltas a key
 //! never leaves**. A DELTA before any BASELINE is not an error: the fold marks the
-//! domain-hour unknown, folds nothing, and retains the accumulator (`:22247`).
+//! domain-hour unknown, folds nothing, and retains the accumulator (`world_fold.rs::fold_map_control`).
 //!
 //! *Wire layer*: [`Accumulator`] replays the shipping layer into the two full
 //! per-hour keyed states, and only then does the wire grammar apply — a wire
@@ -163,20 +163,20 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:386`-`:387` and `:22230`-`:22311`. ---
 
-/// `world_fold.rs:22230` — `need(payload, 32, ...)`, then rows at `32 + ..`.
+/// `world_fold.rs::fold_map_control` — `need(payload, 32, ...)`, then rows at `32 + ..`.
 pub const HEADER_LEN: usize = 32;
-/// `MAP_STATE_ROW_LEN`, `world_fold.rs:386`. Fixed; there is no legacy form.
+/// `MAP_STATE_ROW_LEN`, `world_fold.rs::MAP_STATE_ROW_LEN`. Fixed; there is no legacy form.
 pub const STATE_ROW_LEN: usize = 16;
-/// `MAP_PROVINCE_ROW_LEN`, `world_fold.rs:387`.
+/// `MAP_PROVINCE_ROW_LEN`, `world_fold.rs::MAP_PROVINCE_ROW_LEN`.
 pub const PROVINCE_ROW_LEN: usize = 16;
 
-/// State row: gates `owner` (`world_fold.rs:22270`).
+/// State row: gates `owner` (`world_fold.rs::fold_map_control`).
 pub const FLAG_STATE_OWNER: u32 = 1;
-/// State row: gates `controller` (`world_fold.rs:22278`).
+/// State row: gates `controller` (`world_fold.rs::fold_map_control`).
 pub const FLAG_STATE_CONTROLLER: u32 = 1 << 1;
-/// Province row: gates `controller` (`world_fold.rs:22297`).
+/// Province row: gates `controller` (`world_fold.rs::fold_map_control`).
 pub const FLAG_PROVINCE_CONTROLLER: u32 = 1;
-/// Province row: gates `state_id` (`world_fold.rs:22305`).
+/// Province row: gates `state_id` (`world_fold.rs::fold_map_control`).
 pub const FLAG_PROVINCE_STATE_ID: u32 = 1 << 1;
 
 pub fn schema() -> Schema {
@@ -196,7 +196,7 @@ pub fn schema() -> Schema {
     //   * `owner`, `controller`      — a country `tag_db_id` indexes the country
     //     database the game builds from content at load, so the same number names
     //     a different country under another mod set. d20's `owner` is the *same*
-    //     quantity from `fold_divisions` (`world_fold.rs:19221`, also stringified)
+    //     quantity from `fold_divisions` (`world_fold.rs::fold_divisions`, also stringified)
     //     and is `ContentId`; d63's `tag_db_id` key is `ContentId` too. Classifying
     //     it `Unsigned` here would split one concept across sibling domains and
     //     hide these fields from §5's manifest-assignment retrofit sweep.
@@ -209,7 +209,7 @@ pub fn schema() -> Schema {
             Field::new(f::STATE_ID, Kind::ContentId).key(0),
             // Null when the gate is clear: tag_db_id 0 is "no country owns this
             // state" — the relation points at nothing. Not optional (the concept
-            // applies to every state row, `world_fold.rs:5350`) and not
+            // applies to every state row, `world_fold.rs::build_snapshot`) and not
             // unknown-capable (an unreadable read fails the whole hour, never one
             // field — see the module docs).
             Field::new(f::STATE_OWNER, Kind::ContentId).nullable(),
@@ -240,7 +240,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 32-byte payload header (`world_fold.rs:22230`-`:22233`, written at
+/// The 32-byte payload header (`world_fold.rs::fold_map_control`, written at
 /// `attach_log.rs:71692`-`:71699`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
@@ -254,7 +254,7 @@ pub struct PayloadHeader {
 }
 
 /// Split a d22 DATA payload into its header, its state rows and its province
-/// rows, applying the fold's own structural checks (`world_fold.rs:22230`-`:22237`).
+/// rows, applying the fold's own structural checks (`world_fold.rs::fold_map_control`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness that
@@ -317,17 +317,17 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     ))
 }
 
-/// The key of one state row: its `state_id` (`world_fold.rs:22259`, `:22266`).
+/// The key of one state row: its `state_id` (`world_fold.rs::fold_map_control`).
 ///
 /// Zero is a legal key here. `fold_map_control` applies no zero check — unlike
-/// `fold_country_core_scalars` (`:9279`) — so a zero `state_id` becomes the map
+/// `fold_country_core_scalars` (`world_fold.rs::fold_country_core_scalars`) — so a zero `state_id` becomes the map
 /// entry `"0"` rather than a rejected frame, and this mirrors that.
 pub fn key_from_state_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_row_len(row, STATE_ROW_LEN, "state")?;
     Ok(key(&[u32_at(row, 0) as u64]))
 }
 
-/// The key of one province row: its `province_id` (`world_fold.rs:22286`, `:22293`).
+/// The key of one province row: its `province_id` (`world_fold.rs::fold_map_control`).
 pub fn key_from_province_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_row_len(row, PROVINCE_ROW_LEN, "province")?;
     Ok(key(&[u32_at(row, 0) as u64]))
@@ -356,9 +356,9 @@ pub fn record_from_state_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // `world_fold.rs:22268`-`:22275`.
+            // `world_fold.rs::fold_map_control`.
             field::STATE_OWNER => gated_id(flags & FLAG_STATE_OWNER != 0, u32_at(row, 4)),
-            // `world_fold.rs:22276`-`:22283`.
+            // `world_fold.rs::fold_map_control`.
             field::STATE_CONTROLLER => {
                 gated_id(flags & FLAG_STATE_CONTROLLER != 0, u32_at(row, 8))
             }
@@ -390,11 +390,11 @@ pub fn record_from_province_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // `world_fold.rs:22295`-`:22302`.
+            // `world_fold.rs::fold_map_control`.
             field::PROVINCE_CONTROLLER => {
                 gated_id(flags & FLAG_PROVINCE_CONTROLLER != 0, u32_at(row, 4))
             }
-            // `world_fold.rs:22303`-`:22310`.
+            // `world_fold.rs::fold_map_control`.
             field::PROVINCE_STATE_ID => {
                 gated_id(flags & FLAG_PROVINCE_STATE_ID != 0, u32_at(row, 8))
             }
@@ -426,7 +426,7 @@ fn gated_id(present: bool, value: u32) -> Value {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldOutcome {
     /// A shipping BASELINE: both maps were cleared and refilled
-    /// (`world_fold.rs:22253`-`:22256`). The domain now has a baseline.
+    /// (`world_fold.rs::fold_map_control`). The domain now has a baseline.
     Baseline,
     /// A shipping DELTA applied on top of an existing baseline: the payload's rows
     /// were upserted and nothing else was touched.
@@ -457,7 +457,7 @@ impl Accumulator {
         Self::default()
     }
 
-    /// `world_fold.rs:22247` — whether a BASELINE has been folded, which is what
+    /// `world_fold.rs::fold_map_control` — whether a BASELINE has been folded, which is what
     /// decides whether an arriving DELTA is data or a marked-unknown hour.
     pub fn baseline_seen(&self) -> bool {
         self.baseline_seen
@@ -488,7 +488,7 @@ impl Accumulator {
     ) -> core::result::Result<FoldOutcome, String> {
         let (header, state_rows, province_rows) = split_payload(payload)?;
         let _ = header;
-        // `world_fold.rs:22247`-`:22252`. Note the order: this is decided before
+        // `world_fold.rs::fold_map_control`. Note the order: this is decided before
         // anything is cleared or upserted, so the accumulator survives untouched.
         if is_delta && !self.baseline_seen {
             return Ok(FoldOutcome::DeltaBeforeBaseline);
@@ -513,7 +513,7 @@ impl Accumulator {
             ));
         }
 
-        // `world_fold.rs:22253`-`:22256`: a baseline clears BOTH maps first.
+        // `world_fold.rs::fold_map_control`: a baseline clears BOTH maps first.
         if !is_delta {
             self.states.clear();
             self.provinces.clear();
@@ -528,7 +528,7 @@ impl Accumulator {
             self.provinces.insert(k, record);
         }
         if !is_delta {
-            // `world_fold.rs:22312`-`:22314`.
+            // `world_fold.rs::fold_map_control`.
             self.baseline_seen = true;
             Ok(FoldOutcome::Baseline)
         } else {
@@ -663,7 +663,7 @@ mod tests {
     fn every_gated_field_is_nullable_and_nothing_else() {
         // The schema declares exactly one capability, so the mapper may emit
         // exactly one empty state. Absent would claim the concept does not apply
-        // to a state or province — but `world_fold.rs:5350`/`:5403` insert these
+        // to a state or province — but `world_fold.rs::build_snapshot` insert these
         // keys on every row. Unknown would claim the value was not captured — but
         // an unreadable read fails the whole hour with
         // COMPACT_STATUS_SOURCE_UNAVAILABLE (`attach_log.rs:58564`) and never
@@ -844,7 +844,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // A set gate with a zero word: the fold stores `json!("0")` rather than
-        // Null (`world_fold.rs:22270`-`:22274` tests the flag, never the value),
+        // Null (`world_fold.rs::fold_map_control` tests the flag, never the value),
         // so this mapper keeps the zero. §3 keeps zero out of the three empty
         // states. The collector's writer cannot produce this row — its flag is a
         // pure non-zero test (`attach_log.rs:71702`) — which is the open question
@@ -1048,7 +1048,7 @@ mod tests {
 
     #[test]
     fn a_delta_before_any_baseline_folds_nothing() {
-        // `world_fold.rs:22247`-`:22252`: the domain-hour is marked unknown, the
+        // `world_fold.rs::fold_map_control`: the domain-hour is marked unknown, the
         // accumulator is retained, and the rows in the payload are NOT applied.
         let mut acc = Accumulator::new();
         assert!(!acc.baseline_seen());

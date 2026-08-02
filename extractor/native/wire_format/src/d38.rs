@@ -4,7 +4,7 @@
 //! Derived from `world_fold.rs:16160`-`:16280`
 //! (`fold_air_superiority_inputs`), its payload constants at `:991`-`:992`,
 // @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=16160-16280 sha256=c8cfeadd470eb6ca6da19a405e16f97a842bc27b16b28723b469bfc2a20f4a0b
-//! `:758` and `:156`, the accumulator's own JSON projection (`:9063`-`:9096`), and
+//! `:758` and `:156`, the accumulator's own JSON projection (`world_fold.rs::insert_air_superiority_inputs`), and
 //! the collector read that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:55529`-`:55769`,
 //! `:71517`-`:71562`). There is no `extractor/documents/domains/d38_*.md` dossier,
@@ -19,7 +19,7 @@
 //! into one bucket per `(region, owner, mission_mask, variant_id)`
 //! (`attach_log.rs:55568`-`:55655`).
 //!
-//! **Payload grammar** (`world_fold.rs:15383`-`:15454`, collector
+//! **Payload grammar** (`world_fold.rs::fold_air_superiority_inputs`, collector
 //! `attach_log.rs:71530`-`:71542`): a 52-byte header followed by `row_count`
 //! fixed 48-byte rows. The fold requires the length to be exactly
 //! `52 + row_count * 48` (`:15447`-`:15454`), so no legacy short row exists and the
@@ -49,7 +49,7 @@
 //! fold constrains them by nothing. **d38 has no header reserved word at all**, so
 //! unlike d31 there is no zero check on the header; the row has one, at `+36`.
 //!
-//! Row (`world_fold.rs:15460`-`:15498`):
+//! Row (`world_fold.rs::fold_air_superiority_inputs`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
@@ -57,13 +57,13 @@
 //! | `+4`  | u32 | `owner_tag_db_id`          | raw | none (key component 1) |
 //! | `+8`  | u32 | `mission_mask`             | raw | none (key component 2) |
 //! | `+12` | u32 | `variant_id`               | raw | none (key component 3) |
-//! | `+16` | u32 | `flags`                    | —   | only `1<<0` DELETED is legal (`:15467`) |
+//! | `+16` | u32 | `flags`                    | —   | only `1<<0` DELETED is legal (`world_fold.rs::fold_air_superiority_inputs`) |
 //! | `+20` | u32 | `equipment_token_raw`      | raw | none |
 //! | `+24` | u32 | `equipment_type_token_raw` | raw | none |
 //! | `+28` | u32 | `interface_type_raw`       | raw | none |
 //! | `+32` | u32 | `wing_count`               | raw | none |
-//! | `+36` | u32 | `reserved`                 | —   | must be zero (`:15470`) |
-//! | `+40` | i64 | `amount_raw`               | `/100_000` (`:9087`) | none |
+//! | `+36` | u32 | `reserved`                 | —   | must be zero (`world_fold.rs::fold_air_superiority_inputs`) |
+//! | `+40` | i64 | `amount_raw`               | `/100_000` (`world_fold.rs::insert_air_superiority_inputs`) | none |
 //!
 //! **One scale, and it is the header's own constant.** `amount_raw` is the only
 //! scaled field: the fold's render divides it by `FIXED_SCALE`
@@ -93,7 +93,7 @@
 //! one, and the deciding authority is the fold:
 //!
 //! - **The fold enforces no such function.** It reads the three words at fixed
-//!   offsets and stores them per row (`world_fold.rs:15491`-`:15493`) with no
+//!   offsets and stores them per row (`world_fold.rs::fold_air_superiority_inputs`) with no
 //!   comparison against anything, no cross-row check, and no dependency on d35
 //!   (the fold has no cross-domain read here at all). The recipe's
 //!   drop-a-derived-value rule applies to a value *the fold hard-enforces* as a
@@ -151,7 +151,7 @@
 //!
 //! ## Sparse-after-first, not baseline-plus-delta
 //!
-//! `replace_or_sparse_after_first` (`world_fold.rs:2947`, called at `:15455`)
+//! `replace_or_sparse_after_first` (`world_fold.rs::replace_or_sparse_after_first`, called at `:15455`)
 //! clears the accumulator only for the FIRST record that reaches it without the
 //! `COMPACT_STATUS_DELTA_DATA` bit; every record after that — delta-flagged or
 //! not — is applied sparsely, upserting the rows it carries and removing the keys
@@ -219,22 +219,22 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:991`-`:992` and `:15383`-`:15498`. ---
 
-/// `AIR_SUPERIORITY_INPUT_HEADER_LEN`, `world_fold.rs:991`.
+/// `AIR_SUPERIORITY_INPUT_HEADER_LEN`, `world_fold.rs::AIR_SUPERIORITY_INPUT_HEADER_LEN`.
 pub const HEADER_LEN: usize = 52;
-/// `AIR_SUPERIORITY_INPUT_ROW_LEN`, `world_fold.rs:992`. Fixed; no legacy form.
+/// `AIR_SUPERIORITY_INPUT_ROW_LEN`, `world_fold.rs::AIR_SUPERIORITY_INPUT_ROW_LEN`. Fixed; no legacy form.
 pub const ROW_LEN: usize = 48;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`, applied at `:15480`, and the
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`, applied at `:15480`, and the
 /// collector's `COMPACT_AIR_SUPERIORITY_INPUT_ROW_FLAG_DELETED`
 /// (`attach_log.rs:71545`).
 pub const ROW_FLAG_DELETED: u32 = 1;
-/// The whole legal flag vocabulary of a d38 row: `world_fold.rs:15467` rejects the
+/// The whole legal flag vocabulary of a d38 row: `world_fold.rs::fold_air_superiority_inputs` rejects the
 /// frame outright when any other bit is set, so an unrecognised flag word means
 /// the row is not this grammar and nothing in it can be trusted.
 pub const ROW_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`, and the header word the fold asserts equal
-/// to it (`:15432`, via `ensure_fixed_scale` at `:30245`).
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`, and the header word the fold asserts equal
+/// to it (`:15432`, via `ensure_fixed_scale` at `world_fold.rs::ensure_fixed_scale`).
 pub const FIXED_SCALE: f64 = 100_000.0;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 /// `FIXED_SCALE` is `10^5`, so `Quant::Fixed(5)` is exactly the source's own grid
@@ -245,7 +245,7 @@ pub const SCALE_DIGITS: u8 = 5;
 /// reproduces the source integer **exactly**. It is a documented property, **not a
 /// gate**: the mapper maps every `i64` the fold maps.
 ///
-/// `amount_raw` is an `i64` (`world_fold.rs:15495`) and `Value::Continuous` is a
+/// `amount_raw` is an `i64` (`world_fold.rs::fold_air_superiority_inputs`) and `Value::Continuous` is a
 /// binary64, so the pair is exact only while the round trip
 /// `round_ties_even((raw / 10^5) * 10^5)` returns `raw`. That holds for every
 /// `|raw| <= 2^51`, which is what
@@ -313,7 +313,7 @@ pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
         // The key is the fold's own quadruple, in the fold's own order
-        // (`world_fold.rs:15474`-`:15479`), which is also the row order and the
+        // (`world_fold.rs::fold_air_superiority_inputs`), which is also the row order and the
         // order the collector aggregates and sorts by (`attach_log.rs:55621`,
         // `:55736`).
         //
@@ -324,7 +324,7 @@ pub fn schema() -> Schema {
         Field::new(f::REGION_ID, Kind::ContentId).key(0),
         // A country tag-db id, classed as ContentId by d20 (`owner`), d31, d62 and
         // d63 for the same reason. The fold's own projection resolves it through
-        // the country reference table (`world_fold.rs:9079`), which is the manifest
+        // the country reference table (`world_fold.rs::insert_air_superiority_inputs`), which is the manifest
         // lookup in its shipping form.
         Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(1),
         // The wing's mission bitmask. `Unsigned`, NOT `ContentId`: air mission
@@ -347,7 +347,7 @@ pub fn schema() -> Schema {
         // `836..=7249`, in a campaign whose whole country roster is 29 tags.
         Field::new(f::VARIANT_ID, Kind::Unsigned).key(3),
         // The three catalog words, all read raw and stored per row
-        // (`world_fold.rs:15491`-`:15493`). `Unsigned` for the reasons d35 states
+        // (`world_fold.rs::fold_air_superiority_inputs`). `Unsigned` for the reasons d35 states
         // and the module docs restate: process-local token handles and an engine
         // discriminator, none of them content, and `interface_type_raw` is not an
         // `Enum` because the fold validates no cardinality. See the module docs for
@@ -355,7 +355,7 @@ pub fn schema() -> Schema {
         Field::new(f::EQUIPMENT_TOKEN, Kind::Unsigned),
         Field::new(f::EQUIPMENT_TYPE_TOKEN, Kind::Unsigned),
         Field::new(f::INTERFACE_TYPE, Kind::Unsigned),
-        // How many wings contribute to this bucket (`world_fold.rs:15494`, summed
+        // How many wings contribute to this bucket (`world_fold.rs::fold_air_superiority_inputs`, summed
         // at `attach_log.rs:55646`). `Unsigned`, not `Monotone`: §4 makes monotone
         // a hint that a value usually rises, and this one is recomputed from
         // scratch every frame over the wings currently flying that mission in that
@@ -368,13 +368,13 @@ pub fn schema() -> Schema {
         //
         // `Quant::Fixed(5)` is not a precision *budget*: `amount_raw` is a signed
         // 64-bit fixed-point word whose denominator the fold asserts to be exactly
-        // `10^5` before folding anything (`:15432`), so `fixed(5)` is the source's
+        // `10^5` before folding anything (`world_fold.rs::fold_air_superiority_inputs`), so `fixed(5)` is the source's
         // own grid and reproduces the source integer bit for bit over the whole
         // accepted band (proved in `fixed_five_reproduces_every_raw_in_the_band`).
         // §6's "exact unless justified" bar is met by a stronger fact than a
         // precision argument: nothing is rounded at all. It also matters that the
         // raw integer survives — the fold's own renderer emits `amount_raw` beside
-        // `amount` (`:9088`), so a downstream consumer requires the integer, and
+        // `amount` (`world_fold.rs::insert_air_superiority_inputs`), so a downstream consumer requires the integer, and
         // `fixed(5)` is precisely the quantization under which `round(value * 1e5)`
         // returns it unchanged, where `exact` would spend 8 bytes per value to
         // carry the same information.
@@ -395,7 +395,7 @@ pub fn schema() -> Schema {
         collections: vec![Collection {
             collection_id: SUPERIORITY_INPUTS,
             // The fold upserts and deletes by key against a retained map
-            // (`world_fold.rs:15480`-`:15498`) — a keyed set is what that is, and
+            // (`world_fold.rs::fold_air_superiority_inputs`) — a keyed set is what that is, and
             // only a keyed set has a delta grammar (§7.3).
             shape: Shape::KeyedSet,
             fields,
@@ -406,7 +406,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 52-byte payload header (`world_fold.rs:15388`-`:15396`, collector
+/// The 52-byte payload header (`world_fold.rs::fold_air_superiority_inputs`, collector
 /// `attach_log.rs:71531`-`:71542`).
 ///
 /// `observed_variant_rows` at `+32` and `invalid_air_wing_rows` at `+36` are read
@@ -432,14 +432,14 @@ pub struct PayloadHeader {
 }
 
 impl PayloadHeader {
-    /// `COMPACT_STATUS_DELTA_DATA` (`world_fold.rs:2948`). Note this is *not* the
+    /// `COMPACT_STATUS_DELTA_DATA` (`world_fold.rs::replace_or_sparse_after_first`). Note this is *not* the
     /// same question as "is this record a sparse patch" — see
     /// [`Accumulator::fold_payload`].
     pub fn is_delta(self) -> bool {
         self.status_flags & STATUS_DELTA_DATA != 0
     }
 
-    /// The fold's failure gate (`world_fold.rs:15433`).
+    /// The fold's failure gate (`world_fold.rs::fold_air_superiority_inputs`).
     pub fn is_failure(self) -> bool {
         self.status_flags & FAILURE_STATUS_MASK != 0
     }
@@ -447,7 +447,7 @@ impl PayloadHeader {
 
 /// Read the 52-byte payload header and apply exactly the checks
 /// `fold_air_superiority_inputs` applies BEFORE its two return-without-folding
-/// paths (`world_fold.rs:15383`-`:15432`).
+/// paths (`world_fold.rs::fold_air_superiority_inputs`).
 ///
 /// Six checks, in the fold's own order: the header-length `need`, four
 /// `ensure_count_at_most` invariants, `ensure_row_count_with_deletes`, and
@@ -456,14 +456,14 @@ impl PayloadHeader {
 /// The split from [`split_payload`] exists because the fold's order is
 /// load-bearing: these checks reject a frame even when its status marks the
 /// domain-hour failed, while the exact-length check runs only after both
-/// exclusions have passed (`:15447`). A caller needs `status_flags` to decide the
+/// exclusions have passed (`world_fold.rs::fold_air_superiority_inputs`). A caller needs `status_flags` to decide the
 /// exclusions, and `status_flags` lives in this header — exposing the header read
 /// is what keeps that from becoming a second, hand-rolled copy of the header
 /// layout in every caller.
 ///
 /// Total: no input of any length panics.
 pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String> {
-    // `need(payload, AIR_SUPERIORITY_INPUT_HEADER_LEN, ...)`, `world_fold.rs:15383`.
+    // `need(payload, AIR_SUPERIORITY_INPUT_HEADER_LEN, ...)`, `world_fold.rs::fold_air_superiority_inputs`.
     if payload.len() < HEADER_LEN {
         return Err(format!(
             "air_superiority_inputs payload {} shorter than the {HEADER_LEN}-byte header",
@@ -545,7 +545,7 @@ fn ensure_at_most(
 
 /// Split a d38 DATA payload into its header and its rows slice: [`peek_header`]
 /// plus the exact-length check the fold makes after its exclusions
-/// (`world_fold.rs:15447`-`:15454`).
+/// (`world_fold.rs::fold_air_superiority_inputs`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly one
 /// implementation: a measurement harness that re-derives it is a harness that can
@@ -578,7 +578,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 /// One parsed 48-byte row.
 ///
 /// The five value words are carried even on a deleted row, where the fold ignores
-/// them (`world_fold.rs:15480`-`:15483` removes the key and never reads past `+36`).
+/// them (`world_fold.rs::fold_air_superiority_inputs` removes the key and never reads past `+36`).
 /// They are `0` in every delete row the shipping collector emits
 /// (`attach_log.rs:55754`-`:55769`) but the fold does not require that, so this does
 /// not either — rejecting a row the fold accepts would drop real data.
@@ -597,10 +597,10 @@ pub struct Row {
 }
 
 /// Parse one 48-byte row, applying every per-row check the fold applies, in the
-/// fold's order (`world_fold.rs:15460`-`:15483`).
+/// fold's order (`world_fold.rs::fold_air_superiority_inputs`).
 ///
 /// **No key component has a range check**, and that is the fold's decision, not an
-/// omission here: `:15462`-`:15465` read the four words and use them whole. The
+/// omission here: `world_fold.rs::fold_air_superiority_inputs` read the four words and use them whole. The
 /// collector will not produce a `region_id` outside `1..=MAX_AIR_WING_MISSION_REGION_ID`
 /// (`attach_log.rs:55576`), nor a zero `mission_mask` (`:55570`), nor a
 /// `variant_id` with no live variant object behind it (`:55605`) — and the capture
@@ -615,13 +615,13 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<Row, String> {
     let mission_mask = u32_at(row, 8);
     let variant_id = u32_at(row, 12);
     let flags = u32_at(row, 16);
-    // `world_fold.rs:15467`-`:15469`.
+    // `world_fold.rs::fold_air_superiority_inputs`.
     if flags & !ROW_KNOWN_FLAGS != 0 {
         return Err(format!(
             "air_superiority_inputs row has unknown flags {flags:#x}"
         ));
     }
-    // `world_fold.rs:15470`-`:15473`. Read after the flag check, as the fold does.
+    // `world_fold.rs::fold_air_superiority_inputs`. Read after the flag check, as the fold does.
     let reserved = u32_at(row, 36);
     if reserved != 0 {
         return Err(format!(
@@ -646,7 +646,7 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<Row, String> {
 }
 
 /// The key of one compact row: the fold's `(region_id, owner_tag_db_id,
-/// mission_mask, variant_id)` quadruple (`world_fold.rs:15474`-`:15479`), in the
+/// mission_mask, variant_id)` quadruple (`world_fold.rs::fold_air_superiority_inputs`), in the
 /// fold's order, which is also the row order.
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     let parsed = parse_row(row)?;
@@ -664,7 +664,7 @@ pub fn row_key(row: &Row) -> Key {
 }
 
 /// Whether this row removes its key from the set rather than carrying a state
-/// (`world_fold.rs:15480`-`:15483`).
+/// (`world_fold.rs::fold_air_superiority_inputs`).
 pub fn is_deleted_row(row: &[u8]) -> core::result::Result<bool, String> {
     Ok(parse_row(row)?.deleted)
 }
@@ -679,7 +679,7 @@ pub fn is_deleted_row(row: &[u8]) -> core::result::Result<bool, String> {
 ///
 /// Fail-closed throughout, mirroring `fold_air_superiority_inputs`: a row the fold
 /// would reject is an `Err` here, never a coerced value. A **deleted** row is an
-/// `Err` too — it is a removal (`world_fold.rs:15480`) and has no record; a caller
+/// `Err` too — it is a removal (`world_fold.rs::fold_air_superiority_inputs`) and has no record; a caller
 /// maps it to a wire tombstone, and quietly handing back a record of the zeros the
 /// collector packs into a delete row would turn a delete into an upsert. Nothing in
 /// this function can panic on any input.
@@ -711,7 +711,7 @@ pub fn record_from_parsed(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // No gate, no scale: `world_fold.rs:15491`-`:15494` reads each word and
+            // No gate, no scale: `world_fold.rs::fold_air_superiority_inputs` reads each word and
             // stores it. A zero is a real measured zero — 6 live rows of the capture
             // carry `interface_type_raw == 0`.
             field::EQUIPMENT_TOKEN => Value::Unsigned(parsed.equipment_token_raw as u64),
@@ -741,7 +741,7 @@ pub fn record_from_parsed(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldOutcome {
     /// The FIRST record to reach `replace_or_sparse_after_first` without the delta
-    /// bit (`world_fold.rs:2947`, called at `:15455`): the map was cleared and
+    /// bit (`world_fold.rs::replace_or_sparse_after_first`, called at `:15455`): the map was cleared and
     /// refilled, and the domain now has a baseline.
     FullReplace,
     /// Applied sparsely on top of the retained map — rows upserted, tombstoned keys
@@ -749,7 +749,7 @@ pub enum FoldOutcome {
     /// whether or not it carries the delta bit.
     Sparse,
     /// A delta-flagged record that arrived before any baseline.
-    /// `reject_delta_before_baseline` (`world_fold.rs:2895`, called at `:15440`)
+    /// `reject_delta_before_baseline` (`world_fold.rs::reject_delta_before_baseline`, called at `:15440`)
     /// marks the domain-hour unknown, folds **nothing**, and retains the
     /// accumulator. The hour carries no d38 data and belongs in no measurement.
     DeltaBeforeBaseline,
@@ -783,7 +783,7 @@ impl Accumulator {
 
     /// Whether a record has already cleared-and-refilled the map — the
     /// `delta_baselines_seen` membership `replace_or_sparse_after_first`
-    /// (`world_fold.rs:2947`) and `reject_delta_before_baseline` (`:2895`) both
+    /// (`world_fold.rs::replace_or_sparse_after_first`) and `reject_delta_before_baseline` (`world_fold.rs::reject_delta_before_baseline`) both
     /// consult. It is set by the first non-delta record that gets past both
     /// exclusions, and by nothing else.
     pub fn baseline_seen(&self) -> bool {
@@ -824,7 +824,7 @@ impl Accumulator {
         // d38 has no derived field; §6's transform input is unused. Named rather
         // than `_frame_tick` because the signature is the cross-domain contract.
         let _ = frame_tick;
-        // `world_fold.rs:15383`-`:15432`: the header-structural checks that precede
+        // `world_fold.rs::fold_air_superiority_inputs`: the header-structural checks that precede
         // both exclusions.
         peek_header(payload)?;
         // `:15440`-`:15446`. Decided before the exact-length check and before
@@ -1163,7 +1163,7 @@ mod tests {
         // Recipe step 8 case 3: the schema declares NO capability, so there is no
         // absent/null/unknown raw-row case to build. The reason is the row grammar
         // itself — the only flag bit the fold accepts is DELETED
-        // (`world_fold.rs:15467`), which removes the key rather than gating a field,
+        // (`world_fold.rs::fold_air_superiority_inputs`), which removes the key rather than gating a field,
         // so every value field is unconditionally present in every row that becomes
         // a record; and every collector path that cannot read a word drops the whole
         // record through a failure status rather than emitting a gated-off row (see
@@ -1457,7 +1457,7 @@ mod tests {
         // The Fixed(5)-vs-Exact defence, as an executable claim: over the whole
         // accepted `amount_raw` band, `quantize(raw / 10^5)` returns `raw` unchanged
         // — nothing is rounded, and the raw integer the fold's own renderer emits
-        // beside the scaled value (`world_fold.rs:9088`) survives the wire. Edges,
+        // beside the scaled value (`world_fold.rs::insert_air_superiority_inputs`) survives the wire. Edges,
         // decades, and a deterministic sweep of the top of the band, where the
         // property fails first.
         let q = Quant::Fixed(SCALE_DIGITS);
@@ -1659,7 +1659,7 @@ mod tests {
             assert!(parse_row(&row).is_err(), "length {len}");
             assert!(is_deleted_row(&row).is_err(), "length {len}");
         }
-        // An unknown flag bit (`world_fold.rs:15467`) — every one of them, alone and
+        // An unknown flag bit (`world_fold.rs::fold_air_superiority_inputs`) — every one of them, alone and
         // beside the delete bit.
         for bit in 1..32u32 {
             for base in [0u32, ROW_FLAG_DELETED] {
@@ -1747,7 +1747,7 @@ mod tests {
 
     #[test]
     fn peek_header_enforces_all_five_count_invariants() {
-        // `world_fold.rs:15397`-`:15431`, one at a time, each just over its bound —
+        // `world_fold.rs::fold_air_superiority_inputs`, one at a time, each just over its bound —
         // the five are separate checks and a copy-paste error between them is exactly
         // the failure this covers. All five run BEFORE the status exits, so each is a
         // hard error on a failure-status record too.
@@ -1823,7 +1823,7 @@ mod tests {
     #[test]
     fn the_accumulator_replaces_once_then_patches_sparsely() {
         // The property that separates d38 from a full-replace domain
-        // (`world_fold.rs:15455`, `replace_or_sparse_after_first` at `:2947`). Only
+        // (`world_fold.rs:15455`, `replace_or_sparse_after_first` at `world_fold.rs::replace_or_sparse_after_first`). Only
         // the FIRST record clears; a later record — delta-flagged or not — is a
         // sparse patch, and reading it as a snapshot would drop every bucket it
         // omits.
@@ -1882,7 +1882,7 @@ mod tests {
 
     #[test]
     fn a_delta_before_any_baseline_folds_nothing() {
-        // `reject_delta_before_baseline` (`world_fold.rs:2895`, called at `:15440`)
+        // `reject_delta_before_baseline` (`world_fold.rs::reject_delta_before_baseline`, called at `:15440`)
         // marks the hour unknown and retains the accumulator. Note the shipping
         // collector never sets DELTA_DATA for d38 (`attach_log.rs:29175`-`:29190`
         // passes the frame's base status through), so this path is unreachable from

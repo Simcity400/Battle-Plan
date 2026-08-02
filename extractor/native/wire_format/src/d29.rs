@@ -11,7 +11,7 @@
 //! finds ships, not the row layout, so the fold and the collector read are the
 //! field-level basis.
 //!
-//! **Payload grammar** (`world_fold.rs:14549`-`:14622`): a 40-byte header —
+//! **Payload grammar** (`world_fold.rs::fold_ships`): a 40-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `observed_ship_rows` u32 at `+20`,
 //! `observed_task_force_rows` u32 at `+24`, `deleted_rows` u32 at `+28`,
@@ -19,8 +19,8 @@
 //! **variable-length** rows.
 //!
 //! **Rows are variable-length and are therefore walked, never index-addressed.**
-//! Each row is 40 fixed bytes (`SHIP_FIXED_ROW_LEN`, `:974`) followed by a
-//! u16-length-prefixed UTF-8 `definition` string (`read_string`, `:30256`),
+//! Each row is 40 fixed bytes (`SHIP_FIXED_ROW_LEN`, `world_fold.rs::SHIP_FIXED_ROW_LEN`) followed by a
+//! u16-length-prefixed UTF-8 `definition` string (`read_string`, `world_fold.rs::read_string`),
 //! whose length is `0` exactly when `FLAG_DEFINITION` is clear (`:14613`-`:14618`
 //! reject both asymmetries). [`split_payload`] walks them the same way the fold
 //! does and enforces the fold's trailing-byte rule (`:14621`).
@@ -36,7 +36,7 @@
 //! | `+24` | u32 | `experience_raw`   | /100000   | none |
 //! | `+28` | u32 | `sunk_convoys`     | raw       | none |
 //! | `+32` | u32 | `owner_tag_db_id`  | raw       | `1<<3` |
-//! | `+36` | u32 | reserved           | —         | must be 0 (`:14607`) |
+//! | `+36` | u32 | reserved           | —         | must be 0 (`world_fold.rs::fold_ships`) |
 //! | `+40` | u16+n | `definition`     | symbol    | `1<<2` |
 //!
 //! **The scale is a frame invariant, not an assumption.** The header's
@@ -46,8 +46,8 @@
 //!
 //! **The `/FIXED_SCALE` division belongs at this boundary.** `fold_ships` stores
 //! `strength_raw`/`organisation_raw`/`experience_raw` as the raw u32 words
-//! (`:14640`-`:14642`) and the division happens one layer later, in `ship_json`
-//! (`:8629`-`:8631`), which is the **only** consumer of the folded d29
+//! (`world_fold.rs::fold_ships`) and the division happens one layer later, in `ship_json`
+//! (`world_fold.rs::ship_json`), which is the **only** consumer of the folded d29
 //! accumulator's numeric channels — the naval-combat lane reads raw strength from
 //! the *collector's* row (`attach_log.rs:40229`), never from this accumulator.
 //! So the value a d29 consumer sees is the divided one, and that is what the
@@ -108,7 +108,7 @@
 //! recorder already packs a `ship_definitions_static` catalog whose `ship_hulls`
 //! keys are exactly this vocabulary,
 //! `recorder_host/src/main.rs:7621`), it is the join key `naval_missions_status`
-//! groups task-force composition by (`world_fold.rs:8551`-`:8571`), and it is
+//! groups task-force composition by (`world_fold.rs::naval_missions_status_ship_summary`), and it is
 //! read from the ship's own memory independently of `category_enum`. On this
 //! capture the two happen to be bijective (7 definitions, 7 categories, matching
 //! counts) — but nothing enforces that: `ship_category_label`
@@ -145,28 +145,28 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:973`-`:974`, `:1039`-`:1045`. -------
 
-/// `SHIP_HEADER_LEN`, `world_fold.rs:973`.
+/// `SHIP_HEADER_LEN`, `world_fold.rs::SHIP_HEADER_LEN`.
 pub const HEADER_LEN: usize = 40;
-/// `SHIP_FIXED_ROW_LEN`, `world_fold.rs:974`. The **fixed** part only: a row is
+/// `SHIP_FIXED_ROW_LEN`, `world_fold.rs::SHIP_FIXED_ROW_LEN`. The **fixed** part only: a row is
 /// this plus a u16-length-prefixed `definition` string.
 pub const FIXED_ROW_LEN: usize = 40;
 /// The u16 length prefix that follows the fixed part (`read_string`, `:30256`).
 pub const DEFINITION_LEN_PREFIX: usize = 2;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`. A set bit removes the key
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`. A set bit removes the key
 /// (`:14629`-`:14632`) — a wire tombstone, not a record.
 pub const FLAG_DELETED: u32 = 1 << 0;
-/// `SHIP_ROW_FLAG_TASK_FORCE`, `world_fold.rs:1039`.
+/// `SHIP_ROW_FLAG_TASK_FORCE`, `world_fold.rs::SHIP_ROW_FLAG_TASK_FORCE`.
 pub const FLAG_TASK_FORCE: u32 = 1 << 1;
-/// `SHIP_ROW_FLAG_DEFINITION`, `world_fold.rs:1040`.
+/// `SHIP_ROW_FLAG_DEFINITION`, `world_fold.rs::SHIP_ROW_FLAG_DEFINITION`.
 pub const FLAG_DEFINITION: u32 = 1 << 2;
-/// `SHIP_ROW_FLAG_OWNER`, `world_fold.rs:1041`.
+/// `SHIP_ROW_FLAG_OWNER`, `world_fold.rs::SHIP_ROW_FLAG_OWNER`.
 pub const FLAG_OWNER: u32 = 1 << 3;
-/// `SHIP_KNOWN_FLAGS`, `world_fold.rs:1042`. Any other bit is a hard error
+/// `SHIP_KNOWN_FLAGS`, `world_fold.rs::SHIP_KNOWN_FLAGS`. Any other bit is a hard error
 /// (`:14593`) — an unrecognised flag word means the row is not this grammar.
 pub const KNOWN_FLAGS: u32 = FLAG_DELETED | FLAG_TASK_FORCE | FLAG_DEFINITION | FLAG_OWNER;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`. The header's `scale_raw` is asserted equal
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`. The header's `scale_raw` is asserted equal
 /// to it (`:14578`).
 pub const FIXED_SCALE: f64 = 100_000.0;
 /// The same constant as the integer word the header carries, so the check is
@@ -262,8 +262,8 @@ impl Symbols {
 pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
-        // Key: the ship's `instance_id` (`world_fold.rs:14601`, keyed at
-        // `:14626`-`:14634`). `Unsigned`, not `ContentId`: it is the high half of
+        // Key: the ship's `instance_id` (`world_fold.rs::fold_ships`, keyed at
+        // `world_fold.rs::fold_ships`). `Unsigned`, not `ContentId`: it is the high half of
         // the engine's runtime object handle (`attach_log.rs:47994`), minted
         // during play. No content manifest resolves it and it names a different
         // ship next campaign — d20's `div_id`/`army_id` case, not its `owner`
@@ -322,7 +322,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 40-byte payload header (`world_fold.rs:14549`-`:14556`).
+/// The 40-byte payload header (`world_fold.rs::fold_ships`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -350,12 +350,12 @@ pub struct ShipRow {
     pub experience_raw: u32,
     pub sunk_convoys: u32,
     pub owner_tag_db_id: u32,
-    /// `Some` exactly when `FLAG_DEFINITION` is set (`world_fold.rs:14613`-`:14618`).
+    /// `Some` exactly when `FLAG_DEFINITION` is set (`world_fold.rs::fold_ships`).
     pub definition: Option<String>,
 }
 
 impl ShipRow {
-    /// `world_fold.rs:14629`: a set low bit removes the key and nothing else in
+    /// `world_fold.rs::fold_ships`: a set low bit removes the key and nothing else in
     /// the row is read.
     pub fn is_deleted(&self) -> bool {
         self.flags & FLAG_DELETED != 0
@@ -363,7 +363,7 @@ impl ShipRow {
 }
 
 /// Read and fully validate the 40-byte payload header, **without walking the
-/// rows** (`world_fold.rs:14549`-`:14581`).
+/// rows** (`world_fold.rs::fold_ships`).
 ///
 /// This split exists because the fold's own call order demands it. `fold_ships`
 /// applies every header check *before* it consults the status word
@@ -433,13 +433,13 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 }
 
 /// Split a d29 DATA payload into its header and its rows, applying the fold's
-/// structural checks (`world_fold.rs:14549`-`:14622`).
+/// structural checks (`world_fold.rs::fold_ships`).
 ///
 /// **Rows are variable-length, so this walks them** — 40 fixed bytes then a
 /// u16-length-prefixed string — exactly as `fold_ships` does, and returns one
 /// slice per row covering the whole row including its string. Index arithmetic
 /// over a fixed stride would silently mis-frame every row after the first
-/// definition. The walk ends with the fold's trailing-byte rule (`:14621`).
+/// definition. The walk ends with the fold's trailing-byte rule (`world_fold.rs::fold_ships`).
 ///
 /// The header invariants are [`peek_header`]'s, which are the fold's own and no
 /// others. d29 is **not** full-replace: `fold_ships` requires
@@ -564,10 +564,10 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<ShipRow, String> {
     })
 }
 
-/// The key of one row: its `instance_id` (`world_fold.rs:14601`, `:14630`).
+/// The key of one row: its `instance_id` (`world_fold.rs::fold_ships`).
 ///
 /// Valid on a tombstone too — that is the whole point of a tombstone, and
-/// `fold_ships` reads exactly this word before removing (`:14631`).
+/// `fold_ships` reads exactly this word before removing (`world_fold.rs::fold_ships`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(ship_key(parse_row(row)?.instance_id))
 }
@@ -743,14 +743,14 @@ impl State {
 /// Fold one d29 DATA payload into `acc`, exactly as `fold_ships` folds it.
 ///
 /// `sparse` is the result of `replace_or_sparse_after_first(29, status_flags)`
-/// (`world_fold.rs:14624`, defined at `:2947`): **false only for the first
+/// (`world_fold.rs::fold_ships`, defined at `:2947`): **false only for the first
 /// non-delta record of the stream**, true for every record after it and for any
 /// record carrying `COMPACT_STATUS_DELTA_DATA`. The caller supplies it rather
 /// than this function reading the bit, because that constant belongs to
 /// `compact_contract` and `wire_format`'s library half deliberately does not
 /// depend on that crate — copying the literal here is exactly the drift the
 /// shared-contract rule forbids. The caller also owns the `delta_baselines_seen`
-/// side effect that makes the decision stateful (`:2954`-`:2959`).
+/// side effect that makes the decision stateful (`world_fold.rs::replace_or_sparse_after_first`).
 ///
 /// Two payloads the fold returns from **without folding** are likewise the
 /// caller's to exclude before calling: a failure status
@@ -765,7 +765,7 @@ impl State {
 ///
 /// **Rows apply in payload order, last one winning.** `fold_ships` has no
 /// duplicate rejection: a second row for one `instance_id` overwrites the first
-/// in its map (`:14633`), and a delete followed by an insert of the same id in
+/// in its map (`world_fold.rs::fold_ships`), and a delete followed by an insert of the same id in
 /// one frame resurrects it. Refusing such a frame would refuse one the shipping
 /// recorder folds.
 pub fn fold_payload(
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[test]
     fn a_tombstone_row_is_not_a_record() {
-        // `world_fold.rs:14629`: a delete row removes its key and nothing in it
+        // `world_fold.rs::fold_ships`: a delete row removes its key and nothing in it
         // is read as state. It still has a valid key.
         let c = collection();
         let row = tombstone_row(42);
@@ -1622,7 +1622,7 @@ mod tests {
 
     #[test]
     fn the_first_record_replaces_and_later_records_upsert() {
-        // `replace_or_sparse_after_first`, `world_fold.rs:2947`: `sparse` is false
+        // `replace_or_sparse_after_first`, `world_fold.rs::replace_or_sparse_after_first`: `sparse` is false
         // exactly once. A later record leaves untouched keys alone.
         let schema = schema();
         let s = symbols();

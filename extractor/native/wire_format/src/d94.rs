@@ -4,7 +4,7 @@
 //! Derived from `world_fold.rs:10970`-`:10998`
 //! (`fold_pov_province_visibility`, dispatched at `:4745`, its error arm at
 // @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=10970-10998 sha256=b890566c4bec3a5338dcc5d472b8c0934d667a133a0bcf3d9753c98b57939c05
-//! `:4917`-`:4925`, its hour reset at `:3093`-`:3094`) and from the payload codec
+//! `:4917`-`:4925`, its hour reset at `world_fold.rs::reset_hour_state`) and from the payload codec
 //! the domain already owns, `compact_contract/src/pov_visibility.rs` (recipe
 //! authority 2). There is no `extractor/documents/domains/d94_*.md`, which is
 //! expected for a batch-3 domain.
@@ -36,15 +36,15 @@
 //! observing country; `pov_country_id` is a header word, not a row column, and it
 //! must not drift into one. It is a key component rather than a bare frame input
 //! because the fold's accumulator holds exactly one snapshot per hour
-//! (`world_fold.rs:1838`, cleared at `:3093`): if the POV country ever changed,
+//! (`world_fold.rs:1838`, cleared at `world_fold.rs::reset_hour_state`): if the POV country ever changed,
 //! the recorder's next hour would be that country's vector *alone*, and a keyed
 //! set whose keys carry the POV reproduces that as 13,414 tombstones plus 13,414
 //! inserts — losslessly. A frame input would instead let one POV's levels be
 //! read as another's. See the coverage caveat: no capture exercises a POV change.
 //!
 //! **Full replace per hour.** Every record carries the whole vector and the fold
-//! keeps only the latest (`world_fold.rs:10533`); the accumulator is reset at each
-//! hour boundary (`:3093`), so no state survives an hour and there is no
+//! keeps only the latest (`world_fold.rs::fold_pov_province_visibility`); the accumulator is reset at each
+//! hour boundary (`world_fold.rs::reset_hour_state`), so no state survives an hour and there is no
 //! accumulator to patch. Recipe step 1 shape 1.
 //!
 //! **Four states: the collection declares NONE.** Every index in `0..count` has a
@@ -61,17 +61,17 @@
 //! fold, all typed parameters here:
 //!
 //! - the **d18 identity roster** — `country_identity_known_this_hour`
-//!   (`world_fold.rs:10512`) and `tag_by_db_id.contains_key(pov_country_id)`
-//!   (`:10518`). Both are hard gates: the hour folds nothing without them. See
+//!   (`world_fold.rs::fold_pov_province_visibility`) and `tag_by_db_id.contains_key(pov_country_id)`
+//!   (`world_fold.rs::fold_pov_province_visibility`). Both are hard gates: the hour folds nothing without them. See
 //!   [`Roster`].
 //! - the **prior record of the same hour**, for the strictly-increasing
-//!   `capture_sequence` rule (`:10525`-`:10532`). See [`State`].
+//!   `capture_sequence` rule (`world_fold.rs::fold_pov_province_visibility`). See [`State`].
 //! - §6's `frame_tick`, which d94 has no derived field for and therefore ignores,
 //!   so every domain's mapper keeps one shape.
 //!
 //! **Every non-folding path retracts the hour.** `fold_pov_province_visibility`
 //! sets `pov_visibility_this_hour = None` on each of its three refusals
-//! (`:10513`, `:10519`, `:10530`), and the dispatcher's error arm does the same
+//! (`world_fold.rs::fold_pov_province_visibility`), and the dispatcher's error arm does the same
 //! for a payload the codec refuses (`:4917`-`:4919`) — so a second record that
 //! fails in an hour whose first record succeeded **erases** the good one rather
 //! than leaving it standing. [`State::fold_payload`] mirrors that exactly; it is
@@ -124,7 +124,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: PROVINCES,
-            // Full-replace each hour (`world_fold.rs:10533`), but the key is a
+            // Full-replace each hour (`world_fold.rs::fold_pov_province_visibility`), but the key is a
             // stable identity that persists across hours — which is what a keyed
             // set needs, and only a keyed set has a delta grammar (§7.3). This is
             // the whole point of the port: the shipping arm re-sends 13,414 bytes
@@ -174,7 +174,7 @@ pub struct PayloadHeader {
 /// **All of them belong here, and none of them is deferrable.** Unlike the folds
 /// that run some header checks before a status early exit and the rest after
 /// (recipe step 7), d94's fold has no status word to exit on: it calls `decode`
-/// as its very first act (`world_fold.rs:10510`), so the codec's whole predicate
+/// as its very first act (`world_fold.rs::fold_pov_province_visibility`), so the codec's whole predicate
 /// runs before anything else the fold does. A payload that fails any part of it
 /// is not this grammar, and — this is the part that decides the harness — it is a
 /// **stream rejection**, not an excluded hour: the recorder's second, status-
@@ -335,13 +335,13 @@ pub fn record_from_row(
 
 /// The two facts `fold_pov_province_visibility` reads out of the **d18
 /// `country_identity`** accumulator, and nothing else
-/// (`world_fold.rs:10512`, `:10518`).
+/// (`world_fold.rs::fold_pov_province_visibility`).
 ///
 /// They are separate on purpose, because the recorder keeps them separate:
 /// `tag_by_db_id` **persists across hours** — d18 is full-replace and the map is
-/// only overwritten by a successful d18 fold (`world_fold.rs:14146`-`:14152`) —
+/// only overwritten by a successful d18 fold (`world_fold.rs::fold_country_identity`) —
 /// while `country_identity_known_this_hour` is cleared at every hour boundary
-/// (`:3002`) and set only by that same successful fold (`:14153`-`:14155`). An
+/// (`world_fold.rs::reset_hour_state`) and set only by that same successful fold (`world_fold.rs::fold_country_identity`). An
 /// hour whose d18 record carried a failure status, or whose d18 payload the fold
 /// refused, therefore has a *populated* roster that is nonetheless **not known
 /// this hour**, and d94 folds nothing in it. Collapsing the two into "is the
@@ -360,7 +360,7 @@ impl Roster {
         Self { known_this_hour: false, tag_db_ids }
     }
 
-    /// A roster a d18 record measured this hour (`world_fold.rs:14153`).
+    /// A roster a d18 record measured this hour (`world_fold.rs::fold_country_identity`).
     pub fn measured_this_hour(tag_db_ids: BTreeSet<u32>) -> Self {
         Self { known_this_hour: true, tag_db_ids }
     }
@@ -405,16 +405,16 @@ pub struct State {
 }
 
 impl State {
-    /// `world_fold.rs:3093`-`:3094` — the hour boundary reset.
+    /// `world_fold.rs::reset_hour_state` — the hour boundary reset.
     pub fn begin_hour(&mut self) {
         self.seen = false;
         self.accepted = None;
     }
 
     /// Whether any d94 record was observed this hour, of any outcome
-    /// (`world_fold.rs:10509`, and the error arm at `:4918`). The recorder
+    /// (`world_fold.rs::fold_pov_province_visibility`, and the error arm at `world_fold.rs::apply_domain_data`). The recorder
     /// publishes `null` rather than nothing for an hour that was seen and
-    /// refused (`build_pov_visibility_value`, `:6390`-`:6399`).
+    /// refused (`build_pov_visibility_value`, `world_fold.rs::build_pov_visibility_value`).
     pub fn seen(&self) -> bool {
         self.seen
     }
@@ -425,13 +425,13 @@ impl State {
     }
 
     /// Fold one d94 DATA payload, exactly as `fold_pov_province_visibility` does
-    /// (`world_fold.rs:10508`-`:10536`), in the fold's own order: decode, then
+    /// (`world_fold.rs::fold_pov_province_visibility`), in the fold's own order: decode, then
     /// the d18 freshness gate, then the d18 membership gate, then the
     /// strictly-increasing `capture_sequence` gate.
     ///
     /// **Error contract — this fold MUTATES BEFORE ERRORING, and the mutation is
     /// the point.** Every refusal clears the hour's accepted snapshot
-    /// (`:10513`, `:10519`, `:10530`, and the dispatcher's arm at `:4919` for a
+    /// (`world_fold.rs::fold_pov_province_visibility`, and the dispatcher's arm at `world_fold.rs::apply_domain_data` for a
     /// payload the codec refuses), so a later bad record in an hour erases an
     /// earlier good one instead of leaving it standing. A caller that treats an
     /// `Err` as "nothing happened" disagrees with the recorder on exactly the
@@ -447,7 +447,7 @@ impl State {
     ///   time (see [`split_payload`]).
     /// - the two **roster** gates and the **sequence** gate are **excluded
     ///   hours**: the dispatcher catches the `Err` and marks the domain-hour
-    ///   unknown (`world_fold.rs:4917`-`:4925`), the stream stays valid, and the
+    ///   unknown (`world_fold.rs::apply_domain_data`), the stream stays valid, and the
     ///   hour publishes nothing for d94.
     pub fn fold_payload(
         &mut self,
@@ -956,7 +956,7 @@ mod tests {
 
     #[test]
     fn the_fold_requires_a_current_hour_d18_roster() {
-        // `world_fold.rs:10512`-`:10517`. A populated but stale roster is still a
+        // `world_fold.rs::fold_pov_province_visibility`. A populated but stale roster is still a
         // refusal: `tag_by_db_id` persists across hours while
         // `country_identity_known_this_hour` is cleared at every boundary, so
         // "the map has the country" is not the gate.
@@ -978,7 +978,7 @@ mod tests {
 
     #[test]
     fn the_fold_requires_the_pov_country_to_be_in_the_roster() {
-        // `world_fold.rs:10518`-`:10524`.
+        // `world_fold.rs::fold_pov_province_visibility`.
         let payload = raw_payload(5, 368, &[1, 2, 3]);
         let mut state = State::default();
         assert!(state
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn the_capture_sequence_must_strictly_increase_within_the_hour() {
-        // `world_fold.rs:10525`-`:10532`, and the retraction that comes with it.
+        // `world_fold.rs::fold_pov_province_visibility`, and the retraction that comes with it.
         let roster = roster_with(&[368]);
         let mut state = State::default();
         state
@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn the_hour_boundary_clears_everything() {
-        // `world_fold.rs:3093`-`:3094`. Nothing survives an hour, which is what
+        // `world_fold.rs::reset_hour_state`. Nothing survives an hour, which is what
         // makes d94 full-replace: a new hour's first record never compares its
         // sequence against the previous hour's.
         let roster = roster_with(&[368]);
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn a_refused_payload_never_reaches_the_roster_gates() {
-        // The fold decodes FIRST (`world_fold.rs:10510`), so a malformed payload
+        // The fold decodes FIRST (`world_fold.rs::fold_pov_province_visibility`), so a malformed payload
         // is refused as a malformed payload whatever the roster says — which
         // matters because the two refusals are different outcomes for the
         // harness: a decode failure is a stream rejection, a roster gate is an

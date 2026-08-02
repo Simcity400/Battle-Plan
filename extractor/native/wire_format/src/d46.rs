@@ -59,14 +59,14 @@
 //!
 //! # Shape: recipe shape 4, implicit-baseline variant
 //!
-//! `implicit_delta_baseline_or_sparse` (`world_fold.rs:2972`-`:2978`, called at
+//! `implicit_delta_baseline_or_sparse` (`world_fold.rs::implicit_delta_baseline_or_sparse`, called at
 //! `:16503`) returns `false` the first time the domain is folded and `true` ever
 //! after: the FIRST folded frame replaces the whole table, every later frame is a
 //! sparse upsert/delete patch. That is the recipe's shape 4
 //! (replace-or-sparse-after-first, d31/d34/d36) and **not a sixth shape** — with
 //! one difference worth naming, because it makes d46 the purest instance of the
 //! shape rather than a different one: d31/d34/d36 call
-//! `replace_or_sparse_after_first` (`:2957`-`:2970`), which consults
+//! `replace_or_sparse_after_first` (`world_fold.rs::replace_or_sparse_after_first`), which consults
 //! `COMPACT_STATUS_DELTA_DATA` and the expected-partial tolerance table, so a
 //! first frame that sets `DELTA_DATA` is already sparse there. d46's helper
 //! consults **neither**, so "nothing in the payload says so" is literally true:
@@ -207,7 +207,7 @@
 //!
 //! **A second, independent blocker**, the d17 shape, which would stop the
 //! collection even with a symbol id. The roster is FULL-REPLACE with
-//! retain-on-incomplete: `apply_air_ace_roster` (`world_fold.rs:16562`-`:16631`)
+//! retain-on-incomplete: `apply_air_ace_roster` (`world_fold.rs::apply_air_ace_roster`)
 //! replaces the whole map on a clean frame, but on `SOURCE_UNAVAILABLE` or
 //! `PARTIAL_DATA` it **retains prior state and marks the domain problem**, because
 //! "a read failure must never be written into the replay as ground-truth absence"
@@ -290,16 +290,16 @@ pub mod field {
 
 // --- Payload grammar constants ----------------------------------------------
 
-/// `AIR_VARIANT_ARCHETYPE_HEADER_LEN`, `world_fold.rs:1011`;
+/// `AIR_VARIANT_ARCHETYPE_HEADER_LEN`, `world_fold.rs::AIR_VARIANT_ARCHETYPE_HEADER_LEN`;
 /// `HEADER_LEN`, `domain46_air_variant_archetypes_live.rs:5`.
 pub const HEADER_LEN: usize = 48;
-/// `AIR_VARIANT_ARCHETYPE_ROW_LEN`, `world_fold.rs:1012`; the lane's `ROW_LEN`
+/// `AIR_VARIANT_ARCHETYPE_ROW_LEN`, `world_fold.rs::AIR_VARIANT_ARCHETYPE_ROW_LEN`; the lane's `ROW_LEN`
 /// (`:6`). There is no legacy short row.
 pub const ROW_LEN: usize = 32;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`.
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`.
 pub const ROW_FLAG_DELETED: u32 = 1;
-/// `AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE`, `world_fold.rs:1069`.
+/// `AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE`, `world_fold.rs::AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE`.
 pub const ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 /// `world_fold.rs:1070`.
 pub const ROW_FLAG_BASE_AIRFRAME: u32 = 1 << 2;
@@ -307,7 +307,7 @@ pub const ROW_FLAG_BASE_AIRFRAME: u32 = 1 << 2;
 pub const ROW_FLAG_ROLE: u32 = 1 << 3;
 /// `world_fold.rs:1072`.
 pub const ROW_FLAG_AIR_SUPERIORITY_WEIGHT: u32 = 1 << 4;
-/// `AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS`, `world_fold.rs:1073`-`:1077`.
+/// `AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS`, `world_fold.rs::AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS`.
 pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_DELETED
     | ROW_FLAG_ARCHETYPE
     | ROW_FLAG_BASE_AIRFRAME
@@ -315,14 +315,14 @@ pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_DELETED
     | ROW_FLAG_AIR_SUPERIORITY_WEIGHT;
 
 /// `SOURCE_LIVE_STATS`, `domain46_air_variant_archetypes_live.rs:17`. Required on
-/// every non-deleted row (`world_fold.rs:16420`), so it is a constant of the
+/// every non-deleted row (`world_fold.rs::fold_air_variant_archetypes`), so it is a constant of the
 /// accepted grammar and not a field.
 pub const SOURCE_LIVE_STATS: u32 = 1;
 /// `:18`.
 pub const SOURCE_LIVE_DEFINITION: u32 = 1 << 1;
 /// `:19`.
 pub const SOURCE_STATIC_CATALOG: u32 = 1 << 2;
-/// `:20`. Refused by the fold (`world_fold.rs:16425`), so constant `0`.
+/// `:20`. Refused by the fold (`world_fold.rs::fold_air_variant_archetypes`), so constant `0`.
 pub const SOURCE_DEV_SAVE_JOIN_REJECTED: u32 = 1 << 3;
 /// `:21`. Refused by the fold, so constant `0`.
 pub const SOURCE_STATIC_HEURISTIC: u32 = 1 << 4;
@@ -341,7 +341,7 @@ pub const KNOWN_SOURCE_MASK: u32 = SOURCE_LIVE_STATS
     | SOURCE_STATIC_SOURCE_ENUM;
 
 /// The string prefix the fold refuses as a fabricated identity
-/// (`world_fold.rs:16435`-`:16443`).
+/// (`world_fold.rs::fold_air_variant_archetypes`).
 pub const FABRICATED_TOKEN_PREFIX: &str = "equipment_token_raw_";
 
 /// `COMPACT_STATUS_DELTA_DATA`. Named here because d46 is not admitted to the
@@ -355,7 +355,7 @@ pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 
 /// `FIXED_SCALE_RAW`, `domain46_air_variant_archetypes_live.rs:7`. The authority
 /// requires the header word to equal this on every DATA record (`:172`-`:176`);
-/// the FOLD requires only that it is non-zero (`world_fold.rs:16336`). Both are
+/// the FOLD requires only that it is non-zero (`world_fold.rs::fold_air_variant_archetypes`). Both are
 /// mirrored, in [`check_authority_payload`] and [`peek_header`] respectively.
 pub const AUTHORITY_FIXED_SCALE_RAW: u32 = 100_000;
 /// `MAX_VARIANT_ID`, `:25`.
@@ -396,10 +396,10 @@ pub mod ace {
     pub const TRAILER_ROW_LEN_V1: usize = 32;
 
     /// `ACE_STATUS_SOURCE_UNAVAILABLE`, `:36`. The fold RETAINS prior ace state
-    /// on this (`world_fold.rs:16564`-`:16573`).
+    /// on this (`world_fold.rs::apply_air_ace_roster`).
     pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
     /// `ACE_STATUS_PARTIAL_DATA`, `:37`. The fold RETAINS on this too
-    /// (`world_fold.rs:16574`-`:16584`).
+    /// (`world_fold.rs::apply_air_ace_roster`).
     pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
     /// `ACE_STATUS_WING_ASSIGNMENT_BLOCKED`, `:38`. Assignment-only anomaly; the
     /// frame still REPLACES (`world_fold.rs:16555`-`:16557`).
@@ -528,7 +528,7 @@ pub mod ace {
     /// * `name`, `surname`, `callsign` — **the stop**. Free text, no kind.
     ///
     /// The key would be `(tag_db_id, ace_id)`, the fold's own map key
-    /// (`world_fold.rs:16620`), and the decoder already enforces its uniqueness
+    /// (`world_fold.rs::apply_air_ace_roster`), and the decoder already enforces its uniqueness
     /// (`:420`-`:424`). The blocker is not the key; it is the free text and the
     /// retain-on-incomplete membership gap (module docs).
     pub const KEY_FIELDS: [&str; 2] = ["tag_db_id", "ace_id"];
@@ -541,7 +541,7 @@ pub fn schema() -> Schema {
 
     let archetypes = Collection {
         collection_id: ARCHETYPES,
-        // `variant_id` is the fold's own map key (`world_fold.rs:16512`), a stable
+        // `variant_id` is the fold's own map key (`world_fold.rs::fold_air_variant_archetypes`), a stable
         // identity that persists across hours — what a keyed set needs, and only a
         // keyed set has a delta grammar (§7.3), which this domain needs because
         // every frame after the first is a sparse patch.
@@ -552,7 +552,7 @@ pub fn schema() -> Schema {
             // same call d35, d38, d39 and d40 make for the same word.
             Field::new(f::VARIANT_ID, Kind::Unsigned).key(0),
             // The three catalog words, read raw and stored per row
-            // (`world_fold.rs:16370`-`:16372`, `:16516`-`:16518`). Process-local
+            // (`world_fold.rs::fold_air_variant_archetypes`). Process-local
             // token handles and an engine discriminator — see the module docs and
             // `d35.rs:145`-`:159`. A zero `interface_type_raw` is a real measured
             // zero; the authority permits it (`:294`-`:298`).
@@ -561,7 +561,7 @@ pub fn schema() -> Schema {
             Field::new(f::INTERFACE_TYPE_RAW, Kind::Unsigned),
             // The raw fixed-point word, carried RAW beside its divisor rather than
             // projected (d61). `Signed` because the fold reads an `i32`
-            // (`world_fold.rs:16373`) and bounds nothing; the authority's
+            // (`world_fold.rs::fold_air_variant_archetypes`) and bounds nothing; the authority's
             // `0..=1_000_000` is not the fold's grammar. Unknown on a clear gate:
             // the collector never reads the value (`attach_log.rs:53768`).
             Field::new(f::AIR_SUPERIORITY_WEIGHT_RAW, Kind::Signed).unknown_capable(),
@@ -578,7 +578,7 @@ pub fn schema() -> Schema {
             Field::new(f::STATIC_CATALOG, Kind::Boolean),
             Field::new(f::LIVE_TOKEN_DICTIONARY, Kind::Boolean),
             // Two header words the fold stamps into every row it stores
-            // (`world_fold.rs:16531`-`:16532`), so they are per-row state: a
+            // (`world_fold.rs::fold_air_variant_archetypes`), so they are per-row state: a
             // sparse frame rewrites them only on the rows it carries. The hash is
             // an integrity witness over the static catalog, not a reference into
             // content, so `Unsigned` — no manifest resolves it.
@@ -700,7 +700,7 @@ pub struct PayloadHeader {
 
 impl PayloadHeader {
     /// The two header words the fold stamps into every row it stores
-    /// (`world_fold.rs:16531`-`:16532`).
+    /// (`world_fold.rs::fold_air_variant_archetypes`).
     pub fn stamp(&self) -> HeaderStamp {
         HeaderStamp {
             static_catalog_hash: self.static_catalog_hash,
@@ -709,7 +709,7 @@ impl PayloadHeader {
     }
 
     /// The lane's status word. **The fold never reads this bit** — the baseline is
-    /// implicit (`world_fold.rs:16501`-`:16506`) — so nothing in this module
+    /// implicit (`world_fold.rs::fold_air_variant_archetypes`) — so nothing in this module
     /// branches on it; it exists for reporting.
     pub fn declares_delta(&self) -> bool {
         self.status_flags & STATUS_DELTA_DATA != 0
@@ -725,7 +725,7 @@ pub struct HeaderStamp {
 }
 
 /// Read the header and apply exactly the checks the fold runs **before** its
-/// status gate (`world_fold.rs:16320`-`:16341`): the 48-byte minimum, the
+/// status gate (`world_fold.rs::fold_air_variant_archetypes`): the 48-byte minimum, the
 /// `classified + unresolved == row_count` identity, `fixed_scale_raw != 0`, and
 /// both reserved words zero.
 ///
@@ -755,7 +755,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
         reserved0: u32_at(payload, 40),
         reserved1: u32_at(payload, 44),
     };
-    // `world_fold.rs:16333`. The fold adds two `usize`s with `saturating_add`;
+    // `world_fold.rs::fold_air_variant_archetypes`. The fold adds two `usize`s with `saturating_add`;
     // over `u32` inputs on a 64-bit host that never saturates, so `u64` arithmetic
     // is the same function without depending on the host's pointer width.
     if u64::from(header.classified_rows) + u64::from(header.unresolved_rows)
@@ -792,7 +792,7 @@ pub struct SplitPayload<'a> {
     pub variable: &'a [u8],
 }
 
-/// [`peek_header`] plus the fold's row-length check (`world_fold.rs:16349`-`:16351`),
+/// [`peek_header`] plus the fold's row-length check (`world_fold.rs::fold_air_variant_archetypes`),
 /// which the fold runs **after** its status gate — so this is the boundary a caller
 /// crosses only for a record it is going to fold.
 ///
@@ -843,12 +843,12 @@ pub struct ParsedRow {
 
 impl ParsedRow {
     /// A tombstone: the key is removed and the row carries no data
-    /// (`world_fold.rs:16403`-`:16418`, `:16508`-`:16510`).
+    /// (`world_fold.rs::fold_air_variant_archetypes`).
     pub fn is_deleted(&self) -> bool {
         self.flags & ROW_FLAG_DELETED != 0
     }
 
-    /// `world_fold.rs:16460`-`:16461`. Equal to `SOURCE_STATIC_SOURCE_ENUM` on
+    /// `world_fold.rs::fold_air_variant_archetypes`. Equal to `SOURCE_STATIC_SOURCE_ENUM` on
     /// every payload the fold accepts, which is why that bit is not a field.
     pub fn carries_static_semantics(&self) -> bool {
         self.base_airframe_token.is_some() || self.role_token.is_some()
@@ -874,7 +874,7 @@ pub struct AceTrailer {
 }
 
 impl AceTrailer {
-    /// `world_fold.rs:16564`-`:16584`: both statuses RETAIN the prior roster
+    /// `world_fold.rs::apply_air_ace_roster`: both statuses RETAIN the prior roster
     /// rather than full-replacing it.
     pub fn retains_prior_state(&self) -> bool {
         self.status_flags & (ace::STATUS_SOURCE_UNAVAILABLE | ace::STATUS_PARTIAL_DATA) != 0
@@ -895,9 +895,9 @@ pub struct DecodedPayload {
 }
 
 /// Decode and validate a payload exactly as `fold_air_variant_archetypes` reads it
-/// **after** its status gate (`world_fold.rs:16349`-`:16500`).
+/// **after** its status gate (`world_fold.rs::fold_air_variant_archetypes`).
 ///
-/// Deliberately NOT status-independent: the fold returns at `:16347` on a failure
+/// Deliberately NOT status-independent: the fold returns at `world_fold.rs::fold_air_variant_archetypes` on a failure
 /// status and never reaches any of this. Production's *other* authority does run
 /// on those records, and that is [`check_authority_payload`], a different rule set
 /// — see the module docs.
@@ -907,7 +907,7 @@ pub fn decode_payload(payload: &[u8]) -> core::result::Result<DecodedPayload, St
     let split = split_payload(payload)?;
     let rows_end = HEADER_LEN + split.rows.len();
 
-    // Loop 1, `world_fold.rs:16353`-`:16379`: the fixed rows, with the three
+    // Loop 1, `world_fold.rs::fold_air_variant_archetypes`: the fixed rows, with the three
     // checks the fold makes before it reads a single string.
     let mut rows: Vec<ParsedRow> = Vec::with_capacity(split.rows.len() / ROW_LEN);
     for (index, row) in split.rows.chunks_exact(ROW_LEN).enumerate() {
@@ -1008,7 +1008,7 @@ pub fn tokens_in_payload(payload: &[u8]) -> core::result::Result<Vec<String>, St
 }
 
 /// The fold's per-row rules that run after its string walk
-/// (`world_fold.rs:16403`-`:16487`), plus the one refusal this schema's
+/// (`world_fold.rs::fold_air_variant_archetypes`), plus the one refusal this schema's
 /// decomposition of `source_mask` requires (module docs).
 ///
 /// Shared by [`decode_payload`] and [`record_from_parsed_row`] so the invariants
@@ -1087,7 +1087,7 @@ pub fn check_row(row: &ParsedRow, static_catalog_hash: u32) -> core::result::Res
 // --- The boundary mapping ----------------------------------------------------
 
 /// The key of one archetype row: its `variant_id`, with the fold's zero check
-/// (`world_fold.rs:16355`-`:16358`, and the fold's own map key at `:16512`).
+/// (`world_fold.rs::fold_air_variant_archetypes`, and the fold's own map key at `world_fold.rs::fold_air_variant_archetypes`).
 ///
 /// Total: no `row` of any length panics.
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
@@ -1111,7 +1111,7 @@ pub fn variant_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 
 /// The three token strings a row carries, exactly as the variable-length region
 /// holds them: **empty means absent**, which is the flag/string agreement the fold
-/// enforces (`world_fold.rs:30325`-`:30338`).
+/// enforces (`world_fold.rs::validate_optional_flagged_string`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RowTokens<'a> {
     pub archetype: &'a str,
@@ -1131,9 +1131,9 @@ pub struct RowTokens<'a> {
 /// that the row's own bytes do not carry:
 ///
 /// * `tokens` — the row's three strings, which live in the payload's
-///   variable-length region rather than in the row (`world_fold.rs:16382`-`:16402`);
+///   variable-length region rather than in the row (`world_fold.rs::fold_air_variant_archetypes`);
 /// * `stamp` — the two header words the fold copies into every stored row
-///   (`:16531`-`:16532`), d35's header-carried-value shape;
+///   (`world_fold.rs::fold_air_variant_archetypes`), d35's header-carried-value shape;
 /// * `symbols` — §5's resolver for the content-defined tokens (step 3, d29).
 ///
 /// Fail-closed throughout: a row the fold would reject is an `Err`, never a
@@ -1212,7 +1212,7 @@ pub fn record_from_parsed_row(
         ));
     }
     // A tombstone is not a record: it removes its key and carries no fields
-    // (`world_fold.rs:16508`-`:16510`). Callers reach it through
+    // (`world_fold.rs::fold_air_variant_archetypes`). Callers reach it through
     // [`ParsedRow::is_deleted`] and [`State::fold_payload`], the d29/d38 shape.
     if parsed.is_deleted() {
         return Err(format!(
@@ -1232,7 +1232,7 @@ pub fn record_from_parsed_row(
                 Value::Unsigned(u64::from(parsed.equipment_type_token_raw))
             }
             field::INTERFACE_TYPE_RAW => Value::Unsigned(u64::from(parsed.interface_type_raw)),
-            // `world_fold.rs:16519`-`:16526`: the flag decides whether the word is
+            // `world_fold.rs::fold_air_variant_archetypes`: the flag decides whether the word is
             // stored at all. Clear gate = the collector never read it
             // (`attach_log.rs:53768`) — §3's unknown. Carried RAW; the divisor is
             // its own field (d61).
@@ -1878,8 +1878,8 @@ pub fn decode_ace_trailer(
 /// stop-reported ace roster (`:1887`).
 ///
 /// **No other writer of the archetype map.** `self.air_variant_archetypes` is
-/// written only by this fold (`:16505`, `:16509`, `:16512`) and cleared with the
-/// rest of the world state; every other mention is a read (`:8656`, `:8694`).
+/// written only by this fold (`world_fold.rs::fold_air_variant_archetypes`) and cleared with the
+/// rest of the world state; every other mention is a read (`world_fold.rs::build_designs`).
 /// Nothing to model, prove inert or assert inert.
 #[derive(Clone, Debug, Default)]
 pub struct State {
@@ -1890,7 +1890,7 @@ pub struct State {
     pub baseline_seen: bool,
     /// The stop-reported roster's size after this frame — the analogue of d56's
     /// `supremacy_rows`. The fold's own accumulator is a map keyed
-    /// `(tag_db_id, ace_id)` (`world_fold.rs:16620`); this schema carries no
+    /// `(tag_db_id, ace_id)` (`world_fold.rs::apply_air_ace_roster`); this schema carries no
     /// collection for it, so only its size is mirrored, which is enough to
     /// reproduce the fold's replace-or-retain decision and to report the segment's
     /// bytes.
@@ -1929,13 +1929,13 @@ impl State {
     /// `status_is_failure` is the caller's classification of
     /// `header.status_flags` — the fold's own
     /// `compact_failure_flags_after_expected_partial_tolerance(46, ...) != 0`
-    /// (`world_fold.rs:2882`-`:2884`). It is an input rather than something
+    /// (`world_fold.rs::handle_compact_failure`). It is an input rather than something
     /// re-derived here so the library carries no copied status mask.
     ///
     /// **Error contract: all-or-nothing.** Every structural check, every row, every
     /// string, the trailer walk and every record are done before a single
     /// accumulator write, which is what the fold does — it decodes and validates
-    /// the whole payload and only then reaches `:16503`. A harness that assumed the
+    /// the whole payload and only then reaches `world_fold.rs::fold_air_variant_archetypes`. A harness that assumed the
     /// partial-mutation contract instead would disagree with the recorder on
     /// exactly the frames that fail.
     pub fn fold_payload(
@@ -1981,7 +1981,7 @@ impl State {
             ops.push((row_key, Some(record)));
         }
 
-        // 5. `world_fold.rs:16501`-`:16506`: the FIRST folded frame replaces, every
+        // 5. `world_fold.rs::fold_air_variant_archetypes`: the FIRST folded frame replaces, every
         //    later one is a sparse patch. The status word is not consulted.
         let sparse = self.baseline_seen;
         self.baseline_seen = true;
@@ -2048,7 +2048,7 @@ fn i32_at(bytes: &[u8], off: usize) -> i32 {
     u32_at(bytes, off) as i32
 }
 
-/// The fold's `read_string` (`world_fold.rs:30587`-`:30597`): a length-prefixed
+/// The fold's `read_string` (`world_fold.rs::read_string`): a length-prefixed
 /// (u16) UTF-8 string, advancing the cursor. Bounds-checked before every read.
 fn read_string(
     bytes: &[u8],
@@ -2127,7 +2127,7 @@ fn read_ace_string_len(
     Ok(len)
 }
 
-/// The fold's `validate_optional_flagged_string` (`world_fold.rs:30325`-`:30338`):
+/// The fold's `validate_optional_flagged_string` (`world_fold.rs::validate_optional_flagged_string`):
 /// a flag with an empty string and a string without its flag are both refused.
 fn flagged_string(
     value: String,
@@ -2423,7 +2423,7 @@ mod tests {
 
     #[test]
     fn a_negative_weight_maps_because_the_fold_accepts_one() {
-        // The FOLD bounds nothing (`world_fold.rs:16373` reads a plain `i32`); the
+        // The FOLD bounds nothing (`world_fold.rs::fold_air_variant_archetypes` reads a plain `i32`); the
         // payload authority's `0..=1_000_000` is a separate boundary. Never gate
         // against the fold — d36's rule.
         let c = collection();
@@ -2472,7 +2472,7 @@ mod tests {
     fn no_field_is_quantized_and_that_is_recorded() {
         // There is no continuous field to quantize. The one measured quantity,
         // `air_superiority_weight_raw`, is a fixed-point word over a divisor the
-        // HEADER carries and the fold does not pin (`world_fold.rs:16336` rejects
+        // HEADER carries and the fold does not pin (`world_fold.rs::fold_air_variant_archetypes` rejects
         // zero only), so it is carried RAW beside `fixed_scale_raw` per d61's rule
         // rather than projected into a float — which also makes it exactly the
         // integer the fold stores. Nothing is drawn-rather-than-interpolated here.
@@ -3226,7 +3226,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_ace_roster_retains_prior_state() {
-        // `world_fold.rs:16564`-`:16584`. This is the second, independent blocker
+        // `world_fold.rs::apply_air_ace_roster`. This is the second, independent blocker
         // in the stop report: a keyed set cannot express "membership was not
         // measured this hour".
         let schema = schema();

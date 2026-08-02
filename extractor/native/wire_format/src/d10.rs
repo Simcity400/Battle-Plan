@@ -12,7 +12,7 @@
 //! `+0x18`, `+0x38`, scale `32768`) and nothing about precision or four-state
 //! semantics, so the fold and the collector read are the basis for those.
 //!
-//! **Payload grammar** (`world_fold.rs:9224`-`:9231`, `attach_log.rs:67982`-`:67996`):
+//! **Payload grammar** (`world_fold.rs::fold_fuel`, `attach_log.rs:67982`-`:67996`):
 //! a 24-byte header — `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`,
 //! `changed_rows` u32 at `+12`, `status_flags` u32 at `+16`, `scale_raw` u32 at
 //! `+20` — followed by `row_count` fixed 40-byte rows. There is no legacy short
@@ -28,9 +28,9 @@
 //! | `+24` | i64 | `gain`      | /32768 | none |
 //! | `+32` | i64 | `cost`      | /32768 | none |
 //!
-//! **The scale is 32768, not 100000.** `FUEL_SCALE` (`world_fold.rs:152`) is
+//! **The scale is 32768, not 100000.** `FUEL_SCALE` (`world_fold.rs::FUEL_SCALE`) is
 //! applied to all four fields at `:9236`-`:9239`. The general `FIXED_SCALE`
-//! (`:156`) is 100_000 and the field named `fuel` in d20 folds at *that* scale
+//! (`world_fold.rs::FIXED_SCALE`) is 100_000 and the field named `fuel` in d20 folds at *that* scale
 //! (`:19387`) — reading d10's fields at 100_000 would make every value ~3.05x too
 //! small while every round-trip test still passed. The payload carries its own
 //! scale word at `+20` (`FUEL_SCALE_RAW`, `collector/src/attach_log/offsets.rs:378`),
@@ -129,13 +129,13 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:9224`-`:9239` and `:152`. -----------
 
-/// `world_fold.rs:9224` — `need(payload, 24, "fuel header")`, then rows at
+/// `world_fold.rs::fold_fuel` — `need(payload, 24, "fuel header")`, then rows at
 /// `24 + i * 40`.
 pub const HEADER_LEN: usize = 24;
-/// `world_fold.rs:9226` — `24 + row_count * 40`. Fixed; there is no legacy form.
+/// `world_fold.rs::fold_fuel` — `24 + row_count * 40`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 40;
 
-/// `FUEL_SCALE`, `world_fold.rs:152`, applied to all four measures at
+/// `FUEL_SCALE`, `world_fold.rs::FUEL_SCALE`, applied to all four measures at
 /// `:9236`-`:9239`. **32768, not `FIXED_SCALE`'s 100_000.**
 pub const FUEL_SCALE: f64 = 32768.0;
 
@@ -166,7 +166,7 @@ pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
         // Key: the country's `tag_db_id` (`world_fold.rs:9232`), the identity the
-        // fold indexes its country map by (`country_mut`, `:3112`). ContentId
+        // fold indexes its country map by (`country_mut`, `world_fold.rs::country_mut`). ContentId
         // because a country tag is content-defined (§5) — a manifest must resolve
         // it for it to keep its meaning under another mod set. d20 classes its
         // `owner` country the same way, and d63 keys on the same id.
@@ -205,7 +205,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 24-byte payload header (`world_fold.rs:9224`-`:9226`,
+/// The 24-byte payload header (`world_fold.rs::fold_fuel`,
 /// `attach_log.rs:67984`-`:67988`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
@@ -218,7 +218,7 @@ pub struct PayloadHeader {
 }
 
 /// Split a d10 DATA payload into its header and its rows slice, applying the
-/// fold's structural checks (`world_fold.rs:9224`-`:9229`) plus the three the
+/// fold's structural checks (`world_fold.rs::fold_fuel`) plus the three the
 /// recorder's own decoder applies to this same payload and the fold does not:
 /// the scale word (`domain_data_authority.rs:949`), `changed_rows <= row_count`
 /// (`:962`), and a `tag_db_id` repeated inside one payload (`:984`).
@@ -277,10 +277,10 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     // A `tag_db_id` repeated inside one payload (`domain_data_authority.rs:984`).
     // This is a cross-row structural property, so it belongs here rather than in
     // the per-row mapper, which cannot see it: `fold_fuel`'s upsert
-    // (`world_fold.rs:9240`) would silently take the last writer, and a keyed set
+    // (`world_fold.rs::fold_fuel`) would silently take the last writer, and a keyed set
     // cannot hold both rows at all. Every caller gets the check, not just the one
     // that remembered to write it. A zero `tag_db_id` is still the per-row
-    // mapper's rejection (`world_fold.rs:9233`); this pass only reads the word.
+    // mapper's rejection (`world_fold.rs::fold_fuel`); this pass only reads the word.
     let mut seen = std::collections::BTreeSet::new();
     for row in rows.chunks_exact(ROW_LEN) {
         let tag_db_id = u32_at(row, 0);
@@ -291,12 +291,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     Ok((header, rows))
 }
 
-/// The key of one compact row: its `tag_db_id` (`world_fold.rs:9232`-`:9235`).
+/// The key of one compact row: its `tag_db_id` (`world_fold.rs::fold_fuel`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[tag_db_id_of_row(row)? as u64]))
 }
 
-/// `tag_db_id` with the fold's zero check (`world_fold.rs:9233`).
+/// `tag_db_id` with the fold's zero check (`world_fold.rs::fold_fuel`).
 pub fn tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let tag_db_id = u32_at(row, 0);
@@ -332,7 +332,7 @@ pub fn record_from_row(
 
     // `domain_data_authority.rs:989` rejects `row_flags & !1` and nothing else,
     // so bit 0 clear is accepted there; `fold_fuel` ignores the word entirely and
-    // reads all four measures regardless (`world_fold.rs:9236`-`:9239`). This
+    // reads all four measures regardless (`world_fold.rs::fold_fuel`). This
     // mapper matches both: an unknown bit means the row is not this grammar, and
     // a clear bit 0 does not, so the measures are mapped exactly as the fold maps
     // them. No shipping encoder writes anything but `1` (`attach_log.rs:67992`,
@@ -374,7 +374,7 @@ pub fn record_from_row(
                 return Err(format!("fuel has no mapping for field id {other}"));
             }
         };
-        // `world_fold.rs:9236`-`:9239`. Every accepted raw is `<= MAX_FUEL_RAW`
+        // `world_fold.rs::fold_fuel`. Every accepted raw is `<= MAX_FUEL_RAW`
         // in magnitude, well inside `2^53`, so this conversion is exact.
         values.push(Value::Continuous(raw as f64 / FUEL_SCALE));
     }
@@ -686,7 +686,7 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // Zero tag_db_id (`world_fold.rs:9233`).
+        // Zero tag_db_id (`world_fold.rs::fold_fuel`).
         assert!(record_from_row(&c, &raw_row(0, ROW_FLAG_FUEL_PRESENT, [0; 4]), 0).is_err());
         // Every unknown row flag bit (`domain_data_authority.rs:989`), not one
         // sample.
@@ -750,7 +750,7 @@ mod tests {
     fn a_cleared_presence_bit_maps_exactly_as_the_fold_maps_it() {
         // Round-1 review input, generalized. `fold_fuel` never reads the row
         // flags word and reads all four measures unconditionally
-        // (`world_fold.rs:9236`-`:9239`), and `domain_data_authority.rs:989`
+        // (`world_fold.rs::fold_fuel`), and `domain_data_authority.rs:989`
         // rejects only bits outside bit 0 — so a cleared bit 0 is a row both
         // authorities accept, and refusing it here would be a rejection with
         // nothing behind it. The mapped record must be identical to the one the

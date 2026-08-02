@@ -32,7 +32,7 @@
 //! raw integer or a token, so the 32768-vs-100000 class of error has no surface
 //! here. There is no legacy short row and no delta grammar.
 //!
-//! **Full replace per hour** (`world_fold.rs:10360`-`:10366`): the fold rebuilds
+//! **Full replace per hour** (`world_fold.rs::fold_country_preferred_tactics`): the fold rebuilds
 //! `country_preferred_tactics_this_hour` from the record's rows and discards the
 //! prior state. There is no accumulator to carry across hours, and every
 //! non-folding path clears it outright.
@@ -76,7 +76,7 @@
 //! the fold rather than assumed away. The codec requires the mapping to be
 //! **injective within one payload** (`preferred_tactic.rs:203`-`:209`), and
 //! nothing anywhere requires it to be the same mapping in the next payload: the
-//! fold stores whatever decodes (`world_fold.rs:10360`), so a frame whose id↔token
+//! fold stores whatever decodes (`world_fold.rs::fold_country_preferred_tactics`), so a frame whose id↔token
 //! mapping differs from the previous hour's is a frame the fold accepts. Neither
 //! field is therefore a function of the other on the payloads the fold folds, and
 //! dropping either would lose data on input the recorder accepts — the recipe's
@@ -100,7 +100,7 @@
 //!
 //! `source_sequence` is frame-level, not per-row, and it is **consumed by d96**:
 //! `fold_country_preferred_tactic_weights` refuses to fold without a clean d92
-//! snapshot *and* its sequence (`world_fold.rs:10380`-`:10389`), and
+//! snapshot *and* its sequence (`world_fold.rs::fold_country_preferred_tactic_weights`), and
 //! `tactic_weight.rs:356` rejects a d96 payload whose sequence differs. Dropping
 //! it would make d96 unportable, so it is carried — as a one-row collection under
 //! a constant key, the shape d68 established for a payload-level scalar with no
@@ -130,8 +130,8 @@
 //! # Modelled dependency: the D18 roster-CONTAINMENT gate
 //!
 //! The fold refuses the hour unless a **proven D18 record landed this same hour**
-//! (`world_fold.rs:10320`-`:10325`) and the observed tag set **covers** the
-//! current D18 roster (`:10345`-`:10359`) — containment, not equality. The two
+//! (`world_fold.rs::fold_country_preferred_tactics`) and the observed tag set **covers** the
+//! current D18 roster (`world_fold.rs::fold_country_preferred_tactics`) — containment, not equality. The two
 //! sides are different enumerations by construction: d92's producer walks the
 //! COMPLETE gamestate country table (`attach_log.rs:33054`) so that an
 //! unreadable slot fails the frame closed (`:30886`-`:30891`), while D18
@@ -152,7 +152,7 @@
 //! # Error contract, and why there is no header/body split
 //!
 //! `fold_country_preferred_tactics` calls `preferred_tactic::decode_payload`
-//! **first**, before it looks at the status word (`world_fold.rs:10309`-`:10318`).
+//! **first**, before it looks at the status word (`world_fold.rs::fold_country_preferred_tactics`).
 //! The whole payload — header, every row, every invariant, trailing bytes — is
 //! therefore validated on every record whatever its status, which is d83's shape
 //! and not d63's: there is no non-folding exit sitting between a header check and
@@ -162,7 +162,7 @@
 //! [`fold_payload`] **mutates before erroring**, mirroring the fold exactly: each
 //! of the fold's refusal paths clears `country_preferred_tactics_this_hour` (and,
 //! on the status path, the sequence too) before returning
-//! (`:10316`-`:10317`, `:10321`, `:10352`). A harness that assumed
+//! (`world_fold.rs::fold_country_preferred_tactics`). A harness that assumed
 //! all-or-nothing would disagree with the recorder on exactly the frames that
 //! fail.
 
@@ -254,14 +254,14 @@ pub fn schema() -> Schema {
         collections: vec![
             Collection {
                 collection_id: COUNTRIES,
-                // Full replace each hour (`world_fold.rs:10360`), but `tag_db_id`
+                // Full replace each hour (`world_fold.rs::fold_country_preferred_tactics`), but `tag_db_id`
                 // is a stable identity that persists across hours, which is what
                 // a keyed set needs — and only a keyed set has a delta grammar
                 // (§7.3). The roster is constant at 439 rows on the measured
                 // capture, so the delta path is what this domain actually costs.
                 shape: Shape::KeyedSet,
                 fields: vec![
-                    // The country's `tag_db_id` (`world_fold.rs:10345`), the same
+                    // The country's `tag_db_id` (`world_fold.rs::fold_country_preferred_tactics`), the same
                     // identity D18 keys its roster by and which d92 is gated on
                     // being EQUAL to. `ContentId` because a country tag is
                     // content-defined (§5); d63 and d83 class theirs the same.
@@ -461,7 +461,7 @@ pub fn check_row(row: &TacticRow) -> core::result::Result<(), String> {
 /// `validate_rows` (`:186`-`:222`).
 ///
 /// The fold decodes the whole payload before it consults the status word
-/// (`world_fold.rs:10309`), so there is no cheaper header-only exit to preserve
+/// (`world_fold.rs::fold_country_preferred_tactics`), so there is no cheaper header-only exit to preserve
 /// and nothing here is deferred: rows are variable-length, so the walk is
 /// required to find a row boundary at all.
 ///
@@ -649,7 +649,7 @@ fn validate_rows(rows: &[TacticRow]) -> core::result::Result<(), String> {
     Ok(())
 }
 
-/// The key of one country row: its `tag_db_id` (`world_fold.rs:10345`).
+/// The key of one country row: its `tag_db_id` (`world_fold.rs::fold_country_preferred_tactics`).
 ///
 /// A zero `tag_db_id` never decodes (`preferred_tactic.rs:194`), and `TacticRow`
 /// is publicly constructible, so the check is here rather than assumed.
@@ -834,7 +834,7 @@ impl State {
     }
 
     /// Drop the hour's state, as the fold's gate refusals do
-    /// (`world_fold.rs:10321`, `:10352`).
+    /// (`world_fold.rs::fold_country_preferred_tactics`).
     fn clear(&mut self) {
         for collection in &mut self.collections {
             collection.clear();
@@ -846,10 +846,10 @@ impl State {
 /// because the harness has to report them apart (recipe step 9).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldRefusal {
-    /// The hour carried no proven D18 record (`world_fold.rs:10320`).
+    /// The hour carried no proven D18 record (`world_fold.rs::fold_country_preferred_tactics`).
     NoCurrentHourRoster,
     /// The observed tag set does not COVER the current D18 roster: at least one
-    /// tag the projection can name has no measured row (`world_fold.rs:10351`).
+    /// tag the projection can name has no measured row (`world_fold.rs::fold_country_preferred_tactics`).
     RosterDoesNotCoverD18 {
         missing: usize,
         d18: usize,
@@ -858,7 +858,7 @@ pub enum FoldRefusal {
 }
 
 /// Fold one d92 DATA payload into `acc`, exactly as `fold_country_preferred_tactics`
-/// folds it (`world_fold.rs:10307`-`:10370`).
+/// folds it (`world_fold.rs::fold_country_preferred_tactics`).
 ///
 /// The caller has already excluded a failure-status record — that exclusion is
 /// the fold's own `handle_compact_failure` (`:10311`) and it sits *after* the
@@ -882,7 +882,7 @@ pub fn fold_payload(
     frame_tick: u64,
     symbols: &Symbols,
 ) -> core::result::Result<(), String> {
-    // The decode comes first, before any gate: `world_fold.rs:10309`.
+    // The decode comes first, before any gate: `world_fold.rs::fold_country_preferred_tactics`.
     let (header, rows) = split_payload(payload)?;
 
     // `:10320`-`:10325`.
@@ -1347,7 +1347,7 @@ mod tests {
         // Step 4's "quantization saves bytes" test does not apply: d92 has no
         // `Continuous` field at all. Every value it carries is an integer
         // identity or a symbol id, and the fold applies no scale factor anywhere
-        // (`world_fold.rs:10360`-`:10366` stores the decoded rows verbatim).
+        // (`world_fold.rs::fold_country_preferred_tactics` stores the decoded rows verbatim).
         for c in &schema().collections {
             for f in c.value_fields() {
                 assert!(
@@ -1714,7 +1714,7 @@ mod tests {
         let schema = schema();
         let mut acc = State::new();
         // A d92 record that MISSES a D18 tag is refused: that tag is one the
-        // projection can name (`world_fold.rs:6329`) and would otherwise be
+        // projection can name (`world_fold.rs::project_country_preferred_tactics`) and would otherwise be
         // published as unavailable while the hour counted as measured.
         let err = fold_payload(
             &schema,
@@ -1830,7 +1830,7 @@ mod tests {
     fn a_refused_fold_clears_the_accumulator_as_the_recorder_does() {
         // The fold's error contract is NOT all-or-nothing: every gate refusal
         // sets `country_preferred_tactics_this_hour = None` before returning
-        // (`world_fold.rs:10321`, `:10352`). A harness that assumed otherwise
+        // (`world_fold.rs::fold_country_preferred_tactics`). A harness that assumed otherwise
         // would keep publishing last hour's tactics.
         let schema = schema();
         let mut acc = State::new();
@@ -1861,9 +1861,9 @@ mod tests {
 
     #[test]
     fn a_malformed_payload_does_not_clear_the_accumulator() {
-        // The decode runs BEFORE the gates (`world_fold.rs:10309`), and on that
+        // The decode runs BEFORE the gates (`world_fold.rs::fold_country_preferred_tactics`), and on that
         // path the fold's `?` returns before either clear. The recorder's own
-        // Err arm then clears it (`:4897`-`:4906`), which is the caller's job,
+        // Err arm then clears it (`world_fold.rs::apply_domain_data`), which is the caller's job,
         // not this boundary's — mirroring it here would clear twice and hide
         // which path fired.
         let schema = schema();

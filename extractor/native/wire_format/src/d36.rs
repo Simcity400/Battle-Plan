@@ -4,14 +4,14 @@
 //! Derived from `world_fold.rs:16054`-`:16157`
 //! (`fold_air_variant_reserves`), its payload constants at `:989`-`:990` and
 // @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=16054-16157 sha256=6b4f4dcb82fc64534f8323e2363dc7ab8963c6684192cb54019f07af35b76f2d
-//! `:156`, the render at `:8736`-`:8755`, and the collector read that produces
+//! `:156`, the render at `world_fold.rs::build_designs`, and the collector read that produces
 //! the rows (`extractor/native/collector/src/attach_log.rs:55392`-`:55530`,
 //! `:71487`-`:71523`). There is no `extractor/documents/domains/d36_*.md`, so the
 //! fold and the collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:15277`-`:15341`): a 48-byte header
+//! **Payload grammar** (`world_fold.rs::fold_air_variant_reserves`): a 48-byte header
 //! followed by `row_count` fixed 24-byte rows. There is no legacy short row — the
-//! fold requires `payload.len() == 48 + row_count * 24` exactly (`:15334`), so
+//! fold requires `payload.len() == 48 + row_count * 24` exactly (`world_fold.rs::fold_air_variant_reserves`), so
 //! the length never selects a row form and the mapper accepts exactly one.
 //!
 //! Header:
@@ -20,15 +20,15 @@
 //! |---|---|---|---|
 //! | `+0`  | u64 | `elapsed_wall_ms`          | collector timing, not game state |
 //! | `+8`  | u32 | `row_count`               | rows in THIS record, not table size |
-//! | `+12` | u32 | `changed_rows`            | `<= row_count` (`:15291`) |
+//! | `+12` | u32 | `changed_rows`            | `<= row_count` (`world_fold.rs::fold_air_variant_reserves`) |
 //! | `+16` | u32 | `status_flags`            | the two early-exit gates |
 //! | `+20` | u32 | `observed_country_rows`   | |
 //! | `+24` | u32 | `observed_stockpile_rows` | |
 //! | `+28` | u32 | `observed_air_variant_rows` | **the fold does not read this** |
-//! | `+32` | u32 | `matched_stockpile_rows`  | `<= observed_stockpile_rows` (`:15298`) |
-//! | `+36` | u32 | `invalid_country_rows`    | `<= observed_country_rows` (`:15305`) |
-//! | `+40` | u32 | `deleted_rows`            | `<= row_count` (`:15312`) |
-//! | `+44` | u32 | `scale_raw`               | asserted `== 100_000` (`:15319`) |
+//! | `+32` | u32 | `matched_stockpile_rows`  | `<= observed_stockpile_rows` (`world_fold.rs::fold_air_variant_reserves`) |
+//! | `+36` | u32 | `invalid_country_rows`    | `<= observed_country_rows` (`world_fold.rs::fold_air_variant_reserves`) |
+//! | `+40` | u32 | `deleted_rows`            | `<= row_count` (`world_fold.rs::fold_air_variant_reserves`) |
+//! | `+44` | u32 | `scale_raw`               | asserted `== 100_000` (`world_fold.rs::fold_air_variant_reserves`) |
 //!
 //! Row:
 //!
@@ -36,15 +36,15 @@
 //! |---|---|---|---|---|
 //! | `+0`  | u32 | `tag_db_id`  | raw | none (key component) |
 //! | `+4`  | u32 | `variant_id` | raw | none (key component) |
-//! | `+8`  | u32 | `flags`      | —   | only bit 0, the delete bit (`:15352`) |
-//! | `+12` | u32 | `reserved`   | —   | must be 0 (`:15356`) |
-//! | `+16` | i64 | `amount_raw` | `/100_000` (`:8749`) | none |
+//! | `+8`  | u32 | `flags`      | —   | only bit 0, the delete bit (`world_fold.rs::fold_air_variant_reserves`) |
+//! | `+12` | u32 | `reserved`   | —   | must be 0 (`world_fold.rs::fold_air_variant_reserves`) |
+//! | `+16` | i64 | `amount_raw` | `/100_000` (`world_fold.rs::build_designs`) | none |
 //!
 //! **The domain declares no empty state at all — no `optional`, no `nullable`,
 //! no `unknown_capable`.** There is exactly one value field and it is
 //! unconditional: the fold reads `amount_raw` at a fixed offset with no gate
-//! (`:15372`), and the only flag bit the grammar admits is the row-level delete
-//! (`:15352`-`:15354`), which is a removal from the keyed set rather than a state
+//! (`world_fold.rs::fold_air_variant_reserves`), and the only flag bit the grammar admits is the row-level delete
+//! (`world_fold.rs::fold_air_variant_reserves`), which is a removal from the keyed set rather than a state
 //! of a field. The collector never emits a row with an unreadable amount either:
 //! `read_production_stockpile_raw` (`attach_log.rs:84993`) returns `None` for the
 //! whole country when any entry is unreadable, which drops the country from the
@@ -110,18 +110,18 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:989`-`:990` and `:15277`-`:15376`. --
 
-/// `AIR_VARIANT_RESERVE_HEADER_LEN`, `world_fold.rs:989`.
+/// `AIR_VARIANT_RESERVE_HEADER_LEN`, `world_fold.rs::AIR_VARIANT_RESERVE_HEADER_LEN`.
 pub const HEADER_LEN: usize = 48;
-/// `AIR_VARIANT_RESERVE_ROW_LEN`, `world_fold.rs:990`. Fixed; no legacy form.
+/// `AIR_VARIANT_RESERVE_ROW_LEN`, `world_fold.rs::AIR_VARIANT_RESERVE_ROW_LEN`. Fixed; no legacy form.
 pub const ROW_LEN: usize = 24;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`, applied at `:15363`. It is
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`, applied at `:15363`. It is
 /// the ONLY bit the row's flag word may carry: `flags & !1 != 0` is a hard error
 /// (`:15352`-`:15354`).
 pub const ROW_FLAG_DELETED: u32 = 1;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`, and the header word the fold asserts
-/// equal to it (`:15319`, via `ensure_fixed_scale` at `:30245`).
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`, and the header word the fold asserts
+/// equal to it (`:15319`, via `ensure_fixed_scale` at `world_fold.rs::ensure_fixed_scale`).
 pub const FIXED_SCALE: f64 = 100_000.0;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 /// `FIXED_SCALE` is `10^5`, so `Quant::Fixed(5)` is exactly the source's own
@@ -132,7 +132,7 @@ pub const SCALE_DIGITS: u8 = 5;
 /// reproduces the source integer **exactly**. It is a documented property, **not
 /// a gate**: the mapper accepts every `i64` the fold accepts.
 ///
-/// `amount_raw` is an `i64` (`world_fold.rs:15372`) and `Value::Continuous` is a
+/// `amount_raw` is an `i64` (`world_fold.rs::fold_air_variant_reserves`) and `Value::Continuous` is a
 /// binary64, so the pair is exact only while the round trip
 /// `round_ties_even((raw / 10^5) * 10^5)` returns `raw`. That holds for every
 /// `|raw| <= 2^51` on every magnitude
@@ -247,14 +247,14 @@ pub fn schema() -> Schema {
                 //
                 // `Quant::Fixed(5)` is not a precision *budget*: `amount_raw` is a
                 // signed 64-bit CFixedPoint whose denominator the fold asserts to
-                // be exactly `10^5` before folding anything (`:15319`), so
+                // be exactly `10^5` before folding anything (`world_fold.rs::fold_air_variant_reserves`), so
                 // `fixed(5)` is the source's own grid and reproduces the source
                 // integer bit for bit over the whole accepted range (proved in
                 // `fixed_five_reproduces_every_raw_in_the_band`). §6's "exact
                 // unless justified" bar is met by a stronger fact than a precision
                 // argument: nothing is rounded at all. It also matters that the
                 // raw integer survives — the fold's own renderer emits
-                // `amount_raw` beside `amount` (`:8750`), so a downstream consumer
+                // `amount_raw` beside `amount` (`world_fold.rs::build_designs`), so a downstream consumer
                 // requires the integer, and `fixed(5)` is precisely the
                 // quantization under which `round(value * 1e5)` returns it
                 // unchanged, where `exact` would spend 8 raw bytes per value to
@@ -282,7 +282,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 48-byte payload header (`world_fold.rs:15282`-`:15290`).
+/// The 48-byte payload header (`world_fold.rs::fold_air_variant_reserves`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -302,20 +302,20 @@ pub struct PayloadHeader {
 }
 
 impl PayloadHeader {
-    /// `COMPACT_STATUS_DELTA_DATA` (`world_fold.rs:2948`). Note this is *not* the
+    /// `COMPACT_STATUS_DELTA_DATA` (`world_fold.rs::replace_or_sparse_after_first`). Note this is *not* the
     /// same question as "is this record a sparse patch" — see [`State::fold_payload`].
     pub fn is_delta(self) -> bool {
         self.status_flags & STATUS_DELTA_DATA != 0
     }
 
-    /// The fold's failure gate (`world_fold.rs:15320`).
+    /// The fold's failure gate (`world_fold.rs::fold_air_variant_reserves`).
     pub fn is_failure(self) -> bool {
         self.status_flags & FAILURE_STATUS_MASK != 0
     }
 }
 
 /// Parse and check the payload header, applying every check the fold performs
-/// **before** its status early-exits (`world_fold.rs:15277`-`:15319`).
+/// **before** its status early-exits (`world_fold.rs::fold_air_variant_reserves`).
 ///
 /// Position matters and is taken from the fold's own call order: the four
 /// `ensure_count_at_most` invariants and the scale assertion run before
@@ -382,7 +382,7 @@ fn ensure_at_most(field: &str, value: u32, max_field: &str, max: u32) -> core::r
 }
 
 /// Split a d36 DATA payload into its header and its rows slice, adding the
-/// fold's exact-length check (`world_fold.rs:15334`-`:15341`) to [`parse_header`]'s
+/// fold's exact-length check (`world_fold.rs::fold_air_variant_reserves`) to [`parse_header`]'s
 /// invariants.
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
@@ -413,7 +413,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// The key of one compact row: `(tag_db_id, variant_id)`
-/// (`world_fold.rs:15359`-`:15362`).
+/// (`world_fold.rs::fold_air_variant_reserves`).
 ///
 /// Neither component is range-checked, because the fold does not check either.
 /// The independent authority decoder rejects `tag_db_id == 0` and
@@ -425,7 +425,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 }
 
 /// Whether this row removes its key from the set rather than carrying a state
-/// (`world_fold.rs:15363`-`:15366`).
+/// (`world_fold.rs::fold_air_variant_reserves`).
 ///
 /// A deleted row's `amount_raw` is packed as zero by the collector
 /// (`attach_log.rs:55525`), which is why it is a removal and not a record: mapping
@@ -435,7 +435,7 @@ pub fn is_deleted_row(row: &[u8]) -> core::result::Result<bool, String> {
 }
 
 /// The row's flag word, with the fold's unknown-bit rejection
-/// (`world_fold.rs:15352`-`:15354`) and its reserved-word rejection (`:15356`).
+/// (`world_fold.rs::fold_air_variant_reserves`) and its reserved-word rejection (`world_fold.rs::fold_air_variant_reserves`).
 pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let flags = u32_at(row, 8);
@@ -462,7 +462,7 @@ pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
 /// mapper has the same shape.
 ///
 /// A **deleted** row is not a record and is rejected here: it removes its key
-/// from the set (`world_fold.rs:15363`). [`State::fold_payload`] branches on
+/// from the set (`world_fold.rs::fold_air_variant_reserves`). [`State::fold_payload`] branches on
 /// [`is_deleted_row`] before ever calling this.
 ///
 /// Fail-closed throughout, mirroring `fold_air_variant_reserves`: a row the fold
@@ -541,7 +541,7 @@ fn i64_at(b: &[u8], off: usize) -> i64 {
 /// What one d36 DATA record did to the accumulator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldOutcome {
-    /// `handle_compact_failure` (`world_fold.rs:2863`, called at `:15320`): the
+    /// `handle_compact_failure` (`world_fold.rs::handle_compact_failure`, called at `:15320`): the
     /// domain-hour is unknown and the accumulator is retained. Nothing was
     /// folded, so the hour is not d36 data and belongs in no measurement.
     FailureRetained,
@@ -559,7 +559,7 @@ pub enum FoldOutcome {
 }
 
 /// The reconstructed `air_variant_reserves` state, folded exactly as
-/// `fold_air_variant_reserves` folds it (`world_fold.rs:15342`-`:15376`).
+/// `fold_air_variant_reserves` folds it (`world_fold.rs::fold_air_variant_reserves`).
 ///
 /// d36 is replace-once-then-sparse, so an hour's state is **not** an hour's rows:
 /// it is this accumulator after the hour's record. Every caller — the measurement
@@ -574,7 +574,7 @@ pub enum FoldOutcome {
 pub struct State {
     /// The reserve table, keyed by `(tag_db_id, variant_id)`.
     pub reserves: KeyedState,
-    /// `delta_baselines_seen` for this domain (`world_fold.rs:2954`-`:2958`).
+    /// `delta_baselines_seen` for this domain (`world_fold.rs::replace_or_sparse_after_first`).
     baseline_seen: bool,
 }
 
@@ -984,7 +984,7 @@ mod tests {
         // `amount_raw` magnitude tried at or below `EXACT_AMOUNT_RAW_BAND`,
         // `quantize(raw / 10^5)` returns `raw` unchanged — nothing is rounded,
         // and the raw integer the fold's own renderer emits beside the scaled
-        // value (`world_fold.rs:8750`) survives the wire.
+        // value (`world_fold.rs::build_designs`) survives the wire.
         let q = Quant::Fixed(SCALE_DIGITS);
         let mut raws: Vec<i64> = vec![0, 1, -1, 5, 99_999, 100_000, 100_001, 10_100_000];
         for decade in 0..16u32 {
@@ -1082,7 +1082,7 @@ mod tests {
             assert!(row_flags(&row).is_err(), "length {len}");
             assert!(is_deleted_row(&row).is_err(), "length {len}");
         }
-        // An unknown flag bit (`world_fold.rs:15352`) — every one of them.
+        // An unknown flag bit (`world_fold.rs::fold_air_variant_reserves`) — every one of them.
         for bit in 1..32u32 {
             let row = raw_row(1, 2, ROW_FLAG_DELETED | (1 << bit), 0, 0);
             assert!(record_from_row(&c, &row, 0).is_err(), "flag bit {bit}");
@@ -1216,7 +1216,7 @@ mod tests {
 
     #[test]
     fn parse_header_enforces_all_four_count_invariants() {
-        // `world_fold.rs:15291`-`:15318`, one at a time, each at max + 1 and each
+        // `world_fold.rs::fold_air_variant_reserves`, one at a time, each at max + 1 and each
         // at its boundary — the four are separate checks and a copy-paste error
         // between them is exactly the failure this covers.
         let rows = vec![live_row(1, 2, 100_000)];
@@ -1289,7 +1289,7 @@ mod tests {
             key(&[41, 7318])
         );
         // Both components are read, and neither is range-checked: the fold checks
-        // neither (`world_fold.rs:15349`-`:15350`), so a zero tag_db_id is a key
+        // neither (`world_fold.rs::fold_air_variant_reserves`), so a zero tag_db_id is a key
         // here even though the independent authority decoder rejects it
         // (`domain_data_authority.rs:15190`). Recorded as a finding.
         assert_eq!(key_from_row(&live_row(0, 0, 0)).expect("keys"), key(&[0, 0]));
@@ -1364,7 +1364,7 @@ mod tests {
 
     #[test]
     fn a_deleted_row_removes_its_key() {
-        // `world_fold.rs:15363`-`:15366`. A delete for a key that is not present
+        // `world_fold.rs::fold_air_variant_reserves`. A delete for a key that is not present
         // is a no-op, exactly as `BTreeMap::remove` is in the fold.
         let s = schema();
         let mut state = empty_state();

@@ -6,7 +6,7 @@
 // @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=20819-20907 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6
 //! owns the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`),
-//! the fold's own renderer (`world_fold.rs:8765`-`:8838`), and the collector walk
+//! the fold's own renderer (`world_fold.rs::build_naval_combats`), and the collector walk
 //! that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:39800`-`:39860`,
 //! `:40890`-`:40925`). There is no `extractor/documents/domains/d49_*.md`, so
@@ -78,7 +78,7 @@
 //! information it carries is already on the wire as `generation`.
 //!
 //! **Pure cumulative delta: no baseline record, no mode word** (recipe shape 3).
-//! The fold says so in its own words at `world_fold.rs:20091`-`:20095`: *"the
+//! The fold says so in its own words at `world_fold.rs::fold_naval_combat_lifecycle`: *"the
 //! collector emits every active row on the first frame (empty previous baseline)
 //! and only changes thereafter, so no separate baseline record exists to gate
 //! on."* There is consequently **no** `reject_delta_before_baseline` call, no
@@ -147,7 +147,7 @@
 //! since no producer path exercises the clear gate; it is in the deliverable's
 //! open questions.
 //!
-//! **A deleted row is a removal, not a record** (`world_fold.rs:20097`-`:20100`).
+//! **A deleted row is a removal, not a record** (`world_fold.rs::fold_naval_combat_lifecycle`).
 //! Bit 0 is `LIFECYCLE_ROW_DELETED`; the fold removes the key and `continue`s
 //! without reading another word. In the measured capture the collector packs
 //! tombstones carrying the last-known values with every presence bit still set, so
@@ -157,8 +157,8 @@
 //!
 //! **Duplicate keys inside one payload are legal and are applied in order.**
 //! Unlike its d50 sibling, which refuses a repeated member identity
-//! (`world_fold.rs:20160`-`:20166`), this fold walks the rows and upserts or
-//! removes each in turn (`:20096`-`:20125`) with no uniqueness check. The fold's
+//! (`world_fold.rs::fold_naval_combat_members`), this fold walks the rows and upserts or
+//! removes each in turn (`world_fold.rs::fold_naval_combat_lifecycle`) with no uniqueness check. The fold's
 //! permissive last-writer-wins collapse is mirrored exactly, so the keyed set
 //! reproduces its stored state; `duplicate_keys_in_one_payload_apply_in_order` is
 //! the test.
@@ -208,7 +208,7 @@ pub const STRING_TABLE_LEN: usize = 2;
 /// `:1817`.
 pub const MAX_ROW_COUNT: u32 = 100_000;
 
-/// `LIFECYCLE_ROW_DELETED`, `:38`, applied at `world_fold.rs:20098`.
+/// `LIFECYCLE_ROW_DELETED`, `:38`, applied at `world_fold.rs::fold_naval_combat_lifecycle`.
 pub const ROW_FLAG_DELETED: u32 = 1 << 0;
 pub const ROW_FLAG_LOCATION_PRESENT: u32 = 1 << 1;
 pub const ROW_FLAG_ATTACKER_COUNT_PRESENT: u32 = 1 << 2;
@@ -329,7 +329,7 @@ pub fn schema() -> Schema {
         collections: vec![Collection {
             collection_id: COMBATS,
             // `(combat_id, generation)` is the fold's own key
-            // (`world_fold.rs:20097`) and it persists across hours: the fold
+            // (`world_fold.rs::fold_naval_combat_lifecycle`) and it persists across hours: the fold
             // patches and deletes against it rather than rebuilding the table,
             // which is what a keyed set needs — and only a keyed set has a delta
             // grammar (§7.3).
@@ -348,7 +348,7 @@ pub fn schema() -> Schema {
                 // must resolve province 2757 for it to keep its meaning under
                 // another mod set, which is the deciding question for
                 // ContentId-vs-Unsigned. The fold renders this word as
-                // `location_province` (`world_fold.rs:8777`), and d20 classes its
+                // `location_province` (`world_fold.rs::build_naval_combats`), and d20 classes its
                 // `location_province` the same way. Never empty on a folded row;
                 // see the module docs.
                 Field::new(f::LOCATION_ID, Kind::ContentId),
@@ -373,7 +373,7 @@ pub fn schema() -> Schema {
                 // than a precision argument — nothing is rounded at all. It also
                 // matters that the raw integer survives: the fold's renderer emits
                 // `attacker_positioning_raw` beside `attacker_positioning`
-                // (`world_fold.rs:8790`-`:8795`) and the same for the other three,
+                // (`world_fold.rs::build_naval_combats`) and the same for the other three,
                 // so a downstream consumer requires the integer, and `fixed(5)` is
                 // precisely the quantization under which `round(value * 1e5)`
                 // returns it unchanged, where `exact` would spend 8 raw bytes per
@@ -439,7 +439,7 @@ impl PayloadHeader {
         self.status_flags & !LANE_LOCAL_STATUS_MASK
     }
 
-    /// The fold's failure gate (`world_fold.rs:20066`, helper at `:2863`).
+    /// The fold's failure gate (`world_fold.rs::fold_naval_combat_lifecycle`, helper at `world_fold.rs::handle_compact_failure`).
     pub fn is_failure(self) -> bool {
         self.status_for_global_interpretation() & FAILURE_STATUS_MASK != 0
     }
@@ -450,7 +450,7 @@ impl PayloadHeader {
 /// in its own order.
 ///
 /// **Position.** Every one of these runs inside `decode_lifecycle_rows`, which the
-/// fold calls FIRST and whose `Err` it propagates (`world_fold.rs:20044`-`:20046`).
+/// fold calls FIRST and whose `Err` it propagates (`world_fold.rs::fold_naval_combat_lifecycle`).
 /// So a header failure is a stream rejection for every payload whatever its status
 /// — d49's status gates cannot shield a malformed header, unlike the folds whose
 /// early exits precede their length check.
@@ -554,7 +554,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     Ok((header, &payload[HEADER_LEN..table_at]))
 }
 
-/// The key of one compact row: `(combat_id, generation)` (`world_fold.rs:20097`).
+/// The key of one compact row: `(combat_id, generation)` (`world_fold.rs::fold_naval_combat_lifecycle`).
 ///
 /// `combat_id` carries the lane's own zero and upper-bound rejection (`:1878`);
 /// `generation` carries none, because no authority constrains it.
@@ -589,7 +589,7 @@ pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
 }
 
 /// Whether this row removes its key from the set rather than carrying a state
-/// (`world_fold.rs:20098`-`:20101`).
+/// (`world_fold.rs::fold_naval_combat_lifecycle`).
 pub fn is_deleted_row(row: &[u8]) -> core::result::Result<bool, String> {
     Ok(row_flags(row)? & ROW_FLAG_DELETED != 0)
 }
@@ -685,12 +685,12 @@ pub fn validate_row(row: &[u8]) -> core::result::Result<(), String> {
 /// Two row shapes are **preconditions of the grammar**, not values, and both are
 /// rejected rather than mapped:
 ///
-/// - A **deleted** row removes its key from the set (`world_fold.rs:20098`), so it
+/// - A **deleted** row removes its key from the set (`world_fold.rs::fold_naval_combat_lifecycle`), so it
 ///   is not a record. [`State::fold_payload`] branches on [`is_deleted_row`]
 ///   before ever calling this.
 /// - A **live row missing any of the six fields in [`REQUIRED_ON_A_FOLDED_LIVE_ROW`]**
 ///   can only occur inside a payload that refusal 1 or refusal 3 refuses whole
-///   (`world_fold.rs:20047`-`:20062`, `:20076`-`:20087`), so the fold publishes
+///   (`world_fold.rs::fold_naval_combat_lifecycle`), so the fold publishes
 ///   nothing for it either. Mapping it would require inventing an empty state for
 ///   a field that has none — see the module docs. This is a precondition, not a
 ///   narrowing: `the_fold_never_folds_a_row_the_mapper_rejects` pins that every
@@ -737,14 +737,14 @@ pub fn record_from_row(
                 flags & ROW_FLAG_DEFENDER_COUNT_PRESENT != 0,
                 u32_at(row, 36) as u64,
             ),
-            // `world_fold.rs:8800` / `:8814` — `f64::from(i32) / 100_000.0`.
+            // `world_fold.rs::build_naval_combats` — `f64::from(i32) / 100_000.0`.
             field::ATTACKER_POSITIONING => {
                 Value::Continuous(f64::from(i32_at(row, 40)) / FIXED_SCALE)
             }
             field::DEFENDER_POSITIONING => {
                 Value::Continuous(f64::from(i32_at(row, 44)) / FIXED_SCALE)
             }
-            // `world_fold.rs:8825` / `:8836` — `i64 as f64 / 100_000.0`.
+            // `world_fold.rs::build_naval_combats` — `i64 as f64 / 100_000.0`.
             field::ATTACKER_ANTI_AIR => {
                 Value::Continuous(i64_at(row, 48) as f64 / FIXED_SCALE)
             }
@@ -816,7 +816,7 @@ fn i64_at(b: &[u8], off: usize) -> i64 {
 /// [`State::fold_payload`], which says the payload is not this grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldOutcome {
-    /// Refusal 1, **before** the failure gate (`world_fold.rs:20047`-`:20062`):
+    /// Refusal 1, **before** the failure gate (`world_fold.rs::fold_naval_combat_lifecycle`):
     /// the lane-local bit 11 is set, or a live row omits `location_id` or
     /// `region_id`. Under the recorder's `boundary_validation` mode this is an
     /// `Err`; on the production path the domain-hour is unknown and the
@@ -828,7 +828,7 @@ pub enum FoldOutcome {
         /// A live row omitted `location_id` or `region_id`.
         row_incomplete: bool,
     },
-    /// `handle_compact_failure` (`world_fold.rs:2863`, called at `:20066`): the
+    /// `handle_compact_failure` (`world_fold.rs::handle_compact_failure`, called at `:20066`): the
     /// domain-hour is unknown and the accumulator is retained.
     FailureRetained,
     /// Refusal 3, **after** the failure gate (`:20076`-`:20087`): a live row
@@ -842,7 +842,7 @@ pub enum FoldOutcome {
 impl FoldOutcome {
     /// Whether this outcome contributed a measurable domain-hour. Exactly the
     /// fold's own `naval_combat_lifecycle_known_this_hour` witness, which is set
-    /// only on the path that reaches `world_fold.rs:20126`.
+    /// only on the path that reaches `world_fold.rs::fold_naval_combat_lifecycle`.
     pub fn is_measured(self) -> bool {
         matches!(self, FoldOutcome::Folded { .. })
     }
@@ -862,7 +862,7 @@ impl FoldOutcome {
 /// `fold_naval_combat_lifecycle`, which inserts, removes and sets every lifecycle
 /// scalar, and `fold_naval_combat_members` (d50), which only ever does
 /// `combat.members.insert(..)` / `.remove(..)` on an entry it obtained with
-/// `get_mut` (`world_fold.rs:20205`-`:20217`). d50 never inserts an entry, never
+/// `get_mut` (`world_fold.rs::fold_naval_combat_members`). d50 never inserts an entry, never
 /// removes one, and never touches a lifecycle scalar — its `members` map is d50's
 /// own collection, which this port does not carry. So d50 is **proved inert** for
 /// d49's keyed set by construction, not merely on this capture; the measurement
@@ -871,7 +871,7 @@ impl FoldOutcome {
 ///
 /// **`fold_payload`'s error contract is all-or-nothing.** The lane decodes and
 /// validates the entire payload before the fold applies a single row
-/// (`world_fold.rs:20044`, `domain49_50_naval_combat_live.rs:496`-`:531`), so a
+/// (`world_fold.rs::fold_naval_combat_lifecycle`, `domain49_50_naval_combat_live.rs:496`-`:531`), so a
 /// payload that fails anywhere leaves the accumulator exactly as it was. This
 /// mirrors the recorder rather than assuming it.
 #[derive(Clone, Debug, Default)]
@@ -2125,7 +2125,7 @@ mod tests {
 
     #[test]
     fn the_location_refusal_runs_before_the_failure_gate() {
-        // The position that must not be guessed (`world_fold.rs:20047` vs `:20066`).
+        // The position that must not be guessed (`world_fold.rs::fold_naval_combat_lifecycle` vs `world_fold.rs::fold_naval_combat_lifecycle`).
         // A payload carrying BOTH the location badge and a failure status is
         // excluded for the LOCATION reason, because the fold returns at refusal 1
         // and never reaches `handle_compact_failure`.

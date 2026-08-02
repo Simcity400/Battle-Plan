@@ -60,7 +60,7 @@ pub const ORDER_LINK_CARDINALITY: u32 = 3;
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
-        // Key: (div_id, div_type), both unsigned, per world_fold.rs:19141.
+        // Key: (div_id, div_type), both unsigned, per `world_fold.rs::fold_divisions`.
         Field::new(f::DIV_ID, Kind::Unsigned).key(0),
         Field::new(f::DIV_TYPE, Kind::Unsigned).key(1),
         // Position and identity.
@@ -74,7 +74,7 @@ pub fn schema() -> Schema {
         fields.push(Field::new(id, Kind::Continuous).quant(BAR_PRECISION));
     }
     // The A15 extension fields. A legacy 104-byte row does not carry them
-    // (`world_fold.rs:19001`-`:19013`), and the schema does support them, so their
+    // (`world_fold.rs::fold_divisions`), and the schema does support them, so their
     // state on such a row is **unknown**, not absent — §3 reserves absent for
     // "not applicable, or unsupported by this schema".
     fields.push(

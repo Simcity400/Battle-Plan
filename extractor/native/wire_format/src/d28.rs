@@ -11,7 +11,7 @@
 //! `extractor/documents/domains/` carries no d28 dossier, so the fold and the
 //! collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:14272`-`:14300`): a 48-byte header —
+//! **Payload grammar** (`world_fold.rs::fold_oob_command`): a 48-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `root_rows` u32 at `+20`,
 //! `observed_army_rows` u32 at `+24`, `observed_army_group_rows` u32 at `+28`,
@@ -19,20 +19,20 @@
 //! `observed_fleet_rows` u32 at `+40`, `observed_task_force_rows` u32 at `+44` —
 //! followed by `row_count` fixed 80-byte **command rows** and then `member_count`
 //! fixed 8-byte **member rows**. The fold requires the length to be exactly
-//! `48 + row_count * 80 + member_count * 8` (`:14299`-`:14306`), so no legacy
+//! `48 + row_count * 80 + member_count * 8` (`world_fold.rs::fold_oob_command`), so no legacy
 //! short row exists and the length selects nothing.
 //!
-//! Command row (`world_fold.rs:14324`-`:14390`):
+//! Command row (`world_fold.rs::fold_oob_command`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `kind`                  | raw | none (key; must be `1..=4`, `:14326`) |
-//! | `+4`  | u32 | `object_id`             | raw | none (key; zero rejected, `:14334`) |
+//! | `+0`  | u32 | `kind`                  | raw | none (key; must be `1..=4`, `world_fold.rs::fold_oob_command`) |
+//! | `+4`  | u32 | `object_id`             | raw | none (key; zero rejected, `world_fold.rs::fold_oob_command`) |
 //! | `+8`  | u32 | `flags`                 | —   | — |
 //! | `+12` | u32 | `parent_id`             | raw | `PARENT` (`1<<1`) |
 //! | `+16` | u32 | `owner_tag_db_id`       | raw | `OWNER` (`1<<2`) |
 //! | `+20` | u32 | `leader_id`             | raw | `LEADER` (`1<<3`) |
-//! | `+24` | u32 | `leader_skill`          | raw | `LEADER_SKILL` (`1<<4`), **validated** `:14361` |
+//! | `+24` | u32 | `leader_skill`          | raw | `LEADER_SKILL` (`1<<4`), **validated** `world_fold.rs::fold_oob_command` |
 //! | `+28` | u32 | `member_first`          | —   | transport, not state |
 //! | `+32` | u32 | `member_count`          | —   | transport, not state |
 //! | `+36` | u32 | `logical_member_count`  | raw | none |
@@ -44,23 +44,23 @@
 //! | `+60` | u32 | `owner_status`          | raw | none |
 //! | `+64` | u32 | `leader_status`         | raw | none |
 //! | `+68` | u32 | `leader_trait_status`   | raw | none |
-//! | `+72` | u32 | `location_province_id`  | raw | `LOCATION` (`1<<7`), **validated** `:14366` |
-//! | `+76` | u32 | `reserved`              | —   | must be zero (`:14369`) |
+//! | `+72` | u32 | `location_province_id`  | raw | `LOCATION` (`1<<7`), **validated** `world_fold.rs::fold_oob_command` |
+//! | `+76` | u32 | `reserved`              | —   | must be zero (`world_fold.rs::fold_oob_command`) |
 //!
-//! Member row (`world_fold.rs:14390`-`:14405`): `member_id` u32 at `+0` (zero
+//! Member row (`world_fold.rs::fold_oob_command`): `member_id` u32 at `+0` (zero
 //! rejected), `reserved` u32 at `+4` (must be zero).
 //!
 //! **No scales anywhere.** Every word is a raw id, count, skill or status code;
 //! the fold divides nothing and the accumulator's JSON projection
-//! (`world_fold.rs:7964`-`:7994`) emits every one of them verbatim. There is no
+//! (`world_fold.rs::build_order_of_battle`) emits every one of them verbatim. There is no
 //! `scale_raw` word in the header and `ensure_fixed_scale` is never called for
 //! this domain.
 //!
 //! **Two collections, because `(member_first, member_count)` is transport.** A
 //! command addresses its members as a half-open range into one shared member
 //! array; the fold proves those ranges non-overlapping (current
-//! `:14429`-`:14432`) and total (`:14480`-`:14482`), and proves each member id
-//! unique within its owning row (`:14483`-`:14485`).
+//! `world_fold.rs::fold_oob_command`) and total (`world_fold.rs::fold_oob_command`), and proves each member id
+//! unique within its owning row (`world_fold.rs::fold_oob_command`).
 //! The range *words* are re-packed by the collector on
 //! every frame from emission order — `compact_oob_command_data_payload` recomputes
 //! `member_first` from a running cursor over the row loop (current
@@ -79,12 +79,12 @@
 //!
 //! What the fold flattens the range into is **not** a set. It slices the frame's
 //! shared member array and stores the slice as an ordered `Vec<u32>`
-//! (`OobCommandState.members`, current `world_fold.rs:23623`, filled at `:14526`),
+//! (`OobCommandState.members`, current `world_fold.rs:23623`, filled at `world_fold.rs::fold_oob_command`),
 //! and the recorder's own projection emits that vector verbatim as an ordered
-//! JSON array — `armies[].members` (`:8011`) and `army_groups[].army_refs`
-//! (`:8003`). The fold enforces **no ordering at all** on the member rows: its
+//! JSON array — `armies[].members` (`world_fold.rs::build_order_of_battle`) and `army_groups[].army_refs`
+//! (`world_fold.rs::build_order_of_battle`). The fold enforces **no ordering at all** on the member rows: its
 //! member loop rejects a zero id, an unowned child and a repeat within one row,
-//! and nothing else (`:14470`-`:14487`). So the fold accepts every permutation of
+//! and nothing else (`world_fold.rs::fold_oob_command`). So the fold accepts every permutation of
 //! a row's members and stores each one as a different vector, and [`MEMBERS`]'
 //! `(kind, object_id, member_id)` key — whose own order is ascending `member_id`
 //! — cannot express the ones that are not sorted.
@@ -98,8 +98,8 @@
 //! information" — is why the rest of this schema mirrors and this one place does
 //! not. Placing it there rather than in [`split_payload`] is what confines it to
 //! the rows a frame leaves behind: a **delete** row's range is discarded with the
-//! key (`world_fold.rs:14509`, before the slice at `:14526`) and a **withheld**
-//! tolerated-partial frame is abandoned whole (`:14488`-`:14496`), so neither can
+//! key (`world_fold.rs::fold_oob_command`, before the slice at `world_fold.rs::fold_oob_command`) and a **withheld**
+//! tolerated-partial frame is abandoned whole (`world_fold.rs::fold_oob_command`), so neither can
 //! lose a sequence and neither is refused — see [`validate_withheld_payload`].
 //!
 //! **It is not stricter than the producer, and the position is transport rather
@@ -154,7 +154,7 @@
 //!
 //! Seven flag gates (`world_fold.rs:1024`-`:1038`) and one status-driven field.
 //! The fold folds a clear gate to `None` for five of them, and — the hazard worth
-//! naming — to **`0`, not `None`**, for `owner_tag_db_id` (`:14444`-`:14448`).
+//! naming — to **`0`, not `None`**, for `owner_tag_db_id` (`world_fold.rs::fold_oob_command`).
 //! Per `WIRE_FORMAT.md` §3 the fold decides value-vs-nothing and nothing else;
 //! the three-way choice below comes from the collector read that sets each flag.
 //!
@@ -195,7 +195,7 @@
 //!   fact: the single-owner relation genuinely resolves to nothing, which is §3's
 //!   null. `"unknown"` is an unread owner, which is §3's unknown. The fold's `0`
 //!   is a sentinel and not a country: the recorder's own projection renders it as
-//!   JSON `Null` (`country_ref_json`, `world_fold.rs:6870`-`:6873`), and `0` is
+//!   JSON `Null` (`country_ref_json`, `world_fold.rs::country_ref_json`), and `0` is
 //!   rejected as a `tag_db_id` everywhere else (d26 `:17404`, d63 `:9259`). So
 //!   the `0` is an empty state that this schema is able to keep apart from a real
 //!   value, and it is never emitted as `Unsigned(0)`/`ContentId(0)`.
@@ -236,7 +236,7 @@
 //!   value is an `Option<u32>` that the packer writes as `unwrap_or(0)`
 //!   (`attach_log.rs:69719`) with **no gate bit**, so a `None` becomes an
 //!   indistinguishable `0` on the wire — and the fold stores that `0` as a
-//!   value (`world_fold.rs:14459`). What disambiguates it is `leader_trait_status`,
+//!   value (`world_fold.rs::fold_oob_command`). What disambiguates it is `leader_trait_status`,
 //!   which is `"none"` when the row has no leader at all, `"exact"` when the
 //!   traits were read (including an honest empty vector, `attach_log.rs:22312`),
 //!   and `"validation_failed"` when the walk failed — but **`"none"` alone does
@@ -280,12 +280,12 @@
 //! property of one capture, not of the grammar, so none of the four is derived
 //! from another here.
 //!
-//! **Deleted rows are removals, not records** (`world_fold.rs:14433`-`:14436`):
+//! **Deleted rows are removals, not records** (`world_fold.rs::fold_oob_command`):
 //! the low flag bit erases the key from the accumulator. They become wire
 //! tombstones in *both* collections, derived by `body::diff` from the state the
 //! removal produces. [`record_from_command_row`] refuses one rather than
 //! inventing a record. Note the fold applies **no** emptiness requirement to a
-//! delete row — unlike d26's (`:17427`) — so a delete row may legally declare a
+//! delete row — unlike d26's (`world_fold.rs::fold_division_equipment`) — so a delete row may legally declare a
 //! member range, and those member rows are validated and then discarded with the
 //! key. [`fold_payload`] reproduces that.
 //!
@@ -346,22 +346,22 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:970`-`:972` and `:1019`-`:1038`. ----
 
-/// `OOB_COMMAND_HEADER_LEN`, `world_fold.rs:970`.
+/// `OOB_COMMAND_HEADER_LEN`, `world_fold.rs::OOB_COMMAND_HEADER_LEN`.
 pub const HEADER_LEN: usize = 48;
-/// `OOB_COMMAND_ROW_LEN`, `world_fold.rs:971`.
+/// `OOB_COMMAND_ROW_LEN`, `world_fold.rs::OOB_COMMAND_ROW_LEN`.
 pub const ROW_LEN: usize = 80;
-/// `OOB_COMMAND_MEMBER_ROW_LEN`, `world_fold.rs:972`.
+/// `OOB_COMMAND_MEMBER_ROW_LEN`, `world_fold.rs::OOB_COMMAND_MEMBER_ROW_LEN`.
 pub const MEMBER_ROW_LEN: usize = 8;
 
 /// `OOB_KIND_*`, `world_fold.rs:1019`-`:1022`. A `kind` outside this set is a
-/// rejected row (`:14327`-`:14333`), which is why `kind` needs no enum
+/// rejected row (`world_fold.rs::fold_oob_command`), which is why `kind` needs no enum
 /// cardinality on the wire — see [`schema`].
 pub const KIND_ARMY: u32 = 1;
 pub const KIND_ARMY_GROUP: u32 = 2;
 pub const KIND_FLEET: u32 = 3;
 pub const KIND_TASK_FORCE: u32 = 4;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`.
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`.
 pub const FLAG_DELETED: u32 = 1;
 /// `OOB_ROW_FLAG_*`, `world_fold.rs:1024`-`:1030`.
 pub const FLAG_PARENT: u32 = 1 << 1;
@@ -371,7 +371,7 @@ pub const FLAG_LEADER_SKILL: u32 = 1 << 4;
 pub const FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 pub const FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const FLAG_LOCATION: u32 = 1 << 7;
-/// `OOB_KNOWN_FLAGS`, `world_fold.rs:1031`-`:1038`. Any other bit is a hard
+/// `OOB_KNOWN_FLAGS`, `world_fold.rs::OOB_KNOWN_FLAGS`. Any other bit is a hard
 /// error (`:14342`) — an unrecognised flag word means the row is not this
 /// grammar, so nothing in it can be trusted.
 pub const KNOWN_FLAGS: u32 = FLAG_DELETED
@@ -395,7 +395,7 @@ pub const STATUS_MIXED: u32 = 5;
 pub const STATUS_CARDINALITY: u32 = 6;
 
 /// The five status words, in row order, with their byte offsets
-/// (`world_fold.rs:14381`-`:14385`).
+/// (`world_fold.rs::fold_oob_command`).
 pub const STATUS_WORDS: [(u32, usize); 5] = [
     (field::PARENT_STATUS, 52),
     (field::MEMBER_STATUS, 56),
@@ -415,12 +415,12 @@ pub fn schema() -> Schema {
                 collection_id: COMMANDS,
                 // Commands persist across hours and the frame grammar is
                 // first-frame-replaces / later-frames-upsert / low-bit-removes
-                // (`world_fold.rs:14424`-`:14436`), which is exactly a keyed
+                // (`world_fold.rs::fold_oob_command`), which is exactly a keyed
                 // set's grammar — and only a keyed set has deltas (§7.3).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is the `(kind, object_id)` pair
-                    // (`world_fold.rs:14429`-`:14432`); `kind` is checked
+                    // (`world_fold.rs::fold_oob_command`); `kind` is checked
                     // against a four-value set and `object_id` is zero-rejected,
                     // so both are concrete in every row.
                     //
@@ -521,7 +521,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 48-byte payload header (`world_fold.rs:14273`-`:14282`).
+/// The 48-byte payload header (`world_fold.rs::fold_oob_command`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -553,7 +553,7 @@ pub struct CommandRow {
 }
 
 /// Read the 48-byte payload header and nothing else
-/// (`world_fold.rs:14273`-`:14282`).
+/// (`world_fold.rs::fold_oob_command`).
 ///
 /// Exposing the header read is what keeps it from becoming a second, hand-rolled
 /// copy of the header layout in every caller that needs `status_flags` before it
@@ -583,7 +583,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 
 /// Split a d28 DATA payload into its header, its command rows and its member
 /// rows, applying every structural check `fold_oob_command` applies before it
-/// starts folding (`world_fold.rs:14272`-`:14320`).
+/// starts folding (`world_fold.rs::fold_oob_command`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -605,7 +605,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 
     // Checked arithmetic throughout: both counts are attacker-shaped words from
     // a file on disk, and either product overflows `usize` for a large enough
-    // one. `world_fold.rs:14300` uses saturating arithmetic, which turns an
+    // one. `world_fold.rs::fold_oob_command` uses saturating arithmetic, which turns an
     // overflowing claim into a length that cannot match; rejecting is the same
     // outcome reached without relying on that.
     let rows_len = (header.row_count as usize)
@@ -648,10 +648,10 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 ///
 /// The fold enforces no ordering on a member range — its member loop rejects a
 /// zero id, an unowned child and a repeat within one row, and nothing else
-/// (current `world_fold.rs:14470`-`:14487`) — and it stores the range as an
+/// (current `world_fold.rs::fold_oob_command`) — and it stores the range as an
 /// ordered `Vec<u32>` (`OobCommandState.members`, current `:23623`, filled at
-/// `:14526`) that the recorder projects verbatim as an ordered JSON array
-/// (`:8003`, `:8011`). On a fold-accepted range that is *not* ascending,
+/// `world_fold.rs::fold_oob_command`) that the recorder projects verbatim as an ordered JSON array
+/// (`world_fold.rs::build_order_of_battle`). On a fold-accepted range that is *not* ascending,
 /// mirroring would silently re-sort the sequence, which is the data-loss defect
 /// itself. So this schema refuses that frame instead — d32's precedent exactly
 /// (`d32.rs:146`-`:171`): stricter than the fold, on input the fold would accept,
@@ -695,7 +695,7 @@ pub fn member_range_is_ordered(
 }
 
 /// Parse one 80-byte command row, applying every per-row check the fold applies
-/// (`world_fold.rs:14325`-`:14371`) except the member-range bounds and the
+/// (`world_fold.rs::fold_oob_command`) except the member-range bounds and the
 /// cross-row uniqueness rules, which need the whole frame and live in
 /// [`split_rows`] / [`fold_payload`].
 pub fn parse_command_row(row: &[u8]) -> core::result::Result<CommandRow, String> {
@@ -717,7 +717,7 @@ pub fn parse_command_row(row: &[u8]) -> core::result::Result<CommandRow, String>
     if flags & !KNOWN_FLAGS != 0 {
         return Err(format!("oob_command row has unknown flags {flags:#x}"));
     }
-    // `world_fold.rs:14361`-`:14367`: exactly two of the seven gates are
+    // `world_fold.rs::fold_oob_command`: exactly two of the seven gates are
     // *validated* zero-when-clear. The other five are applied at insert only, so
     // this mapper does not invent a check the fold does not make — see the
     // deliverable's open questions on the asymmetry.
@@ -727,7 +727,7 @@ pub fn parse_command_row(row: &[u8]) -> core::result::Result<CommandRow, String>
     if flags & FLAG_LOCATION == 0 && u32_at(row, 72) != 0 {
         return Err("oob_command location present without flag".into());
     }
-    // `world_fold.rs:14368`-`:14371`.
+    // `world_fold.rs::fold_oob_command`.
     if u32_at(row, 76) != 0 {
         return Err("oob_command row reserved field is nonzero".into());
     }
@@ -742,7 +742,7 @@ pub fn parse_command_row(row: &[u8]) -> core::result::Result<CommandRow, String>
 }
 
 /// Parse one 8-byte member row, applying the fold's per-row checks
-/// (`world_fold.rs:14391`-`:14405`), and return its `member_id`.
+/// (`world_fold.rs::fold_oob_command`), and return its `member_id`.
 pub fn parse_member_row(row: &[u8]) -> core::result::Result<u32, String> {
     if row.len() != MEMBER_ROW_LEN {
         return Err(format!(
@@ -762,11 +762,11 @@ pub fn parse_member_row(row: &[u8]) -> core::result::Result<u32, String> {
 
 /// The half-open index range of one command's member rows within the frame's
 /// shared member array, checked exactly as the fold checks it
-/// (`world_fold.rs:14348`-`:14354`).
+/// (`world_fold.rs::fold_oob_command`).
 ///
 /// One derivation of the range rule, so the check and the use cannot disagree.
 /// Unlike d26's ranges these may **not** overlap — the fold proves ownership is
-/// injective (`:14355`-`:14359`) — but that is a whole-frame property and lives
+/// injective (`world_fold.rs::fold_oob_command`) — but that is a whole-frame property and lives
 /// in [`fold_payload`]; this is the per-row bound.
 pub fn member_index_range(
     row: &CommandRow,
@@ -786,14 +786,14 @@ pub fn member_index_range(
 }
 
 /// The [`COMMANDS`] key of one command: `(kind, object_id)`
-/// (`world_fold.rs:14429`-`:14432`).
+/// (`world_fold.rs::fold_oob_command`).
 pub fn command_key(kind: u32, object_id: u32) -> Key {
     key(&[kind as u64, object_id as u64])
 }
 
 /// The [`MEMBERS`] key of one membership edge: its command's key plus the member
 /// id, which is the identity the fold's per-row uniqueness check is on
-/// (`world_fold.rs:14409`-`:14411`).
+/// (`world_fold.rs::fold_oob_command`).
 pub fn member_key(kind: u32, object_id: u32, member_id: u32) -> Key {
     key(&[kind as u64, object_id as u64, member_id as u64])
 }
@@ -824,7 +824,7 @@ pub fn key_from_member_row(
 ///
 /// Fail-closed throughout, mirroring `fold_oob_command`: a row the fold would
 /// reject is an `Err` here, never a coerced value. A **deleted** row is an `Err`
-/// too — it is a removal (`world_fold.rs:14433`-`:14436`) and has no record; a
+/// too — it is a removal (`world_fold.rs::fold_oob_command`) and has no record; a
 /// caller must map it to a wire tombstone, and quietly handing one back a
 /// gates-all-clear row would turn a delete into an upsert. Nothing in this
 /// function can panic on any input.
@@ -862,7 +862,7 @@ pub fn record_from_row(
         statuses[i] = code;
     }
     // Indices are `STATUS_WORDS`' own order: parent, member, owner, leader,
-    // leader_trait (`world_fold.rs:14381`-`:14385`).
+    // leader_trait (`world_fold.rs::fold_oob_command`).
     let parent_status = statuses[0];
     let owner_status = statuses[2];
     let leader_status = statuses[3];
@@ -901,7 +901,7 @@ pub fn record_from_row(
                 || Value::ContentId(u32_at(row, 16) as u64),
                 // `"mixed"` is a measured "there is no single owner"; anything
                 // else is an unread owner. The fold's `0` sentinel
-                // (`world_fold.rs:14444`-`:14448`) is never emitted as a value.
+                // (`world_fold.rs::fold_oob_command`) is never emitted as a value.
                 if owner_status == STATUS_MIXED {
                     Value::Null
                 } else {
@@ -991,7 +991,7 @@ pub fn record_from_row(
 /// One compact member row onto its stored Record. [`MEMBERS`] carries no value
 /// fields — the membership edge is the whole fact and its key holds it — so the
 /// record is empty and this exists to keep the boundary uniform: the row is
-/// still validated (`world_fold.rs:14391`-`:14405`) and a collection carrying a
+/// still validated (`world_fold.rs::fold_oob_command`) and a collection carrying a
 /// value field this mapper cannot fill is still refused.
 ///
 /// The *order* of a command's member range is not this function's business: it
@@ -1023,7 +1023,7 @@ pub fn record_from_member_row(
 pub struct CommandEntry {
     pub record: Record,
     /// Wire order, exactly as the fold's slice stores it (current
-    /// `world_fold.rs:14526`) — which, on every frame this schema accepts, is
+    /// `world_fold.rs::fold_oob_command`) — which, on every frame this schema accepts, is
     /// ascending: see [`member_range_is_ordered`].
     pub members: Vec<u32>,
 }
@@ -1032,7 +1032,7 @@ pub struct CommandEntry {
 /// `BTreeMap<OobCommandKey, OobCommandState>`.
 ///
 /// One d28 record is **not** one state — the domain is a full first frame
-/// followed by sparse upserts (`:14424`-`:14427`) — so the frame-level fold is a
+/// followed by sparse upserts (`world_fold.rs::fold_oob_command`) — so the frame-level fold is a
 /// public, tested boundary here rather than a private copy in each caller.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
@@ -1062,7 +1062,7 @@ impl State {
 }
 
 /// `replace_or_sparse_after_first` for the frames that reach the fold
-/// (`world_fold.rs:2927`-`:2940`).
+/// (`world_fold.rs::replace_or_sparse_after_first`).
 ///
 /// A tolerated-partial frame never reaches it — d28's withhold at `:14414`
 /// returns first — so the expected-partial arm of that helper is unreachable
@@ -1073,15 +1073,15 @@ pub fn frame_is_sparse(delta: bool, baseline_seen: bool) -> bool {
 }
 
 /// Apply one d28 payload to the accumulator exactly as `fold_oob_command` does
-/// (`world_fold.rs:14272`-`:14470`), returning its header.
+/// (`world_fold.rs::fold_oob_command`), returning its header.
 ///
 /// `sparse` is [`frame_is_sparse`]'s answer: `false` clears the accumulator
-/// first (`:14425`-`:14427`), `true` upserts into it.
+/// first (`world_fold.rs::fold_oob_command`), `true` upserts into it.
 ///
 /// The caller is responsible for the four fold-nothing paths, all of which
-/// return before this function's effect: failure status (`:14283`),
-/// expected-partial-before-baseline (`:14286`), delta-before-baseline (`:14293`)
-/// and — d28's own — the expected-partial **withhold** at `:14414`, which sits
+/// return before this function's effect: failure status (`world_fold.rs::fold_oob_command`),
+/// expected-partial-before-baseline (`world_fold.rs::fold_oob_command`), delta-before-baseline (`world_fold.rs::fold_oob_command`)
+/// and — d28's own — the expected-partial **withhold** at `world_fold.rs::fold_oob_command`, which sits
 /// *after* every row has been decoded and validated. That ordering matters and
 /// is why this function is fail-closed on row content regardless of status: a
 /// tolerated-partial frame whose rows are malformed is a corrupt frame in the
@@ -1105,7 +1105,7 @@ pub fn fold_payload(
 
 /// Everything [`fold_payload`] validates, on a frame the recorder validates in
 /// full and then **withholds**: `fold_oob_command` decodes and checks every row
-/// and every member row, and only then — at `world_fold.rs:14488`-`:14496`,
+/// and every member row, and only then — at `world_fold.rs::fold_oob_command`,
 /// before the accumulator is touched — marks the domain-hour unknown and returns
 /// without folding anything. A harness must still run that validation, because a
 /// malformed tolerated-partial frame is a corrupt stream in the recorder too.
@@ -1146,14 +1146,14 @@ fn fold_payload_inner(
     let member_count = header.member_count as usize;
 
     // Pass 1 over the command rows, in the fold's own order
-    // (`world_fold.rs:14323`-`:14389`): per-row validity, key uniqueness across
+    // (`world_fold.rs::fold_oob_command`): per-row validity, key uniqueness across
     // the frame, and member-range ownership.
     let mut rows = Vec::with_capacity(header.row_count as usize);
     let mut row_keys = BTreeSet::new();
     let mut member_owners: Vec<Option<usize>> = vec![None; member_count];
     for (index, bytes) in row_bytes.chunks_exact(ROW_LEN).enumerate() {
         let row = parse_command_row(bytes).map_err(|e| format!("row {index}: {e}"))?;
-        // `world_fold.rs:14336`-`:14340`: a key serialized twice in one frame is
+        // `world_fold.rs::fold_oob_command`: a key serialized twice in one frame is
         // a rejected frame, never a last-writer-wins overwrite.
         if !row_keys.insert((row.kind, row.object_id)) {
             return Err(format!(
@@ -1180,7 +1180,7 @@ fn fold_payload_inner(
         ));
     }
 
-    // Pass 2 over the member rows (`world_fold.rs:14390`-`:14412`): every member
+    // Pass 2 over the member rows (`world_fold.rs::fold_oob_command`): every member
     // row is decoded and checked before any row is applied, so a single invalid
     // member rejects the whole frame — and every member row must be owned
     // (totality) and unique within its owner.
@@ -1216,7 +1216,7 @@ fn fold_payload_inner(
     for (index, row) in rows.iter().enumerate() {
         let key = (row.kind, row.object_id);
         if row.deleted {
-            // `world_fold.rs:14433`-`:14436`. The fold imposes no emptiness
+            // `world_fold.rs::fold_oob_command`. The fold imposes no emptiness
             // requirement on a delete row, so a member range it declared is
             // validated above and then discarded with the key.
             removals.push(key);
@@ -1244,7 +1244,7 @@ fn fold_payload_inner(
         ));
     }
 
-    // `world_fold.rs:14425`-`:14427`: only a non-sparse frame replaces the
+    // `world_fold.rs::fold_oob_command`: only a non-sparse frame replaces the
     // world. Keys are unique within the frame, so `removals` and `upserts` name
     // disjoint keys and their order does not matter.
     if !sparse {
@@ -1314,7 +1314,7 @@ mod tests {
     }
 
     /// The twenty words of one command row, in row order
-    /// (`world_fold.rs:14375`-`:14389`).
+    /// (`world_fold.rs::fold_oob_command`).
     #[derive(Clone, Copy)]
     struct RawRow {
         kind: u32,
@@ -1576,7 +1576,7 @@ mod tests {
         // Step 4's "quantization saves bytes" test does not apply: d28 has no
         // continuous field at all. Every word in the row is a raw id, count,
         // skill or status code and the fold divides none of them
-        // (`world_fold.rs:14375`-`:14389`, projection `:7964`-`:7994`), so there
+        // (`world_fold.rs::fold_oob_command`, projection `world_fold.rs::build_order_of_battle`), so there
         // is nothing to quantize and nothing to under- or over-quantize.
         for c in schema().collections {
             assert!(
@@ -1649,7 +1649,7 @@ mod tests {
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Every gate set, every value zero: §3 keeps zero out of the three empty
         // states. `owner_tag_db_id` is the pointed case — the fold folds a
-        // *clear* owner gate to `0` (`world_fold.rs:14444`), so a `0` under a
+        // *clear* owner gate to `0` (`world_fold.rs::fold_oob_command`), so a `0` under a
         // SET gate must still be a value here and not be confused with it.
         let c = commands();
         let row = RawRow {
@@ -2064,7 +2064,7 @@ mod tests {
         for len in [0usize, 1, ROW_LEN - 1, ROW_LEN + 1, 48] {
             assert!(record_from_row(&c, &vec![0u8; len], 0).is_err(), "length {len}");
         }
-        // An invalid kind (`world_fold.rs:14327`), across the whole edge.
+        // An invalid kind (`world_fold.rs::fold_oob_command`), across the whole edge.
         for kind in [0u32, 5, 6, u32::MAX] {
             let row = RawRow { kind, ..full_army() };
             assert!(record_from_row(&c, &row.bytes(), 0).is_err(), "kind {kind}");
@@ -2195,7 +2195,7 @@ mod tests {
         let mut long = p.clone();
         long.push(0);
         assert!(split_payload(&long).is_err());
-        // changed_rows > row_count (`world_fold.rs:14308`).
+        // changed_rows > row_count (`world_fold.rs::fold_oob_command`).
         let mut over = p.clone();
         over[12..16].copy_from_slice(&2u32.to_le_bytes());
         assert!(split_payload(&over).is_err());
@@ -2335,7 +2335,7 @@ mod tests {
         fold_one(&mut state, &[good], &[10], false).expect("folds");
         let before = state.clone();
 
-        // A duplicated identity in one frame (`world_fold.rs:14336`).
+        // A duplicated identity in one frame (`world_fold.rs::fold_oob_command`).
         let mut dup = good;
         dup.member_first = 1;
         assert!(fold_one(&mut state, &[good, dup], &[10, 11], true).is_err());
@@ -2396,7 +2396,7 @@ mod tests {
 
     #[test]
     fn frame_is_sparse_matches_the_folds_rule() {
-        // `world_fold.rs:2934`: only the first non-delta frame replaces.
+        // `world_fold.rs::replace_or_sparse_after_first`: only the first non-delta frame replaces.
         assert!(!frame_is_sparse(false, false));
         assert!(frame_is_sparse(true, false));
         assert!(frame_is_sparse(false, true));
@@ -2428,7 +2428,7 @@ mod tests {
     fn an_unsorted_member_range_is_refused_rather_than_re_sorted() {
         // The exact payload the audit is about: descending member ids. The FOLD
         // accepts this — its member loop checks only zero, ownership and per-row
-        // uniqueness (`world_fold.rs:14470`-`:14487`) — and stores the vector
+        // uniqueness (`world_fold.rs::fold_oob_command`) — and stores the vector
         // [900, 431, 12]. The MEMBERS key orders them 12 < 431 < 900, so this
         // schema cannot carry it and must say so instead of silently re-sorting.
         let s = schema();
@@ -2471,7 +2471,7 @@ mod tests {
     fn a_withheld_frame_is_validated_in_full_but_not_ordering_checked() {
         // The recorder validates a tolerated-partial frame's every row and member
         // row and then abandons it without touching the accumulator
-        // (`world_fold.rs:14488`-`:14496`). Its member ranges never become state,
+        // (`world_fold.rs::fold_oob_command`). Its member ranges never become state,
         // so the ordering rule has nothing to protect and must not refuse it —
         // otherwise this port rejects a frame class the recorder tolerates.
         let s = schema();
@@ -2584,7 +2584,7 @@ mod tests {
     fn a_delete_rows_range_is_not_subject_to_the_ordering_check() {
         // The tightening runs on the rows the frame leaves behind. A delete row's
         // range never reaches the accumulator — the fold `continue`s at
-        // `world_fold.rs:14509`, before the slice at `:14526` — so refusing it
+        // `world_fold.rs::fold_oob_command`, before the slice at `world_fold.rs::fold_oob_command` — so refusing it
         // would reject a frame whose folded state this schema represents
         // perfectly well. Same carve-out as d32's (`d32.rs:575`-`:581`).
         let s = schema();

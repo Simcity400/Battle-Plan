@@ -11,22 +11,22 @@
 //! `:46181`-`:46335`, `:69931`-`:69999`). `extractor/documents/domains/` carries
 //! no d27 dossier, so the fold and the collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:14162`-`:14192`): a 40-byte header —
+//! **Payload grammar** (`world_fold.rs::fold_army_orders`): a 40-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `root_rows` u32 at `+20`,
 //! `observed_army_rows` u32 at `+24`, `observed_order_rows` u32 at `+28`,
 //! `target_state_count` u32 at `+32`, `deleted_rows` u32 at `+36` — followed by
 //! `row_count` fixed 48-byte **order rows** and then `target_state_count` fixed
 //! 8-byte **target rows**. The fold requires the length to be exactly
-//! `40 + row_count * 48 + target_state_count * 8` (`:14185`-`:14192`), so no
+//! `40 + row_count * 48 + target_state_count * 8` (`world_fold.rs::fold_army_orders`), so no
 //! legacy short row exists and the length selects nothing.
 //!
-//! Order row (`world_fold.rs:14218`-`:14280`):
+//! Order row (`world_fold.rs::fold_army_orders`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `owner_id` (`army_id`)          | raw | none (key; zero rejected, `:14225`) |
-//! | `+4`  | u64 | `generation`                    | raw | none (key; zero rejected, `:14226`) |
+//! | `+0`  | u32 | `owner_id` (`army_id`)          | raw | none (key; zero rejected, `world_fold.rs::fold_army_orders`) |
+//! | `+4`  | u64 | `generation`                    | raw | none (key; zero rejected, `world_fold.rs::fold_army_orders`) |
 //! | `+12` | u32 | `flags`                         | —   | — |
 //! | `+16` | u32 | `slot_index`                    | raw | none |
 //! | `+20` | i32 | `order_type`                    | raw | none — **signed**, `read_i32` at `:14274` |
@@ -34,10 +34,10 @@
 //! | `+28` | u32 | `target_count`                  | —   | transport, not state |
 //! | `+32` | u32 | `target_state_declared_count`   | raw | `TARGET_STATE_COUNT` (`1<<2`) — **collector-side only**, see below |
 //! | `+36` | u32 | `target_status_code`            | raw | none |
-//! | `+40` | u32 | `owner_kind`                    | raw | none (key; must be `0` or `1`, `:14227`-`:14231`) |
-//! | `+44` | u32 | `reserved1`                     | —   | must be zero (`:14264`) |
+//! | `+40` | u32 | `owner_kind`                    | raw | none (key; must be `0` or `1`, `world_fold.rs::fold_army_orders`) |
+//! | `+44` | u32 | `reserved1`                     | —   | must be zero (`world_fold.rs::fold_army_orders`) |
 //!
-//! Target row (`world_fold.rs:14283`-`:14299`): `state_id` u32 at `+0` (zero
+//! Target row (`world_fold.rs::fold_army_orders`): `state_id` u32 at `+0` (zero
 //! rejected), `reserved` u32 at `+4` (must be zero).
 //!
 //! **No scales anywhere.** Every word is a raw id, count, index or code; the
@@ -47,9 +47,9 @@
 //!
 //! **Two collections, because `(target_first, target_count)` is transport.** An
 //! order addresses its target states as a half-open range into one shared target
-//! array; the fold proves those ranges non-overlapping (`:14258`-`:14263`) and
-//! total (`:14293`-`:14295`), and proves each state id unique within its owning
-//! row (`:14296`-`:14298`). The ranges are re-packed by the collector on every
+//! array; the fold proves those ranges non-overlapping (`world_fold.rs::fold_army_orders`) and
+//! total (`world_fold.rs::fold_army_orders`), and proves each state id unique within its owning
+//! row (`world_fold.rs::fold_army_orders`). The ranges are re-packed by the collector on every
 //! frame from emission order (`attach_log.rs:69971`-`:69991`). So the ranges are
 //! flattened away here: collection [`ORDERS`] carries one row per order and
 //! collection [`TARGET_STATES`] one row per (order, state) pair, keyed by the
@@ -57,9 +57,9 @@
 //!
 //! **[`TARGET_STATES`] carries an ordinal, and that is the one place this port
 //! departs from its d28 sibling.** The fold stores `target_states` as a
-//! `Vec<u32>` in **producer order** (`world_fold.rs:14333`, struct at `:23538`)
+//! `Vec<u32>` in **producer order** (`world_fold.rs::fold_army_orders`, struct at `:23538`)
 //! and the recorder's own projection emits that vector as an ordered JSON array
-//! (`:7938`). The producer refuses to sort it and says why:
+//! (`world_fold.rs::build_order_of_battle`). The producer refuses to sort it and says why:
 //! "Preserve engine vector order. Rendering/replay consumers require the exact
 //! producer order; sorting here would erase redraw semantics"
 //! (`attach_log.rs:19349`-`:19351`). A keyed set orders its rows by key, so
@@ -91,7 +91,7 @@
 //! | `target_state_declared_count` | value | `target_status_code == UNSUPPORTED` → **absent**; otherwise **unknown** |
 //!
 //! **`target_state_declared_count` is the four-state decision the fold alone
-//! gets wrong.** The fold reads `+32` unconditionally (`world_fold.rs:14277`)
+//! gets wrong.** The fold reads `+32` unconditionally (`world_fold.rs::fold_army_orders`)
 //! and stores whatever is there, so a fold-only reading publishes the packer's
 //! `unwrap_or(0)` filler (`attach_log.rs:69984`) as a measured **zero**. The
 //! gate is real, it is just on the collector side: the packer sets
@@ -132,7 +132,7 @@
 //! measured — possibly as a real empty set — and `UNSUPPORTED`, `OVERFLOW` and
 //! `VALIDATION_FAILED` each name a different reason it was not. The fold itself
 //! is lossier: it fabricates an empty `Vec` for an unread list
-//! (`world_fold.rs:14333` over an empty range) and keeps the status word beside
+//! (`world_fold.rs::fold_army_orders` over an empty range) and keeps the status word beside
 //! it, which is the same information in a shape the reader has to know to
 //! consult.
 //!
@@ -168,7 +168,7 @@
 //!
 //! **`owner_kind` is different, and it is a key.** The fold hard-rejects any
 //! value outside `{ORDER_OWNER_KIND_ARMY=0, ORDER_OWNER_KIND_ARMY_GROUP=1}`
-//! (`world_fold.rs:14227`-`:14236`, constants at
+//! (`world_fold.rs::fold_army_orders`, constants at
 //! `lanes/army_battleplans_depth_live/src/orders_group_live.rs:45`-`:46`), so
 //! unlike `order_type` its two-value set *is* enforced. It is still `Unsigned`
 //! rather than `Enum`: §7.4 admits only `Unsigned`, `Signed` and `ContentId` as
@@ -193,7 +193,7 @@
 //! key: it is mutable, and including it stranded a stale twin under the old key
 //! with no tombstone able to remove it.
 //!
-//! **Deleted rows are removals, not records** (`world_fold.rs:14320`-`:14323`):
+//! **Deleted rows are removals, not records** (`world_fold.rs::fold_army_orders`):
 //! the low flag bit erases the key from the accumulator. They become wire
 //! tombstones in *both* collections, derived by `body::diff` from the state the
 //! removal produces. [`record_from_row`] refuses one rather than inventing a
@@ -252,28 +252,28 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:967`-`:969` and `:1019`-`:1023`. ---
 
-/// `ARMY_ORDER_HEADER_LEN`, `world_fold.rs:967`.
+/// `ARMY_ORDER_HEADER_LEN`, `world_fold.rs::ARMY_ORDER_HEADER_LEN`.
 pub const HEADER_LEN: usize = 40;
-/// `ARMY_ORDER_ROW_LEN`, `world_fold.rs:968`.
+/// `ARMY_ORDER_ROW_LEN`, `world_fold.rs::ARMY_ORDER_ROW_LEN`.
 pub const ROW_LEN: usize = 48;
-/// `ARMY_ORDER_TARGET_ROW_LEN`, `world_fold.rs:969`.
+/// `ARMY_ORDER_TARGET_ROW_LEN`, `world_fold.rs::ARMY_ORDER_TARGET_ROW_LEN`.
 pub const TARGET_ROW_LEN: usize = 8;
 
 /// `battleplans54::ORDER_OWNER_KIND_*`, re-exported at
 /// `lanes/army_battleplans_depth_live/src/lib.rs:62`-`:63` from
 /// `orders_group_live.rs:45`-`:46`. A value outside this pair is a rejected row
-/// (`world_fold.rs:14227`-`:14236`), which is why `owner_kind` needs no enum
+/// (`world_fold.rs::fold_army_orders`), which is why `owner_kind` needs no enum
 /// cardinality on the wire — see [`schema`].
 pub const OWNER_KIND_ARMY: u32 = 0;
 pub const OWNER_KIND_ARMY_GROUP: u32 = 1;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`.
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`.
 pub const FLAG_DELETED: u32 = 1;
-/// `ARMY_ORDER_ROW_FLAG_TARGET_STATES`, `world_fold.rs:1019`.
+/// `ARMY_ORDER_ROW_FLAG_TARGET_STATES`, `world_fold.rs::ARMY_ORDER_ROW_FLAG_TARGET_STATES`.
 pub const FLAG_TARGET_STATES: u32 = 1 << 1;
-/// `ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT`, `world_fold.rs:1020`.
+/// `ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT`, `world_fold.rs::ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT`.
 pub const FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
-/// `ARMY_ORDER_KNOWN_FLAGS`, `world_fold.rs:1021`-`:1023`. Any other bit is a
+/// `ARMY_ORDER_KNOWN_FLAGS`, `world_fold.rs::ARMY_ORDER_KNOWN_FLAGS`. Any other bit is a
 /// hard error (`:14241`-`:14243`) — an unrecognised flag word means the row is
 /// not this grammar, so nothing in it can be trusted.
 pub const KNOWN_FLAGS: u32 = FLAG_DELETED | FLAG_TARGET_STATES | FLAG_TARGET_STATE_COUNT;
@@ -300,14 +300,14 @@ pub fn schema() -> Schema {
                 collection_id: ORDERS,
                 // Orders persist across hours and the frame grammar is
                 // first-frame-replaces / later-frames-upsert / low-bit-removes
-                // (`world_fold.rs:14311`-`:14323`), which is exactly a keyed
+                // (`world_fold.rs::fold_army_orders`), which is exactly a keyed
                 // set's grammar — and only a keyed set has deltas (§7.3).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is the typed identity
                     // `(owner_kind, owner_id, generation)`
-                    // (`world_fold.rs:14315`-`:14319`); all three are validated
-                    // in every row (`:14225`-`:14231`), so all three are
+                    // (`world_fold.rs::fold_army_orders`); all three are validated
+                    // in every row (`world_fold.rs::fold_army_orders`), so all three are
                     // concrete. `owner_kind` is `Unsigned`, not `Enum`: §7.4
                     // admits no `Enum` key, and §5 classes an engine
                     // discriminator as `Unsigned` — d20's call for `div_type`.
@@ -371,7 +371,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 40-byte payload header (`world_fold.rs:14162`-`:14170`).
+/// The 40-byte payload header (`world_fold.rs::fold_army_orders`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -402,15 +402,15 @@ pub struct OrderRow {
 }
 
 /// Read the 40-byte payload header and nothing else
-/// (`world_fold.rs:14162`-`:14170`).
+/// (`world_fold.rs::fold_army_orders`).
 ///
 /// Exposing the header read is what keeps it from becoming a second, hand-rolled
 /// copy of the header layout in every caller that needs `status_flags` before it
 /// decides whether the record is measurable at all. It applies no invariant
 /// beyond the length needed to read the words themselves — which is exactly the
-/// fold's own call order: `need(payload, ARMY_ORDER_HEADER_LEN)` at `:14162`,
-/// then the three status guards at `:14171`-`:14184`, and only then the payload
-/// length check at `:14185`. Enforcing the body length here would refuse records
+/// fold's own call order: `need(payload, ARMY_ORDER_HEADER_LEN)` at `world_fold.rs::fold_army_orders`,
+/// then the three status guards at `world_fold.rs::fold_army_orders`, and only then the payload
+/// length check at `world_fold.rs::fold_army_orders`. Enforcing the body length here would refuse records
 /// the recorder accepts and folds nothing from.
 pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String> {
     if payload.len() < HEADER_LEN {
@@ -434,7 +434,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 
 /// Split a d27 DATA payload into its header, its order rows and its target rows,
 /// applying every structural check `fold_army_orders` applies before it starts
-/// reading rows (`world_fold.rs:14185`-`:14212`).
+/// reading rows (`world_fold.rs::fold_army_orders`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -453,7 +453,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 
     // Checked arithmetic throughout: both counts are attacker-shaped words from
     // a file on disk, and either product overflows `usize` for a large enough
-    // one. `world_fold.rs:14185`-`:14188` uses saturating arithmetic, which
+    // one. `world_fold.rs::fold_army_orders` uses saturating arithmetic, which
     // turns an overflowing claim into a length that cannot match; rejecting is
     // the same outcome reached without relying on that.
     let rows_len = (header.row_count as usize)
@@ -504,7 +504,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// Parse one 48-byte order row, applying every per-row check the fold applies
-/// (`world_fold.rs:14219`-`:14267`) except the target-range bounds and the
+/// (`world_fold.rs::fold_army_orders`) except the target-range bounds and the
 /// cross-row uniqueness rules, which need the whole frame and live in
 /// [`target_index_range`] / [`fold_payload`].
 pub fn parse_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
@@ -514,7 +514,7 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
     let owner_id = u32_at(row, 0);
     let generation = u64::from_le_bytes(row[4..12].try_into().expect("8 bytes"));
     let owner_kind = u32_at(row, 40);
-    // `world_fold.rs:14225`-`:14236`: one combined typed-identity check.
+    // `world_fold.rs::fold_army_orders`: one combined typed-identity check.
     if owner_id == 0
         || generation == 0
         || !matches!(owner_kind, OWNER_KIND_ARMY | OWNER_KIND_ARMY_GROUP)
@@ -530,12 +530,12 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
     }
     let target_first = u32_at(row, 24) as usize;
     let target_count = u32_at(row, 28) as usize;
-    // `world_fold.rs:14246`-`:14251`: the range words must be zero when the
+    // `world_fold.rs::fold_army_orders`: the range words must be zero when the
     // gate is clear. This is the only gate the fold itself validates.
     if flags & FLAG_TARGET_STATES == 0 && (target_first != 0 || target_count != 0) {
         return Err("army_orders target range present without flag".into());
     }
-    // `world_fold.rs:14264`-`:14267`.
+    // `world_fold.rs::fold_army_orders`.
     if u32_at(row, 44) != 0 {
         return Err("army_orders row reserved field is nonzero".into());
     }
@@ -551,7 +551,7 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
 }
 
 /// Parse one 8-byte target row, applying the fold's per-row checks
-/// (`world_fold.rs:14284`-`:14292`), and return its `state_id`.
+/// (`world_fold.rs::fold_army_orders`), and return its `state_id`.
 pub fn parse_target_row(row: &[u8]) -> core::result::Result<u32, String> {
     if row.len() != TARGET_ROW_LEN {
         return Err(format!(
@@ -571,11 +571,11 @@ pub fn parse_target_row(row: &[u8]) -> core::result::Result<u32, String> {
 
 /// The half-open index range of one order's target rows within the frame's
 /// shared target array, checked exactly as the fold checks it
-/// (`world_fold.rs:14252`-`:14257`).
+/// (`world_fold.rs::fold_army_orders`).
 ///
 /// One derivation of the range rule, so the check and the use cannot disagree.
 /// The ranges may not overlap — the fold proves ownership is injective
-/// (`:14258`-`:14263`) — but that is a whole-frame property and lives in
+/// (`world_fold.rs::fold_army_orders`) — but that is a whole-frame property and lives in
 /// [`fold_payload`]; this is the per-row bound.
 pub fn target_index_range(
     row: &OrderRow,
@@ -595,14 +595,14 @@ pub fn target_index_range(
 }
 
 /// The [`ORDERS`] key of one order: `(owner_kind, owner_id, generation)`
-/// (`world_fold.rs:14315`-`:14319`).
+/// (`world_fold.rs::fold_army_orders`).
 pub fn order_key(owner_kind: u32, owner_id: u32, generation: u64) -> Key {
     key(&[owner_kind as u64, owner_id as u64, generation])
 }
 
 /// The [`TARGET_STATES`] key of one (order, state) pair: its order's key plus
 /// the state id, which is the identity the fold's per-row uniqueness check is on
-/// (`world_fold.rs:14296`-`:14298`).
+/// (`world_fold.rs::fold_army_orders`).
 pub fn target_key(owner_kind: u32, owner_id: u32, generation: u64, state_id: u32) -> Key {
     key(&[
         owner_kind as u64,
@@ -647,7 +647,7 @@ pub fn key_from_target_row(
 ///
 /// Fail-closed throughout, mirroring `fold_army_orders`: a row the fold would
 /// reject is an `Err` here, never a coerced value. A **deleted** row is an `Err`
-/// too — it is a removal (`world_fold.rs:14320`-`:14323`) and has no record; a
+/// too — it is a removal (`world_fold.rs::fold_army_orders`) and has no record; a
 /// caller must map it to a wire tombstone, and quietly handing one back a
 /// gates-all-clear row would turn a delete into an upsert. Nothing in this
 /// function can panic on any input.
@@ -700,7 +700,7 @@ pub fn record_from_row(
         let value = match f.field_id {
             // Always a value: `slot_index` is `out.len()` in the order walk
             // (`attach_log.rs:19080`) and the fold reads it unconditionally
-            // (`world_fold.rs:14273`).
+            // (`world_fold.rs::fold_army_orders`).
             field::SLOT_INDEX => Value::Unsigned(u32_at(row, 16) as u64),
             // `read_i32` (`world_fold.rs:14274`); no producer validates the
             // vocabulary, so the codomain is all of `i32`.
@@ -751,7 +751,7 @@ pub fn record_from_row(
 /// The state id itself is **not** a value field — it is key component 3, and
 /// carrying it beside the key would be a second copy of state the decoder must
 /// then keep consistent. The row is still validated
-/// (`world_fold.rs:14284`-`:14292`), and a collection carrying a value field
+/// (`world_fold.rs::fold_army_orders`), and a collection carrying a value field
 /// this mapper cannot fill is still refused.
 pub fn record_from_target_row(
     collection: &Collection,
@@ -794,7 +794,7 @@ pub fn record_from_target_row(
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderEntry {
     pub record: Record,
-    /// Producer order, exactly as `world_fold.rs:14333` stores it. The child
+    /// Producer order, exactly as `world_fold.rs::fold_army_orders` stores it. The child
     /// collection's ordinal is this vector's index.
     pub targets: Vec<u32>,
 }
@@ -804,7 +804,7 @@ pub struct OrderEntry {
 /// `(owner_kind, owner_id, generation)`.
 ///
 /// One d27 record is **not** one state — the domain is a full first frame
-/// followed by sparse upserts (`:14311`-`:14314`) — so the frame-level fold is a
+/// followed by sparse upserts (`world_fold.rs::fold_army_orders`) — so the frame-level fold is a
 /// public, tested boundary here rather than a private copy in each caller.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
@@ -837,7 +837,7 @@ impl State {
 }
 
 /// `replace_or_sparse_after_first` for the frames that reach the fold
-/// (`world_fold.rs:2947`-`:2960`).
+/// (`world_fold.rs::replace_or_sparse_after_first`).
 ///
 /// A tolerated-partial frame never reaches it — d27's withhold at `:14301`
 /// returns first — so the expected-partial arm of that helper is unreachable
@@ -848,15 +848,15 @@ pub fn frame_is_sparse(delta: bool, baseline_seen: bool) -> bool {
 }
 
 /// Apply one d27 payload to the accumulator exactly as `fold_army_orders` does
-/// (`world_fold.rs:14161`-`:14341`), returning its header.
+/// (`world_fold.rs::fold_army_orders`), returning its header.
 ///
 /// `sparse` is [`frame_is_sparse`]'s answer: `false` clears the accumulator
-/// first (`:14312`-`:14314`), `true` upserts into it.
+/// first (`world_fold.rs::fold_army_orders`), `true` upserts into it.
 ///
 /// The caller is responsible for the four fold-nothing paths, all of which
-/// return before this function's effect: failure status (`:14171`),
-/// expected-partial-before-baseline (`:14174`), delta-before-baseline (`:14181`)
-/// and — d27's own — the expected-partial **withhold** at `:14301`, which sits
+/// return before this function's effect: failure status (`world_fold.rs::fold_army_orders`),
+/// expected-partial-before-baseline (`world_fold.rs::fold_army_orders`), delta-before-baseline (`world_fold.rs::fold_army_orders`)
+/// and — d27's own — the expected-partial **withhold** at `world_fold.rs::fold_army_orders`, which sits
 /// *after* every order row and every target row has been decoded and validated.
 /// That ordering matters and is why this function is fail-closed on row content
 /// regardless of status: a tolerated-partial frame whose rows are malformed is a
@@ -878,14 +878,14 @@ pub fn fold_payload(
     let target_state_count = header.target_state_count as usize;
 
     // Pass 1 over the order rows, in the fold's own order
-    // (`world_fold.rs:14217`-`:14281`): per-row validity, key uniqueness across
+    // (`world_fold.rs::fold_army_orders`): per-row validity, key uniqueness across
     // the frame, and target-range ownership.
     let mut rows = Vec::with_capacity(header.row_count as usize);
     let mut row_keys = BTreeSet::new();
     let mut target_owners: Vec<Option<usize>> = vec![None; target_state_count];
     for (index, bytes) in row_bytes.chunks_exact(ROW_LEN).enumerate() {
         let row = parse_row(bytes).map_err(|e| format!("row {index}: {e}"))?;
-        // `world_fold.rs:14237`-`:14240`: a key serialized twice in one frame is
+        // `world_fold.rs::fold_army_orders`: a key serialized twice in one frame is
         // a rejected frame, never a last-writer-wins overwrite.
         if !row_keys.insert((row.owner_kind, row.owner_id, row.generation)) {
             return Err(format!(
@@ -913,7 +913,7 @@ pub fn fold_payload(
         ));
     }
 
-    // Pass 2 over the target rows (`world_fold.rs:14282`-`:14300`): every target
+    // Pass 2 over the target rows (`world_fold.rs::fold_army_orders`): every target
     // row is decoded and checked before any row is applied, so a single invalid
     // target rejects the whole frame — and every target row must be owned
     // (totality) and unique within its owner.
@@ -951,7 +951,7 @@ pub fn fold_payload(
     for (index, row) in rows.iter().enumerate() {
         let key = (row.owner_kind, row.owner_id, row.generation);
         if row.deleted {
-            // `world_fold.rs:14320`-`:14323`. The fold imposes no emptiness
+            // `world_fold.rs::fold_army_orders`. The fold imposes no emptiness
             // requirement on a delete row, so a target range it declared is
             // validated above and then discarded with the key.
             removals.push(key);
@@ -965,14 +965,14 @@ pub fn fold_payload(
             key,
             OrderEntry {
                 record,
-                // `world_fold.rs:14333`: the fold's own slice, in producer
+                // `world_fold.rs::fold_army_orders`: the fold's own slice, in producer
                 // order. The child collection's ordinal is this vector's index.
                 targets: target_ids[range].to_vec(),
             },
         ));
     }
 
-    // `world_fold.rs:14311`-`:14314`: only a non-sparse frame replaces the
+    // `world_fold.rs::fold_army_orders`: only a non-sparse frame replaces the
     // world. Keys are unique within the frame, so `removals` and `upserts` name
     // disjoint keys and their order does not matter.
     if !sparse {
@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     /// The eleven words of one order row, in row order
-    /// (`world_fold.rs:14219`-`:14280`). `generation` is a u64 at `+4`, so the
+    /// (`world_fold.rs::fold_army_orders`). `generation` is a u64 at `+4`, so the
     /// row is built explicitly rather than from a `[u32; 12]`.
     #[allow(clippy::too_many_arguments)]
     fn order_row(
@@ -1198,7 +1198,7 @@ mod tests {
 
     /// Step 8.4 does not apply: d27 has no `Continuous` field at all — every
     /// word in the payload is a raw id, count, index or code and the fold
-    /// divides nothing (`world_fold.rs:14268`-`:14280`) — so there is nothing to
+    /// divides nothing (`world_fold.rs::fold_army_orders`) — so there is nothing to
     /// quantize and no all-`Exact` variant to compare against.
     #[test]
     fn no_field_is_continuous_so_quantization_does_not_apply() {
@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn every_target_row_word_reads_from_its_own_offset() {
         assert_eq!(parse_target_row(&target_row(1234)).expect("parses"), 1234);
-        // A non-zero reserved word is a rejected row (`world_fold.rs:14286`).
+        // A non-zero reserved word is a rejected row (`world_fold.rs::fold_army_orders`).
         let mut bad = target_row(1234);
         bad[4] = 1;
         assert!(parse_target_row(&bad).is_err());
@@ -1732,7 +1732,7 @@ mod tests {
     #[test]
     fn a_delete_row_may_declare_a_target_range_and_it_is_discarded() {
         // The fold applies no emptiness requirement to a delete row
-        // (`world_fold.rs:14320`), so this must fold, not fail.
+        // (`world_fold.rs::fold_army_orders`), so this must fold, not fail.
         let s = schema();
         let mut state = State::new();
         let deleted_with_range = order_row(

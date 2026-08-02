@@ -54,7 +54,7 @@
 //!
 //! **Full replace per hour, with no cross-hour accumulator at all.** The state is
 //! a single `Option<CountryPreferredTacticWeightSnapshot>` that
-//! `begin_hour` clears at every hour boundary (`world_fold.rs:3102`,
+//! `begin_hour` clears at every hour boundary (`world_fold.rs::reset_hour_state`,
 //! `tactic_weight_fold.rs:22`-`:25`), so one record is one state and a
 //! non-folding path leaves the domain-hour unavailable rather than carrying the
 //! previous hour forward.
@@ -205,18 +205,18 @@
 //! # Modelled dependencies: the D18 roster and a clean D92 snapshot
 //!
 //! `fold_country_preferred_tactic_weights` runs three gates **before** it decodes
-//! anything (`world_fold.rs:10542`-`:10560`):
+//! anything (`world_fold.rs::fold_country_preferred_tactic_weights`):
 //!
 //! 1. `country_identity_known_this_hour` — a proven D18 record must have landed
-//!    this same hour (`:10543`-`:10549`);
+//!    this same hour (`world_fold.rs::fold_country_preferred_tactic_weights`);
 //! 2. `country_preferred_tactics_this_hour` — a **clean D92 snapshot** must exist
-//!    for this hour (`:10550`-`:10557`);
+//!    for this hour (`world_fold.rs::fold_country_preferred_tactic_weights`);
 //! 3. `country_preferred_tactics_source_sequence_this_hour` — and its sequence
-//!    (`:10558`-`:10560`).
+//!    (`world_fold.rs::fold_country_preferred_tactic_weights`).
 //!
 //! The last two are one input here, and that is faithful rather than a
 //! simplification: the recorder writes both fields together at the end of a
-//! successful D92 fold (`:10530`-`:10537`) and clears both together at every other
+//! successful D92 fold (`world_fold.rs::fold_country_preferred_tactics`) and clears both together at every other
 //! site (`:3099`-`:3101`, `:4909`-`:4911`), so `Some`/`None` is always in
 //! lockstep. [`fold_payload`] therefore takes [`Preferred`] — D92's row map and
 //! its sequence — plus the D18 freshness flag, as typed inputs (recipe step 7),
@@ -231,21 +231,21 @@
 //! **The post-fix roster semantics are reproduced exactly.** D92 keeps the tags
 //! D18 filtered out — 83 of them on `runs/batch3/deepwar_c`, including the one
 //! *selected* tag 286 — because the D96 join must validate exactly the row set the
-//! collector validated before encoding (`world_fold.rs:10508`-`:10514`,
+//! collector validated before encoding (`world_fold.rs::fold_country_preferred_tactics`,
 //! `tactic_weight.rs:350`-`:353`). [`check_join`] iterates D92's whole map, so a
 //! port that fed it D18's filtered roster would leave that country's weight row
 //! unverified. Its `tag_db_id` is a legal key here and its record is encoded like
 //! any other; it is only the recorder's JSON *projection* that cannot name it,
-//! because that iterates `tag_by_db_id` (`world_fold.rs:6339`).
+//! because that iterates `tag_by_db_id` (`world_fold.rs::project_country_preferred_tactics`).
 //!
 //! # Error contract
 //!
 //! [`fold_payload`] **mutates before erroring**: every refusal path leaves the
 //! accumulator cleared. That is the composition the recorder observably has, and
 //! it comes from two places — the fold's own `mark_unavailable` on the D18 gate
-//! and the failure-status path (`world_fold.rs:10545`, `tactic_weight_fold.rs:42`),
+//! and the failure-status path (`world_fold.rs::fold_country_preferred_tactic_weights`, `tactic_weight_fold.rs:42`),
 //! and the recorder's d96 `Err` arm, which calls `mark_unavailable()` on **every**
-//! error the fold returns (`world_fold.rs:4918`-`:4925`). A harness that assumed
+//! error the fold returns (`world_fold.rs::apply_domain_data`). A harness that assumed
 //! all-or-nothing would disagree with the recorder on exactly the frames that
 //! fail. (`TacticWeightFoldState::fold_payload` alone leaves `current` untouched
 //! on its count/join paths; that difference is unobservable, because the only
@@ -613,7 +613,7 @@ pub fn check_row(row: &WeightRow, country_factor_raw: i64) -> core::result::Resu
 /// `validate_snapshot` (`:289`-`:345`), in the codec's own order.
 ///
 /// The three cross-domain gates sit before the decode in the fold
-/// (`world_fold.rs:10542`-`:10560`) and the decode is all-or-nothing once it
+/// (`world_fold.rs::fold_country_preferred_tactic_weights`) and the decode is all-or-nothing once it
 /// starts, so there is no cheaper header-only exit to preserve and nothing here is
 /// deferred: rows are variable-length, so the walk is required to find a row
 /// boundary at all.
@@ -1095,8 +1095,8 @@ impl State {
     /// `TacticWeightFoldState::mark_unavailable` (`tactic_weight_fold.rs:27`-`:30`)
     /// and `begin_hour` (`:22`-`:25`), which clear the snapshot outright. Public
     /// because the recorder calls it from outside the fold too — on the domain's
-    /// `Err` arm (`world_fold.rs:4918`-`:4925`) and at every hour boundary
-    /// (`:3102`).
+    /// `Err` arm (`world_fold.rs::apply_domain_data`) and at every hour boundary
+    /// (`world_fold.rs::reset_hour_state`).
     pub fn mark_unavailable(&mut self) {
         for collection in &mut self.collections {
             collection.clear();
@@ -1111,23 +1111,23 @@ pub enum FoldOutcome {
     /// The payload folded; `acc` holds the hour's state.
     Folded { status_flags: u32 },
     /// A failure status: the fold cleared the snapshot and returned without
-    /// folding (`tactic_weight_fold.rs:41`-`:44`, then `world_fold.rs:10568`).
+    /// folding (`tactic_weight_fold.rs:41`-`:44`, then `world_fold.rs::fold_country_preferred_tactic_weights`).
     FailureStatus { status_flags: u32 },
 }
 
 /// Why [`fold_payload`] refused a record. Named for the same reason.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldRefusal {
-    /// The hour carried no proven D18 record (`world_fold.rs:10543`).
+    /// The hour carried no proven D18 record (`world_fold.rs::fold_country_preferred_tactic_weights`).
     NoCurrentHourRoster,
     /// The hour carried no clean D92 snapshot, or none with a source sequence
-    /// (`world_fold.rs:10550`-`:10560`).
+    /// (`world_fold.rs::fold_country_preferred_tactic_weights`).
     NoCleanPreferredTactic,
 }
 
 /// Fold one d96 DATA payload into `acc`, exactly as
 /// `fold_country_preferred_tactic_weights` folds it
-/// (`world_fold.rs:10542`-`:10580`) through
+/// (`world_fold.rs::fold_country_preferred_tactic_weights`) through
 /// `TacticWeightFoldState::fold_payload` (`tactic_weight_fold.rs:32`-`:80`).
 ///
 /// The fold's order is reproduced exactly, and it is **not** the harness's order:
@@ -1144,7 +1144,7 @@ pub enum FoldRefusal {
 ///
 /// **Error contract: this MUTATES before erroring** — every refusal path clears
 /// the accumulator, which is what the recorder observably holds after any d96
-/// error (`world_fold.rs:4918`-`:4925`). A caller must not treat an `Err` as
+/// error (`world_fold.rs::apply_domain_data`). A caller must not treat an `Err` as
 /// leaving the prior state intact; the recorder does not.
 pub fn fold_payload(
     schema: &Schema,
@@ -2123,7 +2123,7 @@ mod tests {
         // The post-fix semantics: D92 keeps the tags D18 filtered out, and the
         // join validates the WHOLE D92 row set — including a selected extra like
         // `deepwar_c`'s tag 286, which is exactly the row dropping the extras
-        // would have left unverified (`world_fold.rs:10508`-`:10514`).
+        // would have left unverified (`world_fold.rs::fold_country_preferred_tactics`).
         let factor = 0i64;
         let rows_bytes = [
             present_row(2, 5, "shock", 0, factor),
@@ -2278,7 +2278,7 @@ mod tests {
         // The error contract, swept over all five refusal paths rather than the
         // two the gate test covers. The recorder reaches the same state on every
         // one of them, through the fold's own `mark_unavailable` or through the
-        // domain's `Err` arm (`world_fold.rs:4918`-`:4925`).
+        // domain's `Err` arm (`world_fold.rs::apply_domain_data`).
         let schema = schema();
         let factor = 0i64;
         let preferred = preferred_rows(&[(1, 0, None), (2, 5, Some("shock"))]);
@@ -2380,7 +2380,7 @@ mod tests {
 
     #[test]
     fn the_fold_runs_its_gates_before_the_decode_and_clears_on_every_refusal() {
-        // The fold's order (`world_fold.rs:10542`-`:10560`): D18, then a clean
+        // The fold's order (`world_fold.rs::fold_country_preferred_tactic_weights`): D18, then a clean
         // D92 snapshot, and only then the payload. A malformed payload under a
         // failed gate never reaches the decoder — the gate's message is what
         // comes back.

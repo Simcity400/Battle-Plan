@@ -12,7 +12,7 @@
 //!
 //! # Payload grammar
 //!
-//! A 40-byte header (`world_fold.rs:12502`-`:12518`):
+//! A 40-byte header (`world_fold.rs::fold_production`):
 //!
 //! | offset | width | field |
 //! |---|---|---|
@@ -30,17 +30,17 @@
 //! self-sized trailer segments:
 //!
 //! * `stockpile_count` × 16-byte rows — `tag_db_id` u32, `variant_id` u32,
-//!   `amount` i64 `/100_000` (`:12551`-`:12553`).
+//!   `amount` i64 `/100_000` (`world_fold.rs::fold_production`).
 //! * `military_count + naval_count` × 32-byte rows — `tag_db_id` u32, `kind` u32,
 //!   `line_id` i32, `active_factories` i32, `cost` i32 `/100_000`, `speed` i32
 //!   `/100_000`, `produced` i32 `/100_000`, `amount` i32 **raw**
-//!   (`:12572`-`:12579`). The military rows come first, then the naval rows;
+//!   (`world_fold.rs::fold_production`). The military rows come first, then the naval rows;
 //!   `kind` (not the position) is what the fold reads, and `kind == 2` is naval
-//!   (`:12658`).
+//!   (`world_fold.rs::fold_production`).
 //! * `construction_count` × 32-byte rows — `tag_db_id` u32, `line_id` u32,
 //!   `template_id` u32 (`u32::MAX` = absent), `active_factories` i32, `cost` i32
 //!   `/100_000`, `produced` i32 `/100_000`, `priority` u32, then 4 reserved bytes
-//!   the fold does not read (`:12668`-`:12674`, packed at
+//!   the fold does not read (`world_fold.rs::fold_production`, packed at
 //!   `attach_log.rs:68076`-`:68101`).
 //!
 //! **The scales are per field and three of them are different.**
@@ -53,15 +53,15 @@
 //! `+20` and `+24` are all scaled; `active_factories` and the construction
 //! `priority` are raw too.
 //!
-//! # Trailer chain (`world_fold.rs:27419`-`:27524`)
+//! # Trailer chain (`world_fold.rs::parse_production_trailers`)
 //!
 //! Each segment starts with its 4-byte magic; a magic that is not one of the ten
-//! refuses the whole payload (`:27520`), and a repeated magic is a hard error.
+//! refuses the whole payload (`world_fold.rs::parse_production_trailers`), and a repeated magic is a hard error.
 //! Nine of the ten carry a 20-byte header of `magic, version u16, header_len u16,
 //! segment_len u32, row_count u32, reserved u32`; `PLIC` has no `segment_len`
 //! and computes its length from two counts, `PCV1` has a 28-byte header with
 //! three counts, and `PDQ1` carries a nested codec payload and **must be last**
-//! (`:27514`).
+//! (`world_fold.rs::parse_production_trailers`).
 //!
 //! | magic | rows | joins onto | carries |
 //! |---|---|---|---|
@@ -71,7 +71,7 @@
 //! | `PPR1` v1 | 16 | line | `priority`, range `0..=4095` — the engine's line ordinal at line+0x44 |
 //! | `PLS1` v1 | 16 | line | `line_subtype`, only `(1,1) (2,2) (2,3) (1,4)` |
 //! | `PEF1` v1 | 36 | line | `efficiency`, `efficiency_cap`, `efficiency_growth`, all i64 `/10_000_000` |
-//! | `PMI1` v1 | 16 | line | `mio_id`; `0` is a **proven zero CID**, folded to Null (`:12651`) |
+//! | `PMI1` v1 | 16 | line | `mio_id`; `0` is a **proven zero CID**, folded to Null (`world_fold.rs::fold_production`) |
 //! | `PCP1` v1 | 8 | country | the three completeness bits |
 //! | `PCV1` v1 | 40/16/8 | country | the convoy bank, its variants and its priority reservations |
 //! | `PDQ1` v1 | nested | country | the military deployment queue — **stop-reported, see below** |
@@ -109,8 +109,8 @@
 //!   Unexercised in `deepwar_t1` (0 of 67,848 construction rows).
 //! * **`cache_valid` and `assigned` are `Unknown` on an unreadable convoy bank.**
 //!   `PCV1` forces every field of an incomplete country row to zero
-//!   (`world_fold.rs:27707`-`:27718`), so those zeros are padding, not
-//!   measurements, and the fold never emits them (`:13005`-`:13007`).
+//!   (`world_fold.rs::parse_country_convoy_bank_segment`), so those zeros are padding, not
+//!   measurements, and the fold never emits them (`world_fold.rs::fold_production`).
 //! * **Zero is a value everywhere else.** A country with an empty but readable
 //!   stockpile has `stockpile_complete = true` and no rows; a line with no
 //!   factories assigned reads `active_factories = 0` with every gate set.
@@ -122,9 +122,9 @@
 //!   (`world_fold.rs:27732`-`:27738`). Every summand is non-negative and every
 //!   step re-clamps, so the sum is order-independent and reproducible from the
 //!   carried variant rows.
-//! * `convoys_count` — `owned_raw / 100_000` (`:13011`).
+//! * `convoys_count` — `owned_raw / 100_000` (`world_fold.rs::fold_production`).
 //! * `convoys_available` — rejected unless it equals `owned_raw / 100_000 -
-//!   assigned` (`:27741`); the replay layer re-checks the same law
+//!   assigned` (`world_fold.rs::parse_country_convoy_bank_segment`); the replay layer re-checks the same law
 //!   (`replay_core/src/world.rs:19841`).
 //! * The `PCV1` `cache_verified` bit — rejected unless equal to `cache_valid`
 //!   (`:27720`) — and the `classifier_exact` bit, which is required set on every
@@ -143,7 +143,7 @@
 //! accepts** — not merely on the payloads this capture happens to contain. Two
 //! of the three need an explicit ordinal for that; the third does not.
 //!
-//! * `military_lines` / `naval_lines` (`world_fold.rs:12659`, `:12662`) — the
+//! * `military_lines` / `naval_lines` (`world_fold.rs::fold_production`) — the
 //!   array is the base table's row order within a `(tag_db_id, kind)` run. The
 //!   `PPR1` join's `priority` is the engine's own line ordinal at line+0x44
 //!   (`attach_log.rs:72727`) and it *does* rank that order: it is unique within
@@ -192,7 +192,7 @@
 //! # `convoy_priority_reservations`: ordered occurrence list
 //!
 //! `PCV1`'s reservation run is a pointer vector the fold emits as an ordered
-//! array of `{priority, count}` (`world_fold.rs:13330`-`:13339`). Its only identity
+//! array of `{priority, count}` (`world_fold.rs::fold_production`). Its only identity
 //! candidate, `priority`, happens to be unique within each captured country-hour
 //! but is not required unique by the parser. **Its order is load-bearing and is
 //! not a function of any carried field**: across `deepwar_t1`, 2,633 consecutive
@@ -209,7 +209,7 @@
 //!
 //! This module still **parses** the reservation run — the fold's exact total law
 //! checks every `count` against `owned_raw / 100_000`
-//! (`world_fold.rs:28128`-`:28140`), so refusing to
+//! (`world_fold.rs::parse_country_convoy_bank_segment`), so refusing to
 //! parse it would accept payloads the recorder refuses — and
 //! [`FoldOutcome::reservation_rows`] accounts for it. The port maps every row,
 //! including `tag_db_id`, retaining source order within each country and
@@ -287,15 +287,15 @@ pub mod field {
     pub const LICENSE_DETAIL: u32 = 13;
 
     /// The `stockpile` amount, as the fold projects it: `raw / 100_000` and
-    /// nothing else (`world_fold.rs:12553`).
+    /// nothing else (`world_fold.rs::fold_production`).
     pub const AMOUNT: u32 = 20;
     /// The convoy variant's **raw i64**. The fold emits `amount_raw` beside its
-    /// `f64` projection (`world_fold.rs:13026`-`:13027`), and `PCV1` accepts
+    /// `f64` projection (`world_fold.rs::fold_production`), and `PCV1` accepts
     /// raws past 2^53, which no `f64` can hold — so the raw is what is carried
     /// and the projection is recomputed.
     pub const CONVOY_AMOUNT_RAW: u32 = 21;
     /// The convoy variant's dense position within its country's `PCV1` run. The
-    /// fold stores the run as an ordered array (`world_fold.rs:13017`) and
+    /// fold stores the run as an ordered array (`world_fold.rs::fold_production`) and
     /// enforces nothing about its order, so this is the order witness — the same
     /// device `line_ordinal` and `construction_ordinal` use.
     pub const CONVOY_VARIANT_ORDINAL: u32 = 22;
@@ -340,9 +340,9 @@ pub mod field {
     pub const RESERVED_RESERVATION_COUNT: u32 = RESERVATION_COUNT;
 }
 
-// --- Payload constants, from `world_fold.rs:12502`-`:12689` -------------------
+// --- Payload constants, from `world_fold.rs::fold_production` -------------------
 
-/// `world_fold.rs:12502` — `need(payload, 40, "production header")`.
+/// `world_fold.rs::fold_production` — `need(payload, 40, "production header")`.
 pub const HEADER_LEN: usize = 40;
 pub const STOCKPILE_ROW_LEN: usize = 16;
 pub const LINE_ROW_LEN: usize = 32;
@@ -357,14 +357,14 @@ pub const PRODUCTION_SCALE: f64 = 100_000.0;
 pub const EFFICIENCY_SCALE: f64 = 10_000_000.0;
 
 /// `attach_log.rs:68081` — the sentinel the collector writes for
-/// `template_id: None`. `world_fold.rs:12677` reads it as "omit the key".
+/// `template_id: None`. `world_fold.rs::fold_production` reads it as "omit the key".
 pub const TEMPLATE_ID_ABSENT: u32 = u32::MAX;
 
-/// `world_fold.rs:12658` — the only naval kind. Everything else folds military.
+/// `world_fold.rs::fold_production` — the only naval kind. Everything else folds military.
 pub const KIND_NAVAL: u32 = 2;
 pub const KIND_MILITARY: u32 = 1;
 
-/// The three `PCP1` bits (`world_fold.rs:12543`-`:12545`).
+/// The three `PCP1` bits (`world_fold.rs::fold_production`).
 pub const PCP1_STOCKPILE: u32 = 1;
 pub const PCP1_MILITARY_LINES: u32 = 1 << 1;
 pub const PCP1_NAVAL_LINES: u32 = 1 << 2;
@@ -382,14 +382,14 @@ pub const PCV1_CLASSIFIER_EXACT: u32 = 1 << 4;
 pub const PCV1_OWNED_RAW_CAP: i64 = 0x53E2_D620_FB40;
 /// `world_fold.rs:27599`. The integer denominator of the convoy bank totals.
 pub const PCV1_SCALE: i64 = 100_000;
-/// `world_fold.rs:27646` — the only accepted convoy variant equipment type.
+/// `world_fold.rs::parse_country_convoy_bank_segment` — the only accepted convoy variant equipment type.
 pub const PCV1_EQUIP_TYPE: u32 = 70;
 
-/// `world_fold.rs:28346`.
+/// `world_fold.rs::parse_production_requested_factories_segment`.
 pub const MAX_REQUESTED_FACTORIES: i32 = 100_000;
 /// `world_fold.rs:28371`.
 pub const MAX_LINE_PRIORITY: i32 = 4095;
-/// `world_fold.rs:27964` — a licence variant id is `1..2^24`.
+/// `world_fold.rs::parse_production_license_segment` — a licence variant id is `1..2^24`.
 pub const MAX_LICENSE_VARIANT_ID: u32 = 1 << 24;
 
 /// `deployment_queue.rs:5`, `:3`.
@@ -402,7 +402,7 @@ const PDQ1_TEMPLATE_ID_TYPE: u32 = 52;
 const PDQ1_EQUIPMENT_ID_TYPE: u32 = 70;
 const PDQ1_MAX_STRING_BYTES: usize = 16 * 1024;
 
-/// The `line_subtype` codes of the `PLS1` join (`world_fold.rs:28472`-`:28482`).
+/// The `line_subtype` codes of the `PLS1` join (`world_fold.rs::parse_production_line_subtype_segment`).
 /// A mutually exclusive set, so §3's Enum rule applies and the overlap the fold
 /// rejects becomes inexpressible.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -417,7 +417,7 @@ pub enum LineSubtype {
 impl LineSubtype {
     pub const CARDINALITY: u32 = 4;
 
-    /// `world_fold.rs:28472`-`:28482`: only these four `(kind, subtype)` pairs
+    /// `world_fold.rs::parse_production_line_subtype_segment`: only these four `(kind, subtype)` pairs
     /// exist; anything else refuses the whole segment.
     pub fn from_wire(kind: u32, subtype: u32) -> Option<Self> {
         match (kind, subtype) {
@@ -442,7 +442,7 @@ impl LineSubtype {
 #[repr(u32)]
 pub enum LicenseDetail {
     /// No `PLIC` row for this country: the fold writes `production_licenses:
-    /// Null` (`world_fold.rs:12953`). Absent is not empty.
+    /// Null` (`world_fold.rs::fold_production`). Absent is not empty.
     NotMeasured = 0,
     /// `PLIC` v1: ids only, sorted ascending by the fold (`:27995`), and
     /// `production_license_variants` is omitted entirely (`:12933`).
@@ -521,7 +521,7 @@ pub fn schema() -> Schema {
                     // reads it with `read_i32` (`world_fold.rs:12574`) and
                     // rejects no sign.
                     Field::new(f::LINE_ID, Kind::Signed).key(2),
-                    // Raw i32, no scale (`world_fold.rs:12575`). `Signed`
+                    // Raw i32, no scale (`world_fold.rs::fold_production`). `Signed`
                     // because the fold range-checks nothing here.
                     Field::new(f::ACTIVE_FACTORIES, Kind::Signed),
                     Field::new(f::COST, Kind::Continuous).quant(Quant::Fixed(5)),
@@ -550,7 +550,7 @@ pub fn schema() -> Schema {
                     Field::new(f::LINE_SUBTYPE, Kind::Enum)
                         .enum_card(LineSubtype::CARDINALITY)
                         .unknown_capable(),
-                    // `/10_000_000`, not `/100_000` (`world_fold.rs:12631`).
+                    // `/10_000_000`, not `/100_000` (`world_fold.rs::fold_production`).
                     Field::new(f::EFFICIENCY, Kind::Continuous)
                         .quant(Quant::Fixed(7))
                         .unknown_capable(),
@@ -578,7 +578,7 @@ pub fn schema() -> Schema {
                     // order, and it is unique by construction, so no frame the
                     // fold accepts is ever refused for a key collision — which
                     // matters here because the fold enforces no construction key
-                    // at all (`world_fold.rs:12667`-`:12689`).
+                    // at all (`world_fold.rs::fold_production`).
                     Field::new(f::CONSTRUCTION_ORDINAL, Kind::Unsigned).key(1),
                     // `read_u32` (`world_fold.rs:12669`), so `Unsigned`.
                     Field::new(f::CONSTRUCTION_ID, Kind::Unsigned).key(2),
@@ -599,7 +599,7 @@ pub fn schema() -> Schema {
                     Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                     Field::new(f::VARIANT_ID, Kind::ContentId).key(1),
                     // v1 carries none of the three: the item is 4 bytes wide and
-                    // physically cannot hold them (`world_fold.rs:27913`), which
+                    // physically cannot hold them (`world_fold.rs::parse_production_license_segment`), which
                     // is the recipe's legacy-row Unknown.
                     Field::new(f::VISIBLE_ORDER, Kind::Unsigned).unknown_capable(),
                     Field::new(f::CREATOR_TAG_DB_ID, Kind::ContentId).unknown_capable(),
@@ -608,7 +608,7 @@ pub fn schema() -> Schema {
                     // That is §3's null — the relation genuinely points at
                     // nothing — and it is safe from §3's sentinel ban because
                     // `0` is not a country: every d11 parser rejects a zero tag.
-                    // The fold emits the raw `0` (`world_fold.rs:12944`), which
+                    // The fold emits the raw `0` (`world_fold.rs::fold_production`), which
                     // decides value-vs-nothing and nothing else.
                     Field::new(f::ORIGIN_TAG_DB_ID, Kind::ContentId)
                         .nullable()
@@ -621,7 +621,7 @@ pub fn schema() -> Schema {
                 fields: vec![
                     Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                     // Both witnesses are emitted unconditionally by the fold
-                    // (`world_fold.rs:13000`-`:13004`), including for an
+                    // (`world_fold.rs::fold_production`), including for an
                     // unreadable country, so both are always concrete.
                     Field::new(f::CONVOYS_COMPLETE, Kind::Boolean),
                     Field::new(f::RESERVATIONS_COMPLETE, Kind::Boolean),
@@ -639,7 +639,7 @@ pub fn schema() -> Schema {
                     Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                     Field::new(f::VARIANT_ID, Kind::ContentId).key(1),
                     // The fold emits `amount_raw` (exact i64) beside its `f64`
-                    // projection (`world_fold.rs:13026`-`:13027`). `PCV1` only
+                    // projection (`world_fold.rs::fold_production`). `PCV1` only
                     // requires `amount_raw >= 0` (`:27646`) and the total law
                     // clamps the SUM at `OWNED_RAW_CAP` (`:27736`), so a single
                     // variant may legally carry a raw past 2^53 — which no
@@ -648,7 +648,7 @@ pub fn schema() -> Schema {
                     // is the d24 rule applied to the pair.
                     Field::new(f::CONVOY_AMOUNT_RAW, Kind::Unsigned),
                     // The run's order. `PCV1` enforces `variant_id` uniqueness
-                    // within a complete country's run (`world_fold.rs:27733`),
+                    // within a complete country's run (`world_fold.rs::parse_country_convoy_bank_segment`),
                     // so the key is fold-enforced and the ordinal is a value —
                     // but the run's ORDER is enforced nowhere, so it has to be
                     // carried rather than inferred from the key.
@@ -658,17 +658,17 @@ pub fn schema() -> Schema {
             Collection {
                 collection_id: CONVOY_PRIORITY_RESERVATIONS,
                 // The fold stores each country's pointer-vector order
-                // (`world_fold.rs:13330`-`:13339`). `priority` is not proven
+                // (`world_fold.rs::fold_production`). `priority` is not proven
                 // unique by `PCV1`, so all three words are values and duplicate
                 // rows remain legitimate occurrences.
                 shape: Shape::OrderedOccurrenceList,
                 fields: vec![
                     Field::new(f::TAG_DB_ID, Kind::ContentId),
                     // `PCV1` reads an i32 and places no range constraint on it
-                    // (`world_fold.rs:28049`-`:28059`).
+                    // (`world_fold.rs::parse_country_convoy_bank_segment`).
                     Field::new(f::RESERVATION_PRIORITY, Kind::Signed),
                     // Production rejects `count < 0` before the row reaches the
-                    // fold (`world_fold.rs:28052`-`:28058`; mirrored by this
+                    // fold (`world_fold.rs::parse_country_convoy_bank_segment`; mirrored by this
                     // module's `parse_convoy_bank_segment`), so the complete
                     // accepted range is exactly `0..=i32::MAX`.
                     Field::new(f::RESERVATION_COUNT, Kind::Unsigned),
@@ -750,7 +750,7 @@ impl Default for Collections {
 
 // --- The payload header ------------------------------------------------------
 
-/// The 40-byte payload header (`world_fold.rs:12502`-`:12516`).
+/// The 40-byte payload header (`world_fold.rs::fold_production`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -784,11 +784,11 @@ pub struct Tables<'a> {
 }
 
 /// Read the header alone, applying only the check the fold applies **before** it
-/// looks at the status flags (`world_fold.rs:12502`).
+/// looks at the status flags (`world_fold.rs::fold_production`).
 ///
 /// The split is not cosmetic. `fold_production` checks the payload length against
 /// 40, then the failure status, and only then the row counts against `base_len`
-/// (`:12508` before `:12524`). A harness that validated `base_len` first would
+/// (`world_fold.rs::fold_production` before `world_fold.rs::fold_production`). A harness that validated `base_len` first would
 /// refuse a malformed failure-status record the recorder accepts and skips — a
 /// stream the recorder reads and this arm does not.
 pub fn split_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String> {
@@ -813,12 +813,12 @@ pub fn split_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
 
 /// Split a d11 DATA payload into its header, its three base tables and the
 /// trailer chain, applying the fold's structural checks
-/// (`world_fold.rs:12517`-`:12529`).
+/// (`world_fold.rs::fold_production`).
 ///
 /// Call only after the status check has passed — see [`split_header`].
 ///
 /// `base_len` is **not** an exact length: the trailer chain follows it, and
-/// `:12524` requires only `payload.len() >= base_len`.
+/// `world_fold.rs::fold_production` requires only `payload.len() >= base_len`.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tables<'_>), String> {
     let header = split_header(payload)?;
     // Checked throughout: the counts are u32 words off a file on disk and their
@@ -863,7 +863,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tab
 // --- Trailers ----------------------------------------------------------------
 
 /// The `(tag_db_id, kind, line_id)` identity every line join is keyed by
-/// (`world_fold.rs:12580`).
+/// (`world_fold.rs::fold_production`).
 pub type LineKey = (u32, u32, i32);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -970,7 +970,7 @@ impl Trailers {
 }
 
 /// The two status predicates the `PDQ1` segment check needs
-/// (`world_fold.rs:27574`, `:27580`).
+/// (`world_fold.rs::parse_production_deployment_queue_segment`).
 ///
 /// They are function pointers rather than calls because they live in
 /// `compact_contract` and d11 is not admitted to the production-codec
@@ -992,7 +992,7 @@ impl StatusPredicates {
 }
 
 /// Parse the trailer chain, mirroring `parse_production_trailers`
-/// (`world_fold.rs:27419`-`:27524`): a strict segment chain, one of each magic at
+/// (`world_fold.rs::parse_production_trailers`): a strict segment chain, one of each magic at
 /// most, an unknown magic refusing the whole payload, and `PDQ1` last.
 pub fn parse_trailers(
     trailers: &[u8],
@@ -1065,7 +1065,7 @@ pub fn parse_trailers(
             }
             b"PMI1" => {
                 duplicate(out.mio_by_line.is_some(), "PMI1")?;
-                // `world_fold.rs:27816` checks tag/kind but puts NO range check
+                // `world_fold.rs::parse_production_mio_join_segment` checks tag/kind but puts NO range check
                 // on `mio_id`: zero is the proven-null CID and every other value
                 // is an id.
                 let (rows, next) =
@@ -1088,7 +1088,7 @@ pub fn parse_trailers(
             b"PDQ1" => {
                 duplicate(out.deployment.is_some(), "PDQ1")?;
                 let (shape, next) = parse_deployment_segment(trailers, offset, status)?;
-                // `world_fold.rs:27514`.
+                // `world_fold.rs::parse_production_trailers`.
                 if next != trailers.len() {
                     return Err("PDQ1 must be the final D11 trailer".into());
                 }
@@ -1201,7 +1201,7 @@ fn parse_line_u32_segment<T>(
     Ok((out, offset + header.segment_len))
 }
 
-/// `world_fold.rs:28429`. The kind/subtype pair is checked jointly, so a valid
+/// `world_fold.rs::parse_production_line_subtype_segment`. The kind/subtype pair is checked jointly, so a valid
 /// subtype under the wrong kind refuses the segment.
 fn parse_subtype_segment(
     trailers: &[u8],
@@ -1230,7 +1230,7 @@ fn parse_subtype_segment(
     Ok((out, offset + header.segment_len))
 }
 
-/// `world_fold.rs:28497`. 36-byte rows, three i64 channels, all non-negative.
+/// `world_fold.rs::parse_production_efficiency_segment`. 36-byte rows, three i64 channels, all non-negative.
 fn parse_efficiency_segment(
     trailers: &[u8],
     offset: usize,
@@ -1270,7 +1270,7 @@ fn parse_efficiency_segment(
     Ok((out, offset + header.segment_len))
 }
 
-/// `world_fold.rs:27830`. 8-byte rows of `(tag_db_id, flags)`.
+/// `world_fold.rs::parse_production_completeness_segment`. 8-byte rows of `(tag_db_id, flags)`.
 fn parse_completeness_segment(
     trailers: &[u8],
     offset: usize,
@@ -1294,7 +1294,7 @@ fn parse_completeness_segment(
     Ok((out, offset + header.segment_len))
 }
 
-/// `world_fold.rs:27885`. The one segment with no `segment_len` word: v1 has
+/// `world_fold.rs::parse_production_license_segment`. The one segment with no `segment_len` word: v1 has
 /// 4-byte items, v2 16-byte items, and the length is computed from two counts.
 fn parse_license_segment(
     trailers: &[u8],
@@ -1412,7 +1412,7 @@ fn parse_license_segment(
                 origin_tag_db_id: origin,
             });
         }
-        // `world_fold.rs:27994`-`:27996`: v1 sorts its ids, so a v1 country's
+        // `world_fold.rs::parse_production_license_segment`: v1 sorts its ids, so a v1 country's
         // fold order is ascending `variant_id` — which is the keyed set's own
         // order. v2 keeps manager order and carries `visible_order` for it.
         if version == 1 {
@@ -1423,7 +1423,7 @@ fn parse_license_segment(
     Ok((out, offset + expected))
 }
 
-/// `world_fold.rs:27590`. A 28-byte header, three parallel row runs and canonical
+/// `world_fold.rs::parse_country_convoy_bank_segment`. A 28-byte header, three parallel row runs and canonical
 /// (start, len) ranges into them.
 fn parse_convoy_bank_segment(
     trailers: &[u8],
@@ -1562,7 +1562,7 @@ fn parse_convoy_bank_segment(
         let reservations =
             all_reservations[reservation_start..reservation_start + reservation_len].to_vec();
         if complete {
-            // `world_fold.rs:27732`-`:27749`. This is what makes `owned_raw`,
+            // `world_fold.rs::parse_country_convoy_bank_segment`. This is what makes `owned_raw`,
             // `convoys_count` and `available` functions of carried state.
             let mut seen = BTreeSet::new();
             let sum_raw = variants.iter().try_fold(0i64, |sum, row| {
@@ -1607,7 +1607,7 @@ fn parse_convoy_bank_segment(
     Ok((rows, offset + segment_len))
 }
 
-/// The `PDQ1` segment header (`world_fold.rs:27526`-`:27587`) and a **structural**
+/// The `PDQ1` segment header (`world_fold.rs::parse_production_deployment_queue_segment`) and a **structural**
 /// walk of the nested codec payload (`deployment_queue.rs:267`-`:579`).
 ///
 /// Every identity, count, ordering and flag gate the decoder enforces is enforced
@@ -1654,7 +1654,7 @@ fn parse_deployment_segment(
     let mut shape = scan_deployment_codec(codec)?;
     shape.segment_len = segment_len;
 
-    // `world_fold.rs:27574`-`:27586`.
+    // `world_fold.rs::parse_production_deployment_queue_segment`.
     let unknown = (status.unknown_flags)(shape.status_flags);
     if unknown != 0 {
         return Err(format!(
@@ -1702,8 +1702,8 @@ fn scan_deployment_codec(payload: &[u8]) -> core::result::Result<DeploymentShape
     let declared_lines = u32_at(payload, 28);
     let declared_equipment = u32_at(payload, 32);
     let reserved = u32_at(payload, 36);
-    // `world_fold.rs:27566` requires the CURRENT codec version, which is
-    // stricter than the codec's own `MIN..=CURRENT` range (`:278`). The fold is
+    // `world_fold.rs::parse_production_deployment_queue_segment` requires the CURRENT codec version, which is
+    // stricter than the codec's own `MIN..=CURRENT` range (`world_fold.rs::domain71_carrier`). The fold is
     // the authority for what the recorder accepts, so the tighter check wins.
     if schema_version != PDQ1_CODEC_VERSION {
         // The codec itself accepts `PDQ1_CODEC_MIN_VERSION..=PDQ1_CODEC_VERSION`
@@ -1937,7 +1937,7 @@ fn need(payload: &[u8], upto: usize, label: &str) -> core::result::Result<(), St
 
 // --- Key extractors ----------------------------------------------------------
 
-/// `world_fold.rs:12551`-`:12552`.
+/// `world_fold.rs::fold_production`.
 pub fn key_from_stockpile_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_row_len(row, STOCKPILE_ROW_LEN, "stockpile")?;
     Ok(Key(vec![
@@ -1946,14 +1946,14 @@ pub fn key_from_stockpile_row(row: &[u8]) -> core::result::Result<Key, String> {
     ]))
 }
 
-/// `world_fold.rs:12572`-`:12574`.
+/// `world_fold.rs::fold_production`.
 pub fn key_from_line_row(row: &[u8]) -> core::result::Result<Key, String> {
     let (tag, kind, line_id) = line_key_of_row(row)?;
     Ok(Key(vec![tag as i128, kind as i128, line_id as i128]))
 }
 
 /// The `(tag, kind, line_id)` triple, with the fold's kind gate. The base table
-/// itself does **not** reject a kind outside `{1, 2}` — `world_fold.rs:12658`
+/// itself does **not** reject a kind outside `{1, 2}` — `world_fold.rs::fold_production`
 /// folds everything that is not `2` as military — so no kind check belongs here.
 pub fn line_key_of_row(row: &[u8]) -> core::result::Result<LineKey, String> {
     check_row_len(row, LINE_ROW_LEN, "production line")?;
@@ -1965,7 +1965,7 @@ pub fn line_key_of_row(row: &[u8]) -> core::result::Result<LineKey, String> {
 /// `ordinal` is the row's dense position within its country's run of the base
 /// table, which the caller counts — [`fold_payload`] is the one that does, and
 /// any other caller must count it the same way. The fold enforces no
-/// construction key of its own (`world_fold.rs:12667`-`:12689`), so the ordinal
+/// construction key of its own (`world_fold.rs::fold_production`), so the ordinal
 /// is what makes every frame the fold accepts expressible here; see the module
 /// docs.
 pub fn key_from_construction_row(row: &[u8], ordinal: u32) -> core::result::Result<Key, String> {
@@ -1994,7 +1994,7 @@ pub fn record_from_stockpile_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // `world_fold.rs:12553`.
+            // `world_fold.rs::fold_production`.
             field::AMOUNT => Value::Continuous(i64_at(row, 8) as f64 / PRODUCTION_SCALE),
             other => return Err(format!("stockpile has no mapping for field id {other}")),
         };
@@ -2007,7 +2007,7 @@ pub fn record_from_stockpile_row(
 ///
 /// `joins` is not an extra input so much as the rest of the row: the fold reads
 /// exactly these six maps for exactly this key and **errors the whole frame** if
-/// a present join has no entry for a base line (`world_fold.rs:12593`-`:12656`),
+/// a present join has no entry for a base line (`world_fold.rs::fold_production`),
 /// so the lookup and its failure mode belong at this boundary, not in a caller.
 ///
 /// `ordinal` is the row's dense position within its `(tag_db_id, kind)` run of
@@ -2025,7 +2025,7 @@ pub fn record_from_line_row(
     let key = line_key_of_row(row)?;
     let (tag, kind, line_id) = key;
 
-    // `world_fold.rs:12594`, `:12602`, `:12610`, `:12618`, `:12626`, `:12646`:
+    // `world_fold.rs::fold_production`:
     // a present join that does not cover this line is a hard error, not a hole.
     let lookup = |present: bool, found: bool, magic: &str| -> core::result::Result<(), String> {
         if present && !found {
@@ -2062,7 +2062,7 @@ pub fn record_from_line_row(
             field::COST => Value::Continuous(i32_at(row, 16) as f64 / PRODUCTION_SCALE),
             field::SPEED => Value::Continuous(i32_at(row, 20) as f64 / PRODUCTION_SCALE),
             field::PRODUCED => Value::Continuous(i32_at(row, 24) as f64 / PRODUCTION_SCALE),
-            // Raw: `world_fold.rs:12592` inserts the i32 with no division.
+            // Raw: `world_fold.rs::fold_production` inserts the i32 with no division.
             field::LINE_AMOUNT => Value::Signed(i32_at(row, 28) as i64),
             field::EQUIPMENT_VARIANT_ID => match variant {
                 Some(id) => Value::ContentId(*id as u64),
@@ -2093,7 +2093,7 @@ pub fn record_from_line_row(
                 Some(v) => Value::Continuous(v.efficiency_growth_raw as f64 / EFFICIENCY_SCALE),
                 None => Value::Unknown,
             },
-            // `world_fold.rs:12651`-`:12655`: zero is a proven-null CID.
+            // `world_fold.rs::fold_production`: zero is a proven-null CID.
             field::MIO_ID => match mio {
                 Some(0) => Value::Null,
                 Some(id) => Value::ContentId(*id as u64),
@@ -2111,7 +2111,7 @@ pub fn record_from_line_row(
 }
 
 /// One compact row of the `construction_queue` table
-/// (`world_fold.rs:12668`-`:12683`).
+/// (`world_fold.rs::fold_production`).
 pub fn record_from_construction_row(
     collection: &Collection,
     row: &[u8],
@@ -2123,7 +2123,7 @@ pub fn record_from_construction_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // `world_fold.rs:12677` omits the key on the sentinel; the collector
+            // `world_fold.rs::fold_production` omits the key on the sentinel; the collector
             // writes it for an unreadable template subobject
             // (`attach_log.rs:85351`), which is §3's unknown.
             field::TEMPLATE_ID => {
@@ -2136,7 +2136,7 @@ pub fn record_from_construction_row(
             field::ACTIVE_FACTORIES => Value::Signed(i32_at(row, 12) as i64),
             field::COST => Value::Continuous(i32_at(row, 16) as f64 / PRODUCTION_SCALE),
             field::PRODUCED => Value::Continuous(i32_at(row, 20) as f64 / PRODUCTION_SCALE),
-            // `world_fold.rs:12674` reads `+24` raw. Sparse, so it is data about
+            // `world_fold.rs::fold_production` reads `+24` raw. Sparse, so it is data about
             // which source slots were skipped, not the queue's ordering.
             field::CONSTRUCTION_PRIORITY => Value::Unsigned(u32_at(row, 24) as u64),
             other => {
@@ -2154,7 +2154,7 @@ pub fn record_from_construction_row(
 ///
 /// `completeness` is that country's `PCP1` flag word, or `None` when the frame
 /// carried no `PCP1` segment — the fold leaves all three witnesses off the JSON
-/// in that case (`world_fold.rs:12886`, `:12895`, `:12904`), which is §3's
+/// in that case (`world_fold.rs::fold_production`), which is §3's
 /// unknown, not a false.
 pub fn record_from_country(
     collection: &Collection,
@@ -2181,7 +2181,7 @@ pub fn record_from_country(
     Ok(Record::new(values))
 }
 
-/// One `PLIC` item (`world_fold.rs:12921`-`:12950`).
+/// One `PLIC` item (`world_fold.rs::fold_production`).
 pub fn record_from_license_item(
     collection: &Collection,
     item: &LicenseItem,
@@ -2201,7 +2201,7 @@ pub fn record_from_license_item(
             },
             // `attach_log.rs:69023`: zero means "the engine's optional origin
             // override is absent", which is §3's null and not a country id.
-            // d53 reads it the same way (`world_fold.rs:7186`: `if origin == 0
+            // d53 reads it the same way (`world_fold.rs::project_production_license_agreements`: `if origin == 0
             // { creator } else { origin }`).
             field::ORIGIN_TAG_DB_ID => match item.origin_tag_db_id {
                 Some(0) => Value::Null,
@@ -2219,7 +2219,7 @@ pub fn record_from_license_item(
     Ok(Record::new(values))
 }
 
-/// One `PCV1` country row (`world_fold.rs:13000`-`:13015`).
+/// One `PCV1` country row (`world_fold.rs::fold_production`).
 pub fn record_from_convoy_bank(
     collection: &Collection,
     bank: &ConvoyBank,
@@ -2252,7 +2252,7 @@ pub fn record_from_convoy_bank(
     Ok(Record::new(values))
 }
 
-/// One `PCV1` variant row (`world_fold.rs:13022`-`:13028`).
+/// One `PCV1` variant row (`world_fold.rs::fold_production`).
 ///
 /// The raw i64 is what is carried: `PCV1` accepts a variant raw past `2^53`
 /// whenever the country's clamped total still satisfies the exact total law, and
@@ -2267,7 +2267,7 @@ pub fn record_from_convoy_variant(
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
     let _ = frame_tick;
-    // `world_fold.rs:27646` refuses a negative raw, so the cast is total.
+    // `world_fold.rs::parse_country_convoy_bank_segment` refuses a negative raw, so the cast is total.
     if variant.amount_raw < 0 {
         return Err(format!(
             "convoy variant {} has negative amount_raw {}",
@@ -2291,7 +2291,7 @@ pub fn record_from_convoy_variant(
 }
 
 /// One `PCV1` priority reservation in the source order the fold preserves
-/// (`world_fold.rs:13330`-`:13339`).
+/// (`world_fold.rs::fold_production`).
 pub fn record_from_convoy_reservation(
     collection: &Collection,
     tag_db_id: u32,
@@ -2329,7 +2329,7 @@ pub fn record_from_convoy_reservation(
 }
 
 /// The fold's `amount` projection of a carried convoy variant raw
-/// (`world_fold.rs:13027`). Recomputed rather than carried — it is a function of
+/// (`world_fold.rs::fold_production`). Recomputed rather than carried — it is a function of
 /// state the record already holds.
 pub fn convoy_amount(amount_raw: i64) -> f64 {
     amount_raw as f64 / PRODUCTION_SCALE
@@ -2340,8 +2340,8 @@ pub fn convoy_amount(amount_raw: i64) -> f64 {
 /// The eight reconstructed collections.
 ///
 /// d11 is **full-replace per country, not per frame**: `fold_production` rebuilds
-/// `per_tag` from scratch each frame (`world_fold.rs:12533`) but writes it into
-/// `self.country_mut(tag)` (`:12956`), so a country the frame does not mention
+/// `per_tag` from scratch each frame (`world_fold.rs::fold_production`) but writes it into
+/// `self.country_mut(tag)` (`world_fold.rs::fold_production`), so a country the frame does not mention
 /// keeps the production block it had. In `deepwar_t1` a frame touches a median of
 /// two countries out of a roster of 356, so the accumulator — not the frame — is
 /// the state this domain holds.
@@ -2418,7 +2418,7 @@ pub struct FoldOutcome {
     /// The countries whose convoy bank this frame replaced (`PCV1`'s key set),
     /// which is a separate write path onto a separate leaf.
     pub touched_convoy_countries: usize,
-    /// `world_fold.rs:12875`: `country_count` exceeds the keyed set. The fold
+    /// `world_fold.rs::fold_production`: `country_count` exceeds the keyed set. The fold
     /// badges the hour and folds the rest, so this is a count, not an exclusion.
     pub uncovered_countries: u32,
     /// Bytes the `PDQ1` segment occupied, for the stop-report's accounting.
@@ -2454,7 +2454,7 @@ pub fn fold_payload(
     let (header, tables) = split_payload(payload)?;
     let trailers = parse_trailers(tables.trailers, status)?;
 
-    // `world_fold.rs:12534`-`:12547`: PCP1 seeds `per_tag` and must be bijective
+    // `world_fold.rs::fold_production`: PCP1 seeds `per_tag` and must be bijective
     // with the declared country count.
     let mut per_tag: BTreeSet<u32> = BTreeSet::new();
     if let Some(completeness) = trailers.completeness_by_tag.as_ref() {
@@ -2468,7 +2468,7 @@ pub fn fold_payload(
         per_tag.extend(completeness.keys().copied());
     }
 
-    // Stockpile rows. `world_fold.rs:12562`: a duplicate `(tag, variant)` is a
+    // Stockpile rows. `world_fold.rs::fold_production`: a duplicate `(tag, variant)` is a
     // torn read and refuses the frame.
     let mut stockpile_rows: Vec<(Key, Record)> = Vec::new();
     let mut seen_stockpile: BTreeSet<(u32, u32)> = BTreeSet::new();
@@ -2487,7 +2487,7 @@ pub fn fold_payload(
         ));
     }
 
-    // Line rows. `world_fold.rs:12581`: a duplicate `(tag, kind, line_id)` is a
+    // Line rows. `world_fold.rs::fold_production`: a duplicate `(tag, kind, line_id)` is a
     // hard error.
     let joins = trailers.line_joins();
     let mut line_rows: Vec<(Key, Record)> = Vec::new();
@@ -2540,7 +2540,7 @@ pub fn fold_payload(
         ));
     }
 
-    // `world_fold.rs:12692`-`:12767`: every present line join must be a bijection
+    // `world_fold.rs::fold_production`: every present line join must be a bijection
     // over the base line keys.
     check_line_coverage("PVJ1", trailers.variant_by_line.as_ref(), &seen_lines)?;
     check_line_coverage(
@@ -2553,12 +2553,12 @@ pub fn fold_payload(
     check_line_coverage("PEF1", trailers.efficiency_by_line.as_ref(), &seen_lines)?;
     check_line_coverage("PMI1", trailers.mio_by_line.as_ref(), &seen_lines)?;
 
-    // `world_fold.rs:12775`-`:12778`: PLIC adds its countries to `per_tag`.
+    // `world_fold.rs::fold_production`: PLIC adds its countries to `per_tag`.
     if let Some(licenses) = trailers.licenses_by_tag.as_ref() {
         per_tag.extend(licenses.keys().copied());
     }
 
-    // `world_fold.rs:12781`-`:12809`: PCP1 tag bijection and the two
+    // `world_fold.rs::fold_production`: PCP1 tag bijection and the two
     // rows-without-a-witness checks.
     if let Some(completeness) = trailers.completeness_by_tag.as_ref() {
         if per_tag.len() != completeness.len() || !per_tag.iter().all(|t| completeness.contains_key(t))
@@ -2590,7 +2590,7 @@ pub fn fold_payload(
         }
     }
 
-    // `world_fold.rs:12812`-`:12866`: the five-way PDQ1 cross-check.
+    // `world_fold.rs::fold_production`: the five-way PDQ1 cross-check.
     let mut deployment_segment_len = 0usize;
     if let Some(deployment) = trailers.deployment.as_ref() {
         deployment_segment_len = deployment.segment_len;
@@ -2691,8 +2691,8 @@ pub fn fold_payload(
         }
     }
 
-    // `world_fold.rs:12959`-`:13044`: a separate write path with its own key set.
-    // Note `:12989`-`:12999` removes every convoy leaf BEFORE the completeness
+    // `world_fold.rs::fold_production`: a separate write path with its own key set.
+    // Note `world_fold.rs::fold_production` removes every convoy leaf BEFORE the completeness
     // witnesses go back, so an unreadable country's previous rows are erased.
     let mut touched_convoy_countries = 0usize;
     let mut reservation_rows = 0usize;
@@ -2939,7 +2939,7 @@ mod tests {
         row
     }
 
-    /// `world_fold.rs:27885`. Items are `(variant_id, visible_order, creator, origin)`.
+    /// `world_fold.rs::parse_production_license_segment`. Items are `(variant_id, visible_order, creator, origin)`.
     fn plic(version: u16, countries: &[(u32, Vec<(u32, u32, u32, u32)>)]) -> Vec<u8> {
         let item_len = if version == 1 { 4 } else { 16 };
         let id_rows: usize = countries.iter().map(|(_, ids)| ids.len()).sum();
@@ -2979,7 +2979,7 @@ mod tests {
         reservations: Vec<(i32, i32)>,
     }
 
-    /// `world_fold.rs:27590`. Derives `owned_raw` and `available` the way the
+    /// `world_fold.rs::parse_country_convoy_bank_segment`. Derives `owned_raw` and `available` the way the
     /// fold requires them, so a well-formed segment is easy to write in a test.
     fn pcv1(countries: &[ConvoyCountry]) -> Vec<u8> {
         let variant_count: usize = countries.iter().map(|c| c.variants.len()).sum();
@@ -4206,7 +4206,7 @@ mod tests {
 
     #[test]
     fn the_header_is_readable_before_the_row_counts_are_checked() {
-        // `world_fold.rs:12508` checks the failure status BEFORE `:12524` checks
+        // `world_fold.rs::fold_production` checks the failure status BEFORE `world_fold.rs::fold_production` checks
         // `base_len`, so a failure-status record whose counts do not add up is
         // skipped by the recorder rather than refused. A harness that validated
         // the counts first would refuse a stream the recorder reads.
@@ -4226,7 +4226,7 @@ mod tests {
         let good = tables.trailers.to_vec();
         assert!(parse_trailers(&good, StatusPredicates::PERMISSIVE).is_ok());
 
-        // An unknown magic (`world_fold.rs:27520`).
+        // An unknown magic (`world_fold.rs::parse_production_trailers`).
         let mut unknown = good.clone();
         unknown[0] = b'X';
         assert!(parse_trailers(&unknown, StatusPredicates::PERMISSIVE).is_err());
@@ -4690,7 +4690,7 @@ mod tests {
             "the two frames the fold distinguishes must stay distinguishable here"
         );
         // The two kinds are counted independently, because the fold keeps two
-        // arrays (`world_fold.rs:12659`, `:12662`).
+        // arrays (`world_fold.rs::fold_production`).
         let mixed = order_of(vec![
             line_row(7, KIND_MILITARY, 20, 1, 1, 1, 1, 1),
             line_row(7, KIND_NAVAL, 30, 1, 1, 1, 1, 1),
@@ -4810,7 +4810,7 @@ mod tests {
         let bank = &encoded[5];
 
         // `owned_raw` = the clamped sum of the country's variant raws
-        // (`world_fold.rs:27732`-`:27738`). The frame carried 300_000 + 200_000.
+        // (`world_fold.rs::parse_country_convoy_bank_segment`). The frame carried 300_000 + 200_000.
         let owned_raw = variants
             .iter()
             .filter(|(key, _)| key.first() == 7)
@@ -4942,7 +4942,7 @@ mod tests {
 
     #[test]
     fn the_deployment_carrier_status_predicates_are_the_callers() {
-        // `world_fold.rs:27574`-`:27586`, with the two `compact_contract`
+        // `world_fold.rs::parse_production_deployment_queue_segment`, with the two `compact_contract`
         // predicates the reference library must not depend on.
         let mut frame = full_frame();
         frame.status_flags = 0x40;
@@ -5071,7 +5071,7 @@ mod tests {
             );
         }
         // A join carrying a line the base table does not: the other half of the
-        // bijection (`world_fold.rs:12693`).
+        // bijection (`world_fold.rs::fold_production`).
         let mut frame = full_frame();
         frame.trailers = {
             let mut t = Vec::new();
@@ -5099,7 +5099,7 @@ mod tests {
 
     #[test]
     fn the_pcp1_country_bijection_and_its_row_witnesses_are_enforced() {
-        // Row count vs `country_count` (`world_fold.rs:12535`).
+        // Row count vs `country_count` (`world_fold.rs::fold_production`).
         let mut frame = full_frame();
         frame.country_count = 2;
         frame.changed_country_count = Some(2);
@@ -5271,7 +5271,7 @@ mod tests {
     #[test]
     fn the_fold_replaces_per_country_and_leaves_untouched_countries_alone() {
         // The property that makes d11 an accumulator rather than a per-frame
-        // snapshot (`world_fold.rs:12533` builds `per_tag` fresh, `:12956`
+        // snapshot (`world_fold.rs::fold_production` builds `per_tag` fresh, `world_fold.rs::fold_production`
         // writes it into one country).
         let c = cols();
         let mut state = State::new();
@@ -5332,7 +5332,7 @@ mod tests {
         assert_eq!(state.convoy_variants.len(), 2);
 
         // A frame that replaces country 7's production block but carries no
-        // PCV1: `world_fold.rs:12959` is gated on the trailer, so the bank
+        // PCV1: `world_fold.rs::fold_production` is gated on the trailer, so the bank
         // survives.
         let mut frame = Frame::new();
         frame.country_count = 1;
@@ -5352,7 +5352,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_convoy_bank_erases_the_countrys_previous_rows() {
-        // `world_fold.rs:12989`-`:13007` removes every convoy leaf before the
+        // `world_fold.rs::fold_production` removes every convoy leaf before the
         // completeness witnesses go back and returns early on `!complete`.
         let c = cols();
         let mut state = State::new();
@@ -5443,7 +5443,7 @@ mod tests {
 
     #[test]
     fn a_plic_only_country_is_still_a_keyed_country() {
-        // `world_fold.rs:12775` adds PLIC's tags to `per_tag`, so a country with
+        // `world_fold.rs::fold_production` adds PLIC's tags to `per_tag`, so a country with
         // no base rows at all still gets a production block.
         let c = cols();
         let mut frame = Frame::new();
@@ -5489,7 +5489,7 @@ mod tests {
 
     #[test]
     fn an_uncovered_country_is_counted_not_excluded() {
-        // `world_fold.rs:12875` badges the hour and folds the rest.
+        // `world_fold.rs::fold_production` badges the hour and folds the rest.
         let c = cols();
         let mut frame = Frame::new();
         frame.country_count = 3;

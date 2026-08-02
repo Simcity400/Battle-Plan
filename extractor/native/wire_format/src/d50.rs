@@ -71,7 +71,7 @@
 //!
 //! The fold never clears: every payload is a patch, there is no baseline record
 //! and no mode word — the same grammar D49 documents in its own fold
-//! (`world_fold.rs:20090`-`:20092`: *"the collector emits every active row on the
+//! (`world_fold.rs::fold_naval_combat_lifecycle`: *"the collector emits every active row on the
 //! first frame (empty previous baseline) and only changes thereafter, so no
 //! separate baseline record exists to gate on"*). That is the recipe's shape 3,
 //! so **`changed_rows == row_count` is not an invariant** — the header carries no
@@ -81,7 +81,7 @@
 //! The key is the fold's own: `(combat_id, generation, side.wire_id(),
 //! battle_slot_index_raw)` (`world_fold.rs:20153`-`:20158`, and the accumulator's
 //! per-combat map key `(side.wire_id(), battle_slot_index_raw)` at `:20200`
-//! under the combat's own `(combat_id, generation)` key at `:20199`).
+//! under the combat's own `(combat_id, generation)` key at `world_fold.rs::fold_naval_combat_members`).
 //!
 //! # Three whole-hour refusals, validated before any mutation
 //!
@@ -90,20 +90,20 @@
 //! retaining the accumulator ([`FoldOutcome`]):
 //!
 //! 1. **Orphan member** — a live row whose `(combat_id, generation)` is not in
-//!    D49's `naval_combats` accumulator (`:20146`-`:20152`). Delete rows are
+//!    D49's `naval_combats` accumulator (`world_fold.rs::fold_naval_combat_members`). Delete rows are
 //!    exempt: a delete for an already-removed combat is a valid idempotent no-op.
 //! 2. **Duplicate member identity** — the same key twice inside one payload
-//!    (`:20153`-`:20166`), live or deleted.
+//!    (`world_fold.rs::fold_naval_combat_members`), live or deleted.
 //! 3. **Retired-member resurrection** — a live row whose key is in the
-//!    **persistent** `naval_retired_member_keys` set (`:20167`-`:20181`). That set
+//!    **persistent** `naval_retired_member_keys` set (`world_fold.rs::fold_naval_combat_members`). That set
 //!    is never cleared anywhere in `world_fold.rs`: it is written only by this
-//!    fold, one insert per delete row (`:20204`), so it is fold state a replay
+//!    fold, one insert per delete row (`world_fold.rs::fold_naval_combat_members`), so it is fold state a replay
 //!    harness must carry across hours, not payload state. [`State`] carries it.
 //!
 //! None of the three is a stream rejection: the accumulator survives and the next
 //! hour folds normally. A payload that fails the lane's own decode or row
 //! validation *is* a stream rejection, because `decode_member_rows` returns `Err`
-//! and the fold propagates it (`:20136`-`:20137`).
+//! and the fold propagates it (`world_fold.rs::fold_naval_combat_members`).
 //!
 //! # D49 is a hard parent, and it is MODELLED
 //!
@@ -213,7 +213,7 @@
 //!   set and every derived bit clear — it only forbids the converse
 //!   (`:2064`-`:2069`, `:2087`-`:2096`) — so the biconditional is a property of
 //!   this producer, not of the grammar. The fold stores the bit and the snapshot
-//!   publishes it (`world_fold.rs:8848`), so it rides as a `Boolean`.
+//!   publishes it (`world_fold.rs::build_naval_combats`), so it rides as a `Boolean`.
 //!
 //! # Scales — from the code that folds each field, not from the names
 //!
@@ -340,7 +340,7 @@ pub const CSHIP_DERIVED_FLAGS: u32 = TASK_FORCE_PRESENT
     | EXPERIENCE_PRESENT
     | SUNK_CONVOYS_PRESENT;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`, used by the member projection at
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`, used by the member projection at
 /// `:8876`-`:8877`.
 pub const FIXED_SCALE: f64 = 100_000.0;
 /// `FIXED_SCALE` is `10^5`, so `Quant::Fixed(5)` is exactly the source's own grid.
@@ -411,11 +411,11 @@ pub fn schema() -> Schema {
             collection_id: MEMBERS,
             // Members persist across hours under a stable identity and the frame
             // grammar is pure cumulative upsert / DELETED-removes
-            // (`world_fold.rs:20195`-`:20218`) — a keyed set's grammar, and only a
+            // (`world_fold.rs::fold_naval_combat_members`) — a keyed set's grammar, and only a
             // keyed set has deltas (§7.3).
             shape: Shape::KeyedSet,
             fields: vec![
-                // The fold's key, `world_fold.rs:20153`-`:20158`.
+                // The fold's key, `world_fold.rs::fold_naval_combat_members`.
                 //
                 // `combat_id` is a runtime engine instance identity created when a
                 // battle starts; no manifest resolves it, so `Unsigned` (d20's
@@ -436,7 +436,7 @@ pub fn schema() -> Schema {
                 Field::new(f::BATTLE_SLOT_INDEX, Kind::Unsigned).key(3),
                 // Position of the member inside the combat's group array. Carried
                 // because the fold stores it and the snapshot publishes it
-                // (`world_fold.rs:8843`-`:8844`); not a key, because the fold's
+                // (`world_fold.rs::build_naval_combats`); not a key, because the fold's
                 // identity is the battle slot.
                 Field::new(f::GROUP_INDEX, Kind::Unsigned),
                 Field::new(f::MEMBER_INDEX, Kind::Unsigned),
@@ -477,7 +477,7 @@ pub fn schema() -> Schema {
                     .optional()
                     .unknown_capable(),
                 // `Continuous` because the fold's own projection is
-                // `raw / FIXED_SCALE` (`world_fold.rs:8876`-`:8877`); `Fixed(5)`
+                // `raw / FIXED_SCALE` (`world_fold.rs::build_naval_combats`); `Fixed(5)`
                 // because the source is an integer over a `10^5` denominator, so
                 // the quantizer reproduces the source word bit for bit rather than
                 // spending a precision budget (the recipe's d24 rule, proved in
@@ -573,16 +573,16 @@ pub struct LifecycleKeyRow {
     pub combat_id: u32,
     pub generation: u64,
     pub deleted: bool,
-    /// `world_fold.rs:20050`-`:20052`: a live row missing either masks the hour.
+    /// `world_fold.rs::fold_naval_combat_lifecycle`: a live row missing either masks the hour.
     pub has_location: bool,
     pub has_region: bool,
-    /// `world_fold.rs:20077`-`:20086`: a live row missing any of the four masks
+    /// `world_fold.rs::fold_naval_combat_lifecycle`: a live row missing any of the four masks
     /// the hour.
     pub has_all_side_scalars: bool,
 }
 
 /// The `MEMBERS` key of one membership: the fold's own tuple
-/// (`world_fold.rs:20153`-`:20158`).
+/// (`world_fold.rs::fold_naval_combat_members`).
 pub fn member_key(combat_id: u32, generation: u64, side_wire_id: u32, battle_slot: u32) -> Key {
     key(&[
         combat_id as u64,
@@ -667,7 +667,7 @@ pub fn peek_header(
 /// `decode_member_payload` plus `validate_decoded_member_row` on every row, run
 /// whatever the status word says. `fold_naval_combat_members` reaches the same
 /// rules through `decode_member_rows` (lane `:535`) and turns any of them into a
-/// fold `Err` (`world_fold.rs:20136`-`:20137`) — a stream rejection, not an
+/// fold `Err` (`world_fold.rs::fold_naval_combat_members`) — a stream rejection, not an
 /// excluded hour.
 ///
 /// It lives here rather than in each caller so the payload grammar has exactly one
@@ -995,7 +995,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 ///
 /// Fail-closed throughout, mirroring the recorder's own decode: a row it would
 /// reject is an `Err` here, never a coerced value. A **deleted** row is an `Err`
-/// too — it is a key removal plus a retirement (`world_fold.rs:20202`-`:20215`)
+/// too — it is a key removal plus a retirement (`world_fold.rs::fold_naval_combat_members`)
 /// and has no record; a caller must map it to a wire tombstone, and quietly
 /// handing one back a record would turn a delete into an upsert. Nothing in this
 /// function can panic on any input.
@@ -1122,14 +1122,14 @@ pub enum FoldOutcome {
     /// The delta was applied. `mark_fold_domain_success`, `world_fold.rs:20220`.
     Applied,
     /// A live row referenced a `(combat_id, generation)` D49 does not hold
-    /// (`world_fold.rs:20146`-`:20152`). Nothing folded, accumulator retained,
+    /// (`world_fold.rs::fold_naval_combat_members`). Nothing folded, accumulator retained,
     /// the domain-hour unknown.
     OrphanMemberReference,
     /// The payload repeated a `(combat, generation, side, slot)` identity
-    /// (`world_fold.rs:20153`-`:20166`). Nothing folded, accumulator retained.
+    /// (`world_fold.rs::fold_naval_combat_members`). Nothing folded, accumulator retained.
     DuplicateMemberIdentity,
     /// A live row re-used a key that a previous delete retired
-    /// (`world_fold.rs:20167`-`:20181`). Nothing folded, accumulator retained.
+    /// (`world_fold.rs::fold_naval_combat_members`). Nothing folded, accumulator retained.
     RetiredMemberResurrection,
 }
 
@@ -1143,14 +1143,14 @@ pub enum LifecycleOutcome {
     /// counted separately wherever it is used.
     AppliedOverValueGate,
     /// Status bit 11 was set, or a live row lacked its promoted location/region
-    /// pair (`world_fold.rs:20047`-`:20062`). Nothing folded, accumulator
+    /// pair (`world_fold.rs::fold_naval_combat_lifecycle`). Nothing folded, accumulator
     /// retained. **This is the 3a stream's 72-hour case.**
     LocationRegionIncomplete,
     /// The caller's failure-status exclusion fired
     /// (`handle_compact_failure`, `world_fold.rs:20069`-`:20075`).
     FailureStatus,
     /// A live row omitted one of the four side scalars
-    /// (`world_fold.rs:20076`-`:20087`). Nothing folded, accumulator retained.
+    /// (`world_fold.rs::fold_naval_combat_lifecycle`). Nothing folded, accumulator retained.
     IncompleteSideScalars,
 }
 
@@ -1190,7 +1190,7 @@ pub enum ParentPolicy {
 /// `STATUS_LOCATION_CANDIDATE_UNVALIDATED`, lane `:32`. A **lane-local** payload
 /// status bit for domain 49, masked from global interpretation
 /// (`compact_contract/src/lib.rs:93`-`:101`) but read directly by
-/// `fold_naval_combat_lifecycle` (`world_fold.rs:20049`). Mirrored here because
+/// `fold_naval_combat_lifecycle` (`world_fold.rs::fold_naval_combat_lifecycle`). Mirrored here because
 /// the parent mirror must read it exactly where the fold does.
 pub const D49_STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
 
@@ -1377,7 +1377,7 @@ impl State {
     }
 
     /// How many D49 tombstone **rows** have actually removed a parent, counted one
-    /// row at a time inside the fold (`world_fold.rs:20095`-`:20099` processes each
+    /// row at a time inside the fold (`world_fold.rs::fold_naval_combat_lifecycle` processes each
     /// deleted row individually).
     ///
     /// A caller cannot recover this from the parent set's size: one payload may
@@ -1413,7 +1413,7 @@ impl State {
     /// is `compact_contract`'s and this crate's library half must not copy its
     /// mask — the recipe's typed-mapper-input rule. Its position in the sequence
     /// is the fold's own: **after** the location/region check, **before** the
-    /// side-scalar check (`world_fold.rs:20048`, `:20069`, `:20076`).
+    /// side-scalar check (`world_fold.rs::fold_naval_combat_lifecycle`).
     ///
     /// Error contract: all-or-nothing. Every row is parsed and every refusal is
     /// decided before the first mutation, which is what `fold_naval_combat_lifecycle`
@@ -1424,7 +1424,7 @@ impl State {
         failure_status: bool,
         policy: ParentPolicy,
     ) -> core::result::Result<LifecycleOutcome, String> {
-        // `decode_lifecycle_rows` (`world_fold.rs:20046`) runs before anything
+        // `decode_lifecycle_rows` (`world_fold.rs::fold_naval_combat_lifecycle`) runs before anything
         // else, so a malformed payload is an `Err` even under a failure status,
         // and under either policy.
         let (header, rows) = split_lifecycle_payload(payload)?;
@@ -1433,7 +1433,7 @@ impl State {
             .map(parse_lifecycle_row)
             .collect::<core::result::Result<_, _>>()?;
 
-        // `world_fold.rs:20047`-`:20062`, and it is BEFORE the failure check.
+        // `world_fold.rs::fold_naval_combat_lifecycle`, and it is BEFORE the failure check.
         let location_region_incomplete = header.status_flags
             & D49_STATUS_LOCATION_CANDIDATE_UNVALIDATED
             != 0
@@ -1449,7 +1449,7 @@ impl State {
         if failure_status {
             return Ok(LifecycleOutcome::FailureStatus);
         }
-        // `world_fold.rs:20076`-`:20087`.
+        // `world_fold.rs::fold_naval_combat_lifecycle`.
         let side_scalars_incomplete = parsed
             .iter()
             .any(|row| !row.deleted && !row.has_all_side_scalars);
@@ -1460,7 +1460,7 @@ impl State {
         for row in parsed {
             let combat = (row.combat_id, row.generation);
             if row.deleted {
-                // `world_fold.rs:20097`-`:20099`: the whole combat state goes,
+                // `world_fold.rs::fold_naval_combat_lifecycle`: the whole combat state goes,
                 // and its `members` map with it. Counted PER ROW, because a
                 // payload that also inserts would otherwise hide the deletion in
                 // the net size change.
@@ -1473,7 +1473,7 @@ impl State {
                     .saturating_add(dropped as u64);
                 continue;
             }
-            // `world_fold.rs:20100`-`:20113`: `or_insert_with` keeps an existing
+            // `world_fold.rs::fold_naval_combat_lifecycle`: `or_insert_with` keeps an existing
             // combat's members untouched, so a re-emitted live row changes
             // nothing here.
             self.parents.insert(combat);
@@ -1492,7 +1492,7 @@ impl State {
     ///
     /// The caller is responsible for the **failure-status** exclusion, because the
     /// predicate is `compact_contract`'s and this crate's library half must not
-    /// depend on that crate nor copy its mask. The fold consults it at `:20140`,
+    /// depend on that crate nor copy its mask. The fold consults it at `world_fold.rs::fold_naval_combat_members`,
     /// i.e. **after** `decode_member_rows` and **before** the three refusals — so a
     /// caller that gets the order right runs [`split_payload`] (production's
     /// status-independent payload authority), excludes on status, and only then
@@ -1501,7 +1501,7 @@ impl State {
     /// Error contract: all-or-nothing, exactly like the fold. Every row is parsed
     /// and all three refusals are decided before the first mutation — the fold's
     /// own comment says so: *"Validate the whole current D50 delta before mutating
-    /// any member accumulator"* (`world_fold.rs:20143`-`:20145`).
+    /// any member accumulator"* (`world_fold.rs::fold_naval_combat_members`).
     pub fn fold_payload(
         &mut self,
         collection: &Collection,
@@ -1513,7 +1513,7 @@ impl State {
             .map(parse_row)
             .collect::<core::result::Result<_, _>>()?;
 
-        // `world_fold.rs:20146`-`:20152`. Delete rows are exempt: a delete for an
+        // `world_fold.rs::fold_naval_combat_members`. Delete rows are exempt: a delete for an
         // already-removed combat is a valid idempotent no-op.
         if parsed
             .iter()
@@ -1521,7 +1521,7 @@ impl State {
         {
             return Ok(FoldOutcome::OrphanMemberReference);
         }
-        // `world_fold.rs:20153`-`:20166`. Over EVERY row, deleted included.
+        // `world_fold.rs::fold_naval_combat_members`. Over EVERY row, deleted included.
         let mut identities = BTreeSet::new();
         if parsed.iter().any(|row| {
             !identities.insert((
@@ -1533,7 +1533,7 @@ impl State {
         }) {
             return Ok(FoldOutcome::DuplicateMemberIdentity);
         }
-        // `world_fold.rs:20167`-`:20181`.
+        // `world_fold.rs::fold_naval_combat_members`.
         if parsed.iter().any(|row| {
             !row.deleted
                 && self.retired.contains(&(
@@ -1565,13 +1565,13 @@ impl State {
                 row.side_wire_id,
                 row.battle_slot_index_raw,
             );
-            // `world_fold.rs:20202`-`:20205`: the retirement is recorded BEFORE
+            // `world_fold.rs::fold_naval_combat_members`: the retirement is recorded BEFORE
             // the parent lookup, so a delete for a combat that is already gone
             // still retires the key.
             if row.deleted {
                 self.retired.insert(retired_key);
             }
-            // `world_fold.rs:20206`-`:20213`: a member whose combat has no active
+            // `world_fold.rs::fold_naval_combat_members`: a member whose combat has no active
             // lifecycle row is skipped rather than fabricating a parentless
             // combat. The orphan refusal above means only delete rows reach here.
             if !self.parents.contains(&(row.combat_id, row.generation)) {
@@ -1581,7 +1581,7 @@ impl State {
             if row.deleted {
                 self.members.remove(&member);
             } else {
-                // `world_fold.rs:20216`: a plain insert, so a repeated key inside
+                // `world_fold.rs::fold_naval_combat_members`: a plain insert, so a repeated key inside
                 // one payload would be last-writer-wins — except that the
                 // duplicate-identity refusal above has already ruled that out.
                 self.members

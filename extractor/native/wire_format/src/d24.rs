@@ -9,11 +9,11 @@
 //! (`replay_interface/native/replay_core/src/world.rs:7438`-`:7591`,
 //! `:750`-`:790`).
 //!
-//! **Payload grammar** (`world_fold.rs:17032`-`:17053`): a 48-byte header, then
+//! **Payload grammar** (`world_fold.rs::fold_weather`): a 48-byte header, then
 //! `region_count` fixed 32-byte region rows, then `province_count` fixed 32-byte
 //! province rows. Two collections, one payload. There is no legacy short row:
 //! the fold requires `payload.len() == 48 + region_count*32 + province_count*32`
-//! exactly (`:17054`), so length never selects a row form.
+//! exactly (`world_fold.rs::fold_weather`), so length never selects a row form.
 //!
 //! | header | offset | field |
 //! |---|---|---|
@@ -22,14 +22,14 @@
 //! | u32 | `+12` | `changed_rows` |
 //! | u32 | `+16` | `status_flags` |
 //! | u32 | `+20` | `province_count` (rows emitted by THIS record) |
-//! | u32 | `+24` | `observed_region_rows` (must be 305, `:17059`) |
+//! | u32 | `+24` | `observed_region_rows` (must be 305, `world_fold.rs::fold_weather`) |
 //! | u32 | `+28` | `observed_province_rows` (0, or 10_000..=65_536) |
-//! | u32 | `+32` | `scale_raw` (asserted `== FIXED_SCALE`, `:17058`) |
-//! | u32 | `+36` | `active_region_count` (delta-local witness, `:17210`) |
+//! | u32 | `+32` | `scale_raw` (asserted `== FIXED_SCALE`, `world_fold.rs::fold_weather`) |
+//! | u32 | `+36` | `active_region_count` (delta-local witness, `world_fold.rs::fold_weather`) |
 //! | u32 | `+40` | `reserved0` (must be 0) |
 //! | u32 | `+44` | `reserved1` (must be 0) |
 //!
-//! **This domain is baseline + delta** (`:17328`-`:17343`), unlike d63's
+//! **This domain is baseline + delta** (`world_fold.rs::fold_weather`), unlike d63's
 //! full-replace. A record without `COMPACT_STATUS_DELTA_DATA` resets
 //! `weather_live` and must carry all 305 regions and all `observed_province_rows`
 //! provinces; a delta record upserts its rows and never deletes. `WeatherState`
@@ -49,7 +49,7 @@
 //!
 //! | province row | offset | field | scale | gate |
 //! |---|---|---|---|---|
-//! | u32 | `+0`  | `province_id`            | raw  | none (key; **0 is a real row**, `:17228`) |
+//! | u32 | `+0`  | `province_id`            | raw  | none (key; **0 is a real row**, `world_fold.rs::fold_weather`) |
 //! | u32 | `+4`  | `flags`                  | —    | — |
 //! | i32 | `+8`  | `temperature_raw`        | /1e5 | `TEMP_PRESENT` |
 //! | i32 | `+12` | `temperature_change_raw` | /1e5 | `TEMP_CHANGE_PRESENT` |
@@ -65,12 +65,12 @@
 //! schema carries the function's inputs and not its outputs — that is a rewrite
 //! of the same information, not a loss, and every one is proved by a test here:
 //!
-//! - `active_signal == phenomenon_active == (phenomenon != 0)` (`:17161`). Both
+//! - `active_signal == phenomenon_active == (phenomenon != 0)` (`world_fold.rs::fold_weather`). Both
 //!   bits are what the fold itself calls "activity witnesses"; `phenomenon` is
 //!   carried and both bits read off it.
-//! - `map_recolor == (temp_present || water_present || snow_present)` (`:17258`).
+//! - `map_recolor == (temp_present || water_present || snow_present)` (`world_fold.rs::fold_weather`).
 //!   Those three presences are the record's own unknown bits.
-//! - `dynamic_lut == (snow_present || mud_present)` (`:17263`). Likewise.
+//! - `dynamic_lut == (snow_present || mud_present)` (`world_fold.rs::fold_weather`). Likewise.
 //!   The collector names both of these `..._DRIVER`
 //!   (`lanes/weather_live/domain24_weather_sandstorm_v3.rs:49`-`:50`,
 //!   `:133`-`:138`) and computes them from the presences exactly this way.
@@ -131,7 +131,7 @@
 //! every row (`:17207`, `:17324`) without dividing. The division happens in the
 //! fold's JSON: `temperature`, `temperature_change`, `water` and `snow` are all
 //! `raw / scale_raw` (`:24243`, `:24277`-`:24284`, `optional_scaled_i32` at
-//! `:26778`). This mapper applies that division. The five raw-only region words
+//! `world_fold.rs::optional_scaled_i32`). This mapper applies that division. The five raw-only region words
 //! (`phenomenon`, `next_weather_change_raw`, `active_modifier_count`,
 //! `intensity`) are emitted undivided by the fold and are undivided here.
 //!
@@ -201,31 +201,31 @@ pub mod weather_kind {
 
 // --- Payload grammar, from `world_fold.rs:761`-`:808` and `:17032`-`:17326`. --
 
-/// `WEATHER_HEADER_LEN`, `world_fold.rs:761`.
+/// `WEATHER_HEADER_LEN`, `world_fold.rs::WEATHER_HEADER_LEN`.
 pub const HEADER_LEN: usize = 48;
-/// `WEATHER_REGION_ROW_LEN`, `world_fold.rs:762`.
+/// `WEATHER_REGION_ROW_LEN`, `world_fold.rs::WEATHER_REGION_ROW_LEN`.
 pub const REGION_ROW_LEN: usize = 32;
-/// `WEATHER_PROVINCE_ROW_LEN`, `world_fold.rs:763`.
+/// `WEATHER_PROVINCE_ROW_LEN`, `world_fold.rs::WEATHER_PROVINCE_ROW_LEN`.
 pub const PROVINCE_ROW_LEN: usize = 32;
-/// `WEATHER_REGION_ROWS`, `world_fold.rs:764`. A full snapshot carries exactly
+/// `WEATHER_REGION_ROWS`, `world_fold.rs::WEATHER_REGION_ROWS`. A full snapshot carries exactly
 /// this many regions (`:17072`).
 pub const REGION_ROWS: usize = 305;
 /// `WEATHER_MIN_PROVINCE_ROWS` / `WEATHER_MAX_PROVINCE_ROWS`, `:765`-`:766`.
 pub const MIN_PROVINCE_ROWS: usize = 10_000;
 pub const MAX_PROVINCE_ROWS: usize = 65_536;
-/// `WEATHER_MAX_REGION_ID`, `world_fold.rs:767`.
+/// `WEATHER_MAX_REGION_ID`, `world_fold.rs::WEATHER_MAX_REGION_ID`.
 pub const MAX_REGION_ID: u32 = 304;
-/// `WEATHER_MAX_RAW_ACTIVITY_CANDIDATE`, `world_fold.rs:768`.
+/// `WEATHER_MAX_RAW_ACTIVITY_CANDIDATE`, `world_fold.rs::WEATHER_MAX_RAW_ACTIVITY_CANDIDATE`.
 pub const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
-/// `WEATHER_MAX_TEMPERATURE_RAW`, `world_fold.rs:769`.
+/// `WEATHER_MAX_TEMPERATURE_RAW`, `world_fold.rs::WEATHER_MAX_TEMPERATURE_RAW`.
 pub const MAX_TEMPERATURE_RAW: i32 = 10_000_000;
-/// `WEATHER_MAX_TEMP_CHANGE_RAW`, `world_fold.rs:770`.
+/// `WEATHER_MAX_TEMP_CHANGE_RAW`, `world_fold.rs::WEATHER_MAX_TEMP_CHANGE_RAW`.
 pub const MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
-/// `WEATHER_MAX_PRECIP_RAW`, `world_fold.rs:771`.
+/// `WEATHER_MAX_PRECIP_RAW`, `world_fold.rs::WEATHER_MAX_PRECIP_RAW`.
 pub const MAX_PRECIP_RAW: i32 = 100_000_000;
-/// `WEATHER_MAX_ACTIVE_MODIFIERS`, `world_fold.rs:772`.
+/// `WEATHER_MAX_ACTIVE_MODIFIERS`, `world_fold.rs::WEATHER_MAX_ACTIVE_MODIFIERS`.
 pub const MAX_ACTIVE_MODIFIERS: u32 = 4_096;
-/// `world_fold.rs:17186` bounds `intensity` at one byte.
+/// `world_fold.rs::fold_weather` bounds `intensity` at one byte.
 pub const MAX_INTENSITY: u32 = u8::MAX as u32;
 
 /// `COMPACT_STATUS_DELTA_DATA`. Named here because d24 is not admitted to the
@@ -233,7 +233,7 @@ pub const MAX_INTENSITY: u32 = u8::MAX as u32;
 /// value and the shipping contract agree.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`, and the header word the fold asserts
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`, and the header word the fold asserts
 /// equal to it (`:17058`).
 pub const FIXED_SCALE: f64 = 100_000.0;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
@@ -249,7 +249,7 @@ pub const REGION_ARCTIC_WATER: u32 = 1 << 4;
 pub const REGION_ACTIVE_SIGNAL: u32 = 1 << 5;
 pub const REGION_PHENOMENON_ACTIVE: u32 = 1 << 6;
 pub const REGION_SANDSTORM: u32 = 1 << 7;
-/// `WEATHER_REGION_KNOWN_FLAGS`, `world_fold.rs:781`. Any other bit is a hard
+/// `WEATHER_REGION_KNOWN_FLAGS`, `world_fold.rs::WEATHER_REGION_KNOWN_FLAGS`. Any other bit is a hard
 /// error (`:17137`) — an unrecognised flag word means the row is not this
 /// grammar.
 pub const REGION_KNOWN_FLAGS: u32 = REGION_RAIN_LIGHT
@@ -260,7 +260,7 @@ pub const REGION_KNOWN_FLAGS: u32 = REGION_RAIN_LIGHT
     | REGION_ACTIVE_SIGNAL
     | REGION_PHENOMENON_ACTIVE
     | REGION_SANDSTORM;
-/// The mutually-exclusive named weather bits (`world_fold.rs:17166`-`:17180`),
+/// The mutually-exclusive named weather bits (`world_fold.rs::fold_weather`),
 /// paired with the `weather_kind` code each maps to, in the fold's own
 /// if-chain order.
 pub const NAMED_WEATHER: [(u32, u32); 5] = [
@@ -281,7 +281,7 @@ pub const PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT: u32 = 1 << 6;
 pub const PROVINCE_STRUCT_VALIDATED: u32 = 1 << 7;
 pub const PROVINCE_MAP_RECOLOR: u32 = 1 << 8;
 pub const PROVINCE_DYNAMIC_LUT: u32 = 1 << 9;
-/// `WEATHER_PROVINCE_KNOWN_FLAGS`, `world_fold.rs:799`; enforced at `:17239`.
+/// `WEATHER_PROVINCE_KNOWN_FLAGS`, `world_fold.rs::WEATHER_PROVINCE_KNOWN_FLAGS`; enforced at `:17239`.
 pub const PROVINCE_KNOWN_FLAGS: u32 = PROVINCE_TEMP_PRESENT
     | PROVINCE_TEMP_CHANGE_PRESENT
     | PROVINCE_WATER_PRESENT
@@ -296,7 +296,7 @@ pub const PROVINCE_KNOWN_FLAGS: u32 = PROVINCE_TEMP_PRESENT
 pub fn schema() -> Schema {
     // Every scaled channel is `Quant::Fixed(5)`, and that is not a precision
     // *choice*: the source is a signed int32 CFixedPoint whose denominator the
-    // fold asserts to be exactly `10^5` (`world_fold.rs:17058`), so
+    // fold asserts to be exactly `10^5` (`world_fold.rs::fold_weather`), so
     // `fixed(5)` reproduces the source integer bit for bit over the whole
     // declared raw range (proved in the tests below). §6's "exact unless
     // justified" bar is met by a stronger fact than a precision budget: nothing
@@ -314,7 +314,7 @@ pub fn schema() -> Schema {
         collection_id: REGIONS,
         // A strategic region keeps its identity for the whole campaign, which is
         // what a keyed set needs — and only a keyed set has a delta grammar
-        // (§7.3). d24 is itself baseline + delta (`world_fold.rs:17328`).
+        // (§7.3). d24 is itself baseline + delta (`world_fold.rs::fold_weather`).
         shape: Shape::KeyedSet,
         fields: vec![
             // ContentId because a strategic region is content-defined (§5): a
@@ -353,7 +353,7 @@ pub fn schema() -> Schema {
         shape: Shape::KeyedSet,
         fields: vec![
             // ContentId for the same reason as d20's `location_province`.
-            // Province 0 is a REAL row here (`world_fold.rs:17228`-`:17231`),
+            // Province 0 is a REAL row here (`world_fold.rs::fold_weather`),
             // unlike gameplay-facing province references.
             Field::new(province_field::PROVINCE_ID, Kind::ContentId).key(0),
             Field::new(province_field::TEMPERATURE, Kind::Continuous)
@@ -390,7 +390,7 @@ pub fn schema() -> Schema {
 
 // --- The payload header ------------------------------------------------------
 
-/// The 48-byte payload header (`world_fold.rs:17032`-`:17042`).
+/// The 48-byte payload header (`world_fold.rs::fold_weather`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -407,7 +407,7 @@ pub struct PayloadHeader {
 }
 
 impl PayloadHeader {
-    /// `world_fold.rs:17057`.
+    /// `world_fold.rs::fold_weather`.
     pub fn is_delta(self) -> bool {
         self.status_flags & STATUS_DELTA_DATA != 0
     }
@@ -445,7 +445,7 @@ pub fn parse_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
 
 /// Split a d24 DATA payload into its header, its region rows and its province
 /// rows, applying every structural check `fold_weather` applies
-/// (`world_fold.rs:17050`-`:17116`).
+/// (`world_fold.rs::fold_weather`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -573,12 +573,12 @@ pub fn split_payload(
 // --- The boundary mapping: regions -------------------------------------------
 
 /// The key of one compact region row: its `region_id`
-/// (`world_fold.rs:17123`, `:17132`).
+/// (`world_fold.rs::fold_weather`).
 pub fn key_from_region_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[region_id_of_row(row)? as u64]))
 }
 
-/// `region_id` with the fold's row-local bound (`world_fold.rs:17132`). The
+/// `region_id` with the fold's row-local bound (`world_fold.rs::fold_weather`). The
 /// duplicate half of that same check is frame-level and lives in
 /// [`WeatherState::fold_payload`].
 pub fn region_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
@@ -705,7 +705,7 @@ pub fn record_from_region_row(
 // --- The boundary mapping: provinces -----------------------------------------
 
 /// The key of one compact province row: its `province_id`
-/// (`world_fold.rs:17219`). **Province 0 is a real row** (`:17228`-`:17231`), so
+/// (`world_fold.rs::fold_weather`). **Province 0 is a real row** (`world_fold.rs::fold_weather`), so
 /// there is no zero rejection here — the fold's only id check is the
 /// `< observed_province_rows` bound, which is header-relative and therefore
 /// frame-level ([`WeatherState::fold_payload`]).
@@ -718,7 +718,7 @@ pub fn province_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     Ok(u32_at(row, 0))
 }
 
-/// The fold's header-relative province id bound (`world_fold.rs:17232`). Public
+/// The fold's header-relative province id bound (`world_fold.rs::fold_weather`). Public
 /// because it cannot live in [`record_from_province_row`] — it needs the
 /// payload header — and a caller that re-derives it can drift.
 pub fn check_province_id(
@@ -774,7 +774,7 @@ pub fn record_from_province_row(
         return Err("weather province row has inconsistent dynamic LUT flag".to_string());
     }
 
-    // `validate_weather_i32_optional`, `world_fold.rs:26794`: a present value
+    // `validate_weather_i32_optional`, `world_fold.rs::validate_weather_i32_optional`: a present value
     // must be in range, and a gated-off field must pack a zero. The second half
     // is what makes an ungated non-zero word a malformed row rather than data.
     let temperature_raw = gated_i32(
@@ -870,7 +870,7 @@ pub enum FoldOutcome {
 }
 
 /// The reconstructed `weather_live` state, folded exactly as `fold_weather`
-/// folds it (`world_fold.rs:17328`-`:17356`).
+/// folds it (`world_fold.rs::fold_weather`).
 ///
 /// d24 is baseline + delta, so an hour's state is *not* an hour's rows: it is
 /// this accumulator after the hour's record. Every caller — the measurement
@@ -889,12 +889,12 @@ pub struct WeatherState {
 
 impl WeatherState {
     /// The active-region witness the fold recomputes over the *reconstructed*
-    /// state after merging (`world_fold.rs:17349`-`:17355`) — a derived value,
+    /// state after merging (`world_fold.rs::fold_weather`) — a derived value,
     /// which is why no field carries it.
     ///
     /// It is derived from `phenomenon`, not from a stored `active_signal` bit,
     /// because the fold proves the two identical for every accepted row
-    /// (`:17161`).
+    /// (`world_fold.rs::fold_weather`).
     pub fn active_region_count(&self, collection: &Collection) -> usize {
         let Some(index) = collection
             .value_fields()
@@ -1227,8 +1227,8 @@ mod tests {
     }
 
     /// A full snapshot with no province rows at all. `observed_province_rows`
-    /// may legally be zero (`world_fold.rs:17064`), and then `province_count`
-    /// must be zero too (`:17087`) — the cheap fixture for whole-payload sweeps.
+    /// may legally be zero (`world_fold.rs::fold_weather`), and then `province_count`
+    /// must be zero too (`world_fold.rs::fold_weather`) — the cheap fixture for whole-payload sweeps.
     fn region_only_baseline() -> Vec<u8> {
         let regions: Vec<Vec<u8>> = (0..REGION_ROWS as u32)
             .map(|id| region_row(id, 0, -50_000, 0, 60_832_505, 0, 0))
@@ -1283,7 +1283,7 @@ mod tests {
 
     #[test]
     fn province_zero_is_a_real_key() {
-        // `world_fold.rs:17228`-`:17231`: the engine array is indexed
+        // `world_fold.rs::fold_weather`: the engine array is indexed
         // `0..observed-1`, so id 0 is a completeness row, not a null reference.
         // The deep-war capture carries it in every baseline.
         let row = province_row(0, full_province_flags(false), 0, 0, 0, 0, 0);
@@ -1296,7 +1296,7 @@ mod tests {
     #[test]
     fn the_region_collection_declares_no_empty_state_at_all() {
         // No region field is gated: `fold_weather` reads all seven values
-        // unconditionally (`world_fold.rs:17123`-`:17208`), so the region
+        // unconditionally (`world_fold.rs::fold_weather`), so the region
         // collection can never emit Absent, Null or Unknown and must declare
         // none of the three. Step 8.3's per-capability raw-bytes cases therefore
         // do not apply to this collection; the assertion below is what keeps the
@@ -1721,7 +1721,7 @@ mod tests {
 
     #[test]
     fn the_activity_witnesses_are_recoverable_from_phenomenon() {
-        // `world_fold.rs:17161` makes active_signal == phenomenon_active ==
+        // `world_fold.rs::fold_weather` makes active_signal == phenomenon_active ==
         // (phenomenon != 0) on every accepted row, so the two flag bits are a
         // function of a carried field. Over the whole legal phenomenon space.
         let c = region_collection();
@@ -2252,7 +2252,7 @@ mod tests {
 
     #[test]
     fn the_active_region_witness_is_recomputed_over_reconstructed_state() {
-        // `world_fold.rs:17349`-`:17355`: after a delta the count is over the
+        // `world_fold.rs::fold_weather`: after a delta the count is over the
         // whole 305-region state, not over the delta's own rows. A field
         // carrying the header's number would be wrong on every delta.
         let s = schema();

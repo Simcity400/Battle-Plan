@@ -55,7 +55,7 @@
 //!
 //! **`built_count_from_raw` is not a scale, and the derived count is not a
 //! field.** The fold emits both `amount_raw` and `amount`
-//! (`world_fold.rs:11487`-`:11489`), where `amount` is
+//! (`world_fold.rs::fold_nuke_stockpile`), where `amount` is
 //! `built_count_from_raw(amount_raw)`: a pure function of a field this schema
 //! already carries, so it is a derived value and not state (recipe step 2). Its
 //! arithmetic is `raw.wrapping_mul(100_000).wrapping_div(10_000_000_000_000)` —
@@ -69,7 +69,7 @@
 //! **not** mirror `built_count_from_raw` — the leaf's own header says it is
 //! dependency-free precisely so no second interpretation exists.
 //!
-//! `nukes_total` and `nukes_ready_total` (`world_fold.rs:11480`-`:11481`) are
+//! `nukes_total` and `nukes_ready_total` (`world_fold.rs::fold_nuke_stockpile`) are
 //! likewise per-country folds over the entries this schema carries, so they are
 //! derived and unmapped.
 //!
@@ -109,7 +109,7 @@
 //! the collector converts any such error into a rowless
 //! `COMPACT_STATUS_SOURCE_UNAVAILABLE` frame with **no snapshot at all**
 //! (`attach_log.rs:32117`-`:32133`), which the fold treats as a failed
-//! domain-hour that folds nothing (`world_fold.rs:11461`-`:11468`). That is an
+//! domain-hour that folds nothing (`world_fold.rs::fold_nuke_stockpile`). That is an
 //! hour with no d83 state, not a row with an empty field — §3's four states are
 //! per field. Declaring a capability no mapper can emit would cost real bits (§3
 //! sizes the null and unknown bitmaps by the fields that declare them) and
@@ -249,7 +249,7 @@ pub fn schema() -> Schema {
     use field as f;
 
     // `countries`: the stockpile-container roster. The key is the country's
-    // `tag_db_id` (`world_fold.rs:11495`), the same identity d18 keys its roster
+    // `tag_db_id` (`world_fold.rs::fold_nuke_stockpile`), the same identity d18 keys its roster
     // by and the one d63 keys its own rows by. `ContentId` because a country tag
     // is content-defined (§5) — a manifest must resolve it for it to keep its
     // meaning under another mod set, which is the deciding question for
@@ -258,7 +258,7 @@ pub fn schema() -> Schema {
     //
     // `container_capacity` is the engine container's allocated capacity
     // (`nuke_stockpile_exact.rs:91`, read from `COUNTRY_NUKE_CAPACITY_OFF`),
-    // emitted raw by the fold (`world_fold.rs:11496`). `Unsigned`, not `Signed`:
+    // emitted raw by the fold (`world_fold.rs::fold_nuke_stockpile`). `Unsigned`, not `Signed`:
     // the source word is `i32` but the codec rejects anything below
     // `NUKE_TYPE_COUNT` (`lib.rs:252`), so the value can never be negative and
     // the mapper checks that bound before it casts. Not `Monotone` either: a
@@ -277,7 +277,7 @@ pub fn schema() -> Schema {
     // `stockpile_entries`: the per-country typed warhead rows, flattened onto
     // `(tag_db_id, nuke_type)` exactly as d23 flattens its `(parent, type_id)`
     // entry tables. The fold's own JSON nests them under the country
-    // (`world_fold.rs:11486`-`:11499`), and the entry's position in that array
+    // (`world_fold.rs::fold_nuke_stockpile`), and the entry's position in that array
     // is not state — the codec forces it to equal `nuke_type_raw`
     // (`lib.rs:258`-`:265`), so the type IS the identity.
     //
@@ -292,7 +292,7 @@ pub fn schema() -> Schema {
     //
     // `nukes_ready` is the engine's serialized ready leaf
     // (`nuke_stockpile_exact.rs:176`-`:183`), a `u32` the fold emits raw
-    // (`world_fold.rs:11490`). `Unsigned`, not `Monotone`, for the same reason.
+    // (`world_fold.rs::fold_nuke_stockpile`). `Unsigned`, not `Monotone`, for the same reason.
     let stockpile_entries = Collection {
         collection_id: STOCKPILE_ENTRIES,
         shape: Shape::KeyedSet,
@@ -309,7 +309,7 @@ pub fn schema() -> Schema {
         // Hourly, like every other compact lane: one DATA record per game hour.
         cadence_log2: 0,
         // Full replace each frame — the fold assigns one whole per-hour value and
-        // clears it on failure (`world_fold.rs:11466`, `:11504`) — but
+        // clears it on failure (`world_fold.rs::fold_nuke_stockpile`) — but
         // `tag_db_id` and `(tag_db_id, nuke_type)` are stable identities that
         // persist across hours, which is what a keyed set needs, and only a keyed
         // set has a delta grammar (§7.3).
@@ -353,7 +353,7 @@ pub struct PayloadHeader {
 /// that can drift from the recorder without anything failing.
 ///
 /// **Call order matters.** `fold_nuke_stockpile` decodes the payload
-/// (`world_fold.rs:11459`) *before* it consults the status word (`:11461`), so a
+/// (`world_fold.rs::fold_nuke_stockpile`) *before* it consults the status word (`world_fold.rs::fold_nuke_stockpile`), so a
 /// caller that excludes failure-status records must run this first and exclude
 /// afterwards — a malformed payload is a refused stream whatever its status is.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u8]), String> {
@@ -614,7 +614,7 @@ pub fn split_country_block(block: &[u8]) -> core::result::Result<(&[u8], &[u8]),
     Ok((row, entries))
 }
 
-/// The key of one country row: its `tag_db_id` (`world_fold.rs:11495`).
+/// The key of one country row: its `tag_db_id` (`world_fold.rs::fold_nuke_stockpile`).
 pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[tag_db_id_of_row(row)? as u64]))
 }
@@ -670,7 +670,7 @@ pub fn record_from_country_row(
 /// One 24-byte entry row onto its stored `stockpile_entries` Record.
 ///
 /// **`amount_raw` is carried raw and unscaled.** The fold's `amount`
-/// (`world_fold.rs:11489`) is `built_count_from_raw(amount_raw)`, a ÷10⁸ integer
+/// (`world_fold.rs::fold_nuke_stockpile`) is `built_count_from_raw(amount_raw)`, a ÷10⁸ integer
 /// law with a `0xa7c5` sentinel, not a scale factor — see the module docs.
 pub fn record_from_stockpile_entry_row(
     collection: &Collection,
@@ -700,7 +700,7 @@ fn no_mapping(table: &str, field_id: u32) -> String {
 /// One hour of d83 state: the two collections, in schema order.
 ///
 /// d83 is full-replace — the fold assigns one whole per-hour value
-/// (`world_fold.rs:11504`) — so one usable record *is* one state and there is no
+/// (`world_fold.rs::fold_nuke_stockpile`) — so one usable record *is* one state and there is no
 /// accumulator to carry across hours. The walk still lives here rather than in
 /// the measurement harness so the tests and the harness share one derivation of
 /// the payload's nesting.
@@ -733,7 +733,7 @@ impl NukeStockpileState {
 }
 
 /// Fold one clean d83 payload body into its hour's state, exactly as
-/// `fold_nuke_stockpile` does (`world_fold.rs:11469`-`:11504`).
+/// `fold_nuke_stockpile` does (`world_fold.rs::fold_nuke_stockpile`).
 ///
 /// `header` and `body` come from [`split_payload`]. **The caller applies the
 /// failure-status exclusion first**: `handle_compact_failure`
@@ -752,12 +752,12 @@ pub fn fold_payload(
             schema.collections.len()
         ));
     }
-    // `world_fold.rs:11469`-`:11471`: a clean payload without the receipt is an
+    // `world_fold.rs::fold_nuke_stockpile`: a clean payload without the receipt is an
     // error, not an hour to drop.
     if header.authority != Authority::ExactA729Receipt {
         return Err("clean nuke_stockpile payload lacks receipted authority".into());
     }
-    // `world_fold.rs:11472`-`:11474`.
+    // `world_fold.rs::fold_nuke_stockpile`.
     if !header.has_snapshot {
         return Err("nuke_stockpile clean payload omitted authenticated snapshot".into());
     }
@@ -1340,8 +1340,8 @@ mod tests {
         // The frame the collector emits for any source failure
         // (`attach_log.rs:32117`-`:32126`): authority 0, non-zero status, zeroed
         // receipt, no snapshot. It must parse — the fold decodes before it looks
-        // at the status word (`world_fold.rs:11459`-`:11461`) — and it must not
-        // fold, because a clean fold requires the receipt (`:11469`).
+        // at the status word (`world_fold.rs::fold_nuke_stockpile`) — and it must not
+        // fold, because a clean fold requires the receipt (`world_fold.rs::fold_nuke_stockpile`).
         let schema = schema();
         let p = unavailable_payload(1);
         let (header, body) = split_payload(&p).expect("an unavailable frame is well-formed");

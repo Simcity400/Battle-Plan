@@ -8,6 +8,11 @@ top-level authority marker therefore pins three things to the source it cites:
 * the exact lexical function envelope; and
 * a SHA-256 of the cited source bytes after newline normalization.
 
+That marker owns exactly one line range.  Every OTHER line number in these
+modules is free text: it drifts on the next insertion into ``world_fold.rs`` and
+nothing notices.  Those have been rewritten to name the item they point at, and
+the ones that could not be are ratcheted -- see ``verify_prose_references``.
+
 The two ports which also transcribe a capture-lane payload decoder (d51 and d52)
 carry a second marker.  That marker hashes the original decoder, not the
 transcription, so a changed production authority cannot be approved by tests of
@@ -18,8 +23,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -27,6 +34,9 @@ from typing import Iterable
 
 WORLD_FOLD = Path("extractor/native/recorder_host/src/world_fold.rs")
 WIRE_SRC = Path("extractor/native/wire_format/src")
+PROSE_ALLOWANCE = Path(
+    "extractor/native/scripts/world_fold_prose_reference_allowance.json"
+)
 
 WORLD_MARKER_RE = re.compile(
     r"^// @world-fold-authority "
@@ -258,13 +268,96 @@ def _only_match(pattern: re.Pattern[str], source: str, label: str) -> re.Match[s
     return matches[0]
 
 
+def gated_citation(marker: re.Match[str]) -> str:
+    """The one human citation the ``lines=``/sha256 marker backs."""
+    return f"`world_fold.rs:{marker.group('start')}`-`:{marker.group('end')}`"
+
+
+def ungated_prose_references(source: str, marker: re.Match[str]) -> list[int]:
+    """Every `world_fold.rs:N` in a module that the digest gate does not own.
+
+    The gated citation -- the ``lines=`` marker's paired human form -- is the one
+    place a line number belongs, because the sha256 beside it fails the moment
+    those bytes move.  Every OTHER line number is free text that nothing checks,
+    drifts silently on the next insertion, and should name the item instead.
+
+    ONE occurrence is owned, not every occurrence.  Treating them all as owned
+    would let a second, unpaired copy of the gated text smuggle two unchecked
+    line numbers past the ratchet, and the digest backs a citation, not a string
+    that happens to look like one.  ``verify_repo`` separately requires the
+    citation to appear exactly once, so the first match is that one occurrence.
+    """
+    gated = gated_citation(marker)
+    found = re.search(re.escape(gated), source)
+    owned = (found.start(), found.end()) if found else (-1, -1)
+    return sorted(
+        int(reference.group(1))
+        for reference in re.finditer(r"world_fold\.rs:(\d+)", source)
+        if not owned[0] <= reference.start() < owned[1]
+    )
+
+
+def verify_prose_references(
+    repo_root: Path, modules: Iterable[Path], markers: dict[str, re.Match[str]]
+) -> int:
+    """Fail when a module gains a world_fold.rs line number outside the gate.
+
+    This is a ratchet, not a clean-tree assertion.  The references that survive
+    today are the ones no tool could resolve to an item with total confidence --
+    ranges spanning several items, struct fields, and citations that were already
+    off by one when they were written.  They are listed per module in
+    ``world_fold_prose_reference_allowance.json``, and the list may only shrink:
+    citing a NEW line number, or swapping one for another, fails here.
+
+    Known and accepted limit: the budget is per (module, line number), not per
+    site.  Deleting one grandfathered occurrence and citing the SAME number again
+    elsewhere in the SAME module passes.  Binding to a site would mean recording
+    a position in a file whose own line numbers move -- the very failure this
+    check exists to stop -- and the hole admits no line number that module was
+    not already allowed to cite.
+    """
+    allowance_path = repo_root / PROSE_ALLOWANCE
+    if allowance_path.is_file():
+        try:
+            allowance = json.loads(allowance_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise VerificationError(
+                f"cannot read the prose-reference allowance {allowance_path}: {error}"
+            ) from error
+    else:
+        # No allowance file means no reference is grandfathered.  That fails
+        # closed: a tree that lost the file fails loudly instead of quietly
+        # permitting everything.
+        allowance = {}
+    permitted: dict[str, list[int]] = allowance.get("modules", {})
+
+    total = 0
+    for module in modules:
+        name = module.name
+        found = ungated_prose_references(_read_utf8(module), markers[name])
+        total += len(found)
+        budget = Counter(permitted.get(name, []))
+        for line in found:
+            if budget[line] <= 0:
+                raise VerificationError(
+                    f"{name}: `world_fold.rs:{line}` is a free-text line number "
+                    f"the digest gate does not own. Line numbers drift on the "
+                    f"next insertion into world_fold.rs and nothing catches it; "
+                    f"cite the item instead, as `world_fold.rs::<item_name>`. "
+                    f"(If this reference genuinely cannot be named, add it to "
+                    f"{PROSE_ALLOWANCE.name} with the reason.)"
+                )
+            budget[line] -= 1
+    return total
+
+
 def verify_repo(
     repo_root: Path,
     *,
     required_lane_authorities: Iterable[tuple[int, str, str]] = (
         REQUIRED_LANE_AUTHORITIES
     ),
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     repo_root = repo_root.resolve()
     world_path = repo_root / WORLD_FOLD
     world_source = _read_utf8(world_path)
@@ -290,7 +383,12 @@ def verify_repo(
     # days, and because this check runs before Cargo, the whole central gate
     # was unreachable the entire time. Report the complete set so one fix pass
     # can close it.
+    #
+    # The marker checks below are deliberately NOT also run as a fail-fast
+    # pre-pass: the same checks reporting twice would restore exactly the
+    # stop-at-the-first-defect behaviour this accumulator exists to remove.
     module_failures: list[str] = []
+    world_markers: dict[str, re.Match[str]] = {}
     for module in modules:
         domain = int(module.stem[1:])
         module_source = _read_utf8(module)
@@ -298,6 +396,7 @@ def verify_repo(
             marker = _only_match(
                 WORLD_MARKER_RE, module_source, module.relative_to(repo_root).as_posix()
             )
+            world_markers[module.name] = marker
             marker_domain = int(marker.group("domain"))
             if marker_domain != domain:
                 raise VerificationError(
@@ -333,12 +432,15 @@ def verify_repo(
                     f"{module.name}: authority digest changed for "
                     f"{expected.start}-{expected.end}"
                 )
-            human_citation = (
-                f"`world_fold.rs:{expected.start}`-`:{expected.end}`"
-            )
-            if human_citation not in module_source:
+            human_citation = gated_citation(marker)
+            # Exactly once, not at least once.  The digest backs one citation; a
+            # second copy of the same text is two more unchecked line numbers,
+            # and the free-text ratchet would read them as gated.
+            occurrences = module_source.count(human_citation)
+            if occurrences != 1:
                 raise VerificationError(
-                    f"{module.name}: human authority citation is not {human_citation}"
+                    f"{module.name}: expected exactly one human authority citation "
+                    f"{human_citation}, found {occurrences}"
                 )
         except VerificationError as error:
             module_failures.append(str(error))
@@ -408,7 +510,9 @@ def verify_repo(
             + "; ".join(module_failures)
         )
 
-    return len(modules), len(lane_markers)
+    grandfathered = verify_prose_references(repo_root, modules, world_markers)
+
+    return len(modules), len(lane_markers), grandfathered
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -420,13 +524,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        module_count, lane_count = verify_repo(args.repo_root)
+        module_count, lane_count, grandfathered = verify_repo(args.repo_root)
     except VerificationError as error:
         print(f"world-fold citation authority check: FAIL: {error}", file=sys.stderr)
         return 1
     print(
         "world-fold citation authority check: PASS "
-        f"({module_count} dNN modules, {lane_count} lane authorities)"
+        f"({module_count} dNN modules, {lane_count} lane authorities, "
+        f"{grandfathered} grandfathered prose line references)"
     )
     return 0
 

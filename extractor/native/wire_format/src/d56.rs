@@ -11,7 +11,7 @@
 //! (`read_task_force_row`). There is no `documents/domains/d56_*.md` dossier.
 //!
 //! **The fold decodes the WHOLE payload before it looks at status**
-//! (`world_fold.rs:22120`-`:22122`: `naval56::decode_status_payload(...)?`), so a
+//! (`world_fold.rs::fold_naval_missions_status`: `naval56::decode_status_payload(...)?`), so a
 //! malformed payload is a refused stream whatever its status word — the d83 shape,
 //! not the d63 one. Production's second authority
 //! (`recorder_host/src/domain_data_authority.rs:8628`-`:8653`) runs the same lane
@@ -68,7 +68,7 @@
 //!
 //! **Four-state semantics come from the collector read**, `read_task_force_row`
 //! (`lib.rs:493`-`:605`), because the fold answers only null-vs-value (it emits
-//! JSON `Null` for every clear gate, `world_fold.rs:22159`-`:22193`). Every gated
+//! JSON `Null` for every clear gate, `world_fold.rs::fold_naval_missions_status`). Every gated
 //! field here is **unknown** on a clear gate, and one field — `sunk_convoys` — is
 //! a measured **zero**:
 //!
@@ -99,7 +99,7 @@
 //!   set exactly when the computed total is non-zero. The gate is therefore
 //!   value-derived and a clear gate is a measured **Zero**, not an empty state —
 //!   a fidelity gain over the fold, which folds `Null` there
-//!   (`world_fold.rs:22189`-`:22193`). It is lossless only because the decoder
+//!   (`world_fold.rs::fold_naval_missions_status`). It is lossless only because the decoder
 //!   requires a zero word under a clear gate (`domain56_compact.rs:1048`-`:1052`),
 //!   which this mapper enforces rather than assumes. The collector-side ambiguity
 //!   that remains — `aggregate_sunk_convoys` (`lib.rs:787`-`:823`) folds an
@@ -121,7 +121,7 @@
 //! and §13 records its measured port. The fold agrees: it calls the array an
 //! "ORDER-PRESERVING occurrence list, not a keyed map", full-replaces it on every
 //! successful frame regardless of the delta flag, and pushes every decoded row in
-//! emit order into a `Vec` (`world_fold.rs:22589`-`:22609`), and the decoder states
+//! emit order into a `Vec` (`world_fold.rs::fold_naval_missions_status`), and the decoder states
 //! that `(region, controller)` is explicitly NOT a uniqueness key, with live RE
 //! evidence of repeats (`domain56_compact.rs:438`-`:449`).
 //!
@@ -139,7 +139,7 @@
 //! the implemented reading rather than disappearing once the shape exists.
 //!
 //! The trailer is still fully **validated** here, because the fold decodes it before
-//! it folds anything (`world_fold.rs:22511`-`:22513`): a malformed trailer is a
+//! it folds anything (`world_fold.rs::fold_naval_missions_status`): a malformed trailer is a
 //! refused stream, and a harness that skipped the walk would measure payloads
 //! production rejects. [`split_payload`] does the walk and [`check_supremacy_row`]
 //! the per-row bounds; nothing maps them into records.
@@ -244,7 +244,7 @@ pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
 
 /// `NAVAL_SUPREMACY_FIXED_SCALE_RAW`, `domain56_compact.rs:41`, and the divisor
 /// the fold's own projection applies to all six supremacy words
-/// (`world_fold.rs:9019`-`:9024`, documented at `:9000`-`:9004`: they are
+/// (`world_fold.rs::insert_naval_supremacy`, documented at `:9000`-`:9004`: they are
 /// CFixedPoint dominance *points*, `raw / 100_000`, not a normalised fraction —
 /// only `individual_ratio` is a ratio).
 pub const FIXED_SCALE: f64 = 100_000.0;
@@ -331,10 +331,10 @@ pub fn schema() -> Schema {
     let task_forces = Collection {
         collection_id: TASK_FORCES,
         // The fold keys its accumulator by `task_force_id` alone
-        // (`world_fold.rs:22153`), a runtime identity that persists across hours,
+        // (`world_fold.rs::fold_naval_missions_status`), a runtime identity that persists across hours,
         // which is what a keyed set needs — and only a keyed set has a delta
         // grammar (§7.3). Full replace on a non-delta frame, upsert on a delta
-        // one, no tombstone contract (`:22138`-`:22143`).
+        // one, no tombstone contract (`world_fold.rs::fold_naval_missions_status`).
         shape: Shape::KeyedSet,
         fields: vec![
             // A task force id is created during play and means nothing under
@@ -383,7 +383,7 @@ pub fn schema() -> Schema {
     let naval_supremacy = Collection {
         collection_id: NAVAL_SUPREMACY,
         // The fold clears and pushes every decoded row in emit order on every
-        // successful frame (`world_fold.rs:22589`-`:22609`). Duplicate
+        // successful frame (`world_fold.rs::fold_naval_missions_status`). Duplicate
         // `(region, controller)` pairs are legitimate, so there is no key.
         shape: Shape::OrderedOccurrenceList,
         fields: vec![
@@ -432,7 +432,7 @@ pub struct PayloadHeader {
 }
 
 impl PayloadHeader {
-    /// `world_fold.rs:22138`.
+    /// `world_fold.rs::fold_naval_missions_status`.
     pub fn is_delta(&self) -> bool {
         self.status_flags & STATUS_DELTA_DATA != 0
     }
@@ -453,7 +453,7 @@ pub struct SplitPayload<'a> {
 /// (`:362`-`:470`).
 ///
 /// The fold runs this decode **before** it consults the status word
-/// (`world_fold.rs:22120`-`:22122`), so every error here is a refused stream and
+/// (`world_fold.rs::fold_naval_missions_status`), so every error here is a refused stream and
 /// not an hour to skip — including on a record this harness would otherwise
 /// exclude for a failure status. The same decode is production's second authority
 /// on every DOMAIN_DATA record (`domain_data_authority.rs:8633`).
@@ -614,7 +614,7 @@ fn split_trailer(payload: &[u8], base_len: usize) -> core::result::Result<(&[u8]
 // --- The task-force boundary mapping -----------------------------------------
 
 /// The key of one compact task-force row: its `task_force_id`
-/// (`world_fold.rs:22153`), with the decoder's own id check
+/// (`world_fold.rs::fold_naval_missions_status`), with the decoder's own id check
 /// (`domain56_compact.rs:908`, `:1027`-`:1033`).
 pub fn key_from_task_force_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[task_force_id_of_row(row)? as u64]))
@@ -811,7 +811,7 @@ pub fn record_from_task_force_row(
 ///
 /// Validation remains separate from mapping because the fold decodes the whole
 /// payload, trailer included, before it folds anything
-/// (`world_fold.rs:22511`-`:22513`): a row this rejects is a refused stream even
+/// (`world_fold.rs::fold_naval_missions_status`): a row this rejects is a refused stream even
 /// on a non-folding status path.
 ///
 /// `ordinal` names the row's position in the trailer for the error message only.
@@ -899,13 +899,13 @@ pub struct DecodedPayload {
     pub header: PayloadHeader,
     pub task_forces: Vec<(Key, Record)>,
     /// Every sidecar row in emit order. A `Vec` is intentional: duplicates and
-    /// position are both fold state (`world_fold.rs:22589`-`:22609`).
+    /// position are both fold state (`world_fold.rs::fold_naval_missions_status`).
     pub naval_supremacy: Vec<Record>,
 }
 
 /// Decode and validate a whole d56 DATA payload — `naval56::decode_status_payload`
 /// (`domain56_compact.rs:182`-`:292`), which is both the fold's first act
-/// (`world_fold.rs:22120`-`:22122`) and production's second authority on every
+/// (`world_fold.rs::fold_naval_missions_status`) and production's second authority on every
 /// DOMAIN_DATA record whatever its status
 /// (`domain_data_authority.rs:8628`-`:8653`).
 ///
@@ -970,7 +970,7 @@ pub fn decode_payload(
 /// The accumulator `fold_naval_missions_status` maintains: the task-force map
 /// (`world_fold.rs:1718`) and the supremacy array (`:1726`), plus the
 /// `delta_baselines_seen` membership the fold's delta-before-baseline check reads
-/// (`:22130`-`:22136`, `:22220`-`:22223`).
+/// (`world_fold.rs::fold_naval_missions_status`).
 ///
 /// **No other writer.** Both accumulator fields are touched only by
 /// `fold_naval_missions_status` (`world_fold.rs:22143`, `:22153`, `:22203`,
@@ -995,7 +995,7 @@ pub enum FoldOutcome {
     /// with `compact_contract`'s own predicate and passes the answer in, so this
     /// module never re-derives a failure mask.
     FailureStatus,
-    /// `world_fold.rs:22130`-`:22136`.
+    /// `world_fold.rs::fold_naval_missions_status`.
     DeltaBeforeBaseline,
 }
 
@@ -1015,7 +1015,7 @@ impl State {
     /// **Error contract: all-or-nothing.** Every structural and per-row check runs
     /// and every record is built before a single accumulator write, which is what
     /// the fold does — `decode_status_payload` decodes and validates the whole
-    /// payload before the fold touches its maps (`world_fold.rs:22120`-`:22152`).
+    /// payload before the fold touches its maps (`world_fold.rs::fold_naval_missions_status`).
     /// A harness that assumed the partial-mutation contract instead would disagree
     /// with the recorder on exactly the frames that fail.
     pub fn fold_payload(
@@ -1038,7 +1038,7 @@ impl State {
             return Ok(FoldOutcome::DeltaBeforeBaseline);
         }
 
-        // 4. `world_fold.rs:22139`-`:22144`: full-replace frames with no deletion
+        // 4. `world_fold.rs::fold_naval_missions_status`: full-replace frames with no deletion
         // tombstone contract, so only a non-delta frame may clear stale rows.
         if !delta {
             self.task_forces.clear();
@@ -1576,7 +1576,7 @@ mod tests {
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Both zero cases the grammar has. `sunk_convoys` with its gate clear is
         // the measured zero the decoder requires the row to pack — the fidelity
-        // gain over the fold, which folds Null there (`world_fold.rs:22189`).
+        // gain over the fold, which folds Null there (`world_fold.rs::fold_naval_missions_status`).
         let c = task_force_collection();
         let raw = RawRow {
             flags: FLAG_HAS_MISSION | FLAG_HAS_MISSION_STATE | FLAG_VALIDATED_DIRECT,
@@ -1740,7 +1740,7 @@ mod tests {
         // The mapper depends on these offsets and the divisor, so pin them rather
         // than trusting the schema prose. Known fixed-point words are checked
         // against their exact readings at the fold's own divisor
-        // (`world_fold.rs:9019`-`:9024`) — the check that would catch a
+        // (`world_fold.rs::insert_naval_supremacy`) — the check that would catch a
         // 100000-vs-32768 error.
         let row = supremacy_row([16, 2, 100_000, 150_000, 1, 67_962_800, 250_000, 87_173]);
         check_supremacy_row(&row, 0).expect("legal row");
@@ -2285,7 +2285,7 @@ mod tests {
         assert_eq!(state.naval_supremacy.len(), 2);
         assert!(state.baseline_seen);
 
-        // A non-delta frame clears stale rows (`world_fold.rs:22142`).
+        // A non-delta frame clears stale rows (`world_fold.rs::fold_naval_missions_status`).
         let second = payload(
             0,
             1,
@@ -2384,7 +2384,7 @@ mod tests {
 
     #[test]
     fn a_malformed_payload_is_an_error_even_under_a_failure_status() {
-        // The fold decodes before it classifies (`world_fold.rs:22120`-`:22127`),
+        // The fold decodes before it classifies (`world_fold.rs::fold_naval_missions_status`),
         // so a bad payload refuses the stream whatever its status word says.
         let schema = schema();
         let mut state = State::new();
@@ -2408,7 +2408,7 @@ mod tests {
     #[test]
     fn duplicate_supremacy_occurrences_are_retained_in_source_order() {
         // Three rows, two of them byte-identical: the fold keeps all three in its
-        // `Vec` (`world_fold.rs:22595`-`:22609`), and the decoder says a
+        // `Vec` (`world_fold.rs::fold_naval_missions_status`), and the decoder says a
         // byte-identical repeat "can legitimately occur for zero/steady-state
         // entries" (`domain56_compact.rs:446`-`:449`). Any map keyed by the row's
         // own words would hold one. The count this port tracks holds three, which

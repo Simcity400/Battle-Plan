@@ -10,7 +10,7 @@
 //! `domains/UNDOCUMENTED_DOMAINS.md` lists d35 with no dossier; the fold and the
 //! collector read are the whole basis, which the recipe treats as sufficient.
 //!
-//! **Payload grammar** (`world_fold.rs:15211`-`:15247`, writer at
+//! **Payload grammar** (`world_fold.rs::fold_air_variant_stats`, writer at
 //! `attach_log.rs:70492`-`:70500`): a 36-byte header — `elapsed_wall_ms` u64 at
 //! `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at `+12`, `status_flags` u32
 //! at `+16`, `observed_variant_rows` u32 at `+20`, `invalid_variant_rows` u32 at
@@ -56,7 +56,7 @@
 //!
 //! The same fact has a second consequence that a full-replace domain would not
 //! have: **the fold copies both header words into every row's stored state**
-//! (`world_fold.rs:15269`-`:15270`), and d35 never clears its accumulator. A row
+//! (`world_fold.rs::fold_air_variant_stats`), and d35 never clears its accumulator. A row
 //! inserted while the header said `1_000` keeps `1_000` even after a later header
 //! says something else, because nothing re-states it. The scales are therefore
 //! per-row state, not a per-frame constant, and they are carried as per-row
@@ -202,10 +202,10 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:987`-`:988` and `:15211`-`:15271`. --
 
-/// `AIR_VARIANT_STATS_HEADER_LEN`, `world_fold.rs:987`; `need(payload, 36, ...)`
+/// `AIR_VARIANT_STATS_HEADER_LEN`, `world_fold.rs::AIR_VARIANT_STATS_HEADER_LEN`; `need(payload, 36, ...)`
 /// at `:15211`.
 pub const HEADER_LEN: usize = 36;
-/// `AIR_VARIANT_STATS_ROW_LEN`, `world_fold.rs:988`. Fixed; no legacy form.
+/// `AIR_VARIANT_STATS_ROW_LEN`, `world_fold.rs::AIR_VARIANT_STATS_ROW_LEN`. Fixed; no legacy form.
 pub const ROW_LEN: usize = 64;
 
 /// Which header word divides a stat. The fold picks per field, not per name
@@ -221,7 +221,7 @@ pub enum ScaleChoice {
 }
 
 /// The ten i32 stats, in row order, with their byte offsets and their scale.
-/// Taken from the fold's row reads (`world_fold.rs:15254`-`:15264`) paired with
+/// Taken from the fold's row reads (`world_fold.rs::fold_air_variant_stats`) paired with
 /// the render's divisions (`:23860`-`:23870`).
 pub const STATS: [(u32, usize, ScaleChoice); 10] = [
     (field::SPEED_CACHE, 20, ScaleChoice::Fixed),
@@ -239,7 +239,7 @@ pub const STATS: [(u32, usize, ScaleChoice); 10] = [
 /// The two header denominators, as one value a caller cannot build wrong.
 ///
 /// `fold_air_variant_stats` rejects the whole payload when either word is zero
-/// (`world_fold.rs:15220`-`:15222`), and it does so **before** the status guard,
+/// (`world_fold.rs::fold_air_variant_stats`), and it does so **before** the status guard,
 /// so the check applies to failure-status records too. Making that the only
 /// constructor means no code path in this crate can divide by a denominator the
 /// fold would have refused, including the paths that legitimately parse a
@@ -278,7 +278,7 @@ impl RowScales {
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
-        // Key: `variant_id` (`world_fold.rs:15240`, `:15248`). `Unsigned`, not
+        // Key: `variant_id` (`world_fold.rs::fold_air_variant_stats`). `Unsigned`, not
         // `ContentId` — a runtime instance identity, see the module docs.
         Field::new(f::VARIANT_ID, Kind::Unsigned).key(0),
         // Read and stored, never validated (`:15252`). An opaque witness word.
@@ -311,7 +311,7 @@ pub fn schema() -> Schema {
     }
 
     // The two denominators, carried per row because the fold stores them per row
-    // and d35 never clears (`world_fold.rs:15269`-`:15270`). They are what makes
+    // and d35 never clears (`world_fold.rs::fold_air_variant_stats`). They are what makes
     // the raw fixed-point word recoverable from the stored value.
     fields.push(Field::new(f::FIXED_SCALE_RAW, Kind::Unsigned));
     fields.push(Field::new(f::RANGE_SCALE_RAW, Kind::Unsigned));
@@ -335,7 +335,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 36-byte payload header (`world_fold.rs:15211`-`:15222`, writer at
+/// The 36-byte payload header (`world_fold.rs::fold_air_variant_stats`, writer at
 /// `attach_log.rs:70493`-`:70500`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
@@ -352,12 +352,12 @@ pub struct PayloadHeader {
 }
 
 /// Parse the header and apply **only the checks the fold performs before its
-/// status guard**: the 36-byte minimum (`world_fold.rs:15211`) and both scale
-/// words being non-zero (`:15220`-`:15222`).
+/// status guard**: the 36-byte minimum (`world_fold.rs::fold_air_variant_stats`) and both scale
+/// words being non-zero (`world_fold.rs::fold_air_variant_stats`).
 ///
 /// The split from [`split_payload`] is not stylistic. `fold_air_variant_stats`
-/// returns early on a failure status at `:15223`-`:15229`, **before** the exact
-/// length check at `:15230`-`:15237`. A failure-status record whose length does
+/// returns early on a failure status at `world_fold.rs::fold_air_variant_stats`, **before** the exact
+/// length check at `world_fold.rs::fold_air_variant_stats`. A failure-status record whose length does
 /// not match its `row_count` is therefore a record the recorder accepts and folds
 /// nothing from, and a caller that ran the length check first would refuse a
 /// stream the recorder reads happily. Callers that must classify a record by
@@ -383,12 +383,12 @@ pub fn parse_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
 
 /// Split a d35 DATA payload into its header and its rows slice, applying every
 /// structural check `fold_air_variant_stats` applies to a record it will fold
-/// (`world_fold.rs:15211`-`:15237`).
+/// (`world_fold.rs::fold_air_variant_stats`).
 ///
 /// A zero-row payload is well-formed and common: the collector emits only rows
 /// that changed since its own last frame, so 145 of the capture's 146 records
 /// are exactly 36 bytes with `row_count == 0`. The fold's loop simply does not
-/// run (`:15239`), and this returns an empty rows slice rather than an error.
+/// run (`world_fold.rs::fold_air_variant_stats`), and this returns an empty rows slice rather than an error.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u8]), String> {
     let header = parse_header(payload)?;
     // Checked arithmetic: `row_count` is a word from a file on disk, and
@@ -408,12 +408,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     Ok((header, &payload[HEADER_LEN..]))
 }
 
-/// The key of one compact row: its `variant_id` (`world_fold.rs:15240`-`:15248`).
+/// The key of one compact row: its `variant_id` (`world_fold.rs::fold_air_variant_stats`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[variant_id_of_row(row)? as u64]))
 }
 
-/// `variant_id` with the fold's zero check (`world_fold.rs:15241`-`:15243`).
+/// `variant_id` with the fold's zero check (`world_fold.rs::fold_air_variant_stats`).
 pub fn variant_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let variant_id = u32_at(row, 0);
@@ -434,7 +434,7 @@ pub fn variant_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// **`scales` is a fourth parameter, and it has to be.** The recipe's fixed
 /// signature assumes a domain whose scale factors are constants of its own
 /// module; d35's are words in the payload header that the fold does not assert
-/// against anything (`world_fold.rs:15220`-`:15222`, divided at `:23860`-`:23870`).
+/// against anything (`world_fold.rs::fold_air_variant_stats`, divided at `:23860`-`:23870`).
 /// The recipe's own rule for this case is "where an invariant is mode-dependent
 /// or header-relative, take the mode or header value as a parameter instead of
 /// hard-coding one frame shape"; here it is a *value* rather than an invariant,
@@ -458,7 +458,7 @@ pub fn record_from_row(
     // its validity is still part of this row's validity.
     let _ = variant_id_of_row(row)?;
 
-    // `world_fold.rs:15245`-`:15248`: a non-zero `reserved` means the row is not
+    // `world_fold.rs::fold_air_variant_stats`: a non-zero `reserved` means the row is not
     // this grammar. The word is enforced and then left off the wire — re-encoding
     // a constant the fold already guarantees would be a second copy of state a
     // decoder must keep consistent.
@@ -523,15 +523,15 @@ impl Accumulator {
     }
 
     /// Fold one d35 DATA payload, exactly as `fold_air_variant_stats` does from
-    /// `world_fold.rs:15230` onward.
+    /// `world_fold.rs::fold_air_variant_stats` onward.
     ///
     /// The caller must already have excluded failure-status records: the fold
-    /// returns at `:15223`-`:15229` before reaching any of this, retaining the
+    /// returns at `world_fold.rs::fold_air_variant_stats` before reaching any of this, retaining the
     /// accumulator. Classify with [`parse_header`], not with this.
     ///
     /// **Rows are inserted as they are read, and a row error leaves the rows
     /// before it applied.** That is not an oversight — the fold's loop validates
-    /// and inserts one row at a time (`:15239`-`:15271`), so its accumulator is
+    /// and inserts one row at a time (`world_fold.rs::fold_air_variant_stats`), so its accumulator is
     /// partially mutated on a mid-payload rejection too, and diverging here would
     /// mean a caller that continues past an error holds a different state than
     /// the recorder does. d22's `fold_payload` can promise all-or-nothing only
@@ -539,7 +539,7 @@ impl Accumulator {
     /// d35's do not. Pinned by `a_row_error_leaves_the_earlier_rows_applied`.
     ///
     /// A `variant_id` repeated inside one payload is **last-writer-wins**, not a
-    /// rejected frame: the fold's `.insert` (`:15250`) overwrites silently, where
+    /// rejected frame: the fold's `.insert` (`world_fold.rs::fold_air_variant_stats`) overwrites silently, where
     /// d63's fold rejects the duplicate.
     pub fn fold_payload(
         &mut self,
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn a_zero_scale_word_cannot_be_constructed_or_parsed() {
-        // `world_fold.rs:15220`-`:15222` rejects the payload; making `RowScales`
+        // `world_fold.rs::fold_air_variant_stats` rejects the payload; making `RowScales`
         // the only way in means no division by zero exists anywhere in the crate.
         assert!(RowScales::new(0, 1_000).is_err());
         assert!(RowScales::new(100_000, 0).is_err());
@@ -1097,7 +1097,7 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // Zero variant_id (`world_fold.rs:15241`-`:15243`).
+        // Zero variant_id (`world_fold.rs::fold_air_variant_stats`).
         assert!(record_from_row(
             &c,
             &raw_row(0, 0, [1, 1, 1], [1; 10]),
@@ -1166,7 +1166,7 @@ mod tests {
         assert!(split_payload(&truncated).is_err());
         // A row_count whose byte length overflows `usize` must be rejected, not
         // saturated into a plausible small length as the fold's own arithmetic
-        // would (`world_fold.rs:15231`).
+        // would (`world_fold.rs::fold_air_variant_stats`).
         let mut huge = p.clone();
         huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(split_payload(&huge).is_err());
@@ -1309,7 +1309,7 @@ mod tests {
 
     #[test]
     fn a_repeated_variant_id_in_one_payload_is_last_writer_wins() {
-        // `world_fold.rs:15250` inserts without checking, so a repeat overwrites
+        // `world_fold.rs::fold_air_variant_stats` inserts without checking, so a repeat overwrites
         // rather than rejecting the frame — the opposite of d63, whose fold
         // rejects a duplicate `tag_db_id`. Mirroring the fold is the rule.
         let c = collection();
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn a_row_error_leaves_the_earlier_rows_applied() {
-        // Faithful to `world_fold.rs:15239`-`:15271`, which validates and inserts
+        // Faithful to `world_fold.rs::fold_air_variant_stats`, which validates and inserts
         // one row at a time and so leaves its own accumulator partially mutated
         // on a mid-payload rejection. Diverging would mean a caller that
         // continues past an error holds a state the recorder does not.

@@ -11,17 +11,17 @@
 //! There is no `domains/d65_*.md` dossier; the fold, the authority and the
 //! collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:12249`-`:12264`): a 24-byte header —
+//! **Payload grammar** (`world_fold.rs::fold_special_project_programs`): a 24-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `dropped_ambiguous` u32 at `+20` —
 //! followed by `row_count` fixed 16-byte rows. The fold requires
-//! `payload.len() == 24 + row_count * 16` exactly (`:12259`), so there is no
+//! `payload.len() == 24 + row_count * 16` exactly (`world_fold.rs::fold_special_project_programs`), so there is no
 //! legacy short row and the length selects nothing.
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `owner_tag_db_id`           | raw | none (key; zero rejected, `:12296`) |
-//! | `+4`  | u32 | `program_id`                | raw | none (key; zero rejected, `:12299`) |
+//! | `+0`  | u32 | `owner_tag_db_id`           | raw | none (key; zero rejected, `world_fold.rs::fold_special_project_programs`) |
+//! | `+4`  | u32 | `program_id`                | raw | none (key; zero rejected, `world_fold.rs::fold_special_project_programs`) |
 //! | `+8`  | u32 | `province`                  | raw | none |
 //! | `+12` | u32 | `unread_prototype_rewards`  | raw | none |
 //!
@@ -52,7 +52,7 @@
 //! assertion.** The fold reads `row_count` (`+8`), `status_flags` (`+16`) and
 //! `dropped_ambiguous` (`+20`) and **never reads `+12` at all**. d63's
 //! `changed_rows == row_count` check exists because `fold_country_core_scalars`
-//! reads that word (`world_fold.rs:9267`); copying it here would invent an
+//! reads that word (`world_fold.rs::fold_country_core_scalars`); copying it here would invent an
 //! invariant this fold does not state. The one authority that does read `+12` is
 //! the status-independent payload decoder, and it requires only
 //! `changed_rows <= row_count` (`domain_data_authority.rs:12335`) — that bound,
@@ -62,7 +62,7 @@
 //! not a grammar rule.)
 //!
 //! **The `dropped_ambiguous` word is a diagnostic, not a field.** The fold reads
-//! it only to emit a note (`world_fold.rs:12317`-`:12321`) and current exact
+//! it only to emit a note (`world_fold.rs::fold_special_project_programs`) and current exact
 //! production always writes zero (`attach_log.rs:64837` assigns the constant `0`).
 //! It describes facilities the collector chose not to publish, so it is a
 //! property of the read rather than of any row, and there is no row to hang it
@@ -70,7 +70,7 @@
 //!
 //! **FINDING — a dead fold branch.** `fold_special_project_programs` calls
 //! `compact_expected_partial_tolerance_applies(65, status_flags)` at
-//! `world_fold.rs:12272` and, on a true result, marks the d65 leaf unknown for
+//! `world_fold.rs::fold_special_project_programs` and, on a true result, marks the d65 leaf unknown for
 //! the hour. `COMPACT_EXPECTED_PARTIAL_TOLERANCES`
 //! (`compact_contract/src/lib.rs:136`-`:158`) contains **only domains 26, 27, 28
 //! and 54**, so the call is constantly false and the branch is unreachable. It is
@@ -79,7 +79,7 @@
 //! (`compact_contract/src/lib.rs:117`), so the preceding
 //! `handle_compact_failure` (`world_fold.rs:12265`) already returns on exactly
 //! that status and already marks the domain unknown for the hour
-//! (`mark_fold_domain_unknown`, `:2835`-`:2845`). Nothing in this module
+//! (`mark_fold_domain_unknown`, `world_fold.rs::mark_fold_domain_unknown`). Nothing in this module
 //! implements the branch, and the measurement harness classifies a
 //! `PARTIAL_DATA` record as an excluded failure hour, which is what the code
 //! actually does today. Reported to the orchestrator; if a d65 tolerance entry
@@ -95,7 +95,7 @@
 //! `Value::Array(Vec::new())` for every country in the current d18 roster (or, if
 //! country identity is not known this hour, for every key already in
 //! `self.countries`) and *then* overwrites the owners that actually have rows
-//! (`world_fold.rs:12325`-`:12340`). The seed only ever writes an **empty** array
+//! (`world_fold.rs::fold_special_project_programs`). The seed only ever writes an **empty** array
 //! and the row loop runs after it, so no roster state can add, drop or alter a
 //! row: the witness decides which countries are recorded as *having no
 //! facilities*, which is d18's fact and carries no d65 row. That is why this
@@ -131,9 +131,9 @@ pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
         // The key is the fold's own pair, in the fold's own order:
-        // `(owner_tag_db_id, program_id)` (`world_fold.rs:12303`). A duplicate
+        // `(owner_tag_db_id, program_id)` (`world_fold.rs::fold_special_project_programs`). A duplicate
         // is a rejected frame there — `seen.insert` failing returns `Err`
-        // (`:12303`-`:12307`) — never a last-writer-wins overwrite, which is
+        // (`world_fold.rs::fold_special_project_programs`) — never a last-writer-wins overwrite, which is
         // what makes the pair a real identity rather than a convenience.
         //
         // `owner_tag_db_id` is `ContentId`: a country tag-db id is
@@ -182,7 +182,7 @@ pub fn schema() -> Schema {
         collections: vec![Collection {
             collection_id: PROGRAMS,
             // Full replace per country each clean frame
-            // (`world_fold.rs:12337`-`:12340` assigns each owner's whole array),
+            // (`world_fold.rs::fold_special_project_programs` assigns each owner's whole array),
             // but `(owner, program_id)` is a stable identity that persists across
             // hours — measured churn on the real capture is 5 changed rows in 513
             // transitions with no insert and no delete — and only a keyed set has
@@ -196,7 +196,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 24-byte payload header (`world_fold.rs:12249`-`:12256`).
+/// The 24-byte payload header (`world_fold.rs::fold_special_project_programs`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -213,7 +213,7 @@ pub struct PayloadHeader {
 
 /// Split a d65 DATA payload into its header and its rows slice.
 ///
-/// Carries the fold's structural checks (`world_fold.rs:12249`-`:12264`: the
+/// Carries the fold's structural checks (`world_fold.rs::fold_special_project_programs`: the
 /// 24-byte minimum and the exact `24 + row_count * 16` length) plus the one
 /// header predicate the status-independent payload authority adds,
 /// `changed_rows <= row_count` (`domain_data_authority.rs:12335`). It does
@@ -239,7 +239,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     };
     // Checked arithmetic: `row_count` is attacker-shaped input from a stream on
     // disk, and `row_count * ROW_LEN` overflows `usize` for a large enough word.
-    // The fold multiplies unchecked (`world_fold.rs:12258`); refusing the
+    // The fold multiplies unchecked (`world_fold.rs::fold_special_project_programs`); refusing the
     // overflow is strictly narrower than wrapping into a plausible small length.
     let expected = (header.row_count as usize)
         .checked_mul(ROW_LEN)
@@ -266,7 +266,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// The key of one compact row: the fold's `(owner_tag_db_id, program_id)` pair
-/// (`world_fold.rs:12292`-`:12303`), in the fold's order.
+/// (`world_fold.rs::fold_special_project_programs`), in the fold's order.
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     let (owner_tag_db_id, program_id) = identity_of_row(row)?;
     Ok(key(&[owner_tag_db_id as u64, program_id as u64]))
@@ -351,14 +351,14 @@ pub fn record_from_row(
 /// d65 is full replace, so one clean record **is** one whole state and there is
 /// no accumulator to carry. The reason this boundary exists anyway is the
 /// duplicate rule: `(owner, program_id)` uniqueness is enforced by the fold
-/// after its status check (`world_fold.rs:12303`-`:12307`) *and* by the
+/// after its status check (`world_fold.rs::fold_special_project_programs`) *and* by the
 /// status-independent payload authority before it
 /// (`domain_data_authority.rs:12356`), so every production reader of a d65
 /// payload applies it and no caller should be re-deriving it.
 ///
 /// **Error contract: all-or-nothing.** The fold accumulates into local
 /// `per_owner`/`seen` maps and only writes `self.country_mut(..)` after the row
-/// loop has completed without error (`world_fold.rs:12288`-`:12340`), so a
+/// loop has completed without error (`world_fold.rs::fold_special_project_programs`), so a
 /// rejected row leaves the recorder's prior state untouched. This function
 /// mirrors that: on `Err` no partial state escapes.
 ///
@@ -377,7 +377,7 @@ pub fn state_from_payload(
         let (owner_tag_db_id, program_id) = identity_of_row(row)?;
         let k = key_from_row(row)?;
         let record = record_from_row(collection, row, frame_tick)?;
-        // `world_fold.rs:12303`: the join key must be unique, fail closed.
+        // `world_fold.rs::fold_special_project_programs`: the join key must be unique, fail closed.
         if state.insert(k, record).is_some() {
             return Err(format!(
                 "special_project_programs duplicate (owner {owner_tag_db_id}, program_id {program_id})"
@@ -703,8 +703,8 @@ mod tests {
             );
             assert!(key_from_row(&row).is_err(), "length {len} keys nothing");
         }
-        // Zero owner tag_db_id (`world_fold.rs:12296`) and zero program_id
-        // (`:12299`), independently and together, whatever the value words say.
+        // Zero owner tag_db_id (`world_fold.rs::fold_special_project_programs`) and zero program_id
+        // (`world_fold.rs::fold_special_project_programs`), independently and together, whatever the value words say.
         for (owner, program) in [(0u32, 1u32), (1, 0), (0, 0)] {
             for (province, unread) in [(0u32, 0u32), (13_070, 6)] {
                 let row = raw_row(owner, program, province, unread);
@@ -831,7 +831,7 @@ mod tests {
             "the keyed set orders by the key pair, not by row order"
         );
 
-        // `world_fold.rs:12303`: the join key is unique, fail closed. Same pair
+        // `world_fold.rs::fold_special_project_programs`: the join key is unique, fail closed. Same pair
         // with identical value words and with differing ones — the fold rejects
         // on the pair alone, so both must be refused rather than collapsed.
         for second in [full_row(), raw_row(68, 14, 1, 1)] {
@@ -851,7 +851,7 @@ mod tests {
 
         // A rejected row leaves nothing behind: the fold builds its maps locally
         // and only writes the accumulator after a clean loop
-        // (`world_fold.rs:12288`-`:12340`), so `Err` must carry no partial state.
+        // (`world_fold.rs::fold_special_project_programs`), so `Err` must carry no partial state.
         let bad = payload(2, 0, 0, &[full_row(), raw_row(0, 1, 0, 0)]);
         assert!(state_from_payload(&c, &bad, 0).is_err());
 
@@ -878,7 +878,7 @@ mod tests {
             assert_eq!(state, baseline.1, "status bit {bit} changed the state");
         }
         // The same for the diagnostic `dropped_ambiguous` word, which describes
-        // the read rather than any row (`world_fold.rs:12317`-`:12321`).
+        // the read rather than any row (`world_fold.rs::fold_special_project_programs`).
         for dropped in [0u32, 1, 7, u32::MAX] {
             let (h, state) =
                 state_from_payload(&c, &payload(1, 0, dropped, &rows), 0).expect("legal");

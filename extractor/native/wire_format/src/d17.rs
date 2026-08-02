@@ -2,7 +2,7 @@
 //! war-graph collection.
 //!
 //! Derived from `world_fold.rs:14540`-`:14598`
-//! (`fold_diplomacy`), the `ascii8` token decoder it calls (`:30108`), and the
+//! (`fold_diplomacy`), the `ascii8` token decoder it calls (`world_fold.rs::ascii8`), and the
 // @world-fold-authority domain=17 functions=fold_diplomacy lines=14540-14598 sha256=772ddef21a518b70bd31d98ca409cb3314acd736c576ba9b44b7398b2a5b4cf4
 //! collector reads and writes that produce the payload
 //! (`extractor/native/collector/src/attach_log.rs:69650`-`:69710` writer,
@@ -11,7 +11,7 @@
 //! fact — that status bit 13 is d17-only informational war-segment accounting
 //! outside the shared failure mask — and it agrees with the fold.
 //!
-//! **Payload grammar** (`world_fold.rs:13856`-`:13907`, written at
+//! **Payload grammar** (`world_fold.rs::fold_diplomacy`, written at
 //! `attach_log.rs:69666`-`:69708`): a 24-byte header — `elapsed_wall_ms` u64 at
 //! `+0`, `country_count` u32 at `+8`, `changed_rows` u32 at `+12`,
 //! `status_flags` u32 at `+16`, `relation_count` u32 at `+20` — followed by
@@ -41,7 +41,7 @@
 //!
 //! The at-war table identifies the enemy by an **8-byte inline ASCII country
 //! TAG** with a `u32` length prefix (`attach_log.rs:71935`-`:71942`), decoded by
-//! `ascii8` (`world_fold.rs:30108`). There is no conformant way to store that
+//! `ascii8` (`world_fold.rs::ascii8`). There is no conformant way to store that
 //! today, and both candidate encodings are wrong for the same reason:
 //!
 //! * §4 has **no string kind**. Every scalar kind is a number.
@@ -80,7 +80,7 @@
 //! # The row `flags` word: what the fold discards
 //!
 //! The fold reads the country row's flag word into `_flags` and drops it
-//! (`world_fold.rs:13878`), then emits `at_war_count` and `casualties` raw. The
+//! (`world_fold.rs::fold_diplomacy`), then emits `at_war_count` and `casualties` raw. The
 //! writer, however, sets bit `0` exactly when `at_war` was captured and bit `1`
 //! exactly when `casualties` was captured, and packs a **zero** in the field
 //! otherwise (`attach_log.rs:69679`-`:69698`). So a fold reading `casualties: 0`
@@ -124,7 +124,7 @@
 //!
 //! # `changed_rows` is parsed and not enforced
 //!
-//! The fold never reads `+12` (`world_fold.rs:13871`-`:13872` read `+8` and
+//! The fold never reads `+12` (`world_fold.rs::fold_diplomacy` read `+8` and
 //! `+20` and nothing else), so d17 states no `changed_rows` invariant for
 //! [`split_payload`] to carry. The writer happens to store `country_count`
 //! twice (`attach_log.rs:69673`-`:69674`), and all 903 records of the capture
@@ -142,7 +142,7 @@
 //! carry zero rows and are therefore no-ops, not mass deletions. [`Accumulator`]
 //! is the shared implementation; the measurement bin, the tests and any future
 //! caller use it rather than re-deriving the rule. The other writers of the
-//! fold's `diplomacy` object (`:3246` lend-lease projection, `:6919` d53
+//! fold's `diplomacy` object (`world_fold.rs::project_market_trade_lend_lease` lend-lease projection, `world_fold.rs::project_domain53_country_overlays` d53
 //! overlay) add their own keys and never touch these three fields.
 //!
 //! **No derived field (§6).** Nothing here changes deterministically with the
@@ -176,15 +176,15 @@ pub mod field {
     pub const ENEMY_TAG_TOKEN_LEN_RESERVED: u32 = 6;
 }
 
-// --- Payload grammar, from `world_fold.rs:13856`-`:13907`. -------------------
+// --- Payload grammar, from `world_fold.rs::fold_diplomacy`. -------------------
 
-/// `world_fold.rs:13856` — `need(payload, 24, "diplomacy header")`.
+/// `world_fold.rs::fold_diplomacy` — `need(payload, 24, "diplomacy header")`.
 pub const HEADER_LEN: usize = 24;
-/// `world_fold.rs:13876` — `need(payload, cursor + 24, "diplomacy country row")`.
+/// `world_fold.rs::fold_diplomacy` — `need(payload, cursor + 24, "diplomacy country row")`.
 pub const COUNTRY_ROW_LEN: usize = 24;
-/// `world_fold.rs:13891` — `need(payload, cursor + 16, "diplomacy at-war row")`.
+/// `world_fold.rs::fold_diplomacy` — `need(payload, cursor + 16, "diplomacy at-war row")`.
 pub const AT_WAR_ROW_LEN: usize = 16;
-/// The at-war row's inline token field, `world_fold.rs:13894`.
+/// The at-war row's inline token field, `world_fold.rs::fold_diplomacy`.
 pub const ENEMY_TAG_OFFSET: usize = 8;
 pub const ENEMY_TAG_BYTES: usize = 8;
 
@@ -224,7 +224,7 @@ pub fn schema() -> Schema {
         // set needs — and only a keyed set has a delta grammar (§7.3).
         shape: Shape::KeyedSet,
         fields: vec![
-            // The country's `tag_db_id` (`world_fold.rs:13877`), the identity d18
+            // The country's `tag_db_id` (`world_fold.rs::fold_diplomacy`), the identity d18
             // keys its roster by. `ContentId` because a country is content-defined
             // (§5) — a manifest must resolve it for it to keep its meaning under
             // another mod set. This is the raw-source-id cast every ported domain
@@ -235,7 +235,7 @@ pub fn schema() -> Schema {
             Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
             // An opaque engine `i32` read from the country object at `+0x598`
             // (`attach_log.rs:80137`, `offsets.rs:154`) and folded raw
-            // (`world_fold.rs:13879`). `Signed`, not `ContentId`: no authority
+            // (`world_fold.rs::fold_diplomacy`). `Signed`, not `ContentId`: no authority
             // says a manifest resolves it, and the read is unfiltered `i32`, so
             // a negative value is representable and `ContentId`'s unsigned
             // domain could not carry it. Not gated — the whole country row is
@@ -268,7 +268,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 24-byte payload header (`world_fold.rs:13856`-`:13872`).
+/// The 24-byte payload header (`world_fold.rs::fold_diplomacy`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -282,7 +282,7 @@ pub struct PayloadHeader {
 
 /// Split a d17 DATA payload into its header, its country rows and its at-war
 /// rows, applying the fold's own structural checks
-/// (`world_fold.rs:13856`-`:13907`).
+/// (`world_fold.rs::fold_diplomacy`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -330,10 +330,10 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     ))
 }
 
-/// The key of one country row: its `tag_db_id` (`world_fold.rs:13877`).
+/// The key of one country row: its `tag_db_id` (`world_fold.rs::fold_diplomacy`).
 ///
 /// The fold does not reject a zero `tag_db_id` here (unlike d18's roster fold at
-/// `:13940`) — it folds the row under country key `"0"` — so neither does this.
+/// `world_fold.rs::fold_country_identity`) — it folds the row under country key `"0"` — so neither does this.
 pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_row_len(row, COUNTRY_ROW_LEN, "country")?;
     Ok(key(&[u32_at(row, 0) as u64]))
@@ -342,13 +342,13 @@ pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
 // --- The at-war table: decoding only, for the stop condition's census --------
 
 /// The at-war row's `tag_db_id` — the *owning* country, `+0`
-/// (`world_fold.rs:13892`).
+/// (`world_fold.rs::fold_diplomacy`).
 pub fn at_war_owner_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row, AT_WAR_ROW_LEN, "at-war")?;
     Ok(u32_at(row, 0))
 }
 
-/// The at-war row's token length prefix, `+4` (`world_fold.rs:13893`).
+/// The at-war row's token length prefix, `+4` (`world_fold.rs::fold_diplomacy`).
 pub fn enemy_tag_token_len(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row, AT_WAR_ROW_LEN, "at-war")?;
     Ok(u32_at(row, 4))
@@ -371,7 +371,7 @@ pub fn enemy_tag_token(word: u64) -> [u8; ENEMY_TAG_BYTES] {
     word.to_le_bytes()
 }
 
-/// The fold's own `ascii8` (`world_fold.rs:30108`-`:30113`), reproduced from a
+/// The fold's own `ascii8` (`world_fold.rs::ascii8`), reproduced from a
 /// packed word and a token length, so a census can report exactly the string
 /// `fold_diplomacy` put in `at_war_with`.
 pub fn enemy_tag_string(word: u64, token_len: u32) -> String {
@@ -437,7 +437,7 @@ pub fn record_from_country_row(
     // part of this row's validity.
     let _ = key_from_country_row(row)?;
 
-    // `world_fold.rs:13878` reads the flag word and discards it, so an
+    // `world_fold.rs::fold_diplomacy` reads the flag word and discards it, so an
     // unrecognised bit is not a rejected row here either — mirroring the fold
     // rather than tightening it. Bits 2..=31 have no writer
     // (`attach_log.rs:69679`-`:69685`) and gate nothing.
@@ -524,7 +524,7 @@ pub struct FoldReport {
     /// count a caller must surface rather than let pass silently.
     pub at_war_rows_not_stored: usize,
     /// Of those, rows naming a country the payload does not carry. The fold
-    /// drops them silently (`world_fold.rs:13896`), so they would not have been
+    /// drops them silently (`world_fold.rs::fold_diplomacy`), so they would not have been
     /// stored even without the stop condition; counted separately so the stop's
     /// real cost is not overstated.
     pub orphan_at_war_rows: usize,
@@ -562,21 +562,21 @@ impl Accumulator {
     }
 
     /// Fold one d17 DATA payload, exactly as `fold_diplomacy` does from
-    /// `world_fold.rs:13871` onward, for the part of the payload this schema
+    /// `world_fold.rs::fold_diplomacy` onward, for the part of the payload this schema
     /// stores; the at-war table is censused into the report and not stored (see
     /// the module docs' stop condition).
     ///
     /// The caller must already have excluded failure-status records: the fold
-    /// returns at `:13864`-`:13870` before reaching any of this, retaining the
+    /// returns at `world_fold.rs::fold_diplomacy` before reaching any of this, retaining the
     /// accumulator. `war_segment` is the caller's reading of
     /// `COMPACT_STATUS_WAR_SEGMENT_ABSENT`; that bit is informational and is
-    /// **not** part of the failure mask (`:13861`-`:13862`), so a frame carrying
+    /// **not** part of the failure mask (`world_fold.rs::fold_diplomacy`), so a frame carrying
     /// it is data and must be folded.
     ///
     /// On `Err` the accumulator is left as it was, so a caller that reports the
     /// error and stops is not left holding a half-folded frame: every row is
     /// mapped before anything is mutated, exactly as the fold's own errors all
-    /// precede its first mutation (`:13902` is the last of them).
+    /// precede its first mutation (`world_fold.rs::fold_diplomacy` is the last of them).
     pub fn fold_payload(
         &mut self,
         countries_collection: &Collection,
@@ -594,7 +594,7 @@ impl Accumulator {
                 record_from_country_row(countries_collection, row, war_segment, 0)?,
             ));
         }
-        // `world_fold.rs:13874`-`:13888`: the country table is built into a map
+        // `world_fold.rs::fold_diplomacy`: the country table is built into a map
         // first, so a tag repeated inside one frame is last-writer-wins rather
         // than a rejected frame, and the at-war rows attach to the survivor.
         let mut present: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
@@ -619,7 +619,7 @@ impl Accumulator {
             if !enemy_tag_is_collector_shaped(word, token_len) {
                 report.non_collector_shaped_tokens += 1;
             }
-            // `world_fold.rs:13896` — a row naming a tag the country table does
+            // `world_fold.rs::fold_diplomacy` — a row naming a tag the country table does
             // not carry falls on the floor even in the fold.
             if !present.contains(&owner) {
                 report.orphan_at_war_rows += 1;
@@ -631,7 +631,7 @@ impl Accumulator {
         // --- Nothing above this line has mutated the accumulator. ------------
 
         for (k, record) in new_countries {
-            // A whole-row upsert: `world_fold.rs:13909` replaces the country's
+            // A whole-row upsert: `world_fold.rs::fold_diplomacy` replaces the country's
             // diplomacy object outright and removes no other country.
             self.countries.insert(k, record);
         }
@@ -816,7 +816,7 @@ mod tests {
     fn no_field_is_quantized_because_no_field_is_continuous() {
         // Step 4's "quantization saves bytes" test does not apply: d17 has no
         // continuous field at all. Every field the fold emits is an integer word
-        // folded raw (`world_fold.rs:13879`-`:13886`) — there is no fixed-point
+        // folded raw (`world_fold.rs::fold_diplomacy`) — there is no fixed-point
         // scale anywhere in this domain, so there is nothing to quantize.
         for f in countries().value_fields() {
             assert!(!matches!(f.kind, Kind::Continuous), "field {}", f.field_id);
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn the_census_reproduces_the_folds_own_string() {
         // `ascii8` trims to `min(token_len, 8)` BEFORE trimming to the first NUL
-        // (`world_fold.rs:30109`-`:30111`). The census must reproduce that
+        // (`world_fold.rs::ascii8`). The census must reproduce that
         // exactly or its report is about a different string than the fold's.
         let token = [b'G', b'E', b'R', b'M', b'A', b'N', b'Y', b'!'];
         assert_eq!(enemy_tag_string(u64::from_le_bytes(token), 3), "GER");
@@ -1108,7 +1108,7 @@ mod tests {
 
     #[test]
     fn an_unrecognised_flag_bit_is_ignored_exactly_as_the_fold_ignores_it() {
-        // `world_fold.rs:13878` reads the flag word into `_flags` and drops it.
+        // `world_fold.rs::fold_diplomacy` reads the flag word into `_flags` and drops it.
         // Rejecting an unknown bit would refuse a row the fold accepts.
         let c = countries();
         for bit in 2..32u32 {
@@ -1196,7 +1196,7 @@ mod tests {
 
     #[test]
     fn a_country_row_upserts_and_no_frame_ever_deletes_one() {
-        // `world_fold.rs:13908`-`:13911` writes one country object per tag in
+        // `world_fold.rs::fold_diplomacy` writes one country object per tag in
         // the payload and touches nothing else, so a later rowless frame is a
         // no-op rather than a mass deletion — which is what 901 of the capture's
         // 903 hours are.
@@ -1222,7 +1222,7 @@ mod tests {
 
     #[test]
     fn a_tag_repeated_in_one_frame_is_last_writer_wins() {
-        // `world_fold.rs:13888`'s `per_tag.insert` overwrites, so a repeat is not
+        // `world_fold.rs::fold_diplomacy`'s `per_tag.insert` overwrites, so a repeat is not
         // a rejected frame.
         let c = countries();
         let mut acc = Accumulator::new();
@@ -1242,7 +1242,7 @@ mod tests {
     #[test]
     fn every_unstored_at_war_row_is_counted_never_passed_over() {
         // The stop condition must be visible in the numbers: rows carried, rows
-        // the fold itself would drop (`world_fold.rs:13896`), and tokens outside
+        // the fold itself would drop (`world_fold.rs::fold_diplomacy`), and tokens outside
         // the collector's own shape.
         let c = countries();
         let mut acc = Accumulator::new();
@@ -1308,7 +1308,7 @@ mod tests {
     #[test]
     fn a_segment_absent_frame_is_folded_and_its_hour_reported() {
         // Bit 13 is informational and outside the failure mask
-        // (`world_fold.rs:13861`-`:13862`), so its frames are data and are
+        // (`world_fold.rs::fold_diplomacy`), so its frames are data and are
         // folded. What cannot be expressed is that this hour measured nothing
         // about wars; the field-level half of that IS expressed.
         let c = countries();

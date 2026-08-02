@@ -23,7 +23,7 @@
 //! and `COL1` (32-byte header + 16-byte relation rows).
 //!
 //! **The fold reads exactly two header words** — `row_count` at `+8` and
-//! `status_flags` at `+16` (`world_fold.rs:16802`-`:16803`). Every other word is
+//! `status_flags` at `+16` (`world_fold.rs::fold_occupation_resistance_compliance`). Every other word is
 //! parsed and reported by [`PayloadHeader`] and **never enforced here**, per the
 //! recipe's rule that the test is whether YOUR fold reads it. In particular
 //! `changed_rows` at `+12` is *not* an invariant of this fold: it is the lane
@@ -45,11 +45,11 @@
 //! | `+44` | u32 | `garrison_scalar_rows`    | no |
 //! | `+48` | u32 | `garrison_anomaly_rows`   | no |
 //!
-//! State row, 64 bytes (`world_fold.rs:16854`-`:16868`):
+//! State row, 64 bytes (`world_fold.rs::fold_occupation_resistance_compliance`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `state_id`                   | raw    | key; zero rejected (`:16876`) |
+//! | `+0`  | u32 | `state_id`                   | raw    | key; zero rejected (`world_fold.rs::fold_occupation_resistance_compliance`) |
 //! | `+4`  | u32 | `owner_tag_db_id`            | raw    | `OWNER` (`1<<0`) |
 //! | `+8`  | u32 | `controller_tag_db_id`       | raw    | `CONTROLLER` (`1<<1`) |
 //! | `+12` | u32 | `occupied_country_tag_db_id` | raw    | `OCCUPIED_TAG_DERIVED` (`1<<5`) |
@@ -67,7 +67,7 @@
 //! | `+60` | u32 | `reserved2` (must be 0)      | —      | — |
 //!
 //! **Mixed scales inside one row.** `garrison_manpower_need` is a plain manpower
-//! count with **no divisor** (`world_fold.rs:16960`-`:16963`, and the lane says so
+//! count with **no divisor** (`world_fold.rs::fold_occupation_resistance_compliance`, and the lane says so
 //! in the type itself: "Plain i32 manpower count (CStateGarrisonData+0x88), NOT
 //! fixed-scaled", `domain44_compact.rs:82`), while the two scalars beside it at
 //! `+36`/`+40` are `/FIXED_SCALE` (`:16964`-`:16973`). Reading the count through
@@ -291,17 +291,17 @@ pub mod field {
 
 // --- Payload grammar constants, from `world_fold.rs:388`-`:399`, `:435`-`:466`.
 
-/// `OCCUPATION_HEADER_LEN`, `world_fold.rs:388`.
+/// `OCCUPATION_HEADER_LEN`, `world_fold.rs::OCCUPATION_HEADER_LEN`.
 pub const HEADER_LEN: usize = 52;
-/// `OCCUPATION_ROW_LEN`, `world_fold.rs:389`. Fixed; there is no legacy form.
+/// `OCCUPATION_ROW_LEN`, `world_fold.rs::OCCUPATION_ROW_LEN`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 64;
-/// `OCCUPATION_GARRISON_ALERT_HEADER_LEN`, `world_fold.rs:390`.
+/// `OCCUPATION_GARRISON_ALERT_HEADER_LEN`, `world_fold.rs::OCCUPATION_GARRISON_ALERT_HEADER_LEN`.
 pub const GARRISON_ALERT_HEADER_LEN: usize = 40;
-/// `OCCUPATION_GARRISON_ALERT_ROW_LEN`, `world_fold.rs:391`.
+/// `OCCUPATION_GARRISON_ALERT_ROW_LEN`, `world_fold.rs::OCCUPATION_GARRISON_ALERT_ROW_LEN`.
 pub const GARRISON_ALERT_ROW_LEN: usize = 16;
-/// `OCCUPATION_COLLABORATION_HEADER_LEN`, `world_fold.rs:396`.
+/// `OCCUPATION_COLLABORATION_HEADER_LEN`, `world_fold.rs::OCCUPATION_COLLABORATION_HEADER_LEN`.
 pub const COLLABORATION_HEADER_LEN: usize = 32;
-/// `OCCUPATION_COLLABORATION_ROW_LEN`, `world_fold.rs:397`.
+/// `OCCUPATION_COLLABORATION_ROW_LEN`, `world_fold.rs::OCCUPATION_COLLABORATION_ROW_LEN`.
 pub const COLLABORATION_ROW_LEN: usize = 16;
 
 /// `FIXED_SCALE`, the divisor the fold applies to five of this row's seven
@@ -338,7 +338,7 @@ pub const ROW_FLAG_OCCUPATION_STATUS_ROOT: u32 = 1 << 13;
 pub const ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN: u32 = 1 << 14;
 pub const ROW_FLAG_GARRISON_SCALARS: u32 = 1 << 15;
 
-/// `OCC_ROW_KNOWN_FLAGS`, `world_fold.rs:451`-`:466`. Any other bit is a hard
+/// `OCC_ROW_KNOWN_FLAGS`, `world_fold.rs::OCC_ROW_KNOWN_FLAGS`. Any other bit is a hard
 /// error (`:16876`-`:16880`) — an unrecognised flag word means the row is not
 /// this grammar.
 pub const KNOWN_FLAGS: u32 = ROW_FLAG_OWNER
@@ -359,10 +359,10 @@ pub const KNOWN_FLAGS: u32 = ROW_FLAG_OWNER
     | ROW_FLAG_GARRISON_SCALARS;
 
 /// Every flag that on its own puts a key into the fold's `occupation` object —
-/// the four value channels (`world_fold.rs:16903`-`:16929`) and the eight badge
-/// or extension keys (`:16948`-`:17010`). `OCCUPIED_STATE` is deliberately NOT
+/// the four value channels (`world_fold.rs::fold_occupation_resistance_compliance`) and the eight badge
+/// or extension keys (`world_fold.rs::fold_occupation_resistance_compliance`). `OCCUPIED_STATE` is deliberately NOT
 /// here: on its own it contributes nothing, and only pairs with `OWNER`,
-/// `CONTROLLER` or `OCCUPIED_TAG_DERIVED` (`:16932`-`:16947`).
+/// `CONTROLLER` or `OCCUPIED_TAG_DERIVED` (`world_fold.rs::fold_occupation_resistance_compliance`).
 pub const OCCUPATION_CONTENT_FLAGS: u32 = ROW_FLAG_RESISTANCE
     | ROW_FLAG_COMPLIANCE
     | ROW_FLAG_RESISTANCE_SPEED
@@ -462,7 +462,7 @@ pub fn schema() -> Schema {
                 .optional()
                 .nullable(),
             // `Signed`, not `Unsigned`: the FOLD applies no sign check
-            // (`world_fold.rs:16960`-`:16963`), and mapping a negative word
+            // (`world_fold.rs::fold_occupation_resistance_compliance`), and mapping a negative word
             // through an unsigned kind would publish a different number. The lane
             // contract rejects a negative one (`domain44_compact.rs:478`), which
             // is a stream refusal in `check_authority_payload`, not a mapper gate.
@@ -478,7 +478,7 @@ pub fn schema() -> Schema {
                 .unknown_capable()
                 .quant(FIXED_QUANT),
             // `ContentId`. The fold labels this an FNV-1a-32 hash of the law's
-            // NAME (`world_fold.rs:16989`-`:16997`), and a law name is
+            // NAME (`world_fold.rs::fold_occupation_resistance_compliance`), and a law name is
             // content-defined — §5 lists law tokens among the content-defined
             // vocabularies, and the recipe's deciding question ("must a content
             // manifest resolve this id for it to keep its meaning across mod
@@ -522,7 +522,7 @@ pub fn schema() -> Schema {
             // names it, and no manifest resolves it.
             Field::new(f::ALERT_SINGLETON, Kind::Unsigned).key(0),
             // The trailer's own two-state discriminator
-            // (`world_fold.rs:30383`-`:30386`: `unavailable == complete` is a
+            // (`world_fold.rs::decode_occupation_garrison_alert`: `unavailable == complete` is a
             // rejected header, so exactly one of them holds).
             Field::new(f::ALERT_SOURCE_UNAVAILABLE, Kind::Boolean),
             // Carried by the header in BOTH arms and constrained by neither, so
@@ -530,7 +530,7 @@ pub fn schema() -> Schema {
             // drops the whole object on the unavailable path (`:30407`).
             Field::new(f::ALERT_GAME_HOUR_RAW, Kind::Signed),
             // These three are hard-zeroed by the header invariants exactly when
-            // the source is unavailable (`world_fold.rs:30395`-`:30399`), so on
+            // the source is unavailable (`world_fold.rs::decode_occupation_garrison_alert`), so on
             // that arm their words are grammar rather than measurement: the
             // alert was not read at all. Emitting `0`/`false` there would
             // publish "no controller, the predicate did not fire, nothing is
@@ -551,7 +551,7 @@ pub fn schema() -> Schema {
             // `CEquipmentArchetype+0x418` (`domain44_compact.rs:95`). §5 names
             // equipment as content-defined, so this is a ContentId key.
             Field::new(f::EQUIPMENT_ARCHETYPE_ID, Kind::ContentId).key(0),
-            // `whole_units <= 0` is a rejected row (`world_fold.rs:30419`).
+            // `whole_units <= 0` is a rejected row (`world_fold.rs::decode_occupation_garrison_alert`).
             Field::new(f::EQUIPMENT_WHOLE_UNITS, Kind::Unsigned),
         ],
     };
@@ -563,7 +563,7 @@ pub fn schema() -> Schema {
             Field::new(f::COLLABORATION_SINGLETON, Kind::Unsigned).key(0),
             Field::new(f::COLLABORATION_SOURCE_UNAVAILABLE, Kind::Boolean),
             // Hard-zeroed exactly when the source is unavailable
-            // (`world_fold.rs:30322`-`:30326`), i.e. the country population was
+            // (`world_fold.rs::decode_occupation_collaboration`), i.e. the country population was
             // never counted — **unknown**, not a zero that would read as a
             // measured population of none.
             Field::new(f::COLLABORATION_OBSERVED_COUNTRY_ROWS, Kind::Unsigned).unknown_capable(),
@@ -580,8 +580,8 @@ pub fn schema() -> Schema {
         fields: vec![
             Field::new(f::RELATION_OWNER_TAG_DB_ID, Kind::ContentId).key(0),
             Field::new(f::RELATION_TARGET_TAG_DB_ID, Kind::ContentId).key(1),
-            // `progress_raw / FIXED_SCALE` (`world_fold.rs:5249`), an i64 the
-            // decoder bounds to `0..=100_000` (`:30345`). `Fixed(5)` is the
+            // `progress_raw / FIXED_SCALE` (`world_fold.rs::build_snapshot`), an i64 the
+            // decoder bounds to `0..=100_000` (`world_fold.rs::decode_occupation_collaboration`). `Fixed(5)` is the
             // source's own decimal grid, exactly as for the row scalars.
             Field::new(f::RELATION_PROGRESS, Kind::Continuous).quant(FIXED_QUANT),
         ],
@@ -660,7 +660,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 
 /// Split a d52 DATA payload into its header, its state rows and the trailing
 /// bytes, applying exactly the fold's structural checks
-/// (`world_fold.rs:16801`-`:16812`).
+/// (`world_fold.rs::fold_occupation_resistance_compliance`).
 ///
 /// Note what is **not** here. The fold requires `payload.len() >= base_len`, not
 /// equality: everything past the rows is the trailer region, and its own grammar
@@ -692,7 +692,7 @@ pub struct AlertEquipmentRow {
     pub whole_units: i64,
 }
 
-/// The decoded `GAR1` trailer (`world_fold.rs:30355`-`:30440`).
+/// The decoded `GAR1` trailer (`world_fold.rs::decode_occupation_garrison_alert`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GarrisonAlert {
     pub game_hour_raw: i32,
@@ -719,7 +719,7 @@ pub struct CollaborationRelationRow {
     pub progress_raw: i64,
 }
 
-/// The decoded `COL1` trailer (`world_fold.rs:30291`-`:30352`).
+/// The decoded `COL1` trailer (`world_fold.rs::decode_occupation_collaboration`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Collaboration {
     pub flags: u32,
@@ -736,7 +736,7 @@ impl Collaboration {
 
 /// Both trailers, as the fold reads them: `GAR1` first and mandatory once the
 /// trailer region is non-empty, `COL1` second and optional
-/// (`world_fold.rs:16812`-`:16822`).
+/// (`world_fold.rs::fold_occupation_resistance_compliance`).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Trailers {
     pub garrison_alert: Option<GarrisonAlert>,
@@ -744,7 +744,7 @@ pub struct Trailers {
 }
 
 /// Decode the trailer region. An empty region is the legal "no trailers" case
-/// (`world_fold.rs:16823`); anything else must be a well-formed `GAR1`, optionally
+/// (`world_fold.rs::fold_occupation_resistance_compliance`); anything else must be a well-formed `GAR1`, optionally
 /// followed by a well-formed `COL1` that consumes the rest exactly.
 pub fn parse_trailers(trailers: &[u8]) -> core::result::Result<Trailers, String> {
     if trailers.is_empty() {
@@ -764,7 +764,7 @@ pub fn parse_trailers(trailers: &[u8]) -> core::result::Result<Trailers, String>
     })
 }
 
-/// `occupation_garrison_alert_len`, `world_fold.rs:30271`-`:30289`.
+/// `occupation_garrison_alert_len`, `world_fold.rs::occupation_garrison_alert_len`.
 pub fn garrison_alert_len(trailers: &[u8]) -> core::result::Result<usize, String> {
     need(trailers, GARRISON_ALERT_HEADER_LEN, "occupation GAR1 header")?;
     if &trailers[0..4] != GARRISON_ALERT_MAGIC
@@ -782,7 +782,7 @@ pub fn garrison_alert_len(trailers: &[u8]) -> core::result::Result<usize, String
     Ok(len)
 }
 
-/// `decode_occupation_garrison_alert`, `world_fold.rs:30355`-`:30440`. The slice
+/// `decode_occupation_garrison_alert`, `world_fold.rs::decode_occupation_garrison_alert`. The slice
 /// must be exactly the trailer, as the fold slices it before calling.
 pub fn parse_garrison_alert(trailer: &[u8]) -> core::result::Result<GarrisonAlert, String> {
     need(trailer, GARRISON_ALERT_HEADER_LEN, "occupation GAR1 header")?;
@@ -854,7 +854,7 @@ pub fn parse_garrison_alert(trailer: &[u8]) -> core::result::Result<GarrisonAler
     })
 }
 
-/// `decode_occupation_collaboration`, `world_fold.rs:30291`-`:30352`.
+/// `decode_occupation_collaboration`, `world_fold.rs::decode_occupation_collaboration`.
 pub fn parse_collaboration(trailer: &[u8]) -> core::result::Result<Collaboration, String> {
     need(trailer, COLLABORATION_HEADER_LEN, "occupation COL1 header")?;
     if &trailer[0..4] != COLLABORATION_MAGIC
@@ -918,7 +918,7 @@ pub fn parse_collaboration(trailer: &[u8]) -> core::result::Result<Collaboration
     })
 }
 
-/// `MAX_TAG_DB_ID`, `world_fold.rs:30344` and `domain44_compact.rs:50`.
+/// `MAX_TAG_DB_ID`, `world_fold.rs::decode_occupation_collaboration` and `domain44_compact.rs:50`.
 pub const MAX_TAG_DB_ID: u32 = 1_024;
 /// `MAX_STATE_ID`, `domain44_compact.rs:49` — a lane-contract bound, not a fold
 /// one, so it is enforced in [`check_authority_payload`] and nowhere else.
@@ -929,7 +929,7 @@ pub const MAX_ABS_FIXED_RAW: i32 = 100_000_000;
 // --- Keys --------------------------------------------------------------------
 
 /// The key of one state row: its `state_id`, with the fold's zero check
-/// (`world_fold.rs:16876`-`:16878`).
+/// (`world_fold.rs::fold_occupation_resistance_compliance`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[state_id_of_row(row)? as u64]))
 }
@@ -961,7 +961,7 @@ pub fn key_from_collaboration_row(entry: &CollaborationRelationRow) -> Key {
 /// — every domain's mapper has the same shape.
 ///
 /// Fail-closed throughout, mirroring `fold_occupation_resistance_compliance`'s row
-/// loop (`world_fold.rs:16874`-`:16901`, `:16951`-`:16983`): a row the fold would
+/// loop (`world_fold.rs::fold_occupation_resistance_compliance`): a row the fold would
 /// reject is an `Err` here, never a coerced value, and every check the fold does
 /// **not** make is left to [`check_authority_payload`]. Nothing in this function
 /// can panic on any 64-byte input.
@@ -1017,7 +1017,7 @@ pub fn record_from_row(
                 } else if flags & ROW_FLAG_OCCUPIED_TAG_DERIVED != 0 {
                     Value::ContentId(occupied as u64)
                 } else if flags & ROW_FLAG_OWNER != 0 {
-                    // The fold's own fallback (`world_fold.rs:16943`-`:16947`):
+                    // The fold's own fallback (`world_fold.rs::fold_occupation_resistance_compliance`):
                     // a derived value, not a carried one.
                     Value::ContentId(owner as u64)
                 } else {
@@ -1081,7 +1081,7 @@ pub fn record_from_row(
 }
 
 /// The row's flag word, with every check the FOLD makes before it reads a field
-/// (`world_fold.rs:16874`-`:16901`, `:16951`-`:16983`).
+/// (`world_fold.rs::fold_occupation_resistance_compliance`).
 pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
     // The key's validity is part of the row's validity even though the key is not
     // carried in the record body (§3).
@@ -1110,7 +1110,7 @@ pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
     if flags & (ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE | ROW_FLAG_GARRISON_SCALARS) == 0
         && (i32_at(row, 32) != 0 || i32_at(row, 36) != 0 || i32_at(row, 40) != 0)
     {
-        // `world_fold.rs:16974`-`:16983`: "Values without a measured badge are
+        // `world_fold.rs::fold_occupation_resistance_compliance`: "Values without a measured badge are
         // torn/foreign data: fail the fold closed rather than emit them."
         return Err("occupation row has garrison scalar values without measured flag".into());
     }
@@ -1119,7 +1119,7 @@ pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
 
 /// Whether this row makes the fold's `occupation` object empty, i.e. whether
 /// folding it **removes** the state from this domain's slice
-/// (`world_fold.rs:17018`-`:17022`). See the module docs.
+/// (`world_fold.rs::fold_occupation_resistance_compliance`). See the module docs.
 pub fn row_folds_to_deletion(row: &[u8]) -> core::result::Result<bool, String> {
     let flags = row_flags(row)?;
     let has_content = flags & OCCUPATION_CONTENT_FLAGS != 0;
@@ -1151,7 +1151,7 @@ pub fn record_from_garrison_alert(
             field::ALERT_GAME_HOUR_RAW => Value::Signed(alert.game_hour_raw as i64),
             // On the unavailable arm these three words are grammar, not
             // measurement: the header invariants hard-zero them
-            // (`world_fold.rs:30395`-`:30399`) because nothing was read.
+            // (`world_fold.rs::decode_occupation_garrison_alert`) because nothing was read.
             field::ALERT_CONTROLLER_TAG_DB_ID => {
                 if unavailable {
                     Value::Unknown
@@ -1238,7 +1238,7 @@ pub fn record_from_collaboration_status(
             field::COLLABORATION_OBSERVED_COUNTRY_ROWS => {
                 if unavailable {
                     // Hard-zeroed by the header invariants because the country
-                    // population was never counted (`world_fold.rs:30322`).
+                    // population was never counted (`world_fold.rs::decode_occupation_collaboration`).
                     Value::Unknown
                 } else {
                     Value::Unsigned(collaboration.observed_country_rows as u64)
@@ -1294,13 +1294,13 @@ pub enum FoldOutcome {
     Baseline,
     /// A delta frame applied to the retained accumulator.
     Delta,
-    /// `DELTA_DATA` before any baseline (`world_fold.rs:16836`-`:16845`). The
+    /// `DELTA_DATA` before any baseline (`world_fold.rs::fold_occupation_resistance_compliance`). The
     /// base table is left untouched — not cleared, not upserted, and its rows are
     /// never parsed, because the fold returns before its row loop — and the
     /// domain-hour is marked unknown. **The trailers are still this hour's and
     /// are still installed**, because the fold assigns them before taking this
     /// exit and the recorder publishes them from there; that asymmetry with the
-    /// failure path (which overwrites them, `:16827`-`:16829`) is the whole
+    /// failure path (which overwrites them, `world_fold.rs::fold_occupation_resistance_compliance`) is the whole
     /// reason this outcome has its own name. An hour in this state carries
     /// measured trailer data beside an unknown base table, which no keyed set can
     /// express, so a measurement harness must refuse the run rather than skip the
@@ -1315,7 +1315,7 @@ pub enum FoldOutcome {
 /// baseline-plus-delta, so an hour's `states` is the whole history of the stream
 /// up to that hour rather than that hour's rows. The two trailers are the
 /// opposite — they are reset at the start of every hour
-/// (`world_fold.rs:3028`-`:3030`) and are therefore whole-cloth per hour. This is
+/// (`world_fold.rs::reset_hour_state`) and are therefore whole-cloth per hour. This is
 /// the recipe's fourth public boundary, and it exists so the measurement bin, the
 /// tests and any future caller share ONE replay of the shipping layer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1330,7 +1330,7 @@ pub struct State {
     pub collaboration_status: KeyedState,
     /// Collection [`COLLABORATION_RELATIONS`], keyed by `(owner, target)`.
     pub collaboration_relations: KeyedState,
-    /// `delta_baselines_seen.contains(&52)` (`world_fold.rs:16837`, `:17024`).
+    /// `delta_baselines_seen.contains(&52)` (`world_fold.rs::fold_occupation_resistance_compliance`).
     baseline_seen: bool,
 }
 
@@ -1357,13 +1357,13 @@ impl State {
     }
 
     /// Fold one d52 DATA payload exactly as `fold_occupation_resistance_compliance`
-    /// folds it (`world_fold.rs:16801`-`:17026`), in the fold's own order.
+    /// folds it (`world_fold.rs::fold_occupation_resistance_compliance`), in the fold's own order.
     ///
     /// The caller is responsible for the **failure-status** exclusion, because the
     /// predicate is `compact_contract`'s
     /// (`compact_status_failure_flags_after_expected_partial_tolerance`) and this
     /// crate's library half must not depend on that crate nor copy its mask. The
-    /// fold consults it at `:16825` — **after** the header checks and after the
+    /// fold consults it at `world_fold.rs::fold_occupation_resistance_compliance` — **after** the header checks and after the
     /// trailer decode, and before everything else — so a caller that gets the
     /// order right calls [`split_payload`] and [`parse_trailers`], excludes on
     /// status, and only then calls this.
@@ -1371,7 +1371,7 @@ impl State {
     /// The **delta-before-baseline** exclusion is handled here, because it needs
     /// no vocabulary this crate lacks: it is `DELTA_DATA` against
     /// [`State::baseline_seen`], and the fold makes the same decision before
-    /// touching anything (`:16836`).
+    /// touching anything (`world_fold.rs::fold_occupation_resistance_compliance`).
     ///
     /// **Error contract: all-or-nothing.** Every trailer record and every row
     /// record is built before the first mutation, mirroring the fold, whose
@@ -1405,9 +1405,9 @@ impl State {
 
         // The trailers are built FIRST, and installed even on the
         // delta-before-baseline exit, because that is what the fold does: it
-        // assigns them at `world_fold.rs:16813`-`:16820` and only then takes the
-        // exit at `:16838`-`:16844`, and the recorder publishes them from there
-        // (`:5218`-`:5268`, `:6014`-`:6019`). Every one of these mappers is
+        // assigns them at `world_fold.rs::fold_occupation_resistance_compliance` and only then takes the
+        // exit at `world_fold.rs::fold_occupation_resistance_compliance`, and the recorder publishes them from there
+        // (`world_fold.rs::build_snapshot`). Every one of these mappers is
         // infallible on a payload `parse_trailers` accepted — the only errors
         // they can return are a wrong collection id and a negative word the
         // parser already refused — so building them here cannot make this
@@ -1441,7 +1441,7 @@ impl State {
             }
         }
 
-        // `world_fold.rs:16838`-`:16844`. The base table is left exactly as it
+        // `world_fold.rs::fold_occupation_resistance_compliance`. The base table is left exactly as it
         // was — no clear, no upsert, no `baseline_seen` — and the rows are never
         // even parsed, because the fold returns before its row loop. The
         // trailers, though, are this hour's and stay.
@@ -1464,7 +1464,7 @@ impl State {
             }
         }
 
-        // `world_fold.rs:16853`-`:16858`: a non-delta frame removes this domain's
+        // `world_fold.rs::fold_occupation_resistance_compliance`: a non-delta frame removes this domain's
         // two keys from EVERY state before folding its own rows. Over this
         // domain's slice that is exactly a clear.
         if !delta {
@@ -1472,7 +1472,7 @@ impl State {
         }
         for (row_key, record) in pending {
             match record {
-                // `world_fold.rs:17019` — the empty-occupation removal.
+                // `world_fold.rs::fold_occupation_resistance_compliance` — the empty-occupation removal.
                 None => {
                     self.states.remove(&row_key);
                 }
@@ -1486,7 +1486,7 @@ impl State {
             }
         }
         // The trailers are per-hour, cleared at the top of every hour
-        // (`world_fold.rs:3028`-`:3030`), so they are replaced wholesale and are
+        // (`world_fold.rs::reset_hour_state`), so they are replaced wholesale and are
         // empty on an hour whose payload carries no trailer.
         self.garrison_alert = alert_state;
         self.garrison_alert_equipment = equipment_state;
@@ -1494,7 +1494,7 @@ impl State {
         self.collaboration_relations = relations_state;
 
         if !delta {
-            // `world_fold.rs:17024`.
+            // `world_fold.rs::fold_occupation_resistance_compliance`.
             self.baseline_seen = true;
             Ok(FoldOutcome::Baseline)
         } else {
@@ -2615,7 +2615,7 @@ mod tests {
         for id in ids {
             assert_eq!(value_of(&c, &r, id), Value::Absent, "field {id}");
         }
-        // Both badges: the fold errors (`world_fold.rs:16951`-`:16957`).
+        // Both badges: the fold errors (`world_fold.rs::fold_occupation_resistance_compliance`).
         let both = RawRow {
             flags: REAL_FULL_FLAGS | ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE,
             ..full_row()
@@ -2677,7 +2677,7 @@ mod tests {
         );
 
         // Occupied, derived tag clear, owner set: the fold's fallback to the
-        // owner word (`world_fold.rs:16943`-`:16947`) — a derived value.
+        // owner word (`world_fold.rs::fold_occupation_resistance_compliance`) — a derived value.
         let fallback = RawRow {
             occupied: 0,
             flags: REAL_FULL_FLAGS & !ROW_FLAG_OCCUPIED_TAG_DERIVED,
@@ -3063,7 +3063,7 @@ mod tests {
             );
             assert!(key_from_row(&row).is_err(), "length {len}");
         }
-        // Zero state_id (`world_fold.rs:16876`).
+        // Zero state_id (`world_fold.rs::fold_occupation_resistance_compliance`).
         let zero = RawRow {
             state_id: 0,
             ..full_row()
@@ -3218,7 +3218,7 @@ mod tests {
         assert!(split_payload(&huge).is_err());
 
         // `changed_rows` is NOT an invariant of this fold: the fold never reads
-        // the word (`world_fold.rs:16802`-`:16803`), so refusing a record for it
+        // the word (`world_fold.rs::fold_occupation_resistance_compliance`), so refusing a record for it
         // here would refuse a record the recorder folds. It is the lane
         // contract's, and it lives in `check_authority_payload`.
         let mut mismatched = p.clone();
@@ -3242,7 +3242,7 @@ mod tests {
         assert!(check_authority_payload(&wrong_scale).is_err());
 
         // Bytes past the rows are the trailer region, not an error: the fold
-        // requires `>=`, never `==` (`world_fold.rs:16806`-`:16812`).
+        // requires `>=`, never `==` (`world_fold.rs::fold_occupation_resistance_compliance`).
         let mut with_trailer = p.clone();
         with_trailer.extend_from_slice(&gar1_unavailable(3));
         let (_, body, trailers) = split_payload(&with_trailer).expect("trailers are legal");
@@ -3420,7 +3420,7 @@ mod tests {
         );
 
         // A second non-delta frame CLEARS everything first
-        // (`world_fold.rs:16853`-`:16858`), so the state it does not carry is
+        // (`world_fold.rs::fold_occupation_resistance_compliance`), so the state it does not carry is
         // gone rather than retained.
         let rebaseline = payload(0, &[RawRow { state_id: 65, ..full_row() }]);
         assert_eq!(
@@ -3434,8 +3434,8 @@ mod tests {
     #[test]
     fn a_delta_before_any_baseline_keeps_the_base_table_but_installs_the_trailers() {
         // The asymmetry that gives this outcome its own name. The fold assigns
-        // the trailers (`world_fold.rs:16813`-`:16820`) and only THEN takes the
-        // delta-before-baseline exit (`:16838`-`:16844`) without touching them,
+        // the trailers (`world_fold.rs::fold_occupation_resistance_compliance`) and only THEN takes the
+        // delta-before-baseline exit (`world_fold.rs::fold_occupation_resistance_compliance`) without touching them,
         // so they are this hour's data and the recorder publishes them. The base
         // table is left exactly as it was.
         let s = schema();
@@ -3506,7 +3506,7 @@ mod tests {
 
     #[test]
     fn a_row_that_folds_to_an_empty_occupation_deletes_the_state() {
-        // `world_fold.rs:17018`-`:17022`. This is a keyed-set tombstone, and it
+        // `world_fold.rs::fold_occupation_resistance_compliance`. This is a keyed-set tombstone, and it
         // is the reason `State::fold_payload` cannot simply upsert every row.
         let s = schema();
         let empty = RawRow {
@@ -3553,7 +3553,7 @@ mod tests {
             );
         }
         // `OCCUPIED_STATE` alone contributes nothing; paired with any tag flag it
-        // does (`world_fold.rs:16932`-`:16947`).
+        // does (`world_fold.rs::fold_occupation_resistance_compliance`).
         let bare = RawRow {
             state_id: 64,
             flags: ROW_FLAG_OCCUPIED_STATE,
@@ -3581,7 +3581,7 @@ mod tests {
 
     #[test]
     fn the_occupation_law_marker_is_a_constant_and_is_not_re_encoded() {
-        // `world_fold.rs:17017` writes `state["occupation_law"] = Null` for every
+        // `world_fold.rs::fold_occupation_resistance_compliance` writes `state["occupation_law"] = Null` for every
         // folded row — a constant with no measured value, so it is not a field
         // (the derived-constant rule). The one consequence: the marker is written
         // even by a deletion row, so the fold's marker set is a SUPERSET of its
@@ -3616,7 +3616,7 @@ mod tests {
 
     #[test]
     fn the_trailers_are_replaced_wholesale_every_hour() {
-        // `world_fold.rs:3028`-`:3030` clears both at the top of every hour, so
+        // `world_fold.rs::reset_hour_state` clears both at the top of every hour, so
         // they are per-hour data even though the base table is an accumulator.
         let s = schema();
         let mut state = State::new();
@@ -3770,7 +3770,7 @@ mod tests {
     #[test]
     fn the_lane_bounds_a_complete_alerts_controller_and_the_fold_does_not() {
         // The one place the two trailer grammars disagree
-        // (`domain44_compact.rs:666`-`:667` against `world_fold.rs:30400`). The
+        // (`domain44_compact.rs:666`-`:667` against `world_fold.rs::decode_occupation_garrison_alert`). The
         // fold-facing parser must stay permissive — refusing a trailer the
         // recorder folds is the data loss this recipe exists to prevent — and the
         // authority path must refuse it, or the harness measures a stream the

@@ -6,7 +6,7 @@
 // @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=11000-11024 sha256=d8fc557c5b6c2958716543227bb14c684aa74691f267bf8492f3f0dafd7c8acb
 //! `extractor/native/compact_contract/src/spotted_units.rs` (authority #2 for
 //! offsets, per the recipe), the production dispatcher's d95 error arm
-//! (`world_fold.rs:4926`-`:4934`), the hour-boundary reset (`:3095`-`:3096`) and
+//! (`world_fold.rs::apply_domain_data`), the hour-boundary reset (`world_fold.rs::reset_hour_state`) and
 //! the collector read that decides when a surface is captured at all
 //! (`extractor/native/lanes/spotted_units_live/src/a729.rs:175`-`:202`,
 //! `:234`-`:266`). `extractor/documents/domains/` carries no d95 dossier, which
@@ -37,7 +37,7 @@
 //!
 //! **No field on this domain is scaled.** Every header word and every row field
 //! is emitted raw: the codec neither multiplies nor divides, and the fold copies
-//! the decoded snapshot verbatim (`world_fold.rs:10559`). `raw_intel` in
+//! the decoded snapshot verbatim (`world_fold.rs::fold_pov_spotted_units`). `raw_intel` in
 //! particular is the engine intel byte as the getter returns it
 //! (`a729.rs:274`: `original(unit) & 0xff`), not a fixed-point word — the
 //! `FIXED_SCALE`/`32768` class of error has no surface here, which the offset
@@ -60,7 +60,7 @@
 //!
 //! The fold's own JSON says the same thing in the only vocabulary it has: it
 //! publishes `"land": Null` for an unflagged surface and `"land_frame_complete":
-//! false` beside it (`world_fold.rs:6416`-`:6417`, `:6436`-`:6437`). Per the
+//! false` beside it (`world_fold.rs::build_pov_visibility_value`). Per the
 //! recipe's step 2 that decides value-vs-nothing only; the three-way choice is
 //! made here, from the collector read, and it is not a tie-break.
 //!
@@ -100,7 +100,7 @@
 //!
 //! The fold refuses the payload outright unless a `country_identity` (d18) record
 //! landed **this hour** and the POV country is in that roster
-//! (`world_fold.rs:10542`-`:10551`), clearing the domain-hour in both cases. That
+//! (`world_fold.rs::fold_pov_spotted_units`), clearing the domain-hour in both cases. That
 //! is an input the payload does not carry, so it is a typed mapper input
 //! ([`CountryRoster`]) rather than something a caller re-derives — the recipe's
 //! step-7 rule, and a new member of its measured family.
@@ -236,7 +236,7 @@ pub fn schema() -> Schema {
                 // The POV country persists across hours, which is what a keyed
                 // set needs, and only a keyed set has a delta grammar (§7.3).
                 // Full replace per hour: the fold assigns one whole snapshot
-                // (`world_fold.rs:10559`).
+                // (`world_fold.rs::fold_pov_spotted_units`).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // `pov_country_id` (`spotted_units.rs:98`, header +16). A
@@ -244,7 +244,7 @@ pub fn schema() -> Schema {
                     // resolve it to keep its meaning under another mod set — so
                     // `ContentId`, exactly as d63 classes `tag_db_id` and d20
                     // classes `owner`. It is also the id the d18 roster is keyed
-                    // by (`world_fold.rs:10546`).
+                    // by (`world_fold.rs::fold_pov_spotted_units`).
                     Field::new(f::POV_COUNTRY_ID, Kind::ContentId).key(0),
                     // The producer's capture counter, monotone by construction
                     // (`a729.rs:348`-`:351`) and required non-zero
@@ -282,7 +282,7 @@ fn spotted_collection(collection_id: u32) -> Collection {
             // `stable_id` the runtime instance id, both halves of the packed
             // `CUnit` reference at `unit+0x18` (`a729.rs:333`-`:338`; the fold
             // names it "CUnit_reference_type_id_stable_id",
-            // `world_fold.rs:6432`). Neither is content: no manifest resolves
+            // `world_fold.rs::build_pov_visibility_value`). Neither is content: no manifest resolves
             // them, and a `stable_id` is a different unit next campaign. §5's
             // deciding question answers "no", so `Unsigned`, exactly as d20
             // classes `div_type` and `div_id`.
@@ -314,13 +314,13 @@ fn spotted_collection(collection_id: u32) -> Collection {
 
 /// The `country_identity` (d18) state the d95 fold reads and the payload does not
 /// carry: whether a d18 record measured the roster THIS hour
-/// (`world_fold.rs:1944`, reset at `:3002`) and which `tag_db_id`s it carries
-/// (`:1933`, full-replaced at `:14149`).
+/// (`world_fold.rs:1944`, reset at `world_fold.rs::reset_hour_state`) and which `tag_db_id`s it carries
+/// (`:1933`, full-replaced at `world_fold.rs::fold_country_identity`).
 ///
 /// Two separate facts, deliberately not collapsed: `tag_by_db_id` persists across
 /// hours while the known flag resets, so "the roster contains 368" and "a d18
 /// record landed this hour" are independent, and the fold requires both
-/// (`:10542`-`:10551`).
+/// (`world_fold.rs::fold_pov_spotted_units`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryRoster {
     known_this_hour: bool,
@@ -329,7 +329,7 @@ pub struct CountryRoster {
 
 impl CountryRoster {
     /// No d18 record has landed this hour. Every d95 payload is refused against
-    /// it, which is what the fold does (`world_fold.rs:10542`-`:10544`).
+    /// it, which is what the fold does (`world_fold.rs::fold_pov_spotted_units`).
     pub fn unmeasured() -> Self {
         Self::default()
     }
@@ -343,13 +343,13 @@ impl CountryRoster {
     }
 
     /// The hour boundary: `country_identity_known_this_hour` resets, the id map
-    /// deliberately persists (`world_fold.rs:2999`-`:3002`).
+    /// deliberately persists (`world_fold.rs::reset_hour_state`).
     pub fn begin_hour(&mut self) {
         self.known_this_hour = false;
     }
 
     /// A d18 record folded successfully this hour, full-replacing the map
-    /// (`world_fold.rs:14149`, `:14156`).
+    /// (`world_fold.rs::fold_country_identity`).
     pub fn measure<I: IntoIterator<Item = u32>>(&mut self, tag_db_ids: I) {
         self.tag_db_ids = tag_db_ids.into_iter().collect();
         self.known_this_hour = true;
@@ -538,7 +538,7 @@ pub fn split_payload(
     Ok((header, &payload[HEADER_LEN..land_end], &payload[land_end..]))
 }
 
-/// The key of the `capture` row: the POV country (`world_fold.rs:10546`).
+/// The key of the `capture` row: the POV country (`world_fold.rs::fold_pov_spotted_units`).
 pub fn key_from_capture_row(header_bytes: &[u8]) -> core::result::Result<Key, String> {
     Ok(key_from_capture_header(&parse_header(header_bytes)?))
 }
@@ -757,11 +757,11 @@ impl StoredSnapshot {
 ///
 /// **Error contract, mirrored rather than chosen.** `fold_pov_spotted_units`
 /// leaves the stored snapshot untouched when the payload fails to decode
-/// (`:10540`-`:10541`: the `?` runs before any mutation) and *clears* it on the
-/// three semantic refusals (`:10543`, `:10547`, `:10556` — the `= None` lines) —
+/// (`world_fold.rs::fold_pov_spotted_units`: the `?` runs before any mutation) and *clears* it on the
+/// three semantic refusals (`world_fold.rs::fold_pov_spotted_units` — the `= None` lines) —
 /// but production reaches
 /// the fold through a dispatcher whose d95 arm clears the snapshot on **every**
-/// `Err` (`:4926`-`:4934`). The composed production effect is what a harness must
+/// `Err` (`world_fold.rs::apply_domain_data`). The composed production effect is what a harness must
 /// reproduce, so [`HourAccumulator::fold_payload`] clears on every error path and
 /// both anchors are cited here rather than one being silently preferred.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -775,7 +775,7 @@ impl HourAccumulator {
         Self::default()
     }
 
-    /// The hour boundary (`world_fold.rs:3095`-`:3096`): both the snapshot and
+    /// The hour boundary (`world_fold.rs::reset_hour_state`): both the snapshot and
     /// the seen flag reset. d95 keeps nothing across hours.
     pub fn begin_hour(&mut self) {
         self.seen = false;
@@ -794,13 +794,13 @@ impl HourAccumulator {
     }
 
     /// Fold one d95 DATA payload, exactly as `fold_pov_spotted_units` does
-    /// (`world_fold.rs:10538`-`:10561`) under the production dispatcher.
+    /// (`world_fold.rs::fold_pov_spotted_units`) under the production dispatcher.
     ///
     /// `roster` is the d18 state the fold reads and the payload does not carry.
     /// Several records in one hour are legal and are folded in stream order: a
     /// payload whose `capture_sequence` strictly increases over the stored one
-    /// replaces it (`:10553`-`:10559`, the assignment at `:10559`), and one that
-    /// does not CLEARS the stored snapshot (`:10556`) rather than ending the
+    /// replaces it (`world_fold.rs::fold_pov_spotted_units`, the assignment at `world_fold.rs::fold_pov_spotted_units`), and one that
+    /// does not CLEARS the stored snapshot (`world_fold.rs::fold_pov_spotted_units`) rather than ending the
     /// hour — a cleared accumulator has nothing to compare against, so the next
     /// record stores whatever it carries. That is why this is an accumulator and
     /// not a one-shot decode.
@@ -834,18 +834,18 @@ impl HourAccumulator {
         // fold ever sees the snapshot (`spotted_units.rs:114`-`:123`, `:160`-`:171`).
         check_rows(land, Surface::Land)?;
         check_rows(taskforces, Surface::Taskforce)?;
-        // `world_fold.rs:10542`-`:10544`.
+        // `world_fold.rs::fold_pov_spotted_units`.
         if !roster.known_this_hour() {
             return Err("pov_spotted_units requires a current-hour D18 identity roster".into());
         }
-        // `world_fold.rs:10546`-`:10551`.
+        // `world_fold.rs::fold_pov_spotted_units`.
         if !roster.contains(header.pov_country_id) {
             return Err(format!(
                 "pov_spotted_units POV country {} is absent from current D18 roster",
                 header.pov_country_id
             ));
         }
-        // `world_fold.rs:10553`-`:10559`: within one hour the capture sequence
+        // `world_fold.rs::fold_pov_spotted_units`: within one hour the capture sequence
         // must strictly increase, and a violation clears what was already stored.
         if self
             .stored
@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn the_fold_requires_a_current_hour_d18_roster() {
-        // `world_fold.rs:10542`-`:10551`: both halves, and both clear the hour.
+        // `world_fold.rs::fold_pov_spotted_units`: both halves, and both clear the hour.
         let p = both_surfaces_payload();
         let mut hour = HourAccumulator::new();
         assert!(hour.fold_payload(&p, &CountryRoster::unmeasured()).is_err());
@@ -1659,7 +1659,7 @@ mod tests {
 
     #[test]
     fn a_later_record_in_one_hour_replaces_the_earlier_one() {
-        // `world_fold.rs:10553`-`:10559`: several records in one hour are legal;
+        // `world_fold.rs::fold_pov_spotted_units`: several records in one hour are legal;
         // the last strictly-increasing one wins.
         let schema = schema();
         let mut hour = HourAccumulator::new();
@@ -1687,7 +1687,7 @@ mod tests {
         // A non-increasing sequence CLEARS the stored snapshot rather than being
         // ignored — and clearing is not ending the hour: the accumulator then has
         // nothing to compare against, so the next record stores whatever it
-        // carries, however small (`world_fold.rs:10553`, `:10559`).
+        // carries, however small (`world_fold.rs::fold_pov_spotted_units`).
         for sequence in [1u64, 6] {
             let mut hour = HourAccumulator::new();
             hour.fold_payload(&payload(6, 368, (Some(1), &[]), (None, &[])), &roster())
@@ -1706,7 +1706,7 @@ mod tests {
             assert_eq!(stored.header.capture_sequence, 1);
         }
 
-        // The hour boundary drops everything (`world_fold.rs:3095`-`:3096`), so
+        // The hour boundary drops everything (`world_fold.rs::reset_hour_state`), so
         // the next hour's first record may carry any sequence above zero.
         let mut hour = HourAccumulator::new();
         hour.fold_payload(&payload(9, 368, (Some(1), &[]), (None, &[])), &roster())
@@ -1721,7 +1721,7 @@ mod tests {
     #[test]
     fn a_malformed_payload_clears_the_hour_and_is_refused() {
         // The production dispatcher's d95 arm clears the snapshot on every Err
-        // (`world_fold.rs:4926`-`:4934`), including the decode failures the fold
+        // (`world_fold.rs::apply_domain_data`), including the decode failures the fold
         // function itself would leave alone.
         let mut hour = HourAccumulator::new();
         hour.fold_payload(&payload(5, 368, (Some(1), &[]), (None, &[])), &roster())

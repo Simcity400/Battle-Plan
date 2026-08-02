@@ -18,13 +18,13 @@
 //! `fold_delayed_events` first checks the 20-byte base header, requires
 //! `observed_rows == row_count`, computes `20 + row_count * 20` with checked
 //! arithmetic, and requires the payload to reach that boundary
-//! (`world_fold.rs:9499`-`:9515`). If bytes remain, it parses the whole DEL2
-//! trailer before consulting the table status (`:9517`-`:9528`). Only then does
+//! (`world_fold.rs::fold_delayed_events`). If bytes remain, it parses the whole DEL2
+//! trailer before consulting the table status (`world_fold.rs::fold_delayed_events`). Only then does
 //! the table failure gate run; the independently drained ledger is settled on
-//! every table path (`:9530`-`:9558`). [`split_payload`], [`parse_trailer`] and
+//! every table path (`world_fold.rs::fold_delayed_events`). [`split_payload`], [`parse_trailer`] and
 //! [`fold_payload`] preserve that order.
 //!
-//! Header and row checks are transcribed from `world_fold.rs:9686`-`:9796`.
+//! Header and row checks are transcribed from `world_fold.rs::parse_delayed_event_lifecycle`.
 //! Their shipping original lives in `recorder_host`, which this library may not
 //! depend on. `bench_real_d64` therefore checks every reachable constant against
 //! `compact_contract`, runs the transcribed status-independent payload authority
@@ -35,15 +35,15 @@
 //! # Mapping decisions
 //!
 //! - `sequence` is not a field. The fold requires row `sequence ==
-//!   first_sequence + index` (`world_fold.rs:9743`-`:9747`), so §9 derives it
+//!   first_sequence + index` (`world_fold.rs::parse_delayed_event_lifecycle`), so §9 derives it
 //!   from event position and the after-frontier.
 //!   [`event_batch_from_lifecycle_payload`] enforces the header bounds and every
 //!   row's expected position before omitting it.
-//! - `reason` is the closed four-way transform at `:9758`-`:9776`, represented
+//! - `reason` is the closed four-way transform at `world_fold.rs::parse_delayed_event_lifecycle`, represented
 //!   as a four-cardinality enum (wire codes 0..=3).
 //! - `due_after` is not a field. On the only arm where it exists the fold
-//!   requires `due_after == due_before - 1` (`:9758`-`:9764`); on all other arms
-//!   it requires the zero-packed absence word (`:9765`-`:9771`). It is therefore
+//!   requires `due_after == due_before - 1` (`world_fold.rs::parse_delayed_event_lifecycle`); on all other arms
+//!   it requires the zero-packed absence word (`world_fold.rs::parse_delayed_event_lifecycle`). It is therefore
 //!   a total function of carried `reason` and `due_before`, and carrying a second
 //!   copy would admit contradictory bytes. [`record_from_lifecycle_row`] refuses
 //!   every contradictory public row before omitting it.
@@ -204,7 +204,7 @@ pub struct PayloadParts<'a> {
 }
 
 /// The fold's pre-status structural prefix, in its own call order
-/// (`world_fold.rs:9499`-`:9517`).
+/// (`world_fold.rs::fold_delayed_events`).
 pub fn split_payload(payload: &[u8]) -> Result<PayloadParts<'_>, String> {
     if payload.len() < BASE_HEADER_LEN {
         return Err(format!(
@@ -240,7 +240,7 @@ pub fn split_payload(payload: &[u8]) -> Result<PayloadParts<'_>, String> {
     })
 }
 
-/// Parse DEL2 exactly as `world_fold.rs:9686`-`:9796`: header structure,
+/// Parse DEL2 exactly as `world_fold.rs::parse_delayed_event_lifecycle`: header structure,
 /// count/sequence arithmetic, then rows in wire order.
 pub fn parse_trailer(payload: &[u8]) -> Result<LifecyclePayload, String> {
     if payload.len() < TRAILER_HEADER_LEN {
@@ -687,7 +687,7 @@ pub struct FoldOutcome {
 }
 
 /// Production's cross-hour d64 lifecycle state
-/// (`world_fold.rs:9650`-`:9683`). The sticky poison is intentionally mirrored,
+/// (`world_fold.rs::settle_delayed_event_lifecycle`). The sticky poison is intentionally mirrored,
 /// even though §9 recovers after a recorded gap; that divergence is measured and
 /// reported rather than silently "fixed" at this boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -721,8 +721,8 @@ impl State {
 /// A trailer parse error mutates `history_failed` before returning `Err`, as the
 /// fold does (`world_fold.rs:9521`-`:9527`). A table-row refusal is carried in
 /// [`TablePart::Refused`] beside the already-settled ledger: production settles
-/// at `world_fold.rs:9555`-`:9559`, records the table error at `:5026`, and emits
-/// the ledger independently at `:6055`-`:6065`.
+/// at `world_fold.rs::fold_delayed_events`, records the table error at `world_fold.rs::apply_domain_data`, and emits
+/// the ledger independently at `world_fold.rs::build_snapshot`.
 pub fn fold_payload(state: &mut State, payload: &[u8]) -> Result<FoldOutcome, String> {
     let parts = split_payload(payload)?;
     let lifecycle = match parts.trailer {
@@ -746,7 +746,7 @@ pub fn fold_payload(state: &mut State, payload: &[u8]) -> Result<FoldOutcome, St
         // Validate the table rows only after the status gate, in the fold's
         // order. Preserve its Result until after ledger settlement: production
         // settles the independent trailer even when a clean table row refuses
-        // (`world_fold.rs:9550`-`:9559`).
+        // (`world_fold.rs::fold_delayed_events`).
         validate_state_rows(parts.state_rows, parts.header.row_count).map(|()| {
             TablePart::StoppedPresent {
                 row_count: parts.header.row_count,

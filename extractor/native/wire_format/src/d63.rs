@@ -8,16 +8,16 @@
 //! `extractor/documents/domains/d63_country_core_scalars_live.md` carries no
 //! field-level knowledge, so the fold and the collector read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:9256`-`:9297`): a 20-byte header —
+//! **Payload grammar** (`world_fold.rs::fold_country_core_scalars`): a 20-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16` — followed by `row_count` fixed 48-byte
 //! rows. There is no legacy short row: the fold requires
-//! `payload.len() == 20 + row_count * 48` exactly (`:9260`), so the length never
+//! `payload.len() == 20 + row_count * 48` exactly (`world_fold.rs::fold_country_core_scalars`), so the length never
 //! selects a row form and the mapper accepts exactly one.
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `tag_db_id`               | raw     | none (key; zero rejected, `:9279`) |
+//! | `+0`  | u32 | `tag_db_id`               | raw     | none (key; zero rejected, `world_fold.rs::fold_country_core_scalars`) |
 //! | `+4`  | u32 | `flags`                   | —       | — |
 //! | `+8`  | u32 | `manpower_pool`           | raw     | `1<<0` |
 //! | `+12` | u32 | `convoys_destroyed`       | raw     | `1<<1` |
@@ -32,7 +32,7 @@
 //!
 //! **Every gated field is `unknown`, never `null` or `absent`, when its gate is
 //! clear.** `fold_country_core_scalars` emits JSON `Null` uniformly on a clear
-//! gate (`:9342`-`:9382`), which per `WIRE_FORMAT.md` §3 decides value-vs-nothing
+//! gate (`world_fold.rs::fold_country_core_scalars`), which per `WIRE_FORMAT.md` §3 decides value-vs-nothing
 //! and nothing else. The collector decides the rest, and it is explicit
 //! (`attach_log.rs:60576`): *"Fail-closed per field: an unreadable/out-of-range
 //! value folds ABSENT (null), never a fabricated 0."* Each flag is exactly
@@ -77,34 +77,34 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:159`-`:172` and `:9256`-`:9297`. ----
 
-/// `world_fold.rs:9256` — `need(payload, 20, ...)`, then rows at `20 + i * 48`.
+/// `world_fold.rs::fold_country_core_scalars` — `need(payload, 20, ...)`, then rows at `20 + i * 48`.
 pub const HEADER_LEN: usize = 20;
-/// `COUNTRY_CORE_ROW_LEN`, `world_fold.rs:159`. Fixed; there is no legacy form.
+/// `COUNTRY_CORE_ROW_LEN`, `world_fold.rs::COUNTRY_CORE_ROW_LEN`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 48;
 
 pub const FLAG_MANPOWER_POOL: u32 = 1 << 0;
 pub const FLAG_CONVOYS_DESTROYED: u32 = 1 << 1;
 pub const FLAG_DIVISIONS_LOST: u32 = 1 << 2;
 pub const FLAG_EXPERIENCE: u32 = 1 << 3;
-/// `COUNTRY_CORE_KNOWN_FLAGS`, `world_fold.rs:164`. Any other bit is a hard
+/// `COUNTRY_CORE_KNOWN_FLAGS`, `world_fold.rs::COUNTRY_CORE_KNOWN_FLAGS`. Any other bit is a hard
 /// error (`:9283`) — an unrecognised flag word means the row is not this grammar.
 pub const KNOWN_FLAGS: u32 =
     FLAG_MANPOWER_POOL | FLAG_CONVOYS_DESTROYED | FLAG_DIVISIONS_LOST | FLAG_EXPERIENCE;
 
-/// `COUNTRY_CORE_EXPERIENCE_SCALE`, `world_fold.rs:169`. **32768, not
+/// `COUNTRY_CORE_EXPERIENCE_SCALE`, `world_fold.rs::COUNTRY_CORE_EXPERIENCE_SCALE`. **32768, not
 /// `FIXED_SCALE`**: the channels are raw signed int32 CFixedPoint, and the fold
 /// divides every one of the seven by this (`:9369`-`:9377`).
 pub const EXPERIENCE_SCALE: f64 = 32768.0;
 
-/// `COUNTRY_CORE_MAX_MANPOWER_POOL`, `world_fold.rs:170`.
+/// `COUNTRY_CORE_MAX_MANPOWER_POOL`, `world_fold.rs::COUNTRY_CORE_MAX_MANPOWER_POOL`.
 pub const MAX_MANPOWER_POOL: u32 = 2_000_000_000;
-/// `COUNTRY_CORE_MAX_CONVOYS_DESTROYED`, `world_fold.rs:171`.
+/// `COUNTRY_CORE_MAX_CONVOYS_DESTROYED`, `world_fold.rs::COUNTRY_CORE_MAX_CONVOYS_DESTROYED`.
 pub const MAX_CONVOYS_DESTROYED: u32 = 100_000_000;
-/// `COUNTRY_CORE_MAX_DIVISIONS_LOST`, `world_fold.rs:172`.
+/// `COUNTRY_CORE_MAX_DIVISIONS_LOST`, `world_fold.rs::COUNTRY_CORE_MAX_DIVISIONS_LOST`.
 pub const MAX_DIVISIONS_LOST: u32 = 1_000_000;
 
 /// The seven experience channels, in row order, with their byte offsets
-/// (`world_fold.rs:9291`-`:9297`). All seven share the single `FLAG_EXPERIENCE`
+/// (`world_fold.rs::fold_country_core_scalars`). All seven share the single `FLAG_EXPERIENCE`
 /// gate and the single `EXPERIENCE_SCALE`.
 pub const EXPERIENCE_CHANNELS: [(u32, usize); 7] = [
     (field::ARMY_EXPERIENCE, 20),
@@ -119,7 +119,7 @@ pub const EXPERIENCE_CHANNELS: [(u32, usize); 7] = [
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
-        // Key: the country's `tag_db_id` (`world_fold.rs:9278`), the same
+        // Key: the country's `tag_db_id` (`world_fold.rs::fold_country_core_scalars`), the same
         // identity d18 keys its roster by. The fold's D18 gate is CONTAINMENT
         // (every D18 tag must have a d63 row; rows for tags D18 cannot name
         // are dropped at the persistence boundary with a provenance note,
@@ -156,7 +156,7 @@ pub fn schema() -> Schema {
     //
     // `num_armies_for_training` is `Continuous`, not `Unsigned`, because the
     // fold divides it by `EXPERIENCE_SCALE` like every other channel
-    // (`world_fold.rs:9377`) — the fold is the authority even where the name
+    // (`world_fold.rs::fold_country_core_scalars`) — the fold is the authority even where the name
     // reads like a count.
     for (id, _) in EXPERIENCE_CHANNELS {
         fields.push(
@@ -172,7 +172,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: COUNTRIES,
-            // Full-replace each frame (`world_fold.rs:9267` requires
+            // Full-replace each frame (`world_fold.rs::fold_country_core_scalars` requires
             // `changed_rows == row_count`), but `tag_db_id` is a stable identity
             // that persists across hours, which is what a keyed set needs — and
             // only a keyed set has a delta grammar (§7.3).
@@ -185,7 +185,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 20-byte payload header (`world_fold.rs:9256`-`:9259`).
+/// The 20-byte payload header (`world_fold.rs::fold_country_core_scalars`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -195,7 +195,7 @@ pub struct PayloadHeader {
 }
 
 /// Split a d63 DATA payload into its header and its rows slice, applying the
-/// fold's own structural checks (`world_fold.rs:9256`-`:9271`).
+/// fold's own structural checks (`world_fold.rs::fold_country_core_scalars`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -225,7 +225,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
             payload.len()
         ));
     }
-    // `world_fold.rs:9267`: d63 is full-replace, so a header claiming a partial
+    // `world_fold.rs::fold_country_core_scalars`: d63 is full-replace, so a header claiming a partial
     // update is a malformed frame rather than a delta to be applied.
     if header.changed_rows != header.row_count {
         return Err(format!(
@@ -236,12 +236,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     Ok((header, &payload[HEADER_LEN..]))
 }
 
-/// The key of one compact row: its `tag_db_id` (`world_fold.rs:9278`-`:9281`).
+/// The key of one compact row: its `tag_db_id` (`world_fold.rs::fold_country_core_scalars`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[tag_db_id_of_row(row)? as u64]))
 }
 
-/// `tag_db_id` with the fold's zero check (`world_fold.rs:9279`).
+/// `tag_db_id` with the fold's zero check (`world_fold.rs::fold_country_core_scalars`).
 pub fn tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let tag_db_id = u32_at(row, 0);
@@ -276,7 +276,7 @@ pub fn record_from_row(
     let _ = tag_db_id_of_row(row)?;
 
     let flags = u32_at(row, 4);
-    // `world_fold.rs:9283`: an unknown flag bit means the row is not this
+    // `world_fold.rs::fold_country_core_scalars`: an unknown flag bit means the row is not this
     // grammar, so nothing in it can be trusted.
     if flags & !KNOWN_FLAGS != 0 {
         return Err(format!(
@@ -290,7 +290,7 @@ pub fn record_from_row(
     let has_divisions_lost = flags & FLAG_DIVISIONS_LOST != 0;
     let has_experience = flags & FLAG_EXPERIENCE != 0;
 
-    // `validate_optional_u32_field`, `world_fold.rs:30197`: a present value must
+    // `validate_optional_u32_field`, `world_fold.rs::validate_optional_u32_field`: a present value must
     // be in range, and a gated-off field must pack a zero. The second half is
     // what makes an ungated non-zero word a malformed row rather than data.
     validate_optional_u32(
@@ -311,7 +311,7 @@ pub fn record_from_row(
         MAX_DIVISIONS_LOST,
         "divisions_lost",
     )?;
-    // `world_fold.rs:9329`-`:9339`: the seven channels only carry meaning under
+    // `world_fold.rs::fold_country_core_scalars`: the seven channels only carry meaning under
     // the flag, and must be zero-packed without it.
     if !has_experience
         && EXPERIENCE_CHANNELS
@@ -727,7 +727,7 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // Zero tag_db_id (`world_fold.rs:9279`).
+        // Zero tag_db_id (`world_fold.rs::fold_country_core_scalars`).
         assert!(record_from_row(&c, &raw_row(0, KNOWN_FLAGS, [0; 3], [0; 7]), 0).is_err());
         // An unknown flag bit (`:9283`) — every one of them, not just one sample.
         for bit in 4..32u32 {
@@ -807,7 +807,7 @@ mod tests {
         let mut truncated = payload.clone();
         truncated.pop();
         assert!(split_payload(&truncated).is_err());
-        // changed_rows != row_count (`world_fold.rs:9267`).
+        // changed_rows != row_count (`world_fold.rs::fold_country_core_scalars`).
         let mut partial = payload.clone();
         partial[12..16].copy_from_slice(&0u32.to_le_bytes());
         assert!(split_payload(&partial).is_err());

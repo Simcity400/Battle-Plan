@@ -3,8 +3,8 @@
 //! Derived from `world_fold.rs:15633`-`:15774`
 //! (`fold_air_wing_loadouts`), its payload constants at `:979`-`:981`, its
 // @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=15633-15774 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4
-//! accumulator's JSON projection (`:8168`-`:8223`), the end-of-hour orphan prune
-//! that also writes that accumulator (`:5122`-`:5147`), and the collector read
+//! accumulator's JSON projection (`world_fold.rs::build_order_of_battle`), the end-of-hour orphan prune
+//! that also writes that accumulator (`world_fold.rs::prune_air_wing_loadout_orphans_for_current_hour`), and the collector read
 //! and packer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:57153`-`:57193`,
 //! `:57391`-`:57463`, `:55966`-`:56045`, `:70227`-`:70283`).
@@ -12,11 +12,11 @@
 //! the collector read are the whole basis; where they could be read differently
 //! the fold wins and the disagreement is recorded.
 //!
-//! # Payload grammar (`world_fold.rs:14856`-`:14968`)
+//! # Payload grammar (`world_fold.rs::fold_air_wing_loadouts`)
 //!
 //! A 44-byte header, then `row_count` fixed 32-byte **wing rows**, then
 //! `equipment_count` fixed 16-byte **entry rows**. The fold requires the length
-//! to be exactly `44 + row_count * 32 + equipment_count * 16` (`:14915`-`:14923`),
+//! to be exactly `44 + row_count * 32 + equipment_count * 16` (`world_fold.rs::fold_air_wing_loadouts`),
 //! so no legacy short row exists and the length selects nothing.
 //!
 //! Header:
@@ -31,33 +31,33 @@
 //! | `+24` | u32 | `observed_equipment_rows` |
 //! | `+28` | u32 | `equipment_count` |
 //! | `+32` | u32 | `deleted_rows` |
-//! | `+36` | u32 | `scale_raw` (asserted `== 100000`, `:14898`) |
-//! | `+40` | u32 | `reserved0` (must be zero, `:14899`) |
+//! | `+36` | u32 | `scale_raw` (asserted `== 100000`, `world_fold.rs::fold_air_wing_loadouts`) |
+//! | `+40` | u32 | `reserved0` (must be zero, `world_fold.rs::fold_air_wing_loadouts`) |
 //!
-//! Wing row (`world_fold.rs:14926`-`:14953`):
+//! Wing row (`world_fold.rs::fold_air_wing_loadouts`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
 //! | `+0`  | u32 | `owner_tag_db_id` | raw | none (key; **not** zero-rejected) |
 //! | `+4`  | u32 | `wing_id`         | raw | none (key; **not** zero-rejected) |
 //! | `+8`  | u64 | `generation`      | raw | none (key) |
-//! | `+16` | u32 | `flags`           | —   | only `1<<0` DELETED is legal (`:14932`) |
-//! | `+20` | u32 | `air_base_id`     | raw | **value test** `!= 0` (`:14989`), not a flag |
+//! | `+16` | u32 | `flags`           | —   | only `1<<0` DELETED is legal (`world_fold.rs::fold_air_wing_loadouts`) |
+//! | `+20` | u32 | `air_base_id`     | raw | **value test** `!= 0` (`world_fold.rs::fold_air_wing_loadouts`), not a flag |
 //! | `+24` | u32 | `entry_first`     | —   | transport, not state |
 //! | `+28` | u32 | `entry_count`     | —   | transport, not state |
 //!
-//! Entry row (`world_fold.rs:14956`-`:14967`):
+//! Entry row (`world_fold.rs::fold_air_wing_loadouts`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
 //! | `+0` | u32 | `variant_id` | raw     | none (key) |
-//! | `+4` | u32 | `reserved`   | —       | must be zero (`:14959`) |
+//! | `+4` | u32 | `reserved`   | —       | must be zero (`world_fold.rs::fold_air_wing_loadouts`) |
 //! | `+8` | i64 | `amount_raw` | /100000 | none; **no range check in the fold** |
 //!
 //! # Two collections, because `(entry_first, entry_count)` is transport
 //!
 //! A wing row addresses its equipment as a half-open range into one shared entry
-//! array (`:14940`-`:14945`, `:14990`-`:14993`); the ranges are re-packed by the
+//! array (`world_fold.rs::fold_air_wing_loadouts`); the ranges are re-packed by the
 //! collector from emission order on every frame
 //! (`attach_log.rs:70258`-`:70274`) and carry no state a reader could ask about.
 //! What is state is the wing's placement plus the set of
@@ -69,7 +69,7 @@
 //! **The wing's equipment list is replaced wholesale, never merged.** The fold's
 //! accumulator value is one `AirWingLoadoutState { air_base_id, equipment }`
 //! (`world_fold.rs:23762`-`:23765`) and an upsert re-inserts the whole struct
-//! (`:14986`-`:14994`), so a variant the new row omits is gone. [`State::fold_payload`]
+//! (`world_fold.rs::fold_air_wing_loadouts`), so a variant the new row omits is gone. [`State::fold_payload`]
 //! therefore drops every [`EQUIPMENT`] key under a wing before inserting that
 //! wing's new lines; merging them would resurrect equipment the recorder dropped.
 //!
@@ -79,7 +79,7 @@
 //! scale is a contract rather than a per-frame variable, and the consumer-facing
 //! projection divides: the snapshot emits `entry.amount_raw as f64 / FIXED_SCALE`
 //! in both the joined `equipment` array (`:8203`) and the `_r2_air_wing_loadout`
-//! leaf, which carries `amount_raw` and `amount` side by side (`:8219`-`:8220`).
+//! leaf, which carries `amount_raw` and `amount` side by side (`world_fold.rs::build_order_of_battle`).
 //! The division belongs at this boundary; nothing else in the row is scaled.
 //!
 //! # Four states
@@ -89,7 +89,7 @@
 //! ## `air_base_id` — `unknown`, and nothing else
 //!
 //! The gate is a value test, not a flag: `(row.air_base_id != 0).then_some(...)`
-//! (`world_fold.rs:14989`). There is no flag to consult, so the meaning of the
+//! (`world_fold.rs::fold_air_wing_loadouts`). There is no flag to consult, so the meaning of the
 //! zero has to come from the producer, per the recipe's step 2.
 //!
 //! The collector's live-row path never writes it. A wing row is built by
@@ -111,7 +111,7 @@
 //! "This wing is at no air base" is carried by **key absence**, not by a zero:
 //! the snapshot's own comment for a wing with no d32 row reads *"A wing without a
 //! current D32 row has no authenticated air-base handle to join. Keep every
-//! placement leaf null."* (`world_fold.rs:14879`-`:14881` region, `:8225`-`:8231`).
+//! placement leaf null."* (`world_fold.rs::fold_air_wing_loadouts` region, `world_fold.rs::build_order_of_battle`).
 //! Nothing in either authority assigns "the relation genuinely points at nothing"
 //! to the zero word.
 //!
@@ -137,7 +137,7 @@
 //!
 //! ## A deleted wing is a removal, not a row
 //!
-//! `DELETED` (`1<<0`, `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`) erases the
+//! `DELETED` (`1<<0`, `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`) erases the
 //! key (`:14979`-`:14982`). It maps to wire tombstones in both collections, so it
 //! never reaches a record: [`record_from_wing_row`] refuses one rather than
 //! inventing a placement.
@@ -145,7 +145,7 @@
 //! # The child-uniqueness check is this layer's, not the fold's
 //!
 //! `fold_air_wing_loadouts` parses entries into a `Vec` and slices it
-//! (`:14956`-`:14968`, `:14990`-`:14993`). It applies **no** uniqueness check, and
+//! (`world_fold.rs::fold_air_wing_loadouts`). It applies **no** uniqueness check, and
 //! a repeated `variant_id` inside one wing's range is perfectly representable in
 //! that `Vec` — both lines survive and both reach the snapshot array.
 //!
@@ -227,21 +227,21 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:979`-`:981` and `:14856`-`:14968`. --
 
-/// `AIR_WING_LOADOUT_HEADER_LEN`, `world_fold.rs:979`.
+/// `AIR_WING_LOADOUT_HEADER_LEN`, `world_fold.rs::AIR_WING_LOADOUT_HEADER_LEN`.
 pub const HEADER_LEN: usize = 44;
-/// `AIR_WING_LOADOUT_ROW_LEN`, `world_fold.rs:980`.
+/// `AIR_WING_LOADOUT_ROW_LEN`, `world_fold.rs::AIR_WING_LOADOUT_ROW_LEN`.
 pub const WING_ROW_LEN: usize = 32;
-/// `AIR_WING_LOADOUT_ENTRY_ROW_LEN`, `world_fold.rs:981`.
+/// `AIR_WING_LOADOUT_ENTRY_ROW_LEN`, `world_fold.rs::AIR_WING_LOADOUT_ENTRY_ROW_LEN`.
 pub const ENTRY_ROW_LEN: usize = 16;
 
-/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs:758`.
+/// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`.
 pub const WING_FLAG_DELETED: u32 = 1;
-/// `world_fold.rs:14932`-`:14935`: the delete bit is the only legal flag, and any
+/// `world_fold.rs::fold_air_wing_loadouts`: the delete bit is the only legal flag, and any
 /// other bit is a hard error — an unrecognised flag word means the row is not
 /// this grammar, so nothing in it can be trusted.
 pub const WING_KNOWN_FLAGS: u32 = WING_FLAG_DELETED;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`. `ensure_fixed_scale` (`:14898`) asserts the
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`. `ensure_fixed_scale` (`:14898`) asserts the
 /// header word equal to it, so this is the only scale d32 ever uses and a frame
 /// declaring another is rejected rather than read at its own scale.
 pub const FIXED_SCALE: f64 = 100_000.0;
@@ -255,7 +255,7 @@ pub const SCALE_DIGITS: u8 = 5;
 
 /// `MAX_AIR_WING_EQUIPMENT_AMOUNT_RAW`, `attach_log/offsets.rs:1067`. This is the
 /// **producer's** bound, not the fold's: `fold_air_wing_loadouts` applies no
-/// range check to `amount_raw` at all (`world_fold.rs:14967`), so the mapper does
+/// range check to `amount_raw` at all (`world_fold.rs::fold_air_wing_loadouts`), so the mapper does
 /// not either. It is named here because it is what makes `Fixed(5)` lossless over
 /// every value a capture can contain (`1e15 < 2^53`).
 pub const PRODUCER_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
@@ -276,13 +276,13 @@ pub fn schema() -> Schema {
                 collection_id: WINGS,
                 // Wings persist across hours and the frame grammar is
                 // clear-on-first-baseline / upsert-after / DELETED-removes
-                // (`world_fold.rs:14969`-`:14994`), which is exactly a keyed
+                // (`world_fold.rs::fold_air_wing_loadouts`), which is exactly a keyed
                 // set's grammar — and only a keyed set has deltas (§7.3).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is `AirWingKey { owner_tag_db_id, wing_id,
-                    // generation }` (`world_fold.rs:14974`-`:14978`), the same key
-                    // type d30 air_wings uses (`:14728`-`:14732`). None of the
+                    // generation }` (`world_fold.rs::fold_air_wing_loadouts`), the same key
+                    // type d30 air_wings uses (`world_fold.rs::fold_air_wings`). None of the
                     // three is zero-rejected by this fold, so all three are
                     // concrete in every row by construction rather than by check.
                     //
@@ -340,13 +340,13 @@ pub fn schema() -> Schema {
                     //
                     // `Quant::Fixed(5)` is not a precision *choice*: the source is
                     // an i64 over a denominator the fold asserts to be exactly
-                    // `10^5` (`:14898`), so `fixed(5)` reproduces the source
+                    // `10^5` (`world_fold.rs::fold_air_wing_loadouts`), so `fixed(5)` reproduces the source
                     // integer bit for bit over every value a producer can emit
                     // (proved in the tests). §6's "exact unless justified" bar is
                     // met by a stronger fact than a precision budget: nothing is
                     // rounded at all. It also matters that the raw integer
                     // survives, because the snapshot publishes `amount_raw`
-                    // beside `amount` (`:8219`) — `fixed(5)` is precisely the
+                    // beside `amount` (`world_fold.rs::build_order_of_battle`) — `fixed(5)` is precisely the
                     // quantization under which `round(value * 1e5)` returns that
                     // integer unchanged, and `exact` would spend 8 raw bytes per
                     // value to carry the same information.
@@ -360,7 +360,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 44-byte payload header (`world_fold.rs:14862`-`:14872`).
+/// The 44-byte payload header (`world_fold.rs::fold_air_wing_loadouts`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -394,7 +394,7 @@ pub struct WingRow {
     pub wing_id: u32,
     pub generation: u64,
     pub flags: u32,
-    /// `None` when the word is zero (`world_fold.rs:14989`) — §3's `unknown`, see
+    /// `None` when the word is zero (`world_fold.rs::fold_air_wing_loadouts`) — §3's `unknown`, see
     /// the module docs.
     pub air_base_id: Option<u32>,
     pub entry_first: usize,
@@ -412,11 +412,11 @@ pub struct EquipmentRow {
 
 /// Read the 44-byte payload header and apply exactly the checks
 /// `fold_air_wing_loadouts` applies **before** it consults `status_flags`
-/// (`world_fold.rs:14856`-`:14901`).
+/// (`world_fold.rs::fold_air_wing_loadouts`).
 ///
 /// The split is the fold's own call order and it is load-bearing for a harness:
 /// the fold validates these header counts, then returns early on a failure
-/// status or a delta-before-baseline (`:14902`-`:14915`), and only then checks
+/// status or a delta-before-baseline (`world_fold.rs::fold_air_wing_loadouts`), and only then checks
 /// the payload length and reads any row. A caller that needs the status word in
 /// order to decide whether the record folds at all must therefore be able to
 /// read the header without paying for the body — which is what this is for.
@@ -465,7 +465,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             header.row_count, header.observed_air_wing_rows, header.deleted_rows
         ));
     }
-    // `world_fold.rs:14891`-`:14897`: a full frame serializes every equipment row
+    // `world_fold.rs::fold_air_wing_loadouts`: a full frame serializes every equipment row
     // it observed, a delta only the changed ones — so the bound holds only when
     // `DELTA_DATA` is clear.
     if header.equipment_count > header.observed_equipment_rows && !header.is_delta() {
@@ -483,7 +483,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             header.scale_raw
         ));
     }
-    // `world_fold.rs:14899`-`:14901`.
+    // `world_fold.rs::fold_air_wing_loadouts`.
     if header.reserved0 != 0 {
         return Err("air_wing_loadouts header reserved field is nonzero".into());
     }
@@ -495,9 +495,9 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 /// one check this layer must carry itself.
 ///
 /// The fold's own checks are [`peek_header`]'s, then the exact payload length
-/// (`world_fold.rs:14915`-`:14923`), then per wing row the flag word and the
-/// entry-range bound (`:14932`-`:14945`), then per entry row the reserved word
-/// (`:14958`-`:14961`).
+/// (`world_fold.rs::fold_air_wing_loadouts`), then per wing row the flag word and the
+/// entry-range bound (`world_fold.rs::fold_air_wing_loadouts`), then per entry row the reserved word
+/// (`world_fold.rs::fold_air_wing_loadouts`).
 ///
 /// The extra check is **child uniqueness**: a `variant_id` repeated inside one
 /// wing's range is rejected here although the fold accepts it. See the module
@@ -513,7 +513,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 
     // Checked arithmetic throughout: both counts are attacker-shaped words from a
     // file on disk, and either product overflows `usize` for a large enough one.
-    // `world_fold.rs:14915` uses saturating arithmetic, which turns an
+    // `world_fold.rs::fold_air_wing_loadouts` uses saturating arithmetic, which turns an
     // overflowing claim into a length that cannot match; rejecting reaches the
     // same outcome without relying on that.
     let wings_len = (header.row_count as usize)
@@ -544,7 +544,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     let equipment_count = header.equipment_count as usize;
 
     // Pass 1 — the FOLD's per-row checks, on every row: the flag word and the
-    // entry-range bound (`world_fold.rs:14932`-`:14948`). The fold applies both
+    // entry-range bound (`world_fold.rs::fold_air_wing_loadouts`). The fold applies both
     // before it ever looks at the delete bit, so delete rows are checked too.
     let mut parsed_rows: Vec<WingRow> = Vec::with_capacity(wings.len() / WING_ROW_LEN);
     let mut last_row_of_key: BTreeMap<Key, usize> = BTreeMap::new();
@@ -562,7 +562,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 
     // Every entry row, referenced or not: the fold parses the whole array and
     // rejects a non-zero reserved word wherever it is
-    // (`world_fold.rs:14956`-`:14968`). Ranges may legally overlap or leave gaps,
+    // (`world_fold.rs::fold_air_wing_loadouts`). Ranges may legally overlap or leave gaps,
     // so a per-range loop alone would miss an unreferenced row.
     for (index, row) in entries.chunks_exact(ENTRY_ROW_LEN).enumerate() {
         parse_equipment_row(row).map_err(|e| format!("air_wing_loadouts entry {index}: {e}"))?;
@@ -616,11 +616,11 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 }
 
 /// Parse one 32-byte wing row, applying every per-row check the fold applies
-/// (`world_fold.rs:14926`-`:14953`) except the entry-range bound, which needs the
+/// (`world_fold.rs::fold_air_wing_loadouts`) except the entry-range bound, which needs the
 /// frame's `equipment_count` and lives in [`entry_index_range`].
 ///
 /// Mirrored deliberately: the fold does **not** reject a zero `owner_tag_db_id`
-/// or a zero `wing_id` here (contrast d26's roots, `:17478`-`:17486`), and
+/// or a zero `wing_id` here (contrast d26's roots, `world_fold.rs::fold_division_equipment`), and
 /// neither does this. Tightening would refuse a frame the recorder folds.
 pub fn parse_wing_row(row: &[u8]) -> core::result::Result<WingRow, String> {
     if row.len() != WING_ROW_LEN {
@@ -637,7 +637,7 @@ pub fn parse_wing_row(row: &[u8]) -> core::result::Result<WingRow, String> {
     let entry_first = u32_at(row, 24) as usize;
     let entry_count = u32_at(row, 28) as usize;
 
-    // `world_fold.rs:14932`-`:14935`.
+    // `world_fold.rs::fold_air_wing_loadouts`.
     if flags & !WING_KNOWN_FLAGS != 0 {
         return Err(format!("air_wing_loadouts row has unknown flags {flags:#x}"));
     }
@@ -648,9 +648,9 @@ pub fn parse_wing_row(row: &[u8]) -> core::result::Result<WingRow, String> {
         wing_id,
         generation,
         flags,
-        // `world_fold.rs:14989`: a value test, not a flag. The fold does NOT
+        // `world_fold.rs::fold_air_wing_loadouts`: a value test, not a flag. The fold does NOT
         // require a delete row to zero the rest of its payload (contrast d26's
-        // `:17501`), so a delete row's `air_base_id` word is read the same way
+        // `world_fold.rs::fold_division_equipment`), so a delete row's `air_base_id` word is read the same way
         // and simply never reaches a record.
         air_base_id: (air_base_word != 0).then_some(air_base_word),
         entry_first,
@@ -660,11 +660,11 @@ pub fn parse_wing_row(row: &[u8]) -> core::result::Result<WingRow, String> {
 }
 
 /// Parse one 16-byte entry row, applying the fold's per-row checks
-/// (`world_fold.rs:14958`-`:14967`).
+/// (`world_fold.rs::fold_air_wing_loadouts`).
 ///
 /// The fold checks the reserved word and nothing else: `variant_id` has no bound
-/// (contrast d26's `:17545`) and `amount_raw` has no range check at all (contrast
-/// d26's `:17551`). Both are mirrored — see [`PRODUCER_MAX_AMOUNT_RAW`] for the
+/// (contrast d26's `world_fold.rs::fold_division_equipment`) and `amount_raw` has no range check at all (contrast
+/// d26's `world_fold.rs::fold_division_equipment`). Both are mirrored — see [`PRODUCER_MAX_AMOUNT_RAW`] for the
 /// producer-side bound that the fold declines to restate.
 pub fn parse_equipment_row(row: &[u8]) -> core::result::Result<EquipmentRow, String> {
     if row.len() != ENTRY_ROW_LEN {
@@ -687,7 +687,7 @@ pub fn parse_equipment_row(row: &[u8]) -> core::result::Result<EquipmentRow, Str
 
 /// The half-open index range of one wing's entry rows within the frame's shared
 /// entry array, checked exactly as the fold checks it
-/// (`world_fold.rs:14940`-`:14948`).
+/// (`world_fold.rs::fold_air_wing_loadouts`).
 ///
 /// [`split_payload`] runs this over every row, and any caller that wants a wing's
 /// entries runs it again to find them: one derivation of the range rule, so the
@@ -714,7 +714,7 @@ pub fn entry_index_range(
 }
 
 /// The [`WINGS`] key of one wing: `(owner_tag_db_id, wing_id, generation)`
-/// (`world_fold.rs:14974`-`:14978`).
+/// (`world_fold.rs::fold_air_wing_loadouts`).
 pub fn wing_key(owner_tag_db_id: u32, wing_id: u32, generation: u64) -> Key {
     key(&[owner_tag_db_id as u64, wing_id as u64, generation])
 }
@@ -769,7 +769,7 @@ pub fn key_from_equipment_row(
 ///
 /// Fail-closed throughout, mirroring `fold_air_wing_loadouts`: a row the fold
 /// would reject is an `Err` here, never a coerced value. A **deleted** row is an
-/// `Err` too — it is a removal (`world_fold.rs:14979`-`:14982`) and has no
+/// `Err` too — it is a removal (`world_fold.rs::fold_air_wing_loadouts`) and has no
 /// record; a caller must map it to wire tombstones in both collections, and
 /// quietly handing one back a placement-less row would turn a delete into an
 /// upsert. Nothing in this function can panic on any input.
@@ -818,7 +818,7 @@ pub fn record_from_wing_row(
 /// `frame_tick` contract.
 ///
 /// `amount` is `amount_raw / FIXED_SCALE` — the fold's own projection
-/// (`world_fold.rs:8203`, `:8219`-`:8220`). `amount_raw == 0` is a real measured
+/// (`world_fold.rs::build_order_of_battle`). `amount_raw == 0` is a real measured
 /// value (a bank slot holding nothing) and never an empty state.
 pub fn record_from_equipment_row(
     collection: &Collection,
@@ -882,7 +882,7 @@ pub struct State {
     pub wings: KeyedState,
     /// Collection [`EQUIPMENT`], keyed by [`equipment_key`].
     pub equipment: KeyedState,
-    /// `delta_baselines_seen.contains(32)` (`world_fold.rs:2954`-`:2958`).
+    /// `delta_baselines_seen.contains(32)` (`world_fold.rs::replace_or_sparse_after_first`).
     baseline_seen: bool,
 }
 
@@ -899,20 +899,20 @@ impl State {
     }
 
     /// Fold one d32 DATA payload exactly as `fold_air_wing_loadouts` folds it
-    /// (`world_fold.rs:14855`-`:14995`).
+    /// (`world_fold.rs::fold_air_wing_loadouts`).
     ///
     /// The caller is responsible for the **failure-status** exclusion, because
     /// the predicate is `compact_contract`'s
     /// (`compact_status_failure_flags_after_expected_partial_tolerance`) and this
     /// crate's library half must not depend on that crate nor copy its mask. The
-    /// fold consults it at `:14902`, i.e. after [`peek_header`]'s checks and
+    /// fold consults it at `world_fold.rs::fold_air_wing_loadouts`, i.e. after [`peek_header`]'s checks and
     /// before the payload length check — so a caller that gets the order right
     /// calls [`peek_header`], excludes on status, and only then calls this.
     ///
     /// The **delta-before-baseline** exclusion is handled here, because it needs
     /// no vocabulary this crate lacks: it is `DELTA_DATA` against
     /// [`State::baseline_seen`], and the fold makes the same decision before
-    /// touching anything (`:14911`).
+    /// touching anything (`world_fold.rs::fold_air_wing_loadouts`).
     ///
     /// A structural error leaves the state exactly as the fold would have left
     /// it: every row is parsed before the first mutation, mirroring the fold,
@@ -1005,11 +1005,11 @@ impl State {
             // new row dropped.
             self.drop_equipment_of(row.owner_tag_db_id, row.wing_id, row.generation);
             if row.deleted {
-                // `world_fold.rs:14979`-`:14982`.
+                // `world_fold.rs::fold_air_wing_loadouts`.
                 self.wings.remove(&row.key);
                 continue;
             }
-            // `world_fold.rs:14986`: a plain insert, so a key repeated inside one
+            // `world_fold.rs::fold_air_wing_loadouts`: a plain insert, so a key repeated inside one
             // frame is last-writer-wins rather than a rejected frame.
             self.wings
                 .insert(row.key, row.record.expect("a live row has a record"));
@@ -1513,7 +1513,7 @@ mod tests {
 
     #[test]
     fn beyond_the_binary64_integer_range_the_escape_bit_carries_the_value() {
-        // The fold applies NO bound to `amount_raw` (`world_fold.rs:14967`), so
+        // The fold applies NO bound to `amount_raw` (`world_fold.rs::fold_air_wing_loadouts`), so
         // the mapper accepts words no producer can emit. Past `2^53` the source
         // integer is no longer exactly representable, `fixed(5)` stops being
         // stable, and the codec's escape path stores the raw f64 instead. That is
@@ -1583,7 +1583,7 @@ mod tests {
                 "entry len {len}"
             );
         }
-        // Every unknown flag bit, not one sample (`world_fold.rs:14932`).
+        // Every unknown flag bit, not one sample (`world_fold.rs::fold_air_wing_loadouts`).
         for bit in 1..32u32 {
             let row = wing_row(7, 11, 3, 1 << bit, 408, 0, 0);
             assert!(
@@ -1736,8 +1736,8 @@ mod tests {
         // each with a duplicated variant that must therefore be accepted.
         let dup = [entry_row(900, 100_000), entry_row(900, 200_000)];
 
-        // 1. A DELETE row's range is never read (`world_fold.rs:14980` returns
-        //    before the slice at `:14990`). The reviewer's exact input.
+        // 1. A DELETE row's range is never read (`world_fold.rs::fold_air_wing_loadouts` returns
+        //    before the slice at `world_fold.rs::fold_air_wing_loadouts`). The reviewer's exact input.
         let deleted = vec![wing_row(7, 11, 3, WING_FLAG_DELETED, 0, 0, 2)];
         assert!(
             split_payload(&payload(0, &deleted, &dup)).is_ok(),
@@ -1843,7 +1843,7 @@ mod tests {
 
     #[test]
     fn the_first_non_delta_frame_is_a_baseline_and_every_later_frame_is_sparse() {
-        // `replace_or_sparse_after_first` (`world_fold.rs:2947`-`:2960`) clears
+        // `replace_or_sparse_after_first` (`world_fold.rs::replace_or_sparse_after_first`) clears
         // only ONCE. A later `status_flags == 0` frame is still sparse, which is
         // the trap: treating it as a second full replace would delete every wing
         // the frame did not mention.
@@ -2013,7 +2013,7 @@ mod tests {
 
     #[test]
     fn a_wing_key_repeated_in_one_frame_is_last_writer_wins() {
-        // `self.air_wing_loadouts.insert` (`world_fold.rs:14986`) makes a repeat
+        // `self.air_wing_loadouts.insert` (`world_fold.rs::fold_air_wing_loadouts`) makes a repeat
         // a whole-row overwrite, not a rejected frame — and the equipment list
         // that survives is the last row's, because each upsert clears first.
         // Mirrored, unlike the child-uniqueness case: here the fold's own result

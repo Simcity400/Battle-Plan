@@ -4,7 +4,7 @@
 //! (`fold_session_header`), its payload constants at `:224`-`:253`, the carried
 // @world-fold-authority domain=68 functions=fold_session_header lines=10436-10566 sha256=1b4d863946a4f3ea1da94395d91ed01fcb5707eec005aeddd871c12254ae89c1
 //! accumulator at `:1744` / `:2258`-`:2267`, the value it publishes at
-//! `:4080`-`:4102`, and the collector read that produces the presence flags
+//! `world_fold.rs::build_session_header_value`, and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:61784`-`:61969`).
 //! `extractor/documents/domains/d68_session_header_live.md` carries campaign-identity
 //! RE knowledge but no field-level wire knowledge, so the fold and the collector
@@ -14,7 +14,7 @@
 //! `dlcs`, `start_date_raw`, `save_version`, `session` — are ported here. The
 //! payload's three length-prefixed UTF-8 strings (`ideology`, `cosmetic_tag`,
 //! `version`) are **stop-reported**: they are parsed here, because the fold's
-//! trailing-byte rule (`world_fold.rs:10134`) makes the whole payload invalid if
+//! trailing-byte rule (`world_fold.rs::fold_session_header`) makes the whole payload invalid if
 //! they are malformed and because the deliverable reports their byte share, but
 //! they are never mapped onto a `Record`. See "Why the three strings stop".
 //!
@@ -22,34 +22,34 @@
 //!
 //! Every other ported domain folds a payload of rows into a table. d68 folds a
 //! payload of *fields* into ONE carried record, merged **last-value-wins per
-//! field** through eight presence bits (`world_fold.rs:10141`-`:10167`). It is
+//! field** through eight presence bits (`world_fold.rs::fold_session_header`). It is
 //! the first merge accumulator in the fan-out, and the whole shape of this module
 //! follows from that:
 //!
 //! - the fold's stored state is `Option<SessionHeaderFoldState>` (`:1744`) — one
 //!   optional record, not a set of rows;
 //! - a set presence bit **assigns**; a clear one **leaves the prior value in
-//!   place** (`:10144`-`:10167`, one `if has_x { header.x = ... }` per field).
+//!   place** (`world_fold.rs::fold_session_header`, one `if has_x { header.x = ... }` per field).
 //!   Nothing in the fold ever clears a field, on any input;
 //! - a failure status retains the whole prior header and folds nothing
-//!   (`:10044`-`:10046`), which is the same "unchanged" rule at record
+//!   (`world_fold.rs::fold_session_header`), which is the same "unchanged" rule at record
 //!   granularity.
 //!
-//! ## Payload grammar (`world_fold.rs:10040`-`:10139`, written at `attach_log.rs:61914`-`:61969`)
+//! ## Payload grammar (`world_fold.rs::fold_session_header`, written at `attach_log.rs:61914`-`:61969`)
 //!
 //! A 16-byte header:
 //!
 //! | offset | width | field | read at |
 //! |---|---|---|---|
 //! | `+0`  | u64 | `elapsed_wall_ms` | written `attach_log.rs:61945`; the fold never reads it |
-//! | `+8`  | u32 | `presence`        | `world_fold.rs:10042` |
-//! | `+12` | u32 | `status_flags`    | `:10043` |
+//! | `+8`  | u32 | `presence`        | `world_fold.rs::fold_session_header` |
+//! | `+12` | u32 | `status_flags`    | `world_fold.rs::fold_session_header` |
 //!
 //! then a fixed 20-byte scalar block, then three length-prefixed strings:
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+16` | u32 | `player_tag_db_id` | raw | `1<<0`, and `1..=2048` when set (`:10077`) |
+//! | `+16` | u32 | `player_tag_db_id` | raw | `1<<0`, and `1..=2048` when set (`world_fold.rs::fold_session_header`) |
 //! | `+20` | u32 | `dlcs`             | raw | `1<<1` |
 //! | `+24` | u32 | `start_date_raw`   | raw | `1<<2` |
 //! | `+28` | u32 | `save_version`     | raw | `1<<3` |
@@ -66,7 +66,7 @@
 //!
 //! Every gate is enforced **bidirectionally**: a set bit requires a value (and,
 //! for `player_tag_db_id`, a value in range), and a clear bit requires a
-//! zero-packed scalar or a zero-length string (`:10073`-`:10095`, `:10123`-`:10128`).
+//! zero-packed scalar or a zero-length string (`world_fold.rs::fold_session_header`).
 //! A clear bit therefore carries no data, which is what makes "unchanged" the only
 //! reading it can have.
 //!
@@ -76,8 +76,8 @@
 //!
 //! **1. §3's four states are properties of a stored record field, and the stored
 //! record here is the merged accumulator.** `fold_session_header` stores the
-//! merged header (`:10143`-`:10167`); `build_session_header_value` publishes that
-//! merged header, not the frame (`:4084`-`:4101`); and the measurement's reader
+//! merged header (`world_fold.rs::fold_session_header`); `build_session_header_value` publishes that
+//! merged header, not the frame (`world_fold.rs::build_session_header_value`); and the measurement's reader
 //! replay asserts stored-equality against it. So the question "what state is this
 //! field in?" is asked of the accumulator, never of one frame's update.
 //!
@@ -151,7 +151,7 @@
 //!   folded at all — is the keyed set's **membership**: [`keyed_state`] returns an
 //!   empty map before the first fold and a one-entry map after it. The flip
 //!   happens on the first *folded payload*, not on the first *field*, because
-//!   `get_or_insert_with` at `world_fold.rs:10143` runs before any presence bit is
+//!   `get_or_insert_with` at `world_fold.rs::fold_session_header` runs before any presence bit is
 //!   consulted — so a legal payload carrying nothing still creates a row of all
 //!   `Unknown`s ([`Accumulator`]);
 //! - each field's own `Option` is the record's **unknown bitmap**.
@@ -160,7 +160,7 @@
 //!
 //! `ideology`, `cosmetic_tag` and `version` are `read_msvc_string` /
 //! `read_module_ascii_cstr` tokens (`attach_log.rs:61850`-`:61880`), carried as
-//! `u16` length + UTF-8 bytes (`world_fold.rs:10101`-`:10133`). §4 declares no
+//! `u16` length + UTF-8 bytes (`world_fold.rs::fold_session_header`). §4 declares no
 //! string kind (`schema.rs:12`-`:20`), and the three do not stop for the same
 //! reason:
 //!
@@ -184,8 +184,8 @@
 //! ## No other writer of the accumulator
 //!
 //! `self.session_header` is written in exactly one place in `world_fold.rs`
-//! (`:10143`, inside this fold), initialised to `None` at `:2408`, and read at
-//! `:4084`. There is no prune, no cross-domain deletion path and no second
+//! (`world_fold.rs::fold_session_header`, inside this fold), initialised to `None` at `world_fold.rs::new`, and read at
+//! `world_fold.rs::build_session_header_value`. There is no prune, no cross-domain deletion path and no second
 //! producer, so the recipe's "enumerate every other writer" step resolves by
 //! enumeration rather than by a per-capture assertion.
 
@@ -211,12 +211,12 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:224`-`:253` and `:10040`-`:10139`. ---
 
-/// `SESSION_HEADER_HEADER_LEN`, `world_fold.rs:229`.
+/// `SESSION_HEADER_HEADER_LEN`, `world_fold.rs::SESSION_HEADER_HEADER_LEN`.
 pub const HEADER_LEN: usize = 16;
-/// `SESSION_HEADER_SCALAR_BLOCK_LEN`, `world_fold.rs:230`.
+/// `SESSION_HEADER_SCALAR_BLOCK_LEN`, `world_fold.rs::SESSION_HEADER_SCALAR_BLOCK_LEN`.
 pub const SCALAR_BLOCK_LEN: usize = 20;
 /// Where the three length-prefixed strings begin — the stopped slice runs from
-/// here to the end of the payload (`world_fold.rs:10100`).
+/// here to the end of the payload (`world_fold.rs::fold_session_header`).
 pub const STRING_BLOCK_OFFSET: usize = HEADER_LEN + SCALAR_BLOCK_LEN;
 
 pub const FLAG_PLAYER: u32 = 1 << 0;
@@ -227,7 +227,7 @@ pub const FLAG_SESSION: u32 = 1 << 4;
 pub const FLAG_IDEOLOGY: u32 = 1 << 5;
 pub const FLAG_COSMETIC_TAG: u32 = 1 << 6;
 pub const FLAG_VERSION: u32 = 1 << 7;
-/// `SESSION_HEADER_KNOWN_FLAGS`, `world_fold.rs:240`. Any other bit is a hard
+/// `SESSION_HEADER_KNOWN_FLAGS`, `world_fold.rs::SESSION_HEADER_KNOWN_FLAGS`. Any other bit is a hard
 /// error (`:10047`) — an unrecognised presence word means the payload is not this
 /// grammar, so no bit in it can be trusted.
 pub const KNOWN_FLAGS: u32 = FLAG_PLAYER
@@ -239,7 +239,7 @@ pub const KNOWN_FLAGS: u32 = FLAG_PLAYER
     | FLAG_COSMETIC_TAG
     | FLAG_VERSION;
 
-/// `SESSION_HEADER_MAX_STRING_LEN`, `world_fold.rs:251`.
+/// `SESSION_HEADER_MAX_STRING_LEN`, `world_fold.rs::SESSION_HEADER_MAX_STRING_LEN`.
 pub const MAX_STRING_LEN: usize = 128;
 /// `SESSION_HEADER_MAX_PLAYER_TAG_DB_ID`, `world_fold.rs:252`.
 pub const MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
@@ -311,7 +311,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary: header split, update parse, accumulator, mapper ------------
 
-/// The 16-byte payload header (`world_fold.rs:10041`-`:10043`).
+/// The 16-byte payload header (`world_fold.rs::fold_session_header`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -323,9 +323,9 @@ pub struct PayloadHeader {
 ///
 /// **The split point is this fold's call order, and it is unusually early.**
 /// `fold_session_header` runs exactly ONE check before its status exit — the
-/// 16-byte minimum (`world_fold.rs:10041`) — and then returns `Ok` on a failure
-/// status (`:10044`-`:10046`) having folded nothing. Every other rule, *including*
-/// the unknown-presence-flag rejection at `:10047`, runs after that exit. So a
+/// 16-byte minimum (`world_fold.rs::fold_session_header`) — and then returns `Ok` on a failure
+/// status (`world_fold.rs::fold_session_header`) having folded nothing. Every other rule, *including*
+/// the unknown-presence-flag rejection at `world_fold.rs::fold_session_header`, runs after that exit. So a
 /// caller must be able to classify a record from the header alone, and this
 /// function must not enforce anything the fold checks later: a failure-status
 /// record whose presence word is garbage is a record the recorder accepts and
@@ -369,12 +369,12 @@ pub struct Update {
 }
 
 /// Parse everything `fold_session_header` does **after** its status exit
-/// (`world_fold.rs:10047`-`:10139`), in the fold's own order, with the fold's own
+/// (`world_fold.rs::fold_session_header`), in the fold's own order, with the fold's own
 /// rejections. Nothing here can panic on any byte string.
 pub fn parse_update(payload: &[u8]) -> core::result::Result<Update, String> {
     let (header, _) = split_payload(payload)?;
     let presence = header.presence;
-    // `world_fold.rs:10047`.
+    // `world_fold.rs::fold_session_header`.
     if presence & !KNOWN_FLAGS != 0 {
         return Err(format!(
             "session_header unknown presence flags {presence:#x}"
@@ -508,7 +508,7 @@ pub struct Header {
 
 impl Header {
     /// Merge one frame's update, last-value-wins per field
-    /// (`world_fold.rs:10143`-`:10167`).
+    /// (`world_fold.rs::fold_session_header`).
     ///
     /// **A `None` in the update leaves the stored field untouched.** There is no
     /// input, on any code path, that clears a field once it has been set — which
@@ -542,16 +542,16 @@ impl Header {
 }
 
 /// The fold's accumulator in full: `Option<SessionHeaderFoldState>`
-/// (`world_fold.rs:1744`, initialised `None` at `:2408`).
+/// (`world_fold.rs:1744`, initialised `None` at `world_fold.rs::new`).
 ///
 /// **The outer `Option` flips on the first payload that FOLDS, not on the first
 /// field that arrives.** `fold_session_header` materialises the header with
-/// `self.session_header.get_or_insert_with(Default::default)` at `:10143`,
+/// `self.session_header.get_or_insert_with(Default::default)` at `world_fold.rs::fold_session_header`,
 /// unconditionally, *before* it consults a single presence bit. So a legal
 /// payload carrying no field at all — presence `0`, five zero-packed scalars,
 /// three zero-length strings, 42 bytes — still creates a header, and
 /// `build_session_header_value` then attaches an object whose every field is
-/// empty (`:4084`-`:4101`). Collapsing that into "nothing has folded" would
+/// empty (`world_fold.rs::build_session_header_value`). Collapsing that into "nothing has folded" would
 /// publish an empty collection where the recorder publishes a row, which is why
 /// the outer `Option` is a witness of its own and not derived from the fields.
 ///
@@ -578,7 +578,7 @@ impl Accumulator {
     }
 
     /// `get_or_insert_with(Default::default)` then the per-field merge, in the
-    /// fold's own order (`world_fold.rs:10143`-`:10167`). Materialising first is
+    /// fold's own order (`world_fold.rs::fold_session_header`). Materialising first is
     /// the whole point: an update with no field still creates the header.
     pub fn merge(&mut self, update: &Update) {
         self.header.get_or_insert_with(Header::default).merge(update);
@@ -590,12 +590,12 @@ impl Accumulator {
 ///
 /// **Error contract: all-or-nothing.** `fold_session_header` parses the entire
 /// payload before it touches `self.session_header` (the merge block is
-/// `world_fold.rs:10143`, after every rejection), so a payload this function
+/// `world_fold.rs::fold_session_header`, after every rejection), so a payload this function
 /// rejects leaves `state` byte-identical. Mirrored here and pinned by
 /// `a_rejected_payload_leaves_the_state_untouched`.
 ///
 /// **Status is the CALLER's decision, and it comes first.** The fold's status exit
-/// (`:10044`) precedes every rule this function implements, so a caller must
+/// (`world_fold.rs::fold_session_header`) precedes every rule this function implements, so a caller must
 /// classify the record's `status_flags` — with
 /// `compact_contract`'s own predicate, never a copied mask — and skip this call
 /// entirely on a failure status, exactly as the recorder retains the prior header.
@@ -677,7 +677,7 @@ pub fn record_from_header(
 /// The whole collection for one hour: the fold's OUTER `Option` becomes the keyed
 /// set's membership. An accumulator no payload has ever folded into yields an
 /// EMPTY keyed set — the state in which `build_session_header_value` returns
-/// `None` and attaches nothing (`world_fold.rs:4084`) — and any materialised
+/// `None` and attaches nothing (`world_fold.rs::build_session_header_value`) — and any materialised
 /// accumulator yields exactly one row, however many of its fields are still
 /// unread.
 pub fn keyed_state(
@@ -879,7 +879,7 @@ mod tests {
     fn no_field_is_continuous_so_no_quantization_applies() {
         // Step 4's "quantization saves bytes" test does not apply: d68 has no
         // continuous field at all. Every scalar is an integer word the fold
-        // assigns raw (`world_fold.rs:10145`-`:10157`), so there is nothing to
+        // assigns raw (`world_fold.rs::fold_session_header`), so there is nothing to
         // quantize and nothing to justify.
         let c = collection();
         assert!(c.fields.iter().all(|f| !matches!(f.kind, Kind::Continuous)));
@@ -1022,7 +1022,7 @@ mod tests {
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // §3 keeps zero out of the three empty states. Every flag set with every
         // scalar zero is not a legal frame — `player_tag_db_id` must be `1..=2048`
-        // when its bit is set (`world_fold.rs:10077`) — so this is the largest
+        // when its bit is set (`world_fold.rs::fold_session_header`) — so this is the largest
         // real-zero frame the fold accepts.
         let c = collection();
         let state = folded(&raw_payload(
@@ -1193,10 +1193,10 @@ mod tests {
 
     #[test]
     fn a_payload_carrying_no_field_still_materialises_a_row_of_unknowns() {
-        // `get_or_insert_with` at `world_fold.rs:10143` runs BEFORE any presence
+        // `get_or_insert_with` at `world_fold.rs::fold_session_header` runs BEFORE any presence
         // bit is consulted, so the smallest legal payload — presence 0, five
         // zero-packed scalars, three zero-length strings, 42 bytes — creates the
-        // carried header, and `build_session_header_value` (`:4084`) then attaches
+        // carried header, and `build_session_header_value` (`world_fold.rs::build_session_header_value`) then attaches
         // an object with every field empty. Deriving membership from the FIELDS
         // instead of from the outer `Option` would publish an empty collection
         // where the recorder publishes a row; this is the regression pin.
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[test]
     fn a_rejected_payload_leaves_the_state_untouched() {
-        // The fold's error contract (`world_fold.rs:10143` runs after every
+        // The fold's error contract (`world_fold.rs::fold_session_header` runs after every
         // rejection): all-or-nothing. A harness that assumed the other contract
         // would silently disagree with the recorder on exactly the frames that
         // fail.
@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn the_parser_rejects_every_payload_the_fold_rejects() {
         // Unknown presence bits — every one of the 24, not one sample
-        // (`world_fold.rs:10047`).
+        // (`world_fold.rs::fold_session_header`).
         for bit in 8..32u32 {
             let p = raw_payload(0, 1 << bit, 0, [0; 5], ["", "", ""]);
             assert!(parse_update(&p).is_err(), "presence bit {bit}");

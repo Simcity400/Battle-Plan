@@ -44,7 +44,7 @@
 //!
 //! This port does not have to choose a divisor at all, and that is the point.
 //! **The fold's own emitter carries all three quantities per channel**
-//! (`world_fold.rs:9163`-`:9172`): `channels[label]` is `row.channel_value(k)`,
+//! (`world_fold.rs::insert_air_loss_stats`): `channels[label]` is `row.channel_value(k)`,
 //! `raw[label]` is `row.channels[k]`, and `display_divisors[label]` is
 //! `CHANNEL_DISPLAY_DIVISORS[k]`. The display value is therefore a **pure
 //! function of the raw word and a compile-time constant of the grammar** —
@@ -94,7 +94,7 @@
 //! `decode_payload_rows` rejects a row carrying any bit outside the two
 //! (`lib.rs:328`-`:330`) **and** a row missing either of them (`lib.rs:331`-`:335`),
 //! and either rejection makes the whole payload an `Err` that the fold never
-//! folds (`world_fold.rs:15897`-`:15898`). So on the whole set of rows this
+//! folds (`world_fold.rs::fold_air_loss_stats`). So on the whole set of rows this
 //! schema can ever describe, `flags` is the constant `0b11`: it has no state to
 //! encode, and every channel on a row that exists is a measured value. The
 //! witnesses are witnesses *about a row that exists*, not gates on its fields —
@@ -116,9 +116,9 @@
 //!
 //! # Shape, and what the accumulator does
 //!
-//! **Full replace**: `self.air_loss_stats = fresh` (`world_fold.rs:15918`) discards
+//! **Full replace**: `self.air_loss_stats = fresh` (`world_fold.rs::fold_air_loss_stats`) discards
 //! the prior table wholesale, and a duplicate `owner_tag_db_id` is a rejected
-//! payload (`:15913`-`:15918`), never a last-writer-wins overwrite — which is what
+//! payload (`world_fold.rs::fold_air_loss_stats`), never a last-writer-wins overwrite — which is what
 //! makes the key a real identity. The country is a stable identity that persists
 //! across hours, so §7.3's keyed set applies and the domain has a delta grammar.
 //!
@@ -289,7 +289,7 @@ const fn channel_offset_in_range(channel: usize) -> usize {
 
 /// The engine's human display value for a channel's raw word — exactly
 /// `AirLossStatRow::channel_value` (`lib.rs:161`-`:163`), which the fold's own
-/// emitter calls to build its `channels` map (`world_fold.rs:9165`).
+/// emitter calls to build its `channels` map (`world_fold.rs::insert_air_loss_stats`).
 ///
 /// This is the one place the per-channel divisor is applied. The wire carries
 /// the raw word, so nothing downstream of the codec depends on this function
@@ -304,7 +304,7 @@ pub fn schema() -> Schema {
     let mut fields = Vec::with_capacity(1 + CHANNEL_COUNT);
 
     // The fold's key, and its whole key: `fresh` is keyed by `owner_tag_db_id`
-    // alone (`world_fold.rs:15913`), with a duplicate rejecting the payload
+    // alone (`world_fold.rs::fold_air_loss_stats`), with a duplicate rejecting the payload
     // rather than overwriting.
     //
     // `ContentId`: a country tag-db id is an id whose meaning a content manifest
@@ -327,7 +327,7 @@ pub fn schema() -> Schema {
     //
     // The value stored is the engine's RAW word, not the displayed quantity:
     // the fold emits raw, divisor and display side by side
-    // (`world_fold.rs:9163`-`:9172`) and the display is a pure function of the
+    // (`world_fold.rs::insert_air_loss_stats`) and the display is a pure function of the
     // other two, so carrying it would be a second copy of derived state. See
     // the module docs and [`channel_display_value`].
     for spec in CHANNELS {
@@ -340,7 +340,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: COUNTRY_AIR_LOSS_STATS,
-            // Full replace each frame (`world_fold.rs:15918` assigns the whole
+            // Full replace each frame (`world_fold.rs::fold_air_loss_stats` assigns the whole
             // fresh map), but the country is a stable identity that persists
             // across hours — the measured capture holds a constant 440 rows an
             // hour with ~25 changing — and only a keyed set has a delta grammar
@@ -380,7 +380,7 @@ pub struct PayloadHeader {
 ///
 /// Note there is **no `changed_rows` word** in this header, so there is no such
 /// invariant to enforce — the fold reads `row_count` and nothing else about
-/// cardinality (`world_fold.rs:15897`).
+/// cardinality (`world_fold.rs::fold_air_loss_stats`).
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u8]), String> {
     if payload.len() < HEADER_LEN {
         return Err(format!(
@@ -442,7 +442,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 ///
 /// **These run before the fold ever looks at the status word.**
 /// `fold_air_loss_stats` calls `decode_payload_rows` first
-/// (`world_fold.rs:15897`-`:15898`) and only reaches `handle_compact_failure`
+/// (`world_fold.rs::fold_air_loss_stats`) and only reaches `handle_compact_failure`
 /// (`:15899`) if that decode returned `Ok`, so a row rejected here makes the
 /// whole payload an error even in a record whose status marks the domain-hour
 /// failed. A caller that classifies records by status must therefore run this
@@ -476,13 +476,13 @@ pub fn check_codec_row(row: &[u8]) -> core::result::Result<(), String> {
 }
 
 /// The key of one compact row: the fold's `owner_tag_db_id`
-/// (`world_fold.rs:15913`).
+/// (`world_fold.rs::fold_air_loss_stats`).
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[owner_tag_db_id_of_row(row)? as u64]))
 }
 
 /// The key word, with the fold's identity invariant applied
-/// (`world_fold.rs:15908`-`:15912`).
+/// (`world_fold.rs::fold_air_loss_stats`).
 pub fn owner_tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_row_len(row)?;
     let owner = u32_at(row, 0);
@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn the_folds_identity_invariant_is_enforced_but_is_not_a_codec_rule() {
-        // `world_fold.rs:15908`-`:15912` rejects the payload when the two words
+        // `world_fold.rs::fold_air_loss_stats` rejects the payload when the two words
         // disagree, which is what lets `country_idx` stay off the wire. It sits
         // AFTER `handle_compact_failure` (`:15899`), so it is a fold rule and not
         // a codec rule — `check_codec_row` must NOT apply it, or a caller running

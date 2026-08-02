@@ -94,7 +94,7 @@
 //! # Frame relation: baseline + delta, with a THREE-WAY accumulator seed
 //!
 //! This is a **fifth shape** beside the recipe's four (step 1), and it is
-//! recorded as a recipe gap. `world_fold.rs:20313`-`:20336` seeds the working
+//! recorded as a recipe gap. `world_fold.rs::fold_construction_buildings_state_damage` seeds the working
 //! state from one of three places, chosen by the frame's mode:
 //!
 //! * **delta frame** (`COMPACT_STATUS_DELTA_DATA` set) — seed from the **delta
@@ -107,7 +107,7 @@
 //!   `domain48_state` and sparse-merge, retaining omitted rows.
 //! * **clean frame** — replace from empty.
 //!
-//! The two accumulators then advance differently (`:20591`-`:20598`): the
+//! The two accumulators then advance differently (`world_fold.rs::fold_construction_buildings_state_damage`): the
 //! projected state always takes this frame, while the delta baseline advances
 //! only on a clean or delta frame. [`Domain48Fold`] holds both and
 //! [`Domain48Fold::apply`] takes [`FrameMode`] — the frame mode **and** the
@@ -126,7 +126,7 @@
 //! # The frame-level source flag that decides one field for every row
 //!
 //! `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE` (`lib.rs:30`) is a
-//! **frame** bit, and `world_fold.rs:20365`-`:20407` lets it decide
+//! **frame** bit, and `world_fold.rs::fold_construction_buildings_state_damage` lets it decide
 //! `target_state_id` for every construction row in the projected state —
 //! including rows retained from an earlier frame that carried a real value. This
 //! is the d17 `WarSegment` pattern (recipe step 7's typed-input table), second
@@ -142,7 +142,7 @@
 //! # Four-state semantics
 //!
 //! The fold answers value-vs-nothing only: it emits JSON `Null` for
-//! `template_id`/`healthy_level` (`option_u32_json`, `world_fold.rs:25585`) and
+//! `template_id`/`healthy_level` (`option_u32_json`, `world_fold.rs::option_u32_json`) and
 //! omits the key for `created_date_raw`, `target_location_id`, `target_scope`,
 //! `repair_levels_remaining` and `partial_health_raw`. §3's three-way choice is
 //! made here, per field, from the collector read:
@@ -159,7 +159,7 @@
 //! * `target_location_id`, `target_scope` — **Unknown** when absent, for the same
 //!   reason: they are the other two thirds of the one promoted tuple the
 //!   collector clears together. Note the fold gates these two on the row's own
-//!   option only, **not** on the frame bit (`world_fold.rs:20408`-`:20418`), so a
+//!   option only, **not** on the frame bit (`world_fold.rs::fold_construction_buildings_state_damage`), so a
 //!   badged frame still projects them for a retained row; this mapper mirrors
 //!   that asymmetry exactly and reports it as a fold observation.
 //! * `repair_levels_remaining` — **Unknown** when absent: the read failed or the
@@ -167,7 +167,7 @@
 //!   reads `0` with the flag **set** — a real Zero, never an empty state.
 //! * `created_date_raw` — **Unknown** when absent: a torn or implausible raw
 //!   hour-count is badged absent rather than emitted as a fabricated 0
-//!   (`lib.rs:628`-`:632`, `world_fold.rs:20396`-`:20398` says so in prose).
+//!   (`lib.rs:628`-`:632`, `world_fold.rs::fold_construction_buildings_state_damage` says so in prose).
 //! * `healthy_level` — **Unknown** when absent: at least one `CBuilding` at this
 //!   location/type had an unreadable or out-of-range healthy word, which makes
 //!   the summed level incomplete (`lib.rs:942`-`:944`, `:1874`-`:1895`).
@@ -189,11 +189,11 @@
 //! Per the recipe's step-2 rule, a value the fold hard-enforces as a function of
 //! carried state stays off the wire and is enforced in the mapper instead:
 //!
-//! * `damaged` (`domain48_building_rows_by_type`, `world_fold.rs:25659`-`:25662`)
+//! * `damaged` (`domain48_building_rows_by_type`, `world_fold.rs::domain48_building_rows_by_type`)
 //!   `== healthy_level < level`.
 //! * `is_repair` (`:20424`) `== repair_levels_remaining > 0`.
 //! * `remaining_hours` (`:20479`) `== remaining_hours_raw / 100000.0`.
-//! * `token` (`:25663`-`:25667`) is a building-registry lookup on `type_id`.
+//! * `token` (`world_fold.rs::domain48_building_rows_by_type`) is a building-registry lookup on `type_id`.
 //! * RLC1 `route_len` is the cardinality of this row's [`RAILWAY_ROUTE`] rows.
 //!
 //! # No continuous field, and therefore no quantization
@@ -365,7 +365,7 @@ pub const MAX_RAILWAY_ROUTE_PROVINCES: u32 = 4_096;
 pub fn schema() -> Schema {
     use field as f;
 
-    // --- Construction queue, keyed as the fold keys it (`world_fold.rs:25681`:
+    // --- Construction queue, keyed as the fold keys it (`world_fold.rs::domain48_construction_key`:
     // `(tag_db_id, line_id & !ROW_ID_DELETED)`).
     let construction = Collection {
         collection_id: CONSTRUCTION,
@@ -381,7 +381,7 @@ pub fn schema() -> Schema {
             // engine's own `CBuildingProductionLine` id (`lib.rs:599`).
             Field::new(f::LINE_ID, Kind::Unsigned).key(1),
             // The country's production-vector index (`lib.rs:640`) and the only
-            // order witness the fold's sort reads (`world_fold.rs:20372` sorts
+            // order witness the fold's sort reads (`world_fold.rs::fold_construction_buildings_state_damage` sorts
             // by `(tag_db_id, priority, line_id)`). Recipe step 5's first
             // ordinal case: a carried field already ranks the array, so the
             // order is a total function of carried fields and the keyed set
@@ -392,7 +392,7 @@ pub fn schema() -> Schema {
             Field::new(f::TEMPLATE_ID, Kind::ContentId).unknown_capable(),
             Field::new(f::ACTIVE_FACTORIES, Kind::Unsigned),
             // Raw fixed-point words the fold emits verbatim
-            // (`world_fold.rs:20393`-`:20394`), never divided.
+            // (`world_fold.rs::fold_construction_buildings_state_damage`), never divided.
             Field::new(f::COST_RAW, Kind::Unsigned),
             Field::new(f::PRODUCED_RAW, Kind::Unsigned),
             Field::new(f::TARGET_STATE_ID, Kind::ContentId).unknown_capable(),
@@ -405,7 +405,7 @@ pub fn schema() -> Schema {
         ],
     };
 
-    // --- Buildings, keyed as the fold keys them (`world_fold.rs:25685`:
+    // --- Buildings, keyed as the fold keys them (`world_fold.rs::domain48_building_key`:
     // `(scope, location_id, state_id, type_id & !ROW_ID_DELETED)`).
     let buildings = Collection {
         collection_id: BUILDINGS,
@@ -427,7 +427,7 @@ pub fn schema() -> Schema {
         ],
     };
 
-    // --- State resources, keyed as the fold keys them (`world_fold.rs:25694`).
+    // --- State resources, keyed as the fold keys them (`world_fold.rs::domain48_resource_identity_key`).
     let resources = Collection {
         collection_id: STATE_RESOURCES,
         shape: Shape::KeyedSet,
@@ -435,13 +435,13 @@ pub fn schema() -> Schema {
             Field::new(f::STATE_ID, Kind::ContentId).key(0),
             // A resource is defined by mod content. ContentId KEY.
             Field::new(f::RESOURCE_ID, Kind::ContentId).key(1),
-            // Raw, emitted verbatim by the fold (`world_fold.rs:20565`).
+            // Raw, emitted verbatim by the fold (`world_fold.rs::fold_construction_buildings_state_damage`).
             Field::new(f::AMOUNT_RAW, Kind::Unsigned),
         ],
     };
 
     // --- RLC1 railway construction. The fold full-replaces this table on every
-    // non-partial frame (`world_fold.rs:20359`-`:20363`); full replacement is
+    // non-partial frame (`world_fold.rs::fold_construction_buildings_state_damage`); full replacement is
     // recipe shape 1 and a keyed set carries it, because the identity persists.
     //
     // KEY DECISION, recorded with its evidence (recipe step 5). The trailer
@@ -476,7 +476,7 @@ pub fn schema() -> Schema {
             // magic number to carry as a Signed word.
             Field::new(f::CURRENT_SEGMENT_INDEX, Kind::Unsigned).nullable(),
             // Fixed-5 over 100000 (`lib.rs:316`-`:317`), carried as the raw
-            // integer the fold emits (`world_fold.rs:20478`); the fold's
+            // integer the fold emits (`world_fold.rs::fold_construction_buildings_state_damage`); the fold's
             // `remaining_hours` float beside it is derived and stays off the wire.
             Field::new(f::REMAINING_HOURS_RAW, Kind::Unsigned),
         ],
@@ -513,7 +513,7 @@ pub fn schema() -> Schema {
 
 // --- Frame mode --------------------------------------------------------------
 
-/// The two typed inputs `world_fold.rs:20323`-`:20329` selects the accumulator
+/// The two typed inputs `world_fold.rs::fold_construction_buildings_state_damage` selects the accumulator
 /// seed with. Both come from the caller — the delta bit from the payload status
 /// word, the partial flag from `compact_contract`'s own tolerance predicate —
 /// so neither is re-derived inside the fold boundary.
@@ -544,7 +544,7 @@ pub struct PayloadHeader {
 
 impl PayloadHeader {
     /// Whether this frame badges the construction target-state join unavailable
-    /// (`world_fold.rs:20365`-`:20366`).
+    /// (`world_fold.rs::fold_construction_buildings_state_damage`).
     pub fn target_state_unavailable(&self) -> bool {
         self.source_flags & SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE != 0
     }
@@ -1200,7 +1200,7 @@ pub struct Frame {
 ///
 /// **Position matters (recipe step 9).** `fold_construction_buildings_state_damage`
 /// calls this FIRST, before it looks at the status word, and returns `Err` on
-/// failure (`world_fold.rs:20226`-`:20237`) — so a payload this rejects is a
+/// failure (`world_fold.rs::fold_construction_buildings_state_damage`) — so a payload this rejects is a
 /// **stream rejection**, not an hour to skip, whatever its status. That is the
 /// d83 shape, not d63's, and copying d63's order here would have excluded
 /// malformed failure-status records instead of refusing them. The production
@@ -1237,7 +1237,7 @@ pub fn decode_frame(payload: &[u8]) -> Result<Frame, String> {
 /// The lane gate's verdict (`lib.rs:1413`-`:1504`).
 ///
 /// A failed gate is an **excluded hour**, not a stream rejection: the fold
-/// returns `Ok(())` and folds nothing (`world_fold.rs:20262`-`:20275`).
+/// returns `Ok(())` and folds nothing (`world_fold.rs::fold_construction_buildings_state_damage`).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GateReport {
     pub ok: bool,
@@ -1317,7 +1317,7 @@ pub fn gate_frame(frame: &Frame) -> GateReport {
     // NOTE, reported as a fold observation: the gate's building uniqueness is
     // over `(scope, location_id, type_id)` (`lib.rs:1476`) while the fold's
     // accumulator key is `(scope, location_id, state_id, type_id)`
-    // (`world_fold.rs:25685`). For a state-scope row the two coincide, because
+    // (`world_fold.rs::domain48_building_key`). For a state-scope row the two coincide, because
     // `location_id == state_id` is enforced (`lib.rs:1750`). For a province-scope
     // row whose owning state changed, the accumulator gains a second entry under
     // the new key while the old one persists. This mirrors the gate exactly
@@ -1353,7 +1353,7 @@ pub fn gate_frame(frame: &Frame) -> GateReport {
 
 // --- Keys --------------------------------------------------------------------
 
-/// `world_fold.rs:25681`: `(tag_db_id, line_id & !ROW_ID_DELETED)`.
+/// `world_fold.rs::domain48_construction_key`: `(tag_db_id, line_id & !ROW_ID_DELETED)`.
 pub fn key_from_construction_row(row: &[u8]) -> Result<Key, String> {
     let parsed = parse_construction_row(row)?;
     Ok(construction_key(parsed.tag_db_id, parsed.line_id))
@@ -1363,7 +1363,7 @@ pub fn construction_key(tag_db_id: u32, line_id: u32) -> Key {
     key(&[tag_db_id as u64, line_id as u64])
 }
 
-/// `world_fold.rs:25685`: `(scope, location_id, state_id, type_id & !ROW_ID_DELETED)`.
+/// `world_fold.rs::domain48_building_key`: `(scope, location_id, state_id, type_id & !ROW_ID_DELETED)`.
 pub fn key_from_building_row(row: &[u8]) -> Result<Key, String> {
     let parsed = parse_building_row(row)?;
     Ok(building_key(
@@ -1383,7 +1383,7 @@ pub fn building_key(scope: u32, location_id: u32, state_id: u32, type_id: u32) -
     ])
 }
 
-/// `world_fold.rs:25694`: `(state_id, resource_id & !ROW_ID_DELETED)`.
+/// `world_fold.rs::domain48_resource_identity_key`: `(state_id, resource_id & !ROW_ID_DELETED)`.
 pub fn key_from_resource_row(row: &[u8]) -> Result<Key, String> {
     let parsed = parse_resource_row(row)?;
     Ok(resource_key(parsed.state_id, parsed.resource_id))
@@ -1429,7 +1429,7 @@ pub fn key_from_railway_route_row(parent: (u32, u32), ordinal: u32) -> Key {
 ///
 /// `target_state_unavailable` is the frame's
 /// `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE` bit
-/// (`world_fold.rs:20365`), the d17-shaped typed input: it decides
+/// (`world_fold.rs::fold_construction_buildings_state_damage`), the d17-shaped typed input: it decides
 /// `target_state_id` for **every** row of the frame, including rows the
 /// accumulator retained from an earlier frame, and it is never re-derived here.
 ///
@@ -1468,7 +1468,7 @@ pub fn record_from_construction_row(
                 }
             }
             // The fold gates these two on the row's own option ONLY — not on the
-            // frame bit (`world_fold.rs:20408`-`:20418`). Mirrored exactly.
+            // frame bit (`world_fold.rs::fold_construction_buildings_state_damage`). Mirrored exactly.
             field::TARGET_LOCATION_ID => {
                 unknown_or(parsed.target_location_id.map(|v| Value::ContentId(v as u64)))
             }
@@ -1729,7 +1729,7 @@ pub struct Domain48State {
     pub construction: BTreeMap<ConstructionKey, ConstructionRow>,
     pub buildings: BTreeMap<BuildingKey, BuildingRow>,
     pub resources: BTreeMap<ResourceKey, ResourceRow>,
-    /// `None` until an `RLC1` trailer has ever been seen (`world_fold.rs:20359`).
+    /// `None` until an `RLC1` trailer has ever been seen (`world_fold.rs::fold_construction_buildings_state_damage`).
     pub railway: Option<Vec<RailwayRow>>,
 }
 
@@ -1855,7 +1855,7 @@ impl Domain48State {
 /// three-way seed that reads them.
 ///
 /// The recorder holds each as an `Option` and seeds with `unwrap_or_default()`
-/// (`:20324`, `:20326`), which is indistinguishable from holding a default, so
+/// (`world_fold.rs::fold_construction_buildings_state_damage`), which is indistinguishable from holding a default, so
 /// these are plain values.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Domain48Fold {
@@ -1874,7 +1874,7 @@ impl Domain48Fold {
 
     /// Apply one d48 frame, exactly as `fold_construction_buildings_state_damage`
     /// does once its four non-folding exits are behind it
-    /// (`world_fold.rs:20311`-`:20363`, `:20591`-`:20598`).
+    /// (`world_fold.rs::fold_construction_buildings_state_damage`).
     ///
     /// **The caller applies the exclusions first**, in the fold's own order:
     /// a decode failure (a stream rejection, [`decode_frame`]), a failure
@@ -1883,7 +1883,7 @@ impl Domain48Fold {
     ///
     /// **Error contract: all-or-nothing.** The fold builds its whole working
     /// state before assigning either accumulator, and its one post-seed error
-    /// path (an invalid building scope, `:20533`-`:20538`) fires before the
+    /// path (an invalid building scope, `world_fold.rs::fold_construction_buildings_state_damage`) fires before the
     /// assignment, so neither accumulator is touched by a frame this rejects.
     /// This mirrors that; a harness that assumed the other contract would
     /// disagree with the recorder on exactly the frames that fail.
@@ -1899,10 +1899,10 @@ impl Domain48Fold {
 
     /// Build the state this frame folds to, **without touching either
     /// accumulator**. This is the whole of the recorder's fold body
-    /// (`world_fold.rs:20323`-`:20363`) up to but not including its two
+    /// (`world_fold.rs::fold_construction_buildings_state_damage`) up to but not including its two
     /// assignments.
     pub fn project(&self, frame: &Frame, mode: FrameMode) -> Result<Domain48State, String> {
-        // `world_fold.rs:20323`-`:20329` — the three-way seed.
+        // `world_fold.rs::fold_construction_buildings_state_damage` — the three-way seed.
         let mut state = if mode.delta {
             self.delta_baseline.clone()
         } else if mode.expected_partial {
@@ -1936,7 +1936,7 @@ impl Domain48Fold {
                 state.resources.insert(key, row.clone());
             }
         }
-        // `world_fold.rs:20355`-`:20363`: RLC1 is a complete set, full-replaced
+        // `world_fold.rs::fold_construction_buildings_state_damage`: RLC1 is a complete set, full-replaced
         // rather than merged into the row-delta grammar — and a tolerated-partial
         // frame must NOT replace it, because a partial cannot prove absence.
         if !mode.expected_partial {
@@ -1945,7 +1945,7 @@ impl Domain48Fold {
             }
         }
 
-        // `world_fold.rs:20526`-`:20539`: an invalid building scope is an `Err`
+        // `world_fold.rs::fold_construction_buildings_state_damage`: an invalid building scope is an `Err`
         // after the state was built and before it is stored. `parse_building_row`
         // has already refused any other scope, so this cannot fire; it is here
         // because the fold has it, and a scope that reached this point would be
@@ -1963,7 +1963,7 @@ impl Domain48Fold {
     }
 
     /// Store a projected state into both accumulators, on the recorder's own
-    /// advance conditions (`world_fold.rs:20591`-`:20598`): the delta baseline
+    /// advance conditions (`world_fold.rs::fold_construction_buildings_state_damage`): the delta baseline
     /// advances only on a clean or delta frame, while the projected state always
     /// takes this frame. Infallible by construction — every way this fold can
     /// fail has already happened in [`Domain48Fold::project`].
@@ -1995,7 +1995,7 @@ impl Domain48Fold {
 /// **What the `Err` from the second step means is narrower than a fold
 /// rejection, and the distinction matters.** The recorder *accepts* a legacy
 /// trailer-less frame — it folds it, stores it, and simply projects no railway
-/// rows (`world_fold.rs:20359`-`:20363`). So an `Err` here does not say "the
+/// rows (`world_fold.rs::fold_construction_buildings_state_damage`). So an `Err` here does not say "the
 /// recorder rejected this frame"; it says "the resulting state is not
 /// expressible as keyed sets", which makes the **stream** unmeasurable rather
 /// than the frame invalid. A caller must abort, not skip the hour and continue —
@@ -2382,7 +2382,7 @@ mod tests {
             }
         }
 
-        // `world_fold.rs:25681`.
+        // `world_fold.rs::domain48_construction_key`.
         let construction = c(CONSTRUCTION_INDEX);
         let keys: Vec<(u32, Kind)> = construction
             .key_fields()
@@ -2397,7 +2397,7 @@ mod tests {
             ]
         );
 
-        // `world_fold.rs:25685` — four components, not the gate's three.
+        // `world_fold.rs::domain48_building_key` — four components, not the gate's three.
         let buildings = c(BUILDINGS_INDEX);
         let keys: Vec<(u32, Kind)> = buildings
             .key_fields()
@@ -2414,7 +2414,7 @@ mod tests {
             ]
         );
 
-        // `world_fold.rs:25694`.
+        // `world_fold.rs::domain48_resource_identity_key`.
         let resources = c(STATE_RESOURCES_INDEX);
         let keys: Vec<(u32, Kind)> = resources
             .key_fields()
@@ -2812,7 +2812,7 @@ mod tests {
     fn the_frame_flag_makes_target_state_unknown_for_every_row() {
         // The d17-shaped input: a frame bit decides one field's answer for every
         // row, INCLUDING a row the accumulator retained with a real value
-        // (`world_fold.rs:20365`-`:20407`).
+        // (`world_fold.rs::fold_construction_buildings_state_damage`).
         let collection = c(CONSTRUCTION_INDEX);
         let row = full_construction_row();
         let available = record_from_construction_row(&collection, &row, 0, false).expect("maps");
@@ -2827,7 +2827,7 @@ mod tests {
         );
         // ...and the fold gates the other two thirds of the promoted tuple on
         // the row's own option only, not on the frame bit
-        // (`world_fold.rs:20408`-`:20418`). Mirrored, not tidied.
+        // (`world_fold.rs::fold_construction_buildings_state_damage`). Mirrored, not tidied.
         assert_eq!(
             value_of(&collection, &unavailable, field::TARGET_LOCATION_ID),
             Value::ContentId(2_068)
@@ -3034,7 +3034,7 @@ mod tests {
     #[test]
     fn the_derived_values_are_functions_of_carried_state_and_are_not_fields() {
         let schema = s();
-        // `damaged` == healthy_level < level (`world_fold.rs:25659`-`:25662`).
+        // `damaged` == healthy_level < level (`world_fold.rs::domain48_building_rows_by_type`).
         let collection = &schema.collections[BUILDINGS_INDEX];
         for (level, healthy, damaged) in [(5u32, 3u32, true), (5, 5, false), (1, 0, true)] {
             let row = building_row(SCOPE_STATE, 42, 42, 0x1234, level, Some(healthy), Some(0));
@@ -3049,7 +3049,7 @@ mod tests {
             );
         }
 
-        // `is_repair` == repair_levels_remaining > 0 (`world_fold.rs:20424`).
+        // `is_repair` == repair_levels_remaining > 0 (`world_fold.rs::fold_construction_buildings_state_damage`).
         let collection = &schema.collections[CONSTRUCTION_INDEX];
         for (levels, is_repair) in [(0u32, false), (4, true)] {
             let row = construction_row(
@@ -3074,7 +3074,7 @@ mod tests {
             );
         }
 
-        // `remaining_hours` == remaining_hours_raw / 100000 (`world_fold.rs:20479`).
+        // `remaining_hours` == remaining_hours_raw / 100000 (`world_fold.rs::fold_construction_buildings_state_damage`).
         let collection = &schema.collections[RAILWAY_CONSTRUCTION_INDEX];
         let line = railway(7, 99, 1);
         let record =
@@ -3167,7 +3167,7 @@ mod tests {
     #[test]
     fn a_delta_seeds_from_the_delta_baseline_not_the_projected_state() {
         // This is the named defect the fold's ten-line comment
-        // (`world_fold.rs:20313`-`:20324`) exists to prevent: a tolerated
+        // (`world_fold.rs::fold_construction_buildings_state_damage`) exists to prevent: a tolerated
         // partial sparse-merges a phantom row into the PROJECTED state without
         // advancing the DELTA BASELINE, so a delta seeded from the projected
         // state would re-introduce it.
@@ -3221,7 +3221,7 @@ mod tests {
 
     #[test]
     fn a_tolerated_partial_must_not_replace_the_railway_trailer() {
-        // `world_fold.rs:20355`-`:20363`: a partial cannot prove absence.
+        // `world_fold.rs::fold_construction_buildings_state_damage`: a partial cannot prove absence.
         let mut fold = Domain48Fold::new();
         fold.apply(&frame_of(&Payload::clean()), clean_mode())
             .expect("folds");
@@ -3295,7 +3295,7 @@ mod tests {
 
     #[test]
     fn a_rejected_frame_leaves_both_accumulators_untouched() {
-        // The fold's error contract is all-or-nothing (`world_fold.rs:20596`).
+        // The fold's error contract is all-or-nothing (`world_fold.rs::fold_construction_buildings_state_damage`).
         let mut fold = Domain48Fold::new();
         fold.apply(&frame_of(&Payload::clean()), clean_mode())
             .expect("folds");

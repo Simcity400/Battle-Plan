@@ -10,7 +10,7 @@
 //! (`documents/domains/UNDOCUMENTED_DOMAINS.md`), so the fold and the collector
 //! read are the whole basis.
 //!
-//! **Payload grammar** (`world_fold.rs:22320`-`:22336`, packer `:71758`-`:71772`):
+//! **Payload grammar** (`world_fold.rs::fold_map_detail`, packer `:71758`-`:71772`):
 //! a 48-byte header followed by five fixed-stride arrays, in this order:
 //!
 //! | offset | width | header field |
@@ -25,25 +25,25 @@
 //! | `+32` | u32 | `resource_count` |
 //! | `+36` | u32 | `state_building_count` |
 //! | `+40` | u32 | `province_building_count` |
-//! | `+44` | u32 | reserved, must be zero (`:22337`) |
+//! | `+44` | u32 | reserved, must be zero (`world_fold.rs::fold_map_detail`) |
 //!
 //! then `state_count` 28-byte state rows, `province_count` 20-byte province
 //! rows, and three arrays of 12-byte entries — `resource_count`,
 //! `state_building_count`, `province_building_count` — with an exact
-//! total-length check (`:22328`-`:22336`).
+//! total-length check (`world_fold.rs::fold_map_detail`).
 //!
 //! | row | offset | width | field | scale | gate |
 //! |---|---|---|---|---|---|
-//! | state    | `+0`  | u32 | `state_id`         | raw | none (key; zero rejected `:22369`) |
-//! | state    | `+4`  | u32 | `flags`            | —   | `!0b11` rejected `:22374` |
+//! | state    | `+0`  | u32 | `state_id`         | raw | none (key; zero rejected `world_fold.rs::fold_map_detail`) |
+//! | state    | `+4`  | u32 | `flags`            | —   | `!0b11` rejected `world_fold.rs::fold_map_detail` |
 //! | state    | `+8`  | u32 | `resource_first`   | —   | transport, `1<<0` |
 //! | state    | `+12` | u32 | `resource_len`     | —   | transport, `1<<0` |
 //! | state    | `+16` | u32 | `building_first`   | —   | transport, `1<<1` |
 //! | state    | `+20` | u32 | `building_len`     | —   | transport, `1<<1` |
-//! | state    | `+24` | u32 | reserved, zero `:22380` | — | — |
-//! | province | `+0`  | u32 | `province_id`      | raw | none (key; zero rejected `:22412`) |
-//! | province | `+4`  | u32 | `state_id`         | raw | `1<<0`, both directions `:22423`-`:22432` |
-//! | province | `+8`  | u32 | `flags`            | —   | `!0b11` rejected `:22417` |
+//! | state    | `+24` | u32 | reserved, zero `world_fold.rs::fold_map_detail` | — | — |
+//! | province | `+0`  | u32 | `province_id`      | raw | none (key; zero rejected `world_fold.rs::fold_map_detail`) |
+//! | province | `+4`  | u32 | `state_id`         | raw | `1<<0`, both directions `world_fold.rs::fold_map_detail` |
+//! | province | `+8`  | u32 | `flags`            | —   | `!0b11` rejected `world_fold.rs::fold_map_detail` |
 //! | province | `+12` | u32 | `building_first`   | —   | transport, `1<<1` |
 //! | province | `+16` | u32 | `building_len`     | —   | transport, `1<<1` |
 //! | entry    | `+0`  | u32 | `type_id`          | raw | zero rejected; resources also reject `u32::MAX` (`:22451`, `:30019`) |
@@ -52,7 +52,7 @@
 //!
 //! **The scale trap.** One entry shape carries two different scales. A resource
 //! entry's `amount_raw` is signed and folds as `amount_raw as f64 / FIXED_SCALE`
-//! (`:30033`, `FIXED_SCALE = 100_000.0` at `:156`); a building entry's `level` is
+//! (`world_fold.rs::map_detail_resource_map`, `FIXED_SCALE = 100_000.0` at `:156`); a building entry's `level` is
 //! unsigned and folds **raw**, `json!(entry.level)` (`:30042`), with no division
 //! at all. Reading a level through `FIXED_SCALE` would be wrong by 100,000×, and
 //! every round-trip test would still pass because the error is in the mapping.
@@ -75,7 +75,7 @@
 //! "loaded from the pinned vanilla `common/buildings` source set" and
 //! "Unknown/mod-added ids remain numeric and therefore fail closed". Resource
 //! ids are the same kind of thing (`common/resources`), and the fold's own
-//! fallback for an unrecognised one is a numeric `tid_0x…` string (`:30056`).
+//! fallback for an unrecognised one is a numeric `tid_0x…` string (`world_fold.rs::map_detail_resource_name`).
 //! Both are content, not engine discriminators, so both are `ContentId` — and
 //! both are **key components**, which §13 flags as the heavier manifest-retrofit
 //! class. Every key in this domain is a `ContentId`; see the deliverable's open
@@ -84,12 +84,12 @@
 //! **Incremental, upsert, no deletes.** A record whose `status_flags` carry
 //! `COMPACT_STATUS_DELTA_DATA` carries only the rows the collector saw change
 //! (`attach_log.rs:58663`-`:58693`); a full-snapshot record clears everything
-//! d23 owns first (`world_fold.rs:22468`-`:22477`) and repopulates. Nothing in
+//! d23 owns first (`world_fold.rs::fold_map_detail`) and repopulates. Nothing in
 //! the grammar deletes a state, a province, or an entry, so [`fold_payload`]
 //! upserts and only a full snapshot removes. A delta before any baseline folds
-//! nothing (`:22349`-`:22354`) and is the caller's to exclude.
+//! nothing (`world_fold.rs::fold_map_detail`) and is the caller's to exclude.
 //!
-//! **`recompute_map_detail_province_building_totals` (`:22522`) is not ported.**
+//! **`recompute_map_detail_province_building_totals` (`world_fold.rs::recompute_map_detail_province_building_totals`) is not ported.**
 //! It sums province building levels into their state, which is a host-side
 //! derivation over data this schema already carries in
 //! `province_buildings` + `provinces.state_id`. Storing it would be storing a
@@ -140,30 +140,30 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:400`-`:403` and `:22320`-`:22336`. --
 
-/// `MAP_DETAIL_HEADER_LEN`, `world_fold.rs:400`.
+/// `MAP_DETAIL_HEADER_LEN`, `world_fold.rs::MAP_DETAIL_HEADER_LEN`.
 pub const HEADER_LEN: usize = 48;
-/// `MAP_DETAIL_STATE_ROW_LEN`, `world_fold.rs:401`.
+/// `MAP_DETAIL_STATE_ROW_LEN`, `world_fold.rs::MAP_DETAIL_STATE_ROW_LEN`.
 pub const STATE_ROW_LEN: usize = 28;
-/// `MAP_DETAIL_PROVINCE_ROW_LEN`, `world_fold.rs:402`.
+/// `MAP_DETAIL_PROVINCE_ROW_LEN`, `world_fold.rs::MAP_DETAIL_PROVINCE_ROW_LEN`.
 pub const PROVINCE_ROW_LEN: usize = 20;
-/// `MAP_DETAIL_ENTRY_ROW_LEN`, `world_fold.rs:403`. One shape, three arrays.
+/// `MAP_DETAIL_ENTRY_ROW_LEN`, `world_fold.rs::MAP_DETAIL_ENTRY_ROW_LEN`. One shape, three arrays.
 pub const ENTRY_ROW_LEN: usize = 12;
 
-/// State row `flags & 1` — the resource list is present (`world_fold.rs:22481`).
+/// State row `flags & 1` — the resource list is present (`world_fold.rs::fold_map_detail`).
 pub const STATE_FLAG_RESOURCES: u32 = 1;
 /// State row `flags & (1 << 1)` — the building list is present (`:22489`).
 pub const STATE_FLAG_BUILDINGS: u32 = 1 << 1;
-/// `world_fold.rs:22374` — any other bit is a hard error.
+/// `world_fold.rs::fold_map_detail` — any other bit is a hard error.
 pub const STATE_KNOWN_FLAGS: u32 = STATE_FLAG_RESOURCES | STATE_FLAG_BUILDINGS;
 
-/// Province row `flags & 1` — the row carries a state (`world_fold.rs:22499`).
+/// Province row `flags & 1` — the row carries a state (`world_fold.rs::fold_map_detail`).
 pub const PROVINCE_FLAG_STATE: u32 = 1;
 /// Province row `flags & (1 << 1)` — the building list is present (`:22503`).
 pub const PROVINCE_FLAG_BUILDINGS: u32 = 1 << 1;
-/// `world_fold.rs:22417` — any other bit is a hard error.
+/// `world_fold.rs::fold_map_detail` — any other bit is a hard error.
 pub const PROVINCE_KNOWN_FLAGS: u32 = PROVINCE_FLAG_STATE | PROVINCE_FLAG_BUILDINGS;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`. Applies to a **resource** entry's
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`. Applies to a **resource** entry's
 /// `amount_raw` (`:30033`) and to nothing else in this domain — a building
 /// entry's `level` is emitted raw (`:30042`).
 pub const RESOURCE_AMOUNT_SCALE: f64 = 100_000.0;
@@ -188,7 +188,7 @@ pub fn schema() -> Schema {
     // `Null` or `Unknown`. A clear flag is not "we could not read it" — a failed
     // read aborts the whole d23 sample and badges the record
     // `COMPACT_STATUS_SOURCE_UNAVAILABLE` (`attach_log.rs:58647`-`:58657`),
-    // which folds nothing at all (`world_fold.rs:22340`-`:22347`).
+    // which folds nothing at all (`world_fold.rs::fold_map_detail`).
     let states = Collection {
         collection_id: STATES,
         shape: Shape::KeyedSet,
@@ -278,7 +278,7 @@ pub fn schema() -> Schema {
 
 // --- The payload header and its five tables ----------------------------------
 
-/// The 48-byte payload header (`world_fold.rs:22320`-`:22327`, packer
+/// The 48-byte payload header (`world_fold.rs::fold_map_detail`, packer
 /// `attach_log.rs:71758`-`:71772`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
@@ -311,7 +311,7 @@ pub struct Tables<'a> {
 }
 
 /// Split a d23 DATA payload into its header and its five tables, applying the
-/// fold's own structural checks (`world_fold.rs:22320`-`:22339`).
+/// fold's own structural checks (`world_fold.rs::fold_map_detail`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -419,11 +419,11 @@ fn parse_state_row(row: &[u8]) -> core::result::Result<StateRowFields, String> {
         building_first: u32_at(row, 16) as usize,
         building_len: u32_at(row, 20) as usize,
     };
-    // `world_fold.rs:22369`.
+    // `world_fold.rs::fold_map_detail`.
     if fields.state_id == 0 {
         return Err("map_detail state row has zero state_id".into());
     }
-    // `world_fold.rs:22374` — an unrecognised flag word means the row is not
+    // `world_fold.rs::fold_map_detail` — an unrecognised flag word means the row is not
     // this grammar, so nothing in it can be trusted.
     if fields.flags & !STATE_KNOWN_FLAGS != 0 {
         return Err(format!(
@@ -431,7 +431,7 @@ fn parse_state_row(row: &[u8]) -> core::result::Result<StateRowFields, String> {
             fields.state_id, fields.flags
         ));
     }
-    // `world_fold.rs:22380`.
+    // `world_fold.rs::fold_map_detail`.
     if u32_at(row, 24) != 0 {
         return Err(format!(
             "map_detail state row {} reserved field is nonzero",
@@ -465,18 +465,18 @@ fn parse_province_row(row: &[u8]) -> core::result::Result<ProvinceRowFields, Str
         building_first: u32_at(row, 12) as usize,
         building_len: u32_at(row, 16) as usize,
     };
-    // `world_fold.rs:22412`.
+    // `world_fold.rs::fold_map_detail`.
     if fields.province_id == 0 {
         return Err("map_detail province row has zero province_id".into());
     }
-    // `world_fold.rs:22417`.
+    // `world_fold.rs::fold_map_detail`.
     if fields.flags & !PROVINCE_KNOWN_FLAGS != 0 {
         return Err(format!(
             "map_detail province row {} has unknown flags {:#x}",
             fields.province_id, fields.flags
         ));
     }
-    // `world_fold.rs:22423`-`:22432`: the state flag and the state id must agree
+    // `world_fold.rs::fold_map_detail`: the state flag and the state id must agree
     // in BOTH directions, so neither a flagged zero nor an unflagged state is a
     // legal row.
     if fields.flags & PROVINCE_FLAG_STATE != 0 && fields.state_id == 0 {
@@ -494,7 +494,7 @@ fn parse_province_row(row: &[u8]) -> core::result::Result<ProvinceRowFields, Str
     Ok(fields)
 }
 
-/// `validate_map_detail_range`, `world_fold.rs:29977`: a flagged range must lie
+/// `validate_map_detail_range`, `world_fold.rs::validate_map_detail_range`: a flagged range must lie
 /// inside its entry array, and a clear flag forces an empty range at zero.
 fn checked_range(
     present: bool,
@@ -519,7 +519,7 @@ fn checked_range(
 }
 
 /// The `(resources, buildings)` entry ranges a state row addresses, validated
-/// against the header's entry counts (`world_fold.rs:22385`-`:22398`).
+/// against the header's entry counts (`world_fold.rs::fold_map_detail`).
 ///
 /// The ranges are transport, never state: they say where this frame happens to
 /// have put the entries, not anything about the world. They are public because
@@ -548,7 +548,7 @@ pub fn state_row_ranges(
 }
 
 /// The building entry range a province row addresses
-/// (`world_fold.rs:22433`-`:22439`).
+/// (`world_fold.rs::fold_map_detail`).
 pub fn province_row_range(
     header: &PayloadHeader,
     row: &[u8],
@@ -563,12 +563,12 @@ pub fn province_row_range(
     )
 }
 
-/// The key of one state row: its `state_id` (`world_fold.rs:22360`).
+/// The key of one state row: its `state_id` (`world_fold.rs::fold_map_detail`).
 pub fn key_from_state_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[parse_state_row(row)?.state_id as u64]))
 }
 
-/// The key of one province row: its `province_id` (`world_fold.rs:22405`).
+/// The key of one province row: its `province_id` (`world_fold.rs::fold_map_detail`).
 pub fn key_from_province_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[parse_province_row(row)?.province_id as u64]))
 }
@@ -599,7 +599,7 @@ pub fn key_from_province_building_row(
 
 /// A resource entry's `type_id`, with the fold's checks (`world_fold.rs:22451`,
 /// `:22454`). Resources reject `u32::MAX` as well as zero; building entries do
-/// not (`:30019`). The asymmetry is the fold's, and it is mirrored rather than
+/// not (`world_fold.rs::read_map_detail_building_entry`). The asymmetry is the fold's, and it is mirrored rather than
 /// unified — unifying it would reject frames the recorder accepts.
 pub fn resource_type_id(entry: &[u8]) -> core::result::Result<u32, String> {
     check_entry_len(entry)?;
@@ -614,7 +614,7 @@ pub fn resource_type_id(entry: &[u8]) -> core::result::Result<u32, String> {
 }
 
 /// A building entry's `type_id`, with the fold's checks
-/// (`world_fold.rs:30019`-`:30024`).
+/// (`world_fold.rs::read_map_detail_building_entry`).
 pub fn building_type_id(entry: &[u8]) -> core::result::Result<u32, String> {
     check_entry_len(entry)?;
     let type_id = u32_at(entry, 0);
@@ -695,7 +695,7 @@ pub fn record_from_province_row(
 
 /// One 12-byte resource entry onto its stored `state_resources` Record.
 ///
-/// **`/100000`** (`world_fold.rs:30033`), and the word is signed.
+/// **`/100000`** (`world_fold.rs::map_detail_resource_map`), and the word is signed.
 pub fn record_from_state_resource_row(
     collection: &Collection,
     entry: &[u8],
@@ -717,7 +717,7 @@ pub fn record_from_state_resource_row(
 
 /// One 12-byte building entry onto its stored `state_buildings` Record.
 ///
-/// **Raw, never scaled** (`world_fold.rs:30042`). Shares the entry shape with
+/// **Raw, never scaled** (`world_fold.rs::map_detail_building_map`). Shares the entry shape with
 /// [`record_from_state_resource_row`] and not its scale.
 pub fn record_from_state_building_row(
     collection: &Collection,
@@ -729,7 +729,7 @@ pub fn record_from_state_building_row(
 
 /// One 12-byte building entry onto its stored `province_buildings` Record. The
 /// same shape, the same scale (none) and the same fold helper
-/// (`world_fold.rs:30039`) as [`record_from_state_building_row`]; it is a
+/// (`world_fold.rs::map_detail_building_map`) as [`record_from_state_building_row`]; it is a
 /// separate entry point because it is a separate collection.
 pub fn record_from_province_building_row(
     collection: &Collection,
@@ -806,7 +806,7 @@ impl MapDetailState {
         &self.collections[index]
     }
 
-    /// `world_fold.rs:22468`-`:22477`: a full snapshot drops everything d23 owns
+    /// `world_fold.rs::fold_map_detail`: a full snapshot drops everything d23 owns
     /// before repopulating.
     pub fn clear(&mut self) {
         for state in &mut self.collections {
@@ -822,13 +822,13 @@ impl MapDetailState {
 /// Fold one d23 DATA payload into `acc`, exactly as `fold_map_detail` folds it.
 ///
 /// `delta_update` is `status_flags & COMPACT_STATUS_DELTA_DATA != 0`
-/// (`world_fold.rs:22348`). The caller supplies it rather than this function
+/// (`world_fold.rs::fold_map_detail`). The caller supplies it rather than this function
 /// reading the bit itself, because that constant belongs to `compact_contract`
 /// and d23 is not admitted to the production-codec dependency surface; copying
 /// the literal here is exactly the drift the shared-contract rule forbids. A
 /// **failure-status** record folds nothing at all
-/// (`:22340`-`:22347`) and a delta before any baseline folds nothing
-/// (`:22349`-`:22354`); both are the caller's to exclude before calling this.
+/// (`world_fold.rs::fold_map_detail`) and a delta before any baseline folds nothing
+/// (`world_fold.rs::fold_map_detail`); both are the caller's to exclude before calling this.
 ///
 /// **Atomic.** Every row and every entry is decoded and checked before anything
 /// is written, so a payload this function rejects leaves `acc` exactly as it
@@ -836,7 +836,7 @@ impl MapDetailState {
 /// before it mutates.
 ///
 /// **Every entry is checked, referenced or not.** `fold_map_detail` decodes all
-/// three entry arrays in full (`:22443`-`:22466`) before it looks at a single
+/// three entry arrays in full (`world_fold.rs::fold_map_detail`) before it looks at a single
 /// range, so an entry with a zero `type_id` or a nonzero reserved word makes the
 /// frame invalid even if no row addresses it. Checking only the addressed
 /// entries would accept frames the recorder refuses.
@@ -896,7 +896,7 @@ pub fn fold_payload(
     let state_buildings_c = &schema.collections[STATE_BUILDINGS_INDEX];
     let province_buildings_c = &schema.collections[PROVINCE_BUILDINGS_INDEX];
 
-    // The three entry arrays, decoded in full — `world_fold.rs:22443`-`:22466`
+    // The three entry arrays, decoded in full — `world_fold.rs::fold_map_detail`
     // reads and validates every declared entry before any range is applied.
     let resources = decode_entries(
         tables.resources,
@@ -985,7 +985,7 @@ pub fn fold_payload(
         let mut record = decoded.record;
         let province_id = decoded.key.first() as u32;
         let prior = acc.collections[PROVINCES_INDEX].get(&decoded.key);
-        // `world_fold.rs:22499`: a clear state flag does not insert, so whatever
+        // `world_fold.rs::fold_map_detail`: a clear state flag does not insert, so whatever
         // the accumulator already holds for this province survives.
         if record.values[province_state_id].is_null() {
             if let Some(prior) = prior {
@@ -1016,7 +1016,7 @@ enum EntryKind {
 /// One whole entry array, decoded and checked entry by entry into
 /// `(type_id, record)` pairs. The array's length is the header's count times the
 /// stride, so this decodes exactly the entries the header declares — the fold's
-/// own `for _ in 0..count` loops (`world_fold.rs:22444`, `:22460`, `:22464`).
+/// own `for _ in 0..count` loops (`world_fold.rs::fold_map_detail`).
 fn decode_entries(
     array: &[u8],
     collection: &Collection,
@@ -1192,7 +1192,7 @@ mod tests {
             }
             payload.extend_from_slice(&s.state_id.to_le_bytes());
             payload.extend_from_slice(&flags.to_le_bytes());
-            // A clear flag forces `first == len == 0` (`world_fold.rs:29985`).
+            // A clear flag forces `first == len == 0` (`world_fold.rs::validate_map_detail_range`).
             // The shipping packer writes the running cursor unconditionally
             // (`attach_log.rs:71798`), which would be a rejected row for a
             // flagless state after a flagged one — a latent inconsistency that
@@ -1384,7 +1384,7 @@ mod tests {
         // optional and no unknown-capable field anywhere: nothing in the payload
         // is inapplicable to its own row, and nothing survives a failed read
         // (a failed read badges the whole record and folds nothing,
-        // `attach_log.rs:58647`, `world_fold.rs:22340`). The one empty state
+        // `attach_log.rs:58647`, `world_fold.rs::fold_map_detail`). The one empty state
         // that exists is `provinces.state_id` = Null.
         let s = schema();
         let mut nullable = Vec::new();
@@ -1657,7 +1657,7 @@ mod tests {
         let mut long = payload.clone();
         long.push(0);
         assert!(split_payload(&long).is_err());
-        // A nonzero header reserved word (`world_fold.rs:22337`).
+        // A nonzero header reserved word (`world_fold.rs::fold_map_detail`).
         let mut reserved = payload.clone();
         reserved[44..48].copy_from_slice(&1u32.to_le_bytes());
         assert!(split_payload(&reserved).is_err());
@@ -1698,7 +1698,7 @@ mod tests {
             assert!(record_from_state_row(&c, &row, 0).is_err(), "length {len}");
             assert!(key_from_state_row(&row).is_err(), "length {len}");
         }
-        // Zero state_id (`world_fold.rs:22369`).
+        // Zero state_id (`world_fold.rs::fold_map_detail`).
         assert!(record_from_state_row(&c, &state_row(0, STATE_KNOWN_FLAGS, [0; 4], 0), 0).is_err());
         // Every unknown flag bit (`:22374`), not one sample.
         for bit in 2..32u32 {
@@ -1720,7 +1720,7 @@ mod tests {
             assert!(record_from_province_row(&c, &row, 0).is_err(), "length {len}");
             assert!(key_from_province_row(&row).is_err(), "length {len}");
         }
-        // Zero province_id (`world_fold.rs:22412`).
+        // Zero province_id (`world_fold.rs::fold_map_detail`).
         assert!(record_from_province_row(&c, &province_row(0, 0, 0, [0, 0]), 0).is_err());
         for bit in 2..32u32 {
             let row = province_row(11, 7, PROVINCE_KNOWN_FLAGS | (1 << bit), [0, 0]);
@@ -1766,7 +1766,7 @@ mod tests {
 
     #[test]
     fn a_range_outside_its_entry_table_is_rejected() {
-        // `validate_map_detail_range` (`world_fold.rs:29977`), both halves: a
+        // `validate_map_detail_range` (`world_fold.rs::validate_map_detail_range`), both halves: a
         // flagged range must fit, and a clear flag forces an empty range.
         let payload = full_payload();
         let (header, _) = split_payload(&payload).expect("well-formed");
@@ -1907,7 +1907,7 @@ mod tests {
 
     #[test]
     fn a_full_snapshot_drops_everything_the_domain_owns() {
-        // `world_fold.rs:22468`-`:22477`. A state, a province and every entry
+        // `world_fold.rs::fold_map_detail`. A state, a province and every entry
         // that the new snapshot does not mention must be gone, not merged.
         let schema = schema();
         let mut acc = MapDetailState::new();
@@ -1976,7 +1976,7 @@ mod tests {
 
     #[test]
     fn a_delta_row_with_a_clear_flag_retains_the_accumulated_capture_flag() {
-        // `world_fold.rs:22481`/`:22489`: a clear flag does not insert, so the
+        // `world_fold.rs::fold_map_detail`: a clear flag does not insert, so the
         // accumulated answer stands. Downgrading `captured` to false here would
         // assert "never read" about data that was read an hour ago.
         let schema = schema();
@@ -2064,7 +2064,7 @@ mod tests {
             ],
             &[],
         );
-        // Zero the second row's state_id (`world_fold.rs:22369`).
+        // Zero the second row's state_id (`world_fold.rs::fold_map_detail`).
         let second = HEADER_LEN + STATE_ROW_LEN;
         payload[second..second + 4].copy_from_slice(&0u32.to_le_bytes());
         assert!(fold_payload(&schema, &mut acc, &payload, false, 0).is_err());
@@ -2266,7 +2266,7 @@ mod tests {
 
     #[test]
     fn overlapping_ranges_land_under_their_own_parents() {
-        // Only `first + len <= total` is checked (`world_fold.rs:29988`), so two
+        // Only `first + len <= total` is checked (`world_fold.rs::validate_map_detail_range`), so two
         // states may legally address the same entries. Flattening must key them
         // by parent, not collapse them.
         let schema = schema();

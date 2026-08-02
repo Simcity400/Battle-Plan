@@ -12,7 +12,7 @@
 //! makes five decisions over the decoded result. So the codec is authority for
 //! offsets, lengths and structural validity (`naval_history.rs:266`-`:473`), and
 //! the fold is authority for the accumulator semantics, the gates and the
-//! refusals (`world_fold.rs:10226`-`:10283`). `wire_format`'s library half must
+//! refusals (`world_fold.rs::fold_sunk_convoy_history`). `wire_format`'s library half must
 //! not depend on `compact_contract` (`Cargo.toml`), so this module mirrors the
 //! codec's grammar with a `naval_history.rs:LINE` citation on every constant and
 //! every check — and `bin/bench_real_d70.rs`, which *does* depend on it, runs
@@ -60,13 +60,13 @@
 //! `fold_sunk_convoy_history` takes `expected_frame_hour: Option<u64>` and
 //! `expected_source_sequence: Option<u64>` and **refuses the payload** when
 //! either disagrees with the H4CR record that carried it
-//! (`world_fold.rs:10259`-`:10273`). The generic dispatcher `fold_domain_data`
-//! passes `None` for both (`:4737`); only the production dispatcher
-//! `apply_domain_data` supplies them (`:4801`-`:4806`):
+//! (`world_fold.rs::fold_sunk_convoy_history`). The generic dispatcher `fold_domain_data`
+//! passes `None` for both (`world_fold.rs::fold_domain_data`); only the production dispatcher
+//! `apply_domain_data` supplies them (`world_fold.rs::apply_domain_data`):
 //!
 //! ```text
-//! expected_frame_hour     = hour_index_from_raw(record.game_hour_raw)   // :4804
-//! expected_source_sequence = Some(record.sequence)                      // :4805
+//! expected_frame_hour     = hour_index_from_raw(record.game_hour_raw)   // `world_fold.rs::apply_domain_data`
+//! expected_source_sequence = Some(record.sequence)                      // `world_fold.rs::apply_domain_data`
 //! ```
 //!
 //! `hour_index_from_raw` is `raw - 43_799_999` inside the years-1850..2200
@@ -94,13 +94,13 @@
 //!    capture are this.
 //! 2. **`Unavailable` + `FirstSeenAggregateIdentity`** (v3, all-zero receipts).
 //!    The codec requires a failure status and zero rows on it (`:347`-`:353`), so
-//!    the fold's failure gate fires first (`world_fold.rs:10243`-`:10251`) and the
+//!    the fold's failure gate fires first (`world_fold.rs::fold_sunk_convoy_history`) and the
 //!    hour is an **excluded hour** — the accumulator is set to `None`, not
 //!    retained.
 //! 3. **`LegacyUnbound`** — v1 (`CanonicalIdentity`, rows sorted by
 //!    `(month, killer, owner)`) or v2 (`FirstSeenAggregateIdentity`), neither
 //!    carrying a frame binding. On a clean status the fold **errors**
-//!    (`:10255`-`:10258`): "legacy-unbound and cannot supply production
+//!    (`world_fold.rs::fold_sunk_convoy_history`): "legacy-unbound and cannot supply production
 //!    authority", which is a stream rejection. On a *failure* status the failure
 //!    gate fires first and it is an excluded hour instead — the order of the two
 //!    checks is load-bearing and is mirrored exactly in [`fold_payload`].
@@ -130,11 +130,11 @@
 //!
 //! # Full replace, and an unavailable hour is not a stale one
 //!
-//! The fold assigns the whole decoded row set (`world_fold.rs:10275`-`:10282`);
+//! The fold assigns the whole decoded row set (`world_fold.rs::fold_sunk_convoy_history`);
 //! nothing is ever merged. Every non-folding path sets
-//! `self.sunk_convoy_history = None` — decode error (`:10236`), failure status
-//! (`:10249`), legacy authority (`:10255`), frame mismatch (`:10262`), sequence
-//! mismatch (`:10269`). This is **not** d63's "retain the accumulator": the
+//! `self.sunk_convoy_history = None` — decode error (`world_fold.rs::fold_sunk_convoy_history`), failure status
+//! (`world_fold.rs::fold_sunk_convoy_history`), legacy authority (`world_fold.rs::fold_sunk_convoy_history`), frame mismatch (`world_fold.rs::fold_sunk_convoy_history`), sequence
+//! mismatch (`world_fold.rs::fold_sunk_convoy_history`). This is **not** d63's "retain the accumulator": the
 //! recorder says the domain-hour is unavailable, so a reader must not carry the
 //! previous hour's table forward across it. A keyed-set delta cannot express
 //! "the collection is unavailable this hour" — that is §8 gap normalisation,
@@ -263,7 +263,7 @@ pub enum Ordering {
 ///
 /// **Why check them at all**, when this crate is a schema layer: an
 /// `authority_raw` word of `1` is a claim of exact static authority, and the
-/// fold refuses everything else (`world_fold.rs:10255`). Accepting the claim
+/// fold refuses everything else (`world_fold.rs::fold_sunk_convoy_history`). Accepting the claim
 /// without the receipts would map a payload from some other build as
 /// authoritative — publishing data the recorder rejects, under an authority it
 /// does not have.
@@ -286,7 +286,7 @@ pub fn schema() -> Schema {
         cadence_log2: 0,
         collections: vec![Collection {
             collection_id: HISTORY,
-            // Full replace every hour (`world_fold.rs:10275`), but the
+            // Full replace every hour (`world_fold.rs::fold_sunk_convoy_history`), but the
             // `(month, killer, owner)` identity persists across hours — a bucket
             // keeps accumulating convoys for as long as the engine keeps it —
             // which is what a keyed set needs, and only a keyed set has a delta
@@ -367,7 +367,7 @@ pub struct PayloadHeader {
 
 impl PayloadHeader {
     /// The fold's failure gate (`world_fold.rs:10243`, `handle_compact_failure`
-    /// at `:2863`). See [`FAILURE_STATUS_MASK`] for why the global mask is the
+    /// at `world_fold.rs::handle_compact_failure`). See [`FAILURE_STATUS_MASK`] for why the global mask is the
     /// whole predicate for d70.
     pub fn is_failure(self) -> bool {
         self.status_flags & FAILURE_STATUS_MASK != 0
@@ -380,7 +380,7 @@ impl PayloadHeader {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldOutcome {
     /// The payload was exact, bound to its record, and replaced the whole table
-    /// (`world_fold.rs:10275`-`:10282`).
+    /// (`world_fold.rs::fold_sunk_convoy_history`).
     Folded {
         rows: usize,
         ordering: Ordering,
@@ -388,7 +388,7 @@ pub enum FoldOutcome {
         source_sequence: u64,
     },
     /// A failure status: the accumulator is set to `None` and nothing is folded
-    /// (`world_fold.rs:10243`-`:10251`). **An excluded hour, and an unavailable
+    /// (`world_fold.rs::fold_sunk_convoy_history`). **An excluded hour, and an unavailable
     /// one** — the previous hour's table is discarded, not retained, so a reader
     /// must not carry state across it. A keyed set cannot say that (§8 gap
     /// normalisation has no code in this crate), which is why the state is
@@ -403,7 +403,7 @@ pub enum FoldOutcome {
 /// The split exists because the codec's order is load-bearing in two directions.
 /// Everything here rejects a payload whatever its status — the fold calls
 /// `decode_payload` first and only then consults the status word
-/// (`world_fold.rs:10231`-`:10243`), so this is the d83 shape: a malformed
+/// (`world_fold.rs::fold_sunk_convoy_history`), so this is the d83 shape: a malformed
 /// payload is a refused stream even on a failure-status record. And the checks
 /// that *do* depend on the row bytes (the reserved tail, the non-zero fields,
 /// the duplicate identity, `observed_rows == row_count`, v1's canonical order)
@@ -731,7 +731,7 @@ impl State {
 }
 
 /// Fold one d70 DATA payload exactly as `fold_sunk_convoy_history` folds it
-/// (`world_fold.rs:10226`-`:10283`), in the fold's own order.
+/// (`world_fold.rs::fold_sunk_convoy_history`), in the fold's own order.
 ///
 /// This is the recipe's fourth public boundary. It lives here rather than in the
 /// harness because the *order* of the five decisions is grammar: the failure
@@ -742,15 +742,15 @@ impl State {
 ///
 /// `expected_frame_hour` and `expected_record_sequence` are the two typed inputs
 /// the payload does not carry; see the module docs. `apply_domain_data` supplies
-/// them from the H4CR record (`world_fold.rs:4801`-`:4806`) as
+/// them from the H4CR record (`world_fold.rs::apply_domain_data`) as
 /// `hour_index_from_raw(game_hour_raw)` and `Some(record.sequence)`; the generic
-/// `fold_domain_data` dispatcher passes `None` for both (`:4737`), and this
+/// `fold_domain_data` dispatcher passes `None` for both (`world_fold.rs::fold_domain_data`), and this
 /// function reproduces that too — `None` against a v3 payload's `Some` is a
 /// mismatch, which is the refusal the fold makes.
 ///
 /// **Error contract: this fold mutates before it errors.** Every `Err` path
 /// leaves `state.rows` at `None`, exactly as the fold leaves
-/// `self.sunk_convoy_history` (`:10236`, `:10255`, `:10262`, `:10269`). A caller
+/// `self.sunk_convoy_history` (`world_fold.rs::fold_sunk_convoy_history`). A caller
 /// that treats an `Err` as "the accumulator is unchanged" disagrees with the
 /// recorder.
 pub fn fold_payload(
@@ -762,7 +762,7 @@ pub fn fold_payload(
     expected_record_sequence: Option<u64>,
     frame_tick: u64,
 ) -> core::result::Result<FoldOutcome, String> {
-    // 1. `decode_payload` (`world_fold.rs:10231`-`:10239`). The whole payload,
+    // 1. `decode_payload` (`world_fold.rs::fold_sunk_convoy_history`). The whole payload,
     //    rows included, is decoded BEFORE the status word is consulted, so a
     //    malformed payload refuses the stream whatever its status.
     let decoded = match decode(payload, receipts, collection, frame_tick) {
@@ -1671,7 +1671,7 @@ mod tests {
 
     #[test]
     fn the_fold_replaces_the_whole_table_and_binds_it_to_its_record() {
-        // `world_fold.rs:10259`-`:10282`: the two typed inputs the payload does
+        // `world_fold.rs::fold_sunk_convoy_history`: the two typed inputs the payload does
         // not carry are checked, and then the table is replaced outright.
         let c = collection();
         let mut state = State::new();
@@ -1712,8 +1712,8 @@ mod tests {
     fn the_fold_refuses_a_payload_that_does_not_match_its_record() {
         // The headline: `record_sequence` and the frame hour are inputs the
         // payload does not carry, and a mismatch in either is a refusal
-        // (`world_fold.rs:10259`-`:10273`). Swept over both fields and over the
-        // `None` the generic dispatcher passes (`:4737`), rather than one case.
+        // (`world_fold.rs::fold_sunk_convoy_history`). Swept over both fields and over the
+        // `None` the generic dispatcher passes (`world_fold.rs::fold_domain_data`), rather than one case.
         let c = collection();
         let payload = good_payload();
         let cases: [(Option<u64>, Option<u64>); 6] = [
@@ -1745,7 +1745,7 @@ mod tests {
 
     #[test]
     fn a_failure_status_makes_the_hour_unavailable_rather_than_stale() {
-        // `world_fold.rs:10243`-`:10251`. The accumulator is set to `None`, so a
+        // `world_fold.rs::fold_sunk_convoy_history`. The accumulator is set to `None`, so a
         // reader must not carry the previous hour's table across it. Every
         // failure bit, one at a time.
         let c = collection();
@@ -1793,8 +1793,8 @@ mod tests {
     fn the_failure_gate_runs_before_the_authority_check() {
         // The order is load-bearing and is the reason d70 has three authority
         // states rather than two: the SAME legacy payload is an excluded hour
-        // under a failure status (`world_fold.rs:10243`) and a stream rejection
-        // under a clean one (`:10255`).
+        // under a failure status (`world_fold.rs::fold_sunk_convoy_history`) and a stream rejection
+        // under a clean one (`world_fold.rs::fold_sunk_convoy_history`).
         let c = collection();
         let mut sorted = three_rows();
         sorted.sort();
@@ -1840,7 +1840,7 @@ mod tests {
 
     #[test]
     fn a_malformed_payload_discards_the_accumulator_and_refuses() {
-        // `world_fold.rs:10231`-`:10239`: `decode_payload` runs before the
+        // `world_fold.rs::fold_sunk_convoy_history`: `decode_payload` runs before the
         // status word is consulted, so a malformed payload is a refusal whatever
         // its status — and it still discards the accumulator.
         let c = collection();

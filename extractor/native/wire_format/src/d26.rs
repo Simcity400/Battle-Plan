@@ -11,43 +11,43 @@
 //! field-level grammar, so the fold and the collector read are the basis; where
 //! the dossier and the fold could be read differently the fold wins.
 //!
-//! **Payload grammar** (`world_fold.rs:17362`-`:17422`): a 40-byte header —
+//! **Payload grammar** (`world_fold.rs::fold_division_equipment`): a 40-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `scale_raw` u32 at `+20`, `root_rows` u32
 //! at `+24`, `observed_division_rows` u32 at `+28`, `equipment_entry_count` u32
 //! at `+32`, `observed_equipment_rows` u32 at `+36` — followed by `row_count`
 //! fixed 24-byte **root rows** and then `equipment_entry_count` fixed 16-byte
 //! **entry rows**. The fold requires the length to be exactly
-//! `40 + row_count * 24 + equipment_entry_count * 16` (`:17415`-`:17423`), so no
+//! `40 + row_count * 24 + equipment_entry_count * 16` (`world_fold.rs::fold_division_equipment`), so no
 //! legacy short row exists and the length selects nothing.
 //!
-//! Root row (`world_fold.rs:17472`-`:17478`):
+//! Root row (`world_fold.rs::fold_division_equipment`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `owner_tag_db_id` | raw | none (key; zero rejected, `:17478`) |
-//! | `+4`  | u32 | `div_id`          | raw | none (key; zero rejected, `:17483`) |
+//! | `+0`  | u32 | `owner_tag_db_id` | raw | none (key; zero rejected, `world_fold.rs::fold_division_equipment`) |
+//! | `+4`  | u32 | `div_id`          | raw | none (key; zero rejected, `world_fold.rs::fold_division_equipment`) |
 //! | `+8`  | u32 | `flags`           | —   | — |
 //! | `+12` | u32 | `template_id`     | raw | `TEMPLATE_PRESENT` (`1<<0`) |
 //! | `+16` | u32 | `entry_first`     | —   | transport, not state |
 //! | `+20` | u32 | `entry_count`     | —   | transport, not state |
 //!
-//! Entry row (`world_fold.rs:17540`-`:17544`):
+//! Entry row (`world_fold.rs::fold_division_equipment`):
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0` | u32 | `variant_id` | raw     | none (key; `0` and `> i32::MAX` rejected, `:17545`) |
-//! | `+4` | u32 | `reserved`   | —       | must be zero (`:17556`) |
-//! | `+8` | i64 | `amount_raw` | /100000 | none (`0 < x <= 1e15` enforced, `:17551`) |
+//! | `+0` | u32 | `variant_id` | raw     | none (key; `0` and `> i32::MAX` rejected, `world_fold.rs::fold_division_equipment`) |
+//! | `+4` | u32 | `reserved`   | —       | must be zero (`world_fold.rs::fold_division_equipment`) |
+//! | `+8` | i64 | `amount_raw` | /100000 | none (`0 < x <= 1e15` enforced, `world_fold.rs::fold_division_equipment`) |
 //!
 //! **Two collections, because `(entry_first, entry_count)` is transport.** A
 //! root addresses its equipment as a half-open range into one shared entry array
-//! (`:17516`, `:17598`); the ranges are re-packed by the collector on every
+//! (`world_fold.rs::fold_division_equipment`); the ranges are re-packed by the collector on every
 //! frame from the emission order (`attach_log.rs:69904`-`:69920`) and carry no
 //! state a reader could ask about. What is state is the *set* of
 //! `(owner_tag_db_id, div_id, variant_id) -> amount` facts, which is what the
 //! fold's accumulator holds (`world_fold.rs:1547`) and what its duplicate check
-//! is keyed by (`:17601`). So the ranges are flattened away here: collection
+//! is keyed by (`world_fold.rs::fold_division_equipment`). So the ranges are flattened away here: collection
 //! [`DIVISIONS`] carries one row per division root and collection [`EQUIPMENT`]
 //! one row per equipment line, keyed by the root key plus the variant.
 //!
@@ -81,7 +81,7 @@
 //! * `amount` reaches no empty state at all. The entry row has no gate, the
 //!   collector drops any line whose `amount_raw` is `0`
 //!   (`attach_log.rs:58388`), and the fold rejects `amount_raw <= 0` outright
-//!   (`world_fold.rs:17551`). A division that holds none of a variant has **no
+//!   (`world_fold.rs::fold_division_equipment`). A division that holds none of a variant has **no
 //!   row**, so "zero of this equipment" is an absent *key*, not a zero value —
 //!   which is why `amount` declares no capability and its mapper can emit only
 //!   a value.
@@ -114,7 +114,7 @@
 //! (`compact_contract/src/lib.rs:137`-`:142`): a frame carrying rows under
 //! `COMPACT_STATUS_PARTIAL_DATA` and no other failure bit is applied to the
 //! retained accumulator and then marks the **domain-hour** unknown
-//! (`world_fold.rs:17375`-`:17404`, `:17617`-`:17624`), because the omitted
+//! (`world_fold.rs::fold_division_equipment`), because the omitted
 //! division identities are not serialized. That unknown is a statement about
 //! *which keys the frame failed to mention*, not about any field of any row it
 //! did mention — the rows in a sparse frame are ordinary measured rows. A keyed
@@ -153,23 +153,23 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:810`-`:816` and `:17362`-`:17423`. --
 
-/// `DIVISION_EQUIPMENT_HEADER_LEN`, `world_fold.rs:810`.
+/// `DIVISION_EQUIPMENT_HEADER_LEN`, `world_fold.rs::DIVISION_EQUIPMENT_HEADER_LEN`.
 pub const HEADER_LEN: usize = 40;
-/// `DIVISION_EQUIPMENT_ROOT_ROW_LEN`, `world_fold.rs:811`.
+/// `DIVISION_EQUIPMENT_ROOT_ROW_LEN`, `world_fold.rs::DIVISION_EQUIPMENT_ROOT_ROW_LEN`.
 pub const ROOT_ROW_LEN: usize = 24;
-/// `DIVISION_EQUIPMENT_ENTRY_ROW_LEN`, `world_fold.rs:812`.
+/// `DIVISION_EQUIPMENT_ENTRY_ROW_LEN`, `world_fold.rs::DIVISION_EQUIPMENT_ENTRY_ROW_LEN`.
 pub const ENTRY_ROW_LEN: usize = 16;
 
-/// `DIVISION_EQUIPMENT_ROOT_FLAG_TEMPLATE_PRESENT`, `world_fold.rs:813`.
+/// `DIVISION_EQUIPMENT_ROOT_FLAG_TEMPLATE_PRESENT`, `world_fold.rs::DIVISION_EQUIPMENT_ROOT_FLAG_TEMPLATE_PRESENT`.
 pub const ROOT_FLAG_TEMPLATE_PRESENT: u32 = 1;
-/// `DIVISION_EQUIPMENT_ROOT_FLAG_DELETED`, `world_fold.rs:814`.
+/// `DIVISION_EQUIPMENT_ROOT_FLAG_DELETED`, `world_fold.rs::DIVISION_EQUIPMENT_ROOT_FLAG_DELETED`.
 pub const ROOT_FLAG_DELETED: u32 = 2;
-/// `DIVISION_EQUIPMENT_ROOT_KNOWN_FLAGS`, `world_fold.rs:815`. Any other bit is
+/// `DIVISION_EQUIPMENT_ROOT_KNOWN_FLAGS`, `world_fold.rs::DIVISION_EQUIPMENT_ROOT_KNOWN_FLAGS`. Any other bit is
 /// a hard error (`:17495`) — an unrecognised flag word means the row is not this
 /// grammar, so nothing in it can be trusted.
 pub const ROOT_KNOWN_FLAGS: u32 = ROOT_FLAG_TEMPLATE_PRESENT | ROOT_FLAG_DELETED;
 
-/// `FIXED_SCALE`, `world_fold.rs:156`. The header's `scale_raw` is asserted
+/// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`. The header's `scale_raw` is asserted
 /// equal to it (`ensure_fixed_scale`, `:17414`/`:30245`), so this is the only
 /// scale d26 ever uses and a frame declaring another is rejected rather than
 /// read at its own scale.
@@ -178,9 +178,9 @@ pub const FIXED_SCALE: f64 = 100_000.0;
 /// requires. Kept as an integer so the header check is exact.
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
-/// `world_fold.rs:17551`: an entry amount must satisfy `0 < x <= 1e15`.
+/// `world_fold.rs::fold_division_equipment`: an entry amount must satisfy `0 < x <= 1e15`.
 pub const MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
-/// `world_fold.rs:17545`: a variant id must satisfy `0 < x <= i32::MAX`.
+/// `world_fold.rs::fold_division_equipment`: a variant id must satisfy `0 < x <= i32::MAX`.
 pub const MAX_VARIANT_ID: u32 = i32::MAX as u32;
 
 pub fn schema() -> Schema {
@@ -194,12 +194,12 @@ pub fn schema() -> Schema {
                 collection_id: DIVISIONS,
                 // Roots persist across hours and the frame grammar is
                 // baseline-clears / delta-upserts / DELETED-removes
-                // (`world_fold.rs:17560`, `:17593`, `:17615`), which is exactly
+                // (`world_fold.rs::fold_division_equipment`), which is exactly
                 // a keyed set's grammar — and only a keyed set has deltas (§7.3).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is the `(owner_tag_db_id, div_id)` pair
-                    // (`world_fold.rs:17488`-`:17491`), both zero-rejected, so
+                    // (`world_fold.rs::fold_division_equipment`), both zero-rejected, so
                     // both are concrete in every row.
                     //
                     // `owner_tag_db_id` is a country tag db id — content-defined
@@ -262,7 +262,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 40-byte payload header (`world_fold.rs:17367`-`:17374`).
+/// The 40-byte payload header (`world_fold.rs::fold_division_equipment`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -282,7 +282,7 @@ pub struct PayloadHeader {
 /// `status_flags` by `compact_contract`'s own predicates
 /// (`COMPACT_STATUS_DELTA_DATA` for `delta`, and
 /// `expected_partial_tolerance_applies` together with `row_count > 0` for
-/// `sparse_partial`, `world_fold.rs:17381`), and this crate's library half must
+/// `sparse_partial`, `world_fold.rs::fold_division_equipment`), and this crate's library half must
 /// not depend on `compact_contract` (`Cargo.toml`) — nor copy its constants.
 /// Passing the mode in keeps one derivation of the status vocabulary in the
 /// crate that owns it.
@@ -290,16 +290,16 @@ pub struct PayloadHeader {
 /// The mode selects three of the fold's header invariants and nothing else. A
 /// full baseline serializes every root, so `row_count == root_rows`,
 /// `root_rows == observed_division_rows` and
-/// `equipment_entry_count == observed_equipment_rows` all hold (`:17431`-`:17464`).
+/// `equipment_entry_count == observed_equipment_rows` all hold (`world_fold.rs::fold_division_equipment`).
 /// A delta serializes only changed roots and a sparse partial only the roots it
 /// managed to sample, so for those the equalities are not invariants and
 /// asserting them would reject healthy frames.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FrameMode {
-    /// `status_flags & COMPACT_STATUS_DELTA_DATA != 0` (`world_fold.rs:17425`).
+    /// `status_flags & COMPACT_STATUS_DELTA_DATA != 0` (`world_fold.rs::fold_division_equipment`).
     pub delta: bool,
     /// `row_count > 0 && compact_expected_partial_tolerance_applies(26, status_flags)`
-    /// (`world_fold.rs:17381`).
+    /// (`world_fold.rs::fold_division_equipment`).
     pub sparse_partial: bool,
 }
 
@@ -336,7 +336,7 @@ pub struct EquipmentRow {
 }
 
 /// Read the 40-byte payload header and nothing else
-/// (`world_fold.rs:17367`-`:17374`).
+/// (`world_fold.rs::fold_division_equipment`).
 ///
 /// [`FrameMode`] is decided from `status_flags` and `row_count`, both of which
 /// live in this header, so a caller cannot hand [`split_payload`] a mode without
@@ -365,7 +365,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
 
 /// Split a d26 DATA payload into its header, its root rows and its entry rows,
 /// applying every structural check `fold_division_equipment` applies before it
-/// starts folding (`world_fold.rs:17362`-`:17538`).
+/// starts folding (`world_fold.rs::fold_division_equipment`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness
@@ -389,7 +389,7 @@ pub fn split_payload(
 
     // Checked arithmetic throughout: both counts are attacker-shaped words from
     // a file on disk, and either product overflows `usize` for a large enough
-    // one. `world_fold.rs:17415` uses saturating arithmetic, which turns an
+    // one. `world_fold.rs::fold_division_equipment` uses saturating arithmetic, which turns an
     // overflowing claim into a length that cannot match; rejecting is the same
     // outcome reached without relying on that.
     let roots_len = (header.row_count as usize)
@@ -414,7 +414,7 @@ pub fn split_payload(
         ));
     }
 
-    // Header count invariants. `world_fold.rs:17432`-`:17464`; the three
+    // Header count invariants. `world_fold.rs::fold_division_equipment`; the three
     // equalities that hold only for a clean full frame are gated on the mode.
     if !mode.delta && !mode.sparse_partial && header.row_count != header.root_rows {
         return Err(format!(
@@ -465,7 +465,7 @@ pub fn split_payload(
     let roots = &payload[HEADER_LEN..HEADER_LEN + roots_len];
     let entries = &payload[HEADER_LEN + roots_len..];
 
-    // The entry-range arithmetic, `world_fold.rs:17501`-`:17534`. Every root's
+    // The entry-range arithmetic, `world_fold.rs::fold_division_equipment`. Every root's
     // range must land inside the shared array and the ranges must account for
     // every entry row exactly once in total — a frame whose declared entries do
     // not sum to the header's count is malformed, not a frame with spare rows.
@@ -488,7 +488,7 @@ pub fn split_payload(
 }
 
 /// Parse one 24-byte root row, applying every per-row check the fold applies
-/// (`world_fold.rs:17472`-`:17515`) except the entry-range bound, which needs
+/// (`world_fold.rs::fold_division_equipment`) except the entry-range bound, which needs
 /// the frame's `equipment_entry_count` and lives in [`split_payload`].
 pub fn parse_division_row(row: &[u8]) -> core::result::Result<DivisionRow, String> {
     if row.len() != ROOT_ROW_LEN {
@@ -516,13 +516,13 @@ pub fn parse_division_row(row: &[u8]) -> core::result::Result<DivisionRow, Strin
     let deleted = flags & ROOT_FLAG_DELETED != 0;
     let has_template = flags & ROOT_FLAG_TEMPLATE_PRESENT != 0;
     if deleted {
-        // `world_fold.rs:17501`: the only permitted flag on a delete row is
+        // `world_fold.rs::fold_division_equipment`: the only permitted flag on a delete row is
         // DELETED itself, and the rest of the row must be empty.
         if flags != ROOT_FLAG_DELETED || template_word != 0 || entry_count != 0 {
             return Err("delete row has non-delete payload".into());
         }
     } else if !has_template && template_word != 0 {
-        // `world_fold.rs:17511`: a gated-off template must pack a zero, which is
+        // `world_fold.rs::fold_division_equipment`: a gated-off template must pack a zero, which is
         // what makes an ungated non-zero word a malformed row rather than data.
         return Err("template_id without flag".into());
     }
@@ -531,7 +531,7 @@ pub fn parse_division_row(row: &[u8]) -> core::result::Result<DivisionRow, Strin
         owner_tag_db_id,
         div_id,
         flags,
-        // `world_fold.rs:17497`: the flag is the whole gate. Note the fold does
+        // `world_fold.rs::fold_division_equipment`: the flag is the whole gate. Note the fold does
         // NOT reject `template_id == 0` with the flag set, and neither does
         // this: the collector cannot produce it (`attach_log.rs:16716` returns
         // `Some` only for `id > 0`), but the fold is the authority and it reads
@@ -544,7 +544,7 @@ pub fn parse_division_row(row: &[u8]) -> core::result::Result<DivisionRow, Strin
 }
 
 /// Parse one 16-byte entry row, applying the fold's per-row checks
-/// (`world_fold.rs:17540`-`:17561`).
+/// (`world_fold.rs::fold_division_equipment`).
 pub fn parse_equipment_row(row: &[u8]) -> core::result::Result<EquipmentRow, String> {
     if row.len() != ENTRY_ROW_LEN {
         return Err(format!(
@@ -572,7 +572,7 @@ pub fn parse_equipment_row(row: &[u8]) -> core::result::Result<EquipmentRow, Str
 
 /// The half-open index range of one root's entry rows within the frame's shared
 /// entry array, checked exactly as the fold checks it
-/// (`world_fold.rs:17501`-`:17520`).
+/// (`world_fold.rs::fold_division_equipment`).
 ///
 /// [`split_payload`] runs this over every root, and any caller that wants a
 /// root's entries runs it again to find them: one derivation of the range rule,
@@ -584,7 +584,7 @@ pub fn entry_index_range(
     equipment_entry_count: usize,
 ) -> core::result::Result<core::ops::Range<usize>, String> {
     if row.deleted {
-        // `world_fold.rs:17501`-`:17509`: a delete row's `entry_count` is
+        // `world_fold.rs::fold_division_equipment`: a delete row's `entry_count` is
         // already zero (`parse_division_row`), and its `entry_first` still has
         // to be in range. The range it names is empty either way.
         if row.entry_first > equipment_entry_count {
@@ -606,13 +606,13 @@ pub fn entry_index_range(
 }
 
 /// The [`DIVISIONS`] key of one root: `(owner_tag_db_id, div_id)`
-/// (`world_fold.rs:17488`-`:17491`).
+/// (`world_fold.rs::fold_division_equipment`).
 pub fn division_key(owner_tag_db_id: u32, div_id: u32) -> Key {
     key(&[owner_tag_db_id as u64, div_id as u64])
 }
 
 /// The [`EQUIPMENT`] key of one entry: its root's key plus the variant
-/// (`world_fold.rs:17601`, the fold's own duplicate-entry key).
+/// (`world_fold.rs::fold_division_equipment`, the fold's own duplicate-entry key).
 pub fn equipment_key(owner_tag_db_id: u32, div_id: u32, variant_id: u32) -> Key {
     key(&[
         owner_tag_db_id as u64,
@@ -651,7 +651,7 @@ pub fn key_from_equipment_row(
 ///
 /// Fail-closed throughout, mirroring `fold_division_equipment`: a row the fold
 /// would reject is an `Err` here, never a coerced value. A **deleted** row is an
-/// `Err` too — it is a removal (`world_fold.rs:17593`-`:17596`) and has no
+/// `Err` too — it is a removal (`world_fold.rs::fold_division_equipment`) and has no
 /// record; a caller must map it to a wire tombstone, and quietly handing one
 /// back a template-less row would turn a delete into an upsert. Nothing in this
 /// function can panic on any input.
@@ -1005,7 +1005,7 @@ mod tests {
         //
         //   * a real value (`template_id` under a set gate, `amount` always),
         //   * a real ZERO — `template_id == 0` with the gate SET. The fold does
-        //     not reject it (`world_fold.rs:17497`-`:17515` only rejects a
+        //     not reject it (`world_fold.rs::fold_division_equipment` only rejects a
         //     non-zero word with the gate CLEAR), so it is a value the grammar
         //     admits and §3 keeps zero out of the three empty states,
         //   * `unknown` — the gate clear.
@@ -1014,7 +1014,7 @@ mod tests {
         // `.optional()` or `.nullable()`; `Record::encode` would reject either.
         // There is no zero case for `amount`: the collector never emits a
         // zero-amount line (`attach_log.rs:58388`) and the fold rejects
-        // `amount_raw <= 0` (`world_fold.rs:17551`), so "none of this variant"
+        // `amount_raw <= 0` (`world_fold.rs::fold_division_equipment`), so "none of this variant"
         // is an absent KEY, tested in `an_absent_variant_is_an_absent_key`.
         let d = divisions();
         let template = index_of(&d, field::TEMPLATE_ID);
@@ -1122,7 +1122,7 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // Zero owner_tag_db_id and zero div_id (`world_fold.rs:17478`, `:17483`).
+        // Zero owner_tag_db_id and zero div_id (`world_fold.rs::fold_division_equipment`).
         assert!(record_from_division_row(&c, &root_row(0, 9, 0, 0, 0, 0), 0).is_err());
         assert!(record_from_division_row(&c, &root_row(3, 0, 0, 0, 0, 0), 0).is_err());
         // An unknown flag bit (`:17495`) — every one of them, not one sample.
@@ -1163,7 +1163,7 @@ mod tests {
                 "length {len} must be rejected, not read"
             );
         }
-        // variant_id 0 and above i32::MAX (`world_fold.rs:17545`).
+        // variant_id 0 and above i32::MAX (`world_fold.rs::fold_division_equipment`).
         assert!(record_from_equipment_row(&c, &entry_row(0, 1), 0).is_err());
         assert!(record_from_equipment_row(&c, &entry_row(MAX_VARIANT_ID + 1, 1), 0).is_err());
         assert!(record_from_equipment_row(&c, &entry_row(u32::MAX, 1), 0).is_err());
@@ -1217,7 +1217,7 @@ mod tests {
         longer.push(0);
         assert!(split_payload(&longer, FrameMode::FULL).is_err());
 
-        // A wrong scale (`world_fold.rs:17414`).
+        // A wrong scale (`world_fold.rs::fold_division_equipment`).
         let wrong_scale = payload(FrameMode::FULL, &roots, &entries, &[(20, 32_768)]);
         assert!(split_payload(&wrong_scale, FrameMode::FULL).is_err());
 
@@ -1293,7 +1293,7 @@ mod tests {
             );
         }
         // A delta must still serialize exactly the rows it counts as changed
-        // (`world_fold.rs:17445`).
+        // (`world_fold.rs::fold_division_equipment`).
         let p = payload(FrameMode::DELTA, &roots, &entries, &[(12, 0)]);
         assert!(split_payload(&p, FrameMode::DELTA).is_err());
         // A full frame with changed_rows < row_count is legal (`:17439` bounds
@@ -1342,11 +1342,11 @@ mod tests {
     #[test]
     fn overlapping_entry_ranges_are_legal_and_shared_rows_are_still_checked() {
         // The fold constrains each range's bounds and the SUM of the counts
-        // (`world_fold.rs:17516`, `:17530`) — never that every entry row is
+        // (`world_fold.rs::fold_division_equipment`) — never that every entry row is
         // referenced exactly once. Two roots may therefore name the same rows,
         // which leaves other rows referenced by nobody. Those rows are still
         // part of the frame and the fold still decodes and range-checks every
-        // one of them (`:17539`-`:17561`), so `split_payload` must accept the
+        // one of them (`world_fold.rs::fold_division_equipment`), so `split_payload` must accept the
         // shape and a caller must not treat "unreferenced" as "unchecked".
         let roots = vec![
             root_row(3, 9, ROOT_FLAG_TEMPLATE_PRESENT, 1, 0, 1),
