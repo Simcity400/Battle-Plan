@@ -4,6 +4,9 @@ use compact_contract::{parse_compact_record_header, RecordFramingError};
 
 #[cfg(windows)]
 pub mod a729_hook;
+/// Passive replacement carrier for the D55 panel hooks. Platform-independent:
+/// it reads through a memory seam, so its laws are provable offline.
+pub mod passive_modifier_carrier;
 #[cfg(windows)]
 pub mod terminal_coordinator;
 #[cfg(windows)]
@@ -23,7 +26,11 @@ pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_even
 // rows, extending the header with a side-detail count. v1 payloads (no side
 // detail) remain decodable: a v1 header omits the trailing count field, so the
 // version gate selects the header/parse shape (never a payload-byte sniff).
-pub const SCHEMA_VERSION: u16 = 8;
+// Schema v9 (the passive D55 carrier) keeps the v8 header length and every v8
+// block offset, and appends its rows AFTER the tactic string table. A v9
+// payload is therefore byte-identical to a v8 one up to the trailer, which is
+// what lets the carrier land without disturbing any existing reader.
+pub const SCHEMA_VERSION: u16 = 9;
 pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
 pub const SCHEMA_VERSION_V2_SIDE_DETAIL: u16 = 2;
 pub const SCHEMA_VERSION_V3_ATTRIBUTION: u16 = 3;
@@ -31,6 +38,9 @@ pub const SCHEMA_VERSION_V4_TACTIC_PROGRESS: u16 = 4;
 pub const SCHEMA_VERSION_V5_RESERVE_MEMBERS: u16 = 5;
 pub const SCHEMA_VERSION_V6_TERMINAL_RECORDS: u16 = 6;
 pub const SCHEMA_VERSION_V7_WIDTH_LOSS: u16 = 7;
+/// v8: hook-observed panel rows. Still emitted; the passive carrier publishes
+/// ALONGSIDE the panel hooks rather than in place of them.
+pub const SCHEMA_VERSION_V8_PANEL: u16 = 8;
 /// v1 header (event rows only). Kept for decoding older streams.
 pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
 /// v2 header adds a u32 side_detail_row_count after the event-row count block.
@@ -742,6 +752,9 @@ pub struct CaptureFrame {
     /// Dormant X2 carrier transport. Empty until the exact loss controls pass.
     pub current_loss_observation_rows: Vec<CurrentLossObservationRow>,
     pub panel_observation_rows: Vec<PanelObservationRow>,
+    /// v9: the passive carrier's rows. Empty is a real observation (no active
+    /// combat), distinct from a pre-v9 stream that could not carry them.
+    pub carrier_rows: passive_modifier_carrier::CarrierRows,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -765,6 +778,16 @@ impl LandCombatDetailTracker {
 
 pub trait LandCombatDetailMemory {
     fn land_combat_snapshots(&self) -> Result<Vec<LandCombatSnapshot>, Vec<String>>;
+
+    /// Passive-carrier rows for this frame.
+    ///
+    /// Defaulted to empty so a memory source that predates the carrier compiles
+    /// unchanged. Modifier state is CURRENT-STATE, not a delta, so these are
+    /// emitted on a rebaselined frame exactly as on any other -- the transition
+    /// baseline reset zeroes event history, not live scalars.
+    fn carrier_rows(&self) -> passive_modifier_carrier::CarrierRows {
+        passive_modifier_carrier::CarrierRows::default()
+    }
 }
 
 pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
@@ -775,6 +798,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
     elapsed_wall_ms: u64,
 ) -> Result<CaptureFrame, Vec<String>> {
     let current = memory.land_combat_snapshots()?;
+    let carrier_rows = memory.carrier_rows();
     if tracker.pending_rebaseline {
         // The transition BASELINE reset zeroes the event-delta history so no
         // synthetic join/leave events are fabricated across the gap. Per-side
@@ -783,7 +807,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         let side_detail_rows = side_detail_rows_from_snapshots(&current);
         let attribution_rows = attribution_rows_from_snapshots(&current);
         let reserve_member_rows = reserve_member_rows_from_snapshots(&current);
-        let payload = encode_detail_events_payload_v8(
+        let payload = encode_detail_events_payload_v9(
             elapsed_wall_ms,
             STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
             &[],
@@ -794,6 +818,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
             &[],
             &[],
             &[],
+            &carrier_rows,
         );
         let mut compact_stream = Vec::new();
         append_compact_record(
@@ -818,15 +843,43 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
             width_observation_rows: Vec::new(),
             current_loss_observation_rows: Vec::new(),
             panel_observation_rows: Vec::new(),
+            carrier_rows,
         });
     }
-    let frame = build_transition_capture_frame(
+    let mut frame = build_transition_capture_frame(
         tracker.previous.as_slice(),
         current.as_slice(),
         sequence,
         game_hour_raw,
         elapsed_wall_ms,
     )?;
+    // `build_transition_capture_frame` is a pure delta builder with no view of
+    // live modifier state, so the carrier rows are folded in here -- one
+    // producer for both the preview stream and the published record.
+    let payload = encode_detail_events_payload_v9(
+        elapsed_wall_ms,
+        STATUS_DELTA_DATA,
+        &frame.rows,
+        &frame.side_detail_rows,
+        &frame.attribution_rows,
+        &frame.reserve_member_rows,
+        &[],
+        &[],
+        &[],
+        &[],
+        &carrier_rows,
+    );
+    frame.compact_stream.clear();
+    append_compact_record(
+        &mut frame.compact_stream,
+        sequence,
+        game_hour_raw,
+        DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        0,
+        &payload,
+    );
+    frame.carrier_rows = carrier_rows;
     tracker.previous = current;
     tracker.last_frame_rebaselined = false;
     Ok(frame)
@@ -931,6 +984,8 @@ pub struct DecodedDetailEventsPayload {
     pub current_loss_observation_rows: Vec<CurrentLossObservationRow>,
     /// Authenticated panel-selected leader and displayed modifiers (v8).
     pub panel_observation_rows: Vec<PanelObservationRow>,
+    /// Passive carrier rows (empty before v9).
+    pub carrier_rows: passive_modifier_carrier::CarrierRows,
 }
 
 pub fn build_transition_capture_frame(
@@ -944,7 +999,11 @@ pub fn build_transition_capture_frame(
     let side_detail_rows = side_detail_rows_from_snapshots(current);
     let attribution_rows = attribution_rows_from_snapshots(current);
     let reserve_member_rows = reserve_member_rows_from_snapshots(current);
-    let payload = encode_detail_events_payload_v8(
+    // A pure delta builder holds no live modifier state, so its trailer is
+    // empty and its `carrier_rows` is empty to match. The frame and its stream
+    // agree; `collect_transition_capture_frame` replaces both together when a
+    // memory source does have carrier rows to contribute.
+    let payload = encode_detail_events_payload_v9(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
         &rows,
@@ -955,6 +1014,7 @@ pub fn build_transition_capture_frame(
         &[],
         &[],
         &[],
+        &passive_modifier_carrier::CarrierRows::default(),
     );
     let mut compact_stream = Vec::new();
     append_compact_record(
@@ -976,6 +1036,7 @@ pub fn build_transition_capture_frame(
         width_observation_rows: Vec::new(),
         current_loss_observation_rows: Vec::new(),
         panel_observation_rows: Vec::new(),
+        carrier_rows: passive_modifier_carrier::CarrierRows::default(),
     })
 }
 
@@ -1320,7 +1381,7 @@ pub fn encode_detail_events_payload_v8(
             + panel_observation_rows.len() * PANEL_OBSERVATION_ROW_LEN
             + string_bytes,
     );
-    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&SCHEMA_VERSION_V8_PANEL.to_le_bytes());
     payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
@@ -1371,6 +1432,45 @@ pub fn encode_detail_events_payload_v8(
         payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
         payload.extend_from_slice(value.as_bytes());
     }
+    payload
+}
+
+/// v9: the v8 payload with the passive-carrier trailer appended.
+///
+/// The version word is the ONLY byte that differs before the trailer, so a
+/// consumer that only wants the v8 blocks can keep its offsets unchanged. The
+/// trailer is always written, even when empty: "this frame observed no modifier
+/// state" and "this frame predates the carrier" must not look alike.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_detail_events_payload_v9(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    rows: &[DetailEventRow],
+    side_detail_rows: &[SideDetailRow],
+    attribution_rows: &[AttributionRow],
+    reserve_member_rows: &[ReserveMemberRow],
+    terminal_record_rows: &[TerminalCombatRecordRow],
+    width_observation_rows: &[WidthObservationRow],
+    current_loss_observation_rows: &[CurrentLossObservationRow],
+    panel_observation_rows: &[PanelObservationRow],
+    carrier_rows: &passive_modifier_carrier::CarrierRows,
+) -> Vec<u8> {
+    let mut payload = encode_detail_events_payload_v8(
+        elapsed_wall_ms,
+        status_flags,
+        rows,
+        side_detail_rows,
+        attribution_rows,
+        reserve_member_rows,
+        terminal_record_rows,
+        width_observation_rows,
+        current_loss_observation_rows,
+        panel_observation_rows,
+    );
+    payload[0..2].copy_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    // The trailer encoder reserves for itself, AFTER validating the budget --
+    // reserving here would size the allocation from an unvalidated row count.
+    passive_modifier_carrier::append_carrier_trailer(&mut payload, carrier_rows);
     payload
 }
 
@@ -2078,7 +2178,9 @@ pub fn decode_detail_events_payload(
                 SIDE_DETAIL_ROW_LEN,
             )
         }
-        SCHEMA_VERSION => {
+        // v9 shares the v8 header verbatim; it differs only by the trailer
+        // appended after the tactic strings.
+        SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION => {
             if payload.len() < PAYLOAD_HEADER_LEN {
                 return Err(vec![format!(
                     "offset {offset}: detail v8 payload too short"
@@ -2141,9 +2243,12 @@ pub fn decode_detail_events_payload(
             | SCHEMA_VERSION_V5_RESERVE_MEMBERS
             | SCHEMA_VERSION_V6_TERMINAL_RECORDS
             | SCHEMA_VERSION_V7_WIDTH_LOSS
+            | SCHEMA_VERSION_V8_PANEL
             | SCHEMA_VERSION
     ) && string_count != 0)
-        || (version != SCHEMA_VERSION && reserved != 0)
+        // v8 and v9 both spend the final header word on the panel-row count,
+        // so it is data there rather than a reserved zero.
+        || (!matches!(version, SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION) && reserved != 0)
     {
         errors.push(format!(
             "offset {offset}: detail payload header reserved/string fields nonzero"
@@ -2257,12 +2362,31 @@ pub fn decode_detail_events_payload(
         strings.push(value);
         string_cursor += len;
     }
-    if string_cursor != payload.len() {
-        return Err(vec![format!(
-            "offset {offset}: detail payload has {} trailing bytes after tactic strings",
-            payload.len() - string_cursor
-        )]);
-    }
+    // v9 alone may carry bytes past the string table, and exactly one trailer's
+    // worth. Every other version keeps the strict no-trailing-bytes rule, so an
+    // older stream cannot smuggle carrier rows past a reader that predates them.
+    let carrier_rows = if version == SCHEMA_VERSION {
+        let (carrier_rows, end) = passive_modifier_carrier::decode_carrier_trailer(
+            payload,
+            string_cursor,
+        )
+        .map_err(|error| vec![format!("offset {offset}: {error}")])?;
+        if end != payload.len() {
+            return Err(vec![format!(
+                "offset {offset}: detail payload has {} trailing bytes after the carrier trailer",
+                payload.len() - end
+            )]);
+        }
+        carrier_rows
+    } else {
+        if string_cursor != payload.len() {
+            return Err(vec![format!(
+                "offset {offset}: detail payload has {} trailing bytes after tactic strings",
+                payload.len() - string_cursor
+            )]);
+        }
+        passive_modifier_carrier::CarrierRows::default()
+    };
     let mut seen = BTreeSet::new();
     let mut rows = Vec::with_capacity(row_count);
     let mut cursor = header_len;
@@ -2422,6 +2546,7 @@ pub fn decode_detail_events_payload(
             width_observation_rows,
             current_loss_observation_rows,
             panel_observation_rows,
+            carrier_rows,
         })
     } else {
         Err(errors)
@@ -2693,6 +2818,7 @@ fn decode_side_detail_row(
             | SCHEMA_VERSION_V5_RESERVE_MEMBERS
             | SCHEMA_VERSION_V6_TERMINAL_RECORDS
             | SCHEMA_VERSION_V7_WIDTH_LOSS
+            | SCHEMA_VERSION_V8_PANEL
             | SCHEMA_VERSION
     );
     let progress_raw = has_tactic_progress.then(|| read_i32(payload, cursor + 100));
