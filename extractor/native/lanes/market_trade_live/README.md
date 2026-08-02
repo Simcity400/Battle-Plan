@@ -185,7 +185,7 @@ every reader takes it from the stream.
 | offset | width | field |
 |---|---|---|
 | `+0`  | `[u8; 4]` | magic `MTRR` |
-| `+4`  | `u16` | schema version -- `1` fixed-seven, `2` count-prefixed |
+| `+4`  | `u16` | schema version -- `1` fixed-seven, `2` count-prefixed, `3` count-prefixed with identity |
 | `+6`  | `u16` | header length, `32` |
 | `+8`  | `u16` | row length, `64` |
 | `+10` | `u16` | reserved, `0` |
@@ -193,16 +193,49 @@ every reader takes it from the stream.
 | `+16` | `u32` | country count |
 | `+20` | `u32` | **resource count** |
 | `+24` | `u32` | display scale, `1` |
-| `+28` | `u32` | reserved, `0` |
+| `+28` | `u32` | reserved `0` (v1, v2) / **identity stride `64`** (v3) |
 
-Rows are 64 bytes and unchanged between versions. `resource_index` and
+Rows are 64 bytes and unchanged between all three versions. `resource_index` and
 `visible_order` are bounded by the header's `resource_count`, not by seven, and
 each country's `visible_order` set must be exactly `0..resource_count`.
 
 - **v1** admits `resource_count == 7` and nothing else. A v1 header claiming any
   other count is refused, so a stream cannot be widened by editing the count
   under the old version stamp.
-- **v2** admits `1..=MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`. Producers emit v2.
+- **v2** admits `1..=MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`.
+- **v3** is v2 plus the resource-identity block below. Producers emit v3.
+
+### `MTRR` v3 resource-identity block
+
+`resource_count` entries of `COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE` (64)
+bytes each, between the header and the rows. Entry `i` is slot `i`'s resource.
+
+| offset | width | field |
+|---|---|---|
+| `+0` | `u16` | token length, `1..=MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN` (62) |
+| `+2` | `[u8; 62]` | token bytes, zero-padded |
+
+So a v3 trailer's extent is
+`32 + resource_count * 64 + row_count * 64`, and its rows do **not** start at
+`header_len`.
+
+Every reader refuses, typed, on: a length outside the bound, a body that is not
+UTF-8, a body outside the `common/resources` key charset
+(`[A-Za-z0-9_\-.:]`), a non-zero byte in the padding, or a token repeated
+across slots. Nothing is truncated or sanitised -- **a shortened token is a
+different resource**, and publishing one would fabricate exactly the identity
+this block exists to carry.
+
+The token is carried once per **slot**, not once per row. The rows are per
+(country, resource), so a per-row column would restate one country's worth of
+identity for every other country, and two rows for one slot could then disagree
+-- a drift a decoder would have to police. One entry per slot makes that state
+unrepresentable, which is the same rule the count already follows: one
+statement of the resource set per payload.
+
+It is a token and not a hash because the replay side has two jobs with it:
+match resources across recordings, and **display** them. A hash does the first
+and cannot do the second.
 
 ### `MTRF` -- per-country resource-flow pools
 
@@ -234,13 +267,20 @@ drift apart. Producers emit v3.
 
 ### Version policy
 
-**A version never changes meaning; a reading is never inferred.** `+24` is a
-seven-bit mask in v1/v2 and a count in v3, and the *version field* -- never the
-value -- decides which. A decoder that meets a version outside its accepted set
-refuses the trailer with the version in the reason and decodes no rows. That is
-what makes an old reader safe against a new stream: it cannot read a v3 header
-under the v2 grammar, compare a small count against `0x7F`, and mis-size every
-row.
+**A version never changes meaning; a reading is never inferred.** `MTRF`'s
+`+24` is a seven-bit mask in v1/v2 and a count in v3; `MTRR`'s `+28` is reserved
+zero in v1/v2 and an identity stride in v3. In both cases the *version field* --
+never the value -- decides which. A decoder that meets a version outside its
+accepted set refuses the trailer with the version in the reason and decodes no
+rows. That is what makes an old reader safe against a new stream: it cannot read
+an `MTRF` v3 header under the v2 grammar, compare a small count against `0x7F`,
+and mis-size every row; and it cannot read an `MTRR` v3 trailer as though its
+rows began at `header_len`, which they do not.
+
+The `MTRR` case has a second, independent guard: v1/v2 require `+28 == 0` and a
+v3 header states a stride there, so even a decoder that somehow admitted the
+version would refuse on the header shape rather than read identity bytes as
+rows.
 
 v1 and v2 stay readable under exactly the validation they shipped with. No
 compact stream carrying these trailers exists on disk (the `.battleplan`
@@ -258,14 +298,34 @@ rather than an engine-proven maximum. A count outside `1..=MAX` is refused
 before anything is sized from it, so `row_count * resource_count * 8` cannot be
 driven by two stream-supplied `u32`s.
 
-### Boundary: resource identity is not on this wire
+### Resource identity: where it comes from
 
-The trailers carry each resource's SLOT and its `descriptor_db_index`. They do
-not carry its token. The fold's only source of a resource name is a positional
-table of vanilla's seven, so a set that table cannot name is refused at fold
-ingest with a reason naming both counts -- decoded, never projected under a
-fabricated identity. Closing this needs one RE offset: the descriptor's own
-token or name hash inside `CStrategicResource`, carried as an `MTRR` row column.
+The trailers carry each resource's SLOT, its `descriptor_db_index`, and -- from
+`MTRR` v3 -- its TOKEN. The producer reads it from the live descriptor:
+
+- `CStrategicResource + 0x08` is a `u32` Clausewitz lexer token id, the id the
+  resource's `common/resources` key was interned to.
+- `CStrategicResourceDatabase + 0x40` is a parallel `u32` key vector, one
+  shorter than the item vector because `items[0]` is the null object. The
+  producer requires `keys[db_index - 1] == items[db_index]->token_id`, so a
+  shifted or half-read items array cannot put a real name on the wrong object.
+- The text is `*(0x35C8B80) + token_id * 0x20` read as an MSVC `std::string`,
+  admitted only while `token_id <= *(i32*)0x35C8B54` -- the exact predicate
+  `CPdxLexer::GetTokenString` applies.
+
+Writer and reader chains, with function ids and instruction-level citations:
+`extractor/native/runs/resource_identity/re_descriptor_token.md`.
+
+The passive read does not take the lexer's read lock (`0x1435c8b78`), which the
+engine's own reader does. The producer closes that window by re-reading the
+table base and highest-admitted id after resolving every name and refusing the
+whole set if either moved, rather than by pretending the window is not there.
+
+**What the positional table is still for.** A v1/v2 stream, and an `MTRD`-only
+payload, state a width and no identity. For those the fold's only name source
+remains `MARKET_TRADE_RESOURCE_NAMES`, and that is the honest answer for exactly
+one set: the one it describes. Any other set is still refused at ingest with a
+reason naming both counts. The refusal was retargeted, not deleted.
 
 ## Optional Lend-Lease Mapping Trailer
 

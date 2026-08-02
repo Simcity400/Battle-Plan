@@ -68,11 +68,19 @@ pub const MARKET_TRADE_FACTORY_HEADER_HEADER_LEN: usize = 24;
 pub const MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
 pub const MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
 /// v1 pinned the header's `resource_count` to seven; v2 admits the count the
-/// live resource database reported, under the shared admission ceiling.
+/// live resource database reported, under the shared admission ceiling; v3 adds
+/// the identity block that states WHICH resources those are.
 pub const MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION: u16 = 1;
-pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 2;
+pub const MARKET_TRADE_RESOURCE_ROW_COUNT_ONLY_SCHEMA_VERSION: u16 = 2;
+pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 3;
 pub const MARKET_TRADE_RESOURCE_ROW_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
+/// One `MTRR` v3 identity entry: `u16 token_len` then the token bytes,
+/// zero-padded to the bound.
+pub const STRATEGIC_RESOURCE_IDENTITY_STRIDE: usize =
+    compact_contract::build_profile::COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize;
+pub const MAX_STRATEGIC_RESOURCE_TOKEN_LEN: usize =
+    compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
 /// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
 pub const MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = 7;
 /// The one shared admission ceiling for a count-prefixed resource vector: the
@@ -450,6 +458,9 @@ pub struct MarketTradePayloadSummary {
     pub resource_rows: u32,
     pub resource_row_country_count: u32,
     pub resource_row_resource_count: u32,
+    /// The resource set's own tokens, in slot order, from an `MTRR` v3 identity
+    /// block. Empty for v1/v2: those streams state a width and no identity.
+    pub resource_tokens: Vec<String>,
     pub classic_deal_trailer_present: bool,
     pub classic_deal_rows: u32,
     pub classic_deal_country_count: u32,
@@ -1754,6 +1765,42 @@ fn decode_factory_header_trailer(
     Some(trailer_offset + expected_len)
 }
 
+/// Decode one `MTRR` v3 identity entry, fail-closed on every field.
+fn decode_strategic_resource_identity(
+    trailer: &[u8],
+    cursor: usize,
+    slot: usize,
+) -> Result<String, String> {
+    let token_len = read_u16_le(trailer, cursor) as usize;
+    if token_len == 0 || token_len > MAX_STRATEGIC_RESOURCE_TOKEN_LEN {
+        return Err(format!(
+            "MTRR identity {slot} token length {token_len} is outside 1..={MAX_STRATEGIC_RESOURCE_TOKEN_LEN}"
+        ));
+    }
+    let body_start = cursor + 2;
+    let body = trailer
+        .get(body_start..body_start.saturating_add(MAX_STRATEGIC_RESOURCE_TOKEN_LEN))
+        .ok_or_else(|| format!("MTRR identity {slot} is truncated"))?;
+    // `split_at`, not two index slices: the length guard above already makes
+    // both in range, and this keeps a future edit to that guard a refusal
+    // rather than a panic.
+    let (token_bytes, padding) = body.split_at(token_len);
+    if padding.iter().any(|byte| *byte != 0) {
+        return Err(format!("MTRR identity {slot} has non-zero padding"));
+    }
+    let token = std::str::from_utf8(token_bytes)
+        .map_err(|_| format!("MTRR identity {slot} is not UTF-8"))?;
+    // A charset rule, not a name list: which resources exist is the mod's to
+    // decide, and a decoder that knows the answer in advance is the defect this
+    // block removes.
+    if !token.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.' || byte == b':'
+    }) {
+        return Err(format!("MTRR identity {slot} is not a resource token"));
+    }
+    Ok(token.to_string())
+}
+
 fn decode_resource_row_trailer(
     offset: usize,
     payload: &[u8],
@@ -1790,16 +1837,25 @@ fn decode_resource_row_trailer(
         MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION => {
             resource_count == MARKET_TRADE_FIXED7_RESOURCE_COUNT
         }
-        MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION => {
+        MARKET_TRADE_RESOURCE_ROW_COUNT_ONLY_SCHEMA_VERSION
+        | MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION => {
             (1..=MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
         }
         _ => false,
+    };
+    // `+28` is reserved zero in v1/v2 and the identity stride in v3. The
+    // VERSION selects the reading; the value never does.
+    let carries_identity = version == MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION;
+    let identity_field_valid = if carries_identity {
+        reserved1 == STRATEGIC_RESOURCE_IDENTITY_STRIDE as u32
+    } else {
+        reserved1 == 0
     };
     if !version_admits_count
         || header_len != MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
         || row_len != MARKET_TRADE_RESOURCE_ROW_LEN
         || reserved0 != 0
-        || reserved1 != 0
+        || !identity_field_valid
         || display_scale != 1
         || row_count != country_count.saturating_mul(resource_count)
     {
@@ -1808,7 +1864,14 @@ fn decode_resource_row_trailer(
         ));
         return None;
     }
-    let expected_len = header_len.saturating_add((row_count as usize).saturating_mul(row_len));
+    let identity_len = if carries_identity {
+        (resource_count as usize).saturating_mul(STRATEGIC_RESOURCE_IDENTITY_STRIDE)
+    } else {
+        0
+    };
+    let expected_len = header_len
+        .saturating_add(identity_len)
+        .saturating_add((row_count as usize).saturating_mul(row_len));
     if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
             "offset {offset}: MTRR trailer is {} byte(s), expected at least {expected_len}",
@@ -1817,6 +1880,25 @@ fn decode_resource_row_trailer(
         return None;
     }
     let mut cursor = header_len;
+    if carries_identity {
+        let mut distinct = BTreeSet::new();
+        for slot in 0..resource_count as usize {
+            match decode_strategic_resource_identity(trailer, cursor, slot) {
+                Ok(token) => {
+                    if !distinct.insert(token.clone()) {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: MTRR identity {slot} repeats token {token}"
+                        ));
+                    }
+                    summary.resource_tokens.push(token);
+                }
+                Err(reason) => summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {reason}")),
+            }
+            cursor += STRATEGIC_RESOURCE_IDENTITY_STRIDE;
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut per_country = BTreeMap::<u32, BTreeSet<u32>>::new();
     for row_index in 0..row_count {
@@ -3981,6 +4063,23 @@ mod tests {
         resource_count: u32,
         version: u16,
     ) {
+        let tokens = (0..resource_count)
+            .map(|slot| format!("res_{slot}"))
+            .collect::<Vec<_>>();
+        append_test_mtrr_with_identity(payload, countries, resource_count, &tokens, version);
+    }
+
+    /// Build an `MTRR` trailer stating an explicit resource set. `tokens` goes
+    /// into the v3 identity block verbatim, including bodies the decoder must
+    /// refuse. v1/v2 ignore it -- they have nowhere to put it.
+    fn append_test_mtrr_with_identity(
+        payload: &mut Vec<u8>,
+        countries: &[u32],
+        resource_count: u32,
+        tokens: &[String],
+        version: u16,
+    ) {
+        let carries_identity = version == MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION;
         payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
         payload.extend_from_slice(&version.to_le_bytes());
         payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_HEADER_LEN as u16).to_le_bytes());
@@ -3990,7 +4089,24 @@ mod tests {
         payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
         payload.extend_from_slice(&resource_count.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(
+            &(if carries_identity {
+                STRATEGIC_RESOURCE_IDENTITY_STRIDE as u32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        if carries_identity {
+            for token in tokens {
+                let bytes = token.as_bytes();
+                payload.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+                let mut body = vec![0u8; MAX_STRATEGIC_RESOURCE_TOKEN_LEN];
+                let copied = bytes.len().min(MAX_STRATEGIC_RESOURCE_TOKEN_LEN);
+                body[..copied].copy_from_slice(&bytes[..copied]);
+                payload.extend_from_slice(&body);
+            }
+        }
         for &tag_db_id in countries {
             for resource_index in 0..resource_count {
                 let oil = resource_index == 0;
@@ -5299,6 +5415,11 @@ mod tests {
         assert!(decoded.resource_row_trailer_present);
         assert_eq!(decoded.resource_row_country_count, 3);
         assert_eq!(decoded.resource_view_rows.len(), 21);
+        // The lane decoder reads the set's identity, not just its width.
+        assert_eq!(
+            decoded.resource_tokens,
+            (0..7).map(|slot| format!("res_{slot}")).collect::<Vec<_>>()
+        );
         assert!(decoded.classic_deal_trailer_present);
         assert_eq!(decoded.classic_deal_country_count, 3);
         assert_eq!(decoded.classic_deals.len(), 2);
@@ -5375,8 +5496,12 @@ mod tests {
         let mut payload = complete_market_payload(1);
         let trailer = payload.len();
         append_test_mtrr(&mut payload, &[47]);
-        let final_row_visible_order =
-            trailer + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN + 6 * MARKET_TRADE_RESOURCE_ROW_LEN + 8;
+        // Rows start after the v3 identity block, not at `header_len`.
+        let final_row_visible_order = trailer
+            + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
+            + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE
+            + 6 * MARKET_TRADE_RESOURCE_ROW_LEN
+            + 8;
         payload[final_row_visible_order..final_row_visible_order + 4]
             .copy_from_slice(&0u32.to_le_bytes());
 

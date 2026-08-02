@@ -334,9 +334,15 @@ pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = 24;
 pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 2;
+/// v2 states the resource COUNT; v3 also states each resource's IDENTITY in a
+/// fixed-stride block between the header and the rows.
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION: u16 = 2;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 3;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
+/// One `MTRR` v3 identity entry.
+pub const COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE: u32 =
+    compact_contract::build_profile::COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE;
 /// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
 pub const COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = 7;
 /// The one shared admission ceiling for a count-prefixed resource vector.
@@ -11203,6 +11209,7 @@ fn decode_compact_market_trade_data_payload(
                 cursor,
                 &[
                     COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
+                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
                     COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
                 ],
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
@@ -11799,6 +11806,7 @@ fn decode_compact_market_trade_sized_trailer(
         return trailer_offset;
     }
 
+    let mut identity_len = 0usize;
     let shape_valid = if label == "MTRH" {
         let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
         let reserved1 = read_u32_le(payload, trailer_offset + 20);
@@ -11808,20 +11816,34 @@ fn decode_compact_market_trade_sized_trailer(
         let resource_count = read_u32_le(payload, trailer_offset + 20);
         let display_scale = read_u32_le(payload, trailer_offset + 24);
         let reserved1 = read_u32_le(payload, trailer_offset + 28);
-        // The count is a wire field. v1 pinned it to seven; v2 admits whatever
-        // the live resource database reported, under the one shared ceiling.
-        // This is the SAME predicate the fold applies -- both sides bound the
-        // count by `MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`, so neither can admit
-        // a stream the other refuses.
+        // The count is a wire field. v1 pinned it to seven; v2 and v3 admit
+        // whatever the live resource database reported, under the one shared
+        // ceiling. This is the SAME predicate the fold applies -- both sides
+        // bound the count by `MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`, so neither
+        // can admit a stream the other refuses.
         let count_admitted = if version == COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION
         {
             resource_count == COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT
         } else {
             (1..=COMPACT_MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
         };
+        // `+28` is reserved zero in v1/v2 and the identity stride in v3. The
+        // VERSION selects the reading, never the value -- which is what stops
+        // an older decoder from sizing a v3 trailer as though the identity
+        // block were rows.
+        let carries_identity = version == COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION;
+        let identity_field_valid = if carries_identity {
+            reserved1 == COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE
+        } else {
+            reserved1 == 0
+        };
+        if carries_identity {
+            identity_len = (resource_count as usize)
+                .saturating_mul(COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize);
+        }
         count_admitted
             && display_scale == 1
-            && reserved1 == 0
+            && identity_field_valid
             && row_count == country_count.saturating_mul(resource_count as usize)
     } else {
         false
@@ -11835,6 +11857,7 @@ fn decode_compact_market_trade_sized_trailer(
 
     let expected_len = trailer_offset
         .saturating_add(header_len)
+        .saturating_add(identity_len)
         .saturating_add(row_count.saturating_mul(row_len));
     if payload.len() < expected_len {
         summary.parse_errors.push(format!(
@@ -11843,8 +11866,67 @@ fn decode_compact_market_trade_sized_trailer(
         ));
         return trailer_offset;
     }
+    // Sizing the identity block is not reading it. This authority applies the
+    // SAME per-entry contract the fold and the lane decoder do -- bound, UTF-8,
+    // token charset, zero padding, distinct -- so a trailer one side refuses
+    // cannot be accepted by another. An authority that only skipped the block
+    // would report a stream as decoded that the fold then rejects.
+    if identity_len > 0 {
+        let mut distinct = BTreeSet::new();
+        let mut cursor = trailer_offset.saturating_add(header_len);
+        for slot in 0..(identity_len / COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize) {
+            match decode_compact_strategic_resource_identity(payload, cursor, slot) {
+                Ok(token) => {
+                    if !distinct.insert(token.clone()) {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: market trade MTRR identity {slot} repeats token {token}"
+                        ));
+                    }
+                }
+                Err(reason) => summary
+                    .parse_errors
+                    .push(format!("offset {offset}: market trade {reason}")),
+            }
+            cursor = cursor.saturating_add(COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize);
+        }
+    }
     add_compact_domain_data_unit(summary, 43, unit_name, row_count);
     expected_len
+}
+
+/// Decode one `MTRR` v3 identity entry, fail-closed on every field.
+///
+/// Deliberately a charset rule and not a list of names: which resources exist
+/// is the mod's to decide, and a decoder that knows the answer in advance is
+/// the defect the identity block removes.
+fn decode_compact_strategic_resource_identity(
+    payload: &[u8],
+    cursor: usize,
+    slot: usize,
+) -> Result<String, String> {
+    let max_len = compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
+    let token_len = read_u16_le(payload, cursor) as usize;
+    if token_len == 0 || token_len > max_len {
+        return Err(format!(
+            "MTRR identity {slot} token length {token_len} is outside 1..={max_len}"
+        ));
+    }
+    let body_start = cursor.saturating_add(2);
+    let body = payload
+        .get(body_start..body_start.saturating_add(max_len))
+        .ok_or_else(|| format!("MTRR identity {slot} is truncated"))?;
+    let (token_bytes, padding) = body.split_at(token_len);
+    if padding.iter().any(|byte| *byte != 0) {
+        return Err(format!("MTRR identity {slot} has non-zero padding"));
+    }
+    let token = std::str::from_utf8(token_bytes)
+        .map_err(|_| format!("MTRR identity {slot} is not UTF-8"))?;
+    if !token.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.' || byte == b':'
+    }) {
+        return Err(format!("MTRR identity {slot} is not a resource token"));
+    }
+    Ok(token.to_string())
 }
 
 fn decode_compact_market_trade_classic_deal_trailer(
@@ -17840,6 +17922,115 @@ mod tests {
             status & COMPACT_STATUS_FAILURE_MASK,
             0,
             "the fold still full-replaces on an assignment-only anomaly, so it is not a failure"
+        );
+    }
+    /// Build one `MTRR` v3 trailer stating `tokens` as its resource set, with no
+    /// rows. `tokens` is written verbatim, including bodies the decoder must
+    /// refuse.
+    fn mtrr_v3_identity_only(tokens: &[&str]) -> Vec<u8> {
+        let max_len = compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
+        let mut out = Vec::new();
+        out.extend_from_slice(COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
+        out.extend_from_slice(&COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION.to_le_bytes());
+        out.extend_from_slice(
+            &(COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN as u16).to_le_bytes(),
+        );
+        out.extend_from_slice(&(COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        push_u32(&mut out, 0); // row count
+        push_u32(&mut out, 0); // country count
+        push_u32(&mut out, tokens.len() as u32);
+        push_u32(&mut out, 1); // display scale
+        push_u32(&mut out, COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE);
+        for token in tokens {
+            let bytes = token.as_bytes();
+            out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            let mut body = vec![0u8; max_len];
+            let copied = bytes.len().min(max_len);
+            body[..copied].copy_from_slice(&bytes[..copied]);
+            out.extend_from_slice(&body);
+        }
+        out
+    }
+
+    fn decode_mtrr(payload: &[u8]) -> DomainDataDecodeSummary {
+        let mut summary = DomainDataDecodeSummary::default();
+        decode_compact_market_trade_sized_trailer(
+            0,
+            payload,
+            0,
+            &[
+                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
+                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
+                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+            ],
+            COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
+            COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN,
+            "MTRR",
+            "market_trade_resource_rows",
+            &mut summary,
+        );
+        summary
+    }
+
+    /// This authority must apply the SAME identity contract the fold and the
+    /// lane decoder do. Sizing the block and stepping over it is not reading
+    /// it: a trailer this side calls decoded and the fold then rejects is not
+    /// an authority, it is a rubber stamp.
+    ///
+    /// Mutation: make the identity walk unreachable, and every case below is
+    /// accepted with no parse error.
+    #[test]
+    fn x15_mtrr_identity_is_validated_by_the_domain_data_authority() {
+        let max_len = compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
+
+        // A well-formed set is accepted, so the refusals below are the contract
+        // biting rather than the decoder being broken.
+        let clean = decode_mtrr(&mtrr_v3_identity_only(&["oil", "steel"]));
+        assert!(clean.parse_errors.is_empty(), "{:?}", clean.parse_errors);
+
+        let over_long = "x".repeat(max_len + 1);
+        for (tokens, needle) in [
+            (vec![over_long.as_str(), "steel"], "token length"),
+            (vec!["not a token", "steel"], "is not a resource token"),
+            (vec!["oil", "oil"], "repeats token"),
+            (vec!["", "steel"], "token length"),
+        ] {
+            let summary = decode_mtrr(&mtrr_v3_identity_only(&tokens));
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(needle)),
+                "{tokens:?} -> {:?}",
+                summary.parse_errors
+            );
+        }
+
+        // A non-zero padding byte carries payload nothing accounts for.
+        let mut padded = mtrr_v3_identity_only(&["oil", "steel"]);
+        let body = COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN + 2;
+        padded[body + max_len - 1] = b'z';
+        let summary = decode_mtrr(&padded);
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("non-zero padding")),
+            "{:?}",
+            summary.parse_errors
+        );
+
+        // And a non-UTF-8 body.
+        let mut invalid = mtrr_v3_identity_only(&["oil", "steel"]);
+        invalid[body] = 0xFF;
+        let summary = decode_mtrr(&invalid);
+        assert!(
+            summary.parse_errors.iter().any(|error| {
+                error.contains("is not UTF-8") || error.contains("is not a resource token")
+            }),
+            "{:?}",
+            summary.parse_errors
         );
     }
 

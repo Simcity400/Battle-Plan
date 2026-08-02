@@ -1105,7 +1105,7 @@ hash would strand physically-present, losslessly-encoded data behind a version m
 versioning inconvenience into unreadable data. A reader that meets an unknown hash *and* cannot
 find its definition refuses that domain and reports a gap; with the definition present it decodes.
 
-### Content counts are never constants
+### Content counts and content identities are never constants
 
 **A count that a mod can change is a field, not a constant** — on the wire, in the producer, and
 in every reader. The rule is not about a particular domain: `common/resources` decides how many
@@ -1127,9 +1127,35 @@ Three properties make a stated count safe, and all three are required:
 
 The identities are a separate obligation from the count, and a count-prefixed vector does not
 discharge it: a reader that knows how many resources there are but names them from a compiled-in
-list has moved the defect, not removed it. Carry the content token, or refuse to name.
+list has moved the defect, not removed it. **Carry the content token, or refuse to name.**
 
-The compact `H4CR` trailers (§14, superseded) `MTRR` v2 and `MTRF` v3 are the worked example, and
+Carrying it well has four further properties:
+
+- **A token, not a hash, when the identity is ever displayed.** A hash matches a resource across
+  two recordings; it cannot put a word on a panel. A format that hashes a displayable identity has
+  chosen not to be able to show its own data.
+- **Bounded and fail-closed, and never truncated.** The token gets a length bound from a contract
+  constant, and a token past it is refused. Truncating is the one response that must not be taken:
+  a shortened token is a *different* identity, so truncation fabricates precisely what carrying the
+  token was meant to stop. The bound's provenance is stated honestly — where the engine imposes no
+  limit, the constant is a format admission bound and says so, rather than borrowing authority it
+  does not have.
+- **One identity per slot, not one per row.** Where the rows are a cross product — per country per
+  resource — the identity belongs to the resource, and stating it on every row both multiplies it
+  by the country count and makes disagreement between two rows representable. Put it in a
+  fixed-stride block the count already sizes.
+- **The old reader must not be able to mis-size the new trailer.** Inserting a block between the
+  header and the rows moves where the rows start. The version field is what protects an older
+  reader from that; a reserved field repurposed as the block's stride is a second, independent
+  guard, because the old grammar required that field to be zero.
+
+The compiled-in list does not always disappear when the token arrives. For a stream stamped with a
+version that predates the identity, the positional table is still the honest answer for the one set
+it describes, and the typed refusal is still the honest answer for every other. Delete the fallback
+only where the recording now supplies identity.
+
+The compact `H4CR` trailers (§14, superseded) `MTRF` v3 and `MTRR` v3 are the worked example —
+`MTRR` v2 carried the count, v3 added the identity block — and
 `extractor/native/lanes/market_trade_live/README.md` records their grammar.
 
 A schema change — game build, mod set, cadence, field added or retired — starts a new block under

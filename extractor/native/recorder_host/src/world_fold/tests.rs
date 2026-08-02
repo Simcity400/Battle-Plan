@@ -10326,11 +10326,37 @@ fn append_d43_mtrh_factory_headers(payload: &mut Vec<u8>, rows: &[(u32, i32, i32
     }
 }
 
+/// The identity-only `MTRR` the producer emits when it discovered the resource
+/// set but its per-country rows failed: the set is stated, the rows are not.
+/// This is the shape every `MTRF`-carrying payload now has.
+fn append_d43_mtrr_identity_only(payload: &mut Vec<u8>) {
+    let tokens: Vec<String> = MARKET_TRADE_RESOURCE_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    append_d43_mtrr_resource_rows_with_identity(
+        payload,
+        &[],
+        7,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+}
+
+/// A VANILLA recording: the seven resources the game ships with, stated on the
+/// wire exactly as any v3 recording states its set. This is a fixture of the
+/// unmodded case, not a fallback -- the names reach the projection off the
+/// trailer here, the same way a mod's would.
 fn append_d43_mtrr_resource_rows(payload: &mut Vec<u8>, tag_db_ids: &[u32]) {
-    append_d43_mtrr_resource_rows_with_count(
+    let tokens: Vec<String> = MARKET_TRADE_RESOURCE_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    append_d43_mtrr_resource_rows_with_identity(
         payload,
         tag_db_ids,
         7,
+        &tokens,
         MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
     );
 }
@@ -10344,6 +10370,28 @@ fn append_d43_mtrr_resource_rows_with_count(
     resource_count: u32,
     version: u16,
 ) {
+    // A v3 trailer that stated no identity would not be a v3 trailer, so the
+    // default builder supplies a distinct token per slot. Tests that care about
+    // the tokens themselves use `append_d43_mtrr_resource_rows_with_identity`.
+    let tokens = (0..resource_count)
+        .map(|slot| format!("res_{slot}"))
+        .collect::<Vec<_>>();
+    append_d43_mtrr_resource_rows_with_identity(payload, tag_db_ids, resource_count, &tokens, version);
+}
+
+/// Build an `MTRR` trailer stating an explicit resource set.
+///
+/// `tokens` is written into the v3 identity block verbatim, including cases the
+/// decoder must refuse -- an over-long token, a non-token body, a repeat. For
+/// v1/v2 it is ignored, because those versions have nowhere to put it.
+fn append_d43_mtrr_resource_rows_with_identity(
+    payload: &mut Vec<u8>,
+    tag_db_ids: &[u32],
+    resource_count: u32,
+    tokens: &[String],
+    version: u16,
+) {
+    let carries_identity = version == MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION;
     payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
     payload.extend_from_slice(&version.to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN as u16).to_le_bytes());
@@ -10353,7 +10401,24 @@ fn append_d43_mtrr_resource_rows_with_count(
     payload.extend_from_slice(&(tag_db_ids.len() as u32).to_le_bytes());
     payload.extend_from_slice(&resource_count.to_le_bytes());
     payload.extend_from_slice(&1u32.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(
+        &(if carries_identity {
+            STRATEGIC_RESOURCE_IDENTITY_STRIDE as u32
+        } else {
+            0
+        })
+        .to_le_bytes(),
+    );
+    if carries_identity {
+        for token in tokens {
+            let bytes = token.as_bytes();
+            payload.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            let mut body = vec![0u8; MAX_STRATEGIC_RESOURCE_TOKEN_LEN];
+            let copied = bytes.len().min(MAX_STRATEGIC_RESOURCE_TOKEN_LEN);
+            body[..copied].copy_from_slice(&bytes[..copied]);
+            payload.extend_from_slice(&body);
+        }
+    }
     for tag_db_id in tag_db_ids {
         for resource_index in 0..resource_count {
             let oil = resource_index == 0;
@@ -11203,6 +11268,7 @@ fn folds_d43_mtd1_and_complete_mtrf_resource_pools() {
             ],
         )],
     );
+    append_d43_mtrr_identity_only(&mut payload);
 
     let snap = chunk1_one_snapshot(vec![
         (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
@@ -11249,6 +11315,10 @@ fn d43_complete_mtrf_promotes_when_equipment_contract_core_is_unavailable() {
             ],
         )],
     );
+    // The pools are named by the set the recording states, so the recording
+    // has to state it. Without this the fold refuses rather than naming seven
+    // anonymous slots from a compiled-in list.
+    append_d43_mtrr_identity_only(&mut payload);
 
     let snap = chunk1_one_snapshot(vec![
         (18, country_identity_payload(&[(67, "ENG")])),
@@ -22039,18 +22109,20 @@ fn d43_fold_parsers_decode_an_eight_resource_payload() {
         MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
     );
 
-    let (flow, flow_count, flow_end) =
+    let (flow, flow_count, flow_version, flow_end) =
         parse_market_trade_resource_flow_trailer(&payload, mtrf_at)
             .expect("eight-resource MTRF must parse");
+    assert_eq!(flow_version, MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION);
     assert_eq!(flow_count, 8);
     assert_eq!(flow_end, mtrr_at);
     let country = flow.get(&67).expect("country pools");
     assert_eq!(country.produced.as_deref(), Some(pools[0].as_slice()));
     assert_eq!(country.base_export.as_deref(), Some(pools[5].as_slice()));
 
-    let (rows, row_count, rows_end) =
+    let (rows, row_count, tokens, rows_end) =
         parse_market_trade_resource_row_trailer(&payload, mtrr_at)
             .expect("eight-resource MTRR must parse");
+    assert_eq!(tokens.as_deref().map(<[String]>::len), Some(8));
     assert_eq!(row_count, 8);
     assert_eq!(rows_end, payload.len());
     let country_rows = rows.get(&67).expect("country rows");
@@ -22181,9 +22253,11 @@ fn d43_fold_still_reads_a_legacy_mtrr_v1_trailer() {
         MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
     );
 
-    let (rows, count, _) = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+    let (rows, count, tokens, _) = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
         .expect("a v1 trailer must still parse");
     assert_eq!(count, 7);
+    // v1 states a width and no identity, and says so by carrying none.
+    assert_eq!(tokens, None);
     assert_eq!(rows.get(&67).expect("rows").len(), 7);
 }
 
@@ -22206,15 +22280,15 @@ fn d43_fold_refuses_a_legacy_mtrr_v1_trailer_that_claims_eight() {
     assert!(error.contains("MTRR header shape is invalid"), "{error}");
 }
 
-/// The BOUNDARY, asserted rather than assumed: the wire states an eight-
-/// resource set, the fold decodes it, and the fold refuses to PROJECT it --
-/// because the only resource token it has is a positional table of vanilla's
-/// seven names, and naming a mod's eighth resource from that table would be a
-/// fabricated identity.
+/// The refusal RETARGETED, not deleted.
 ///
-/// The refusal is typed and names both counts. Deleting the gate is the
-/// mutation; that would put the eighth slot into a `MARKET_TRADE_RESOURCE_NAMES`
-/// lookup that cannot answer for it.
+/// An `MTRR` **v2** stream states a width and no identity. It is still the case
+/// the positional table cannot answer for: eight slots, seven names. So it is
+/// still refused with a typed reason naming both counts -- what changed is that
+/// this is now the older stream's answer, not every stream's.
+///
+/// The mutation is deleting the gate; that would put the eighth slot into a
+/// `MARKET_TRADE_RESOURCE_NAMES` lookup that cannot answer for it.
 #[test]
 fn d43_fold_refuses_to_project_a_resource_set_it_cannot_name() {
     let mut payload = d43_empty_payload();
@@ -22222,7 +22296,7 @@ fn d43_fold_refuses_to_project_a_resource_set_it_cannot_name() {
         &mut payload,
         &[67],
         8,
-        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
     );
 
     let mut fold = WorldFold::new("d43_resource_wire_boundary");
@@ -22233,6 +22307,352 @@ fn d43_fold_refuses_to_project_a_resource_set_it_cannot_name() {
         error.contains("resource identity is not carried on the wire")
             && error.contains("states 8 resources")
             && error.contains("can name only 7"),
+        "{error}"
+    );
+}
+
+/// (a) THE PREVIOUSLY IMPOSSIBLE CASE. An eight-resource set with non-vanilla
+/// tokens is projected under its OWN names.
+///
+/// Every token here is one the fold has never heard of, and none of vanilla's
+/// seven appears. Before the identity block this payload could only be refused;
+/// now it names its own resources and the projection carries them.
+///
+/// Mutations that redden it: emitting the identity block but ignoring it in the
+/// fold; dropping the `resource_names` plumbing; or naming slots from
+/// `MARKET_TRADE_RESOURCE_NAMES` when tokens are present.
+#[test]
+fn d43_fold_projects_a_modded_eight_resource_set_under_its_own_tokens() {
+    let tokens: Vec<String> = [
+        "aether",
+        "bauxite_ore",
+        "cobalt",
+        "deuterium",
+        "erbium",
+        "fissiles",
+        "graphene",
+        "helium3",
+    ]
+    .iter()
+    .map(|token| (*token).to_string())
+    .collect();
+    let mut payload = d43_empty_payload();
+    append_d43_mtrf_resource_flow_with_count(&mut payload, &[(67, vec![vec![7i64; 8]; 6])], 8);
+    append_d43_mtrr_resource_rows_with_identity(
+        &mut payload,
+        &[67],
+        8,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+
+    let mut fold = WorldFold::new("d43_resource_identity");
+    fold.fold_market_trade(&payload)
+        .expect("a set that states its own identity must project");
+
+    let mut countries = Map::new();
+    let mut unresolved = BTreeSet::new();
+    fold.project_market_trade_resource_flow(&mut countries, &mut unresolved);
+    fold.project_market_trade_resource_rows(&mut countries, &mut unresolved);
+
+    let country = countries.values().next().expect("one country projected");
+    let rows = country["economy"]["resource_trade"]["resource_rows"]
+        .as_array()
+        .expect("resource rows");
+    let projected: Vec<&str> = rows
+        .iter()
+        .map(|row| row["resource"].as_str().expect("a resource name"))
+        .collect();
+    assert_eq!(
+        projected,
+        tokens.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    // Not one vanilla name leaked in from the compiled-in table.
+    for vanilla in MARKET_TRADE_RESOURCE_NAMES {
+        assert!(!projected.contains(&vanilla), "{vanilla} was fabricated");
+    }
+    let flows = &country["economy"]["resources"]["produced"];
+    for token in &tokens {
+        assert!(flows.get(token).is_some(), "pool missing {token}");
+    }
+}
+
+/// (b) A RENAMED first resource projects under its new name, at its own slot.
+///
+/// Vanilla's seven, with slot 0 renamed. The count is unchanged, so nothing
+/// about the width catches this: only the identity block does. A fold that
+/// still named slot 0 positionally would publish `oil`.
+#[test]
+fn d43_fold_projects_a_renamed_first_resource_under_its_new_token() {
+    let mut tokens: Vec<String> = MARKET_TRADE_RESOURCE_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    tokens[0] = "petroleum".to_string();
+    let mut payload = d43_empty_payload();
+    append_d43_mtrr_resource_rows_with_identity(
+        &mut payload,
+        &[67],
+        7,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+
+    let mut fold = WorldFold::new("d43_resource_identity");
+    fold.fold_market_trade(&payload)
+        .expect("a renamed resource set must project");
+
+    let mut countries = Map::new();
+    let mut unresolved = BTreeSet::new();
+    fold.project_market_trade_resource_rows(&mut countries, &mut unresolved);
+    let country = countries.values().next().expect("one country projected");
+    let rows = country["economy"]["resource_trade"]["resource_rows"]
+        .as_array()
+        .expect("resource rows");
+    assert_eq!(rows[0]["resource"].as_str(), Some("petroleum"));
+    assert_eq!(rows[6]["resource"].as_str(), Some("coal"));
+}
+
+/// (c) A v3 stream meeting a decoder that knows only v1/v2 refuses TYPED and
+/// decodes no rows -- it never misparses.
+///
+/// The danger this closes is specific and mechanical: a v3 trailer's rows do
+/// not start at `header_len`, they start after the identity block. An older
+/// decoder that admitted the version would read identity bytes as rows. It
+/// cannot, because it refuses the version -- and, belt and braces, because the
+/// stride v3 writes at `+28` is not the zero v1/v2 require there.
+#[test]
+fn d43_fold_refuses_a_v3_mtrr_under_a_decoder_that_knows_only_v1_and_v2() {
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+
+    // The pre-v3 decoder, reconstructed exactly: its accepted set and its
+    // `reserved1 == 0` rule.
+    let version = read_u16(&payload, mtrr_at + 4);
+    let reserved1 = read_u32(&payload, mtrr_at + 28);
+    let pre_v3_admits = matches!(
+        version,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION
+            | MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION
+    ) && reserved1 == 0;
+    assert!(
+        !pre_v3_admits,
+        "a v3 trailer must not satisfy the pre-v3 header predicate"
+    );
+
+    // And the same body under a v1 stamp is refused rather than read with the
+    // identity block treated as rows.
+    let mut mislabelled = payload.clone();
+    mislabelled[mtrr_at + 4..mtrr_at + 6]
+        .copy_from_slice(&MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION.to_le_bytes());
+    let error = parse_market_trade_resource_row_trailer(&mislabelled, mtrr_at)
+        .expect_err("a v1 stamp over a v3 body must refuse");
+    assert!(error.contains("MTRR header shape is invalid"), "{error}");
+}
+
+/// (d) PRODUCER WIDER THAN CONSUMER. The producer emits identity; this asserts
+/// the fold CONSUMES it. Reverting `market_trade_resource_names` to the
+/// positional table -- the exact revert -- makes this red, because the modded
+/// set is then refused at ingest instead of named from the stream.
+#[test]
+fn d43_fold_uses_wire_identity_rather_than_the_compiled_in_table() {
+    let tokens: Vec<String> = (0..8).map(|slot| format!("modded_{slot}")).collect();
+    let mut payload = d43_empty_payload();
+    append_d43_mtrr_resource_rows_with_identity(
+        &mut payload,
+        &[67],
+        8,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+    let mut fold = WorldFold::new("d43_resource_identity");
+    fold.fold_market_trade(&payload)
+        .expect("identity on the wire must be consumed, not ignored");
+    assert_eq!(fold.market_trade_resource_names(), tokens.as_slice());
+}
+
+/// (e) An over-long token, a non-token body, and a repeated token each refuse
+/// typed. None is truncated or sanitised: a shortened token is a different
+/// resource.
+#[test]
+fn d43_fold_refuses_an_identity_token_that_is_unbounded_or_not_a_token() {
+    for (tokens, needle) in [
+        (
+            {
+                let mut tokens: Vec<String> =
+                    (0..7).map(|slot| format!("res_{slot}")).collect();
+                tokens[3] = "x".repeat(MAX_STRATEGIC_RESOURCE_TOKEN_LEN + 1);
+                tokens
+            },
+            "token length",
+        ),
+        (
+            {
+                let mut tokens: Vec<String> =
+                    (0..7).map(|slot| format!("res_{slot}")).collect();
+                tokens[2] = "not a token".to_string();
+                tokens
+            },
+            "is not a resource token",
+        ),
+        (
+            {
+                let mut tokens: Vec<String> =
+                    (0..7).map(|slot| format!("res_{slot}")).collect();
+                tokens[5] = "res_0".to_string();
+                tokens
+            },
+            "repeats token",
+        ),
+    ] {
+        let mut payload = d43_empty_payload();
+        let mtrr_at = payload.len();
+        append_d43_mtrr_resource_rows_with_identity(
+            &mut payload,
+            &[67],
+            7,
+            &tokens,
+            MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+        );
+        let error = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+            .expect_err("an unbounded or non-token identity must refuse");
+        assert!(error.contains(needle), "{error}");
+    }
+}
+
+/// A non-UTF-8 identity body refuses, and so does a body with bytes past the
+/// stated length -- a trailer may not carry payload nothing accounts for.
+#[test]
+fn d43_fold_refuses_a_non_utf8_or_over_padded_identity() {
+    let tokens: Vec<String> = (0..7).map(|slot| format!("res_{slot}")).collect();
+
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_identity(
+        &mut payload,
+        &[67],
+        7,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+    let body = mtrr_at + MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN + 2;
+    let mut invalid_utf8 = payload.clone();
+    invalid_utf8[body] = 0xFF;
+    let error = parse_market_trade_resource_row_trailer(&invalid_utf8, mtrr_at)
+        .expect_err("a non-UTF-8 identity must refuse");
+    assert!(
+        error.contains("is not UTF-8") || error.contains("is not a resource token"),
+        "{error}"
+    );
+
+    let mut over_padded = payload;
+    over_padded[body + MAX_STRATEGIC_RESOURCE_TOKEN_LEN - 1] = b'z';
+    let error = parse_market_trade_resource_row_trailer(&over_padded, mtrr_at)
+        .expect_err("a padded tail carrying bytes must refuse");
+    assert!(error.contains("non-zero padding"), "{error}");
+}
+
+/// (f) An older stream reads EXACTLY as before. A v2 seven-resource trailer
+/// decodes to the same rows and the same count it always did, carries no
+/// identity, and is still named by the positional table.
+#[test]
+fn d43_fold_still_reads_a_v2_mtrr_trailer_unchanged() {
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
+    );
+
+    let (rows, count, tokens, end) = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect("a v2 trailer must still parse");
+    assert_eq!(count, 7);
+    assert_eq!(tokens, None);
+    assert_eq!(end, payload.len());
+    assert_eq!(rows.get(&67).expect("rows").len(), 7);
+
+    let mut fold = WorldFold::new("d43_resource_identity");
+    fold.fold_market_trade(&payload)
+        .expect("vanilla's seven under v2 still project positionally");
+    assert_eq!(
+        fold.market_trade_resource_names(),
+        MARKET_TRADE_RESOURCE_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>()
+            .as_slice()
+    );
+}
+
+/// An old `MTRR` does not launder a new `MTRF`.
+///
+/// A guard keyed on "is there an MTRR at all" is not a guard on identity. An
+/// `MTRF` v3 paired with an `MTRR` **v2** of the same seven-resource width has
+/// an MTRR present and no tokens in it, so a presence test lets it through and
+/// the pools get named from the positional table -- publishing `oil`,
+/// `aluminium`, ... for a seven-resource mod that renamed or reordered them.
+///
+/// The mutation is re-adding `resource_row_count.is_none()` to the refusal.
+#[test]
+fn d43_fold_refuses_an_mtrf_v3_whose_only_mtrr_predates_identity() {
+    let mut payload = d43_empty_payload();
+    append_d43_mtrf_resource_flow(&mut payload, &[(67, [[1_000_000, 0, 0, 0, 0, 0, 0]; 6])]);
+    // Seven resources, seven slots, a perfectly valid pre-identity MTRR -- and
+    // not one word about which resources these are.
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
+    );
+
+    let mut fold = WorldFold::new("d43_resource_identity");
+    let error = fold
+        .fold_market_trade(&payload)
+        .expect_err("an identity-era payload carrying no identity must be refused");
+    assert!(
+        error.contains("resource identity is not carried on the wire")
+            && error.contains("MTRF v3"),
+        "{error}"
+    );
+}
+
+/// The identity-only exemption from the country-witness gate is exactly the v3
+/// shape, and nothing else.
+///
+/// A v1/v2 `MTRR` carries no identity, so an EMPTY one states an empty country
+/// set and means it. It disagreed with a non-empty `MTRF` before this lane and
+/// must keep disagreeing -- otherwise widening the exemption to "any empty
+/// MTRR" would let an old-format country-set conflict past the gate.
+///
+/// The mutation is relaxing the exemption to `rows.is_empty()` alone.
+#[test]
+fn d43_fold_keeps_an_empty_legacy_mtrr_as_a_country_witness() {
+    let mut payload = d43_empty_payload();
+    // A pre-identity MTRF, so the refusal under test is the country-witness
+    // gate and not the identity rule.
+    append_d43_mtrf_resource_flow_v2_fixed_seven(&mut payload, 67);
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[],
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
+    );
+
+    let mut fold = WorldFold::new("d43_resource_identity");
+    let error = fold
+        .fold_market_trade(&payload)
+        .expect_err("an empty legacy MTRR still witnesses an empty country set");
+    assert!(
+        error.contains("classic country witnesses disagree"),
         "{error}"
     );
 }
