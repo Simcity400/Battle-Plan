@@ -787,6 +787,32 @@ fn spool_file_identity(file: &File, path: &Path) -> Result<SpoolFileIdentity, Co
     })
 }
 
+/// Rebind the spool temporary's pathname to the retained object: reopen the
+/// name and refuse unless it still resolves to the identity captured when the
+/// retained handle was created. Extracted verbatim from the publication
+/// sequence so the refusal has a directly executable test on a platform whose
+/// share modes make an end-to-end rebind impossible to stage.
+///
+/// Returns the inspection handle so the caller can keep it open for exactly as
+/// long as the inline code did: it was a closure local, and therefore lived
+/// across the hard link and any post-publication work.
+fn bind_spool_temp_pathname_identity(
+    temp: &Path,
+    retained_identity: SpoolFileIdentity,
+) -> Result<File, ContainerError> {
+    let temp_path_handle = open_spool_path_for_identity(temp).map_err(|error| {
+        ContainerError::Reject(format!(
+            "reopen authenticated spool temporary for identity: {error}"
+        ))
+    })?;
+    if spool_file_identity(&temp_path_handle, temp)? != retained_identity {
+        return Err(ContainerError::Reject(
+            "authenticated spool temporary pathname no longer names the retained file".to_string(),
+        ));
+    }
+    Ok(temp_path_handle)
+}
+
 fn verify_spool_receipt_on_handle(
     file: &mut File,
     receipt: &SpoolEntryReceipt,
@@ -1570,7 +1596,7 @@ impl Container {
             path,
             destination.as_ref(),
             STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-            |_| Ok(()),
+            |_, _| Ok(()),
             |_| Ok(()),
         )
     }
@@ -1588,7 +1614,7 @@ impl Container {
             path,
             destination.as_ref(),
             maximum_uncompressed_bytes,
-            |_| Ok(()),
+            |_, _| Ok(()),
             |_| Ok(()),
         )
     }
@@ -1600,7 +1626,7 @@ impl Container {
         before_publish: F,
     ) -> Result<SpoolEntryReceipt, ContainerError>
     where
-        F: FnOnce(&Path) -> Result<(), ContainerError>,
+        F: FnOnce(&Path, &mut File) -> Result<(), ContainerError>,
     {
         self.spool_entry_to_file_transactionally_with_hooks(
             path,
@@ -1620,8 +1646,32 @@ impl Container {
         after_publish: G,
     ) -> Result<SpoolEntryReceipt, ContainerError>
     where
-        F: FnOnce(&Path) -> Result<(), ContainerError>,
+        F: FnOnce(&Path, &mut File) -> Result<(), ContainerError>,
         G: FnOnce(&Path) -> Result<(), ContainerError>,
+    {
+        self.spool_entry_to_file_transactionally_with_release_hook(
+            path,
+            destination,
+            maximum_uncompressed_bytes,
+            before_publish,
+            after_publish,
+            |_, _| {},
+        )
+    }
+
+    fn spool_entry_to_file_transactionally_with_release_hook<F, G, H>(
+        &self,
+        path: &str,
+        destination: &Path,
+        maximum_uncompressed_bytes: u64,
+        before_publish: F,
+        after_publish: G,
+        after_release: H,
+    ) -> Result<SpoolEntryReceipt, ContainerError>
+    where
+        F: FnOnce(&Path, &mut File) -> Result<(), ContainerError>,
+        G: FnOnce(&Path) -> Result<(), ContainerError>,
+        H: FnOnce(&Path, &Path),
     {
         let directory = SpoolDirectoryGuard::acquire(destination)?;
         let destination = directory.destination.clone();
@@ -1648,22 +1698,18 @@ impl Container {
             writer.get_ref().sync_all().map_err(|error| {
                 ContainerError::Reject(format!("sync authenticated spool temporary: {error}"))
             })?;
-            before_publish(&temp)?;
+            // Test-only mutation window. Production passes a no-op closure; the
+            // hook receives the retained handle as well as the pathname so a
+            // regression test can model BOTH post-sync substitution shapes: a
+            // pathname rebind by another process, and a same-handle byte change
+            // that no share mode can deny.
+            before_publish(&temp, writer.get_mut())?;
 
             // Re-authenticate through the retained handle after the final
             // mutation window and before any pathname is published.
             verify_spool_receipt_on_handle(writer.get_mut(), &receipt)?;
-            let temp_path_handle = open_spool_path_for_identity(&temp).map_err(|error| {
-                ContainerError::Reject(format!(
-                    "reopen authenticated spool temporary for identity: {error}"
-                ))
-            })?;
-            if spool_file_identity(&temp_path_handle, &temp)? != retained_identity {
-                return Err(ContainerError::Reject(
-                    "authenticated spool temporary pathname no longer names the retained file"
-                        .to_string(),
-                ));
-            }
+            // Held to the end of this closure, exactly as the inline local was.
+            let _temp_path_handle = bind_spool_temp_pathname_identity(&temp, retained_identity)?;
 
             // Commit point: the source pathname is identity-bound to the
             // retained, immutable handle and every directory ancestor remains
@@ -1683,6 +1729,12 @@ impl Container {
         // Release every deny-delete file/directory handle before a test-only
         // injected post-commit failure is rolled back.
         drop(directory);
+        // Test-only window. This is the interval in which the destination
+        // pathname is no longer identity-pinned by any retained handle, which
+        // is exactly what the rollback below re-checks before unlinking.
+        // Production passes a no-op closure; the hook returns nothing, so it
+        // cannot influence control flow.
+        after_release(&temp, &destination);
 
         let result = if published && result.is_err() {
             let destination_still_retained = open_spool_path_for_identity(&destination)
@@ -3532,6 +3584,85 @@ mod tests {
         }
     }
 
+    /// A scratch directory that is removed even when an assertion unwinds. The
+    /// spool guarantees are proven by driving failure paths, and on Windows a
+    /// leaked deny-delete temporary is sticky, so cleanup may not depend on a
+    /// test reaching its last line.
+    struct TempSpoolDir(std::path::PathBuf);
+
+    impl TempSpoolDir {
+        fn create(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "hoi4_spool_{label}_{}_{}",
+                std::process::id(),
+                TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).expect("create scratch spool directory");
+            Self(path)
+        }
+
+        fn join<S: AsRef<std::ffi::OsStr>>(&self, name: S) -> std::path::PathBuf {
+            self.0.join(name.as_ref())
+        }
+    }
+
+    impl Drop for TempSpoolDir {
+        fn drop(&mut self) {
+            if let Ok(entries) = fs::read_dir(&self.0) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    // Never recurse through a reparse point: a junction fixture
+                    // must be unlinked, never followed into its target.
+                    let Ok(metadata) = fs::symlink_metadata(&path) else {
+                        continue;
+                    };
+                    let file_type = metadata.file_type();
+                    if file_type.is_symlink() {
+                        // A reparse point: unlink the link itself, never
+                        // descend through it.
+                        if fs::remove_dir(&path).is_err() {
+                            let _ = fs::remove_file(&path);
+                        }
+                    } else if file_type.is_dir() {
+                        let _ = fs::remove_dir_all(&path);
+                    } else {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+            let _ = fs::remove_dir(&self.0);
+        }
+    }
+
+    /// A destination pathname that deliberately lies OUTSIDE a `TempSpoolDir`
+    /// -- a volume root, the process working directory, a scratch directory's
+    /// parent. Those tests assert a refusal, so if the refusal ever regresses
+    /// the destination is genuinely published, and the assertion panics before
+    /// any trailing cleanup could run. Removal must therefore be on drop.
+    struct TempSpoolPath(std::path::PathBuf);
+
+    impl Drop for TempSpoolPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    /// One file-backed container carrying `payload/g/compact.bin`. Every spool
+    /// guarantee below needs a retained-handle container: the transactional
+    /// spool refuses an in-memory archive before it reaches any of them.
+    fn compact_container_bytes(payload: &[u8]) -> Vec<u8> {
+        pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry("payload/g/compact.bin", payload, COMPACT_STREAM_ROLE, None),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap()
+    }
+
     fn entry(path: &str, bytes: &[u8], role: &'static str, hour_index: Option<i64>) -> PackEntry {
         PackEntry {
             path: path.into(),
@@ -3579,12 +3710,7 @@ mod tests {
         .unwrap();
         let archive = TempContainerFile::write("bounded_spool", &bytes);
         let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "hoi4_bounded_spool_{}_{}",
-            std::process::id(),
-            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = TempSpoolDir::create("bounded");
         let destination = root.join("compact.bin");
         let error = container
             .spool_entry_to_file_transactionally_bounded(
@@ -3595,8 +3721,7 @@ mod tests {
             .expect_err("declared bytes beyond the product ceiling must fail closed");
         assert!(error.to_string().contains("spool ceiling"));
         assert!(!destination.exists());
-        assert!(fs::read_dir(&root).unwrap().next().is_none());
-        fs::remove_dir(&root).unwrap();
+        assert!(fs::read_dir(&root.0).unwrap().next().is_none());
     }
 
     #[cfg(windows)]
@@ -3606,16 +3731,10 @@ mod tests {
             .expect_err("UNC replay paths must fail lexically without network access");
         assert_eq!(unc.kind(), std::io::ErrorKind::InvalidInput);
 
-        let root = std::env::temp_dir().join(format!(
-            "hoi4_container_type_{}_{}",
-            std::process::id(),
-            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
-        let error = open_retained_container_file(&root)
+        let root = TempSpoolDir::create("container_type");
+        let error = open_retained_container_file(&root.0)
             .expect_err("a directory must not be accepted as a replay file");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        fs::remove_dir(&root).unwrap();
     }
 
     #[test]
@@ -3694,25 +3813,26 @@ mod tests {
             false,
         )
         .unwrap();
-        let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "hoi4_transactional_spool_race_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
+        // The transactional spool is file-backed ONLY (an in-memory container
+        // refuses bounded entry spooling outright), so this scenario must be
+        // built on a real retained-handle container or it never reaches the
+        // publication path it claims to guard.
+        let archive = TempContainerFile::write("post_sync_substitution", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        assert!(matches!(&container.archive, ContainerArchive::File(_)));
+        let root = TempSpoolDir::create("race");
         let destination = root.join("compact.bin");
         let displaced = root.join("displaced.part");
         let mutated = Arc::new(AtomicBool::new(false));
         let hook_mutated = Arc::clone(&mutated);
+        let reached = Arc::new(AtomicBool::new(false));
+        let hook_reached = Arc::clone(&reached);
 
         let result = container.spool_entry_to_file_transactionally_with_hook(
             "payload/g/compact.bin",
             &destination,
-            |temp| {
+            |temp, _retained| {
+                hook_reached.store(true, Ordering::SeqCst);
                 if fs::rename(temp, &displaced).is_ok() {
                     fs::write(temp, &attacker_bytes)?;
                     hook_mutated.store(true, Ordering::SeqCst);
@@ -3725,6 +3845,14 @@ mod tests {
                 }
                 Ok(())
             },
+        );
+
+        // Without this the whole test degrades to "the spool succeeded": a
+        // refactor that stopped consuming the post-sync window would still be
+        // green on the platform whose share mode denies the mutation.
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "the post-sync/pre-publication window must still be reached"
         );
 
         if mutated.load(Ordering::SeqCst) {
@@ -3743,14 +3871,84 @@ mod tests {
             assert_eq!(fs::read(&destination).unwrap(), AUTHENTICATED);
         }
 
-        let _ = fs::remove_file(&destination);
-        let _ = fs::remove_file(&displaced);
-        if let Ok(entries) = fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let _ = fs::remove_file(entry.path());
-            }
+    }
+
+    /// The pathname-rebinding variant above cannot execute its mutation on
+    /// Windows — the retained spool handle denies write and delete sharing, so
+    /// the substitution is refused by the OS instead of by the re-hash. This
+    /// test drives the SAME production publication path with a post-sync byte
+    /// change made through the retained handle itself, which no share mode can
+    /// deny. It is what keeps `verify_spool_receipt_on_handle` a proven step of
+    /// the commit sequence on every platform rather than dead code on one.
+    #[test]
+    fn transactional_spool_rejects_post_sync_change_on_the_retained_handle() {
+        const AUTHENTICATED: &[u8] = b"authenticated retained-handle bytes";
+
+        for (label, same_length, expected) in [
+            (
+                "same_length",
+                true,
+                "authenticated spool changed before publication",
+            ),
+            (
+                "length_change",
+                false,
+                "authenticated spool length changed before publication",
+            ),
+        ] {
+            let bytes = pack(
+                "g",
+                &[
+                    empty_index_entry(),
+                    entry(
+                        "payload/g/retained.bin",
+                        AUTHENTICATED,
+                        COMPACT_STREAM_ROLE,
+                        None,
+                    ),
+                ],
+                &PackIdentity::default(),
+                false,
+            )
+            .unwrap();
+            let archive = TempContainerFile::write(&format!("retained_handle_{label}"), &bytes);
+            let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+            let root = TempSpoolDir::create(&format!("retained_{label}"));
+            let destination = root.join("retained.bin");
+
+            let error = container
+                .spool_entry_to_file_transactionally_with_hook(
+                    "payload/g/retained.bin",
+                    &destination,
+                    |_temp, retained| {
+                        // After flush + sync_all, before any pathname is
+                        // published: exactly the window the re-hash covers.
+                        retained.seek(SeekFrom::Start(0))?;
+                        if same_length {
+                            retained.write_all(&vec![b'X'; AUTHENTICATED.len()])?;
+                        } else {
+                            retained.write_all(b"short")?;
+                            retained.set_len(b"short".len() as u64)?;
+                        }
+                        retained.flush()?;
+                        retained.sync_all()?;
+                        Ok(())
+                    },
+                )
+                .expect_err("a post-sync change on the retained handle must fail closed");
+            assert!(
+                error.to_string().contains(expected),
+                "{label}: unexpected error: {error}"
+            );
+            assert!(
+                !destination.exists(),
+                "{label}: substituted bytes must never reach the published destination"
+            );
+            assert!(
+                fs::read_dir(&root.0).unwrap().next().is_none(),
+                "{label}: the refused spool temporary must be removed"
+            );
         }
-        let _ = fs::remove_dir(&root);
     }
 
     #[test]
@@ -3771,16 +3969,12 @@ mod tests {
             false,
         )
         .unwrap();
-        let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "hoi4_transactional_spool_post_link_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
+        // File-backed for the same reason as the post-sync substitution test:
+        // the failure-atomicity path only exists behind the retained handle.
+        let archive = TempContainerFile::write("post_link_failure", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        assert!(matches!(&container.archive, ContainerArchive::File(_)));
+        let root = TempSpoolDir::create("post_link");
         let destination = root.join("post-link.bin");
 
         let error = container
@@ -3788,8 +3982,15 @@ mod tests {
                 "payload/g/post-link.bin",
                 &destination,
                 STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-                |_| Ok(()),
-                |_| {
+                |_, _| Ok(()),
+                |published| {
+                    // The hook only runs after the hard-link commit, so the
+                    // destination is genuinely visible at injection time; the
+                    // rollback below is what makes the failure atomic.
+                    assert!(
+                        published.exists(),
+                        "the post-publication hook must run with the destination visible"
+                    );
                     Err(ContainerError::Reject(
                         "injected post-link identity query failure".to_string(),
                     ))
@@ -3801,18 +4002,697 @@ mod tests {
             !destination.exists(),
             "Err must never leave a published destination"
         );
+        assert!(
+            fs::read_dir(&root.0).unwrap().next().is_none(),
+            "a rolled-back publication must leave no spool residue either"
+        );
 
         let receipt = container
             .spool_entry_to_file_transactionally("payload/g/post-link.bin", &destination)
             .expect("hard-link commit with no post-publication work succeeds");
         assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
         assert_eq!(fs::read(&destination).unwrap(), AUTHENTICATED);
+    }
 
-        fs::remove_file(&destination).unwrap();
-        for entry in fs::read_dir(&root).unwrap().flatten() {
-            let _ = fs::remove_file(entry.path());
+    /// A junction anywhere in the destination's directory chain is refused
+    /// before a single byte is spooled. Without this the hard-link commit could
+    /// be aimed at a directory an adversary redirects, and the retained
+    /// ancestor handles would be retaining the wrong objects.
+    #[cfg(windows)]
+    #[test]
+    fn transactional_spool_refuses_a_reparse_point_directory_component() {
+        const PAYLOAD: &[u8] = b"reparse guard payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("reparse_component", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = TempSpoolDir::create("reparse");
+
+        let target = root.join("target");
+        fs::create_dir(&target).unwrap();
+        let junction = root.join("junction");
+        // `mklink /J` creates a directory junction with no privilege at all,
+        // unlike a directory symlink, which needs SeCreateSymbolicLink or
+        // Developer Mode. That makes the reparse fixture available headlessly.
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&junction)
+            .arg(&target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run mklink");
+        assert!(status.success(), "mklink /J must create a junction");
+        assert!(
+            fs::symlink_metadata(&junction)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the fixture must be a reparse point, not a plain directory"
+        );
+
+        let destination = junction.join("compact.bin");
+        let error = container
+            .spool_entry_to_file_transactionally("payload/g/compact.bin", &destination)
+            .expect_err("a reparse-point directory component must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("transactional spool directory component is not a non-reparse directory"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            fs::read_dir(&target).unwrap().next().is_none(),
+            "nothing may be written through the redirected component"
+        );
+        assert!(!destination.exists());
+    }
+
+    /// The destination's parent must contain at least one retainable
+    /// component. A volume root has none, so no ancestor could be pinned for
+    /// the duration of the commit and the spool refuses outright.
+    #[cfg(windows)]
+    #[test]
+    fn transactional_spool_refuses_a_filesystem_root_destination() {
+        const PAYLOAD: &[u8] = b"filesystem root guard payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("filesystem_root", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+
+        let volume_root = std::env::temp_dir()
+            .ancestors()
+            .last()
+            .expect("the temp directory has a volume root")
+            .to_path_buf();
+        // Removal is on drop: if the guard ever regresses on a writable root
+        // the destination IS published, and the assertion below panics before
+        // any trailing cleanup could run.
+        let destination = TempSpoolPath(
+            volume_root.join(format!("hoi4_spool_root_probe_{}.bin", std::process::id())),
+        );
+        assert_eq!(destination.0.parent(), Some(volume_root.as_path()));
+
+        let error = container
+            .spool_entry_to_file_transactionally("payload/g/compact.bin", &destination.0)
+            .expect_err("a volume-root destination must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("transactional spool destination may not be a filesystem root"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !destination.0.exists(),
+            "nothing may be created at the volume root"
+        );
+    }
+
+    /// `.`, `..` and the empty path are refused lexically, before the chain is
+    /// resolved: a destination whose meaning depends on the process working
+    /// directory or on traversal cannot be identity-pinned.
+    #[test]
+    fn transactional_spool_refuses_empty_and_dot_relative_destinations() {
+        const PAYLOAD: &[u8] = b"lexical destination guard payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("lexical_destination", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = TempSpoolDir::create("lexical");
+
+        // Both of these name objects OUTSIDE the scratch root, so a regressed
+        // guard would publish them where nothing else cleans up; removal is on
+        // drop rather than after the panic-capable assertions.
+        let cur_dir_relative = TempSpoolPath(std::path::Path::new(".").join(format!(
+            "hoi4_spool_curdir_probe_{}.bin",
+            std::process::id()
+        )));
+        let parent_traversal = TempSpoolPath(root.join("..").join(format!(
+            "hoi4_spool_parent_probe_{}.bin",
+            std::process::id()
+        )));
+        for (label, destination) in [
+            ("empty", std::path::PathBuf::new()),
+            ("cur_dir", cur_dir_relative.0.clone()),
+            ("parent_dir", parent_traversal.0.clone()),
+        ] {
+            let error = container
+                .spool_entry_to_file_transactionally("payload/g/compact.bin", &destination)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("transactional spool destination is empty or contains . or .."),
+                "{label}: unexpected error: {error}"
+            );
         }
-        fs::remove_dir(&root).unwrap();
+        assert!(
+            !cur_dir_relative.0.exists(),
+            "a working-directory-relative destination must never be created"
+        );
+        assert!(
+            !parent_traversal.0.exists(),
+            "a traversal destination must never be created"
+        );
+    }
+
+    /// Unique-temporary allocation is bounded: after 128 occupied candidate
+    /// names it refuses instead of spinning, and it never opens, truncates or
+    /// adopts a name that already exists.
+    #[test]
+    fn transactional_spool_gives_up_after_the_bounded_unique_name_window() {
+        const PAYLOAD: &[u8] = b"unique name window payload";
+        const ATTEMPTS: u64 = 128;
+        const OCCUPIED: &[u8] = b"occupied by another writer";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("unique_name_window", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = TempSpoolDir::create("unique_name_window");
+        let destination = root.join("compact.bin");
+        let destination_name = destination.file_name().unwrap().to_owned();
+
+        // The candidate names are `.<destination>.authenticated-spool.<pid>.<n>.part`
+        // over a run of the process-wide sequence. nextest gives every test its
+        // own process, so nothing else advances that sequence between the load
+        // below and the spool call, and the run is exactly predictable.
+        let first_sequence = SPOOL_TEMP_SEQUENCE.load(Ordering::Relaxed);
+        let mut occupied = Vec::new();
+        for sequence in first_sequence..first_sequence + ATTEMPTS {
+            let mut temp_name = std::ffi::OsString::from(".");
+            temp_name.push(&destination_name);
+            temp_name.push(format!(
+                ".authenticated-spool.{}.{}.part",
+                std::process::id(),
+                sequence
+            ));
+            let blocker = root.join(&temp_name);
+            fs::write(&blocker, OCCUPIED).unwrap();
+            occupied.push(blocker);
+        }
+
+        let error = container
+            .spool_entry_to_file_transactionally("payload/g/compact.bin", &destination)
+            .expect_err("an exhausted candidate window must fail closed");
+        let message = error.to_string();
+        assert!(
+            message.contains("create authenticated spool temporary file in"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            message.contains("could not allocate a unique authenticated spool temporary file"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            SPOOL_TEMP_SEQUENCE.load(Ordering::Relaxed),
+            first_sequence + ATTEMPTS,
+            "the allocation window must be exactly {ATTEMPTS} candidates wide"
+        );
+        assert!(!destination.exists());
+        for blocker in &occupied {
+            assert_eq!(
+                fs::read(blocker).unwrap(),
+                OCCUPIED,
+                "an occupied candidate name must never be opened or truncated"
+            );
+        }
+    }
+
+    /// The pathname-identity rebind that guards the hard-link source. On
+    /// Windows the retained handle's share mode denies the rename/unlink that
+    /// would rebind the name (proven by the companion test below), so the
+    /// refusal is exercised against the production function directly.
+    #[test]
+    fn spool_temporary_pathname_identity_rebind_is_refused() {
+        let root = TempSpoolDir::create("identity_rebind");
+        let retained_path = root.join("retained.part");
+        let retained = open_new_locked_spool_file(&retained_path).expect("create retained spool");
+        let retained_identity =
+            spool_file_identity(&retained, &retained_path).expect("retained identity");
+
+        bind_spool_temp_pathname_identity(&retained_path, retained_identity)
+            .expect("the unchanged pathname must still bind to the retained object");
+
+        let substitute_path = root.join("substitute.part");
+        let substitute =
+            open_new_locked_spool_file(&substitute_path).expect("create substitute object");
+        let substitute_identity =
+            spool_file_identity(&substitute, &substitute_path).expect("substitute identity");
+        assert_ne!(
+            substitute_identity, retained_identity,
+            "the fixture must be two distinct filesystem objects"
+        );
+        let error = bind_spool_temp_pathname_identity(&substitute_path, retained_identity)
+            .expect_err("a pathname naming a different object must fail closed");
+        assert!(
+            error.to_string().contains(
+                "authenticated spool temporary pathname no longer names the retained file"
+            ),
+            "unexpected error: {error}"
+        );
+
+        let absent = root.join("absent.part");
+        let error = bind_spool_temp_pathname_identity(&absent, retained_identity)
+            .expect_err("an unopenable pathname cannot be identity-bound");
+        assert!(
+            error
+                .to_string()
+                .contains("reopen authenticated spool temporary for identity"),
+            "unexpected error: {error}"
+        );
+
+        drop(retained);
+        drop(substitute);
+    }
+
+    /// Why the rebind above cannot be staged end-to-end on Windows, and why the
+    /// `temp_still_retained` guard's false arm is unreachable there: while the
+    /// retained handle is open, its pathname cannot be renamed or unlinked at
+    /// all, so it can never come to name a different object.
+    #[cfg(windows)]
+    #[test]
+    fn a_retained_spool_temporary_cannot_be_renamed_or_unlinked_at_its_pathname() {
+        let root = TempSpoolDir::create("rebind_denied");
+        let temp = root.join("retained.part");
+        let displaced = root.join("displaced.part");
+        let retained = open_new_locked_spool_file(&temp).expect("create retained spool");
+        let identity = spool_file_identity(&retained, &temp).expect("retained identity");
+
+        let rename_error =
+            fs::rename(&temp, &displaced).expect_err("a retained spool must not be renamable");
+        let remove_error =
+            fs::remove_file(&temp).expect_err("a retained spool must not be unlinkable");
+        // Both refusals are ERROR_SHARING_VIOLATION -- the retained handle's
+        // omitted delete sharing, not a permission or attribute effect.
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        for (label, error) in [("rename", &rename_error), ("remove", &remove_error)] {
+            assert_eq!(
+                error.raw_os_error(),
+                Some(ERROR_SHARING_VIOLATION),
+                "{label}: unexpected os error: {error}"
+            );
+        }
+        assert!(!displaced.exists());
+        bind_spool_temp_pathname_identity(&temp, identity)
+            .expect("the pathname still names the retained object");
+
+        drop(retained);
+        // Once the handle is released the same pathname is ordinary again --
+        // the denial is the retained handle's, not the filesystem's.
+        fs::remove_file(&temp).expect("the released pathname is removable");
+    }
+
+    /// Post-publication rollback never unlinks a destination it cannot bind to
+    /// the object it published. The release hook models the only window in
+    /// which the name is unpinned: after every retained handle is dropped and
+    /// before the rollback runs.
+    #[test]
+    fn post_publication_rollback_refuses_a_rebound_destination() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        const PAYLOAD: &[u8] = b"rollback identity-bind payload";
+        const FOREIGN: &[u8] = b"an object this rollback did not publish";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("rollback_rebind", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = TempSpoolDir::create("rollback_rebind");
+        let destination = root.join("compact.bin");
+        let rebound = Arc::new(AtomicBool::new(false));
+        let hook_rebound = Arc::clone(&rebound);
+
+        let error = container
+            .spool_entry_to_file_transactionally_with_release_hook(
+                "payload/g/compact.bin",
+                &destination,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+                |_, _| Ok(()),
+                |published| {
+                    assert!(published.exists(), "the commit must have happened");
+                    Err(ContainerError::Reject(
+                        "injected post-link failure".to_string(),
+                    ))
+                },
+                |_temp, published| {
+                    fs::remove_file(published).expect("the released name is unlinkable");
+                    fs::write(published, FOREIGN).expect("the released name is rebindable");
+                    hook_rebound.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .expect_err("a rollback that cannot identity-bind must fail closed");
+
+        assert!(
+            rebound.load(std::sync::atomic::Ordering::SeqCst),
+            "the post-release window must still be reached"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("post-publication failure could not identity-bind destination cleanup"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            FOREIGN,
+            "rollback must never unlink an object it did not publish"
+        );
+        let residue: Vec<_> = fs::read_dir(&root.0)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(
+            residue,
+            vec![destination.file_name().unwrap().to_owned()],
+            "the spool temporary must still be cleaned up"
+        );
+    }
+
+    /// The other rollback failure mode: the destination is still the published
+    /// object, but it cannot be removed. The refusal is reported rather than
+    /// swallowed, so a caller never sees a bare Err with a live destination.
+    #[cfg(windows)]
+    #[test]
+    fn post_publication_rollback_reports_an_undeletable_destination() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::sync::{Arc, Mutex};
+
+        const PAYLOAD: &[u8] = b"rollback undeletable payload";
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("rollback_undeletable", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = TempSpoolDir::create("rollback_undeletable");
+        let destination = root.join("compact.bin");
+        let held: Arc<Mutex<Option<File>>> = Arc::new(Mutex::new(None));
+        let hook_held = Arc::clone(&held);
+
+        let error = container
+            .spool_entry_to_file_transactionally_with_hooks(
+                "payload/g/compact.bin",
+                &destination,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+                |_, _| Ok(()),
+                |published| {
+                    // The retained spool handle is still open here, so this
+                    // handle must share read and write with it; omitting delete
+                    // sharing is what makes the rollback's unlink fail.
+                    let blocker = OpenOptions::new()
+                        .read(true)
+                        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                        .open(published)
+                        .expect("open a deny-delete handle on the published destination");
+                    *hook_held.lock().unwrap() = Some(blocker);
+                    Err(ContainerError::Reject(
+                        "injected post-link failure".to_string(),
+                    ))
+                },
+            )
+            .expect_err("a rollback that cannot unlink must fail closed");
+
+        assert!(
+            error.to_string().contains(
+                "post-publication failure could not remove authenticated destination"
+            ),
+            "unexpected error: {error}"
+        );
+        assert!(
+            held.lock().unwrap().is_some(),
+            "the deny-delete handle must have been taken"
+        );
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            PAYLOAD,
+            "the destination the rollback could not remove is still the published object"
+        );
+
+        // Release the blocker so the scratch directory can be cleaned up.
+        held.lock().unwrap().take();
+        fs::remove_file(&destination).expect("the released destination is removable");
+    }
+
+    /// The temporary's own cleanup is identity-gated too, and its refusal arm
+    /// is NOT Windows-unreachable: the retained handle is released before the
+    /// check runs, so the pathname is genuinely unpinned in that window on
+    /// every platform. A temporary whose name was rebound there is left alone
+    /// rather than unlinked, exactly as a foreign destination is.
+    #[test]
+    fn a_rebound_spool_temporary_pathname_is_never_unlinked() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        const PAYLOAD: &[u8] = b"temp cleanup identity payload";
+        const FOREIGN: &[u8] = b"an object this spool did not create";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("temp_cleanup_identity", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let root = TempSpoolDir::create("temp_cleanup_identity");
+        let destination = root.join("compact.bin");
+        let rebound = Arc::new(AtomicBool::new(false));
+        let hook_rebound = Arc::clone(&rebound);
+        let temp_seen = Arc::new(Mutex::new(std::path::PathBuf::new()));
+        let hook_temp = Arc::clone(&temp_seen);
+
+        let receipt = container
+            .spool_entry_to_file_transactionally_with_release_hook(
+                "payload/g/compact.bin",
+                &destination,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+                |_, _| Ok(()),
+                |_| Ok(()),
+                |temp, _published| {
+                    // The retained handle is already dropped here, so this
+                    // unlink succeeds even on Windows: the temporary's cleanup
+                    // window is unpinned on every platform.
+                    fs::remove_file(temp).expect("the released temporary is unlinkable");
+                    fs::write(temp, FOREIGN).expect("the released name is rebindable");
+                    *hook_temp.lock().unwrap() = temp.to_path_buf();
+                    hook_rebound.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .expect("publication itself succeeds; only the temporary was rebound");
+
+        assert!(
+            rebound.load(std::sync::atomic::Ordering::SeqCst),
+            "the post-release window must still be reached"
+        );
+        assert_eq!(receipt.uncompressed_len(), PAYLOAD.len() as u64);
+        assert_eq!(fs::read(&destination).unwrap(), PAYLOAD);
+        let temp = temp_seen.lock().unwrap().clone();
+        assert_eq!(
+            fs::read(&temp).unwrap(),
+            FOREIGN,
+            "a rebound temporary pathname must never be unlinked"
+        );
+    }
+
+    /// Whole-file receipts are a retained-handle property: an in-memory
+    /// container has no object to re-read, and answering with anything would
+    /// be a receipt for bytes nobody can re-verify.
+    #[test]
+    fn whole_file_receipts_require_a_retained_file_backed_container() {
+        const PAYLOAD: &[u8] = b"whole file receipt payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+
+        let in_memory = Container::from_bytes(bytes.clone(), &ExpectedIdentity::default())
+            .expect("byte container opens");
+        assert!(matches!(&in_memory.archive, ContainerArchive::Memory(_)));
+        let error = in_memory
+            .retained_file_receipt()
+            .expect_err("an in-memory container has no whole-file receipt");
+        assert!(
+            error
+                .to_string()
+                .contains("whole-file receipts require a retained file-backed container"),
+            "unexpected error: {error}"
+        );
+
+        let archive = TempContainerFile::write("whole_file_receipt", &bytes);
+        let file_backed =
+            Container::open(&archive.0, &ExpectedIdentity::default()).expect("path container opens");
+        let (len, sha256) = file_backed
+            .retained_file_receipt()
+            .expect("a retained container answers with its receipt");
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(sha256, to_hex(&Sha256::digest(&bytes)));
+    }
+
+    /// `ContainerArchive::copy_entry_to_writer` refuses a file-backed archive
+    /// that answered a `calculate_sha256` request with no digest. That arm is
+    /// unreachable while the archive keeps its side of the contract; this pins
+    /// the contract itself, which is the only thing that keeps it unreachable.
+    #[test]
+    fn a_file_backed_archive_never_omits_a_requested_spool_sha256() {
+        const PAYLOAD: &[u8] = b"requested spool sha256 payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("requested_sha256", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let ContainerArchive::File(file_archive) = &container.archive else {
+            panic!("the fixture must be file-backed");
+        };
+        let index = container
+            .by_path
+            .lock()
+            .unwrap()
+            .get("payload/g/compact.bin")
+            .expect("the entry is manifest-listed")
+            .archive_index;
+
+        let mut requested = Vec::new();
+        let (digest, len) = file_archive
+            .copy_entry_to_writer(
+                index,
+                &mut requested,
+                true,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            )
+            .expect("copy the entry with a requested digest");
+        assert_eq!(
+            digest.as_deref(),
+            Some(to_hex(&Sha256::digest(PAYLOAD)).as_str()),
+            "a requested digest must always be delivered"
+        );
+        assert_eq!(len, PAYLOAD.len() as u64);
+        assert_eq!(requested, PAYLOAD);
+
+        let mut unrequested = Vec::new();
+        let (absent, _) = file_archive
+            .copy_entry_to_writer(
+                index,
+                &mut unrequested,
+                false,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            )
+            .expect("copy the entry without a requested digest");
+        assert!(
+            absent.is_none(),
+            "the absent digest is only ever the unrequested case"
+        );
+    }
+
+    /// `Container::authenticate_entry` has three production consumers and no
+    /// test in any crate. It must authenticate against the manifest without
+    /// exposing bytes, and refuse everything the spool primitive refuses.
+    #[test]
+    fn authenticate_entry_verifies_without_exposing_bytes() {
+        const PAYLOAD: &[u8] = b"authenticate entry payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("authenticate_entry", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+
+        let receipt = container
+            .authenticate_entry("payload/g/compact.bin")
+            .expect("a manifest-listed entry authenticates");
+        assert_eq!(receipt.path(), "payload/g/compact.bin");
+        assert_eq!(receipt.uncompressed_len(), PAYLOAD.len() as u64);
+        assert_eq!(receipt.sha256(), to_hex(&Sha256::digest(PAYLOAD)));
+
+        let error = container
+            .authenticate_entry("payload/g/absent.bin")
+            .expect_err("an unlisted path must fail closed");
+        assert!(
+            error.to_string().contains("not in manifest"),
+            "unexpected error: {error}"
+        );
+
+        // The receipt must come from the archive, not from the manifest record
+        // it is checked against. Against an intact container a receipt
+        // fabricated out of the manifest's own path/len/sha would be
+        // indistinguishable from an authenticated one, so authenticate the
+        // same manifest against stored bytes that no longer match it.
+        let mut tampered = bytes.clone();
+        let offset = tampered
+            .windows(PAYLOAD.len())
+            .position(|window| window == PAYLOAD)
+            .expect("the stored payload is locatable in the packed container");
+        tampered[offset] ^= 0xff;
+        let tampered_archive = TempContainerFile::write("authenticate_entry_tampered", &tampered);
+        let tampered_container = Container::open(&tampered_archive.0, &ExpectedIdentity::default())
+            .expect("entry bytes are authenticated lazily, so the container still opens");
+        let error = tampered_container
+            .authenticate_entry("payload/g/compact.bin")
+            .expect_err("a manifest-listed entry whose stored bytes changed must fail closed");
+        assert!(
+            error.to_string().contains("crc32 mismatch"),
+            "unexpected error: {error}"
+        );
+
+        let in_memory = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
+        let error = in_memory
+            .authenticate_entry("payload/g/compact.bin")
+            .expect_err("an in-memory container cannot stream an entry");
+        assert!(
+            error
+                .to_string()
+                .contains("bounded entry spooling requires a file-backed container"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// `Container::copy_entry_to_unpublished_writer_bounded` is the caller-owned
+    /// sink variant, and its one production consumer is its only exercise. The
+    /// receipt is the caller's permission to publish, so every refusal must
+    /// arrive with nothing usable written.
+    #[test]
+    fn copy_entry_to_unpublished_writer_bounded_refuses_before_it_writes() {
+        const PAYLOAD: &[u8] = b"unpublished writer payload";
+        let bytes = compact_container_bytes(PAYLOAD);
+        let archive = TempContainerFile::write("unpublished_writer", &bytes);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+
+        let mut sink = Vec::new();
+        let receipt = container
+            .copy_entry_to_unpublished_writer_bounded(
+                "payload/g/compact.bin",
+                &mut sink,
+                PAYLOAD.len() as u64,
+            )
+            .expect("a bound at the declared size admits the entry");
+        assert_eq!(sink, PAYLOAD);
+        assert_eq!(receipt.uncompressed_len(), PAYLOAD.len() as u64);
+        assert_eq!(receipt.sha256(), to_hex(&Sha256::digest(PAYLOAD)));
+
+        let mut sink = Vec::new();
+        let error = container
+            .copy_entry_to_unpublished_writer_bounded(
+                "payload/g/compact.bin",
+                &mut sink,
+                PAYLOAD.len() as u64 - 1,
+            )
+            .expect_err("a bound below the declared size must fail closed");
+        assert!(
+            error.to_string().contains("exceed spool ceiling"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            sink.is_empty(),
+            "a refused entry must never reach the caller's sink"
+        );
+
+        let mut sink = Vec::new();
+        let error = container
+            .copy_entry_to_unpublished_writer_bounded("payload/g/compact.bin", &mut sink, 0)
+            .expect_err("a zero ceiling must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("entry spool byte ceiling must be positive"),
+            "unexpected error: {error}"
+        );
+        assert!(sink.is_empty());
+
+        let mut sink = Vec::new();
+        let error = container
+            .copy_entry_to_unpublished_writer_bounded(
+                "payload/g/absent.bin",
+                &mut sink,
+                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+            )
+            .expect_err("an unlisted path must fail closed");
+        assert!(
+            error.to_string().contains("not in manifest"),
+            "unexpected error: {error}"
+        );
+        assert!(sink.is_empty());
     }
 
     #[test]
