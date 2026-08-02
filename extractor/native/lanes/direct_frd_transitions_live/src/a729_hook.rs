@@ -275,6 +275,37 @@ struct HookState {
     current_error: Option<String>,
     drain_sequence: u64,
     kind_witness_counts: [u64; 12],
+    /// Rows this producer could not admit because the bounded pending queue was
+    /// already at [`DEFAULT_MAX_PENDING_ROWS`], counted since the last consumed
+    /// drain.
+    ///
+    /// Per-drain, not cumulative. A window that lost rows cannot hand over a
+    /// complete ordered history, so its drain is self-rejected by the reader
+    /// and CONSUMED; consuming it is what clears this back to zero, so the next
+    /// window reports on itself instead of inheriting an earlier window's loss
+    /// for the life of the process.
+    overflow_dropped_rows: u64,
+}
+
+/// What [`HookState::capture`] refuses when the bounded queue is already full.
+const D45_PENDING_QUEUE_FULL: &str = "D45 direct hook pending queue is full";
+
+/// Whether a [`HookState::capture`] refusal invalidates the ordered history and
+/// must therefore latch `current_error` for the life of the hook epoch.
+///
+/// True for every refusal except a full queue. A crossed callback thread, a
+/// regressed game hour or a carrier that rejected a malformed row all mean the
+/// sequence space can no longer be trusted, and no later success makes an
+/// untrustworthy history trustworthy again -- absorbing is correct there.
+///
+/// A full queue is a different fault with the same symptom. Nothing about the
+/// rows already held is wrong; the consumer simply has not drained recently
+/// enough. Latching it made a transient consumer stall permanent, and because
+/// `peek_batch` and `uninstall_locked` both refuse while the latch is set, it
+/// also removed the only path that could have drained the queue and the only
+/// path that could have taken the detours back out of the running game.
+fn capture_failure_latches_producer(error: &str) -> bool {
+    !error.starts_with(D45_PENDING_QUEUE_FULL)
 }
 
 impl HookState {
@@ -295,6 +326,7 @@ impl HookState {
             current_error: None,
             drain_sequence: 1,
             kind_witness_counts: [0; 12],
+            overflow_dropped_rows: 0,
         }
     }
 
@@ -334,8 +366,15 @@ impl HookState {
             return Err("D45 direct hook terminal custody is sealed".into());
         }
         if self.pending_rows.len() >= DEFAULT_MAX_PENDING_ROWS {
+            // Counted here, not latched by the caller. The bound is deliberate
+            // and stays at DEFAULT_MAX_PENDING_ROWS: measured against both
+            // post-merge captures it absorbed roughly 255 game-hours of
+            // arrivals before it filled, so a consumer that drains once an hour
+            // never approaches it. Raising it would only move the moment a
+            // stalled consumer is noticed.
+            self.overflow_dropped_rows = self.overflow_dropped_rows.saturating_add(1);
             return Err(format!(
-                "D45 direct hook pending queue is full at {} rows",
+                "{D45_PENDING_QUEUE_FULL} at {} rows",
                 DEFAULT_MAX_PENDING_ROWS
             ));
         }
@@ -359,6 +398,11 @@ impl HookState {
 struct BatchReservationState {
     reservation_id: u64,
     row_count: usize,
+    /// The overflow drops this reservation reported. Consuming the reservation
+    /// retires exactly this many, never the whole counter: callbacks that
+    /// dropped rows after the peek belong to the NEXT window and must survive
+    /// this commit to be reported there.
+    overflow_dropped_rows: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -396,6 +440,7 @@ pub struct HookDiagnostics {
     pub drain_sequence: u64,
     pub kind_witness_counts: [u64; 12],
     pub evidence_fixture: bool,
+    pub overflow_dropped_rows: u64,
 }
 
 /// One immutable peek at the ordered D45 event prefix. Callers must explicitly
@@ -404,6 +449,12 @@ pub struct HookDiagnostics {
 pub struct DirectEventBatchReservation {
     pub reservation_id: u64,
     pub batch: DirectEventBatch,
+    /// Rows the bounded queue refused during the window this reservation
+    /// drains. Non-zero means the drain is a PREFIX of what happened, not the
+    /// whole of it, and the D45-v5 trailer has no field that can say so -- so
+    /// the reader must self-reject this batch rather than publish it as a
+    /// complete ordered history.
+    pub overflow_dropped_rows: u64,
 }
 
 /// Explicit terminal handoff for a poisoned D45 producer. Rows remain ordered
@@ -651,12 +702,23 @@ fn discard_install_abort_custody_locked(state: &mut HookState) -> InstallAbortDi
             .reservation
             .map_or(0, |reservation| reservation.row_count as u64),
         discarded_diagnostics: u64::from(state.terminal_custody.is_some()),
-        poisoned: state.current_error.is_some(),
+        // Unretired overflow drops make this lane one that LOST observations,
+        // exactly as a sticky error does. Saying so here is what stops a
+        // zero-observation release claiming this window observed nothing:
+        // `admit_hook_release` refuses that claim on a non-empty discard, and a
+        // window that dropped rows observed something it could not keep.
+        //
+        // Deliberately reported here rather than added to the `uninstall_locked`
+        // custody guard. A guard clause would refuse teardown until the count
+        // reached zero, and only a consumed drain retires it -- which is the
+        // wedge this whole change removes, rebuilt one level down.
+        poisoned: state.current_error.is_some() || state.overflow_dropped_rows != 0,
     };
     state.pending_rows.clear();
     state.reservation = None;
     state.terminal_custody = None;
     state.current_error = None;
+    state.overflow_dropped_rows = 0;
     discard
 }
 
@@ -712,12 +774,13 @@ fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
             || state.current_error.is_some()
         {
             return Err(format!(
-                "D45 direct hook teardown refused with {} pending row(s), {} reserved row(s), reservation {:?}, terminal custody {:?}, sticky error {}",
+                "D45 direct hook teardown refused with {} pending row(s), {} reserved row(s), reservation {:?}, terminal custody {:?}, sticky error {}, {} unretired overflow drop(s)",
                 state.pending_rows.len(),
                 state.reservation.map_or(0, |reservation| reservation.row_count),
                 state.reservation.map(|reservation| reservation.reservation_id),
                 state.terminal_custody.as_ref().map(|custody| custody.custody_id),
                 state.current_error.is_some(),
+                state.overflow_dropped_rows,
             ));
         }
     }
@@ -882,12 +945,15 @@ fn peek_batch_locked(
         .next_reservation_id
         .checked_add(1)
         .ok_or("D45 direct hook reservation ID exhausted")?;
+    let overflow_dropped_rows = state.overflow_dropped_rows;
     state.reservation = Some(BatchReservationState {
         reservation_id,
         row_count: rows.len(),
+        overflow_dropped_rows,
     });
     Ok(DirectEventBatchReservation {
         reservation_id,
+        overflow_dropped_rows,
         batch: DirectEventBatch {
             hook_epoch,
             drain_sequence,
@@ -930,11 +996,23 @@ fn commit_batch_locked(state: &mut HookState, reservation_id: u64) -> Result<(),
         .ok_or("D45 direct hook drain sequence exhausted")?;
     state.pending_rows.drain(..reservation.row_count);
     state.drain_sequence = next_drain_sequence;
+    // Retire exactly the drops this reservation reported. This is what gives
+    // the counter its per-window meaning: without it a single overflow would
+    // mark every later window incomplete for the life of the process, which is
+    // the absorbing shape the D55 completeness latch had.
+    state.overflow_dropped_rows = state
+        .overflow_dropped_rows
+        .saturating_sub(reservation.overflow_dropped_rows);
     state.reservation = None;
     Ok(())
 }
 
 /// Releases a reservation without removing or reordering any row.
+///
+/// The drop count is deliberately NOT retired here. Rollback means the sink did
+/// not take the batch, so nothing about this window has been reported yet and
+/// the next peek must state the same loss again. Only a consumed batch --
+/// published, or self-rejected by the reader -- retires it.
 pub fn rollback_batch(reservation_id: u64) -> Result<(), String> {
     let mut state = STATE
         .get()
@@ -1237,6 +1315,7 @@ pub fn diagnostics() -> HookDiagnostics {
         hook_epoch: ACTIVE_HOOK_EPOCH.load(Ordering::Acquire),
         drain_sequence: state.drain_sequence,
         kind_witness_counts: state.kind_witness_counts,
+        overflow_dropped_rows: state.overflow_dropped_rows,
         evidence_fixture: EVIDENCE_FIXTURE.load(Ordering::Acquire),
     }
 }
@@ -1612,7 +1691,9 @@ fn publish(prepared: Result<Option<PreparedRow>, String>) {
         after,
     };
     if let Err(error) = state.capture(row) {
-        state.current_error = Some(format!("D45 direct hook carrier rejected row: {error}"));
+        if capture_failure_latches_producer(&error) {
+            state.current_error = Some(format!("D45 direct hook carrier rejected row: {error}"));
+        }
     } else {
         state.last_game_hour_raw = Some(prepared.game_hour_raw);
         let index = prepared.kind as usize - 1;
@@ -1690,7 +1771,9 @@ fn publish_optional_entry(prepared: Result<Option<PreparedRow>, String>) {
         },
     };
     if let Err(error) = state.capture(row) {
-        state.current_error = Some(format!("D45 X10 entry carrier rejected row: {error}"));
+        if capture_failure_latches_producer(&error) {
+            state.current_error = Some(format!("D45 X10 entry carrier rejected row: {error}"));
+        }
     } else {
         state.last_game_hour_raw = Some(prepared.game_hour_raw);
         let index = prepared.kind as usize - 1;
@@ -2607,6 +2690,186 @@ mod tests {
         acknowledge_terminal_custody_locked(&mut failed_install, custody.custody_id, true)
             .unwrap();
         assert!(!failed_install.terminal_sealed);
+    }
+
+    /// Fills the bounded queue exactly to its bound, then over it, and returns
+    /// the refusal the overflowing callback actually got.
+    ///
+    /// The text is taken from the production path rather than written out here
+    /// on purpose: a test that asserts against its own literal proves nothing
+    /// about what `capture` returns.
+    fn overflow_the_pending_queue(state: &mut HookState) -> String {
+        for _ in 0..DEFAULT_MAX_PENDING_ROWS {
+            let row = test_focus_row(state, 10);
+            state.capture(row).expect("the bound is not reached yet");
+        }
+        let row = test_focus_row(state, 10);
+        state
+            .capture(row)
+            .expect_err("the bound must refuse the row that exceeds it")
+    }
+
+    /// LAW: a full pending queue counts a drop; it does not poison the producer.
+    ///
+    /// This is the measured defect. Both post-merge captures ended with
+    /// "D45 terminal producer is poisoned: ... pending queue is full at 4096
+    /// rows", and the latch is what made that fatal: `peek_batch` refuses while
+    /// it is set, so the queue could never be drained, and `uninstall_locked`
+    /// refuses too, so the twelve detours could never be taken back out.
+    ///
+    /// Goes red if the queue-full refusal starts latching again, or if the
+    /// classifier stops distinguishing it from the refusals that must latch.
+    #[test]
+    fn a_full_pending_queue_counts_a_drop_and_leaves_the_producer_usable() {
+        let mut state = HookState::fresh();
+        let refusal = overflow_the_pending_queue(&mut state);
+
+        assert!(
+            refusal.contains("pending queue is full"),
+            "unexpected refusal: {refusal}"
+        );
+        assert_eq!(state.overflow_dropped_rows, 1);
+        assert!(
+            !capture_failure_latches_producer(&refusal),
+            "a full queue must not latch the producer"
+        );
+        // Every other refusal `capture` can produce still latches. This one is
+        // taken from the production text rather than paraphrased.
+        let mut sealed = HookState::fresh();
+        sealed.terminal_sealed = true;
+        let row = test_focus_row(&mut sealed, 10);
+        let sealed_refusal = sealed
+            .capture(row)
+            .expect_err("a sealed producer must refuse");
+        assert!(
+            capture_failure_latches_producer(&sealed_refusal),
+            "a sealed-custody refusal must still latch: {sealed_refusal}"
+        );
+        assert!(capture_failure_latches_producer(
+            "D45 direct hook typed carrier staging invariant failed"
+        ));
+    }
+
+    /// LAW: consuming a drain retires exactly the loss that drain reported, so
+    /// one overflow does not mark every later window incomplete forever.
+    ///
+    /// This is the absorbing shape the D55 completeness latch had: a counter
+    /// only a commit could clear, on a batch that was always rolled back. Here
+    /// the reader self-rejects a lossy window and CONSUMES it, which is what
+    /// lets the next window report on itself.
+    ///
+    /// Goes red if `commit_batch_locked` stops retiring the reservation's
+    /// drops, or retires the whole counter and swallows drops that arrived
+    /// after the peek.
+    #[test]
+    fn a_consumed_drain_retires_its_own_loss_and_only_its_own() {
+        let mut state = HookState::fresh();
+        overflow_the_pending_queue(&mut state);
+        let row = test_focus_row(&mut state, 10);
+        assert!(state.capture(row).is_err(), "the queue is still full");
+        assert_eq!(state.overflow_dropped_rows, 2);
+
+        let reservation = peek_batch_locked(&mut state, 7, false).unwrap();
+        assert_eq!(reservation.overflow_dropped_rows, 2);
+        assert_eq!(reservation.batch.rows.len(), DEFAULT_MAX_PENDING_ROWS);
+
+        // A drop that lands after the peek belongs to the NEXT window and must
+        // survive this commit.
+        let row = test_focus_row(&mut state, 10);
+        assert!(state.capture(row).is_err());
+        assert_eq!(state.overflow_dropped_rows, 3);
+
+        commit_batch_locked(&mut state, reservation.reservation_id).unwrap();
+
+        assert_eq!(state.overflow_dropped_rows, 1, "one drop was not reported");
+        assert!(state.pending_rows.is_empty(), "the drain was consumed");
+        assert!(
+            state.current_error.is_none(),
+            "an overflow must leave no sticky error behind"
+        );
+        // The producer is usable again: this is the recovery the latch denied.
+        let row = test_focus_row(&mut state, 10);
+        state
+            .capture(row)
+            .expect("a drained queue must admit rows again");
+    }
+
+    /// LAW: a rolled-back drain keeps its loss, because nothing was reported.
+    ///
+    /// Rollback means the sink refused the batch. Retiring the count there
+    /// would erase a loss no consumer ever saw.
+    ///
+    /// Goes red if `rollback_batch_locked` starts clearing the counter or
+    /// draining the prefix.
+    #[test]
+    fn a_rolled_back_drain_still_owes_its_loss() {
+        let mut state = HookState::fresh();
+        overflow_the_pending_queue(&mut state);
+
+        let first = peek_batch_locked(&mut state, 7, false).unwrap();
+        assert_eq!(first.overflow_dropped_rows, 1);
+        rollback_batch_locked(&mut state, first.reservation_id).unwrap();
+
+        let second = peek_batch_locked(&mut state, 7, false).unwrap();
+        assert_eq!(
+            second.overflow_dropped_rows, 1,
+            "a rolled-back loss must still be owed"
+        );
+        assert_eq!(second.batch.rows.len(), DEFAULT_MAX_PENDING_ROWS);
+        assert_eq!(state.overflow_dropped_rows, 1);
+    }
+
+    /// LAW: an abort that throws away unreported drops says the lane lost
+    /// observations.
+    ///
+    /// `admit_hook_release` refuses a zero-observation release whose discard is
+    /// non-empty, and a window that dropped rows plainly did not observe
+    /// nothing. Without this, an abort could clear the counter silently and the
+    /// run would claim an empty window it did not have.
+    ///
+    /// Goes red if the discard stops accounting for unretired drops, or stops
+    /// clearing them.
+    #[test]
+    fn an_abort_that_discards_unreported_drops_reports_a_lost_observation() {
+        let mut state = HookState::fresh();
+        overflow_the_pending_queue(&mut state);
+        assert!(state.current_error.is_none(), "no sticky error is involved");
+
+        let discard = discard_install_abort_custody_locked(&mut state);
+
+        assert!(
+            discard.poisoned,
+            "an unreported drop is a lost observation, not an empty window"
+        );
+        assert!(!discard.is_empty());
+        assert_eq!(state.overflow_dropped_rows, 0, "the abort consumed the count");
+    }
+
+    /// LAW: physical teardown is not blocked by a window that lost rows.
+    ///
+    /// The uninstall custody guard refuses on a sticky error. An overflow no
+    /// longer sets one, so the only thing between an overflowed lane and hook
+    /// removal is draining its queue -- which it can now do.
+    ///
+    /// Goes red if an overflow starts setting `current_error` again.
+    #[test]
+    fn an_overflowed_lane_can_still_satisfy_the_teardown_custody_guard() {
+        let mut state = HookState::fresh();
+        let refusal = overflow_the_pending_queue(&mut state);
+        // Exactly what both production publish paths do with a capture refusal.
+        // Asserting `current_error.is_none()` without this is vacuous: nothing
+        // else on this path can ever set it.
+        if capture_failure_latches_producer(&refusal) {
+            state.current_error = Some(refusal);
+        }
+        let reservation = peek_batch_locked(&mut state, 7, false).unwrap();
+        commit_batch_locked(&mut state, reservation.reservation_id).unwrap();
+
+        // Exactly the clauses `uninstall_locked` refuses on.
+        assert!(state.pending_rows.is_empty());
+        assert!(state.reservation.is_none());
+        assert!(state.terminal_custody.is_none());
+        assert!(state.current_error.is_none());
     }
 
     #[test]
