@@ -28,8 +28,8 @@ use compact_contract::stream_validator::{
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
-    COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_STATUS_FAILURE_MASK,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -549,6 +549,59 @@ impl BoundaryTracker {
                 self.gap_domains.clear();
                 self.data_domains.clear();
                 self.last_closed_hour = Some(header.game_hour_raw);
+            }
+            COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
+                // NOT a boundary record. A degraded frame still ends with a
+                // canonical FRAME_END, because it PUBLISHED -- the notice only
+                // says which of its domains are unknown. So this arm closes
+                // nothing and clears nothing; doing either would close the hour
+                // early and orphan the DATA and FRAME_END that follow.
+                //
+                // What it does enforce is that the notice belongs to the hour it
+                // rides in. The payload's `degraded_hour` is what a consumer
+                // reads to learn WHICH hour is degraded, and the envelope hour is
+                // what the surrounding records are accounted under. Nothing else
+                // compares them, so a record disagreeing with itself would mark
+                // one hour degraded while a different hour carried the data --
+                // and an hour wrongly believed clean is the exact failure this
+                // record exists to prevent.
+                let open = self.open_hour.or(self.pending_perf_hour);
+                match open {
+                    Some(open) if open == header.game_hour_raw => {}
+                    Some(open) => {
+                        self.violation = Some(format!(
+                            "mismatched FRAME_DEGRADED at byte {at_byte}: degrades hour {} \
+                             while hour {open} is open",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                    None => {
+                        // Unlike a refusal, a degraded notice cannot stand alone:
+                        // it annotates a frame that published, so that frame's
+                        // records must already have opened the hour.
+                        self.violation = Some(format!(
+                            "FRAME_DEGRADED at byte {at_byte} degrades hour {} but no hour is open",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                }
+                match compact_contract::frame_degraded::FrameDegradedRecordV1::decode(payload) {
+                    Ok(record) if record.degraded_hour == header.game_hour_raw => {}
+                    Ok(record) => {
+                        self.violation = Some(format!(
+                            "FRAME_DEGRADED at byte {at_byte} is framed for hour {} but its \
+                             payload degrades hour {}",
+                            header.game_hour_raw, record.degraded_hour
+                        ));
+                    }
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "FRAME_DEGRADED payload at byte {at_byte} is unreadable: {reason}"
+                        ));
+                    }
+                }
             }
             // Not a frame-boundary record: it carries campaign identity and is
             // validated where identity is folded, not here.

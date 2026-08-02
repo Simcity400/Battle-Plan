@@ -43,8 +43,8 @@ use compact_contract::{
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
-    COMPACT_RECORD_TYPE_FRAME_REFUSED,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 use compact_contract::stream_validator::{
     AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
@@ -145,6 +145,11 @@ struct DomainCompleteness {
     data_payload_status_flags_or: u32,
     normalized_status_flags_or: u32,
     lane_local_status_flags_or: u32,
+    /// Failure-class bits no expected-partial tolerance covers, i.e. this
+    /// domain is UNKNOWN for the hour. Nonzero here is only certifiable when
+    /// the frame's `H4FD` notice declares this domain with exactly these bits;
+    /// see `CompletenessAudit::observe`.
+    non_tolerated_status_flags: u32,
 }
 
 impl DomainCompleteness {
@@ -216,6 +221,15 @@ struct HourCompleteness {
     frame_scheduled_domains: u32,
     normalized_frame_status_flags: u32,
     normalized_status_flags_or: u32,
+    /// Domains this hour's `H4FD` notice declared UNKNOWN, and the exact
+    /// non-tolerated bits it declared them with. Empty for a clean hour.
+    ///
+    /// This is the certifier's record of "the producer told me not to trust
+    /// these". A consumer reading a certified hour can therefore separate the
+    /// three states without re-deriving anything: absent from this map and no
+    /// failure bits means complete, absent but tolerated means expected-partial,
+    /// present means unknown.
+    declared_degraded_domains: BTreeMap<u16, u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -358,6 +372,11 @@ struct CompletenessAudit {
     /// from an hour the collector never reached.
     refusals: BTreeMap<i64, HourRefusal>,
     current_domains: BTreeMap<u16, DomainCompleteness>,
+    /// The open hour's `H4FD` declaration, if it has carried one yet. The notice
+    /// rides immediately before `FRAME_END`, so it is always populated (or
+    /// legitimately absent) by the time the hour closes and the two sides are
+    /// compared.
+    current_declared_degraded: BTreeMap<u16, u32>,
 }
 
 impl CompletenessAudit {
@@ -425,11 +444,21 @@ impl CompletenessAudit {
                     domain_id,
                     status_flags,
                 );
-                if residual != 0 {
-                    return Err(format!(
-                        "domain {domain_id} PERF status {status_flags:#010x} has non-tolerated failure flags {residual:#010x}"
-                    ));
-                }
+                // A non-tolerated failure is NOT accepted here and NOT accepted
+                // silently. It is DEFERRED to the frame close, where the only
+                // thing that can certify it is the frame's own `H4FD` notice
+                // declaring this domain with exactly these bits.
+                //
+                // Deferring is not a relaxation. An hour that carries a
+                // non-tolerated failure and no matching declaration fails with
+                // the same verdict it always did -- see the FRAME_END arm. What
+                // deferring buys is the ability to distinguish "the producer
+                // published a defect and told me" from "the producer published a
+                // defect and did not", which is precisely the distinction that
+                // decides whether a degraded frame is honest or dangerous. At a
+                // PERF record that distinction is not yet knowable, because the
+                // notice has not been read.
+                //
                 // Unassigned PERF-only ids (currently diagnostic probes such as
                 // 250) are instrumentation, not extraction completeness. Their
                 // timing/unit payloads remain intentionally outside G1 identity.
@@ -439,6 +468,45 @@ impl CompletenessAudit {
                     domain.normalized_status_flags_or |= normalized;
                     domain.lane_local_status_flags_or |=
                         status_flags & lane_local_status_mask(domain_id);
+                    domain.non_tolerated_status_flags |= residual;
+                } else if residual != 0 {
+                    // An unassigned probe id has no domain descriptor, so it can
+                    // never be declared degraded and there is nothing to defer
+                    // to. Keep the original immediate verdict for it.
+                    return Err(format!(
+                        "domain {domain_id} PERF status {status_flags:#010x} has non-tolerated failure flags {residual:#010x}"
+                    ));
+                }
+            }
+            COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
+                let record = compact_contract::frame_degraded::FrameDegradedRecordV1::decode(
+                    payload,
+                )
+                .map_err(|reason| format!("FRAME_DEGRADED payload is unreadable: {reason}"))?;
+                // Deliberately NOT re-checked here: that the payload's
+                // `degraded_hour` equals the envelope hour. `stream_fold`'s
+                // boundary tracker owns that rule for both frame-level records
+                // (it owns the identical one for FRAME_REFUSED) and every path
+                // into this audit runs through it. A second copy here would be a
+                // third independent statement of a boundary rule, which is the
+                // shape that already cost this project a real bug -- and a copy
+                // that no mutation can kill, because the other copy catches
+                // everything first. One rule, one owner.
+                //
+                // What this audit owns instead is the thing no boundary tracker
+                // can see: whether the DECLARATION agrees with the per-domain
+                // status words. That reconciliation happens at FRAME_END.
+                for domain in &record.domains {
+                    if self
+                        .current_declared_degraded
+                        .insert(domain.domain_id, domain.non_tolerated_flags)
+                        .is_some()
+                    {
+                        return Err(format!(
+                            "hour {game_hour_raw} declares domain {} degraded more than once",
+                            domain.domain_id
+                        ));
+                    }
                 }
             }
             COMPACT_RECORD_TYPE_FRAME_END => {
@@ -458,6 +526,70 @@ impl CompletenessAudit {
                 }
                 let hour_index = compact_contract::calendar::hour_index_from_raw(game_hour_raw)
                     .ok_or_else(|| format!("FRAME_END game hour {game_hour_raw} is invalid"))?;
+
+                // Reconcile OBSERVED degradation against DECLARED degradation.
+                //
+                // This is the whole certification rule for a degraded frame, and
+                // it is deliberately an EQUALITY in both directions:
+                //
+                //  * a domain whose PERF carries non-tolerated failure bits that
+                //    the notice does not declare is an undeclared defect -- the
+                //    stream would be handing a consumer broken data that looks
+                //    like every other domain in the frame. Same verdict as
+                //    before this record existed.
+                //  * a domain the notice declares but whose PERF is clean (or
+                //    only tolerated) is a fabricated degradation. Harmless to
+                //    data, but it means notice and status disagree, and a
+                //    consumer that trusts either one alone is then reading a
+                //    different frame from a consumer that trusts the other.
+                //  * declaring the right domain with the WRONG bits is the same
+                //    disagreement in a subtler form, so the bits must match too.
+                //
+                // The result is that "which domains of this hour are unusable"
+                // has exactly one answer, reachable from either the per-record
+                // status words or the frame-level notice, and the certifier
+                // refuses any stream where those two answers differ.
+                let observed_degraded: BTreeMap<u16, u32> = self
+                    .current_domains
+                    .iter()
+                    .filter(|(_, domain)| domain.non_tolerated_status_flags != 0)
+                    .map(|(domain_id, domain)| (*domain_id, domain.non_tolerated_status_flags))
+                    .collect();
+                let declared_degraded = std::mem::take(&mut self.current_declared_degraded);
+                if observed_degraded != declared_degraded {
+                    for (domain_id, residual) in &observed_degraded {
+                        match declared_degraded.get(domain_id) {
+                            Some(declared) if declared == residual => {}
+                            Some(declared) => {
+                                return Err(format!(
+                                    "domain {domain_id} PERF status has non-tolerated failure flags \
+                                     {residual:#010x} but the hour's H4FD notice declares it \
+                                     degraded with {declared:#010x}"
+                                ));
+                            }
+                            None => {
+                                return Err(format!(
+                                    "domain {domain_id} PERF status has non-tolerated failure flags \
+                                     {residual:#010x} and the frame declares no H4FD degraded \
+                                     notice for it"
+                                ));
+                            }
+                        }
+                    }
+                    for domain_id in declared_degraded.keys() {
+                        if !observed_degraded.contains_key(domain_id) {
+                            return Err(format!(
+                                "hour {hour_index} H4FD notice declares domain {domain_id} degraded \
+                                 but its PERF status carries no non-tolerated failure flags"
+                            ));
+                        }
+                    }
+                    return Err(format!(
+                        "hour {hour_index} observed degraded domains {observed_degraded:?} do not \
+                         match the H4FD declaration {declared_degraded:?}"
+                    ));
+                }
+
                 let aggregate = self
                     .current_domains
                     .values()
@@ -470,6 +602,7 @@ impl CompletenessAudit {
                     frame_scheduled_domains: scheduled,
                     normalized_frame_status_flags: normalized,
                     normalized_status_flags_or: aggregate,
+                    declared_degraded_domains: declared_degraded,
                 };
                 // An hour is published or it is refused; it is never both.
                 // Checked in BOTH directions: the refusal arm rejects a

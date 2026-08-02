@@ -238,6 +238,41 @@ impl CompactOccupationResistanceComplianceTracker {
         rows: &[compact::OccupationStateRow],
     ) -> EncodedFrame {
         let had_baseline = self.emitted_baseline;
+        // A frame carrying any failure-class status bit is DISCARDED whole by
+        // the recorder fold (`WorldFold::handle_compact_failure`), because d52
+        // has no `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry. Its rows are never
+        // applied, so this tracker must not record them as delivered.
+        //
+        // The failure path in `read_compact_occupation_resistance_compliance_live`
+        // calls in here with an EMPTY row slice and
+        // `SOURCE_UNAVAILABLE | PARTIAL_DATA`, and `delta_rows` used to set
+        // `emitted_baseline = true` unconditionally. The first d52 frame of a
+        // capture failing therefore latched "baseline delivered" from a frame
+        // that delivered nothing, and every later frame was badged `DELTA_DATA`
+        // -- which the fold rejects as `delta_before_baseline` because it never
+        // saw the baseline. d52 would then be unknown for the whole campaign.
+        //
+        // This was latent while a failing domain refused its entire frame and
+        // the collector rolled the whole tracker set back. Now that a frame
+        // publishes with its failing domains marked unknown, the tracker IS
+        // committed, so the freeze has to be real. This is the same rule every
+        // other delta domain already follows via
+        // `compact_delta_baseline_withheld`.
+        if compact_contract::compact_status_is_failure(status_flags) {
+            let header = build_header(
+                elapsed_wall_ms,
+                status_flags,
+                observed_state_rows,
+                garrison_anomaly_rows,
+                &[],
+            );
+            let payload = compact::encode_payload(&header, &[]);
+            return EncodedFrame {
+                payload,
+                header,
+                rows: Vec::new(),
+            };
+        }
         let delta_rows = self.delta_rows(rows);
         let mut final_status_flags = status_flags;
         if had_baseline {
@@ -1680,6 +1715,59 @@ mod tests {
         let third = tracker.encode_frame(3, 0, extracted.observed_state_rows, 0, &extracted.rows);
         assert_eq!(third.rows.len(), 1);
         assert!(third.header.status_flags & compact::STATUS_DELTA_DATA != 0);
+    }
+
+    /// A failure-class frame must NOT latch the delta baseline.
+    ///
+    /// The recorder fold discards a d52 frame carrying any failure-class bit
+    /// (d52 has no expected-partial tolerance), so such a frame delivers
+    /// nothing. If it latched `emitted_baseline` anyway, every later frame would
+    /// be badged `DELTA_DATA` and the fold would reject each one as
+    /// `delta_before_baseline` -- having never seen a baseline -- leaving d52
+    /// unknown for the whole campaign.
+    ///
+    /// The exact production shape: `read_compact_occupation_resistance_compliance_live`
+    /// calls in here on its extraction-failure path with an EMPTY row slice and
+    /// `SOURCE_UNAVAILABLE | PARTIAL_DATA`. This test drives that shape FIRST,
+    /// which is what makes the latch fatal rather than cosmetic.
+    #[test]
+    fn a_failure_class_frame_does_not_latch_the_delta_baseline() {
+        let mem = fake_memory(DIVISION_TEMPLATE_TYPE);
+        let mut roots = BTreeMap::new();
+        roots.insert(10, STATE_10);
+        let extracted = extract_rows_from_state_roots(&mem, GAME_STATE, &roots).unwrap();
+        let mut tracker = CompactOccupationResistanceComplianceTracker::default();
+
+        let failed = tracker.encode_frame(
+            1,
+            compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
+                | compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            0,
+            0,
+            &[],
+        );
+        assert!(failed.rows.is_empty());
+        assert_eq!(
+            failed.header.status_flags & compact::STATUS_DELTA_DATA,
+            0,
+            "a failed frame is not a delta"
+        );
+
+        // The next clean frame must be a FULL baseline, not a delta against a
+        // baseline the fold never received.
+        let recovered =
+            tracker.encode_frame(2, 0, extracted.observed_state_rows, 0, &extracted.rows);
+        assert_eq!(
+            recovered.rows.len(),
+            1,
+            "the recovered frame must carry every row, not a delta"
+        );
+        assert_eq!(
+            recovered.header.status_flags & compact::STATUS_DELTA_DATA,
+            0,
+            "the recovered frame must not be badged DELTA_DATA; the fold has no baseline to \
+             patch and would reject it as delta_before_baseline"
+        );
     }
 
     #[test]

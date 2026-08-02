@@ -77,7 +77,15 @@ pub enum TerminalOutcome {
 pub struct SchedulerTelemetry {
     pub observations: u64,
     pub scheduled_hours: u64,
+    /// Hours whose frame reached the production sink. Complete AND degraded
+    /// hours both count here, because both published; the question this counter
+    /// exists to answer is "did anything ever publish".
     pub accepted_hours: u64,
+    /// The SUBSET of `accepted_hours` that published with at least one domain
+    /// unknown (an `H4FD` notice rode in the frame). Kept separate so a reader
+    /// can never mistake a degraded hour for a clean one from telemetry alone,
+    /// which is the same distinction the wire keeps.
+    pub degraded_hours: u64,
     pub gapped_domain_hours: u64,
     pub overrun_domain_hours: u64,
     pub backpressure_domain_hours: u64,
@@ -316,6 +324,22 @@ impl ReadOnlyScheduler {
         let request = slot.latest_pending.take()?;
         slot.in_flight = Some(request);
         Some(request)
+    }
+
+    /// Resolve an in-flight request whose frame published with at least one
+    /// domain unknown.
+    ///
+    /// The frame reached the sink, so the request is ACCEPTED exactly as a
+    /// complete one is -- leaving it in flight would wedge `take_current_request`
+    /// for the rest of the capture, which is the defect `reject_request` exists
+    /// to prevent. What differs is only the accounting: the degraded hour is
+    /// also counted on its own axis, so `accepted_hours` never implies clean.
+    pub fn accept_degraded_request(&mut self, request: CaptureRequest) {
+        let before = self.telemetry.accepted_hours;
+        self.accept_request(request);
+        if self.telemetry.accepted_hours != before {
+            self.telemetry.degraded_hours = self.telemetry.degraded_hours.saturating_add(1);
+        }
     }
 
     pub fn accept_request(&mut self, request: CaptureRequest) {

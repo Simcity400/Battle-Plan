@@ -10,6 +10,13 @@ pub const COMPACT_RECORD_TYPE_DOMAIN_GAP: u16 = 5;
 /// event with a list of offenders, which is why it is not a DOMAIN_GAP. Type 4
 /// is STREAM_HEADER (campaign_identity.rs), hence 6.
 pub const COMPACT_RECORD_TYPE_FRAME_REFUSED: u16 = 6;
+/// Frame-level record: this hour WAS published, and these named domains are
+/// UNKNOWN in it. The counterpart to `FRAME_REFUSED` -- that one closes an hour
+/// which published nothing, this one annotates an hour which published while
+/// some of its domains failed. It is deliberately NOT a boundary record: it
+/// rides inside the frame it describes, before that frame's `FRAME_END`, so a
+/// consumer reads the degradation as part of the same closed hour.
+pub const COMPACT_RECORD_TYPE_FRAME_DEGRADED: u16 = 7;
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -110,6 +117,14 @@ pub fn validate_compact_record_semantics(
                 ));
             }
             crate::frame_refusal::validate_frame_refusal_payload(payload)
+        }
+        COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "FRAME_DEGRADED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::frame_degraded::validate_frame_degraded_payload(payload)
         }
         COMPACT_RECORD_TYPE_DOMAIN_GAP => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {

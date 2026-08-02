@@ -1814,3 +1814,300 @@ fn the_data_payload_status_is_part_of_the_hours_certified_identity() {
         "which record carried the status must change the certified identity"
     );
 }
+
+// --- degraded-frame certification ------------------------------------------
+//
+// Until this record existed, frame completeness was all-or-nothing: one domain
+// with a non-tolerated failure refused the whole frame, so across three walked
+// live captures the stream never carried a single DOMAIN_DATA record and no
+// domain fix could be verified end to end. These tests pin the other outcome --
+// the frame publishes and the failing domains are named unknown -- and, more
+// importantly, they pin the boundary that keeps that honest: a degradation the
+// stream does not DECLARE is still not certifiable.
+
+/// Build one hour: a clean DATA record, one PERF record per `(domain, status)`
+/// pair, optionally an `H4FD` notice declaring `declared`, then `FRAME_END`.
+fn degraded_hour_stream(
+    perf_domains: &[(u16, u32)],
+    declared: Option<&[(u16, u32, &str)]>,
+) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    sequence += 1;
+    for (domain_id, status_flags) in perf_domains {
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(HOUR_A),
+            *domain_id,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(*status_flags),
+        );
+        sequence += 1;
+    }
+    if let Some(entries) = declared {
+        let notice = compact_contract::frame_degraded::FrameDegradedRecordV1 {
+            degraded_hour: raw_for(HOUR_A),
+            domains: entries
+                .iter()
+                .map(|(domain_id, status_flags, reason)| {
+                    compact_contract::frame_degraded::FrameDegradedDomain {
+                        domain_id: *domain_id,
+                        status_flags: *status_flags,
+                        non_tolerated_flags:
+                            compact_status_failure_flags_after_expected_partial_tolerance(
+                                *domain_id,
+                                *status_flags,
+                            ),
+                        reason: (*reason).to_string(),
+                    }
+                })
+                .collect(),
+        };
+        // Encoded through the real codec on purpose: a notice the contract
+        // would refuse must not be constructible for a test either.
+        let payload = notice.encode().expect("test notice must be encodable");
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+            &payload,
+        );
+        sequence += 1;
+    }
+    // The FRAME_END counts must equal the number of terminal domain outcomes.
+    // Note what is NOT counted here: the H4FD notice. A degraded notice is not
+    // a terminal outcome for any domain -- the domain still emitted its own
+    // PERF record -- and the boundary tracker agrees, which is why this count
+    // is the PERF count and not the PERF count plus one.
+    let terminal_outcomes = perf_domains.len() as u32;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(terminal_outcomes, terminal_outcomes, 0),
+    );
+    stream
+}
+
+/// A notice may not name a domain its status does not support. Otherwise the
+/// two halves of the wire disagree, and a consumer trusting one reads a
+/// different frame from a consumer trusting the other.
+#[test]
+fn a_declared_degradation_the_status_does_not_support_fails_certification() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    sequence += 1;
+    for domain_id in [18u16, 30] {
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(HOUR_A),
+            domain_id,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(0),
+        );
+        sequence += 1;
+    }
+    // Self-consistent as a record, but domain 30's PERF above is clean.
+    let notice = compact_contract::frame_degraded::FrameDegradedRecordV1 {
+        degraded_hour: raw_for(HOUR_A),
+        domains: vec![compact_contract::frame_degraded::FrameDegradedDomain {
+            domain_id: 30,
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            reason: "d30_root_unreadable=1".to_string(),
+        }],
+    };
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+        &notice.encode().expect("a self-consistent notice encodes"),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(2, 2, 0),
+    );
+    let err = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .err()
+        .expect("a fabricated degradation must not certify");
+    assert!(
+        err.contains("declares domain 30 degraded")
+            && err.contains("no non-tolerated failure flags"),
+        "{err}"
+    );
+}
+
+/// THE deliverable. An hour with failing domains PUBLISHES and certifies, and
+/// the certified hour records exactly those domains as unknown.
+///
+/// Domains 29 and 30 have no `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry, so
+/// their failure bits are genuine untolerated defects -- the exact shape that
+/// refused every frame in every live capture before this change.
+#[test]
+fn a_frame_declaring_its_degraded_domains_certifies_and_the_hour_records_them_unknown() {
+    let stream = degraded_hour_stream(
+        &[
+            (18, 0),
+            (29, COMPACT_STATUS_PARTIAL_DATA),
+            (30, COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        ],
+        Some(&[
+            (
+                29,
+                COMPACT_STATUS_PARTIAL_DATA,
+                "d29_invalid_air_wing_rows=3",
+            ),
+            (
+                30,
+                COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                "d30_root_unreadable=1",
+            ),
+        ]),
+    );
+    let run = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .expect("a frame that declares its degraded domains must certify");
+
+    let hour = run
+        .hours
+        .iter()
+        .find(|hour| hour.hour_index == HOUR_A)
+        .expect("the degraded hour must be published, not skipped");
+
+    // Published: the domain that read fine really is in the certified hour.
+    // Before this change the whole frame was withheld for the other two.
+    assert_eq!(
+        hour.domain_data_counts.get(&18),
+        Some(&1),
+        "the domains that read fine must publish; that is the entire point"
+    );
+
+    // And the ones that failed are certified UNKNOWN, with their exact bits.
+    assert_eq!(
+        hour.completeness.declared_degraded_domains,
+        [
+            (29u16, COMPACT_STATUS_PARTIAL_DATA),
+            (30u16, COMPACT_STATUS_SOURCE_UNAVAILABLE)
+        ]
+        .into_iter()
+        .collect::<BTreeMap<u16, u32>>(),
+        "a degraded domain must be certified as unknown, never as complete"
+    );
+    assert!(
+        !hour.completeness.declared_degraded_domains.contains_key(&18),
+        "a clean domain must never appear in the degraded declaration"
+    );
+}
+
+/// The notice must belong to the hour it rides in, or a consumer would mark one
+/// hour unknown while a different hour carried the data.
+#[test]
+fn a_notice_framed_for_another_hour_fails_certification() {
+    let mut stream = degraded_hour_stream(
+        &[(18, 0), (29, COMPACT_STATUS_PARTIAL_DATA)],
+        Some(&[(
+            29,
+            COMPACT_STATUS_PARTIAL_DATA,
+            "d29_invalid_air_wing_rows=3",
+        )]),
+    );
+    // Rewrite only the payload's `degraded_hour`. The envelope hour is left
+    // alone, so nothing but the self-agreement check can catch this.
+    let magic = compact_contract::frame_degraded::FRAME_DEGRADED_MAGIC;
+    let at = stream
+        .windows(4)
+        .position(|window| window == magic)
+        .expect("the stream carries an H4FD payload");
+    stream[at + 8..at + 12].copy_from_slice(&raw_for(HOUR_B).to_le_bytes());
+    let err = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .err()
+        .expect("a notice framed for another hour must not certify");
+    // Asserted against the boundary tracker's wording specifically ("at byte"),
+    // because that is the single owner of this rule. If the verdict ever starts
+    // coming from somewhere else, a second copy has appeared and this assertion
+    // is how it gets noticed.
+    assert!(
+        err.contains("FRAME_DEGRADED") && err.contains("at byte"),
+        "the boundary tracker must be the layer that catches this: {err}"
+    );
+}
+
+/// An expected-partial is NOT a degradation and must not be declared as one.
+/// This is the constraint the record exists to protect, checked at the
+/// certifier and not only in the codec.
+#[test]
+fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
+    // Domain 26's tolerance covers exactly PARTIAL_DATA.
+    let stream = degraded_hour_stream(&[(18, 0), (26, COMPACT_STATUS_PARTIAL_DATA)], None);
+    let run = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .expect("a tolerated partial certifies without any H4FD notice");
+    let hour = run
+        .hours
+        .iter()
+        .find(|hour| hour.hour_index == HOUR_A)
+        .expect("the hour must publish");
+    assert!(
+        hour.completeness.declared_degraded_domains.is_empty(),
+        "an expected partial must never be labelled a degradation"
+    );
+
+    // And declaring it degraded is refused by the codec, so a stream cannot
+    // even be BUILT that way.
+    assert!(
+        compact_contract::frame_degraded::FrameDegradedDomain::from_status(
+            26,
+            COMPACT_STATUS_PARTIAL_DATA,
+            "mislabelled",
+        )
+        .is_none(),
+        "a tolerated partial must not produce a degraded entry"
+    );
+}
+
+/// The non-weakening proof, and the mutation target for the whole deferral.
+///
+/// The certifier used to reject a non-tolerated PERF failure the instant it saw
+/// one. That verdict is unchanged for an UNDECLARED failure -- deferring the
+/// check to FRAME_END buys the ability to tell a declared defect from a hidden
+/// one, and buys nothing else.
+#[test]
+fn an_undeclared_non_tolerated_failure_still_fails_certification() {
+    let stream = degraded_hour_stream(&[(18, 0), (29, COMPACT_STATUS_PARTIAL_DATA)], None);
+    let err = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .err()
+        .expect("an undeclared non-tolerated failure must not certify");
+    assert!(err.contains("domain 29"), "{err}");
+    assert!(err.contains("non-tolerated failure flags"), "{err}");
+    assert!(
+        err.contains("declares no H4FD degraded notice"),
+        "the verdict must say the declaration was missing, not merely that a bit was set: {err}"
+    );
+}

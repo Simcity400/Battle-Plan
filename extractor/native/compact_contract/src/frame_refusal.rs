@@ -341,7 +341,20 @@ mod tests {
         );
 
         // And an undefined type still fails loudly rather than being skipped.
-        let unknown = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 7, 0, &wire);
+        //
+        // This probe used to be type 7, which is now FRAME_DEGRADED. The test's
+        // meaning is "a type nobody has defined must fail loudly", not "type 7
+        // must fail", so the probe moves to a value the contract does not
+        // assign rather than the assertion being softened. If a future type
+        // claims this value, this probe moves again -- it must never be the
+        // assertion that gives way.
+        let unassigned_record_type = u16::MAX;
+        let unknown = validate_compact_record_semantics(
+            COMPACT_DOMAIN_FRAME,
+            unassigned_record_type,
+            0,
+            &wire,
+        );
         assert!(
             unknown
                 .as_ref()
