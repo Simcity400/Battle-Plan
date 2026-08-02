@@ -128,6 +128,88 @@ function Invoke-JsonScript {
     return (($stdout -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
 }
 
+# The builder's binary enforcer, lifted out of the fixture builder by AST and
+# made callable on its own.
+#
+# The roster loops below used to spend one whole package build per forbidden
+# symbol, and a package build re-derives the entire production source tree -
+# about fourteen seconds - before it ever looks at the binary. Nothing in that
+# tree changes between two symbols of the same roster: the mutation is a byte
+# in a release artifact. What each of those cases establishes is that the
+# builder's enforcer rejects that symbol, so that is what is driven directly.
+#
+# Lifting the definition rather than restating it is the point. There is still
+# exactly one enforcer, in the builder, and if it is edited this probe changes
+# with it; a hand-written second copy here would agree with itself forever.
+# The builder is still run end to end once per role, so the wiring from
+# "builder invoked" to "enforcer rejected" stays proved rather than assumed.
+# This is the same lifting technique Test-ProductionInteractionClosure.ps1
+# already uses on the same two functions.
+function New-FixtureInteractionEnforcerProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$BuilderPath,
+        [Parameter(Mandatory = $true)][string]$HelperPath
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $BuilderPath,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if (@($parseErrors).Count -ne 0) {
+        throw "fixture package builder source does not parse: $BuilderPath"
+    }
+    $lifted = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @('Find-AsciiByteSequence', 'Assert-ProductionInteractionClosure')) {
+        $definitions = @($ast.FindAll(
+            {
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+            },
+            $true
+        ) | Where-Object { [string]$_.Name -ceq $name })
+        if ($definitions.Count -ne 1) {
+            throw "fixture package builder does not define exactly one $name`: $BuilderPath"
+        }
+        $lifted.Add("function $name $($definitions[0].Body.Extent.Text)")
+    }
+    # The path is pasted into generated source, so its quotes are escaped for
+    # the single-quoted literal it lands in. %TEMP% is whatever the caller's
+    # environment says it is, and a directory named O'Brien would otherwise
+    # terminate the string and fail to parse.
+    $quotedHelperPath = "'" + $HelperPath.Replace("'", "''") + "'"
+    $moduleText = @(
+        ". $quotedHelperPath"
+        $lifted
+        @'
+function Invoke-FixtureInteractionEnforcer {
+    param(
+        [byte[]]$Bytes,
+        [string]$Name,
+        [string[]]$RequiredMarkers,
+        [uint16]$ExpectedPinnedHookCount,
+        [string]$PinnedHookContractSourceSha256,
+        [string[]]$PermittedSelfUiCapabilities,
+        [string[]]$PermittedSelfWorkerCapabilities,
+        [string[]]$PermittedInjectionCapabilities
+    )
+    return Assert-ProductionInteractionClosure `
+        -Bytes $Bytes `
+        -Name $Name `
+        -RequiredMarkers $RequiredMarkers `
+        -ExpectedPinnedHookCount $ExpectedPinnedHookCount `
+        -PinnedHookContractSourceSha256 $PinnedHookContractSourceSha256 `
+        -PermittedSelfUiCapabilities $PermittedSelfUiCapabilities `
+        -PermittedSelfWorkerCapabilities $PermittedSelfWorkerCapabilities `
+        -PermittedInjectionCapabilities $PermittedInjectionCapabilities
+}
+'@
+    ) -join [Environment]::NewLine
+    return (New-Module -ScriptBlock ([scriptblock]::Create($moduleText)) -AsCustomObject)
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ("hoi4-portable-package-selftest-{0}" -f [guid]::NewGuid().ToString('N'))
 try {
     $fixtureScripts = Join-Path $root 'extractor\native\scripts'
@@ -877,8 +959,125 @@ dependencies.path = "../lanes/active_command_abilities_live"
         (Get-ProductionInteractionMarkerRosterSha256) -ceq
             $fixedForbiddenMarkerRosterSha256
     )
+    $binaryEnforcerProbe = New-FixtureInteractionEnforcerProbe `
+        -BuilderPath $fixtureBuilder `
+        -HelperPath (Join-Path $fixtureScripts 'PortableProduct.InteractionClosure.ps1')
+    # The exact argument sets the builder binds for each role. They are not a
+    # relaxation of anything: the builder passes these same three literals at
+    # its three enforcer callsites, and a role that gains or loses a permitted
+    # capability there has to be changed here too or the roster case stops
+    # matching the builder's own behaviour.
+    $binaryRoleEnforcerArguments = @{
+        recorder = [pscustomobject]@{
+            Receipt = 'recorder_host'
+            CleanBytes = [IO.File]::ReadAllBytes($recorder)
+            Name = 'Battle Plan Recorder.exe'
+            RequiredMarkers = @(
+                'BATTLE_PLAN_OBSERVER_ONLY_RECORDER_V1',
+                'BATTLE_PLAN_NO_SEMANTIC_ENGINE_STATE_WRITES_V1'
+            )
+            Ui = @(
+                'SendMessageW',
+                'ShellExecuteW',
+                'EnableWindow',
+                'SetWindowTextW',
+                'ShowWindow',
+                'DestroyWindow'
+            )
+            Worker = @()
+            Injection = @(
+                'OpenProcess',
+                'VirtualAllocEx',
+                'VirtualFreeEx',
+                'WriteProcessMemory',
+                'CreateRemoteThread',
+                'LoadLibraryW',
+                'FreeLibrary'
+            )
+        }
+        replay = [pscustomobject]@{
+            Receipt = 'replay_app'
+            CleanBytes = [IO.File]::ReadAllBytes($replay)
+            Name = 'Battle Plan.exe'
+            RequiredMarkers = @()
+            Ui = @('SetWindowTextW', 'DestroyWindow')
+            Worker = @(
+                'CreateProcessW',
+                'TerminateProcess',
+                'CreateJobObjectW',
+                'AssignProcessToJobObject',
+                'SetInformationJobObject'
+            )
+            Injection = @()
+        }
+        collector = [pscustomobject]@{
+            Receipt = 'collector_dll'
+            CleanBytes = [IO.File]::ReadAllBytes($collector)
+            Name = 'collector.dll'
+            RequiredMarkers = @('BATTLE_PLAN_NO_SEMANTIC_ENGINE_STATE_WRITES_V1')
+            Ui = @()
+            Worker = @()
+            Injection = @()
+        }
+    }
+    # A rejection is only evidence if the probe ACCEPTS the unmutated binary for
+    # the same role under the same arguments. Without this, a probe that threw
+    # on every input - a mis-bound required-marker list would do it - would read
+    # exactly like a probe rejecting every forbidden symbol, and the four
+    # hundred cases below would all pass while proving nothing.
+    #
+    # The control is stricter than "does not throw": the probe's receipt for the
+    # clean binary has to equal, field for field, the receipt the real builder
+    # just published for that role. That pins the arguments too, so a role whose
+    # permitted capabilities drift out of step with the builder's own callsite
+    # is caught here rather than silently narrowing the roster.
+    foreach ($role in @('recorder', 'replay', 'collector')) {
+        $roleEnforcerArguments = $binaryRoleEnforcerArguments[$role]
+        $cleanReceipt = $binaryEnforcerProbe.'Invoke-FixtureInteractionEnforcer'(
+            [byte[]]$roleEnforcerArguments.CleanBytes,
+            [string]$roleEnforcerArguments.Name,
+            [string[]]@($roleEnforcerArguments.RequiredMarkers),
+            [uint16]$expectedPinnedHookCount,
+            [string]$expectedPinnedHookSourceSha256,
+            [string[]]@($roleEnforcerArguments.Ui),
+            [string[]]@($roleEnforcerArguments.Worker),
+            [string[]]@($roleEnforcerArguments.Injection)
+        )
+        $builderReceipt =
+            $builderResult.interaction_closure.([string]$roleEnforcerArguments.Receipt)
+        $receiptSummaries = foreach ($receipt in @($cleanReceipt, $builderReceipt)) {
+            @(
+                [string]$receipt.schema
+                [string]$receipt.policy
+                [string][int]$receipt.forbidden_symbol_count
+                [string]$receipt.forbidden_symbol_roster_sha256
+                [string][bool]$receipt.forbidden_symbols_absent
+                [string][bool]$receipt.semantic_engine_state_writes
+                [string][int]$receipt.exact_pinned_hook_count
+                [string]$receipt.exact_pinned_hook_contract
+                [string]$receipt.pinned_hook_contract_source_sha256
+                (@($receipt.required_markers) -join ',')
+                (@($receipt.forbidden_target_client_capabilities) -join ',')
+                (@($receipt.permitted_self_ui_capabilities) -join ',')
+                (@($receipt.permitted_self_worker_capabilities) -join ',')
+                (@($receipt.permitted_injection_capabilities) -join ',')
+            ) -join '|'
+        }
+        if (@($receiptSummaries).Count -ne 2 -or
+            [string]@($receiptSummaries)[0] -cne [string]@($receiptSummaries)[1]) {
+            throw (
+                "self-test enforcer probe does not reproduce the builder receipt for " +
+                "$role`: probe=$(@($receiptSummaries)[0]) builder=$(@($receiptSummaries)[1])"
+            )
+        }
+    }
     foreach ($role in @('recorder', 'replay', 'collector')) {
         $allRejected = $true
+        $roleEnforcerArguments = $binaryRoleEnforcerArguments[$role]
+        # The first symbol of every role is driven through the real package
+        # builder, so "the builder rejects a forbidden binary symbol for this
+        # role" is measured end to end and not inferred from the enforcer alone.
+        $roleBuilderPathProved = $false
         $roleForbiddenMarkerRoster = if ($role -ceq 'recorder') {
             @($forbiddenMarkerRoster | Where-Object {
                 $_ -cnotin @(
@@ -917,20 +1116,40 @@ dependencies.path = "../lanes/active_command_abilities_live"
             $mutatedBytes = [byte[]]$baseBytes.Clone()
             $marker = [Text.Encoding]::ASCII.GetBytes($symbol)
             [Array]::Copy($marker, 0, $mutatedBytes, 0x300, $marker.Length)
-            $mutatedPath = Join-Path $releaseRoot ("forbidden-{0}-{1}.bin" -f $role, $symbol)
-            Write-Bytes $mutatedPath $mutatedBytes
             $rejected = $false
-            try {
-                Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                    '-RecorderExe', $(if ($role -ceq 'recorder') { $mutatedPath } else { $recorder }),
-                    '-ReplayExe', $(if ($role -ceq 'replay') { $mutatedPath } else { $replay }),
-                    '-CollectorDll', $(if ($role -ceq 'collector') { $mutatedPath } else { $collector }),
-                    '-OutputZip', (Join-Path $releaseRoot ("forbidden-{0}-{1}.zip" -f $role, $symbol)),
-                    '-Version', '0.1.0'
-                ) | Out-Null
+            if (-not $roleBuilderPathProved) {
+                $mutatedPath = Join-Path $releaseRoot ("forbidden-{0}-{1}.bin" -f $role, $symbol)
+                Write-Bytes $mutatedPath $mutatedBytes
+                try {
+                    Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
+                        '-RecorderExe', $(if ($role -ceq 'recorder') { $mutatedPath } else { $recorder }),
+                        '-ReplayExe', $(if ($role -ceq 'replay') { $mutatedPath } else { $replay }),
+                        '-CollectorDll', $(if ($role -ceq 'collector') { $mutatedPath } else { $collector }),
+                        '-OutputZip', (Join-Path $releaseRoot ("forbidden-{0}-{1}.zip" -f $role, $symbol)),
+                        '-Version', '0.1.0'
+                    ) | Out-Null
+                }
+                catch {
+                    $rejected = $true
+                }
+                $roleBuilderPathProved = $true
             }
-            catch {
-                $rejected = $true
+            else {
+                try {
+                    $binaryEnforcerProbe.'Invoke-FixtureInteractionEnforcer'(
+                        $mutatedBytes,
+                        [string]$roleEnforcerArguments.Name,
+                        [string[]]@($roleEnforcerArguments.RequiredMarkers),
+                        [uint16]$expectedPinnedHookCount,
+                        [string]$expectedPinnedHookSourceSha256,
+                        [string[]]@($roleEnforcerArguments.Ui),
+                        [string[]]@($roleEnforcerArguments.Worker),
+                        [string[]]@($roleEnforcerArguments.Injection)
+                    ) | Out-Null
+                }
+                catch {
+                    $rejected = $true
+                }
             }
             if (-not $rejected) {
                 $allRejected = $false
@@ -1278,9 +1497,37 @@ workspace_additive_alias = {
         )
     }
 
+    # As with the binary roster above, the first symbol of every role is driven
+    # through the whole package builder and the rest are driven through the
+    # source-tree authority the builder calls. The gate is the same function
+    # either way - the package builder reaches it through
+    # Get-ProductionSourceCapabilityClosure - and it is the only thing in the
+    # builder that reads these files, so a symbol it does not reject here is a
+    # symbol the builder does not reject either.
+    #
+    # This is the shared helper's own function, called against the fixture root
+    # exactly as the fixture's own copy would be: the fixture's copy of
+    # PortableProduct.InteractionClosure.ps1 is a verbatim copy of the one this
+    # file dot-sourced, and the scenarios that mutate the fixture's copy of a
+    # gate do not run in this loop.
+    # Same control as the binary probe: the in-process gate has to accept the
+    # unmutated fixture, or every rejection below could be the gate failing on
+    # something that has nothing to do with the planted symbol.
+    try {
+        Assert-ProductionInteractionSourceTreeClosure `
+            -RepoRoot $root `
+            -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
+    }
+    catch {
+        throw (
+            'self-test source-tree gate rejects the unmutated fixture: ' +
+            $_.Exception.Message
+        )
+    }
     foreach ($sourceRole in $sourceRejectionRoles) {
         $sourceOriginal = [IO.File]::ReadAllText([string]$sourceRole.Path)
         $allSourceCapabilitiesRejected = $true
+        $sourceRoleBuilderPathProved = $false
         foreach ($symbol in @(Get-ForbiddenProductionClientCapabilitySymbols)) {
             [IO.File]::WriteAllText(
                 [string]$sourceRole.Path,
@@ -1288,15 +1535,23 @@ workspace_additive_alias = {
                 [Text.UTF8Encoding]::new($false)
             )
             $rejected = $false
+            $useBuilder = (-not $sourceRoleBuilderPathProved)
             try {
-                Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                    '-RecorderExe', $recorder,
-                    '-ReplayExe', $replay,
-                    '-CollectorDll', $collector,
-                    '-OutputZip', (Join-Path $releaseRoot ("forbidden-source-{0}-{1}.zip" -f
-                        $sourceRole.Name, $symbol)),
-                    '-Version', '0.1.0'
-                ) | Out-Null
+                if ($useBuilder) {
+                    Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
+                        '-RecorderExe', $recorder,
+                        '-ReplayExe', $replay,
+                        '-CollectorDll', $collector,
+                        '-OutputZip', (Join-Path $releaseRoot ("forbidden-source-{0}-{1}.zip" -f
+                            $sourceRole.Name, $symbol)),
+                        '-Version', '0.1.0'
+                    ) | Out-Null
+                }
+                else {
+                    Assert-ProductionInteractionSourceTreeClosure `
+                        -RepoRoot $root `
+                        -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
+                }
             }
             catch {
                 $rejected = $true
@@ -1307,6 +1562,9 @@ workspace_additive_alias = {
                     $sourceOriginal,
                     [Text.UTF8Encoding]::new($false)
                 )
+                if ($useBuilder) {
+                    $sourceRoleBuilderPathProved = $true
+                }
             }
             if (-not $rejected) {
                 $allSourceCapabilitiesRejected = $false
@@ -1318,6 +1576,11 @@ workspace_additive_alias = {
         )
     }
     $allProductionLaneRootsScanned = $true
+    # Same split as the two rosters above: the first lane root goes through the
+    # whole builder, the remaining forty-odd through the source-tree authority
+    # the builder calls. What varies across these cases is which lane root the
+    # authority reaches, not which gate decides.
+    $laneRootBuilderPathProved = $false
     foreach ($fixtureLaneRoot in $fixtureProductionLaneRoots) {
         $fixtureLaneLib = Join-Path $fixtureLaneRoot 'src\lib.rs'
         $fixtureLaneOriginal = [IO.File]::ReadAllText($fixtureLaneLib)
@@ -1328,16 +1591,24 @@ workspace_additive_alias = {
             [Text.UTF8Encoding]::new($false)
         )
         $rejected = $false
+        $useLaneBuilder = (-not $laneRootBuilderPathProved)
         try {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot (
-                    "forbidden-lane-root-{0}.zip" -f (Split-Path -Leaf $fixtureLaneRoot)
-                )),
-                '-Version', '0.1.0'
-            ) | Out-Null
+            if ($useLaneBuilder) {
+                Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
+                    '-RecorderExe', $recorder,
+                    '-ReplayExe', $replay,
+                    '-CollectorDll', $collector,
+                    '-OutputZip', (Join-Path $releaseRoot (
+                        "forbidden-lane-root-{0}.zip" -f (Split-Path -Leaf $fixtureLaneRoot)
+                    )),
+                    '-Version', '0.1.0'
+                ) | Out-Null
+            }
+            else {
+                Assert-ProductionInteractionSourceTreeClosure `
+                    -RepoRoot $root `
+                    -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
+            }
         }
         catch {
             $rejected = $true
@@ -1348,6 +1619,9 @@ workspace_additive_alias = {
                 $fixtureLaneOriginal,
                 [Text.UTF8Encoding]::new($false)
             )
+            if ($useLaneBuilder) {
+                $laneRootBuilderPathProved = $true
+            }
         }
         if (-not $rejected) {
             $allProductionLaneRootsScanned = $false

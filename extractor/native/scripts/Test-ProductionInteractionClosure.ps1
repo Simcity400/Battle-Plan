@@ -411,8 +411,16 @@ $cases++
 $suspendingCodeMutationFindings = Get-ProductionSuspendingCodeMutationFindings `
     -RepoRoot $repoRoot `
     -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $repoRoot)
-Write-Host (Format-ProductionSuspendingCodeMutationFindings `
-    -Findings $suspendingCodeMutationFindings)
+# On stderr, not stdout. This script's stdout is a single JSON document and
+# Invoke-CentralRustValidation.ps1 pipes the whole captured transcript into
+# ConvertFrom-Json; printing the roster to stdout put 131 lines of prose in
+# front of it, so every -Mode Final and -Mode Release failed with "Invalid JSON
+# primitive: production" before reaching any later gate. The roster is still
+# printed - that is the point of the comment above - and a caller that wants it
+# in a log redirects 2>&1, which is what the deployment-acceptance wrapper
+# already does.
+[Console]::Error.WriteLine((Format-ProductionSuspendingCodeMutationFindings `
+    -Findings $suspendingCodeMutationFindings))
 $measuredSuspendingBaseline = Get-ProductionSuspendingCodeMutationBaseline `
     -Findings $suspendingCodeMutationFindings
 $suspendingBaselinePath =
@@ -429,7 +437,7 @@ $suspendingBaselineDifferences = @(
     }
 )
 foreach ($difference in $suspendingBaselineDifferences) {
-    Write-Host "  baseline drift: $difference"
+    [Console]::Error.WriteLine("  baseline drift: $difference")
 }
 Assert-ClosureCase 'thread-suspending code mutation matches the accepted baseline' (
     $suspendingBaselineDifferences.Count -eq 0

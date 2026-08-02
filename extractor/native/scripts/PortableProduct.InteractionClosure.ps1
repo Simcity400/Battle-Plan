@@ -1,5 +1,70 @@
 ﻿Set-StrictMode -Version Latest
 
+# Content-addressed derivation cache.
+#
+# The authorities in this file are whole-tree: changing one production source
+# file re-derives every other file's comment-stripped code and capability
+# evidence from scratch. That is fine for one Release; it is not fine for the
+# package self-test, which mutates one file and re-runs the whole gate several
+# hundred times in a row.
+#
+# Every key below is the SHA256 of the exact text the answer was derived from,
+# never a path and never a timestamp. That matters: this file is dot-sourced
+# into processes that rewrite production sources between calls, and a
+# path-keyed or mtime-keyed cache would hand such a call a stale answer (two
+# forbidden symbols of the same length written into the same file inside one
+# filesystem timestamp tick is not a hypothetical here - `SuspendThread` and
+# `ResumeThread` are both thirteen characters). Keying on content means a hit
+# can only return what recomputing would have returned.
+#
+# Only successful derivations are stored, so an input that throws still throws
+# every time it is presented.
+#
+# The cache is bounded. A caller that rewrites the same file several hundred
+# times presents a new content key every time, and the largest production
+# source here is over a megabyte, so an unbounded cache would grow without
+# limit while the useful entries - the files that did not change - stay a fixed
+# size. On overflow the whole cache is dropped rather than evicted piecewise:
+# the entries are pure functions of their keys, so dropping them costs one
+# re-derivation and can never change an answer.
+$script:ProductionInteractionDerivationCache = @{}
+$script:ProductionInteractionDerivationCacheWeight = 0
+# Roughly 128 MB of UTF-16, measured against a tree whose largest production
+# source is about 1.7 MB: big enough that a caller rewriting one file keeps the
+# other several hundred cached for tens of iterations, small enough that the
+# process stays well inside what a validation runner should hold.
+$script:ProductionInteractionDerivationCacheWeightBudget = 64000000
+
+function Set-ProductionInteractionDerivation {
+    param(
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][int]$Weight
+    )
+
+    if ($script:ProductionInteractionDerivationCacheWeight + $Weight -gt
+            $script:ProductionInteractionDerivationCacheWeightBudget) {
+        $script:ProductionInteractionDerivationCache = @{}
+        $script:ProductionInteractionDerivationCacheWeight = 0
+    }
+    $script:ProductionInteractionDerivationCache[$Key] = $Value
+    $script:ProductionInteractionDerivationCacheWeight += $Weight
+}
+
+function Get-ProductionInteractionContentKey {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString(
+            $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+        ).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
 function Get-ProductionInteractionRelativePath {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
@@ -717,6 +782,18 @@ function Assert-ProtectedLaneDefaultFeatureClosure {
 function Get-RustCodeWithoutCommentsOrStrings {
     param([Parameter(Mandatory = $true)][string]$Text)
 
+    $key = 'rust-code:' + (Get-ProductionInteractionContentKey -Text $Text)
+    if ($script:ProductionInteractionDerivationCache.Contains($key)) {
+        return [string]$script:ProductionInteractionDerivationCache[$key]
+    }
+    $stripped = Get-RustCodeWithoutCommentsOrStringsCore -Text $Text
+    Set-ProductionInteractionDerivation -Key $key -Value $stripped -Weight $stripped.Length
+    return $stripped
+}
+
+function Get-RustCodeWithoutCommentsOrStringsCore {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
     $output = [Text.StringBuilder]::new($Text.Length)
     $index = 0
     $blockDepth = 0
@@ -1125,16 +1202,31 @@ function Get-ProductionInteractionSourceTreeAuthority {
     if ($files.Count -eq 0) {
         throw 'production interaction source tree is empty'
     }
-    $rows = @(
-        foreach ($file in $files) {
-            [ordered]@{
-                path = Get-ProductionInteractionRelativePath `
-                    -Root $repo `
-                    -Path $file.FullName
-                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Same digest Get-FileHash -Algorithm SHA256 produces - SHA256 over the
+    # file's bytes - computed without paying the cmdlet's per-file overhead.
+    # This walk runs once per gate evaluation and the self-test evaluates the
+    # gate several hundred times; measured on the fixture tree it is the
+    # difference between about 1.1 s and about 0.05 s per evaluation. The
+    # tree digest this feeds is compared byte for byte against the previous
+    # implementation's in the lane's differential evidence.
+    $rowSha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $rows = @(
+            foreach ($file in $files) {
+                [ordered]@{
+                    path = Get-ProductionInteractionRelativePath `
+                        -Root $repo `
+                        -Path $file.FullName
+                    sha256 = ([BitConverter]::ToString(
+                        $rowSha.ComputeHash([IO.File]::ReadAllBytes($file.FullName))
+                    )).Replace('-', '').ToLowerInvariant()
+                }
             }
-        }
-    )
+        )
+    }
+    finally {
+        $rowSha.Dispose()
+    }
     $preimage = ($rows | ForEach-Object { "$($_.path)`0$($_.sha256)" }) -join "`n"
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
@@ -1748,6 +1840,47 @@ function Get-ProductionCapabilityEvidence {
         [switch]$CFamily
     )
 
+    # The whole input is in the key: the two texts the answer is read out of,
+    # the roster it is read against, the path that is stamped into every site,
+    # and the language flag that selects the declaration and call-context rules.
+    $key = 'capability-evidence:' + (Get-ProductionInteractionContentKey -Text (
+        @(
+            (Get-ProductionInteractionContentKey -Text $Source),
+            (Get-ProductionInteractionContentKey -Text $Code),
+            (@($EntryPoints) -join "`0"),
+            $Path,
+            [string][bool]$CFamily
+        ) -join "`n"
+    ))
+    if ($script:ProductionInteractionDerivationCache.Contains($key)) {
+        # The returned record and its site entries are read-only to every caller
+        # in this file: accumulators copy site references, and `resolves_exports`
+        # is set on the accumulator, never back onto the evidence. Sharing one
+        # instance across hits is therefore indistinguishable from recomputing.
+        return $script:ProductionInteractionDerivationCache[$key]
+    }
+    $evidence = Get-ProductionCapabilityEvidenceCore `
+        -Source $Source `
+        -Code $Code `
+        -EntryPoints $EntryPoints `
+        -Path $Path `
+        -CFamily:$CFamily
+    Set-ProductionInteractionDerivation `
+        -Key $key `
+        -Value $evidence `
+        -Weight (256 + 256 * (@($evidence.sites).Count + @($evidence.literal_capabilities).Count))
+    return $evidence
+}
+
+function Get-ProductionCapabilityEvidenceCore {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Source,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Code,
+        [Parameter(Mandatory = $true)][string[]]$EntryPoints,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$CFamily
+    )
+
     $sites = [System.Collections.Generic.List[object]]::new()
     # `use` is a reserved word in Rust only; in C it could be a macro, and a
     # macro must not be able to shield a value use.
@@ -1956,6 +2089,31 @@ function Get-ProductionCrateSourceCapabilityScan {
         [Parameter(Mandatory = $true)][string[]]$CodeMutationEntryPoints
     )
 
+    # Deliberately NOT cached across calls, after three attempts at a safe key.
+    #
+    # A cache is only sound here if the key describes exactly the bytes the
+    # value was derived from. This function walks a directory, so the key has to
+    # come from a separate pass over that directory, and separate passes are
+    # separate snapshots:
+    #   - a path/length/last-write-tick key is defeated by a same-length edit
+    #     that restores the timestamp;
+    #   - a content key read before the scan can file a value derived from state
+    #     B under a key describing state A;
+    #   - re-reading the key after the scan narrows that to a change made and
+    #     reverted inside the scan, but does not close it, and the difference
+    #     from the uncached scan is not the torn read - it is that the cache
+    #     PERSISTS the torn read and keeps serving it after the tree is stable
+    #     again. It also introduces a failure mode the uncached scan does not
+    #     have: the post-scan read can throw and discard a scan that had already
+    #     succeeded.
+    # Deriving key and value from one pass would mean reading every dependency
+    # source before the lookup, and that read is essentially the whole cost of
+    # this scan, so a sound cache would save nothing.
+    #
+    # The per-file strip and capability-evidence caches below DO apply inside
+    # this scan, and they are sound because their key is the exact text handed
+    # to them - not a re-read of a path. They remove the expensive part; what is
+    # left is the read.
     $sourceExtensions = @(Get-ProductionInteractionSourceExtensions)
     $excludedTopLevel = @('tests', 'benches', 'examples', 'fuzz', 'target')
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -3012,6 +3170,44 @@ function Get-ProductionThreadFreezeExemptions {
 }
 
 function Get-ProductionInteractionForbiddenSymbolsForPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$FreezeExemptions
+    )
+
+    # The answer depends on the repository root (it decides which of the three
+    # exception paths this file is), the file's own identity, and this file's
+    # entry in the freeze-exemption map - nothing else. The rest of the map
+    # cannot change this path's answer, so it is deliberately not in the key.
+    $pathFull = [IO.Path]::GetFullPath($Path)
+    $exemptionsForPath = @(
+        if ($null -ne $FreezeExemptions -and $FreezeExemptions.Contains($pathFull)) {
+            $FreezeExemptions[$pathFull]
+        }
+    )
+    $key = 'path-forbidden:' + (Get-ProductionInteractionContentKey -Text (
+        @(
+            [IO.Path]::GetFullPath($RepoRoot),
+            $pathFull,
+            ($exemptionsForPath -join "`0")
+        ) -join "`n"
+    ))
+    if ($script:ProductionInteractionDerivationCache.Contains($key)) {
+        return @($script:ProductionInteractionDerivationCache[$key])
+    }
+    $symbols = @(Get-ProductionInteractionForbiddenSymbolsForPathCore `
+        -RepoRoot $RepoRoot `
+        -Path $Path `
+        -FreezeExemptions $FreezeExemptions)
+    Set-ProductionInteractionDerivation `
+        -Key $key `
+        -Value $symbols `
+        -Weight (64 + 64 * $symbols.Count)
+    return @($symbols)
+}
+
+function Get-ProductionInteractionForbiddenSymbolsForPathCore {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$Path,

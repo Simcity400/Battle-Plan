@@ -99,10 +99,14 @@ jobs:
 
       - name: Run the authorized centralized validation
         shell: pwsh
+        # -RunPackageSelfTest is passed explicitly. The package builder/verifier
+        # self-test is opt-in in the runner so a developer's routine Final does
+        # not pay for it, but CI is where that gate belongs and its cadence is
+        # unchanged here: dropping the switch would silently retire the gate.
         run: >-
           powershell.exe -NoProfile -ExecutionPolicy Bypass
           -File "${{ github.workspace }}\extractor\native\scripts\Invoke-CentralRustValidation.ps1"
-          -Mode Final -Workspace All -CacheMode Iterative
+          -Mode Final -Workspace All -CacheMode Iterative -RunPackageSelfTest
 
       - name: Save trusted Cargo source cache
         if: github.event_name == 'push' && success() && steps.rust-cache.outputs.cache-hit != 'true'

@@ -23,6 +23,16 @@ param(
 
     [switch]$Timings,
 
+    # The portable-product package builder/verifier self-test is the one gate in
+    # this runner whose cost is measured in tens of minutes rather than seconds,
+    # because it drives the package builder once per mutation across four
+    # forbidden-capability rosters. It is a source-only test: nothing it can
+    # detect changes between two runs unless the packaging scripts or the
+    # production source tree change. Running it on every Final/Release made the
+    # routine gate unaffordable, so it is opt-in. It is never skipped silently -
+    # the default path prints exactly what was not run and how to run it.
+    [switch]$RunPackageSelfTest,
+
     # A full Release without this path emits only fresh candidate artifacts for
     # a real capture. Supplying the resulting production receipt on a second
     # full Release is the only route to a portable package/production receipt.
@@ -491,6 +501,19 @@ try {
         throw "Another centralized Rust validation process is already active."
     }
 
+    # The package self-test only has a place in the Final and Release batteries.
+    # Accepting the switch elsewhere and quietly doing nothing would be the same
+    # silent skip the switch exists to prevent - worse, because the caller asked
+    # for the test by name and would be told nothing.
+    if ($RunPackageSelfTest -and $Mode -notin @("Final", "Release")) {
+        throw (
+            "-RunPackageSelfTest is only meaningful for -Mode Final or -Mode Release; " +
+            "mode '$Mode' does not run the portable-product package self-test. Run it " +
+            "on its own instead: powershell.exe -NoProfile -ExecutionPolicy Bypass " +
+            "-File $portablePackageSelfTest"
+        )
+    }
+
     if ($Workspace -in @("All", "Extractor") -and
         $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {
         # These source checks run before Cargo and, for Release, before stale
@@ -607,7 +630,12 @@ try {
         $interactionClosureResult = (($interactionClosureOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$interactionClosureResult.schema -cne 'battle-plan.production_interaction_closure_test.v1' -or
             [string]$interactionClosureResult.status -cne 'PASS' -or
-            [int]$interactionClosureResult.cases -ne 30 -or
+            # Test-ProductionInteractionClosure.ps1 emits 35. This pin said 30
+            # for at least three commits while the test emitted 35, which means
+            # every Final and Release threw here before reaching any of the
+            # gates below - the case-count pin is the second pin site that gets
+            # missed when cases are added, exactly like the marker census.
+            [int]$interactionClosureResult.cases -ne 35 -or
             [string]$interactionClosureResult.policy -cne 'passive_injected_observer') {
             throw "production interaction-closure source tests returned no authority"
         }
@@ -633,19 +661,31 @@ try {
             throw "portable-product static-CRT admission tests returned no authority"
         }
 
-        $packageSelfTestOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portablePackageSelfTest)
-        if ($LASTEXITCODE -ne 0) {
-            throw "portable-product package builder/verifier self-tests exited with code $LASTEXITCODE"
+        if ($RunPackageSelfTest) {
+            $packageSelfTestOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portablePackageSelfTest)
+            if ($LASTEXITCODE -ne 0) {
+                throw "portable-product package builder/verifier self-tests exited with code $LASTEXITCODE"
+            }
+            $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+            if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
+                [string]$packageSelfTestResult.status -cne 'PASS' -or
+                # 61 + 5. The five are the three pinned manifest-graph cases, the
+                # case that the derived fixture reaches exactly the delegating unit
+                # closure the committed baseline accepts, and the case that a
+                # drifted accepted-inventory pin is rejected.
+                [int]$packageSelfTestResult.cases -ne 66) {
+                throw "portable-product package builder/verifier self-tests returned no authority"
+            }
         }
-        $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
-        if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
-            [string]$packageSelfTestResult.status -cne 'PASS' -or
-            # 61 + 5. The five are the three pinned manifest-graph cases, the
-            # case that the derived fixture reaches exactly the delegating unit
-            # closure the committed baseline accepts, and the case that a
-            # drifted accepted-inventory pin is rejected.
-            [int]$packageSelfTestResult.cases -ne 66) {
-            throw "portable-product package builder/verifier self-tests returned no authority"
+        else {
+            Write-Host (
+                'SKIPPED BY POLICY: portable-product package builder/verifier ' +
+                'self-tests (Test-PortableProductPackageSelfTest.ps1, 66 cases) ' +
+                'did NOT run. This validation carries no package ' +
+                'builder/verifier authority. Re-run this command with ' +
+                '-RunPackageSelfTest, or run the test on its own: ' +
+                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portablePackageSelfTest"
+            )
         }
     }
 
