@@ -16,6 +16,17 @@ The default is `<local-path>`; override it with
 `BATTLE_PLAN_RE_STATE_ROOT`. The SQLite registry uses WAL mode, permits concurrent
 readers, and serializes writes. Agents never edit the database directly.
 
+The exact-a729 Ghidra broker also reads function-relevant claims from this same
+registry. `ghidra_get_function` and `ghidra_coverage` surface claims whose subject
+or value names the exact VA, RVA, native logical symbol, or function name.
+`ghidra_annotate_function` appends a `status=proposed`, `predicate=annotation`
+claim through `Registry.record_function_annotation`; it does not create a second
+notes database and never updates or deletes an older claim. Evidence references
+must name an existing completed Ghidra job, a job-relative artifact path, and the
+artifact's matching SHA-256. Validated references are retained in the claim value
+and job IDs are also populated in the existing claim column. Claim lookup uses
+exact address/token boundaries and isolates build-specific claims.
+
 ## Relationship to the exact-a729 broker
 
 The existing `hoi4_ghidra` server remains the sole supported entry point for

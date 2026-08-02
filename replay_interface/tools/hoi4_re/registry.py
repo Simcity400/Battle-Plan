@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,6 +12,9 @@ from common import utc_now
 
 
 SCHEMA_VERSION = 1
+GHIDRA_JOB_ID_RE = re.compile(
+    r"^[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}-[0-9a-f]{8}$"
+)
 
 
 SCHEMA = """
@@ -144,8 +148,20 @@ def native_symbol_id(build_id: str, rva: int) -> str:
 
 
 class Registry:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, read_only: bool = False):
         self.path = path
+        self.read_only = read_only
+        if read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(f"registry is missing: {self.path}")
+            with self.connect() as connection:
+                current = connection.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()
+                if current is None or int(current[0]) != SCHEMA_VERSION:
+                    value = None if current is None else current[0]
+                    raise RuntimeError(f"unsupported registry schema version {value}")
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
@@ -160,16 +176,25 @@ class Registry:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30.0)
+        if self.read_only:
+            uri = self.path.resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=30.0)
+        else:
+            connection = sqlite3.connect(self.path, timeout=30.0)
         try:
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA foreign_keys=ON")
+            if self.read_only:
+                connection.execute("PRAGMA query_only=ON")
+            else:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA busy_timeout=30000")
             yield connection
-            connection.commit()
+            if not self.read_only:
+                connection.commit()
         except BaseException:
-            connection.rollback()
+            if not self.read_only:
+                connection.rollback()
             raise
         finally:
             connection.close()
@@ -458,6 +483,190 @@ class Registry:
                 ),
             )
         return claim_id
+
+    def claims_for_function(
+        self,
+        address: int,
+        image_base: int,
+        executable_sha256: str,
+        function_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return existing claims that name an exact VA, RVA, symbol, or function."""
+        rva = address - image_base
+        with self.connect() as connection:
+            build = connection.execute(
+                "SELECT build_id FROM builds WHERE sha256=?", (executable_sha256.lower(),)
+            ).fetchone()
+            build_id = None if build is None else str(build[0])
+            symbol_ids: list[str] = []
+            if build_id is not None and rva >= 0:
+                symbol_ids = [
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT symbol_id FROM symbol_instances WHERE build_id=? AND rva=?",
+                        (build_id, rva),
+                    )
+                ]
+            # Orphan build ids (rows whose build no longer exists in `builds`) are
+            # legacy claims, not claims about some other binary: dropping them hides
+            # real findings that name this exact address. They are surfaced with
+            # build_attribution='orphan' so callers can weigh them accordingly.
+            orphan = (
+                "(build_id IS NOT NULL AND "
+                "build_id NOT IN (SELECT build_id FROM builds))"
+            )
+            if build_id is None:
+                rows = connection.execute(
+                    f"SELECT * FROM claims WHERE build_id IS NULL OR {orphan} "
+                    "ORDER BY created_utc DESC,claim_id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    f"""
+                    SELECT * FROM claims
+                    WHERE build_id IS NULL OR build_id=? OR {orphan}
+                    ORDER BY created_utc DESC,claim_id
+                    """,
+                    (build_id,),
+                ).fetchall()
+            known_builds = {
+                str(row[0]) for row in connection.execute("SELECT build_id FROM builds")
+            }
+
+        # Boundaries reject both hex continuation (0x...920 must not match 0x...9200)
+        # and surrounding identifier characters (prefix0x...suffix is a different
+        # token, not a citation of this address).
+        expressions = [
+            re.compile(rf"(?<![0-9a-z_])0x{address:x}(?![0-9a-z_])"),
+            re.compile(rf"(?<![a-z0-9_])fun_{address:x}(?![0-9a-z_])"),
+            re.compile(rf"(?<![a-z0-9_])func_{address:x}(?![0-9a-z_])"),
+        ]
+        if rva >= 0:
+            expressions.extend(
+                [
+                    re.compile(rf"(?<![a-z0-9_])rva:0x0*{rva:x}(?![0-9a-z_])"),
+                    re.compile(rf"(?<![a-z0-9_])\+0x0*{rva:x}(?![0-9a-z_])"),
+                ]
+            )
+        exact_tokens = {value.lower() for value in symbol_ids}
+        if function_name:
+            exact_tokens.add(function_name.lower())
+
+        results = []
+        for row in rows:
+            haystack = "\n".join(
+                str(row[key]).lower()
+                for key in ("subject", "predicate", "value_json")
+                if row[key] is not None
+            )
+            exact_match = any(
+                re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", haystack)
+                for token in exact_tokens if token
+            )
+            if not exact_match and not any(expression.search(haystack) for expression in expressions):
+                continue
+            value = dict(row)
+            value["value"] = json.loads(value.pop("value_json"))
+            value["evidence_job_ids"] = json.loads(value.pop("evidence_job_ids_json"))
+            row_build = value.get("build_id")
+            if row_build is None:
+                value["build_attribution"] = "build_agnostic"
+            elif build_id is not None and str(row_build) == build_id:
+                value["build_attribution"] = "exact"
+            elif str(row_build) not in known_builds:
+                value["build_attribution"] = "orphan"
+            else:
+                value["build_attribution"] = "other_build"
+            results.append(value)
+        return results
+
+    def record_function_annotation(
+        self,
+        address: int,
+        image_base: int,
+        executable_sha256: str,
+        note: str,
+        evidence_refs: list[Any],
+        evidence_root: Path | None = None,
+    ) -> dict[str, Any]:
+        """Append a proposed function finding to the existing WAL claims journal."""
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("note must be a non-empty string")
+        if not isinstance(evidence_refs, list) or not evidence_refs:
+            raise ValueError("evidence_refs must contain at least one artifact citation")
+        if evidence_root is None:
+            raise ValueError("evidence_root is required to verify annotation citations")
+        evidence_root = evidence_root.resolve()
+        validated_refs = []
+        for reference in evidence_refs:
+            if not isinstance(reference, dict):
+                raise ValueError("each evidence reference must be an object")
+            job_id = reference.get("job_id")
+            relative = reference.get("path")
+            digest = reference.get("sha256")
+            if not isinstance(job_id, str) or GHIDRA_JOB_ID_RE.fullmatch(job_id) is None:
+                raise ValueError("evidence reference job_id is invalid")
+            if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+                raise ValueError("evidence reference path must be job-relative")
+            job_dir = (evidence_root / job_id).resolve()
+            artifact = (job_dir / relative).resolve()
+            if job_dir not in artifact.parents:
+                raise ValueError("evidence reference path escapes its job")
+            job_path = job_dir / "job.json"
+            if not job_path.is_file():
+                raise ValueError(f"evidence reference job does not exist: {job_id}")
+            receipt = json.loads(job_path.read_text(encoding="utf-8"))
+            if receipt.get("job_id") != job_id or receipt.get("status") != "complete":
+                raise ValueError(f"evidence reference job is not complete: {job_id}")
+            if not artifact.is_file():
+                raise ValueError("evidence reference artifact does not exist")
+            hasher = hashlib.sha256()
+            with artifact.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            actual_sha = hasher.hexdigest()
+            if not isinstance(digest, str) or digest.lower() != actual_sha:
+                raise ValueError("evidence reference SHA-256 disagrees with artifact")
+            validated_refs.append(
+                {"job_id": job_id, "path": artifact.relative_to(job_dir).as_posix(),
+                 "sha256": actual_sha, "bytes": artifact.stat().st_size}
+            )
+        # Fail before opening a write transaction if a reference cannot be journaled.
+        json.dumps(validated_refs, sort_keys=True)
+        with self.connect() as connection:
+            build = connection.execute(
+                "SELECT build_id FROM builds WHERE sha256=?", (executable_sha256.lower(),)
+            ).fetchone()
+        build_id = None if build is None else str(build[0])
+        created = utc_now()
+        evidence_job_ids = []
+        for reference in validated_refs:
+            evidence_job_ids.append(reference["job_id"])
+        payload = {
+            "address": f"0x{address:x}",
+            "rva": f"0x{address - image_base:x}" if address >= image_base else None,
+            "note": note.strip(),
+            "evidence_refs": validated_refs,
+            "annotation_created_utc": created,
+        }
+        claim_seed = json.dumps(payload, sort_keys=True).encode("utf-8")
+        claim_id = "claim_" + hashlib.sha256(claim_seed).hexdigest()[:20]
+        recorded = {
+            "claim_id": claim_id,
+            "subject": f"a729:function:0x{address:x}",
+            "predicate": "annotation",
+            "value": payload,
+            "status": "proposed",
+            "build_id": build_id,
+            "evidence_job_ids": list(dict.fromkeys(evidence_job_ids)),
+        }
+        self.record_claim(recorded)
+        return {
+            "claim_id": claim_id,
+            "status": "proposed",
+            "build_id": build_id,
+            "created_utc": created,
+        }
 
     def query(self, kind: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         limit = arguments.get("limit", 100)

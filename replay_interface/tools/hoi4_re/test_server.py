@@ -97,6 +97,74 @@ class RegistryDiffTests(unittest.TestCase):
         self.assertEqual(0, result["matched_function_count"])
 
 
+class RegistryFunctionClaimTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.registry = Registry(Path(self.temp.name) / "registry.sqlite3")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _claim(self, claim_id, value, build_id=None):
+        self.registry.record_claim(
+            {
+                "claim_id": claim_id,
+                "subject": "fixture",
+                "predicate": "annotation",
+                "value": value,
+                "status": "proposed",
+                "build_id": build_id,
+                "evidence_job_ids": [],
+            }
+        )
+
+    def test_function_claim_lookup_uses_boundaries_func_paths_and_build_isolation(self):
+        address = 0x140C2C920
+        self._claim("claim_long", {"note": "mentions 0x140c2c9200 only"})
+        self._claim("claim_func", {"path": "evidence/func_140c2c920.graph.txt"})
+        other_build = self.registry.upsert_build("other", SHA_B, "0x140000000")
+        self._claim("claim_wrong_build", {"note": "0x140c2c920"}, other_build)
+        rows = self.registry.claims_for_function(address, IMAGE_BASE, SHA_A)
+        self.assertEqual(["claim_func"], [row["claim_id"] for row in rows])
+
+    def test_address_token_is_not_matched_inside_a_longer_identifier(self):
+        address = 0x140C2C920
+        self._claim("claim_embedded", {"note": "prefix0x140c2c920suffix"})
+        self._claim("claim_real", {"note": "0x140c2c920 is the producer"})
+        rows = self.registry.claims_for_function(address, IMAGE_BASE, SHA_A)
+        self.assertEqual(["claim_real"], [row["claim_id"] for row in rows])
+
+    def test_rva_forms_are_not_matched_inside_a_longer_identifier(self):
+        address = 0x140C2C920
+        self._claim("rva_embedded", {"note": "rva:0xc2c920suffix"})
+        self._claim("rva_prefixed", {"note": "prefixrva:0xc2c920"})
+        self._claim("plus_embedded", {"note": "at +0xc2c920suffix"})
+        self._claim("rva_real", {"note": "rva:0xc2c920 confirmed"})
+        rows = self.registry.claims_for_function(address, IMAGE_BASE, SHA_A)
+        self.assertEqual(["rva_real"], [row["claim_id"] for row in rows])
+
+    def test_orphan_build_claims_remain_visible_and_are_labelled(self):
+        # A claim whose build row no longer exists is legacy, not evidence about a
+        # different binary; hiding it loses real findings for this exact address.
+        address = 0x140C2C920
+        orphan_build = self.registry.upsert_build("legacy", SHA_B, "0x140000000")
+        self._claim("claim_orphan", {"note": "0x140c2c920 verified"}, orphan_build)
+        with self.registry.connect() as connection:
+            connection.execute("DELETE FROM builds WHERE build_id=?", (orphan_build,))
+            connection.commit()
+        rows = self.registry.claims_for_function(address, IMAGE_BASE, SHA_A)
+        self.assertEqual(["claim_orphan"], [row["claim_id"] for row in rows])
+        self.assertEqual("orphan", rows[0]["build_attribution"])
+
+    def test_claims_for_a_different_registered_build_stay_isolated(self):
+        address = 0x140C2C920
+        other_build = self.registry.upsert_build("other", SHA_B, "0x140000000")
+        self._claim("claim_other", {"note": "0x140c2c920"}, other_build)
+        self.registry.upsert_build("current", SHA_A, "0x140000000")
+        rows = self.registry.claims_for_function(address, IMAGE_BASE, SHA_A)
+        self.assertEqual([], [row["claim_id"] for row in rows])
+
+
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
