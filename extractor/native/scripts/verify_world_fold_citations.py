@@ -284,64 +284,80 @@ def verify_repo(
         raise VerificationError(f"no dNN modules found under {wire_dir}")
 
     lane_markers: dict[tuple[int, str, str], tuple[Span, str]] = {}
+    # Every module is checked on every run and each failure is retained. A
+    # checker that stops at the FIRST drifted module reports one defect and
+    # hides the rest: one stale d11 range masked 31 further stale ranges for
+    # days, and because this check runs before Cargo, the whole central gate
+    # was unreachable the entire time. Report the complete set so one fix pass
+    # can close it.
+    module_failures: list[str] = []
     for module in modules:
         domain = int(module.stem[1:])
         module_source = _read_utf8(module)
-        marker = _only_match(
-            WORLD_MARKER_RE, module_source, module.relative_to(repo_root).as_posix()
-        )
-        marker_domain = int(marker.group("domain"))
-        if marker_domain != domain:
-            raise VerificationError(
-                f"{module.name}: marker domain {marker_domain} != filename domain {domain}"
-            )
-        functions = marker.group("functions").split(",")
-        dispatched = dispatch.get(domain)
-        if dispatched is None:
-            raise VerificationError(f"{module.name}: domain absent from fold_domain_data")
-        if functions[0] != dispatched:
-            raise VerificationError(
-                f"{module.name}: first authority {functions[0]} != dispatch {dispatched}"
-            )
         try:
-            function_ranges = [spans[name] for name in functions]
-        except KeyError as error:
-            raise VerificationError(
-                f"{module.name}: missing world-fold function {error.args[0]}"
-            ) from error
-        expected = Span(
-            min(span.start for span in function_ranges),
-            max(span.end for span in function_ranges),
-        )
-        declared = Span(int(marker.group("start")), int(marker.group("end")))
-        if declared != expected:
-            raise VerificationError(
-                f"{module.name}: declared lines {declared.start}-{declared.end}, "
-                f"actual {expected.start}-{expected.end}"
+            marker = _only_match(
+                WORLD_MARKER_RE, module_source, module.relative_to(repo_root).as_posix()
             )
-        expected_hash = normalized_span_hash(world_source, expected)
-        if marker.group("sha256") != expected_hash:
-            raise VerificationError(
-                f"{module.name}: authority digest changed for "
-                f"{expected.start}-{expected.end}"
+            marker_domain = int(marker.group("domain"))
+            if marker_domain != domain:
+                raise VerificationError(
+                    f"{module.name}: marker domain {marker_domain} != filename domain {domain}"
+                )
+            functions = marker.group("functions").split(",")
+            dispatched = dispatch.get(domain)
+            if dispatched is None:
+                raise VerificationError(f"{module.name}: domain absent from fold_domain_data")
+            if functions[0] != dispatched:
+                raise VerificationError(
+                    f"{module.name}: first authority {functions[0]} != dispatch {dispatched}"
+                )
+            try:
+                function_ranges = [spans[name] for name in functions]
+            except KeyError as error:
+                raise VerificationError(
+                    f"{module.name}: missing world-fold function {error.args[0]}"
+                ) from error
+            expected = Span(
+                min(span.start for span in function_ranges),
+                max(span.end for span in function_ranges),
             )
-        human_citation = (
-            f"`world_fold.rs:{expected.start}`-`:{expected.end}`"
-        )
-        if human_citation not in module_source:
-            raise VerificationError(
-                f"{module.name}: human authority citation is not {human_citation}"
+            declared = Span(int(marker.group("start")), int(marker.group("end")))
+            if declared != expected:
+                raise VerificationError(
+                    f"{module.name}: declared lines {declared.start}-{declared.end}, "
+                    f"actual {expected.start}-{expected.end}"
+                )
+            expected_hash = normalized_span_hash(world_source, expected)
+            if marker.group("sha256") != expected_hash:
+                raise VerificationError(
+                    f"{module.name}: authority digest changed for "
+                    f"{expected.start}-{expected.end}"
+                )
+            human_citation = (
+                f"`world_fold.rs:{expected.start}`-`:{expected.end}`"
             )
+            if human_citation not in module_source:
+                raise VerificationError(
+                    f"{module.name}: human authority citation is not {human_citation}"
+                )
+        except VerificationError as error:
+            module_failures.append(str(error))
 
+        # Lane markers are an independent authority (they pin a capture-lane
+        # decoder, not the fold envelope), so they are still collected for a
+        # module whose world-fold citation drifted. Skipping them would turn one
+        # stale line range into a spurious "lane authority marker set drifted".
         for lane in LANE_MARKER_RE.finditer(module_source):
             lane_domain = int(lane.group("domain"))
             if lane_domain != domain:
-                raise VerificationError(
+                module_failures.append(
                     f"{module.name}: lane marker domain {lane_domain} != {domain}"
                 )
+                continue
             key = (lane_domain, lane.group("path"), lane.group("function"))
             if key in lane_markers:
-                raise VerificationError(f"duplicate lane authority marker: {key}")
+                module_failures.append(f"duplicate lane authority marker: {key}")
+                continue
             lane_markers[key] = (
                 Span(int(lane.group("start")), int(lane.group("end"))),
                 lane.group("sha256"),
@@ -351,37 +367,46 @@ def verify_repo(
     if set(lane_markers) != required:
         missing = sorted(required - set(lane_markers))
         unexpected = sorted(set(lane_markers) - required)
-        raise VerificationError(
+        module_failures.append(
             f"lane authority marker set drifted; missing={missing}, "
             f"unexpected={unexpected}"
         )
 
     for (domain, relative, function), (declared, digest) in lane_markers.items():
-        authority_path = (repo_root / relative).resolve()
         try:
-            authority_path.relative_to(repo_root)
-        except ValueError as error:
-            raise VerificationError(
-                f"d{domain}: lane authority escapes repository: {relative}"
-            ) from error
-        authority_source = _read_utf8(authority_path)
-        authority_spans = function_spans(authority_source)
-        actual = authority_spans.get(function)
-        if actual is None:
-            raise VerificationError(
-                f"d{domain}: {relative} has no function {function}"
-            )
-        if declared != actual:
-            raise VerificationError(
-                f"d{domain}: lane authority {function} declared "
-                f"{declared.start}-{declared.end}, actual "
-                f"{actual.start}-{actual.end}"
-            )
-        actual_hash = normalized_span_hash(authority_source, actual)
-        if digest != actual_hash:
-            raise VerificationError(
-                f"d{domain}: lane authority digest changed for {relative}::{function}"
-            )
+            authority_path = (repo_root / relative).resolve()
+            try:
+                authority_path.relative_to(repo_root)
+            except ValueError as error:
+                raise VerificationError(
+                    f"d{domain}: lane authority escapes repository: {relative}"
+                ) from error
+            authority_source = _read_utf8(authority_path)
+            authority_spans = function_spans(authority_source)
+            actual = authority_spans.get(function)
+            if actual is None:
+                raise VerificationError(
+                    f"d{domain}: {relative} has no function {function}"
+                )
+            if declared != actual:
+                raise VerificationError(
+                    f"d{domain}: lane authority {function} declared "
+                    f"{declared.start}-{declared.end}, actual "
+                    f"{actual.start}-{actual.end}"
+                )
+            actual_hash = normalized_span_hash(authority_source, actual)
+            if digest != actual_hash:
+                raise VerificationError(
+                    f"d{domain}: lane authority digest changed for {relative}::{function}"
+                )
+        except VerificationError as error:
+            module_failures.append(str(error))
+
+    if module_failures:
+        raise VerificationError(
+            f"{len(module_failures)} citation authority failure(s): "
+            + "; ".join(module_failures)
+        )
 
     return len(modules), len(lane_markers)
 

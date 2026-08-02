@@ -62,6 +62,24 @@ Prints a deterministic JSON report:
 - `hours[]` — per game-hour: `hour_index`, `date`, `snapshot_hash` (SHA-256 of the
   folded snapshot), `snapshot_bytes`, and the per-domain data-record counts that
   fed the hour.
+  Each domain also carries `data_payload_status_flags_or`: the status its
+  DOMAIN_DATA payloads carried INSIDE THEMSELVES, which is the status the
+  fold actually decides on. It is read through the single payload authority
+  that already decodes every domain, so it cannot drift from the fold. A
+  payload declaring a non-tolerated failure does not certify even when its
+  DOMAIN_PERF record is clean — the fold withholds that domain's rows on
+  that status, so the hour is not complete.
+  A domain whose terminal outcome for the hour was a `DOMAIN_GAP` rather than a
+  `DOMAIN_PERF` carries `gap_records`, `gap_reasons` and `gap_parts`: the absence
+  is accounted, and an hour with one cannot certify under a roster that requires
+  an extracted outcome for that domain.
+- `refused_hours` — every game-hour that was assembled and REFUSED. A refused
+  hour published nothing, so it has no snapshot and no hash; it is listed with
+  the offending domains the collector named (raw status bits, the non-tolerated
+  subset, and the reader's typed reason) and the terminal outcomes the refusal
+  discarded. An attempted-and-refused hour is therefore distinguishable from an
+  hour the stream never reached. A run that publishes NO hour does not certify:
+  a fold-equivalence check over zero hours certifies nothing.
 - `expected_roster` — the external profile name and exact domain requirements
   used for certification.
 - `chain_hash` — a single SHA-256 over the ordered snapshot hashes plus normalized
@@ -75,6 +93,11 @@ per-hour hashes; exits **1** on any divergence. On divergence it reports the
 first divergent hour and, for a same-hour hash mismatch, a bounded drill-down:
 which top-level snapshot sections differ (with row counts), a sample of differing
 leaf paths (`--sample N`, default 24), and the per-domain data-record-count deltas.
+
+Two runs that publish identical hours but REFUSED different ones are not
+identical: `compare` reports a `refused_hour_mismatch` divergence. Fold
+equivalence over the published hours alone would lose the refusals, and a
+refused hour is precisely the hour a consumer must not assume it has.
 
 ## Gate protocol (G1)
 

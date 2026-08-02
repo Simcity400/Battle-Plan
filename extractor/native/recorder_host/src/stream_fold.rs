@@ -985,6 +985,50 @@ fn validate_domain_data_payload_at(
     header_hour_raw: i32,
     stream_offset: u64,
 ) -> Result<(), String> {
+    domain_data_payload_status_at(
+        domain_id,
+        payload,
+        record_flags,
+        sequence,
+        header_hour_raw,
+        stream_offset,
+    )
+    .map(|_| ())
+}
+
+/// The status word a `DOMAIN_DATA` payload carries INSIDE ITSELF, read by the
+/// one authority that already decodes every domain's payload.
+///
+/// This is the same call `validate_domain_data_payload` makes; that wrapper
+/// threw the status away with `.map(|_| ())`. Throwing it away is what let the
+/// two statuses a frame carries — the one embedded in the DATA payload and the
+/// one in the matching `DOMAIN_PERF` record — go unchecked against each other.
+/// `WorldFold` decides whether to apply a domain's rows from the EMBEDDED one
+/// (35 of its 90 fold functions read it directly, at three different payload
+/// offsets), while stream certification reads only the PERF one. A payload
+/// declaring a failure while its PERF declares success therefore made the fold
+/// silently withhold every row of that domain from an hour that certified as
+/// complete.
+///
+/// `None` means this domain's payload authority does not decode a status word
+/// at all, which is a different fact from "the status was clean" and is
+/// deliberately not collapsed into one.
+pub fn domain_data_payload_status(
+    domain_id: u16,
+    payload: &[u8],
+    record_flags: u32,
+) -> Result<Option<u32>, String> {
+    domain_data_payload_status_at(domain_id, payload, record_flags, 0, 0, 0)
+}
+
+fn domain_data_payload_status_at(
+    domain_id: u16,
+    payload: &[u8],
+    record_flags: u32,
+    sequence: u64,
+    header_hour_raw: i32,
+    stream_offset: u64,
+) -> Result<Option<u32>, String> {
     summarize_domain_data_payload(
         domain_id,
         payload,
@@ -996,7 +1040,7 @@ fn validate_domain_data_payload_at(
             session_header_identity: None,
         },
     )
-    .map(|_| ())
+    .map(|authority| authority.status_flags)
     .map_err(|error| error.to_string())
 }
 

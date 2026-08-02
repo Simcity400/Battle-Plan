@@ -12,7 +12,7 @@ use compact_contract::campaign_identity::{
 use compact_contract::{
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_PARTIAL_DATA,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_PARTIAL_DATA,
     COMPACT_STATUS_SOURCE_UNAVAILABLE,
 };
 use std::io::Cursor;
@@ -264,6 +264,66 @@ fn identity_v1_stream(ordinary: &[u8]) -> Vec<u8> {
 
 fn fold_bytes(stream: &[u8]) -> FoldRun {
     collect_run(Cursor::new(stream.to_vec()), stream.len() as u64).expect("fold synthetic stream")
+}
+
+/// A `DOMAIN_GAP` (`H4DG`) payload whose witnesses prove the closed
+/// `ClockUnreadable` reason for exactly `hour_index`.
+fn clock_unreadable_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8> {
+    compact_contract::domain_gap::DomainGapRecordV1 {
+        part: compact_contract::domain_gap::DomainGapPart::State,
+        reason: compact_contract::domain_gap::DomainGapReason::ClockUnreadable,
+        target_hour_raw: raw_for(hour_index),
+        range_start_hour_raw: raw_for(hour_index),
+        range_end_hour_raw: raw_for(hour_index),
+        tick_before: 0,
+        tick_after: 0,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal,
+    }
+    .encode()
+    .expect("closed ClockUnreadable gap witnesses")
+}
+
+/// The same absence for a different closed reason: the domain's worker panicked.
+fn worker_panic_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8> {
+    compact_contract::domain_gap::DomainGapRecordV1 {
+        part: compact_contract::domain_gap::DomainGapPart::State,
+        reason: compact_contract::domain_gap::DomainGapReason::WorkerPanic,
+        target_hour_raw: raw_for(hour_index),
+        range_start_hour_raw: raw_for(hour_index),
+        range_end_hour_raw: raw_for(hour_index),
+        tick_before: 103,
+        tick_after: 103,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal,
+    }
+    .encode()
+    .expect("closed WorkerPanic gap witnesses")
+}
+
+/// A `FRAME_REFUSED` (`H4FR`) payload naming one offending domain.
+fn refusal_payload(hour_index: i64, domain_id: u16) -> Vec<u8> {
+    compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(hour_index),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id,
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            reason: "synthetic_offender=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("refusal names an offender")
+}
+
+/// The externally authoritative roster used by the record-shape tests: a single
+/// domain that must produce one PERF and one DATA record per hour.
+fn one_domain_roster() -> ExpectedRoster {
+    ExpectedRoster::test(&[(18, true)])
 }
 
 // --- tests ----------------------------------------------------------------
@@ -848,8 +908,21 @@ fn fold_check_rejects_noncanonical_sequence_and_final_boundary() {
         Ok(_) => panic!("fold_check must reject a stream not ending on FRAME_END"),
         Err(err) => err,
     };
+    // The terminal-boundary rule is asserted in the SHARED authority's own
+    // words. `fold_check` used to restate it ("final record must be canonical
+    // FRAME_END") inside its completeness pass; that was the third independent
+    // copy of a rule whose second copy had already cost a real bug, and it was
+    // NARROWER than the shared rule — it named FRAME_END alone, while
+    // `BoundaryTracker::eof_check` also admits an honestly-refused stream that
+    // ends on FRAME_REFUSED. Pinning the shared wording is what stops the
+    // duplicate coming back: this assertion can only pass if the verdict
+    // arrived through `strict_stream_certification_verdict`.
     assert!(
-        err.contains("final record must be canonical FRAME_END"),
+        err.contains("stream is not certifiable"),
+        "the terminal-boundary verdict must come from the shared certification authority: {err}"
+    );
+    assert!(
+        err.contains("final record must be a canonical FRAME_END or FRAME_REFUSED boundary"),
         "{err}"
     );
 }
@@ -900,164 +973,844 @@ fn legacy_pre222_container_decodes_for_diagnostics_but_does_not_certify() {
     );
 }
 
-/// A refused hour must not contaminate the next one on the AUDIT side either,
-/// and a refusal must not crash the audit.
-///
-/// `CompletenessAudit::observe` closed its `match` on record type with
-/// `_ => unreachable!("record semantics rejected unknown type")`. That arm was
-/// reachable: `validate_compact_record_semantics` accepts FRAME_REFUSED (type
-/// 6) and DOMAIN_GAP (type 5), so both reached `observe` and PANICKED the tool
-/// -- `fold_check hash` could not read any stream containing either. The panic
-/// hid a second copy of the decoder's carry-over: `current_domains` is the
-/// audit's per-hour accumulator and, like `cur_counts`, was drained only by
-/// FRAME_END, so a refused hour's per-domain records would have been added to
-/// the next hour's completeness. That is precisely the disagreement
-/// `verify_fold_counts` reports, and with BOTH sides bleeding identically it
-/// would not even have reported it.
-///
-/// Mutation proof: restore the `unreachable!` arm and this test panics instead
-/// of failing; drop `std::mem::take(&mut self.current_domains)` from the
-/// FRAME_REFUSED arm (leave the rest) and the d18 count for the published hour
-/// becomes 2, which `verify_fold_counts` then reports as a fold/audit
-/// disagreement.
+// --- DOMAIN_GAP and FRAME_REFUSED --------------------------------------------
+//
+// Both record types reach this tool on EVERY real capture on disk: each of the
+// three collector streams captured on 2026-07-31 carries exactly 73 DOMAIN_GAP
+// records and between 254 and 449 FRAME_REFUSED records. The completeness audit
+// used to reach `unreachable!()` on both, so `fold_check` panicked rather than
+// reaching any verdict at all.
+
 #[test]
-fn a_refused_hour_neither_crashes_the_audit_nor_feeds_the_next_hour() {
-    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
-        refused_hour: raw_for(HOUR_A),
-        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
-            domain_id: 64,
-            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
-            non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
-            reason: "d64_source_unavailable_frames=1".to_string(),
-        }],
-    }
-    .encode()
-    .expect("canonical refusal fixture");
-
-    let mut stream = Vec::new();
-    let mut seq = 1u64;
-    // Hour A publishes one d18 DATA + its owned PERF, then is refused.
-    for (record_type, payload) in [
-        (
-            COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            country_identity_payload(&[(47, "GER")]),
-        ),
-        (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
-    ] {
-        push_record(&mut stream, seq, raw_for(HOUR_A), 18, record_type, &payload);
-        seq += 1;
-    }
-    push_record(
-        &mut stream,
-        seq,
-        raw_for(HOUR_A),
-        DOMAIN_FRAME,
-        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
-        &refusal,
-    );
-    seq += 1;
-    // Hour B is an ordinary published hour with exactly one d18 record.
-    for (record_type, payload) in [
-        (
-            COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            country_identity_payload(&[(47, "GER")]),
-        ),
-        (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
-    ] {
-        push_record(&mut stream, seq, raw_for(HOUR_B), 18, record_type, &payload);
-        seq += 1;
-    }
-    push_record(
-        &mut stream,
-        seq,
-        raw_for(HOUR_B),
-        DOMAIN_FRAME,
-        COMPACT_RECORD_TYPE_FRAME_END,
-        &frame_end_payload(),
-    );
-
-    // The audit alone: it must complete, and the refused hour must leave no
-    // completeness row and no residue in the published one.
-    let audited = audit_compact_reader_with_identity_mode(
-        Cursor::new(stream.clone()),
-        StreamIdentityMode::Legacy,
-    )
-    .expect("a stream carrying a canonical refusal must be auditable");
-    assert_eq!(
-        audited.keys().copied().collect::<Vec<_>>(),
-        vec![HOUR_B],
-        "a refused hour published nothing, so it owes no completeness row"
-    );
-    assert_eq!(
-        audited[&HOUR_B].domains[&18].data_records, 1,
-        "the refused hour's d18 record must not be counted into hour {HOUR_B}"
-    );
-    assert_eq!(audited[&HOUR_B].domains[&18].perf_records, 1);
-
-    // And end to end: the fold and the audit agree, so `verify_fold_counts`
-    // passes and the stream folds to exactly one published hour.
-    let run = fold_bytes(&stream);
-    assert_eq!(run.hours.len(), 1);
-    assert_eq!(run.hours[0].hour_index, HOUR_B);
-    assert_eq!(run.hours[0].domain_data_counts.get(&18), Some(&1));
-}
-
-/// The other half: a record type the audit has NOT been taught fails closed
-/// with a named error instead of panicking.
-///
-/// DOMAIN_GAP is the live case. `compact_record_counts_toward_terminal_outcome`
-/// says a gap IS a domain's terminal outcome while
-/// `compact_record_counts_toward_perf_cardinality` says it is not a PERF, and
-/// `verify_expected_roster` demands exactly one PERF per rostered domain -- so
-/// whether a gap satisfies a domain's roster slot is a contract question this
-/// tool must not answer by guessing. Until it is answered the audit refuses the
-/// stream and says why, which is the honest outcome; it used to abort the
-/// process instead.
-///
-/// Mutation proof: put `_ => unreachable!(...)` back and this test panics
-/// rather than failing.
-#[test]
-fn an_untaught_record_type_is_a_named_refusal_not_a_panic() {
-    let mut gap = vec![0u8; compact_contract::COMPACT_DOMAIN_GAP_PAYLOAD_LEN];
-    gap[..4].copy_from_slice(compact_contract::COMPACT_DOMAIN_GAP_MAGIC);
-    gap[4..6].copy_from_slice(&compact_contract::COMPACT_DOMAIN_GAP_VERSION.to_le_bytes());
-    gap[6..8].copy_from_slice(
-        &(compact_contract::COMPACT_DOMAIN_GAP_PAYLOAD_LEN as u16).to_le_bytes(),
-    );
-    gap[8..10].copy_from_slice(&compact_contract::DOMAIN_GAP_REASON_WORKER_PANIC.to_le_bytes());
-    gap[10..12].copy_from_slice(&compact_contract::DOMAIN_GAP_PART_BOTH.to_le_bytes());
-    gap[16..20].copy_from_slice(&raw_for(HOUR_A).to_le_bytes());
-    gap[20..24].copy_from_slice(&raw_for(HOUR_A).to_le_bytes());
-    gap[24..28].copy_from_slice(&raw_for(HOUR_A).to_le_bytes());
-    assert!(
-        compact_contract::validate_compact_record_semantics(
-            18,
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
-            0,
-            &gap,
-        )
-        .is_ok(),
-        "fixture must be a record the semantics layer accepts, or this proves nothing"
-    );
-
+fn domain_gap_is_the_domains_terminal_outcome_not_a_missing_perf_record() {
     let mut stream = Vec::new();
     push_record(
         &mut stream,
         1,
         raw_for(HOUR_A),
         18,
-        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
-        &gap,
+        COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        &clock_unreadable_gap_payload(HOUR_A, 0),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
     );
 
-    let err = audit_compact_reader_with_identity_mode(
-        Cursor::new(stream),
+    let err = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .err()
+    .expect("an accounted absence is still an absence and cannot certify the hour");
+    // The verdict has to say what actually happened. "PERF record count 1,
+    // observed 0" would send a reader hunting for a record that was never
+    // supposed to exist: the gap IS the terminal outcome, and it carries the
+    // reason the collector recorded.
+    assert!(
+        err.contains("terminal outcome is 1 DOMAIN_GAP record(s)"),
+        "{err}"
+    );
+    assert!(err.contains("ClockUnreadable"), "{err}");
+    assert!(err.contains("accounted absence"), "{err}");
+    assert!(
+        !err.contains("PERF record count 1, observed 0"),
+        "a gap must not be reported as a lost PERF record: {err}"
+    );
+}
+
+#[test]
+fn why_a_domain_was_absent_is_part_of_the_hours_certified_identity() {
+    // Two hours identical in every published byte: the same DOMAIN_DATA for
+    // domain 18, the same seal, and domain 26 absent in both. They differ only
+    // in the REASON domain 26 was absent -- an unreadable clock in one, a
+    // panicked worker in the other. Those are different facts about the hour,
+    // and a certification that cannot tell them apart is not certifying the
+    // absence at all.
+    fn stream(gap_payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_record(
+            &mut out,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut out,
+            2,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(),
+        );
+        push_record(
+            &mut out,
+            3,
+            raw_for(HOUR_A),
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            gap_payload,
+        );
+        push_record(
+            &mut out,
+            4,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(2, 2, 0),
+        );
+        out
+    }
+
+    let clock = fold_bytes(&stream(&clock_unreadable_gap_payload(HOUR_A, 0)));
+    let panic = fold_bytes(&stream(&worker_panic_gap_payload(HOUR_A, 0)));
+    assert_eq!(clock.hours.len(), 1);
+    assert_eq!(panic.hours.len(), 1);
+    assert_eq!(
+        clock.hours[0].snapshot_hash, panic.hours[0].snapshot_hash,
+        "the folded state is identical: a gap folds nothing in either stream"
+    );
+    assert_ne!(
+        chain_hash(&clock.hours),
+        chain_hash(&panic.hours),
+        "the reason for an accounted absence must change the hour's certified identity"
+    );
+
+    let gap_domain = clock.hours[0]
+        .completeness
+        .domains
+        .get(&26)
+        .expect("the gapped domain is accounted, not absent");
+    assert_eq!(gap_domain.gap_records, 1);
+    assert_eq!(gap_domain.perf_records, 0);
+    assert_eq!(gap_domain.data_records, 0);
+    assert_eq!(
+        gap_reason_names(gap_domain.gap_reason_mask),
+        ["ClockUnreadable"]
+    );
+    assert_eq!(gap_part_names(gap_domain.gap_part_mask), ["State"]);
+}
+
+#[test]
+fn a_refused_frame_closes_its_hour_without_publishing_a_snapshot() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (record_type, payload) in [
+        (
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            country_identity_payload(&[(47, "GER")]),
+        ),
+        (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
+    ] {
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(HOUR_A),
+            18,
+            record_type,
+            &payload,
+        );
+        sequence += 1;
+    }
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
+    );
+    sequence += 1;
+    // Hour B is attempted -- it produces a terminal outcome for domain 18 --
+    // and then refused. Nothing about hour B is published.
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal_payload(HOUR_B, 18),
+    );
+
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("a stream that publishes one complete hour and refuses another certifies that hour");
+
+    assert_eq!(
+        run.hours
+            .iter()
+            .map(|hour| hour.hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_A],
+        "a refused hour has no folded snapshot"
+    );
+    let refusal = run
+        .refusals
+        .get(&HOUR_B)
+        .expect("the refused hour is accounted, not silently absent");
+    assert_eq!(refusal.offenders.len(), 1);
+    assert_eq!(refusal.offenders[0].domain_id, 18);
+    assert_eq!(
+        refusal.offenders[0].non_tolerated_flags,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE
+    );
+    assert_eq!(
+        refusal.discarded_terminal_outcome_domains,
+        vec![18],
+        "the refusal terminated an hour that had already produced an outcome, and the report must say so"
+    );
+}
+
+#[test]
+fn a_stream_that_publishes_no_hour_certifies_nothing() {
+    // Every real capture on disk has this shape at the tail: hour after hour
+    // attempted and refused, nothing published. Reporting `hours: []` with the
+    // SHA-256 of the empty chain and exit 0 would be a certifier that accepts a
+    // stream containing no extracted data at all.
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for hour in [HOUR_A, HOUR_B, HOUR_C] {
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(hour),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_REFUSED,
+            &refusal_payload(hour, 18),
+        );
+        sequence += 1;
+    }
+
+    let dir = TmpDir::new("refusal_only");
+    let path = dir.0.join("collector_stream.bin");
+    std::fs::write(&path, &stream).unwrap();
+    let err = match run_input(&path, &one_domain_roster()) {
+        Ok(_) => panic!("a stream that publishes no game hour must not certify"),
+        Err(err) => err,
+    };
+    assert!(err.contains("publishes no game hour"), "{err}");
+    assert!(err.contains("3 hour(s)"), "{err}");
+    assert!(
+        err.contains("were attempted and refused"),
+        "the verdict must name the refusals as the reason: {err}"
+    );
+}
+
+#[test]
+fn two_streams_that_refuse_different_hours_are_not_identical() {
+    fn stream(refused_hour: i64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut sequence = 1u64;
+        for (record_type, payload) in [
+            (
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                country_identity_payload(&[(47, "GER")]),
+            ),
+            (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
+        ] {
+            push_record(
+                &mut out,
+                sequence,
+                raw_for(HOUR_A),
+                18,
+                record_type,
+                &payload,
+            );
+            sequence += 1;
+        }
+        push_record(
+            &mut out,
+            sequence,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+        sequence += 1;
+        push_record(
+            &mut out,
+            sequence,
+            raw_for(refused_hour),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_REFUSED,
+            &refusal_payload(refused_hour, 18),
+        );
+        out
+    }
+
+    let dir = TmpDir::new("refusal_compare");
+    let roster = one_domain_roster();
+    let mut runs = Vec::new();
+    for (name, refused_hour) in [("b.bin", HOUR_B), ("c.bin", HOUR_C)] {
+        let path = dir.0.join(name);
+        std::fs::write(&path, stream(refused_hour)).unwrap();
+        runs.push(
+            run_input(&path, &roster)
+                .expect("published hour A certifies")
+                .0,
+        );
+    }
+
+    // The published hours are byte-identical between the two streams, so a
+    // fold-equivalence check over snapshots alone would call them the same.
+    assert_eq!(runs[0].hours.len(), 1);
+    assert_eq!(runs[1].hours.len(), 1);
+    assert_eq!(
+        runs[0].hours[0].snapshot_hash,
+        runs[1].hours[0].snapshot_hash
+    );
+    assert_ne!(
+        runs[0].refusals.keys().collect::<Vec<_>>(),
+        runs[1].refusals.keys().collect::<Vec<_>>(),
+        "the two streams refused different hours"
+    );
+
+    // `compare` therefore has to report a divergence, or it certifies two
+    // different capture outcomes as the same run.
+    let divergence = refusal_divergence(&runs[0].refusals, &runs[1].refusals)
+        .expect("differing refusals are a compare divergence");
+    assert_eq!(divergence["kind"], "refused_hour_mismatch");
+    assert_eq!(divergence["refused_only_in_a"], json!([HOUR_B]));
+    assert_eq!(divergence["refused_only_in_b"], json!([HOUR_C]));
+    assert!(
+        refusal_divergence(&runs[0].refusals, &runs[0].refusals).is_none(),
+        "identical refusals are not a divergence"
+    );
+}
+
+#[test]
+fn the_audit_accounts_every_record_type_the_contract_admits() {
+    // The defect was a PREMISE, not a typo: the audit's fallback arm was
+    // `unreachable!("record semantics rejected unknown type")`, asserting that
+    // `validate_compact_record_semantics` admits only DATA, PERF and FRAME_END.
+    // It also admits DOMAIN_GAP and FRAME_REFUSED, so the arm was reachable --
+    // and reached on the very first record of every real capture.
+    //
+    // Re-testing the two types that were missed would only re-test today's
+    // omission. This asserts the invariant the premise got wrong: whatever the
+    // contract admits, the audit accounts. Sweeping the whole u16 space the
+    // contract could ever open keeps the two authorities from drifting apart
+    // again.
+    let mut admitted = Vec::new();
+    for record_type in 0u16..=u16::MAX {
+        for (domain_id, payload) in [
+            (18u16, country_identity_payload(&[(47, "GER")])),
+            (18, perf_payload()),
+            (DOMAIN_FRAME, frame_end_payload_with(1, 1, 0)),
+            (18, clock_unreadable_gap_payload(HOUR_A, 0)),
+            (DOMAIN_FRAME, refusal_payload(HOUR_A, 18)),
+        ] {
+            if validate_compact_record_semantics(domain_id, record_type, 0, &payload).is_err() {
+                continue;
+            }
+            admitted.push(record_type);
+            let mut audit = CompletenessAudit::default();
+            let outcome = audit.observe(raw_for(HOUR_A), domain_id, record_type, 0, &payload);
+            if let Err(err) = outcome {
+                assert!(
+                    !err.contains("not accounted by the completeness audit"),
+                    "record type {record_type} is admitted by the wire contract but the \
+                     completeness audit does not account it: {err}"
+                );
+            }
+        }
+    }
+    admitted.sort_unstable();
+    admitted.dedup();
+    assert_eq!(
+        admitted,
+        vec![
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>(),
+        "the sweep must actually have reached every admitted record type"
+    );
+}
+
+#[test]
+fn an_hour_is_published_or_refused_but_never_both() {
+    // Checked in both directions on purpose. The audit keeps published hours
+    // and refused hours in separate maps, so a one-sided guard would let the
+    // same hour sit in both and hand the published account to the caller as if
+    // the refusal had not happened.
+    for refuse_first in [true, false] {
+        let mut audit = CompletenessAudit::default();
+        let steps: [(u16, u16, Vec<u8>); 2] = [
+            (
+                DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal_payload(HOUR_A, 18),
+            ),
+            (
+                DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                frame_end_payload_with(0, 0, 0),
+            ),
+        ];
+        let ordered: Vec<&(u16, u16, Vec<u8>)> = if refuse_first {
+            vec![&steps[0], &steps[1]]
+        } else {
+            vec![&steps[1], &steps[0]]
+        };
+        audit
+            .observe(raw_for(HOUR_A), ordered[0].0, ordered[0].1, 0, &ordered[0].2)
+            .expect("the first close of the hour is legitimate");
+        let err = audit
+            .observe(raw_for(HOUR_A), ordered[1].0, ordered[1].1, 0, &ordered[1].2)
+            .expect_err("the same hour cannot be closed twice with contradictory outcomes");
+        assert!(
+            err.contains("is both"),
+            "refuse_first={refuse_first}: {err}"
+        );
+    }
+}
+
+#[test]
+fn compare_reports_a_divergence_when_only_the_refusals_differ() {
+    // The helper being right is not the same as `compare` asking it. This
+    // drives the whole decision `compare` reports `identical` from, so
+    // dropping the refusal check out of that decision -- not just breaking the
+    // helper -- turns this red.
+    fn stream(refused_hour: i64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut sequence = 1u64;
+        for (record_type, payload) in [
+            (
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                country_identity_payload(&[(47, "GER")]),
+            ),
+            (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
+        ] {
+            push_record(
+                &mut out,
+                sequence,
+                raw_for(HOUR_A),
+                18,
+                record_type,
+                &payload,
+            );
+            sequence += 1;
+        }
+        push_record(
+            &mut out,
+            sequence,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+        sequence += 1;
+        push_record(
+            &mut out,
+            sequence,
+            raw_for(refused_hour),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_REFUSED,
+            &refusal_payload(refused_hour, 18),
+        );
+        out
+    }
+
+    let dir = TmpDir::new("compare_refusals");
+    let roster = one_domain_roster();
+    let path_b = dir.0.join("refuses_b.bin");
+    let path_c = dir.0.join("refuses_c.bin");
+    std::fs::write(&path_b, stream(HOUR_B)).unwrap();
+    std::fs::write(&path_c, stream(HOUR_C)).unwrap();
+    let run_b = run_input(&path_b, &roster).expect("published hour A certifies").0;
+    let run_c = run_input(&path_c, &roster).expect("published hour A certifies").0;
+
+    let divergence = first_divergence(
+        &run_b,
+        &run_c,
+        &path_b,
+        &path_c,
+        24,
+        &roster,
         StreamIdentityMode::Legacy,
     )
-    .expect_err("an untaught record type must refuse, not certify");
+    .expect("both runs certified, so the comparison itself must not error")
+    .expect("two streams that refused different hours are not identical");
+    assert_eq!(divergence["kind"], "refused_hour_mismatch");
+
     assert!(
-        err.contains("has not been taught")
-            && err.contains(&compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP.to_string()),
-        "refusal must name the record type it could not account: {err}"
+        first_divergence(
+            &run_b,
+            &run_b,
+            &path_b,
+            &path_b,
+            24,
+            &roster,
+            StreamIdentityMode::Legacy,
+        )
+        .expect("self-comparison must not error")
+        .is_none(),
+        "a run must be identical to itself"
+    );
+}
+
+#[test]
+fn a_refused_hours_records_do_not_reach_the_next_published_hour() {
+    // The decoder feeds every DOMAIN_DATA straight into the production fold and
+    // only drains on FRAME_END, so a FRAME_REFUSED does not discard what the
+    // refused hour had already ingested. The refused hour's record therefore
+    // reaches the NEXT published hour's fold. `fold_check` must not certify
+    // that, because the published hour would carry rows the collector
+    // deliberately withheld.
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    // Hour A is attempted with one DOMAIN_DATA, then refused.
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal_payload(HOUR_A, 18),
+    );
+    sequence += 1;
+    // Hour B publishes one DOMAIN_DATA of its own.
+    for (record_type, payload) in [
+        (
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            country_identity_payload(&[(48, "FRA")]),
+        ),
+        (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
+    ] {
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(HOUR_B),
+            18,
+            record_type,
+            &payload,
+        );
+        sequence += 1;
+    }
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
+    );
+
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("neither the fold nor the audit may carry hour A's withheld record into hour B");
+
+    // This test was written when only the AUDIT had stopped bleeding a refused
+    // hour into the next one, so it asserted the disagreement that exposed the
+    // fold still doing it: `domain 18 production fold 2 vs completeness audit 1`.
+    // `decoder_carryover` then fixed the fold side too, which voids that
+    // premise -- both sides now agree, and a test demanding they disagree would
+    // fail for the RIGHT reason while reading as a regression. What the name
+    // always claimed is asserted directly instead: hour B publishes exactly the
+    // one record that belongs to it.
+    assert_eq!(
+        run.hours
+            .iter()
+            .map(|hour| hour.hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_B],
+        "hour A was refused, so hour B is the only published hour"
+    );
+    // Per HOUR, not stream-wide: the stream really does carry two domain-18
+    // DATA records, one in each hour. Carry-over is a question of which hour
+    // each is ATTRIBUTED to, so the stream total cannot answer it.
+    assert_eq!(
+        run.hours[0].domain_data_counts.get(&18).copied(),
+        Some(1),
+        "hour B publishes its own record only; hour A's withheld one must not land here"
+    );
+    assert!(
+        run.refusals.contains_key(&HOUR_A),
+        "the refused hour is accounted, not silently dropped"
+    );
+}
+
+#[test]
+fn a_bounded_refusal_report_still_states_the_exact_totals() {
+    // One capture on disk refuses 449 consecutive hours, each naming up to two
+    // dozen offenders with a typed reason string. Rendering every one turns the
+    // report into megabytes of near-identical text; rendering a prefix without
+    // saying so would understate how much of the capture was refused. The
+    // per-hour DETAIL is bounded; the count, the span and the offending domains
+    // are exact.
+    let mut refusals: BTreeMap<i64, HourRefusal> = BTreeMap::new();
+    let total = REFUSAL_DETAIL_LIMIT + 17;
+    for step in 0..total {
+        refusals.insert(
+            HOUR_A + step as i64,
+            HourRefusal {
+                offenders: vec![RefusalOffender {
+                    domain_id: 18 + (step % 3) as u16,
+                    status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    reason: "synthetic_offender=1".to_string(),
+                }],
+                discarded_terminal_outcome_domains: Vec::new(),
+                discarded_data_records: 0,
+            },
+        );
+    }
+
+    let rendered = refusals_json(&refusals);
+    assert_eq!(rendered["count"], total);
+    assert_eq!(
+        rendered["hour_range"],
+        json!([HOUR_A, HOUR_A + total as i64 - 1])
+    );
+    assert_eq!(rendered["offending_domains"], json!([18, 19, 20]));
+    assert_eq!(rendered["hours_detailed"], REFUSAL_DETAIL_LIMIT);
+    assert_eq!(rendered["hours_detail_limit"], REFUSAL_DETAIL_LIMIT);
+    assert_eq!(
+        rendered["hours"].as_array().expect("detail array").len(),
+        REFUSAL_DETAIL_LIMIT,
+        "the detail is bounded"
+    );
+}
+
+#[test]
+fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
+    // The shape that made publishing worse than the deadlock it replaced.
+    // `WorldFold` decides whether to apply a domain's rows from the status
+    // EMBEDDED IN THE DATA PAYLOAD -- `fold_country_identity` reads it at
+    // payload offset 16 and returns without folding a single row when it is a
+    // failure. Certification read only the matching DOMAIN_PERF record. A
+    // payload saying "the read did not complete" underneath a PERF saying
+    // "clean" therefore certified as a complete hour whose domain had in fact
+    // contributed nothing, and the report said `data_records: 1` with a clean
+    // status.
+    fn stream(payload_status: u32) -> Vec<u8> {
+        let mut data = country_identity_payload(&[(47, "GER")]);
+        data[16..20].copy_from_slice(&payload_status.to_le_bytes());
+        let mut out = Vec::new();
+        push_record(
+            &mut out,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &data,
+        );
+        push_record(
+            &mut out,
+            2,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            // The PERF record is CLEAN. It is the only status the certifier
+            // used to read.
+            &perf_payload(),
+        );
+        push_record(
+            &mut out,
+            3,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+        out
+    }
+
+    // The clean control certifies, so the refusal below is about the status and
+    // nothing else about the stream shape.
+    let clean = stream(0);
+    collect_certified_run(
+        Cursor::new(clean.clone()),
+        clean.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("a clean payload under a clean PERF is an ordinary certifiable hour");
+
+    let forged = stream(COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    let err = collect_certified_run(
+        Cursor::new(forged.clone()),
+        forged.len() as u64,
+        &one_domain_roster(),
+    )
+    .err()
+    .expect("a DATA payload declaring failure must not certify behind a clean PERF");
+    assert!(
+        err.contains("DOMAIN_DATA payload status"),
+        "the verdict must name the payload's own status, not the PERF's: {err}"
+    );
+    assert!(
+        err.contains("non-tolerated failure flags"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_data_payload_status_is_part_of_the_hours_certified_identity() {
+    // A tolerated payload status must still be visible. Two hours whose only
+    // difference is a status the fold tolerates produce the same rows, so the
+    // snapshots match; the certified identity must not.
+    fn stream(payload_status: u32) -> Vec<u8> {
+        let mut data = country_identity_payload(&[(47, "GER")]);
+        data[16..20].copy_from_slice(&payload_status.to_le_bytes());
+        let mut out = Vec::new();
+        push_record(
+            &mut out,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &data,
+        );
+        push_record(
+            &mut out,
+            2,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(),
+        );
+        push_record(
+            &mut out,
+            3,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+        out
+    }
+
+    let plain = fold_bytes(&stream(0));
+    let delta = fold_bytes(&stream(COMPACT_STATUS_DELTA_DATA));
+    assert_eq!(
+        plain.hours[0].snapshot_hash, delta.hours[0].snapshot_hash,
+        "the tolerated status changes no folded row"
+    );
+    assert_eq!(
+        plain.hours[0]
+            .completeness
+            .domains
+            .get(&18)
+            .expect("domain 18 is accounted")
+            .data_payload_status_flags_or,
+        0
+    );
+    assert_ne!(
+        delta.hours[0]
+            .completeness
+            .domains
+            .get(&18)
+            .expect("domain 18 is accounted")
+            .data_payload_status_flags_or,
+        0,
+        "the payload's own status must be recorded, not discarded"
+    );
+    assert_ne!(
+        chain_hash(&plain.hours),
+        chain_hash(&delta.hours),
+        "the DATA payload's status must change the hour's certified identity"
+    );
+
+    // WHICH record carried the status is itself a fact about the hour. These
+    // two streams OR to the same per-domain status -- one carries the flag on
+    // the PERF record only, the other on both -- so a certification that folds
+    // the payload status into the PERF status and keeps nothing else cannot
+    // tell them apart. That is the disagreement this field exists to expose.
+    fn stream_with_perf_status(perf_status: u32, payload_status: u32) -> Vec<u8> {
+        let mut data = country_identity_payload(&[(47, "GER")]);
+        data[16..20].copy_from_slice(&payload_status.to_le_bytes());
+        let mut out = Vec::new();
+        push_record(
+            &mut out,
+            1,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &data,
+        );
+        push_record(
+            &mut out,
+            2,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(perf_status),
+        );
+        push_record(
+            &mut out,
+            3,
+            raw_for(HOUR_A),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+        out
+    }
+
+    let perf_only = fold_bytes(&stream_with_perf_status(COMPACT_STATUS_DELTA_DATA, 0));
+    let both = fold_bytes(&stream_with_perf_status(
+        COMPACT_STATUS_DELTA_DATA,
+        COMPACT_STATUS_DELTA_DATA,
+    ));
+    let perf_only_domain = perf_only.hours[0]
+        .completeness
+        .domains
+        .get(&18)
+        .expect("domain 18 is accounted");
+    let both_domain = both.hours[0]
+        .completeness
+        .domains
+        .get(&18)
+        .expect("domain 18 is accounted");
+    assert_eq!(
+        perf_only_domain.normalized_status_flags_or, both_domain.normalized_status_flags_or,
+        "the merged per-domain status is identical, which is the whole point"
+    );
+    assert_ne!(
+        perf_only_domain.data_payload_status_flags_or,
+        both_domain.data_payload_status_flags_or
+    );
+    assert_ne!(
+        chain_hash(&perf_only.hours),
+        chain_hash(&both.hours),
+        "which record carried the status must change the certified identity"
     );
 }

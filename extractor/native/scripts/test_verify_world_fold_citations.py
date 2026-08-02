@@ -151,6 +151,54 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                     fixture.root, required_lane_authorities=()
                 )
 
+    def test_reports_every_drifted_module_not_only_the_first(self) -> None:
+        # A first-failure-only checker reported one stale citation and hid 31
+        # more, and because this check gates Cargo the whole central validation
+        # was unreachable while they accumulated. One run must name them all.
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            fixture.add_module(39, ("fold_shared",))
+            fixture.add_module(40, ("fold_shared",))
+            fixture.world_path.write_text(
+                "// inserted before every citation\n" + WORLD,
+                encoding="utf-8",
+                newline="\n",
+            )
+            with self.assertRaises(VERIFY.VerificationError) as raised:
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+            message = str(raised.exception)
+            self.assertIn("3 citation authority failure(s)", message)
+            for name in ("d1.rs", "d39.rs", "d40.rs"):
+                self.assertIn(name, message)
+
+    def test_lane_authority_is_still_collected_from_a_drifted_module(self) -> None:
+        # The lane marker pins a capture-lane decoder, not the fold envelope.
+        # Dropping it because the module's world-fold line range drifted would
+        # turn one stale range into a spurious "lane authority marker set
+        # drifted" and bury the real cause.
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(51, ("fold_lane",))
+            key = fixture.add_lane_authority(
+                51,
+                "extractor/native/lanes/example/original.rs",
+                "decode_payload",
+                "pub fn decode_payload(payload: &[u8]) -> bool {\n"
+                "    !payload.is_empty()\n"
+                "}\n",
+            )
+            fixture.world_path.write_text(
+                "// inserted before every citation\n" + WORLD,
+                encoding="utf-8",
+                newline="\n",
+            )
+            with self.assertRaises(VERIFY.VerificationError) as raised:
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=(key,))
+            message = str(raised.exception)
+            self.assertIn("d51.rs: declared lines", message)
+            self.assertNotIn("lane authority marker set drifted", message)
+
     def test_rejects_same_line_count_semantic_drift_by_digest(self) -> None:
         temporary, fixture = self.fixture()
         with temporary:

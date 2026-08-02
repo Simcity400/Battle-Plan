@@ -83,6 +83,12 @@ use recorder_host::stream_fold::{
     strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
     FoldStreamStats,
 };
+/// The DOMAIN_DATA payload's own embedded status, from the single payload
+/// authority that already decodes every domain. Re-exported through this facade
+/// so a certifier reading the stream classifies the payload status with the
+/// same call `validate_domain_data_payload` makes, rather than re-deriving each
+/// domain's status offset and drifting from `WorldFold`.
+pub use recorder_host::stream_fold::domain_data_payload_status;
 use recorder_host::world_fold::{schema_version, FoldedSnapshotFile, WorldFold};
 use snapshot::container::{Container, ExpectedIdentity};
 use snapshot::sha256::{to_hex, Sha256};
