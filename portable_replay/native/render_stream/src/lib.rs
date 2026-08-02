@@ -65,16 +65,18 @@ pub const SNOW_MUD_TEXTURE_ROW_PITCH: u32 =
     SNOW_MUD_TEXTURE_WIDTH * SNOW_MUD_TEXTURE_BYTES_PER_TEXEL;
 pub const SNOW_MUD_TEXTURE_BYTE_LENGTH: usize =
     SNOW_MUD_TEXTURE_ROW_PITCH as usize * SNOW_MUD_TEXTURE_HEIGHT as usize;
-const COMPACT_GAME_HOUR_RAW_EPOCH: i64 = 43_799_999;
-
+/// The engine's stored hour counter, validated against the window shared with
+/// the extractor producer and the replay consumer.
+///
+/// This used to carry its own transcription of the epoch and the window, and
+/// that transcription had drifted: it spelled the upper comparison `>=` where
+/// all eight other copies in the repository spell `>`, so it alone rejected
+/// `RAW_DATE_MAX`. The extractor pins the inclusive reading with a boundary
+/// test over `RAW_DATE_MAX - 1 / RAW_DATE_MAX / RAW_DATE_MAX + 1`
+/// (`extractor/native/wire_format/src/bin/bench_real_d67.rs`), and nothing
+/// pinned the exclusive reading here.
 fn compact_update_index_from_raw(raw: i32) -> Option<u64> {
-    let raw = i64::from(raw);
-    let min = 1850i64 * 365 * 24 + COMPACT_GAME_HOUR_RAW_EPOCH;
-    let max = 2200i64 * 365 * 24 + COMPACT_GAME_HOUR_RAW_EPOCH;
-    if raw < min || raw >= max {
-        return None;
-    }
-    u64::try_from(raw - COMPACT_GAME_HOUR_RAW_EPOCH).ok()
+    portable_admission::hour_index_from_raw(raw).and_then(|hour| u64::try_from(hour).ok())
 }
 
 mod m02_combat;
@@ -7623,7 +7625,9 @@ mod tests {
         };
         draw.ordered_constant_buffers[0].semantic_layout =
             "d3d11-cbuffer-v1[14:SceneConstants;0;256;0]".into();
-        assert!(selected_present_snow_mud_fade_receipt(&missing, &selected).is_err());
+        assert!(selected_present_snow_mud_fade_receipt(&missing, &selected)
+            .unwrap_err()
+            .contains("lacks one exact reflected fade consumer"));
 
         let mut disagree = submit;
         let mut second = disagree.ordered_static_map_programs[0].ordered_operations[0].clone();
@@ -7681,13 +7685,32 @@ mod tests {
             .contains("differs from the sole retained submit/hour/cutoff"));
 
         let mut malformed_present = serde_json::to_value(&frame).unwrap();
+        let canonical_candidate_id =
+            malformed_present["selected_present"]["selected_candidate_id"].clone();
         malformed_present["selected_present"]["selected_candidate_id"] = serde_json::json!("011");
-        assert!(serde_json::from_value::<ProductionRenderFrame>(malformed_present).is_err());
+        assert!(
+            serde_json::from_value::<ProductionRenderFrame>(malformed_present.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("u64 text is not canonical decimal")
+        );
+        // `decimal_u64` is shared by update_index, first_sequence and the other
+        // decimal fields, and its error names no field, so that message alone does
+        // not say WHICH field was rejected. Restoring only this field has to make the
+        // very same value parse: that is what attributes the rejection above to
+        // selected_present.selected_candidate_id rather than to any other u64 field.
+        malformed_present["selected_present"]["selected_candidate_id"] = canonical_candidate_id;
+        serde_json::from_value::<ProductionRenderFrame>(malformed_present).unwrap();
 
         let mut unknown_present_field = serde_json::to_value(&frame).unwrap();
         unknown_present_field["selected_present"]["guessed_present_kind"] =
             serde_json::json!("display");
-        assert!(serde_json::from_value::<ProductionRenderFrame>(unknown_present_field).is_err());
+        assert!(
+            serde_json::from_value::<ProductionRenderFrame>(unknown_present_field)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field `guessed_present_kind`")
+        );
 
         let mut bad_receipt = frame;
         bad_receipt.selected_present.candidate_set_sha256 = "z".repeat(64);
@@ -7698,7 +7721,14 @@ mod tests {
     fn older_v3_without_optional_input_or_ui_pass_remains_compatible() {
         let frame = production_frame_with_m02();
         let encoded = frame.encode_json().unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+
+        // These two assertions are about the FRAME's own serialization (the
+        // optional fields must stay absent, not be emitted as null). Reading
+        // them off the parsed `encoded` bytes would inspect the wire envelope
+        // added in f32125c1 instead, where `authority` is missing and both
+        // assertions hold vacuously.
+        let value = serde_json::to_value(&frame).unwrap();
+        assert!(value.get("authority").is_some());
         assert!(value["authority"].get("recorded_input_variant").is_none());
         assert!(value.get("authenticated_ui_pass").is_none());
         assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
@@ -7835,7 +7865,28 @@ mod tests {
         };
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
         validate_static_map_draw(&draw).expect("complete authenticated snapshot");
-        packet.resource.ordered_subresources.clear();
+
+        // Dropping the subresources entirely never reaches the snapshot rule:
+        // `validate_authenticated_snapshot_texture_resource` runs the generic
+        // descriptor check first, and that already refuses a texture that does
+        // not carry one subresource per mip*array slice.
+        let mut truncated = packet.clone();
+        truncated.resource.ordered_subresources.clear();
+        assert!(truncated
+            .validate()
+            .unwrap_err()
+            .contains("does not carry every ordered subresource"));
+
+        // The snapshot-specific rule is that every retained subresource is
+        // INLINE: a content-range reference would rest the snapshot's identity
+        // on bytes the packet does not itself carry. This descriptor is
+        // otherwise complete and well formed, so it reaches that check.
+        packet.resource.ordered_subresources[0].source = BufferSource::UsedContentRange {
+            content: content("gfx/terrain/terrain_id.dds"),
+            source_byte_offset: 0,
+            byte_count: 1,
+            range_sha256: "c".repeat(64),
+        };
         assert!(packet
             .validate()
             .unwrap_err()
@@ -9546,11 +9597,27 @@ mod tests {
     fn decode_value_equals_decode_json_and_rejects_wrong_schemas() {
         let frame = production_frame_with_m02();
         let encoded = frame.encode_json().unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+
+        // `decode_value` takes a BARE frame value: production's only caller is
+        // `build_production_render`, which hands it `rest["production_render"]`
+        // out of an already-admitted world document. `encode_json` emits the
+        // wire envelope (schema + wire_schema + inline_blobs + frame) added in
+        // f32125c1, and only `decode_json` unwraps that. Both entry points must
+        // land on the same frame.
+        let bare = serde_json::to_value(&frame).unwrap();
         assert_eq!(
-            ProductionRenderFrame::decode_value(&value).unwrap(),
+            ProductionRenderFrame::decode_value(&bare).unwrap(),
             ProductionRenderFrame::decode_json(&encoded).unwrap()
         );
+
+        // The envelope is not a frame. `decode_value` must refuse it outright
+        // rather than silently drop the blob table it cannot restore, so the
+        // `deny_unknown_fields` rejection is the contract here, not an obstacle.
+        let envelope: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(envelope.get("wire_schema").is_some());
+        assert!(envelope.get("frame").is_some());
+        let error = ProductionRenderFrame::decode_value(&envelope).unwrap_err();
+        assert!(error.contains("unknown field `frame`"), "unexpected: {error}");
 
         let v2 = serde_json::json!({"schema": INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v2).unwrap_err();
@@ -9623,13 +9690,25 @@ mod tests {
 
     #[test]
     fn semantic_render_target_aliases_are_rejected_by_v3() {
-        for legacy in [
-            r#"{"kind":"main_scene_color"}"#,
-            r#"{"kind":"main_scene_depth"}"#,
-            r#"{"kind":"post_process_color","producer_pass_token":"x","attachment_ordinal":0}"#,
-            r#"{"kind":"named_render_graph_resource","resource_token":"x","producer_pass_token":"y","attachment_ordinal":0}"#,
+        for (legacy, alias) in [
+            (r#"{"kind":"main_scene_color"}"#, "main_scene_color"),
+            (r#"{"kind":"main_scene_depth"}"#, "main_scene_depth"),
+            (
+                r#"{"kind":"post_process_color","producer_pass_token":"x","attachment_ordinal":0}"#,
+                "post_process_color",
+            ),
+            (
+                r#"{"kind":"named_render_graph_resource","resource_token":"x","producer_pass_token":"y","attachment_ordinal":0}"#,
+                "named_render_graph_resource",
+            ),
         ] {
-            assert!(serde_json::from_str::<PreparedRenderTarget>(legacy).is_err());
+            let error = serde_json::from_str::<PreparedRenderTarget>(legacy)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("unknown variant `{alias}`")),
+                "{legacy} was not rejected as an unknown variant: {error}"
+            );
         }
         assert_eq!(
             serde_json::from_str::<PreparedRenderTarget>(
@@ -9885,5 +9964,51 @@ mod tests {
             weather_composition_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_hour_window_regression {
+    /// `compact_update_index_from_raw` used to carry its own copy of the
+    /// engine hour-counter window, and that copy had drifted: it spelled the
+    /// upper comparison `>=` where every other copy in the repository spells
+    /// `>`, so this crate alone rejected `RAW_DATE_MAX`. Nothing caught it,
+    /// because nothing compared the copies.
+    ///
+    /// The endpoints are the whole point of this test. Agreement on the
+    /// numeric bound is not enough; the two sides must also agree on whether
+    /// each endpoint is INSIDE the window.
+    #[test]
+    fn the_update_index_window_matches_the_shared_admission_window() {
+        for probe in [
+            portable_admission::RAW_DATE_MIN - 1,
+            portable_admission::RAW_DATE_MIN,
+            portable_admission::RAW_DATE_MIN + 1,
+            portable_admission::RAW_DATE_MAX - 1,
+            portable_admission::RAW_DATE_MAX,
+            portable_admission::RAW_DATE_MAX + 1,
+        ] {
+            let shared = portable_admission::hour_index_from_raw(probe)
+                .and_then(|hour| u64::try_from(hour).ok());
+            assert_eq!(
+                super::compact_update_index_from_raw(probe),
+                shared,
+                "compact_update_index_from_raw disagrees with the shared \
+                 admission window at raw date {probe}"
+            );
+        }
+    }
+
+    /// The specific value the old spelling discarded.
+    #[test]
+    fn the_upper_endpoint_of_the_window_is_admitted() {
+        assert!(
+            super::compact_update_index_from_raw(portable_admission::RAW_DATE_MAX).is_some(),
+            "RAW_DATE_MAX is inside the window; the superseded `>=` spelling \
+             rejected exactly this value while every other copy admitted it"
+        );
+        assert!(
+            super::compact_update_index_from_raw(portable_admission::RAW_DATE_MAX + 1).is_none()
+        );
     }
 }

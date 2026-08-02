@@ -1,8 +1,8 @@
 //! d13 `tech_live` — per-country research census and per-slot active research.
 //!
-//! Derived from `world_fold.rs:14110`-`:14391`
+//! Derived from `world_fold.rs:14132`-`:14413`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=14110-14391 sha256=373ff3a4fcf0ebeb05ff88a97f385a7a51db802656056ddf0c5c42258a7998f0
+// @world-fold-authority domain=13 functions=fold_tech lines=14132-14413 sha256=373ff3a4fcf0ebeb05ff88a97f385a7a51db802656056ddf0c5c42258a7998f0
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
 //! `:81311`-`:81356`). `extractor/documents/domains/d13_tech_live.md` carries the

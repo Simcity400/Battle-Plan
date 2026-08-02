@@ -18,8 +18,11 @@ pub const FIXED_SCALE: u32 = 100_000;
 pub const DISPLAY_DECIMALS: u32 = 2;
 pub const TRAILER_HEADER_LEN: usize = 48;
 pub const TRAILER_ROW_LEN: usize = 40;
-pub const MAX_PROVINCE_ID: u32 = 13_413;
-pub const MAX_OBSERVER_TAG_DB_ID: u32 = 2_048;
+// Both bounds are re-applied by the replay consumer when it reads these rows
+// back, so they live in the crate both workspaces depend on rather than being
+// written once here and once there.
+pub const MAX_PROVINCE_ID: u32 = portable_admission::SUPPLY_MAX_PROVINCE_ID;
+pub const MAX_OBSERVER_TAG_DB_ID: u32 = portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_ROWS: usize = 16_384;
 
 pub const EXACT_A729_EXECUTABLE_SHA256: &str =

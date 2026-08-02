@@ -5,6 +5,9 @@ edition = "2021"
 description = "Portable, fail-closed non-UI render-submit carrier for .battleplan"
 
 [dependencies]
+# The engine hour-counter sanity window, shared with the extractor producer
+# and the replay consumer so this crate cannot hold a third spelling of it.
+portable_admission = { path = "../admission" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

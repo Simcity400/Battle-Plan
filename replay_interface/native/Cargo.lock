@@ -281,6 +281,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
+name = "portable_admission"
+version = "0.1.0"
+
+[[package]]
 name = "portable_compact_stream"
 version = "0.1.0"
 dependencies = [
@@ -301,6 +305,7 @@ dependencies = [
 name = "portable_render_stream"
 version = "0.1.0"
 dependencies = [
+ "portable_admission",
  "portable_content_manifest",
  "serde",
  "serde_json",
@@ -366,6 +371,7 @@ dependencies = [
 name = "replay_core"
 version = "0.1.0"
 dependencies = [
+ "portable_admission",
  "portable_content_manifest",
  "portable_render_stream",
  "portable_replay_format",
@@ -493,6 +499,7 @@ dependencies = [
  "inline_detour",
  "map_viewer",
  "minhook",
+ "portable_admission",
  "portable_replay_format",
  "serde",
  "serde_json",

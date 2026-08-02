@@ -85,6 +85,46 @@ pub enum Xui20SurfaceState {
     NotApplicable { reason: String },
 }
 
+/// The replay frame hour D86's calendar admission is evaluated against.
+///
+/// The gate cannot invent this value. `sink_date_raw` is only admissible
+/// relative to the hour the frame claims to be, so a binding presented without
+/// a usable hour is refused rather than admitted on the hour-independent half
+/// alone -- which is what this surface did before, and is how `game_ui` and
+/// `replay_core` could reach opposite verdicts on the same D86 row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Xui20FrameHour {
+    /// The frame's `hour_index`, non-negative by construction here.
+    Measured(u64),
+    /// The frame carries no hour this gate can evaluate against. The reason
+    /// travels with it so the refusal stays distinguishable from a rejected
+    /// row.
+    Unavailable { reason: String },
+}
+
+impl Xui20FrameHour {
+    /// The ONLY way a caller obtains a frame hour for this gate: it comes from
+    /// authoritative replay state (`WorldFrame::hour_index`) or it does not
+    /// exist. There is no default and no zero.
+    ///
+    /// `hour_index` is read from the recording's index as a signed value and is
+    /// never clamped on the way in, so a negative hour is reachable from a
+    /// corrupt or crafted file. `replay_core` refuses to bind D86 to one
+    /// (`build_sunk_ship_history_exact`); this refuses for the same reason.
+    pub fn from_frame(frame: &WorldFrame) -> Self {
+        match u64::try_from(frame.hour_index()) {
+            Ok(hour) => Self::Measured(hour),
+            Err(_) => Self::Unavailable {
+                reason: format!(
+                    "replay frame hour_index {} is negative; D86's calendar admission \
+                     has no hour to bind to",
+                    frame.hour_index()
+                ),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xui20ReplayAdmission {
     pub land_active: Xui20SurfaceState,
@@ -1133,9 +1173,9 @@ fn validate_convoy_terminal(
             || row.convoy_id == 0
             || row.convoy_type_tag != 4_713
             || row.owner_tag_db_id == 0
-            || row.owner_tag_db_id > 2_048
+            || row.owner_tag_db_id > replay_core::MAX_COMPACT_OWNER_TAG_DB_ID
             || row.killer_tag_db_id == 0
-            || row.killer_tag_db_id > 2_048
+            || row.killer_tag_db_id > replay_core::MAX_COMPACT_OWNER_TAG_DB_ID
             || row.client_id == 0
             || row.client_type_tag != 4_713
             || row.member_state != 32
@@ -1306,68 +1346,47 @@ fn validate_war_participants(
     Ok(())
 }
 
-/// Exactly one side of a D86 exact-text value/reason pair is populated. D86
-/// admits a record whose text will not decode rather than refusing the record,
-/// so a missing name with a reason beside it is a valid row; a missing name
-/// with no reason, or a present-but-empty required name, is not.
-fn valid_exact_text(
-    text: &Option<String>,
-    unavailable: &Option<SunkShipTextUnavailable>,
-    required: bool,
-) -> bool {
-    match (text, unavailable) {
-        (Some(text), None) => {
-            text.len() <= 4_096 && (!required || !text.is_empty()) && !text.as_bytes().contains(&0)
-        }
-        (None, Some(_)) => true,
-        _ => false,
-    }
-}
-
-fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, GateFailure> {
+/// D86's per-row admission, applied from `replay_core`'s ONE copy.
+///
+/// This gate used to carry its own transcription of the whole rule -- the
+/// value/reason pairing, the combat-join shape, the contiguous-from-2 sequence
+/// -- minus `replay_core`'s calendar check. A rule written twice is a rule that
+/// drifts: a fix landed in `replay_core` alone would have been undone here,
+/// which is exactly how D93's and D86's earlier losses happened.
+///
+/// The calendar half -- `sink_date_raw` converts through the shared 1850..=2200
+/// window and lands at or before the frame's hour -- is applied here too, from
+/// `replay_core`'s [`replay_core::sunk_ship_event_sink_hour_is_admissible`],
+/// which converts through `portable_admission`. Both halves are therefore
+/// spelled once and evaluated identically here and where the view is built.
+/// This gate used to apply only the first half, so a row `replay_core` had
+/// refused on its sink date could still be admitted by the binding gate.
+fn validate_sunk_ships(
+    rows: &Leaf<Vec<SunkShipEventExact>>,
+    frame_hour: &Xui20FrameHour,
+) -> Result<usize, GateFailure> {
     let rows = required(rows, "sunk_ships")?;
-    // The producer numbers this history contiguously from 2. A merely
-    // increasing order accepts [2, 4], which is what a dropped sinking leaves.
-    let expected_sequence =
-        |index: usize| u64::try_from(index).ok().and_then(|index| index.checked_add(2));
+    // Refused, never admitted on half the rule: without the frame hour the
+    // calendar half cannot be evaluated at all, and admitting the rows anyway
+    // is exactly the disagreement this threading exists to close.
+    let expected_hour = match frame_hour {
+        Xui20FrameHour::Measured(hour) => *hour,
+        Xui20FrameHour::Unavailable { reason } => {
+            return Err(external(format!(
+                "sunk_ships calendar admission requires the replay frame hour: {reason}"
+            )))
+        }
+    };
     for (index, row) in rows.iter().enumerate() {
-        let combat_join_valid = if row.combat_join_present {
-            row.combat_id != 0
-                && row.combat_generation != 0
-                && row.victim_member_battle_slot_index <= 4_096
-        } else {
-            row.combat_id == 0
-                && row.combat_generation == 0
-                && row.victim_member_battle_slot_index == 0
-        };
-        if row.event_sequence <= 1
-            || !combat_join_valid
-            || row.victim_country_id_raw == 0
-            || row.attacker_country_id_raw == 0
-            || row.sink_date_raw <= 0
-            || row.killed == row.assisted_kill
-            || (row.cause_record_flag && row.assisted_kill)
-            || row.victim_ship_reference_raw == [0, 0]
-            || !valid_exact_text(&row.ship_name, &row.ship_name_unavailable, true)
-            || !valid_exact_text(
-                &row.ship_class_name,
-                &row.ship_class_name_unavailable,
-                true,
-            )
-            || !valid_exact_text(
-                &row.attribution_source_name,
-                &row.attribution_source_name_unavailable,
-                false,
-            )
-            || !valid_exact_text(
-                &row.attribution_source_class_name,
-                &row.attribution_source_class_name_unavailable,
-                false,
-            )
-            || Some(row.event_sequence) != expected_sequence(index)
-        {
+        if !replay_core::sunk_ship_event_content_is_admissible(row, index) {
             return Err(invalid(format!(
                 "sunk_ships[{index}] exact writer identity/content is invalid"
+            )));
+        }
+        if !replay_core::sunk_ship_event_sink_hour_is_admissible(row, expected_hour) {
+            return Err(invalid(format!(
+                "sunk_ships[{index}] sink date is outside the shared calendar window \
+                 or later than the frame hour"
             )));
         }
     }
@@ -1447,12 +1466,21 @@ fn validate_war_overview(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFa
 
 /// Exact replay admission. Each producer family is gated independently and
 /// no cross-family ordering key is constructed.
-pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmission {
+///
+/// `frame_hour` is the hour the binding was taken at, obtained from
+/// authoritative replay state via [`Xui20FrameHour::from_frame`]. D86's
+/// calendar admission is meaningless without it, so it is a parameter rather
+/// than something this function could default: a caller that has no hour
+/// passes [`Xui20FrameHour::Unavailable`] and the D86 surface refuses.
+pub fn admit_xui20_replay(
+    binding: &Xui20CombatDetailLosses,
+    frame_hour: &Xui20FrameHour,
+) -> Xui20ReplayAdmission {
     let air = validate_air(&binding.air_losses);
     let air_region = validate_air_region(&binding.air_region_combat);
     let convoys = validate_convoys(&binding.sunk_convoys);
     let convoy_terminal = validate_convoy_terminal(&binding.convoy_terminal);
-    let sunk_ships = validate_sunk_ships(&binding.sunk_ships);
+    let sunk_ships = validate_sunk_ships(&binding.sunk_ships, frame_hour);
     let war_pairs = validate_war_pairs(&binding.wars);
     let war_overview = validate_war_overview(&binding.wars);
     let family_rows = binding.land.len()
@@ -1929,6 +1957,28 @@ mod tests {
             d70_before_count: before_count,
             d70_after_count: after_count,
         }
+    }
+
+    /// The convoy-terminal owner/killer ceiling is the shared compact identity
+    /// bound, at its exact value: `2_048` is admitted, `2_049` is not. This
+    /// gate carried a hand-typed copy of the number, three layers away from
+    /// where the producer applies it. Spelling the boundary in the test as the
+    /// constant it guards would pass for whatever the constant happened to be.
+    #[test]
+    fn convoy_terminal_identity_ceiling_is_the_shared_compact_bound() {
+        assert_eq!(replay_core::MAX_COMPACT_OWNER_TAG_DB_ID, 2_048);
+        let admitted = |owner: u32, killer: u32| {
+            let mut row =
+                convoy_terminal_row(1, ConvoyD70MutationKindExact::AppendFirstSeen);
+            row.owner_tag_db_id = owner;
+            row.killer_tag_db_id = killer;
+            validate_convoy_terminal(&Leaf::Measured(vec![row])).is_ok()
+        };
+        assert!(admitted(2_048, 2_048));
+        assert!(!admitted(2_049, 2_048));
+        assert!(!admitted(2_048, 2_049));
+        assert!(!admitted(0, 2_048));
+        assert!(!admitted(2_048, 0));
     }
 
     #[test]

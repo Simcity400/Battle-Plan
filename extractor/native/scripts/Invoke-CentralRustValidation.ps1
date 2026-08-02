@@ -67,6 +67,8 @@ $productionSourceCapabilityPaths = [ordered]@{
 $portablePackageReceiptPath = Join-Path $targetDir "release\hoi4-portable-package-receipt.json"
 $worldFoldCitationVerifier = Join-Path $PSScriptRoot "verify_world_fold_citations.py"
 $worldFoldCitationTests = Join-Path $PSScriptRoot "test_verify_world_fold_citations.py"
+$c07TreeLibraryGenerator = Join-Path $repoRoot "replay_interface\re_evidence\rendering_laws\C07\build_c07_portable_tree_library.py"
+$c07TreeLibraryPinSource = Join-Path $repoRoot "portable_replay\native\render_stream\src\c07_tree_content_hashes.rs"
 $expectedRustVersion = "1.96.0"
 $expectedNextestVersion = "0.9.140"
 . $artifactAttestationHelper
@@ -169,6 +171,169 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "$Program exited with code $LASTEXITCODE"
     }
+}
+
+function Get-RequiredReceiptField {
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSObject]$Receipt,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Field
+    )
+
+    if ($Receipt.PSObject.Properties.Name -notcontains $Field) {
+        throw "C07 tree-library generator receipt has no '$Field' field; the gate cannot tell what the run did."
+    }
+    # Comma-wrapped so the pipeline does not unroll it: an empty array would
+    # otherwise come back as $null and a one-element array as a bare scalar,
+    # which is exactly the shape confusion the two callers below reject.
+    return , $Receipt.$Field
+}
+
+function Get-RequiredReceiptScalar {
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSObject]$Receipt,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Field
+    )
+
+    $value = Get-RequiredReceiptField -Receipt $Receipt -Field $Field
+    if ($null -eq $value) {
+        throw "C07 tree-library generator receipt field '$Field' is null."
+    }
+    # PowerShell happily compares a one-element array to a scalar and says they
+    # are equal, so `"mode": ["verify"]` or `"bucket_count": [296, 7]` would pass
+    # a naive check. A receipt whose shape changed is a receipt this gate no
+    # longer understands, and must fail rather than be interpreted.
+    if ($value -is [System.Array]) {
+        throw "C07 tree-library generator receipt field '$Field' is a list, not a scalar; the receipt shape changed and this gate would be reading it wrongly."
+    }
+    return $value
+}
+
+function Get-RequiredReceiptList {
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSObject]$Receipt,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Field
+    )
+
+    $value = Get-RequiredReceiptField -Receipt $Receipt -Field $Field
+    if ($value -isnot [System.Array]) {
+        throw "C07 tree-library generator receipt field '$Field' is not a list; the receipt shape changed and this gate would be reading it wrongly."
+    }
+    return , $value
+}
+
+function Assert-C07GeneratedTreeLibraryReceipt {
+    <#
+    .SYNOPSIS
+    Bind the C07 generated-artifact gate to what the generator reports it did.
+
+    .DESCRIPTION
+    A zero exit code is not the success signal. A --verify that regressed into a
+    no-op would exit zero having compared nothing, and Check/Build never reach
+    the render_stream test target that would otherwise catch it. So this asserts
+    the same things that target asserts: the run was a verify, it compared all
+    three generated artifacts, it wrote none of them, its counts are the pinned
+    ones, and the two digests it re-derived from the hash-pinned installed content equal
+    the literals the crate compiles. Those literals are read out of the generated
+    source rather than spelled again here, so this gate cannot become a third
+    place a pin has to be updated.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$ReceiptJson,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PinSource
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ReceiptJson)) {
+        throw "C07 tree-library generator exited zero but printed no receipt."
+    }
+    try {
+        $receipt = $ReceiptJson | ConvertFrom-Json
+    }
+    catch {
+        throw "C07 tree-library generator receipt is not JSON: $($_.Exception.Message)"
+    }
+
+    $mode = Get-RequiredReceiptScalar -Receipt $receipt -Field "mode"
+    if ($mode -cne "verify") {
+        throw "C07 tree-library generator ran in mode '$mode', not 'verify'; that run would have rewritten the artifacts instead of checking them."
+    }
+
+    $expectedOutputs = @(
+        "c07_tree_complete_buckets.rs",
+        "c07_tree_content_hashes.rs",
+        "c07_tree_content_library.bin"
+    )
+    # -CaseSensitive: these are the literal filenames on disk. Accepting
+    # C07_TREE_CONTENT_HASHES.RS would mean accepting a receipt that is not
+    # describing the files the crate includes.
+    # Assigned before it is sorted, never piped straight out of the helper: the
+    # helper comma-wraps to preserve list shape, and piping that would hand
+    # Sort-Object the whole array as a single item.
+    $reportedList = Get-RequiredReceiptList -Receipt $receipt -Field "verified_outputs"
+    $reportedOutputs = @($reportedList | Sort-Object)
+    if (Compare-Object -ReferenceObject $expectedOutputs -DifferenceObject $reportedOutputs -CaseSensitive) {
+        throw "C07 tree-library generator reported comparing [$($reportedOutputs -join ', ')], not all three generated artifacts."
+    }
+
+    $writtenList = Get-RequiredReceiptList -Receipt $receipt -Field "changed_outputs"
+    $written = @($writtenList)
+    if ($written.Count -ne 0) {
+        throw "C07 tree-library generator reported writing [$($written -join ', ')] in --verify mode, which it must never do."
+    }
+
+    $counts = @{}
+    foreach ($count in @(
+            @{ Field = "bucket_count"; Expected = 296 },
+            @{ Field = "cell_count"; Expected = 99056 },
+            @{ Field = "packed_bytes"; Expected = 2377344 }
+        )) {
+        $observed = Get-RequiredReceiptScalar -Receipt $receipt -Field $count.Field
+        if ($observed -ne $count.Expected) {
+            throw "C07 exact producer reported $($count.Field) = $observed, expected $($count.Expected). Library content moved; this is a finding, not a re-stamp."
+        }
+        $counts[$count.Field] = $observed
+    }
+
+    if (-not (Test-Path -LiteralPath $PinSource -PathType Leaf)) {
+        throw "C07 pin source is missing: $PinSource"
+    }
+    $pinText = Get-Content -LiteralPath $PinSource -Raw
+    foreach ($pin in @(
+            @{ Constant = "C07_TREE_CONTENT_LIBRARY_PACKED_BYTES_SHA256"; Field = "packed_sha256" },
+            @{ Constant = "C07_TREE_CONTENT_LIBRARY_PAYLOAD_SHA256"; Field = "content_library_payload_sha256" }
+        )) {
+        # Anchored at the start of a line and requiring `pub const`, so a
+        # commented-out or shadowed declaration cannot supply the digest this
+        # gate then blesses. Exactly one declaration must match: two would mean
+        # the gate is comparing against an arbitrary one of them.
+        $pattern = '(?m)^pub const {0}\s*:\s*&str\s*=\s*"([0-9a-f]{{64}})"\s*;' -f $pin.Constant
+        $pinMatches = [regex]::Matches($pinText, $pattern)
+        if ($pinMatches.Count -eq 0) {
+            throw "C07 pin $($pin.Constant) was not found as a top-level 'pub const' declaration in $PinSource; the file the crate includes is not the file this gate checked."
+        }
+        if ($pinMatches.Count -ne 1) {
+            throw "C07 pin $($pin.Constant) is declared $($pinMatches.Count) times in $PinSource; this gate cannot tell which one the crate compiles."
+        }
+        $rederived = Get-RequiredReceiptScalar -Receipt $receipt -Field $pin.Field
+        if ($pinMatches[0].Groups[1].Value -cne $rederived) {
+            throw "C07 exact producer re-derived $($pin.Field) = $rederived but $PinSource pins $($pinMatches[0].Groups[1].Value). Never edit a pin literal to match new content."
+        }
+    }
+
+    Write-Host ("C07 generated tree-library check: PASS ({0} artifacts, {1} buckets, {2} cells)" -f `
+            $reportedOutputs.Count, $counts["bucket_count"], $counts["cell_count"])
 }
 
 function Save-CargoTimingReport {
@@ -337,6 +502,37 @@ try {
             "--repo-root",
             $repoRoot
         )
+    }
+
+    if ($Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {
+        # The three C07 tree-library artifacts under
+        # portable_replay\native\render_stream\src are generated whole from the
+        # hash-pinned shipped installed content and compiled straight into the crate,
+        # so a hand-edit to a pin literal or a bucket row changes what the
+        # complete static tree pool admits. This re-derives all three and fails
+        # on any drift. It is unconditional on -Workspace because the portable
+        # crates are validated for every selection: both halves link them.
+        #
+        # The render_stream crate runs the identical script as a test target, so
+        # a lane editing the pins sees this without central validation. Running
+        # it here as well is what covers the Modes that never reach that crate's
+        # tests, and costs about three seconds.
+        if (-not (Test-Path -LiteralPath $c07TreeLibraryGenerator -PathType Leaf)) {
+            throw "C07 tree-library generator is missing: $c07TreeLibraryGenerator"
+        }
+        $c07Python = $null
+        try { $c07Python = Get-Command "python" -ErrorAction Stop } catch { $c07Python = $null }
+        if (-not $c07Python) {
+            throw "python is not on PATH; the C07 generated tree-library gate cannot run."
+        }
+        Write-Host ("> python {0} --verify" -f $c07TreeLibraryGenerator)
+        $c07ReceiptLines = & python $c07TreeLibraryGenerator "--verify"
+        if ($LASTEXITCODE -ne 0) {
+            throw "C07 generated tree-library artifacts drifted from the exact producer (generator exited $LASTEXITCODE)."
+        }
+        Assert-C07GeneratedTreeLibraryReceipt `
+            -ReceiptJson (($c07ReceiptLines | Out-String)) `
+            -PinSource $c07TreeLibraryPinSource
     }
 
     $extractorReleaseRequested = $Mode -eq "Release" -and $Workspace -in @("All", "Extractor")
@@ -668,11 +864,38 @@ try {
         }
     }
 
-    if ($Mode -eq "Lock" -and $Workspace -in @("All", "Extractor")) {
-        $standaloneRoots = @(
-            (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),
-            (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify")
-        )
+    # The extractor-owned standalone cargo roots. They belong to one workspace's
+    # tree but are deliberately not members of it.
+    $extractorStandaloneRoots = @(
+        (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),
+        (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify")
+    )
+
+    # The neutral portable_replay crates. These CANNOT be members of either
+    # workspace: both path-depend on them, and a cargo package belongs to at
+    # most one workspace. Each is therefore a cargo root in its own right, with
+    # its own committed Cargo.lock, and is built (never tested) as a path
+    # dependency of the two workspaces above.
+    #
+    # That is a structural fact, not a decision to leave them unverified.
+    # Until they were listed here nothing ran their `#[cfg(test)]` modules at
+    # all, so `--workspace` reported green while ~190 tests in the crates BOTH
+    # halves statically link had never executed. They are validated for every
+    # -Workspace selection because both halves depend on them.
+    $portableStandaloneRoots = @(
+        (Join-Path $repoRoot "portable_replay\native\admission"),
+        (Join-Path $repoRoot "portable_replay\native\compact_stream"),
+        (Join-Path $repoRoot "portable_replay\native\content_manifest"),
+        (Join-Path $repoRoot "portable_replay\native\render_stream"),
+        (Join-Path $repoRoot "portable_replay\native\snapshot")
+    )
+
+    if ($Mode -eq "Lock") {
+        $standaloneRoots = @()
+        if ($Workspace -in @("All", "Extractor")) {
+            $standaloneRoots += $extractorStandaloneRoots
+        }
+        $standaloneRoots += $portableStandaloneRoots
         foreach ($standaloneRoot in $standaloneRoots) {
             Push-Location $standaloneRoot
             try {
@@ -684,11 +907,12 @@ try {
         }
     }
 
-    if ($Package.Count -eq 0 -and $Workspace -in @("All", "Extractor") -and $Mode -in @("Final", "Release")) {
-        $standaloneRoots = @(
-            (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),
-            (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify")
-        )
+    if ($Package.Count -eq 0 -and $Mode -in @("Final", "Release")) {
+        $standaloneRoots = @()
+        if ($Workspace -in @("All", "Extractor")) {
+            $standaloneRoots += $extractorStandaloneRoots
+        }
+        $standaloneRoots += $portableStandaloneRoots
         foreach ($standaloneRoot in $standaloneRoots) {
             $standaloneManifest = Join-Path $standaloneRoot "Cargo.toml"
             Push-Location $standaloneRoot

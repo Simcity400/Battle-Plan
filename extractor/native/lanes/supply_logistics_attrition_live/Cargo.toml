@@ -8,6 +8,9 @@ path = "src/lib.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+# Province/owner admission bounds shared with the replay consumer, which
+# re-applies both when reading these rows back.
+portable_admission = { path = "../../../../portable_replay/native/admission" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }
 

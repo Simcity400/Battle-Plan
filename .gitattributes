@@ -58,3 +58,13 @@ replay_interface/re_evidence/rendering_laws/refresh_c04_t00_t01_pins.py text eol
 # SHA-256 constant in xui21_registry.rs. Any newline normalisation on checkout
 # changes the bytes and fails that check, so keep it exact on every platform.
 extractor/game_defs/out/fired_event_registry.json -text
+
+# The three C07 tree-library artifacts are emitted whole by
+# replay_interface/re_evidence/rendering_laws/C07/build_c07_portable_tree_library.py
+# and re-checked by its --verify gate, which the render_stream crate runs as a
+# test target. The generator writes LF; without these pins core.autocrlf gives
+# the working tree CRLF and "regenerate and byte-compare" stops being a byte
+# comparison. Keep the checkout representation exact on every host.
+portable_replay/native/render_stream/src/c07_tree_content_hashes.rs text eol=lf
+portable_replay/native/render_stream/src/c07_tree_complete_buckets.rs text eol=lf
+portable_replay/native/render_stream/src/c07_tree_content_library.bin -text

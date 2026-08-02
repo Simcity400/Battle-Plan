@@ -2768,9 +2768,9 @@ fn recorder_campaign_identity(
             .as_i64()
             .and_then(|value| i32::try_from(value).ok())
             .ok_or_else(|| fail("observed_game_hour_raw is not null or i32".into()))?;
-        let min = (1850 * 365 * 24) + 43_799_999;
-        let max = (2200 * 365 * 24) + 43_799_999;
-        if !(min..=max).contains(&raw) {
+        // The extractor applies this same window when it stamps the hour; it
+        // is shared rather than re-typed so the two cannot drift.
+        if !portable_admission::raw_date_in_range(raw) {
             return Err(fail("observed_game_hour_raw is outside the compact calendar".into()));
         }
         Some(raw)

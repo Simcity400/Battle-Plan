@@ -1,5 +1,6 @@
 use game_ui::combat_detail_losses::{
-    admit_xui20_replay, LandCombatPanel, Xui20CombatDetailLosses, Xui20SurfaceState,
+    admit_xui20_replay, LandCombatPanel, Xui20CombatDetailLosses, Xui20FrameHour,
+    Xui20SurfaceState,
 };
 use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, AirRegionDamageRow, EndedCombatRow, LandCombatSideDetail,
@@ -228,6 +229,52 @@ fn air_region() -> AirRegionCombatRow {
     }
 }
 
+/// A real engine hour counter inside the shared 1850..=2200 window; the same
+/// value `replay_core`'s own D86 fixtures carry. It used to be `44`, which is
+/// ~43.8 million below the window's floor -- a value the gate accepted only
+/// because it never applied the calendar half.
+const FIXTURE_SINK_DATE_RAW: i32 = 60_759_299;
+
+/// The schema `hour_index` `FIXTURE_SINK_DATE_RAW` denotes.
+/// `fixture_frame_hour_is_exactly_the_fixture_sinking_hour` pins the two
+/// together through the shared predicate, so neither can be edited alone.
+const FIXTURE_FRAME_HOUR: u64 = 16_959_300;
+
+/// The hour every gate call in this file admits against. The gate has no
+/// default to fall back on, so each call states it.
+fn frame_hour() -> Xui20FrameHour {
+    Xui20FrameHour::Measured(FIXTURE_FRAME_HOUR)
+}
+
+fn sunk_ship_row() -> SunkShipEventExact {
+    SunkShipEventExact {
+        event_sequence: 2,
+        combat_join_present: true,
+        combat_id: 9,
+        combat_generation: 2,
+        victim_country_id_raw: 2,
+        attacker_country_id_raw: 101,
+        ui_source_country_id_raw: 1,
+        sink_date_raw: FIXTURE_SINK_DATE_RAW,
+        victim_member_battle_slot_index: 1,
+        killed: true,
+        assisted_kill: false,
+        victim_ship_reference_raw: [7, 8],
+        damage_source_reference_raw: [9, 10],
+        task_force_id_raw: 11,
+        terminal_context_raw: [12, 13],
+        cause_record_flag: false,
+        ship_name: Some("HMS Exact".into()),
+        ship_name_unavailable: None,
+        ship_class_name: Some("Destroyer".into()),
+        ship_class_name_unavailable: None,
+        attribution_source_name: Some("KMS Exact".into()),
+        attribution_source_name_unavailable: None,
+        attribution_source_class_name: Some("Cruiser".into()),
+        attribution_source_class_name_unavailable: None,
+    }
+}
+
 fn exact_binding() -> Xui20CombatDetailLosses {
     Xui20CombatDetailLosses {
         land: vec![land()],
@@ -238,42 +285,34 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         air_region_combat: Leaf::Measured(vec![air_region()]),
         sunk_convoys: Leaf::Measured(Vec::new()),
         convoy_terminal: Leaf::Unobtained,
-        sunk_ships: Leaf::Measured(vec![SunkShipEventExact {
-            event_sequence: 2,
-            combat_join_present: true,
-            combat_id: 9,
-            combat_generation: 2,
-            victim_country_id_raw: 2,
-            attacker_country_id_raw: 101,
-            ui_source_country_id_raw: 1,
-            sink_date_raw: 44,
-            victim_member_battle_slot_index: 1,
-            killed: true,
-            assisted_kill: false,
-            victim_ship_reference_raw: [7, 8],
-            damage_source_reference_raw: [9, 10],
-            task_force_id_raw: 11,
-            terminal_context_raw: [12, 13],
-            cause_record_flag: false,
-            ship_name: Some("HMS Exact".into()),
-            ship_name_unavailable: None,
-            ship_class_name: Some("Destroyer".into()),
-            ship_class_name_unavailable: None,
-            attribution_source_name: Some("KMS Exact".into()),
-            attribution_source_name_unavailable: None,
-            attribution_source_class_name: Some("Cruiser".into()),
-            attribution_source_class_name_unavailable: None,
-        }]),
+        sunk_ships: Leaf::Measured(vec![sunk_ship_row()]),
         wars: Leaf::Measured(vec![war()]),
         war_relations: Leaf::Measured(Vec::new()),
     }
+}
+
+/// The two fixture constants are one fact spelled two ways. Pinning them
+/// against the shared conversion (rather than against each other) means an
+/// edit to either one, or a change to the shared epoch, turns this red instead
+/// of quietly making every calendar assertion below vacuous.
+#[test]
+fn fixture_frame_hour_is_exactly_the_fixture_sinking_hour() {
+    let row = sunk_ship_row();
+    assert!(
+        replay_core::sunk_ship_event_sink_hour_is_admissible(&row, FIXTURE_FRAME_HOUR),
+        "the fixture sinking must be admissible at the fixture frame hour"
+    );
+    assert!(
+        !replay_core::sunk_ship_event_sink_hour_is_admissible(&row, FIXTURE_FRAME_HOUR - 1),
+        "one hour earlier the same sinking is still in the future"
+    );
 }
 
 #[test]
 fn unavailable_ended_collection_is_not_collapsed_to_measured_empty() {
     let mut binding = exact_binding();
     binding.ended_land_status = replay_core::ViewStatus::DomainUnavailable;
-    let admission = admit_xui20_replay(&binding);
+    let admission = admit_xui20_replay(&binding, &frame_hour());
     assert!(matches!(
         admission.land_ended_lifecycle,
         Xui20SurfaceState::ExternalInputRequired { .. }
@@ -282,7 +321,7 @@ fn unavailable_ended_collection_is_not_collapsed_to_measured_empty() {
 
 #[test]
 fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
-    let admission = admit_xui20_replay(&exact_binding());
+    let admission = admit_xui20_replay(&exact_binding(), &frame_hour());
     assert_eq!(
         admission.land_active,
         Xui20SurfaceState::Admitted { row_count: 1 }
@@ -344,7 +383,7 @@ fn attach_baseline_sunk_rows_admit_only_with_explicitly_absent_combat_join() {
     rows[0].combat_generation = 0;
     rows[0].victim_member_battle_slot_index = 0;
     assert_eq!(
-        admit_xui20_replay(&binding).naval_terminal,
+        admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
         Xui20SurfaceState::Admitted { row_count: 1 }
     );
 
@@ -353,7 +392,7 @@ fn attach_baseline_sunk_rows_admit_only_with_explicitly_absent_combat_join() {
     };
     rows[0].combat_id = 9;
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_terminal,
+        admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
         Xui20SurfaceState::Rejected { .. }
     ));
 }
@@ -370,7 +409,7 @@ fn sunk_rows_reject_a_gap_in_the_history_sequence() {
     second.event_sequence = 3;
     rows.push(second);
     assert_eq!(
-        admit_xui20_replay(&binding).naval_terminal,
+        admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
         Xui20SurfaceState::Admitted { row_count: 2 },
         "a contiguous two-row history is the control"
     );
@@ -381,7 +420,7 @@ fn sunk_rows_reject_a_gap_in_the_history_sequence() {
     rows[1].event_sequence = 4;
     assert!(
         matches!(
-            admit_xui20_replay(&binding).naval_terminal,
+            admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
             Xui20SurfaceState::Rejected { .. }
         ),
         "a history that skips sequence 3 is still strictly increasing"
@@ -401,7 +440,7 @@ fn sunk_rows_admit_an_explicitly_unavailable_name_but_not_an_unexplained_one() {
     rows[0].ship_name = None;
     rows[0].ship_name_unavailable = Some(SunkShipTextUnavailable::EngineEmpty);
     assert_eq!(
-        admit_xui20_replay(&binding).naval_terminal,
+        admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
         Xui20SurfaceState::Admitted { row_count: 1 }
     );
 
@@ -411,7 +450,7 @@ fn sunk_rows_admit_an_explicitly_unavailable_name_but_not_an_unexplained_one() {
     rows[0].ship_name_unavailable = None;
     assert!(
         matches!(
-            admit_xui20_replay(&binding).naval_terminal,
+            admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
             Xui20SurfaceState::Rejected { .. }
         ),
         "an absent name with no reason beside it is not an admitted absence"
@@ -423,7 +462,7 @@ fn sunk_rows_admit_an_explicitly_unavailable_name_but_not_an_unexplained_one() {
     rows[0].ship_name = Some(String::new());
     assert!(
         matches!(
-            admit_xui20_replay(&binding).naval_terminal,
+            admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
             Xui20SurfaceState::Rejected { .. }
         ),
         "emptiness is carried as a reason, never as an empty present name"
@@ -436,7 +475,7 @@ fn sunk_rows_admit_an_explicitly_unavailable_name_but_not_an_unexplained_one() {
     rows[0].ship_name_unavailable = Some(SunkShipTextUnavailable::PayloadUnreadable);
     assert!(
         matches!(
-            admit_xui20_replay(&binding).naval_terminal,
+            admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
             Xui20SurfaceState::Rejected { .. }
         ),
         "a row cannot carry both a name and a reason it is missing"
@@ -463,7 +502,7 @@ fn ended_lifecycle_is_admitted_separately_from_active_land() {
             detail: Leaf::Unobtained,
         },
     );
-    let admission = admit_xui20_replay(&binding);
+    let admission = admit_xui20_replay(&binding, &frame_hour());
     assert_eq!(
         admission.land_ended_lifecycle,
         Xui20SurfaceState::Admitted { row_count: 1 }
@@ -486,7 +525,7 @@ fn malformed_exact_values_reject_instead_of_rendering() {
     };
     attacker.progress = Leaf::Measured(0.1);
     assert!(matches!(
-        admit_xui20_replay(&binding).land_side_detail,
+        admit_xui20_replay(&binding, &frame_hour()).land_side_detail,
         Xui20SurfaceState::Rejected { .. }
     ));
 }
@@ -499,7 +538,7 @@ fn missing_scheduled_w1_payload_is_external_not_zero_filled() {
     };
     wars[0].war_name = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).war_overview_exact,
+        admit_xui20_replay(&binding, &frame_hour()).war_overview_exact,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 }
@@ -509,14 +548,14 @@ fn missing_land_display_or_lifecycle_inputs_fail_closed() {
     let mut binding = exact_binding();
     binding.land[0].terrain = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).land_active,
+        admit_xui20_replay(&binding, &frame_hour()).land_active,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 
     let mut binding = exact_binding();
     binding.land[0].detail_generation = Leaf::Absent;
     assert!(matches!(
-        admit_xui20_replay(&binding).land_side_detail,
+        admit_xui20_replay(&binding, &frame_hour()).land_side_detail,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 }
@@ -526,14 +565,14 @@ fn malformed_land_display_and_lifecycle_values_reject() {
     let mut binding = exact_binding();
     binding.land[0].combat_width = Leaf::Measured(0.0);
     assert!(matches!(
-        admit_xui20_replay(&binding).land_active,
+        admit_xui20_replay(&binding, &frame_hour()).land_active,
         Xui20SurfaceState::Rejected { .. }
     ));
 
     let mut binding = exact_binding();
     binding.land[0].detail_location_province = Leaf::Measured(43);
     assert!(matches!(
-        admit_xui20_replay(&binding).land_side_detail,
+        admit_xui20_replay(&binding, &frame_hour()).land_side_detail,
         Xui20SurfaceState::Rejected { .. }
     ));
 }
@@ -546,21 +585,21 @@ fn naval_member_order_counts_and_country_sets_are_exact() {
     };
     members.swap(0, 1);
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_active,
+        admit_xui20_replay(&binding, &frame_hour()).naval_active,
         Xui20SurfaceState::Rejected { .. }
     ));
 
     let mut binding = exact_binding();
     binding.naval[0].attacker_country_tag_db_ids = Leaf::Measured(vec![99]);
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_active,
+        admit_xui20_replay(&binding, &frame_hour()).naval_active,
         Xui20SurfaceState::Rejected { .. }
     ));
 
     let mut binding = exact_binding();
     binding.naval[0].attacker_member_count = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_active,
+        admit_xui20_replay(&binding, &frame_hour()).naval_active,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 }
@@ -570,21 +609,21 @@ fn naval_side_fixed_point_pairs_are_complete_and_exact() {
     let mut binding = exact_binding();
     binding.naval[0].attacker_anti_air_raw = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_active,
+        admit_xui20_replay(&binding, &frame_hour()).naval_active,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 
     let mut binding = exact_binding();
     binding.naval[0].attacker_positioning = Leaf::Measured(0.750_01);
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_active,
+        admit_xui20_replay(&binding, &frame_hour()).naval_active,
         Xui20SurfaceState::Rejected { .. }
     ));
 
     let mut binding = exact_binding();
     binding.naval[0].defender_anti_air = Leaf::Measured(0.99);
     assert!(matches!(
-        admit_xui20_replay(&binding).naval_active,
+        admit_xui20_replay(&binding, &frame_hour()).naval_active,
         Xui20SurfaceState::Rejected { .. }
     ));
 }
@@ -597,11 +636,11 @@ fn air_loss_arithmetic_and_region_damage_are_fail_closed() {
     };
     losses[0].count_delta = Leaf::Measured(-2);
     assert!(matches!(
-        admit_xui20_replay(&binding).air_history,
+        admit_xui20_replay(&binding, &frame_hour()).air_history,
         Xui20SurfaceState::Rejected { .. }
     ));
     assert!(matches!(
-        admit_xui20_replay(&binding).combat_log_families,
+        admit_xui20_replay(&binding, &frame_hour()).combat_log_families,
         Xui20SurfaceState::Rejected { .. }
     ));
 
@@ -614,7 +653,7 @@ fn air_loss_arithmetic_and_region_damage_are_fail_closed() {
     };
     damage[0].amount = Leaf::Measured(f64::NAN);
     assert!(matches!(
-        admit_xui20_replay(&binding).air_region_history,
+        admit_xui20_replay(&binding, &frame_hour()).air_region_history,
         Xui20SurfaceState::Rejected { .. }
     ));
 
@@ -624,7 +663,7 @@ fn air_loss_arithmetic_and_region_damage_are_fail_closed() {
     };
     regions[0].attributed_country_tag_db_id = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).air_region_history,
+        admit_xui20_replay(&binding, &frame_hour()).air_region_history,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 }
@@ -637,7 +676,7 @@ fn w1_requires_complete_unique_ordered_sides_and_metrics() {
     };
     wars[0].overall_progress_raw = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).war_overview_exact,
+        admit_xui20_replay(&binding, &frame_hour()).war_overview_exact,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 
@@ -654,7 +693,7 @@ fn w1_requires_complete_unique_ordered_sides_and_metrics() {
     };
     participants[0].tag = Leaf::Measured("GER".into());
     assert!(matches!(
-        admit_xui20_replay(&binding).war_overview_exact,
+        admit_xui20_replay(&binding, &frame_hour()).war_overview_exact,
         Xui20SurfaceState::Rejected { .. }
     ));
 
@@ -667,7 +706,236 @@ fn w1_requires_complete_unique_ordered_sides_and_metrics() {
     };
     participants[0].tag_db_id = Leaf::Unobtained;
     assert!(matches!(
-        admit_xui20_replay(&binding).war_overview_exact,
+        admit_xui20_replay(&binding, &frame_hour()).war_overview_exact,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
+}
+
+// The XUI20 gate's D86 row rule is `replay_core`'s ONE copy of it, not a
+// transcription. This gate used to spell the whole rule out again -- the
+// value/reason pairing, the combat-join shape, the contiguous-from-2 sequence
+// -- so a fix landing in `replay_core` alone would have been undone here, which
+// is exactly the shape of the two earlier silent data losses.
+//
+// Reintroducing a local copy that differs from the shared predicate in ANY of
+// the mutations below turns this red.
+#[test]
+fn sunk_ship_gate_verdict_tracks_replay_cores_shared_row_predicate() {
+    let mutations: Vec<(&str, fn(&mut SunkShipEventExact))> = vec![
+        ("control", |_row| {}),
+        ("baseline sequence", |row| row.event_sequence = 1),
+        ("sequence off by one", |row| row.event_sequence = 3),
+        ("joined combat with no id", |row| row.combat_id = 0),
+        ("joined combat with no generation", |row| {
+            row.combat_generation = 0
+        }),
+        ("battle slot out of range", |row| {
+            row.victim_member_battle_slot_index = 4_097
+        }),
+        ("battle slot at the ceiling", |row| {
+            row.victim_member_battle_slot_index = 4_096
+        }),
+        ("no victim", |row| row.victim_country_id_raw = 0),
+        ("no attacker", |row| row.attacker_country_id_raw = 0),
+        ("non-positive sink date", |row| row.sink_date_raw = 0),
+        ("killed and assisted at once", |row| row.assisted_kill = true),
+        ("cause record on an assist", |row| {
+            row.assisted_kill = true;
+            row.killed = false;
+            row.cause_record_flag = true;
+        }),
+        ("no victim ship reference", |row| {
+            row.victim_ship_reference_raw = [0, 0]
+        }),
+        ("required name present but empty", |row| {
+            row.ship_name = Some(String::new())
+        }),
+        ("required name missing with no reason", |row| {
+            row.ship_name = None
+        }),
+        ("required name missing WITH a reason", |row| {
+            row.ship_name = None;
+            row.ship_name_unavailable = Some(SunkShipTextUnavailable::EngineEmpty);
+        }),
+        ("optional name missing with no reason", |row| {
+            row.attribution_source_name = None
+        }),
+        ("name carries an interior NUL", |row| {
+            row.ship_name = Some("HMS\0Exact".into())
+        }),
+        ("name at the length ceiling", |row| {
+            row.ship_name = Some("x".repeat(4_096))
+        }),
+        ("name past the length ceiling", |row| {
+            row.ship_name = Some("x".repeat(4_097))
+        }),
+    ];
+
+    for (label, mutate) in mutations {
+        let mut binding = exact_binding();
+        let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+            panic!("sunk ships")
+        };
+        mutate(&mut rows[0]);
+        let row = rows[0].clone();
+        let shared = replay_core::sunk_ship_event_content_is_admissible(&row, 0);
+        let gate_admitted = matches!(
+            admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
+            Xui20SurfaceState::Admitted { .. }
+        );
+        assert_eq!(
+            shared, gate_admitted,
+            "{label}: the XUI20 gate and replay_core's shared D86 row predicate \
+             disagree; a rule enforced on one side and not its sibling is not \
+             enforced"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D86's calendar half, applied at the binding gate
+// ---------------------------------------------------------------------------
+//
+// `replay_core` refuses a sunk-ship row whose `sink_date_raw` does not convert
+// through the shared 1850..=2200 window, or whose converted hour is later than
+// the frame's. The binding gate is a second production surface with its own
+// refusal contract, and it used to apply only the hour-INDEPENDENT half -- so a
+// row this crate had refused could still be admitted here, and the two layers
+// could return opposite verdicts for the same row on the same frame.
+
+/// A sinking dated outside the shared calendar window is refused even though
+/// every hour-independent field is intact.
+///
+/// Mutation: drop the threaded hour check from `validate_sunk_ships` and the
+/// out-of-window rows below are admitted, turning this red.
+#[test]
+fn sunk_rows_outside_the_shared_calendar_window_are_refused() {
+    // The endpoints come from `portable_admission` through `replay_core`, not
+    // from arithmetic retyped here: a hand-written window in a test that checks
+    // a window is the same drift the shared crate exists to prevent.
+    for (label, raw) in [
+        (
+            "one hour below the window floor",
+            replay_core::RAW_DATE_MIN - 1,
+        ),
+        (
+            "one hour above the window ceiling",
+            replay_core::RAW_DATE_MAX + 1,
+        ),
+    ] {
+        let mut binding = exact_binding();
+        let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+            panic!("sunk ships")
+        };
+        rows[0].sink_date_raw = raw;
+        assert!(
+            matches!(
+                admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
+                Xui20SurfaceState::Rejected { .. }
+            ),
+            "{label}: a raw sink date the shared window cannot convert is not an \
+             admissible sinking"
+        );
+    }
+}
+
+/// A sinking dated after the frame it is presented on is refused. This is the
+/// half that needs the hour: the row is perfectly well formed and inside the
+/// calendar window, and only the frame it arrives on makes it inadmissible.
+///
+/// Mutation: drop the threaded hour check and this is admitted.
+#[test]
+fn a_sinking_later_than_the_frame_hour_is_refused() {
+    let binding = exact_binding();
+    assert_eq!(
+        admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
+        Xui20SurfaceState::Admitted { row_count: 1 },
+        "the control: the fixture sinking happened at the fixture frame hour"
+    );
+    assert!(
+        matches!(
+            admit_xui20_replay(
+                &binding,
+                &Xui20FrameHour::Measured(FIXTURE_FRAME_HOUR - 1)
+            )
+            .naval_terminal,
+            Xui20SurfaceState::Rejected { .. }
+        ),
+        "one hour earlier the same row is a future sinking"
+    );
+}
+
+/// The gate and `replay_core` agree on the calendar half for every sink date,
+/// not just the ones a hand-written case list happens to name. The predicate is
+/// the same function on both sides; this pins that it stays the same function.
+#[test]
+fn sunk_ship_gate_verdict_tracks_replay_cores_shared_calendar_predicate() {
+    let cases: [(&str, i32); 7] = [
+        ("in window, at the frame hour", FIXTURE_SINK_DATE_RAW),
+        ("in window, an hour before the frame", FIXTURE_SINK_DATE_RAW - 1),
+        ("in window, an hour after the frame", FIXTURE_SINK_DATE_RAW + 1),
+        ("below the window floor", replay_core::RAW_DATE_MIN - 1),
+        ("at the window floor", replay_core::RAW_DATE_MIN),
+        ("at the window ceiling", replay_core::RAW_DATE_MAX),
+        ("above the window ceiling", replay_core::RAW_DATE_MAX + 1),
+    ];
+
+    for (label, raw) in cases {
+        let mut binding = exact_binding();
+        let Leaf::Measured(rows) = &mut binding.sunk_ships else {
+            panic!("sunk ships")
+        };
+        rows[0].sink_date_raw = raw;
+        let row = rows[0].clone();
+        let shared = replay_core::sunk_ship_event_content_is_admissible(&row, 0)
+            && replay_core::sunk_ship_event_sink_hour_is_admissible(&row, FIXTURE_FRAME_HOUR);
+        let gate_admitted = matches!(
+            admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
+            Xui20SurfaceState::Admitted { .. }
+        );
+        assert_eq!(
+            shared, gate_admitted,
+            "{label}: the XUI20 gate and replay_core disagree about the same D86 \
+             row on the same frame"
+        );
+    }
+}
+
+/// A caller with no usable frame hour gets a typed refusal, never an
+/// admission. `ExternalInputRequired` is the gate's existing "this surface
+/// needs an input it was not given" state, and it is what a negative
+/// `hour_index` produces -- the same condition `replay_core` refuses D86 on.
+///
+/// Mutation: make the no-hour arm admit (or fall through to the content half
+/// alone) and this turns red.
+#[test]
+fn a_binding_with_no_frame_hour_refuses_the_d86_surface_typed() {
+    let binding = exact_binding();
+    let no_hour = Xui20FrameHour::Unavailable {
+        reason: "replay frame hour_index -1 is negative".into(),
+    };
+    let admission = admit_xui20_replay(&binding, &no_hour);
+    let Xui20SurfaceState::ExternalInputRequired { reason } = &admission.naval_terminal else {
+        panic!(
+            "a D86 surface with no frame hour must refuse typed, got {:?}",
+            admission.naval_terminal
+        );
+    };
+    assert!(
+        reason.contains("frame hour"),
+        "the refusal must name the missing input, got {reason}"
+    );
+    // The refusal is scoped: families that do not depend on the calendar are
+    // untouched, so "no hour" never silently blanks the whole panel.
+    assert_eq!(
+        admission.land_active,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+    assert!(
+        matches!(
+            admission.combat_log_families,
+            Xui20SurfaceState::ExternalInputRequired { .. }
+        ),
+        "the aggregate family state carries the refusal rather than hiding it"
+    );
 }

@@ -19,7 +19,7 @@ use game_ui::character_ui::{
     CharacterPresentationInput,
 };
 use game_ui::combat_detail_losses::{
-    admit_xui20_replay, combat_detail_losses_from_frame, Xui20ReplayAdmission,
+    admit_xui20_replay, combat_detail_losses_from_frame, Xui20FrameHour, Xui20ReplayAdmission,
 };
 use game_ui::decision_replay::{
     bind_decision_panel, decision_panel_snapshot_from_world, DecisionPanelBinding,
@@ -299,6 +299,7 @@ impl SelectedPovRuntime {
             self.snapshot.technology_sharing = technology_sharing;
             self.snapshot.combat_detail = FeatureState::admitted(admit_xui20_replay(
                 &combat_detail_losses_from_frame(frame),
+                &Xui20FrameHour::from_frame(frame),
             ));
             self.snapshot.selected_designer = selected_designer(frame);
             return;
@@ -626,6 +627,7 @@ impl SelectedPovRuntime {
             battleplan_panel,
             combat_detail: FeatureState::admitted(admit_xui20_replay(
                 &combat_detail_losses_from_frame(frame),
+                &Xui20FrameHour::from_frame(frame),
             )),
             strategic_air_details,
             supply_hub_motorization,

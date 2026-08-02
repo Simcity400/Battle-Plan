@@ -50,7 +50,7 @@ pub const BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 = 4;
 pub const BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
 pub const BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 = 6;
 
-pub const MAX_PROVINCE_ID: u32 = 13_413;
+pub const MAX_PROVINCE_ID: u32 = portable_admission::SUPPLY_MAX_PROVINCE_ID;
 pub const MAX_STATE_ID: u32 = 1_081;
 pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_DIVISION_ID: u32 = i32::MAX as u32;

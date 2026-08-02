@@ -720,6 +720,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable_admission"
+version = "0.1.0"
+
+[[package]]
 name = "portable_compact_stream"
 version = "0.1.0"
 dependencies = [
@@ -740,6 +744,7 @@ dependencies = [
 name = "portable_render_stream"
 version = "0.1.0"
 dependencies = [
+ "portable_admission",
  "portable_content_manifest",
  "serde",
  "serde_json",
@@ -875,6 +880,7 @@ dependencies = [
  "naval_missions_status_live_lane",
  "nuke_stockpile_live_lane",
  "occupation_resistance_compliance_live_lane",
+ "portable_admission",
  "portable_content_manifest",
  "portable_render_stream",
  "power_balance_presentation_live_lane",
@@ -942,6 +948,7 @@ dependencies = [
  "compact_contract",
  "inline_detour",
  "minhook",
+ "portable_admission",
  "production_hook_receipt",
  "runtime_text_inputs_live_lane",
  "sha2",
@@ -1071,6 +1078,7 @@ dependencies = [
  "compact_contract",
  "inline_detour",
  "minhook",
+ "portable_admission",
  "serde_json",
  "snapshot",
  "windows-sys",
@@ -1252,6 +1260,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "compact_contract",
+ "portable_admission",
  "portable_content_manifest",
  "serde_json",
  "sha2",

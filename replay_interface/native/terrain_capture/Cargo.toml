@@ -22,6 +22,9 @@ path = "src/bin/capture_harness.rs"
 [dependencies]
 inline_detour = { path = "../../../extractor/native/inline_detour" }
 minhook = "0.9.0"
+# The engine calendar this module stamps onto captured records is the same
+# calendar the recorder and the replay consumer apply; it has one home.
+portable_admission = { path = "../../../portable_replay/native/admission" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 snapshot = { package = "portable_replay_format", path = "../../../portable_replay/native/snapshot" }

@@ -1,0 +1,14 @@
+[package]
+name = "portable_admission"
+version = "0.1.0"
+edition = "2021"
+description = "Admission predicates and bounds shared by the extractor producer and the replay consumer"
+
+# Deliberately dependency-free. This crate is path-depended on by BOTH cargo
+# workspaces (extractor/native and replay_interface/native); every dependency
+# added here is added to both. The values it carries are decision inputs, not
+# serialised types, so nothing here needs serde.
+[dependencies]
+
+[profile.release]
+overflow-checks = true

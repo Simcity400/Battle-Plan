@@ -5460,6 +5460,98 @@ fn chunk3_folds_d45_v5_direct_history_as_disjoint_per_hour_deltas() {
     assert_eq!(rows1[0]["sequence"], json!(2));
 }
 
+/// The direct-FRD history is cumulative and the replay consumer refuses one
+/// longer than `MAX_FRD_DIRECT_TRANSITIONS`, discarding the WHOLE view. The
+/// producer's ceiling is therefore that number exactly: a history OF that
+/// length is readable and must be admitted, one row more is not.
+///
+/// Pinned absolutely. Spelling the boundary as the constant would pass for any
+/// value the constant took, and the value is the cross-workspace contract.
+#[test]
+fn chunk3_d45_direct_history_ceiling_is_the_exact_shared_row_bound() {
+    assert_eq!(portable_admission::MAX_FRD_DIRECT_TRANSITIONS, 1_000_000);
+    assert!(!frd_direct_history_capacity_exceeded(0, 1_000_000));
+    assert!(!frd_direct_history_capacity_exceeded(999_999, 1));
+    assert!(!frd_direct_history_capacity_exceeded(1_000_000, 0));
+    assert!(frd_direct_history_capacity_exceeded(1_000_000, 1));
+    assert!(frd_direct_history_capacity_exceeded(999_999, 2));
+    // Saturating, not wrapping: an absurd length must not fold back into the
+    // admitted range.
+    assert!(frd_direct_history_capacity_exceeded(usize::MAX, 1));
+}
+
+/// ...and the fold actually applies it. Before this, the fold appended without
+/// any ceiling: the recorder kept building a history that replay would throw
+/// away in full, and nothing said so until the recording was already over.
+///
+/// The history has to be AT the ceiling for the next drain to cross it, so this
+/// test allocates that many rows once (~120 MB transient). There is no smaller
+/// state that reaches the boundary, and the boundary is what is under test.
+#[test]
+fn chunk3_d45_direct_history_refuses_to_grow_past_the_ceiling_replay_admits() {
+    use direct_frd_transitions_live::{
+        DirectEventKind, DirectEventRow, DirectEventStateSummary, OpaqueInstanceId,
+    };
+    let seed = DirectEventRow {
+        sequence: 1,
+        kind: DirectEventKind::FocusCompleted,
+        thread_id: 23,
+        game_hour_raw: raw_for(16_959_360),
+        root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+        owner_instance_id: OpaqueInstanceId::NONE,
+        subject_instance_id: OpaqueInstanceId::NONE,
+        argument_instance_id: OpaqueInstanceId::NONE,
+        owner_key: 1,
+        subject_token_hash: 1,
+        subject_key: 0,
+        input_bits: 0,
+        return_bits: 1,
+        before: DirectEventStateSummary::default(),
+        after: DirectEventStateSummary {
+            state_bits: 1 << 63,
+            ..DirectEventStateSummary::default()
+        },
+    };
+
+    // At the ceiling, so the incoming drain would carry it past: the fold stops
+    // and says so instead of building a history replay cannot read. (Which side
+    // of the boundary is admitted is pinned by
+    // `chunk3_d45_direct_history_ceiling_is_the_exact_shared_row_bound`; folding
+    // an admitted million-row history here would spend the test's time
+    // projecting it to JSON, not exercising the rule.)
+    let mut fold = WorldFold::new("d45_direct_history_past_ceiling");
+    fold.frd_direct_transitions =
+        vec![seed; portable_admission::MAX_FRD_DIRECT_TRANSITIONS];
+    fold.ingest_stream(&d45_v5_direct_stream());
+    assert!(fold.frd_direct_history_failed);
+    assert!(fold.frd_direct_transitions.is_empty());
+    assert_eq!(fold.frd_direct_last_sequence, None);
+}
+
+/// One D45 schema-v5 direct-hook record plus its frame end, as a stream.
+fn d45_v5_direct_stream() -> Vec<u8> {
+    let raw = raw_for(16_959_360);
+    let mut stream = Vec::new();
+    push_record_with_flags(
+        &mut stream,
+        1,
+        raw,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_payload(),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    stream
+}
+
 #[test]
 fn chunk3_folds_d45_v5_empty_logical_stream_baseline_after_prior_drains() {
     let batch = direct_frd_transitions_live::DirectEventBatch {
@@ -15454,6 +15546,75 @@ fn chunk2_d64_del2_projects_all_exact_lifecycle_classes_without_touching_d75() {
     assert_eq!(lifecycle["events"][0]["originator_tag_db_id"], json!(2));
 }
 
+/// Both DEL2 identities are bounded by the ceiling the producing lane applies
+/// and the replay consumer re-applies. The fold used to bound only the zero
+/// end, so any id up to `u32::MAX` folded through, and replay bounded nothing
+/// at all -- the fail-open half of the same drift.
+///
+/// Pinned absolutely: `100_000` is admitted, `100_001` is not.
+#[test]
+fn chunk2_d64_del2_identities_stop_at_the_shared_lifecycle_tag_ceiling() {
+    assert_eq!(
+        portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID,
+        100_000
+    );
+    let ledger = |owner: u32, originator: u32| {
+        snapshot_for_domain_records(vec![(
+            64,
+            delayed_event_lifecycle_payload(
+                &[],
+                9,
+                &[(1, 44, 2, owner, 100_101, originator, 7, 0, None)],
+            ),
+        )])
+    };
+
+    let at_ceiling = ledger(100_000, 100_000);
+    assert_eq!(
+        at_ceiling["_r2_delayed_event_lifecycle_live"]["events"][0]["owner_tag_db_id"],
+        json!(100_000)
+    );
+
+    assert_eq!(
+        ledger(100_001, 2)["_r2_delayed_event_lifecycle_live"],
+        Value::Null
+    );
+    assert_eq!(
+        ledger(2, 100_001)["_r2_delayed_event_lifecycle_live"],
+        Value::Null
+    );
+    assert_eq!(
+        ledger(u32::MAX, 2)["_r2_delayed_event_lifecycle_live"],
+        Value::Null
+    );
+}
+
+/// One hour's DEL2 ledger is one drain of the collector's reservable lifecycle
+/// queue, so its row count cannot exceed that queue's capacity. The fold
+/// applied no count bound and the consumer allowed sixteen times as many.
+#[test]
+fn chunk2_d64_del2_row_count_stops_at_the_shared_queue_capacity() {
+    assert_eq!(portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS, 65_536);
+    let ledger = |count: u64| {
+        snapshot_for_domain_records(vec![(
+            64,
+            delayed_event_lifecycle_payload(&[], 9, &del2_rows(1, count)),
+        )])
+    };
+
+    let at_capacity = ledger(portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS as u64);
+    assert_eq!(
+        at_capacity["_r2_delayed_event_lifecycle_live"]["last_sequence"],
+        json!("65536")
+    );
+
+    assert_eq!(
+        ledger(portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS as u64 + 1)
+            ["_r2_delayed_event_lifecycle_live"],
+        Value::Null
+    );
+}
+
 #[test]
 fn chunk2_d64_malformed_first_del2_is_unavailable_not_absent() {
     let mut de = delayed_event_lifecycle_payload(&[], 9, &[]);
@@ -17598,6 +17759,53 @@ fn air_loss_stats_non_clean_masks_current_hour_sidecar() {
         snaps[1]["strategic_air"]["_r2_air_loss_stats_live"],
         Value::Null
     );
+}
+
+/// D61 owner identities are bounded where the rows are folded, by the same
+/// compact identity ceiling the replay consumer applies. The collector bounds
+/// the country COUNT; the fold bounded nothing, so a row outside the range
+/// reached a snapshot whose whole air-loss table replay then voided.
+///
+/// Pinned absolutely: `2_048` is admitted, `2_049` and `0` are not.
+#[test]
+fn air_loss_stats_owner_identity_stops_at_the_shared_compact_ceiling() {
+    assert_eq!(
+        compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID,
+        2_048
+    );
+    let fold_owner = |id: u32| {
+        let row = airloss61_lane::AirLossStatRow {
+            owner_tag_db_id: id,
+            country_idx: id,
+            flags: airloss61_lane::ROW_FLAG_BINDING_VERIFIED
+                | airloss61_lane::ROW_FLAG_STRUCT_VERIFIED,
+            channels: [0; airloss61_lane::CHANNEL_COUNT],
+        };
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(id, "D04")])),
+            (61, air_loss_stats_payload(0, &[row])),
+        ])
+    };
+
+    let admitted = fold_owner(2_048);
+    assert_eq!(
+        admitted["strategic_air"]["_r2_air_loss_stats_live"]
+            .as_array()
+            .expect("admitted D61 table")
+            .len(),
+        1
+    );
+
+    // Above the ceiling and at zero the fold refuses, so the domain is reported
+    // unknown for the hour instead of publishing rows replay discards whole.
+    for rejected in [2_049u32, 0] {
+        let snap = fold_owner(rejected);
+        assert_eq!(
+            snap["strategic_air"]["_r2_air_loss_stats_live"],
+            Value::Null,
+            "owner {rejected} must not fold into a published D61 table"
+        );
+    }
 }
 
 // --- DOMAIN 62 hub_motorization_live (P1) ---------------------------------

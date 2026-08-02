@@ -32,7 +32,11 @@ pub const EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_
 /// existing delayed-events domain is scheduled. Missing roots, callback loss,
 /// or incomplete lifecycle custody fail the observation closed.
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
-pub const MAX_PENDING_EVENTS: usize = 65_536;
+/// Capacity of the reservable lifecycle queue. An enqueue that would exceed it
+/// is refused and charged to `dropped_overflow`, which clears the ledger's
+/// `complete` flag -- so one drain never carries more rows than this, and the
+/// replay consumer applies the same ceiling to the ledger it reads back.
+pub const MAX_PENDING_EVENTS: usize = portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS;
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6E90;
 const CGAMESTATE_CURRENT_DATE_OFF: usize = 0x468;
@@ -50,10 +54,19 @@ const CDELAYED_EVENT_SCOPE_RANDOM_B_OFF: usize = 0x20;
 const CDELAYED_EVENT_ORIGINATOR_OFF: usize = 0xC0;
 const CDELAYED_EVENT_DUE_OFF: usize = 0xC4;
 const CEVENT_COMBINED_ID_OFF: usize = 0x0C;
-const MAX_COUNTRY_TAG_DB_ID: u32 = 100_000;
+/// Owner/originator ceiling for a lifecycle row. Shared with the replay
+/// consumer, which used to apply no upper bound at all.
+const MAX_COUNTRY_TAG_DB_ID: u32 = portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID;
 const MIN_COMBINED_EVENT_ID: u32 = 100_000;
 const MAX_COMBINED_EVENT_ID: u32 = 100_099_999;
 const MAX_DUE_HOURS: u32 = 500_000;
+/// Plausibility ceiling on ONE country's `CCountry+0x129C` delayed-event vector
+/// count. Numerically equal to [`MAX_PENDING_EVENTS`] and deliberately NOT
+/// shared with it: that one is the lifecycle hook queue's capacity, which the
+/// replay consumer re-applies to the ledger it reads back, while this bounds an
+/// engine vector this scan walks. Coupling two different quantities because
+/// they happen to spell the same number is how a bound acquires a meaning
+/// nobody chose.
 const MAX_EVENTS_PER_COUNTRY: u32 = 65_536;
 const HEAP_LO: usize = 0x100_0000_0000;
 const HEAP_HI: usize = 0x7ff0_0000_0000;
