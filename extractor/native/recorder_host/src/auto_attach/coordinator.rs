@@ -889,6 +889,18 @@ impl Coordinator {
             .probe
             .collector_module_residency(key.pid, &dll_path)
         {
+            // `Loaded` is TERMINAL for this process, not a state to wait out.
+            // A capture that enabled an inline detour pinned the collector
+            // against unload, so the module never becomes `Absent` again for
+            // this PID and no amount of retrying rearms it.
+            //
+            // That makes the `Absent` arm below unreachable for such a capture.
+            // It is kept, not deleted: a capture that enabled NO detour still
+            // unloads and still legitimately rearms, and the injection lease is
+            // a named mutex rather than a job-object membership, so nothing
+            // else forecloses the same PID. A repeatable loop therefore has to
+            // launch a fresh game per capture -- a real restriction the pin
+            // introduces, not one it inherited.
             Ok(CollectorModuleResidency::Loaded) | Err(_) => Ok(false),
             Ok(CollectorModuleResidency::Absent) => {
                 self.deps

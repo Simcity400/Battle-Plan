@@ -818,7 +818,7 @@ try {
     Update-AttemptMarker $attemptMarkerPath $attemptMarker "teardown_authenticated" @{
         child_exit_code = $process.ExitCode
         capture_teardown_receipt_sha256 = $teardownAuthority.ReceiptSha256
-        collector_module_absent_verified = $true
+        collector_module_disposition = $teardownAuthority.CollectorModuleDisposition
     }
     Write-Host "phase=teardown_authenticated recorder_pid=$($process.Id) game_pid=$Hoi4Pid"
     if ($process.ExitCode -ne 0) { throw "collector_record exited nonzero after authenticated teardown: $($process.ExitCode)" }
@@ -927,7 +927,7 @@ finally {
                 Update-AttemptMarker $attemptMarkerPath $attemptMarker "failed_clean_teardown" @{
                     child_exit_code = $process.ExitCode
                     capture_teardown_receipt_sha256 = $teardownAuthority.ReceiptSha256
-                    collector_module_absent_verified = $true
+                    collector_module_disposition = $teardownAuthority.CollectorModuleDisposition
                 }
             } catch {
                 try {
@@ -1027,7 +1027,7 @@ $validationReceipt = [ordered]@{
         speed5_witness_only = $true
         ready_authenticated = $true
         hook_lease_released_after_eof = $teardownAuthority.HookLeaseReleasedAfterEof
-        collector_module_absent_verified = $teardownAuthority.CollectorModuleAbsentVerified
+        collector_module_disposition = $teardownAuthority.CollectorModuleDisposition
         target_process_epoch_revalidated = $teardownAuthority.TargetProcessEpochRevalidated
         target_code_temporarily_instrumented = $teardownAuthority.TargetCodeTemporarilyInstrumented
         pinned_hook_target_code_restored = $teardownAuthority.PinnedHookTargetCodeRestored

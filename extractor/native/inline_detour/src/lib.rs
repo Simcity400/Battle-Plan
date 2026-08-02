@@ -142,6 +142,26 @@ mod windows_impl {
         Ok(())
     }
 
+    /// Run `op` ONLY if `pin` succeeded, and never otherwise.
+    ///
+    /// Every public entry point funnels through here, because the ordering IS
+    /// the invariant: patching before pinning leaves a window in which a detour
+    /// is live in an unloadable module, and that window is what produced the
+    /// recorded 0xc0000005 faults in an unloaded capture mapping.
+    ///
+    /// Both inputs are parameters so the ordering is testable. It is not
+    /// otherwise: by the time any test runs, some earlier test has already
+    /// pinned the process, so asserting "the module is pinned afterwards"
+    /// cannot tell a pin-first build from a pin-second one. The property that
+    /// actually discriminates is that a REFUSED pin means `op` never ran.
+    pub(crate) fn run_pinned<T>(
+        pin: impl FnOnce() -> Result<(), u32>,
+        op: impl FnOnce() -> Result<T, MH_STATUS>,
+    ) -> Result<T, InlineDetourEnableError> {
+        pin().map_err(InlineDetourEnableError::ModulePinRefused)?;
+        op().map_err(InlineDetourEnableError::MinHook)
+    }
+
     /// Enable an inline detour at `target`, pinning this module first.
     ///
     /// FAIL-CLOSED and the order is the whole point: if the module cannot be
@@ -155,14 +175,54 @@ mod windows_impl {
     /// keeps every obligation `MH_EnableHook` has: the detour must remain a
     /// valid callable for as long as the patch is live.
     pub unsafe fn enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
-        pin_containing_module().map_err(InlineDetourEnableError::ModulePinRefused)?;
-        match unsafe { MinHook::enable_hook(target) } {
-            Ok(()) => {
-                ENABLED_DETOURS.fetch_add(1, Ordering::AcqRel);
-                Ok(())
-            }
-            Err(status) => Err(InlineDetourEnableError::MinHook(status)),
-        }
+        run_pinned(pin_containing_module, || unsafe { MinHook::enable_hook(target) })?;
+        ENABLED_DETOURS.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Take the permanent loader reference now, without enabling anything.
+    ///
+    /// For callers that pin at a different moment than they patch -- a capture
+    /// that disarms its hooks at dwell end and keeps them mapped as
+    /// pass-throughs, for instance. Fail-closed like [`enable`]: the flag is
+    /// recorded only after the loader accepts the pin, never before it is
+    /// attempted. Recording first and proceeding on failure is the exact
+    /// inversion of this invariant, and it reads as pinned while the module is
+    /// still unloadable.
+    pub fn pin_module_now() -> Result<(), InlineDetourEnableError> {
+        pin_containing_module().map_err(InlineDetourEnableError::ModulePinRefused)
+    }
+
+    /// Queue an inline detour for a batched enable, pinning this module first.
+    ///
+    /// Queuing does not patch, but it is the point of no return for a caller
+    /// that will then apply the batch, and pinning here means a queue that is
+    /// never applied still leaves the module retained -- the conservative
+    /// direction.
+    ///
+    /// # Safety
+    ///
+    /// As [`enable`].
+    pub unsafe fn queue_enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
+        run_pinned(pin_containing_module, || unsafe {
+            MinHook::queue_enable_hook(target)
+        })
+    }
+
+    /// Apply every queued enable, pinning this module first.
+    ///
+    /// This is the call that actually patches a queued batch, so the pin
+    /// ordering matters here exactly as it does in [`enable`]. Counted as ONE
+    /// enable operation covering the whole batch: the batch size is MinHook's
+    /// internal state and is not reported back.
+    ///
+    /// # Safety
+    ///
+    /// As [`enable`], for every target in the queue.
+    pub unsafe fn apply_queued() -> Result<(), InlineDetourEnableError> {
+        run_pinned(pin_containing_module, || unsafe { MinHook::apply_queued() })?;
+        ENABLED_DETOURS.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     /// True once this module holds a permanent loader reference because an
@@ -183,8 +243,10 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
+pub(crate) use windows_impl::run_pinned;
 pub use windows_impl::{
-    enable, enabled_detour_count, module_pinned_against_unload, InlineDetourEnableError,
+    apply_queued, enable, enabled_detour_count, module_pinned_against_unload, pin_module_now,
+    queue_enable, InlineDetourEnableError,
 };
 
 /// The banned MinHook entry points, spelled as they appear in a call.
@@ -196,6 +258,7 @@ const BANNED_CALL_FRAGMENTS: &[(&str, &str)] = &[
     ("MinHook::", "enable_hook("),
     ("MinHook::", "enable_all_hooks("),
     ("MinHook::", "queue_enable_hook("),
+    ("MinHook::", "apply_queued("),
 ];
 
 /// Collapse whitespace around `::` so `MinHook :: enable_hook` cannot slip past
@@ -216,8 +279,23 @@ fn normalize_for_scan(text: &str) -> String {
     let mut aliases = Vec::new();
     for line in out.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("use minhook::MinHook as ") {
-            if let Some(alias) = rest.split(|c: char| c == ';' || c.is_whitespace()).next() {
+        // Both the bare form and the grouped form, which is the idiomatic one
+        // and was a live bypass: `use minhook::{MinHook as MH, MH_STATUS};`
+        // aliases just as effectively as `use minhook::MinHook as MH;` and
+        // needs no extra dependency, since every crate here already has MinHook.
+        for marker in ["use minhook::MinHook as ", "MinHook as "] {
+            if !line.starts_with("use ") && marker.starts_with("use ") {
+                continue;
+            }
+            if marker == "MinHook as " && !line.starts_with("use minhook::") {
+                continue;
+            }
+            let Some(at) = line.find(marker) else { continue };
+            let rest = &line[at + marker.len()..];
+            if let Some(alias) = rest
+                .split(|c: char| c == ';' || c == ',' || c == '}' || c.is_whitespace())
+                .next()
+            {
                 if !alias.is_empty() {
                     aliases.push(alias.to_string());
                 }
@@ -251,19 +329,33 @@ mod source_ban_tests {
     use super::{scan_source_for_direct_enable, BANNED_CALL_FRAGMENTS};
     use std::path::{Path, PathBuf};
 
-    /// Every `.rs` file in the extractor workspace except this crate's own.
+    /// Every `.rs` file in every native workspace that can inject into the
+    /// game, except this crate's own.
+    ///
+    /// EXPLICITLY MORE THAN ONE WORKSPACE. `terrain_capture` lives in
+    /// `replay_interface/native` and is a separately injected DLL with its own
+    /// D3D11 detours; a scan that stopped at the extractor boundary would have
+    /// declared the invariant enforced while that mapping patched before
+    /// pinning. An invariant that stops at a workspace boundary is not one.
     fn workspace_sources() -> Vec<PathBuf> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("inline_detour has a parent directory")
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("inline_detour sits three levels below the repository root")
             .to_path_buf();
-        assert!(
-            root.join("Cargo.toml").is_file(),
-            "expected the extractor workspace root at {}",
-            root.display()
-        );
+        let roots: Vec<PathBuf> = ["extractor/native", "replay_interface/native"]
+            .iter()
+            .map(|rel| repo.join(rel))
+            .collect();
+        for root in &roots {
+            assert!(
+                root.join("Cargo.toml").is_file(),
+                "expected a native workspace root at {}",
+                root.display()
+            );
+        }
         let mut sources = Vec::new();
-        let mut stack = vec![root.clone()];
+        let mut stack = roots;
         let skip = ["target", ".cargo-target", ".git", "runs", "fixtures"];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -370,6 +462,17 @@ mod source_ban_tests {
             "an aliased import must not defeat the scan"
         );
 
+        // The GROUPED import, which is the idiomatic form and was a live
+        // bypass: the bare-form check alone missed it entirely.
+        let grouped = format!(
+            "use minhook::{{MinHook as MH, MH_STATUS}};\nfn f() {{ unsafe {{ MH::{call}t) }}; }}"
+        );
+        assert_eq!(
+            scan_source_for_direct_enable(&grouped),
+            vec![2],
+            "a grouped aliased import must not defeat the scan either"
+        );
+
         let clean = "fn f() { unsafe { inline_detour::enable(t) }; }";
         assert!(
             scan_source_for_direct_enable(clean).is_empty(),
@@ -387,6 +490,7 @@ mod source_ban_tests {
             "land_combat_detail_events_live",
             "dynamic_collection_trace_live",
             "collector",
+            "terrain_capture",
         ] {
             assert!(
                 sources.iter().any(|p| p.to_string_lossy().contains(owner)),
@@ -399,6 +503,12 @@ mod source_ban_tests {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    /// Several tests here read a delta on the process-global enable counter, so
+    /// they are serialized rather than left to interleave. Without this,
+    /// `the_queued_path_pins_before_it_applies` could apply an empty queue --
+    /// which succeeds, and counts -- inside another test's delta window.
+    static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Falsifiable: fails if the pin stops happening, or stops being recorded.
     ///
@@ -414,6 +524,7 @@ mod tests {
     /// module before any detour was enabled.
     #[test]
     fn enabling_a_detour_pins_the_containing_module_first() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // No detour exists in a test process, so `enable` will be refused by
         // MinHook -- AFTER the pin, which is the ordering under test.
         let refusal = unsafe { enable(0x1000 as *mut core::ffi::c_void) }
@@ -428,12 +539,114 @@ mod tests {
         );
     }
 
+    /// Falsifiable: fails if any public entry point stops funnelling through
+    /// [`super::run_pinned`].
+    ///
+    /// `run_pinned` is where the ordering lives, and the previous sweep showed
+    /// that a bypass is invisible to every behavioural assertion available
+    /// here: by the time a test runs, some earlier test has pinned the process,
+    /// so "the module is pinned afterwards" holds for a bypassing build too.
+    /// The source scan cannot help either, since it deliberately skips this
+    /// crate -- this crate is the one place the banned calls are allowed.
+    ///
+    /// So the wiring is asserted structurally, the way
+    /// `division_combat_stats_live` asserts its own rollback ordering: each of
+    /// the three entry points must name the helper. A bypass drops the count.
+    #[test]
+    fn every_entry_point_funnels_through_the_ordering_helper() {
+        let source = include_str!("lib.rs");
+        // Split so this literal is not itself a match in the scanned source,
+        // which would make the count self-satisfying.
+        let needle = concat!("run_pinned(", "pin_containing_module");
+        let funnelled = source.matches(needle).count();
+        assert_eq!(
+            funnelled, 3,
+            "enable, queue_enable and apply_queued must each go through              run_pinned; found {funnelled} call(s), so one of them patches              without the pin ordering"
+        );
+    }
+
+    /// THE ORDERING, and the only test that can actually discriminate it.
+    ///
+    /// Falsifiable: fails if `run_pinned` ever runs the operation when the pin
+    /// was refused -- i.e. if a build patched first and pinned second. The
+    /// asserting-the-flag-afterwards tests below CANNOT catch that, because by
+    /// the time any of them runs some earlier test has already pinned this
+    /// process; that is exactly how two mutations survived the first sweep.
+    #[test]
+    fn a_refused_pin_means_the_patch_never_runs() {
+        use std::cell::Cell;
+        let ran = Cell::new(false);
+        let outcome = super::run_pinned(
+            || Err(5u32),
+            || {
+                ran.set(true);
+                Ok::<(), minhook::MH_STATUS>(())
+            },
+        );
+        assert!(!ran.get(), "the patch must not run when the pin was refused");
+        assert_eq!(
+            outcome.unwrap_err(),
+            InlineDetourEnableError::ModulePinRefused(5),
+            "and the refusal must name the pin, not MinHook"
+        );
+
+        // The converse: an accepted pin does run it, so the guard is not simply
+        // refusing everything.
+        let ran = Cell::new(false);
+        let outcome = super::run_pinned(
+            || Ok(()),
+            || {
+                ran.set(true);
+                Ok::<(), minhook::MH_STATUS>(())
+            },
+        );
+        assert!(ran.get(), "an accepted pin must let the patch run");
+        assert!(outcome.is_ok());
+    }
+
+    /// Falsifiable: fails if the QUEUED path stops pinning before it patches.
+    ///
+    /// `terrain_capture` reaches MinHook only through `queue_enable` +
+    /// `apply_queued`, never through `enable`, so a pin that guarded only the
+    /// direct path would have left that DLL exactly as exposed as before -- and
+    /// it is the one with recorded 0xc0000005 faults in an unloaded mapping.
+    #[test]
+    fn the_queued_path_pins_before_it_applies() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let queued = unsafe { queue_enable(0x3000 as *mut core::ffi::c_void) };
+        assert!(
+            queued.is_err() && queued.unwrap_err().minhook_status().is_some(),
+            "no hook exists at this address, so MinHook must be the refuser"
+        );
+        assert!(
+            module_pinned_against_unload(),
+            "queuing must pin: a queue that is later applied patches the target"
+        );
+
+        let applied = unsafe { apply_queued() };
+        // An empty queue applies cleanly; either way the pin already happened.
+        let _ = applied;
+        assert!(module_pinned_against_unload());
+    }
+
+    /// Falsifiable: fails if the standalone pin stops being fail-closed, i.e.
+    /// if it reports success the loader did not give. This is the inversion
+    /// `terrain_capture` shipped -- it latched its pinned flag BEFORE calling
+    /// the API and proceeded on failure, so the flag read pinned over a module
+    /// that was still unloadable.
+    #[test]
+    fn the_standalone_pin_reports_only_what_the_loader_accepted() {
+        assert!(pin_module_now().is_ok());
+        assert!(module_pinned_against_unload());
+    }
+
     /// Falsifiable: fails if a MinHook refusal is ever counted as an enabled
     /// detour. The count is what the teardown proof reports as the reason the
     /// module is retained, so inflating it would claim residency that never
     /// existed.
     #[test]
     fn a_refused_patch_is_not_counted_as_an_enabled_detour() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let before = enabled_detour_count();
         let _ = unsafe { enable(0x2000 as *mut core::ffi::c_void) };
         assert_eq!(

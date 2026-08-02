@@ -102,11 +102,11 @@ $cases++
 
 Assert-ClosureCase 'shared lifecycle verifier closes hook and DLL authority' (
     $lifecycle.Contains('hoi4-capture-ready-v2') -and
-    $lifecycle.Contains('hoi4-capture-teardown-v1') -and
+    $lifecycle.Contains('hoi4-capture-teardown-v2') -and
     $lifecycle.Contains('$allowedHookCount') -and
     $lifecycle.Contains('$activeHookCount') -and
     $lifecycle.Contains('hook_lease_released_after_eof') -and
-    $lifecycle.Contains('collector_module_absent_verified') -and
+    $lifecycle.Contains('collector_module_disposition') -and
     $lifecycle.Contains('target_process_epoch_revalidated') -and
     $lifecycle.Contains('target_code_temporarily_instrumented') -and
     $lifecycle.Contains('pinned_hook_target_code_restored') -and

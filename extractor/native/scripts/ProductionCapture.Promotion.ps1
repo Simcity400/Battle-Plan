@@ -769,8 +769,8 @@ function Get-ProductionCapturePromotionEvidence {
                 [bool]$teardownAuthority.DataPipeEofObserved
             hook_lease_released_after_eof =
                 [bool]$teardownAuthority.HookLeaseReleasedAfterEof
-            collector_module_absent_verified =
-                [bool]$teardownAuthority.CollectorModuleAbsentVerified
+            collector_module_disposition =
+                [string]$teardownAuthority.CollectorModuleDisposition
             target_process_epoch_revalidated =
                 [bool]$teardownAuthority.TargetProcessEpochRevalidated
             target_code_temporarily_instrumented =

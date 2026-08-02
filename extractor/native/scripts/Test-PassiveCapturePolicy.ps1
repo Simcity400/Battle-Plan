@@ -224,7 +224,7 @@ Assert-Policy `
     -Message 'Production speed/pause monitor rows do not identify their lifecycle phase.'
 foreach ($required in @(
     'hoi4-capture-ready-v2',
-    'hoi4-capture-teardown-v1',
+    'hoi4-capture-teardown-v2',
     'Get-PassivePinnedHookAllowlistAuthorityFromSource',
     '$allowedHookCount -ne [uint32]$hookAuthority.Count',
     'ExpectedHookCount',
@@ -232,7 +232,7 @@ foreach ($required in @(
     '(?:^|\.)a(?:25|28|30)(?:\.|$)',
     'data_pipe_eof_observed',
     'hook_lease_released_after_eof',
-    'collector_module_absent_verified',
+    'collector_module_disposition',
     'target_process_epoch_revalidated',
     'target_code_temporarily_instrumented',
     'pinned_hook_target_code_restored',

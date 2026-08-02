@@ -1167,7 +1167,7 @@ $harnessPolicy = [ordered]@{
     graded_observer_sha256              = $readOnlyObserverSha256
     evidence_only_driver_sha256         = $headlessControlSha256
     ready_contract                      = 'hoi4-capture-ready-v2'
-    teardown_contract                   = 'hoi4-capture-teardown-v1'
+    teardown_contract                   = 'hoi4-capture-teardown-v2'
 }
 $harnessPolicy | ConvertTo-Json -Depth 8 |
     Set-Content -LiteralPath $harnessPolicyPath -Encoding UTF8

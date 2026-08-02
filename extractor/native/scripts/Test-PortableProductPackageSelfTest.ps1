@@ -1323,7 +1323,7 @@ pub fn observer_only() {}
         [Text.UTF8Encoding]::new($false)
     )
     $teardown = [ordered]@{
-        schema = 'hoi4-capture-teardown-v1'
+        schema = 'hoi4-capture-teardown-v2'
         status = 'collector-unloaded'
         capture_policy = 'passive-observer-only'
         pid = $targetPid
@@ -1342,7 +1342,8 @@ pub fn observer_only() {}
         host_binding_sha256 = $ready.host_binding_sha256
         data_pipe_eof_observed = $true
         hook_lease_released_after_eof = $true
-        collector_module_absent_verified = $true
+        collector_module_disposition = 'unloaded'
+        collector_module_retention_policy = 'inline-detour.module.process-lifetime.v1'
         target_process_epoch_revalidated = $true
         target_code_temporarily_instrumented = $true
         pinned_hook_target_code_restored = $true
