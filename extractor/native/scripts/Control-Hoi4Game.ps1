@@ -30,6 +30,25 @@ $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c4
 $gameStateSingletonRva = 0x3316E90L
 $gameHourOffset = 0x468L
 $gameSpeedOffset = 0x4BCL
+# The first conjunct of FUN_140B58C10, which FUN_140DCD3E0 calls at
+# 0x140DCD402 and returns on at 0x140DCD409 when it is non-zero. That routine
+# returns 1 -- blocking -- unless a five-way conjunction holds, and the second
+# term is `u8[CGameState+0xA39] != 0`. So a zero here PROVES the player toggle
+# would do nothing. The inference runs one way only: non-zero proves nothing.
+#
+# It is not the only readable term. The conjunction also tests the byte at
+# +0x8F0 of the object two pointer hops from the idler -- see
+# $interfaceHandlerBlockOffset below, which is read and refused on as well.
+# What remains unevaluable is four CALL predicates: FUN_140DC3E10,
+# FUN_14179FD40, FUN_14179FD60, and FUN_14185C360 on the inner arm.
+$gameStatePlayerInputGateOffset = 0xA39L
+# The other readable term of the same conjunction. FUN_140B58C10 is called with
+# u64[CInGameIdler+0x6B8]; at 0x140B58C4E it loads qword [that+0x180] and at
+# 0x140B58C55 compares byte [result+0x8F0] against zero. A non-zero byte fails
+# the conjunction, so it blocks exactly as a zero at CGameState+0xA39 does.
+$interfaceHandlerOffset = 0x6B8L
+$interfaceHandlerSubOffset = 0x180L
+$interfaceHandlerBlockOffset = 0x8F0L
 $clockSingletonARva = 0x33172E0L
 $clockSingletonBRva = 0x33172E8L
 $clockVtableRva = 0x2952510L
@@ -68,6 +87,10 @@ $clockVtableRva = 0x2952510L
 # +0x6C4/+0x6C5/+0x6C6 are also written in the CInGameIdler code region, by
 # functions that do NOT write +0x6C1. They are idler state, not pause
 # transition state, and are deliberately not touched.
+# +0x6C0 is NOT player-toggle state. Measured live: a player spacebar leaves it
+# clear, and the SAVE-LOAD path sets it. Loading a different save into the same
+# process left both it and +0x6C2 set; only a fresh process clears them, so both
+# are process-scoped rather than save-scoped.
 $clockPauseRouteOffset = 0x6C0L
 $clockPausedOffset = 0x6C1L
 $clockPauseKindOffset = 0x6C2L
@@ -306,6 +329,7 @@ try {
     $initialPauseRoute = $entryCluster.Route
     $mirroredRoutine = 'none'
     $unreproducibleSteps = @()
+    $unverifiedPreconditions = @()
     $expectedPost = $null
 
     if ($Play -or $Pause) {
@@ -344,23 +368,107 @@ try {
             $unreproducibleSteps += 'FUN_140B5F980 in-game interface GUI update'
             $unreproducibleSteps += 'MSVC std::string assign to CInGameIdler+0x7E0 (heap-allocating)'
         } else {
-            # The player's own route. FUN_140DCD3E0 toggles +0x6C1, writes
-            # +0x6C2 from its argument, and clears the counter when it is the
-            # unpause direction. It leaves +0x6C0 and +0x6C3 alone, so this
-            # does too.
-            if (($decisionCluster.Kind -ne 0) -and ($decisionCluster.Paused -ne 0)) {
-                throw 'Refusing to drive: FUN_140DCD3E0 returns without transitioning from this state (+0x6C2 and +0x6C1 both set), so there is no player transition to mirror.'
+            # The player's own route, mirrored WITH ITS ARGUMENT SET TO 1.
+            #
+            # FUN_140DCD3E0(clock, param_2) does, in order:
+            #     if (+0x6C2 != 0 && +0x6C1 != 0 && param_2 == 0) return;
+            #     +0x6C1 = (+0x6C1 == 0);          // toggle
+            #     +0x6C2 = (param_2 == 1);
+            #     if (was paused) DAT_1433723EC = 0;
+            #     FUN_140B5F980(...);              // GUI update
+            #
+            # The argument is not free, and picking it wrongly is what the live
+            # run caught. Measured against a real game, owner at the keyboard:
+            #
+            #   fresh load, paused        6C1=1 6C0=0 6C2=0 6C3=0
+            #   spacebar, first unpause   6C1=0 6C0=0 6C2=1 6C3=0
+            #   spacebar, re-pause        6C1=1 6C0=0 6C2=1 6C3=0
+            #   spacebar, later unpause   6C1=0 6C0=0 6C2=1 6C3=0
+            #
+            # +0x6C2 goes to 1 on the first toggle and stays there, which only
+            # happens when `param_2 == 1`. So the spacebar calls this routine
+            # with 1, and TWO consequences follow that mirroring 0 got wrong:
+            #
+            #   * THE KIND/LATCH early return is unreachable -- its third
+            #     conjunct is `param_2 == 0`. That is a statement about that
+            #     guard alone, not about the routine: the outer gates below
+            #     still refuse. Mirroring 0 made this script refuse from
+            #     (+0x6C2=1, +0x6C1=1), the ORDINARY state of a game in play,
+            #     while the owner unpaused from exactly that state;
+            #   * the kind byte is written to 1, not 0. Mirroring 0 wrote 0 and
+            #     so produced the same cluster as the one-byte poke it replaced.
+            #
+            # It still leaves +0x6C0 and +0x6C3 alone, so this does too.
+            #
+            # PRECONDITIONS. "The early return is unreachable" is true of the
+            # kind/latch guard and ONLY of it. FUN_140DCD3E0 has outer gates
+            # this script cannot fully evaluate, and it is wrong to say no
+            # state refuses a player toggle:
+            #
+            #   * 0x140DCD402 calls FUN_140B58C10 and 0x140DCD409 returns when
+            #     it is non-zero, so the direct write route needs
+            #     FUN_140B58C10 == 0. That routine returns 1 unless a five-way
+            #     conjunction holds, and TWO of its terms are plain reads that
+            #     this script can evaluate:
+            #         u8[CGameState+0xA39] != 0
+            #         u8[ u64[ u64[clock+0x6B8] + 0x180 ] + 0x8F0 ] == 0
+            #     Both are checked below. The inference runs one way: either
+            #     term failing PROVES the routine no-ops; both holding proves
+            #     nothing, because four call predicates remain --
+            #     FUN_140DC3E10, FUN_14179FD40, FUN_14179FD60, and
+            #     FUN_14185C360 on the inner arm.
+            #   * the branch that reaches the direct writes requires the
+            #     session not to be a CNetworkServer or CProxyServer, decided
+            #     by a dynamic_cast on an object reached through a virtual
+            #     call. A network session takes a command/queue path this does
+            #     not mirror at all.
+            #
+            # What is checkable is refused on; the rest is reported as
+            # unverified rather than assumed away.
+            $playerInputGate = Read-RemoteByte $processHandle (
+                $gameState + $gameStatePlayerInputGateOffset
+            )
+            if ($playerInputGate -eq 0) {
+                throw (
+                    'Refusing to drive: CGameState+0xA39 is zero, so FUN_140B58C10 returns ' +
+                    'non-zero and FUN_140DCD3E0 returns at 0x140DCD409 without transitioning. ' +
+                    'Mirroring its writes here would produce a transition the engine would not.'
+                )
             }
-            $mirroredRoutine = 'FUN_140DCD3E0 player toggle'
+            $interfaceHandler = Read-RemoteInt64 $processHandle (
+                $clockA + $interfaceHandlerOffset
+            )
+            if ($interfaceHandler -eq 0 -or ($interfaceHandler -band 7) -ne 0) {
+                throw "Refusing to drive: the in-game interface handler pointer at CInGameIdler+0x6B8 is null or misaligned (0x$('{0:X}' -f $interfaceHandler))."
+            }
+            $interfaceHandlerSub = Read-RemoteInt64 $processHandle (
+                $interfaceHandler + $interfaceHandlerSubOffset
+            )
+            if ($interfaceHandlerSub -eq 0 -or ($interfaceHandlerSub -band 7) -ne 0) {
+                throw "Refusing to drive: the object at +0x180 of the interface handler is null or misaligned (0x$('{0:X}' -f $interfaceHandlerSub))."
+            }
+            $interfaceHandlerBlock = Read-RemoteByte $processHandle (
+                $interfaceHandlerSub + $interfaceHandlerBlockOffset
+            )
+            if ($interfaceHandlerBlock -ne 0) {
+                throw (
+                    'Refusing to drive: the byte at +0x8F0 of the interface handler sub-object ' +
+                    "is $interfaceHandlerBlock, so FUN_140B58C10 returns non-zero and " +
+                    'FUN_140DCD3E0 returns at 0x140DCD409 without transitioning.'
+                )
+            }
+            $unverifiedPreconditions += 'FUN_140B58C10 == 0 is required and only its two readable terms were checked; FUN_140DC3E10, FUN_14179FD40, FUN_14179FD60 and FUN_14185C360 were not evaluated'
+            $unverifiedPreconditions += 'session is not a CNetworkServer or CProxyServer (dynamic_cast through a virtual call)'
+            $mirroredRoutine = 'FUN_140DCD3E0 player toggle (param_2 = 1, the value the spacebar uses)'
             $expectedPost = [pscustomobject]@{
                 Route = $decisionCluster.Route; Paused = [int]$wantPaused
-                Kind = 0; Forced = $decisionCluster.Forced
+                Kind = 1; Forced = $decisionCluster.Forced
             }
             Assert-PauseClusterUnchanged -Expected $decisionCluster
             Write-RemoteBytes $processHandle ($clockA + $clockPausedOffset) (
                 [byte[]]([byte]([int]$wantPaused))
             )
-            Write-RemoteBytes $processHandle ($clockA + $clockPauseKindOffset) ([byte[]](0))
+            Write-RemoteBytes $processHandle ($clockA + $clockPauseKindOffset) ([byte[]](1))
             if (-not $wantPaused) {
                 Write-RemoteBytes $processHandle ($moduleBase + $pauseCounterRva) ([BitConverter]::GetBytes([int]0))
             }
@@ -434,8 +542,8 @@ try {
                 throw "Forced-arm mirror left route=$($postCluster.Route) forced=$($postCluster.Forced); FUN_140DC6520's forced clear leaves both zero."
             }
         } elseif ($mirroredRoutine -like 'FUN_140DCD3E0*') {
-            if ($postCluster.Kind -ne 0) {
-                throw "Player-toggle mirror left kind=$($postCluster.Kind); FUN_140DCD3E0 writes it from its argument, which is zero here."
+            if ($postCluster.Kind -ne 1) {
+                throw "Player-toggle mirror left kind=$($postCluster.Kind); FUN_140DCD3E0 writes it from its argument, which is one here, and the live table shows the spacebar leaves it set."
             }
             if ($postCluster.Route -ne $decisionCluster.Route -or
                 $postCluster.Forced -ne $decisionCluster.Forced) {
@@ -500,6 +608,10 @@ try {
         # this script performed the transition.
         MirrorVerification = 'best-effort divergence detection; convergent and ABA engine transitions are undetectable by endpoint comparison'
         UnreproducibleEngineSteps = $unreproducibleSteps
+        # Conditions the mirrored routine tests and this script cannot. A
+        # transition reported here is conditional on them, and claiming the
+        # engine "would have transitioned" without them is not supported.
+        UnverifiedPreconditions = $unverifiedPreconditions
         HourA = $hourA
         HourB = $hourB
         HourDelta = $hourB - $hourA

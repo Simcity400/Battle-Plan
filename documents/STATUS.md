@@ -76,11 +76,36 @@ writer set rather than a proved exhaustive one. `Control-Hoi4Game.ps1` mirrors o
 case and refuses states from which no engine routine makes the requested
 transition.
 
+The `+0x6C2` overlay hypothesis was tested against a live game and **did not hold as a
+sufficient explanation**, and the run did not reproduce the symptom at all. Driven entirely by memory writes on a freshly loaded save, S2 (the old
+one-byte poke, kind byte clear) and S4 (the mirror, kind byte set) produced a
+date button with no discernible difference -- the S2/S4 comparison is the
+observation, and the two steps are separated by a re-pause, so it is a claim
+about that sequence rather than a single-variable pair. Neither route
+reproduced the reported symptom. The date button tracked the pause latch, which
+is consistent with a bare write being enough; the experiment did not invoke
+and not a finding. Writing `+0x6C2` remains correct because it is what the
+engine's routine writes; it is simply not the explanation. The overlay is
+broadcast and the string assignments. Because S2 -- the old one-byte poke, the
+configuration reported as stuck -- looked normal here, some condition differing
+between the two runs and observed by neither is doing the work, so a
+history-dependent contribution from the kind byte is not excluded. **No player
+baseline has been run against the mirror, so nothing here validates the fix.**
+
 **A write-only control path cannot reach the engine's full post-state, and the
-script says so rather than reporting a partial transition as a complete one.**
-interface handler's GUI update, and the transitions assign MSVC `std::string`s
-that allocate in the target heap. `WriteProcessMemory` performs neither. The
-data state is mirrored; the UI state is not.
+script reports that rather than presenting a partial transition as a complete
+handler's GUI update, and assigns MSVC `std::string`s that allocate in the
+target heap; `WriteProcessMemory` performs neither. That remains true of the
+FULL state, and whether the OVERLAY needs them is undecided -- the comparison
+that appeared to settle it was confounded by the GUI call.
+
+**The acceptance bar -- engine state after our unpause indistinguishable from a
+player-unpaused game -- has been run against a live game and FAILED.** The first
+attempt left `+0x6C2` clear where the player's route sets it, and the overlay
+stayed lit. The `param_2` mismatch behind that has been corrected, which is a
+defect in the mirror fixed rather than a validated fix or an explanation of the
+overlay; no run has compared the mirror against a player baseline. The bar is
+not met.
 
 `CGameState+0x4C0` is a diagnostic and classifies nothing. Reading it as a
 clock hold was refuted by observation: a live capture reported it non-zero on
