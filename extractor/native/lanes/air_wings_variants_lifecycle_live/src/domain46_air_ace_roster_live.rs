@@ -29,10 +29,35 @@ pub const ACE_TRAILER_HEADER_LEN: usize = 40;
 pub const ACE_TRAILER_ROW_LEN: usize = 40;
 pub const ACE_TRAILER_ROW_LEN_V1: usize = 32;
 
-// Trailer-local status flags. These are NEVER fed into the global compact
-// status interpretation (the record-level status stays the base archetype
-// payload's); values are chosen to match the global semantics where one
-// exists so a human reading a dump is not misled.
+// Trailer status flags, and which of them the record status carries.
+//
+// The original rule here was "NEVER fed into the global compact status
+// interpretation". It was written for the whole word and it contradicted the
+// fold: `WorldFold::apply_air_ace_roster` treats SOURCE_UNAVAILABLE and
+// PARTIAL_DATA as decisive -- on either it RETAINS the previous hour's ace map
+// and sidecars rather than full-replacing, and withholds
+// `air_aces_fresh_this_hour`. An hour that serves an unmeasured, retained
+// roster while its record status reads clean is a certified lie, so the two had
+// to be made to agree.
+//
+// They are reconciled on this rule's own second clause -- values are chosen to
+// match the global semantics where one exists -- which is exactly the admission
+// test:
+//
+// * SOURCE_UNAVAILABLE (1<<8) and PARTIAL_DATA (1<<9) ARE their global
+//   namesakes, same bit and same meaning, and they are the two the fold gates
+//   on. `domain46_air_variant_archetypes_live::decode_payload` ORs these, and
+//   only these, into the d46 record status.
+// * WING_ASSIGNMENT_BLOCKED (1<<13) stays trailer-local. Globally 1<<13 is
+//   COMPACT_STATUS_WAR_SEGMENT_ABSENT, an unrelated fact, so it has no global
+//   semantics to borrow -- and it is precisely the bit the fold does NOT gate
+//   on: identity is complete and the frame is still full-replaced. Feeding it
+//   in would assert a war-segment fact about an air domain.
+//
+// What the original clause protected is unchanged: the record's own WIRE status
+// word is still the base archetype payload's, and WHICH slice degraded is still
+// named exactly, by the `air_ace_roster_*_frames` data units and the fold's
+// `ace_roster_source_unavailable` / `ace_roster_partial` domain problems.
 pub const ACE_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const ACE_STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const ACE_STATUS_WING_ASSIGNMENT_BLOCKED: u32 = 1 << 13;

@@ -1135,7 +1135,7 @@ fn decode_compact_country_identity_data_payload(
         cosmetic_absent_rows,
     );
     if cursor < payload.len() {
-        let parsed = (|| -> Result<(usize, usize, usize, usize, usize, usize), String> {
+        let parsed = (|| -> Result<(usize, usize, usize, usize, usize, usize, u32), String> {
             const HEADER_LEN: usize = 40;
             if payload.len().saturating_sub(cursor) < HEADER_LEN
                 || &payload[cursor..cursor + 4] != b"CIM1"
@@ -1253,10 +1253,33 @@ fn decode_compact_country_identity_data_payload(
             if at != payload.len() {
                 return Err(format!("CIM1 has {} trailing byte(s)", payload.len() - at));
             }
-            Ok((states, claim_total, core_total, majors, major_true, at))
+            Ok((
+                states,
+                claim_total,
+                core_total,
+                majors,
+                major_true,
+                at,
+                claims_status | cores_status | major_status,
+            ))
         })();
         match parsed {
-            Ok((states, claims, cores, majors, major_true, consumed)) => {
+            Ok((states, claims, cores, majors, major_true, consumed, cim1_status_or)) => {
+                // The three CIM1 sub-statuses are the SAME global vocabulary the
+                // record status uses (the collector writes exactly 0 or
+                // `SOURCE_UNAVAILABLE | PARTIAL_DATA`), and the production fold
+                // gates on them: `claims_available`/`cores_available`/
+                // `major_available` decide whether the claims, cores and
+                // dynamic-major families are published for this hour AT ALL.
+                // They were read here for the local count contract and then
+                // dropped, so a d18 record whose base status was clean while its
+                // membership read failed certified clean and silently shipped an
+                // hour with no claims. Feeding them to the classifier is what
+                // makes the status word say what the fold already acted on.
+                add_decoder_status(summary, cim1_status_or);
+                if let Some(domain) = summary.per_domain.get_mut(&18) {
+                    domain.status_flags_or |= cim1_status_or;
+                }
                 add_compact_domain_data_unit(summary, 18, "country_membership_state_rows", states);
                 add_compact_domain_data_unit(summary, 18, "country_claim_memberships", claims);
                 add_compact_domain_data_unit(summary, 18, "country_core_memberships", cores);
@@ -17535,6 +17558,234 @@ mod tests {
     fn push_string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u16).to_le_bytes());
         out.extend_from_slice(value.as_bytes());
+    }
+
+    // --- subordinate DATA-payload statuses the fold gates on -----------------
+
+    /// One d18 country_identity payload: base status `base_status`, one country,
+    /// and a CIM1 extension carrying the three sub-statuses.
+    fn country_identity_with_cim1(
+        base_status: u32,
+        claims_status: u32,
+        cores_status: u32,
+        major_status: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        push_u32(&mut payload, 1); // row_count
+        push_u32(&mut payload, 1); // changed_rows
+        push_u32(&mut payload, base_status);
+        push_u32(&mut payload, 47); // tag_db_id
+        push_string(&mut payload, "GER");
+        payload.push(1); // cosmetic null
+
+        let major_available = !compact_contract::compact_status_is_failure(major_status);
+        payload.extend_from_slice(b"CIM1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&40u16.to_le_bytes());
+        push_u32(&mut payload, claims_status);
+        push_u32(&mut payload, cores_status);
+        push_u32(&mut payload, major_status);
+        push_u32(&mut payload, 0); // state rows
+        push_u32(&mut payload, 0); // expected claim memberships
+        push_u32(&mut payload, 0); // expected core memberships
+        push_u32(&mut payload, u32::from(major_available)); // major rows
+        push_u32(&mut payload, 0); // reserved
+        if major_available {
+            push_u32(&mut payload, 47);
+            payload.push(1);
+            payload.extend_from_slice(&[0, 0, 0]);
+        }
+        payload
+    }
+
+    /// d18's three CIM1 sub-statuses reach the record status.
+    ///
+    /// `WorldFold::fold_country_identity` gates on all three:
+    /// `claims_available` / `cores_available` / `major_available` decide whether
+    /// `country_claims_this_hour`, `country_cores_this_hour` and
+    /// `country_major_this_hour` are `Some(map)` or `None` -- that is, whether
+    /// each family is published for this hour at all. The decoder read them for
+    /// its local count contract and then dropped them, so a record with a CLEAN
+    /// base status and a failed membership read certified clean while the hour
+    /// silently shipped with no claims. The collector writes exactly `0` or
+    /// `SOURCE_UNAVAILABLE | PARTIAL_DATA` into these words, so they are the
+    /// same vocabulary the classifier already speaks.
+    ///
+    /// Mutation proof: delete the `add_decoder_status(summary, cim1_status_or)`
+    /// line in `decode_compact_country_identity_data_payload` and every failing
+    /// case below reads `Some(0)`.
+    #[test]
+    fn d18_cim1_claims_cores_and_major_statuses_reach_the_record_status() {
+        let failed = COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA;
+
+        // Control: everything clean stays clean, so the assertions below are
+        // about the sub-statuses and not about some unrelated always-set bit.
+        let clean = summarize_domain_data_payload(
+            18,
+            &country_identity_with_cim1(0, 0, 0, 0),
+            DomainDataContext::default(),
+        )
+        .expect("a clean CIM1 record decodes");
+        assert_eq!(clean.status_flags, Some(0));
+
+        // Each sub-status ALONE, with a clean base status, must surface.
+        for (name, claims, cores, major) in [
+            ("claims", failed, 0, 0),
+            ("cores", 0, failed, 0),
+            ("major", 0, 0, failed),
+        ] {
+            let authority = summarize_domain_data_payload(
+                18,
+                &country_identity_with_cim1(0, claims, cores, major),
+                DomainDataContext::default(),
+            )
+            .unwrap_or_else(|error| panic!("d18 {name}-unavailable record decodes: {error}"));
+            let status = authority
+                .status_flags
+                .unwrap_or_else(|| panic!("d18 {name} record reports a status"));
+            assert_ne!(
+                status & COMPACT_STATUS_FAILURE_MASK,
+                0,
+                "d18 {name} sub-status failed but the record status stayed clean: {status:#010x}"
+            );
+            assert_eq!(
+                compact_contract::compact_status_unknown_flags_v1(
+                    compact_contract::compact_status_for_global_interpretation(18, status)
+                ),
+                0,
+                "d18 {name} status must stay inside the v1 vocabulary the gates classify: {status:#010x}"
+            );
+        }
+    }
+
+    /// One d46 archetypes payload with an `ACE1` trailer carrying `ace_status`.
+    fn air_variant_archetypes_with_ace_trailer(ace_status: u32) -> Vec<u8> {
+        use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
+        use air_wings_variants_lifecycle_live_lane::domain46_air_variant_archetypes_live as air46;
+
+        let mut payload = air46::encode_payload(
+            &air46::AirVariantArchetypeHeader {
+                elapsed_wall_ms: 1,
+                status_flags: air46::STATUS_DELTA_DATA,
+                changed_rows: 0,
+                observed_variant_rows: 0,
+                classified_rows: 0,
+                unresolved_rows: 0,
+                static_catalog_hash: 0,
+            },
+            &[],
+        );
+        payload.extend_from_slice(&ace46::encode_trailer(
+            &ace46::AirAceRosterHeader {
+                status_flags: ace_status,
+                observed_country_rows: 0,
+                observed_ace_rows: 0,
+                wing_assignment_rows: 0,
+                dead_rows: 0,
+                skipped_rows: 0,
+            },
+            &[],
+        ));
+        payload
+    }
+
+    /// d46's `ACE1` trailer status: the two bits the fold GATES on reach the
+    /// record status; the one it does not stays trailer-local.
+    ///
+    /// `WorldFold::apply_air_ace_roster` returns early on
+    /// `ACE_STATUS_SOURCE_UNAVAILABLE` or `ACE_STATUS_PARTIAL_DATA` -- it
+    /// RETAINS the previous hour's ace map and per-country sidecars instead of
+    /// full-replacing, and withholds `air_aces_fresh_this_hour`. The hour then
+    /// publishes a roster it did not measure, and before this the record status
+    /// said the domain was clean.
+    ///
+    /// `ACE_STATUS_WING_ASSIGNMENT_BLOCKED` must NOT cross: its value (1<<13)
+    /// is `COMPACT_STATUS_WAR_SEGMENT_ABSENT` globally, an unrelated fact, and
+    /// it is exactly the bit the fold does not gate on (the frame is still
+    /// full-replaced). Admitting it would assert a war-segment fact about an air
+    /// domain -- so this half of the test is what stops the fix from becoming
+    /// "OR the whole word in".
+    ///
+    /// Mutation proof: widen the mask in
+    /// `domain46_air_variant_archetypes_live::decode_payload` to
+    /// `ACE_KNOWN_STATUS_MASK` and the blocked case fails; remove the OR
+    /// entirely and both the unavailable and partial cases fail.
+    #[test]
+    fn d46_ace_trailer_status_crosses_exactly_where_the_fold_gates() {
+        use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
+
+        let clean = summarize_domain_data_payload(
+            46,
+            &air_variant_archetypes_with_ace_trailer(0),
+            DomainDataContext::default(),
+        )
+        .expect("a clean ace trailer decodes");
+        assert_eq!(
+            clean
+                .status_flags
+                .map(|status| status & COMPACT_STATUS_FAILURE_MASK),
+            Some(0),
+            "a clean ace trailer must not invent a failure"
+        );
+
+        for (name, ace_status, expected_bit) in [
+            (
+                "source_unavailable",
+                ace46::ACE_STATUS_SOURCE_UNAVAILABLE,
+                COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            ),
+            (
+                "partial",
+                ace46::ACE_STATUS_PARTIAL_DATA,
+                COMPACT_STATUS_PARTIAL_DATA,
+            ),
+        ] {
+            let authority = summarize_domain_data_payload(
+                46,
+                &air_variant_archetypes_with_ace_trailer(ace_status),
+                DomainDataContext::default(),
+            )
+            .unwrap_or_else(|error| panic!("d46 ace {name} record decodes: {error}"));
+            let status = authority
+                .status_flags
+                .unwrap_or_else(|| panic!("d46 ace {name} record reports a status"));
+            assert_ne!(
+                status & expected_bit,
+                0,
+                "the fold retained a stale ace roster for this hour but the d46 record status \
+                 stayed clean of {name}: {status:#010x}"
+            );
+            assert_eq!(
+                compact_contract::compact_status_unknown_flags_v1(
+                    compact_contract::compact_status_for_global_interpretation(46, status)
+                ),
+                0,
+                "d46 status must stay inside the v1 vocabulary the gates classify: {status:#010x}"
+            );
+        }
+
+        // And the limit: the assignment-only anomaly is NOT a global fact.
+        let blocked = summarize_domain_data_payload(
+            46,
+            &air_variant_archetypes_with_ace_trailer(ace46::ACE_STATUS_WING_ASSIGNMENT_BLOCKED),
+            DomainDataContext::default(),
+        )
+        .expect("d46 wing-assignment-blocked record decodes");
+        let status = blocked
+            .status_flags
+            .expect("d46 wing-assignment-blocked record reports a status");
+        assert_eq!(
+            status & ace46::ACE_STATUS_WING_ASSIGNMENT_BLOCKED,
+            0,
+            "trailer bit 1<<13 is COMPACT_STATUS_WAR_SEGMENT_ABSENT globally and must not be \
+             asserted about an air domain: {status:#010x}"
+        );
+        assert_eq!(
+            status & COMPACT_STATUS_FAILURE_MASK,
+            0,
+            "the fold still full-replaces on an assignment-only anomaly, so it is not a failure"
+        );
     }
 
     #[test]

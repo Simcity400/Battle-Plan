@@ -122,6 +122,21 @@
                                              ]
                   },
                   {
+                      "unit":  "extractor/native/lanes/division_combat_stats_live",
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
+                      "direct_evidence":  [
+
+                                          ],
+                      "delegated_patchers":  [
+                                                 {
+                                                     "dependency":  "minhook",
+                                                     "package":  "minhook",
+                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                 }
+                                             ]
+                  },
+                  {
                       "unit":  "extractor/native/lanes/dynamic_collection_trace_live",
                       "performs_suspending_code_mutation":  false,
                       "delegates_suspending_code_mutation":  true,

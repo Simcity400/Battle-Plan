@@ -41,7 +41,7 @@ use compact_contract::{
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 use compact_contract::stream_validator::{
     AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
@@ -326,7 +326,36 @@ impl CompletenessAudit {
                     ));
                 }
             }
-            _ => unreachable!("record semantics rejected unknown type"),
+            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+                // A refused frame is a CLOSED frame: it closed without
+                // publishing. `current_domains` is the per-hour accumulator, so
+                // it is discarded here exactly as FRAME_END takes it -- leaving
+                // it populated attributed the refused hour's records to the next
+                // published hour, the same carry-over the decoder's `cur_counts`
+                // had. With BOTH sides bleeding identically, `verify_fold_counts`
+                // would have compared two equally wrong numbers and reported
+                // nothing.
+                //
+                // No `hours` row is inserted, and that is the point: no hour was
+                // published, so there is no completeness to report and
+                // `collect_run`'s "audit produced an hour the fold did not emit"
+                // check stays exact. Whether the refusal was ENTITLED to close
+                // this hour is `BoundaryTracker`'s rule, asked once, on the fold
+                // side.
+                self.current_domains.clear();
+            }
+            // A record type this audit has not been taught is a refusal, not a
+            // skip -- and not a panic either. This arm used to be
+            // `unreachable!`, which was simply false:
+            // `validate_compact_record_semantics` accepts DOMAIN_GAP and
+            // FRAME_REFUSED, so both reached it and aborted the process, which
+            // is why no stream carrying either could be read at all.
+            other => {
+                return Err(format!(
+                    "compact record type {other} on domain {domain_id}: this completeness \
+                     audit has not been taught how to account it"
+                ));
+            }
         }
         Ok(())
     }

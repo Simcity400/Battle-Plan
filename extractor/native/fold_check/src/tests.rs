@@ -899,3 +899,165 @@ fn legacy_pre222_container_decodes_for_diagnostics_but_does_not_certify() {
         "historical envelope should remain diagnosable without becoming certifiable: {err}"
     );
 }
+
+/// A refused hour must not contaminate the next one on the AUDIT side either,
+/// and a refusal must not crash the audit.
+///
+/// `CompletenessAudit::observe` closed its `match` on record type with
+/// `_ => unreachable!("record semantics rejected unknown type")`. That arm was
+/// reachable: `validate_compact_record_semantics` accepts FRAME_REFUSED (type
+/// 6) and DOMAIN_GAP (type 5), so both reached `observe` and PANICKED the tool
+/// -- `fold_check hash` could not read any stream containing either. The panic
+/// hid a second copy of the decoder's carry-over: `current_domains` is the
+/// audit's per-hour accumulator and, like `cur_counts`, was drained only by
+/// FRAME_END, so a refused hour's per-domain records would have been added to
+/// the next hour's completeness. That is precisely the disagreement
+/// `verify_fold_counts` reports, and with BOTH sides bleeding identically it
+/// would not even have reported it.
+///
+/// Mutation proof: restore the `unreachable!` arm and this test panics instead
+/// of failing; drop `std::mem::take(&mut self.current_domains)` from the
+/// FRAME_REFUSED arm (leave the rest) and the d18 count for the published hour
+/// becomes 2, which `verify_fold_counts` then reports as a fold/audit
+/// disagreement.
+#[test]
+fn a_refused_hour_neither_crashes_the_audit_nor_feeds_the_next_hour() {
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(HOUR_A),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 64,
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            reason: "d64_source_unavailable_frames=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    // Hour A publishes one d18 DATA + its owned PERF, then is refused.
+    for (record_type, payload) in [
+        (
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            country_identity_payload(&[(47, "GER")]),
+        ),
+        (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
+    ] {
+        push_record(&mut stream, seq, raw_for(HOUR_A), 18, record_type, &payload);
+        seq += 1;
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    seq += 1;
+    // Hour B is an ordinary published hour with exactly one d18 record.
+    for (record_type, payload) in [
+        (
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            country_identity_payload(&[(47, "GER")]),
+        ),
+        (COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload()),
+    ] {
+        push_record(&mut stream, seq, raw_for(HOUR_B), 18, record_type, &payload);
+        seq += 1;
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    // The audit alone: it must complete, and the refused hour must leave no
+    // completeness row and no residue in the published one.
+    let audited = audit_compact_reader_with_identity_mode(
+        Cursor::new(stream.clone()),
+        StreamIdentityMode::Legacy,
+    )
+    .expect("a stream carrying a canonical refusal must be auditable");
+    assert_eq!(
+        audited.keys().copied().collect::<Vec<_>>(),
+        vec![HOUR_B],
+        "a refused hour published nothing, so it owes no completeness row"
+    );
+    assert_eq!(
+        audited[&HOUR_B].domains[&18].data_records, 1,
+        "the refused hour's d18 record must not be counted into hour {HOUR_B}"
+    );
+    assert_eq!(audited[&HOUR_B].domains[&18].perf_records, 1);
+
+    // And end to end: the fold and the audit agree, so `verify_fold_counts`
+    // passes and the stream folds to exactly one published hour.
+    let run = fold_bytes(&stream);
+    assert_eq!(run.hours.len(), 1);
+    assert_eq!(run.hours[0].hour_index, HOUR_B);
+    assert_eq!(run.hours[0].domain_data_counts.get(&18), Some(&1));
+}
+
+/// The other half: a record type the audit has NOT been taught fails closed
+/// with a named error instead of panicking.
+///
+/// DOMAIN_GAP is the live case. `compact_record_counts_toward_terminal_outcome`
+/// says a gap IS a domain's terminal outcome while
+/// `compact_record_counts_toward_perf_cardinality` says it is not a PERF, and
+/// `verify_expected_roster` demands exactly one PERF per rostered domain -- so
+/// whether a gap satisfies a domain's roster slot is a contract question this
+/// tool must not answer by guessing. Until it is answered the audit refuses the
+/// stream and says why, which is the honest outcome; it used to abort the
+/// process instead.
+///
+/// Mutation proof: put `_ => unreachable!(...)` back and this test panics
+/// rather than failing.
+#[test]
+fn an_untaught_record_type_is_a_named_refusal_not_a_panic() {
+    let mut gap = vec![0u8; compact_contract::COMPACT_DOMAIN_GAP_PAYLOAD_LEN];
+    gap[..4].copy_from_slice(compact_contract::COMPACT_DOMAIN_GAP_MAGIC);
+    gap[4..6].copy_from_slice(&compact_contract::COMPACT_DOMAIN_GAP_VERSION.to_le_bytes());
+    gap[6..8].copy_from_slice(
+        &(compact_contract::COMPACT_DOMAIN_GAP_PAYLOAD_LEN as u16).to_le_bytes(),
+    );
+    gap[8..10].copy_from_slice(&compact_contract::DOMAIN_GAP_REASON_WORKER_PANIC.to_le_bytes());
+    gap[10..12].copy_from_slice(&compact_contract::DOMAIN_GAP_PART_BOTH.to_le_bytes());
+    gap[16..20].copy_from_slice(&raw_for(HOUR_A).to_le_bytes());
+    gap[20..24].copy_from_slice(&raw_for(HOUR_A).to_le_bytes());
+    gap[24..28].copy_from_slice(&raw_for(HOUR_A).to_le_bytes());
+    assert!(
+        compact_contract::validate_compact_record_semantics(
+            18,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            0,
+            &gap,
+        )
+        .is_ok(),
+        "fixture must be a record the semantics layer accepts, or this proves nothing"
+    );
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        &gap,
+    );
+
+    let err = audit_compact_reader_with_identity_mode(
+        Cursor::new(stream),
+        StreamIdentityMode::Legacy,
+    )
+    .expect_err("an untaught record type must refuse, not certify");
+    assert!(
+        err.contains("has not been taught")
+            && err.contains(&compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP.to_string()),
+        "refusal must name the record type it could not account: {err}"
+    );
+}

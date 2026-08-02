@@ -745,6 +745,136 @@ fn a_stream_that_ends_on_a_canonical_frame_refused_certifies() {
         .expect("a stream ending on a canonical FRAME_REFUSED closes cleanly");
 }
 
+/// A refused hour is CLOSED, so nothing it accumulated may be attributed to
+/// the next one.
+///
+/// `drain_finished_hours` -- the only place that resets the per-hour
+/// `cur_counts` accumulator and advances `cur_hour_start` -- used to be reached
+/// from the FRAME_END arm alone. A canonical FRAME_REFUSED closes its hour just
+/// as legitimately (that is exactly what `BoundaryTracker` and `eof_check` were
+/// widened to say), but it published nothing, so it never reached the drain:
+/// hour N's DOMAIN_DATA tallies stayed in the accumulator and were handed to
+/// hour N+1, whose `domain_data_counts` then read `{18: 2}` for a stream in
+/// which hour N+1 carried exactly one d18 record. `fold_check`'s independent
+/// completeness audit does catch the resulting disagreement, but only as a
+/// count mismatch after the fact; a consumer reading `WorldHour` without that
+/// second audit published the contaminated hour.
+///
+/// The strict hour machine had the same hole and it was worse: a refusal left
+/// `strict_open_hour` set, so the FIRST DOMAIN_DATA of the next hour was
+/// reported as "hour interleaving" and a refusal followed by any further hour
+/// could not certify AT ALL.
+///
+/// What must NOT change is the index offset. A refused hour's DOMAIN_DATA is
+/// folded into live state before the refusal lands, so it is part of what the
+/// next published hour is made of; `start_offset` is the start of the byte
+/// range whose replay reproduces that hour. Advancing it past the refusal would
+/// orphan those bytes and give a reconstruction a range that replays to a
+/// different hour than the one it names. This test pins that the published hour
+/// still owns them.
+///
+/// Mutation proof: delete the `close_refused_hour` call from
+/// `HourCursor::next_hour`'s boundary dispatch and this fails on `{18: 2}`;
+/// delete the `COMPACT_RECORD_TYPE_FRAME_REFUSED` arm of
+/// `observe_strict_header` and it fails on the interleaving refusal; make
+/// `close_refused_hour` also advance `cur_hour_start` and it fails on the
+/// offset.
+#[test]
+fn a_refused_hour_does_not_carry_its_counts_into_the_next_hour() {
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(HOUR_A),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 64,
+            status_flags: 0x0000_0100,
+            non_tolerated_flags: 0x0000_0100,
+            reason: "d64_rejected_timed_effect_frames=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+    let mut stream = Vec::new();
+    // Hour A publishes one d18 record and is then refused.
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    let hour_b_first_record_offset =
+        stream.len() as u64 + (COMPACT_RECORD_HEADER_LEN + refusal.len()) as u64;
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    // Hour B publishes one d18 record and closes normally.
+    push_record(
+        &mut stream,
+        3,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut cursor = open_reader(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+    );
+    let hours = cursor
+        .by_ref()
+        .map(|hour| hour.expect("no io error"))
+        .collect::<Vec<_>>();
+    cursor
+        .stats()
+        .certification_verdict()
+        .expect("a refusal followed by a clean closed hour certifies");
+    assert_eq!(
+        hours.len(),
+        1,
+        "only the published hour is emitted; the refused hour published nothing"
+    );
+    assert_eq!(hours[0].hour_index, HOUR_B);
+    assert_eq!(
+        hours[0].domain_data_counts.get(&18),
+        Some(&1),
+        "hour {} carried exactly one d18 record; the refused hour's record must not be added to it: {:?}",
+        HOUR_B,
+        hours[0].domain_data_counts
+    );
+    // The counts reset, but the replayable byte range does NOT: the refused
+    // hour's records were folded into the state hour B was built from, so hour
+    // B's range has to start before them or a reconstruction from it produces a
+    // different hour than the one it names.
+    let dir = TmpDir::new("refused_hour_counts");
+    let path = dir.0.join("collector_stream.bin");
+    std::fs::write(&path, &stream).unwrap();
+    let index = build_index(&Source::StreamFile(path), &OpenOptions::default())
+        .expect("a refusal followed by a clean closed hour indexes");
+    assert_eq!(index.hours.len(), 1);
+    assert_eq!(index.hours[0].hour_index, HOUR_B);
+    assert_eq!(
+        index.hours[0].start_offset, 0,
+        "hour {HOUR_B}'s replay range must still cover the refused hour's folded records"
+    );
+    assert!(index.hours[0].start_offset < hour_b_first_record_offset);
+    assert!(index.hours[0].cheap_seek_point);
+}
+
 /// And the limit of that: a refusal closes the hour that is OPEN, never a
 /// different one.
 ///

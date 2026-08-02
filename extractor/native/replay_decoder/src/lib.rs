@@ -77,7 +77,7 @@ use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, CompactRecordHeader,
     RecordFramingError, ASSIGNED_COMPACT_DOMAINS, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 use recorder_host::stream_fold::{
     strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
@@ -2338,6 +2338,8 @@ impl HourCursor {
                     if !self.ready.is_empty() {
                         return Ok(()); // pause: let the caller pull this hour
                     }
+                } else if header.record_type == COMPACT_RECORD_TYPE_FRAME_REFUSED {
+                    self.close_refused_hour();
                 }
             }
 
@@ -2433,11 +2435,54 @@ impl HourCursor {
                     header.game_hour_raw
                 )),
             },
+            // A canonical FRAME_REFUSED closes the open hour too -- it simply
+            // closed without publishing. This arm only records THAT the hour is
+            // closed; whether the refusal was entitled to close it (it may only
+            // refuse the hour that is open, and a refusal over no open hour is
+            // the ordinary shape) is the shared `BoundaryTracker`'s rule and is
+            // asked there and nowhere else, exactly as the terminal-boundary
+            // rule is. A duplicate of a boundary rule on this path is what made
+            // this cursor refuse every honestly-refused stream once already.
+            //
+            // Without this arm the hour stayed open in the strict machine and
+            // the FIRST DOMAIN_DATA of the next hour was reported as "hour
+            // interleaving", so a refusal followed by any further hour could
+            // not certify at all.
+            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+                self.strict_open_hour = None;
+                None
+            }
             _ => None,
         };
         if self.strict_validation_error.is_none() {
             self.strict_validation_error = sequence_error.or(boundary_error);
         }
+    }
+
+    /// Close a hour that a canonical `FRAME_REFUSED` ended without publishing.
+    ///
+    /// A refusal is a real hour boundary: it ends the window over which
+    /// DOMAIN_DATA records are attributed to one hour. Only `FRAME_END` used to
+    /// reach any reset, so a refused hour's tallies stayed in `cur_counts` and
+    /// were handed to the NEXT published hour's
+    /// [`WorldHour::domain_data_counts`] -- a stream in which the next hour
+    /// carried one d18 record reported `{18: 2}`. The refused hour published no
+    /// `WorldHour`, so there is nothing to attribute its counts to and they are
+    /// dropped. `DecodeStats::per_domain_data_records` is a whole-stream total
+    /// and deliberately still counts them: those records were in the stream.
+    ///
+    /// `cur_hour_start` is deliberately NOT advanced here, and that is not an
+    /// oversight. It is the start of the byte range whose replay reproduces the
+    /// next published hour, which is what
+    /// [`certified binary artifacts`](CertifiedBinaryArtifacts) turn into each
+    /// hour's `h4cr_start_offset`/`h4cr_end_offset`. The refused hour's
+    /// DOMAIN_DATA records were folded into live state before the refusal, so
+    /// that state is part of what the next published hour is made of. Advancing
+    /// past them would leave those bytes inside no hour's range and hand a
+    /// reconstruction a checkpoint range that replays to a DIFFERENT hour than
+    /// the one it names.
+    fn close_refused_hour(&mut self) {
+        self.cur_counts.clear();
     }
 
     /// Drain the hours the fold just closed on this `FRAME_END`, attaching the
