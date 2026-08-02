@@ -47,6 +47,28 @@ pub const ARMY_PERSISTENT_VTABLE_OFF: u64 = 0x10;
 pub const ARMY_PERSISTENT_VTABLE_RVA: u64 = 0x2943CB0;
 pub const ARMY_ID_OFF: u64 = 0x18;
 pub const ARMY_ID_TYPE: u32 = 4_713;
+/// The second handle type the same `CDivision` body carries.
+///
+/// `ARMY_VTABLE_RVA`/`ARMY_PERSISTENT_VTABLE_RVA` are the production
+/// `DIVISION_WRAPPER_VTABLE_RVA`/`DIVISION_VTABLE_RVA` pair, and
+/// `ARMY_ID_OFF` is that wrapper's body `+0x08` type / `+0x0C` id. The
+/// collector's own division reader has accepted `{4713, 51}` behind the
+/// vtable guard since the wrapper-observed alt type was found on the
+/// country-wrapper path; this domain reaches the very same body through the
+/// very same kind of country wrapper (`CCountry+0xF80` ->
+/// `CArmyUpgradesStatus` -> `CArmyUpgradesRequests+0x20`) and must accept
+/// the same set. Requiring `4713` alone refuses upgrade groups the engine
+/// legitimately keeps: in the exact save this build was captured from, the
+/// first country in the roster owns 381 divisions with an `upgrades`
+/// request block and 41 of them serialise `id.type = 51`.
+pub const ARMY_ID_ALT_TYPE: u32 = 51;
+
+/// The identity guard for this domain is the wrapper/body vtable pair; the
+/// handle type is the engine's own unit-body type, which is not a single
+/// value.
+pub fn is_army_identity_type(kind: u32) -> bool {
+    kind == ARMY_ID_TYPE || kind == ARMY_ID_ALT_TYPE
+}
 
 pub const EQUIPMENT_VARIANT_VTABLE_RVA: u64 = 0x293AFB8;
 pub const EQUIPMENT_VARIANT_ID_OFF: u64 = 0x08;
@@ -303,7 +325,7 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
                     ARMY_PERSISTENT_VTABLE_RVA,
                 )?;
                 let army = read_persistent_id(memory, add(army_ptr, ARMY_ID_OFF)?)?;
-                if army.kind != ARMY_ID_TYPE || army.id == 0 || !army_ids.insert(army) {
+                if !is_army_identity_type(army.kind) || army.id == 0 || !army_ids.insert(army) {
                     return invalid("AUR1 CArmy persistent identity is invalid or duplicated");
                 }
                 let requests = read_request_rows(memory, module_base, group_ptr)?;
@@ -605,7 +627,7 @@ pub fn validate_snapshot(snapshot: &ArmyUpgradeSnapshot) -> Result<(), CarrierEr
         let mut armies = BTreeSet::new();
         let mut prior_army = None;
         for group in &country.groups {
-            if group.army.kind != ARMY_ID_TYPE
+            if !is_army_identity_type(group.army.kind)
                 || group.army.id == 0
                 || !armies.insert(group.army)
                 || prior_army.is_some_and(|prior| prior >= group.army)
@@ -1031,5 +1053,147 @@ mod tests {
         invalid_frame.authority = AuthorityState::SourceUnavailable;
         invalid_frame.status_flags = 1;
         assert!(encode_payload(&invalid_frame).is_err());
+    }
+
+    const FIXTURE_BASE: u64 = 0x1_4000_0000;
+    const FIXTURE_COUNTRY: u64 = 0x2000_0000;
+    const FIXTURE_STATUS: u64 = 0x2001_0000;
+    const FIXTURE_GROUP_SLOTS: u64 = 0x2002_0000;
+    const FIXTURE_GROUP: u64 = 0x2003_0000;
+    const FIXTURE_ARMY: u64 = 0x2004_0000;
+
+    #[derive(Default)]
+    struct SparseMemory {
+        bytes: std::collections::BTreeMap<u64, u8>,
+    }
+
+    impl SparseMemory {
+        fn put(&mut self, address: u64, value: &[u8]) {
+            for (index, byte) in value.iter().enumerate() {
+                self.bytes.insert(address + index as u64, *byte);
+            }
+        }
+
+        fn u32(&mut self, address: u64, value: u32) {
+            self.put(address, &value.to_le_bytes());
+        }
+
+        fn u64(&mut self, address: u64, value: u64) {
+            self.put(address, &value.to_le_bytes());
+        }
+    }
+
+    impl ArmyUpgradeMemory for SparseMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            for (index, slot) in out.iter_mut().enumerate() {
+                *slot = *self.bytes.get(&(address + index as u64)).ok_or(())?;
+            }
+            Ok(())
+        }
+    }
+
+    /// One country owning exactly one upgrade group whose `CArmy` handle
+    /// carries `army_kind`. Every other node is the exact-a729 shape, so the
+    /// only thing under test is the handle-type admission.
+    fn single_group_memory(army_kind: u32, army_id: u32) -> SparseMemory {
+        let mut memory = SparseMemory::default();
+        memory.u64(FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF, FIXTURE_STATUS);
+
+        memory.u64(FIXTURE_STATUS, FIXTURE_BASE + STATUS_VTABLE_RVA);
+        memory.u64(
+            FIXTURE_STATUS + STATUS_PERSISTENT_VTABLE_OFF,
+            FIXTURE_BASE + STATUS_PERSISTENT_VTABLE_RVA,
+        );
+        memory.u64(FIXTURE_STATUS + STATUS_GROUP_BEGIN_OFF, FIXTURE_GROUP_SLOTS);
+        memory.u32(FIXTURE_STATUS + STATUS_GROUP_CAPACITY_OFF, 1);
+        memory.u32(FIXTURE_STATUS + STATUS_GROUP_COUNT_OFF, 1);
+        memory.u64(FIXTURE_GROUP_SLOTS, FIXTURE_GROUP);
+
+        memory.u64(FIXTURE_GROUP, FIXTURE_BASE + REQUESTS_VTABLE_RVA);
+        memory.u64(
+            FIXTURE_GROUP + REQUESTS_PERSISTENT_VTABLE_OFF,
+            FIXTURE_BASE + REQUESTS_PERSISTENT_VTABLE_RVA,
+        );
+        memory.u32(FIXTURE_GROUP + REQUESTS_VERSION_OFF, REQUESTS_VERSION);
+        memory.u64(FIXTURE_GROUP + REQUESTS_ARMY_PTR_OFF, FIXTURE_ARMY);
+        memory.u64(FIXTURE_GROUP + REQUESTS_STATUS_PTR_OFF, FIXTURE_STATUS);
+        memory.u64(FIXTURE_GROUP + REQUEST_ROW_BEGIN_OFF, 0);
+        memory.u32(FIXTURE_GROUP + REQUEST_ROW_CAPACITY_OFF, 0);
+        memory.u32(FIXTURE_GROUP + REQUEST_ROW_COUNT_OFF, 0);
+        memory.u64(FIXTURE_GROUP + DELIVERY_BEGIN_OFF, 0);
+        memory.u32(FIXTURE_GROUP + DELIVERY_CAPACITY_OFF, 0);
+        memory.u32(FIXTURE_GROUP + DELIVERY_COUNT_OFF, 0);
+
+        memory.u64(FIXTURE_ARMY, FIXTURE_BASE + ARMY_VTABLE_RVA);
+        memory.u64(
+            FIXTURE_ARMY + ARMY_PERSISTENT_VTABLE_OFF,
+            FIXTURE_BASE + ARMY_PERSISTENT_VTABLE_RVA,
+        );
+        memory.u32(FIXTURE_ARMY + ARMY_ID_OFF, army_kind);
+        memory.u32(FIXTURE_ARMY + ARMY_ID_OFF + 4, army_id);
+        memory
+    }
+
+    fn read_single_group(army_kind: u32) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+        read_snapshot_from_country_roots(
+            &single_group_memory(army_kind, 14_646),
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+        )
+    }
+
+    #[test]
+    fn native_read_admits_the_wrapper_observed_alt_unit_handle_type() {
+        for kind in [ARMY_ID_TYPE, ARMY_ID_ALT_TYPE] {
+            let snapshot = read_single_group(kind)
+                .unwrap_or_else(|error| panic!("handle type {kind} refused: {error:?}"));
+            assert_eq!(snapshot.countries.len(), 1);
+            assert_eq!(snapshot.countries[0].groups.len(), 1);
+            assert_eq!(snapshot.countries[0].groups[0].army.kind, kind);
+        }
+    }
+
+    #[test]
+    fn native_read_still_refuses_a_handle_type_outside_the_unit_body_set() {
+        for kind in [0, 1, EQUIPMENT_VARIANT_ID_TYPE, 52, 4_712] {
+            let error = read_single_group(kind)
+                .expect_err("a non-unit-body handle type must stay refused");
+            assert!(
+                matches!(&error, CarrierError::CountryRead { source, .. }
+                    if matches!(&**source, CarrierError::Invalid(reason)
+                        if reason == "AUR1 CArmy persistent identity is invalid or duplicated")),
+                "handle type {kind} produced {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_read_still_refuses_a_zero_army_id() {
+        let error = read_snapshot_from_country_roots(
+            &single_group_memory(ARMY_ID_ALT_TYPE, 0),
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+        )
+        .expect_err("a zero CArmy id must stay refused");
+        assert!(matches!(&error, CarrierError::CountryRead { source, .. }
+            if matches!(&**source, CarrierError::Invalid(reason)
+                if reason == "AUR1 CArmy persistent identity is invalid or duplicated")));
+    }
+
+    #[test]
+    fn snapshot_validation_matches_the_native_handle_type_set() {
+        let mut snapshot = frame().snapshot.unwrap();
+        snapshot.countries[0].groups[0].army.kind = ARMY_ID_ALT_TYPE;
+        validate_snapshot(&snapshot).expect("alt unit handle type must validate");
+        snapshot.countries[0].groups[0].army.kind = EQUIPMENT_VARIANT_ID_TYPE;
+        assert!(validate_snapshot(&snapshot).is_err());
     }
 }
