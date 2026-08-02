@@ -206,6 +206,18 @@ impl GapRecord {
                     hour_start: self.hour_start,
                     hour_end: self.hour_end,
                 })?;
+        // `inclusive_hour_count` only fails on i32/i64 overflow, and a width of
+        // exactly zero (`hour_end == hour_start - 1`) survives it as `Some(0)`.
+        // A gap that covers no hour is not a gap: `covers()` can never match it,
+        // it carries a reason code for an outcome that never happened, and the
+        // half-open forward-jump constructor relies on this check to refuse a
+        // one-hour step, which is a continuous stream rather than a jump.
+        if hour_count == 0 {
+            return Err(GapRecordValidationError::InvalidInclusiveRange {
+                hour_start: self.hour_start,
+                hour_end: self.hour_end,
+            });
+        }
         if self.domains.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(GapRecordValidationError::DomainsNotStrictlyIncreasing);
         }

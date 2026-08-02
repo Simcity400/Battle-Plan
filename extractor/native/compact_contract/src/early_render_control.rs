@@ -1183,13 +1183,91 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
+    /// The out-of-process production sink verifier and this wire constant must
+    /// never disagree about the staged-hook inventory, and there are exactly two
+    /// non-disagreeing arrangements:
+    ///
+    ///  * the verifier grades an early-render capture receipt, in which case it
+    ///    has to pin THIS value, or
+    ///  * the verifier refuses the early-render surface outright, in which case
+    ///    no production run it grades can carry a staged-hook count at all and
+    ///    the constant is enforced only by the Rust receipt validators.
+    ///
+    /// The passive product took the second arrangement: `--early-launch-exe` is
+    /// a forbidden recorder argument and `early_render_capture_receipt.json` is
+    /// a forbidden run-directory artifact. Asserting only the first arrangement
+    /// -- which is what this test did while the verifier still graded the
+    /// receipt -- would now demand grading logic for a file the same script
+    /// requires to be absent.
+    ///
+    /// What makes this fail: bumping `EARLY_STAGED_HOOK_COUNT` while the
+    /// verifier still pins the old number, or letting the verifier readmit the
+    /// early-render surface without pinning the count.
     #[test]
     fn production_sink_verifier_count_matches_wire_contract() {
         let verifier = include_str!("../../scripts/verify_sink_reconciliation.py");
-        assert!(verifier.contains(&format!(
-            "EARLY_STAGED_HOOK_COUNT = {EARLY_STAGED_HOOK_COUNT}"
-        )));
-        assert!(verifier.contains("receipt.get(\"staged_hook_count\") == EARLY_STAGED_HOOK_COUNT"));
+        let grades_receipt =
+            verifier.contains("receipt.get(\"staged_hook_count\") == EARLY_STAGED_HOOK_COUNT");
+        if grades_receipt {
+            assert!(
+                verifier.contains(&format!(
+                    "EARLY_STAGED_HOOK_COUNT = {EARLY_STAGED_HOOK_COUNT}"
+                )),
+                "the verifier grades staged_hook_count but pins a value other than \
+                 EARLY_STAGED_HOOK_COUNT = {EARLY_STAGED_HOOK_COUNT}"
+            );
+        } else {
+            // These two have to be read POSITIONALLY, inside the block that
+            // makes them forbidden. A bare `contains` passes just as happily
+            // when the same literal is moved into an allowed/tolerated set,
+            // which is the readmission this branch exists to refuse.
+            let forbidden_arguments = verifier
+                .split_once("FORBIDDEN_RECORDER_ARGUMENTS = {")
+                .and_then(|(_, rest)| rest.split_once('}'))
+                .map(|(block, _)| block)
+                .expect("the verifier's forbidden recorder-argument set");
+            assert!(
+                forbidden_arguments.contains("\"--early-launch-exe\","),
+                "a verifier that does not grade staged_hook_count must list \
+                 --early-launch-exe in FORBIDDEN_RECORDER_ARGUMENTS, or a production \
+                 run can stage hooks nothing counts"
+            );
+            // Membership in the set is worth nothing if the check that reads
+            // the set exempts the member. Pin the enforcement itself, so
+            // neutering it (`forbidden not in arguments or forbidden == ...`)
+            // is a failure rather than a silent readmission.
+            //
+            // The limit of this test, stated so nobody reads more into it:
+            // it is a LEXICAL guard from Rust over a Python file. It pins the
+            // set, the artifact loop, and the enforcement expression, but it
+            // cannot prove the verifier enforces anything at RUNTIME. Filtering
+            // the flag out of `arguments` before this loop, or returning early
+            // above it, readmits the surface with every assertion here still
+            // green. Runtime enforcement is the Python verifier's own to test.
+            assert!(
+                verifier.contains(
+                    "require(forbidden not in arguments, \
+                     f\"forbidden_recorder_argument:{forbidden}\", problems)"
+                ),
+                "FORBIDDEN_RECORDER_ARGUMENTS must be enforced unconditionally for every \
+                 member; listing --early-launch-exe means nothing if the check exempts it"
+            );
+            let forbidden_artifacts = verifier
+                .split_once("forbidden_early_launch_artifact")
+                .map(|(before, _)| before)
+                .and_then(|before| before.rsplit_once("for name in ("))
+                .map(|(_, block)| block)
+                .expect("the verifier's forbidden early-launch artifact loop");
+            assert!(
+                forbidden_artifacts.contains("\"early_render_capture_receipt.json\","),
+                "a verifier that does not grade staged_hook_count must forbid the \
+                 early_render_capture_receipt.json artifact in the forbidden-artifact loop"
+            );
+            assert!(
+                verifier.contains("forbidden_early_capture_receipt_present"),
+                "the forbidden early-render capture receipt needs a named problem code"
+            );
+        }
     }
 
     #[test]
