@@ -149,3 +149,4 @@ extractor/coverage_audit/reference_ledger/reference_ledger.csv
 __pycache__/
 *.pyc
 *.pdb
+.merge-target/
