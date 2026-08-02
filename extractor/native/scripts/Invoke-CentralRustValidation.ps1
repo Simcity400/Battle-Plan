@@ -444,7 +444,11 @@ try {
         $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
             [string]$packageSelfTestResult.status -cne 'PASS' -or
-            [int]$packageSelfTestResult.cases -ne 61) {
+            # 61 + 5. The five are the three pinned manifest-graph cases, the
+            # case that the derived fixture reaches exactly the delegating unit
+            # closure the committed baseline accepts, and the case that a
+            # drifted accepted-inventory pin is rejected.
+            [int]$packageSelfTestResult.cases -ne 66) {
             throw "portable-product package builder/verifier self-tests returned no authority"
         }
     }
@@ -831,12 +835,12 @@ try {
                 $packageResult.interaction_closure.recorder_host.semantic_engine_state_writes -or
                 $packageResult.interaction_closure.replay_app.semantic_engine_state_writes -or
                 $packageResult.interaction_closure.collector_dll.semantic_engine_state_writes -or
-                $packageResult.interaction_closure.recorder_host.game_process_lifecycle_control -or
-                $packageResult.interaction_closure.replay_app.game_process_lifecycle_control -or
-                $packageResult.interaction_closure.collector_dll.game_process_lifecycle_control -or
-                $packageResult.interaction_closure.recorder_host.game_ui_control -or
-                $packageResult.interaction_closure.replay_app.game_ui_control -or
-                $packageResult.interaction_closure.collector_dll.game_ui_control -or
+                # Target-process lifecycle control and game-UI control are not
+                # separate receipt verdicts to read here. Both rosters are
+                # subsets of the interaction-marker roster the package enforcers
+                # throw on, and a permitted role capability is filtered out of
+                # both, so a build that produced a receipt at all has already
+                # rejected every symbol either verdict could report.
                 $packageResult.static_vcruntime_admission -isnot [bool] -or
                 -not $packageResult.static_vcruntime_admission -or
                 [int]$packageResult.executable_count -ne 2 -or

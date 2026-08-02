@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -68,9 +68,22 @@ $collectorLib = Get-Content -LiteralPath $collectorLibPath -Raw
 $passiveReady = Get-Content -LiteralPath $passiveReadyPath -Raw
 $cases = 0
 
-    $fixedForbiddenMarkerCount = 121
+    # Repinned deliberately, three times. The roster gained the thread-handle
+    # acquisition and consumption surface it was missing: the Zw
+    # suspend/resume/terminate aliases, Nt/Zw SetContextThread, the alert and
+    # alert-resume pairs, Nt/Zw SetInformationThread and ImpersonateThread, the
+    # QueueUserAPC2 and QueueApcThreadEx2 forms, SetThreadToken,
+    # SetThreadInformation, CancelSynchronousIo, the Nt/Zw OpenThread pair, and
+    # the scheduling setters. NtOpenThread in particular meant the ban on
+    # obtaining another thread's handle had never been in force at all, since
+    # only the Win32 spelling was listed.
+    #
+    # Each of three review rounds found more of this surface, so expect this
+    # census to move again. It is a census, not a proof that the thread-control
+    # surface is closed. Two files pin it and both have to move together.
+    $fixedForbiddenMarkerCount = 147
     $fixedForbiddenMarkerRosterSha256 =
-        '59dbc468c67c2abbe5fc8b7b30ae4f1136ce0c43e7429b11d339451c5feb1c4f'
+        '3068b0722bf931718c471cbeb998998b05ff9cca2ae72a4ecb2ce8a9a8bcf617'
 $forbiddenMarkerRoster = @(Get-ForbiddenProductionInteractionMarkers)
 Assert-ClosureCase 'forbidden interaction marker roster is the fixed reviewed census' (
     $forbiddenMarkerRoster.Count -eq $fixedForbiddenMarkerCount -and
@@ -243,6 +256,22 @@ Assert-ClosureCase 'package requires both production markers' (
 )
 $cases++
 
+# These assertions matched each symbol's own source text inside
+# New-PortableProductPackage.ps1. The roster lives in the shared helper
+# (Get-ForbiddenProductionInteractionMarkers) and the enforcers consume it from
+# there, so the text match reported a missing check that was in fact live in
+# both of them. Matching the roster's own source text would only have re-created
+# the same fragility, so membership is now read from the roster by calling it,
+# and the two enforcers are cited by the roster call and the refusal they raise.
+#
+# Honest limits of this case. Membership is dynamic and case-sensitive, which
+# the old text match was not. The link from that roster to each enforcer's byte
+# scan is still only a whole-file text match, so an enforcer that kept the call
+# and the message while scanning a filtered collection would pass here. Closing
+# that needs the enforcers to expose their scanned roster for comparison rather
+# than being read as text. Provenance note: this repo's history is squashed, so
+# when the inline spelling was dropped is not recoverable from git; the claim
+# above is about where the check is now, which is directly checkable.
 foreach ($symbol in @(
     'BATTLE_PLAN_CLIENT_DRIVING_EVIDENCE_V1',
     '--early-launch-exe',
@@ -254,8 +283,11 @@ foreach ($symbol in @(
     'write_pause_state'
 )) {
     Assert-ClosureCase "package rejects $symbol" (
-        $package.Contains("'$symbol'") -and
-        $package.Contains('contains forbidden client-driving or semantic-state-write symbol')
+        $forbiddenMarkerRoster -ccontains $symbol -and
+        $package.Contains('Get-ForbiddenProductionInteractionMarkers') -and
+        $package.Contains('contains forbidden client-driving or semantic-state-write symbol') -and
+        $packageVerifier.Contains('Get-ForbiddenProductionInteractionMarkers') -and
+        $packageVerifier.Contains('contains forbidden client-driving or semantic-state-write symbol')
     )
 }
 $cases++
@@ -266,8 +298,27 @@ Assert-ClosureCase 'package forbids target control while retaining the injection
     $package.Contains("'CreateRemoteThread'") -and
     $package.Contains("'VirtualAllocEx'") -and
     $package.Contains('forbidden_target_client_capabilities') -and
-    $package.Contains('Get-ForbiddenProductionClientCapabilitySymbols') -and
-    $packageVerifier.Contains('Get-ForbiddenProductionClientCapabilitySymbols') -and
+    # Neither the union getter nor its two halves is named in either enforcer
+    # any more. None of them is gone: Get-ForbiddenProductionInteractionMarkers
+    # calls the union, the union calls both halves, and that roster is the one
+    # both enforcers scan - so dropping the separately reported lifecycle and UI
+    # verdicts took nothing out of what is scanned.
+    #
+    # Reachability, not spelling: every client-capability symbol must be inside
+    # the roster, which a citation of the getter's name would not have shown -
+    # that passes on the definition alone even if nothing calls it. This proves
+    # union output is a subset of roster output. That roster output reaches the
+    # byte scan is proved by running the enforcers below, where one symbol from
+    # each half is rejected by both.
+    # It is also a subset test on two values from the same helper, so an edit
+    # that drops a symbol from the half-getter, from the roster, and from the
+    # pinned count/SHA together satisfies it - the SHA pin catches unaccompanied
+    # drift, not a deliberate repin, which stays a review responsibility.
+    @(Get-ForbiddenProductionClientCapabilitySymbols | Where-Object {
+        $forbiddenMarkerRoster -cnotcontains $_
+    }).Count -eq 0 -and
+    $package.Contains('Get-ForbiddenProductionInteractionMarkers') -and
+    $packageVerifier.Contains('Get-ForbiddenProductionInteractionMarkers') -and
     $package.Contains('Get-ProductionSourceCapabilityClosure') -and
     $package.Contains('Assert-CollectorProductionDependencyFeatureClosure') -and
     $package.Contains('Assert-ProductionInteractionSourceTreeClosure') -and
@@ -390,17 +441,226 @@ Assert-ClosureCase 'binary closure verdicts are computed from the complete fixed
     $package.Contains('forbidden_symbol_roster_sha256') -and
     $package.Contains('forbidden_symbols_absent = $forbiddenSymbolsAbsent') -and
     $package.Contains('semantic_engine_state_writes = $semanticEngineStateWrites') -and
-    $package.Contains('game_process_lifecycle_control = $gameProcessLifecycleControl') -and
-    $package.Contains('game_ui_control = $gameUiControl') -and
     -not $package.Contains('semantic_engine_state_writes = $false') -and
-    -not $package.Contains('game_process_lifecycle_control = $false') -and
-    -not $package.Contains('game_ui_control = $false') -and
     $packageVerifier.Contains('foundForbiddenSymbols') -and
     $packageVerifier.Contains('forbidden_symbol_roster_sha256') -and
     $packageVerifier.Contains('forbidden_symbols_absent = $forbiddenSymbolsAbsent') -and
-    -not $packageVerifier.Contains('semantic_engine_state_writes = $false') -and
-    -not $packageVerifier.Contains('game_process_lifecycle_control = $false') -and
-    -not $packageVerifier.Contains('game_ui_control = $false')
+    -not $packageVerifier.Contains('semantic_engine_state_writes = $false')
+)
+$cases++
+
+# The two enforcers used to publish game_process_lifecycle_control and
+# game_ui_control alongside the verdicts above. Neither could ever be true on a
+# returned receipt: both rosters are subsets of the interaction-marker roster,
+# a permitted role capability is filtered out of both by the same expression,
+# and every remaining hit throws before the receipt is built. A reader who saw
+# them read "checked, and clean" where nothing was left to check. The cases
+# below run the shipped enforcer functions - lifted out with the PowerShell
+# parser, not re-implemented - so the removal is held to what the enforcers do,
+# not to what their source text says.
+function New-InteractionEnforcerProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$EnforcerName,
+        [Parameter(Mandatory = $true)][string]$HelperPath
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Path,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if (@($parseErrors).Count -ne 0) {
+        throw "interaction-closure enforcer source does not parse: $Path"
+    }
+    $lifted = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @('Find-AsciiByteSequence', $EnforcerName)) {
+        $definitions = @($ast.FindAll(
+            {
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+            },
+            $true
+        ) | Where-Object { [string]$_.Name -ceq $name })
+        if ($definitions.Count -ne 1) {
+            throw "interaction-closure enforcer does not define exactly one $name`: $Path"
+        }
+        $lifted.Add("function $name $($definitions[0].Body.Extent.Text)")
+    }
+    $moduleText = @(
+        ". '$HelperPath'"
+        $lifted
+        @'
+function Invoke-InteractionEnforcer {
+    param(
+        [byte[]]$Bytes,
+        [string[]]$RequiredMarkers,
+        [string[]]$PermittedSelfUiCapabilities,
+        [string[]]$PermittedSelfWorkerCapabilities
+    )
+    return ENFORCER_NAME `
+        -Bytes $Bytes `
+        -Name 'enforcer probe' `
+        -RequiredMarkers $RequiredMarkers `
+        -ExpectedPinnedHookCount ([uint16]1) `
+        -PinnedHookContractSourceSha256 ('0' * 64) `
+        -PermittedSelfUiCapabilities $PermittedSelfUiCapabilities `
+        -PermittedSelfWorkerCapabilities $PermittedSelfWorkerCapabilities
+}
+'@.Replace('ENFORCER_NAME', $EnforcerName)
+    ) -join [Environment]::NewLine
+    return (New-Module -ScriptBlock ([scriptblock]::Create($moduleText)) -AsCustomObject)
+}
+
+function New-InteractionEnforcerBytes {
+    param([string[]]$Texts)
+
+    $encoded = [System.Collections.Generic.List[byte]]::new()
+    foreach ($text in $Texts) {
+        $encoded.AddRange([Text.Encoding]::ASCII.GetBytes($text))
+        $encoded.Add(0)
+    }
+    return ,$encoded.ToArray()
+}
+
+$enforcerProbes = [ordered]@{
+    builder = New-InteractionEnforcerProbe `
+        -Path $packagePath `
+        -EnforcerName 'Assert-ProductionInteractionClosure' `
+        -HelperPath $interactionClosureHelperPath
+    verifier = New-InteractionEnforcerProbe `
+        -Path $packageVerifierPath `
+        -EnforcerName 'Assert-VerifiedInteractionClosure' `
+        -HelperPath $interactionClosureHelperPath
+}
+$enforcerMarkers = @(
+    'BATTLE_PLAN_OBSERVER_ONLY_RECORDER_V1',
+    'BATTLE_PLAN_NO_SEMANTIC_ENGINE_STATE_WRITES_V1'
+)
+$enforcerCleanBytes = New-InteractionEnforcerBytes -Texts $enforcerMarkers
+$enforcerReceipts = [ordered]@{}
+foreach ($probe in $enforcerProbes.GetEnumerator()) {
+    $enforcerReceipts[[string]$probe.Key] = $probe.Value.'Invoke-InteractionEnforcer'(
+        $enforcerCleanBytes,
+        $enforcerMarkers,
+        @(),
+        @()
+    )
+}
+Assert-ClosureCase 'both package enforcers admit an interaction-clean artifact' (
+    @($enforcerReceipts.Keys).Count -eq 2 -and
+    ([string]$enforcerReceipts['builder'].schema -ceq 'hoi4.interaction-closure.v1') -and
+    ($enforcerReceipts['builder'].forbidden_symbols_absent -is [bool]) -and
+    $enforcerReceipts['builder'].forbidden_symbols_absent -and
+    (($enforcerReceipts['builder'] | ConvertTo-Json -Depth 5 -Compress) -ceq
+        ($enforcerReceipts['verifier'] | ConvertTo-Json -Depth 5 -Compress))
+)
+$cases++
+
+Assert-ClosureCase 'no package enforcer publishes a lifecycle or UI control verdict' (
+    @(@($enforcerReceipts.Keys) | Where-Object {
+        @($enforcerReceipts[$_].Keys) -ccontains 'game_process_lifecycle_control' -or
+        @($enforcerReceipts[$_].Keys) -ccontains 'game_ui_control'
+    }).Count -eq 0 -and
+    -not $package.Contains('game_process_lifecycle_control') -and
+    -not $package.Contains('game_ui_control') -and
+    -not $packageVerifier.Contains('game_process_lifecycle_control') -and
+    -not $packageVerifier.Contains('game_ui_control') -and
+    -not $runner.Contains('game_process_lifecycle_control') -and
+    -not $runner.Contains('game_ui_control')
+)
+$cases++
+
+# replay_app is required to carry no linker-retained production marker, and the
+# package passes that empty roster explicitly. A Mandatory parameter rejects an
+# empty collection unless it says otherwise, so without AllowEmptyCollection
+# neither enforcer could be called for the replay role at all - which nothing
+# noticed, because every other case here hands them a non-empty roster.
+$enforcerEmptyMarkerReceipts = [ordered]@{}
+foreach ($probe in $enforcerProbes.GetEnumerator()) {
+    $enforcerEmptyMarkerReceipts[[string]$probe.Key] =
+        $probe.Value.'Invoke-InteractionEnforcer'(
+            $enforcerCleanBytes,
+            @(),
+            @(),
+            @()
+        )
+}
+Assert-ClosureCase 'both package enforcers accept the empty required-marker roster' (
+    @($enforcerEmptyMarkerReceipts.Keys).Count -eq 2 -and
+    @(@($enforcerEmptyMarkerReceipts.Keys) | Where-Object {
+        @($enforcerEmptyMarkerReceipts[$_].required_markers).Count -ne 0 -or
+        -not $enforcerEmptyMarkerReceipts[$_].forbidden_symbols_absent
+    }).Count -eq 0
+)
+$cases++
+
+# "It threw" is not the assertion. A binder error, a helper that stopped
+# existing, or any other accident would satisfy that while the forbidden-symbol
+# path itself was gone, so each rejection has to be the exact throw, naming the
+# exact symbol that was planted.
+$enforcerRejections = [ordered]@{}
+foreach ($probe in $enforcerProbes.GetEnumerator()) {
+    foreach ($forbidden in @('TerminateProcess', 'SetCursorPos', 'CREATE_SUSPENDED')) {
+        $rejection = ''
+        try {
+            [void]$probe.Value.'Invoke-InteractionEnforcer'(
+                (New-InteractionEnforcerBytes -Texts (@($enforcerMarkers) + @($forbidden))),
+                $enforcerMarkers,
+                @(),
+                @()
+            )
+        }
+        catch {
+            # The enforcer runs as a module method, so PowerShell wraps its
+            # throw in a MethodInvocationException. Unwrap to the exception the
+            # enforcer actually raised.
+            $raised = $_.Exception
+            while ($null -ne $raised.InnerException) {
+                $raised = $raised.InnerException
+            }
+            $rejection = [string]$raised.Message
+        }
+        $enforcerRejections["$($probe.Key)/$forbidden"] = $rejection
+    }
+}
+Assert-ClosureCase 'both package enforcers still throw on a forbidden symbol' (
+    @($enforcerRejections.Keys).Count -eq 6 -and
+    @(@($enforcerRejections.Keys) | Where-Object {
+        [string]$enforcerRejections[$_] -cne (
+            'enforcer probe contains forbidden client-driving or ' +
+            "semantic-state-write symbol $(($_ -split '/')[1])"
+        )
+    }).Count -eq 0
+)
+$cases++
+
+$enforcerPermittedReceipts = [ordered]@{}
+foreach ($probe in $enforcerProbes.GetEnumerator()) {
+    $enforcerPermittedReceipts[[string]$probe.Key] =
+        $probe.Value.'Invoke-InteractionEnforcer'(
+            (New-InteractionEnforcerBytes -Texts (
+                @($enforcerMarkers) + @('SendMessageW', 'CreateProcessW')
+            )),
+            $enforcerMarkers,
+            @('SendMessageW'),
+            @('CreateProcessW')
+        )
+}
+Assert-ClosureCase 'a permitted role capability is admitted by both enforcers and named once' (
+    @($enforcerPermittedReceipts.Keys).Count -eq 2 -and
+    @(@($enforcerPermittedReceipts.Keys) | Where-Object {
+        (@($enforcerPermittedReceipts[$_].permitted_self_ui_capabilities) -join '|') -cne
+            'SendMessageW' -or
+        (@($enforcerPermittedReceipts[$_].permitted_self_worker_capabilities) -join '|') -cne
+            'CreateProcessW' -or
+        @($enforcerPermittedReceipts[$_].forbidden_target_client_capabilities) -ccontains
+            'SendMessageW' -or
+        @($enforcerPermittedReceipts[$_].forbidden_target_client_capabilities) -ccontains
+            'CreateProcessW'
+    }).Count -eq 0
 )
 $cases++
 
@@ -492,10 +752,16 @@ Assert-ClosureCase 'evidence client-driving is isolated from canonical package n
 )
 $cases++
 
+# 'zero client mutation' was cited here but appears nowhere in the document, and
+# never did - it was a paraphrase, not a quotation, so this conjunct could not
+# pass. The document states the boundary as two separate guarantees; quote both
+# of them, and the surrounding hook-restoration duty, so a rewrite that drops
+# either half is caught instead of being paraphrased over.
 Assert-ClosureCase 'isolation document binds injected observation and minimal hooks' (
     $isolation.Contains('Injected collection is allowed') -and
     $isolation.Contains('evidence-backed') -and
-    $isolation.Contains('zero client mutation')
+    $isolation.Contains('zero semantic game-state mutation and zero client control') -and
+    $isolation.Contains('was restored to its baseline')
 )
 $cases++
 

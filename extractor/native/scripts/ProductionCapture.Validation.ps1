@@ -566,7 +566,15 @@ function Test-ProductionCaptureArtifacts {
             ) {
                 Add-CaptureProblem $problems "capture_plan_domain_roster_authority_binding_invalid"
             } else {
-                try { $authorityRoster = @(Get-Content -LiteralPath $authorityPath -Raw | ConvertFrom-Json) }
+                # The parse has to land in a variable before it is wrapped:
+                # ConvertFrom-Json emits a top-level JSON array as one
+                # un-enumerated object, so @(<pipeline>) counted 1 row for any
+                # roster and the count comparison below could never agree with
+                # the multi-row $expectedRoster.
+                try {
+                    $authorityDocument = Get-Content -LiteralPath $authorityPath -Raw | ConvertFrom-Json
+                    $authorityRoster = @($authorityDocument)
+                }
                 catch { $authorityRoster = @(); Add-CaptureProblem $problems "domain_roster_authority_not_json" }
                 if (
                     $authorityRoster.Count -ne $expectedRoster.Count -or

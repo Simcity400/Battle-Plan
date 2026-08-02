@@ -128,7 +128,13 @@ function Assert-VerifiedInteractionClosure {
     param(
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string[]]$RequiredMarkers,
+        # replay_app is required to carry no linker-retained production marker,
+        # and that empty roster is passed explicitly rather than omitted, so it
+        # has to be bindable. Mandatory alone rejects an empty collection, which
+        # made this enforcer unable to run on the replay role at all.
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$RequiredMarkers,
         [Parameter(Mandatory = $true)][uint16]$ExpectedPinnedHookCount,
         [Parameter(Mandatory = $true)][string]$PinnedHookContractSourceSha256,
         [string[]]$PermittedSelfUiCapabilities = @(),
@@ -177,18 +183,13 @@ function Assert-VerifiedInteractionClosure {
             Find-AsciiByteSequence -Bytes $Bytes -Text $_
         }
     )
-    $foundProcessLifecycleSymbols = @(
-        @(Get-ForbiddenProductionProcessLifecycleSymbols) | Where-Object {
-            $permittedRoleCapabilities -cnotcontains $_ -and
-            (Find-AsciiByteSequence -Bytes $Bytes -Text $_)
-        }
-    )
-    $foundGameUiSymbols = @(
-        @(Get-ForbiddenProductionGameUiSymbols) | Where-Object {
-            $permittedRoleCapabilities -cnotcontains $_ -and
-            (Find-AsciiByteSequence -Bytes $Bytes -Text $_)
-        }
-    )
+    # There is deliberately no separate lifecycle/UI verdict here. The lifecycle
+    # and UI rosters are both subsets of the interaction-marker roster above, and
+    # a permitted role capability is removed from $forbiddenSymbols by the same
+    # $permittedRoleCapabilities filter, so any byte sequence that would set such
+    # a verdict is already in $foundForbiddenSymbols and throws below. A field
+    # reporting it could only ever be false on the returned receipt, which reads
+    # as "this was checked and came back clean" when nothing was left to check.
     $foundSemanticWriteMarkers = @(
         @(
             '--hour-latch',
@@ -210,8 +211,6 @@ function Assert-VerifiedInteractionClosure {
     }
     $forbiddenSymbolsAbsent = ($foundForbiddenSymbols.Count -eq 0)
     $semanticEngineStateWrites = ($foundSemanticWriteMarkers.Count -ne 0)
-    $gameProcessLifecycleControl = ($foundProcessLifecycleSymbols.Count -ne 0)
-    $gameUiControl = ($foundGameUiSymbols.Count -ne 0)
     return [ordered]@{
         schema = 'hoi4.interaction-closure.v1'
         policy = 'passive_injected_observer'
@@ -227,8 +226,6 @@ function Assert-VerifiedInteractionClosure {
         permitted_self_worker_capabilities = @($PermittedSelfWorkerCapabilities)
         permitted_injection_capabilities = @($PermittedInjectionCapabilities)
         semantic_engine_state_writes = $semanticEngineStateWrites
-        game_process_lifecycle_control = $gameProcessLifecycleControl
-        game_ui_control = $gameUiControl
     }
 }
 

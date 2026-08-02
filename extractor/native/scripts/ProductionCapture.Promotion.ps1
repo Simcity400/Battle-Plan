@@ -15,6 +15,16 @@ function Get-ProductionPromotionProperty {
         [Parameter(Mandatory = $true)][string]$Name
     )
     if ($null -eq $Object) { return $null }
+    # The authorities this reads are a mix. Evidence parsed from JSON arrives as
+    # PSCustomObject, but the artifact attestation is built in process and hands
+    # over ordered dictionaries. PSObject.Properties does not see dictionary
+    # keys, so a dictionary member read through here came back $null and every
+    # comparison against it failed - which is how the attested collector
+    # identity check below rejected an artifact whose hash matched exactly.
+    if ($Object -is [System.Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { return $null }
+        return $Object[$Name]
+    }
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) { return $null }
     return $property.Value
@@ -301,7 +311,15 @@ function Get-ProductionCapturePromotionEvidence {
         -Path $authorityPath `
         -Expected ([string](Get-ProductionPromotionProperty $plan 'domain_roster_authority_sha256')) `
         -Name 'domain_roster_authority'
-    $authority = @(Read-ProductionPromotionJson -Path $authorityPath)
+    # The roster document has to land in a variable before it is wrapped.
+    # ConvertFrom-Json emits a top-level JSON array as a single un-enumerated
+    # object, and that survives the function's return, so @(<call>) counts one
+    # item no matter how many rows the file has - while $expectedDomains, built
+    # through a Where-Object pipeline, counts them all. The two could never be
+    # equal for a roster with more than one row, so this gate rejected every
+    # well-formed authority it was ever given.
+    $authorityDocument = Read-ProductionPromotionJson -Path $authorityPath
+    $authority = @($authorityDocument)
     if ($authority.Count -ne $expectedDomains.Count) {
         throw 'capture domain-roster authority has a noncanonical row count'
     }
@@ -726,12 +744,18 @@ function Get-ProductionCapturePromotionEvidence {
     $artifactHashes = [ordered]@{}
     foreach ($currentRow in $currentRows) {
         $role = [string](Get-ProductionPromotionProperty $currentRow 'role')
-        $matches = @($retainedRows | Where-Object { [string]$_.role -ceq $role })
+        # Not $matches. That name is PowerShell's automatic match-group
+        # variable, and the -cnotmatch two lines down overwrites it with the
+        # groups of its own successful match before the reads below run - so
+        # $matches[0] was the hash string rather than the retained row, its
+        # 'sha256' read came back $null, and this gate rejected every roster it
+        # was ever given, including two byte-identical attestations.
+        $retainedMatches = @($retainedRows | Where-Object { [string]$_.role -ceq $role })
         $hash = [string](Get-ProductionPromotionProperty $currentRow 'sha256')
         if ([string]::IsNullOrWhiteSpace($role) -or
             $hash -cnotmatch '^[0-9a-f]{64}$' -or
-            $matches.Count -ne 1 -or
-            [string](Get-ProductionPromotionProperty $matches[0] 'sha256') -cne $hash) {
+            $retainedMatches.Count -ne 1 -or
+            [string](Get-ProductionPromotionProperty $retainedMatches[0] 'sha256') -cne $hash) {
             throw "capture artifact bytes differ from the current Release: $role"
         }
         $artifactHashes[$role] = $hash

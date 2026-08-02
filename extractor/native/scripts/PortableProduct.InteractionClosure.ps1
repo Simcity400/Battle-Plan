@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 function Get-ProductionInteractionRelativePath {
     param(
@@ -76,6 +76,49 @@ function Get-ForbiddenProductionProcessLifecycleSymbols {
         'NtSuspendThread',
         'NtResumeThread',
         'NtTerminateThread',
+        # Thread-handle acquisition and the consumers a handle reaches. Both
+        # halves were incomplete: OpenThread was listed while NtOpenThread and
+        # ZwOpenThread, which do the same thing through ntdll, were not, so the
+        # ban on obtaining another thread's handle was never actually in force
+        # anywhere in the tree. Three review rounds each found more of this
+        # surface - NtSetContextThread, then CancelSynchronousIo and
+        # SetThreadInformation, then the Nt/Zw OpenThread pair and the
+        # scheduling setters. Each round's findings are named here.
+        #
+        # Treat this as a census that has grown three times and can grow again,
+        # never as a proof that the thread-control surface is closed. Nothing in
+        # this lane establishes that, and no comment here should be read as
+        # claiming it. What IS established is narrower and is enforced below:
+        # four exact files, named by the suspending-code-mutation baseline's own
+        # evidence, receive exactly the suspension symbols that evidence records
+        # for that file - SuspendThread and ResumeThread today - plus the handle
+        # entry point those symbols need, three in total.
+        'ZwSuspendThread',
+        'ZwResumeThread',
+        'ZwTerminateThread',
+        'NtSetContextThread',
+        'ZwSetContextThread',
+        'NtAlertThread',
+        'ZwAlertThread',
+        'NtAlertResumeThread',
+        'ZwAlertResumeThread',
+        'NtSetInformationThread',
+        'ZwSetInformationThread',
+        'NtImpersonateThread',
+        'ZwImpersonateThread',
+        'QueueUserAPC2',
+        'ZwQueueApcThreadEx',
+        'NtQueueApcThreadEx2',
+        'ZwQueueApcThreadEx2',
+        'SetThreadToken',
+        'SetThreadInformation',
+        'CancelSynchronousIo',
+        'NtOpenThread',
+        'ZwOpenThread',
+        'SetThreadPriority',
+        'SetThreadPriorityBoost',
+        'SetThreadAffinityMask',
+        'SetThreadIdealProcessor',
         'PostMessageA',
         'PostMessageW',
         'PostThreadMessageA',
@@ -453,12 +496,19 @@ function Assert-CollectorProductionDependencyFeatureClosure {
     $dependencyRecords = [ordered]@{}
     foreach ($assignment in @(Get-TomlLogicalAssignments -Toml $CollectorCargo)) {
         $section = [string]$assignment.Section
-        $sectionParts = if ([string]::IsNullOrWhiteSpace($section)) {
-            @()
-        }
-        else {
-            @(Split-TomlDottedKey -Text $section)
-        }
+        # The @() has to be outside the if. PowerShell unwraps a single-element
+        # result out of an if-expression, so a plain [dependencies] section
+        # arrived here as a bare string and the .Count below threw under
+        # Set-StrictMode instead of reading 1 - which is every ordinary Cargo
+        # manifest, so this closure could not be run at all.
+        $sectionParts = @(
+            if ([string]::IsNullOrWhiteSpace($section)) {
+                @()
+            }
+            else {
+                Split-TomlDottedKey -Text $section
+            }
+        )
         $keyParts = @(Split-TomlDottedKey -Text ([string]$assignment.Key))
         $dependencyName = $null
         $dependencyField = $null
@@ -530,13 +580,15 @@ function Assert-CollectorProductionDependencyFeatureClosure {
     }
     $workspaceDependencyRecords = [ordered]@{}
     foreach ($assignment in @(Get-TomlLogicalAssignments -Toml $WorkspaceCargo)) {
-        $sectionParts = if ([string]::IsNullOrWhiteSpace([string]$assignment.Section)) {
-            @()
-        }
-        else {
-            @(Split-TomlDottedKey -Text ([string]$assignment.Section)
-            )
-        }
+        # Same unwrapping hazard as above: the @() belongs outside the if.
+        $sectionParts = @(
+            if ([string]::IsNullOrWhiteSpace([string]$assignment.Section)) {
+                @()
+            }
+            else {
+                Split-TomlDottedKey -Text ([string]$assignment.Section)
+            }
+        )
         $keyParts = @(Split-TomlDottedKey -Text ([string]$assignment.Key))
         $dependencyName = $null
         $dependencyField = $null
@@ -993,14 +1045,19 @@ function Get-CollectorProductionLaneRoots {
             $dependencyPath = [string]$record.path
             $dependencyBase = $manifestRoot
             if ([string]::IsNullOrWhiteSpace($dependencyPath) -and $record.workspace) {
-                $matches = @($workspaceRecords | Where-Object {
+                # Not $matches: that is PowerShell's automatic match-group
+                # variable, and any -match/-notmatch evaluated between this
+                # assignment and the reads below would silently replace it.
+                # Nothing does today, which is exactly why it would not be
+                # noticed the day something did.
+                $inheritedRecords = @($workspaceRecords | Where-Object {
                     [string]$_.name -ceq [string]$record.name
                 })
-                if ($matches.Count -ne 1 -or
-                    [string]::IsNullOrWhiteSpace([string]$matches[0].path)) {
+                if ($inheritedRecords.Count -ne 1 -or
+                    [string]::IsNullOrWhiteSpace([string]$inheritedRecords[0].path)) {
                     throw "workspace production dependency lacks one exact path: $($record.name)"
                 }
-                $dependencyPath = [string]$matches[0].path
+                $dependencyPath = [string]$inheritedRecords[0].path
                 $dependencyBase = $workspaceRoot
             }
             if ([string]::IsNullOrWhiteSpace($dependencyPath)) {
@@ -1029,6 +1086,13 @@ function Get-CollectorProductionLaneRoots {
     return @($laneRoots | Sort-Object)
 }
 
+function Get-ProductionInteractionSourceExtensions {
+    # The one answer to "which files in a production root are source". A second
+    # copy of this list somewhere else is a place where the authority can start
+    # reading files that a caller believes it does not.
+    return @('.rs', '.c', '.h', '.cc', '.cpp')
+}
+
 function Get-ProductionInteractionSourceTreeAuthority {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
@@ -1038,7 +1102,7 @@ function Get-ProductionInteractionSourceTreeAuthority {
         (Join-Path $repo 'extractor\native\collector'),
         (Join-Path $repo 'replay_interface\native\replay_app')
     ) + @(Get-CollectorProductionLaneRoots -RepoRoot $repo)
-    $sourceExtensions = @('.rs', '.c', '.h', '.cc', '.cpp')
+    $sourceExtensions = @(Get-ProductionInteractionSourceExtensions)
     $files = @(
         foreach ($root in $roots) {
             if (-not (Test-Path -LiteralPath $root -PathType Container)) {
@@ -1892,7 +1956,7 @@ function Get-ProductionCrateSourceCapabilityScan {
         [Parameter(Mandatory = $true)][string[]]$CodeMutationEntryPoints
     )
 
-    $sourceExtensions = @('.rs', '.c', '.h', '.cc', '.cpp')
+    $sourceExtensions = @(Get-ProductionInteractionSourceExtensions)
     $excludedTopLevel = @('tests', 'benches', 'examples', 'fuzz', 'target')
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     $suspension = New-ProductionCapabilityAccumulator
@@ -2005,12 +2069,23 @@ function Get-CargoRegistryCrateRoot {
     return [string]$candidates[0]
 }
 
-function Get-ProductionDependencyCodeMutationClassification {
+function Get-ProductionUnitDependencyClosure {
+    # The one traversal that answers "what does a production unit reach through
+    # its manifest": for every production unit, the manifest that declares its
+    # dependencies, the Cargo.lock that owns it, the workspace manifest that
+    # inherited dependencies resolve against, and the resolved root of every
+    # dependency it declares - path dependencies inside the repository and
+    # registry crates in the cargo source cache alike.
+    #
+    # It is a closure, not a scan: it says which roots the authority will read,
+    # and callers decide what to do with them. Get-ProductionDependencyCode-
+    # MutationClassification scans them for capabilities; the package self-test
+    # materialises them into its fixture. Both walk the same edges because they
+    # call this, so a fixture can no longer be built from a stale hand-written
+    # list of the paths someone believed the authority followed.
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
     $repo = [IO.Path]::GetFullPath($RepoRoot)
-    $suspensionEntryPoints = @(Get-ProductionThreadSuspensionEntryPoints)
-    $codeMutationEntryPoints = @(Get-ProductionCodeMutationEntryPoints)
     $unitRoots = @(Get-ProductionInteractionSourceRoots -RepoRoot $repo)
     $unitRootSet = [System.Collections.Generic.HashSet[string]]::new(
         [StringComparer]::OrdinalIgnoreCase
@@ -2018,8 +2093,7 @@ function Get-ProductionDependencyCodeMutationClassification {
     foreach ($unitRoot in $unitRoots) {
         [void]$unitRootSet.Add([IO.Path]::GetFullPath($unitRoot).TrimEnd('\'))
     }
-    $edges = [System.Collections.Generic.List[object]]::new()
-    $scans = [ordered]@{}
+    $units = [System.Collections.Generic.List[object]]::new()
     foreach ($unitRoot in $unitRoots) {
         $unitFull = [IO.Path]::GetFullPath($unitRoot).TrimEnd('\')
         $manifestPath = Join-Path $unitFull 'Cargo.toml'
@@ -2048,6 +2122,7 @@ function Get-ProductionDependencyCodeMutationClassification {
                 ) | Where-Object { [string]$_.scope -ceq 'workspace.dependencies' }
             }
         )
+        $dependencies = [System.Collections.Generic.List[object]]::new()
         foreach ($record in @(Get-TomlProductionDependencyRecords -Toml (
                     Get-Content -LiteralPath $manifestPath -Raw
                 ))) {
@@ -2075,7 +2150,8 @@ function Get-ProductionDependencyCodeMutationClassification {
                     }
                 }
             }
-            $dependencyRoot = if (-not [string]::IsNullOrWhiteSpace($dependencyPath)) {
+            $isPathDependency = (-not [string]::IsNullOrWhiteSpace($dependencyPath))
+            $dependencyRoot = if ($isPathDependency) {
                 [IO.Path]::GetFullPath((Join-Path $dependencyBase $dependencyPath)).TrimEnd('\')
             }
             else {
@@ -2083,10 +2159,44 @@ function Get-ProductionDependencyCodeMutationClassification {
                     -Package $package `
                     -Version (Get-CargoLockPackageVersion -LockPath $lockPath -Package $package)
             }
-            if ($unitRootSet.Contains($dependencyRoot)) {
-                # A production unit is scanned in its own right below.
+            $dependencies.Add([ordered]@{
+                name = $dependencyName
+                package = $package
+                root = $dependencyRoot
+                path_dependency = $isPathDependency
+                # A production unit is a scan subject in its own right, so an
+                # edge onto one is an edge between units, not onto a dependency.
+                production_unit = $unitRootSet.Contains($dependencyRoot)
+            })
+        }
+        $units.Add([ordered]@{
+            unit = Get-ProductionInteractionRelativePath -Root $repo -Path $unitFull
+            unit_root = $unitFull
+            manifest = Get-ProductionInteractionRelativePath -Root $repo -Path $manifestPath
+            manifest_path = $manifestPath
+            lock_path = $lockPath
+            workspace_root = $workspaceRoot
+            workspace_cargo_path = $workspaceCargoPath
+            dependencies = @($dependencies)
+        })
+    }
+    return @($units)
+}
+
+function Get-ProductionDependencyCodeMutationClassification {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $repo = [IO.Path]::GetFullPath($RepoRoot)
+    $suspensionEntryPoints = @(Get-ProductionThreadSuspensionEntryPoints)
+    $codeMutationEntryPoints = @(Get-ProductionCodeMutationEntryPoints)
+    $edges = [System.Collections.Generic.List[object]]::new()
+    $scans = [ordered]@{}
+    foreach ($unit in @(Get-ProductionUnitDependencyClosure -RepoRoot $repo)) {
+        foreach ($dependency in @($unit.dependencies)) {
+            if ($dependency.production_unit) {
                 continue
             }
+            $dependencyRoot = [string]$dependency.root
             if (-not $scans.Contains($dependencyRoot)) {
                 $scans[$dependencyRoot] = Get-ProductionCrateSourceCapabilityScan `
                     -Root $dependencyRoot `
@@ -2094,11 +2204,11 @@ function Get-ProductionDependencyCodeMutationClassification {
                     -CodeMutationEntryPoints $codeMutationEntryPoints
             }
             $edges.Add([ordered]@{
-                unit = Get-ProductionInteractionRelativePath -Root $repo -Path $unitFull
-                unit_root = $unitFull
-                manifest = Get-ProductionInteractionRelativePath -Root $repo -Path $manifestPath
-                dependency = $dependencyName
-                package = $package
+                unit = [string]$unit.unit
+                unit_root = [string]$unit.unit_root
+                manifest = [string]$unit.manifest
+                dependency = [string]$dependency.name
+                package = [string]$dependency.package
                 dependency_root = $dependencyRoot
             })
         }
@@ -2722,6 +2832,236 @@ function Compare-ProductionSuspendingCodeMutationBaseline {
     return @($differences)
 }
 
+function Get-ProductionThreadFreezeHandleEntryPoints {
+    # SuspendThread and ResumeThread take a thread HANDLE, and the accepted
+    # files acquire theirs with OpenThread. This is NOT a claim that OpenThread
+    # is the only way to get one - NtOpenThread and ZwOpenThread reach the same
+    # object through ntdll, which is why they are on the roster. It is only the
+    # acquisition step those files actually use, and on its own it can neither
+    # stop a thread nor change a byte. It is named here rather than read out of the accepted baseline
+    # because that baseline keys on the entry points that actually suspend or
+    # mutate code, so OpenThread never appears in its evidence - the WHICH-units
+    # question is still answered only by the baseline, and this list only says
+    # which symbol the already-accepted freeze needs to reach one.
+    return @('OpenThread')
+}
+
+function Assert-ProductionThreadFreezeHandleScope {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Code,
+        [Parameter(Mandatory = $true)][string]$Symbol
+    )
+
+    # This used to also read the access rights the handle was opened with and
+    # reject anything outside THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT. That
+    # check is gone, for two reasons, and its absence is not a gap.
+    #
+    # It could not be made sound. Deciding which declaration a Rust identifier
+    # binds to needs the compiler's own name resolution, and every text
+    # approximation of it was evaded in review: a shadowing item with a
+    # parenthesised type, a `use ... as`, a `static mut` assigned after its
+    # initialiser, a macro that expands to a `const`, and finally a block-local
+    # glob import that shadows the constant without the file ever spelling the
+    # name. A gate that reports a mask the compiler does not use is worse than
+    # no mask check, because it reads as a guarantee.
+    #
+    # Nor is the roster a substitute for it. Successive versions of this comment
+    # claimed a wide handle could reach nothing else, because every other
+    # thread-handle consumer was forbidden. That was checked three times and was
+    # wrong three times. Those omissions are now named in the roster, but the
+    # claim itself was the mistake: whether the thread-control surface is closed
+    # is not something this lane establishes, and it is deliberately no longer
+    # asserted anywhere.
+    #
+    # The property this exception actually rests on is narrower, and it is the
+    # only one stated: these four exact files - named by the suspending-code
+    # mutation baseline's own evidence, not by any list written here - receive
+    # exactly the suspension symbols that evidence records, plus the handle
+    # those symbols need. No other unit, file or symbol is admitted, and every
+    # other file in the tree is unaffected by the exception.
+    #
+    # What remains is a rule that can be decided from the text and says
+    # something real: in an exempt file the handle entry point may only be
+    # declared and called directly. A bare reference hands the entry point to
+    # something else, and where it then goes is outside anything this reads.
+    $cFamily = @('.c', '.h', '.cc', '.cpp') -contains
+        [IO.Path]::GetExtension($RelativePath)
+    $namePattern = "(?<![A-Za-z0-9_])$([regex]::Escape($Symbol))(?![A-Za-z0-9_])"
+    $calls = 0
+    foreach ($match in [regex]::Matches($Code, $namePattern)) {
+        # Declaring the extern ABI is not exercising it - the same distinction
+        # the capability scanner already draws.
+        if (Test-ProductionCapabilityDeclaration `
+                -Code $Code `
+                -NameIndex $match.Index `
+                -AfterNameIndex ($match.Index + $match.Length) `
+                -CFamily:$cFamily) {
+            continue
+        }
+        $cursor = $match.Index + $match.Length
+        while ($cursor -lt $Code.Length -and [char]::IsWhiteSpace($Code[$cursor])) {
+            $cursor++
+        }
+        if ($cursor -ge $Code.Length -or $Code[$cursor] -ne '(') {
+            throw (
+                "thread-freeze handle symbol '$Symbol' is referenced without a " +
+                "direct call in $RelativePath"
+            )
+        }
+        $calls++
+    }
+    if ($calls -eq 0) {
+        # The declaration alone is not the exception's justification. If the
+        # exempt file no longer calls it, the symbol has no business being
+        # named there and the exemption should have shrunk with the baseline.
+        throw "thread-freeze handle symbol '$Symbol' is named but never called in $RelativePath"
+    }
+}
+
+function Get-ProductionThreadFreezeExemptions {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)]$Baseline
+    )
+
+    # The exempt set is READ OUT of the accepted suspending-code-mutation
+    # baseline and is never written down a second time here. That is the whole
+    # design: a hand-copied list of "the lanes that freeze threads" is exactly
+    # the drift that let the roster ban and the accepted inventory contradict
+    # each other, and it would go stale again the moment a unit is added to or
+    # removed from the pin. A unit the pin has not accepted gets nothing.
+    $repo = [IO.Path]::GetFullPath($RepoRoot)
+    $suspensionEntryPoints = @(Get-ProductionThreadSuspensionEntryPoints)
+    $mutationEntryPoints = @(Get-ProductionCodeMutationEntryPoints)
+    $handleEntryPoints = @(Get-ProductionThreadFreezeHandleEntryPoints)
+    $forbidden = @(Get-ForbiddenProductionClientCapabilitySymbols)
+
+    $exemptions = [System.Collections.Specialized.OrderedDictionary]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($unit in @($Baseline.units)) {
+        # Only a unit the pin says PERFORMS the mutation itself. A unit that
+        # merely delegates to an external patcher never writes these names, so
+        # admitting it would widen the exception past its evidence.
+        if (-not [bool]$unit.performs_suspending_code_mutation) {
+            continue
+        }
+        $unitPath = ([string]$unit.unit).Replace('\', '/').TrimEnd('/')
+        $unitFiles = [System.Collections.Specialized.OrderedDictionary]::new(
+            [StringComparer]::Ordinal
+        )
+        foreach ($entry in @($unit.direct_evidence)) {
+            if (([string]$entry.kind) -cne 'direct_call') {
+                continue
+            }
+            $file = ([string]$entry.file).Replace('\', '/')
+            if (-not $unitFiles.Contains($file)) {
+                $unitFiles[$file] = [System.Collections.Generic.List[string]]::new()
+            }
+            $unitFiles[$file].Add([string]$entry.capability)
+        }
+        foreach ($file in @($unitFiles.Keys)) {
+            $capabilities = @($unitFiles[$file])
+            # Both halves have to be present in the SAME file: the exception
+            # exists because a patcher must stop the threads it is about to
+            # rewrite bytes under. A file that only suspends is not that.
+            $suspends = @($capabilities | Where-Object {
+                $suspensionEntryPoints -ccontains $_
+            })
+            $mutates = @($capabilities | Where-Object {
+                $mutationEntryPoints -ccontains $_
+            })
+            if ($suspends.Count -eq 0 -or $mutates.Count -eq 0) {
+                continue
+            }
+            if (-not ([string]$file).StartsWith(
+                $unitPath + '/',
+                [StringComparison]::Ordinal
+            )) {
+                throw (
+                    'accepted suspending code mutation evidence names a file ' +
+                    "outside its own unit: $file (unit $unitPath)"
+                )
+            }
+            $symbols = @(
+                @(@($suspends) + @($handleEntryPoints)) |
+                    Where-Object { $forbidden -ccontains $_ } |
+                    Select-Object -Unique
+            )
+            if ($symbols.Count -eq 0) {
+                continue
+            }
+            $full = [IO.Path]::GetFullPath(
+                (Join-Path $repo ($file -replace '/', '\'))
+            )
+            # Re-deriving the relative path throws if the join escaped the
+            # repository, and comparing it back catches a pin that reaches the
+            # same file through a traversal segment.
+            $roundTrip = Get-ProductionInteractionRelativePath -Root $repo -Path $full
+            if ($roundTrip -cne $file) {
+                throw (
+                    'accepted suspending code mutation evidence names a ' +
+                    "non-canonical file path: $file"
+                )
+            }
+            $exemptions[$full] = @($symbols)
+        }
+    }
+    return $exemptions
+}
+
+function Get-ProductionInteractionForbiddenSymbolsForPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$FreezeExemptions
+    )
+
+    $repo = [IO.Path]::GetFullPath($RepoRoot)
+    $forbidden = @(Get-ForbiddenProductionClientCapabilitySymbols)
+    $full = [IO.Path]::GetFullPath($Path)
+    $selfUiPath = [IO.Path]::GetFullPath(
+        (Join-Path $repo 'extractor\native\recorder_host\src\auto_attach\product_runtime.rs')
+    )
+    $replayWorkerPath = [IO.Path]::GetFullPath(
+        (Join-Path $repo 'replay_interface\native\replay_app\src\recording_open.rs')
+    )
+    $replayUiPath = [IO.Path]::GetFullPath(
+        (Join-Path $repo 'replay_interface\native\replay_app\src\win32.rs')
+    )
+    $roleExceptions = if ($full -ieq $selfUiPath) {
+        @(
+            'SendMessageW',
+            'ShellExecuteW',
+            'EnableWindow',
+            'SetWindowTextW',
+            'ShowWindow',
+            'DestroyWindow'
+        )
+    }
+    elseif ($full -ieq $replayWorkerPath) {
+        @(
+            'CreateJobObjectW',
+            'AssignProcessToJobObject',
+            'SetInformationJobObject'
+        )
+    }
+    elseif ($full -ieq $replayUiPath) {
+        @('SetWindowTextW', 'DestroyWindow')
+    }
+    else {
+        @()
+    }
+    $freezeExceptions = @(
+        if ($null -ne $FreezeExemptions -and $FreezeExemptions.Contains($full)) {
+            $FreezeExemptions[$full]
+        }
+    )
+    $permitted = @(@($roleExceptions) + @($freezeExceptions))
+    return @($forbidden | Where-Object { $permitted -cnotcontains $_ })
+}
+
 function Assert-ProductionInteractionSourceTreeClosure {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -2729,7 +3069,6 @@ function Assert-ProductionInteractionSourceTreeClosure {
     )
 
     $repo = [IO.Path]::GetFullPath($RepoRoot)
-    $forbidden = @(Get-ForbiddenProductionClientCapabilitySymbols)
     $recorderMainPath = Join-Path $repo 'extractor\native\recorder_host\src\main.rs'
     $earlyRenderEvidencePath =
         Join-Path $repo 'extractor\native\recorder_host\src\early_render_launch.rs'
@@ -2790,6 +3129,21 @@ function Assert-ProductionInteractionSourceTreeClosure {
         throw ($report -join [Environment]::NewLine)
     }
 
+    # The client-capability roster below bans thread suspension outright, which
+    # is correct for driving somebody else's game and wrong for the four units
+    # the pin above has already accepted: those install inline detours, and
+    # freezing the target's other threads is how a read-only observer avoids
+    # rewriting an instruction a thread is standing on. Without an exception the
+    # two authorities in this file contradict each other and the portable
+    # package cannot be built from the repository at all. The exempt set is
+    # taken from the pin that was just read - not written down again here - so a
+    # unit the pin does not accept is still rejected, and the exception shrinks
+    # to nothing on its own when those direct calls move elsewhere.
+    $freezeExemptions = Get-ProductionThreadFreezeExemptions `
+        -RepoRoot $repo `
+        -Baseline $pinnedBaseline
+    $handleEntryPoints = @(Get-ProductionThreadFreezeHandleEntryPoints)
+
     foreach ($path in @($Authority.files)) {
         $source = Get-Content -LiteralPath $path -Raw
         if ([IO.Path]::GetFullPath($path) -ieq
@@ -2808,41 +3162,26 @@ function Assert-ProductionInteractionSourceTreeClosure {
             $source = $source.Remove($actuatorStart, $observerStart - $actuatorStart)
         }
         $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
-        $pathForbidden = if ([IO.Path]::GetFullPath($path) -ieq
-            [IO.Path]::GetFullPath($selfUiPath)) {
-            @($forbidden | Where-Object {
-                $_ -cnotin @(
-                    'SendMessageW',
-                    'ShellExecuteW',
-                    'EnableWindow',
-                    'SetWindowTextW',
-                    'ShowWindow',
-                    'DestroyWindow'
-                )
-            })
-        }
-        elseif ([IO.Path]::GetFullPath($path) -ieq
-            [IO.Path]::GetFullPath($replayWorkerPath)) {
-            @($forbidden | Where-Object {
-                $_ -cnotin @(
-                    'CreateJobObjectW',
-                    'AssignProcessToJobObject',
-                    'SetInformationJobObject'
-                )
-            })
-        }
-        elseif ([IO.Path]::GetFullPath($path) -ieq
-            [IO.Path]::GetFullPath($replayUiPath)) {
-            @($forbidden | Where-Object {
-                $_ -cnotin @('SetWindowTextW', 'DestroyWindow')
-            })
-        }
-        else {
-            @($forbidden)
-        }
+        $pathForbidden = @(Get-ProductionInteractionForbiddenSymbolsForPath `
+            -RepoRoot $repo `
+            -Path $path `
+            -FreezeExemptions $freezeExemptions)
         foreach ($symbol in $pathForbidden) {
             if ($code -cmatch "(?<![A-Za-z0-9_])$([regex]::Escape($symbol))(?![A-Za-z0-9_])") {
                 throw "production source contains forbidden client capability '$symbol': $path"
+            }
+        }
+        $fullPath = [IO.Path]::GetFullPath($path)
+        if ($freezeExemptions.Contains($fullPath)) {
+            $relative = Get-ProductionInteractionRelativePath -Root $repo -Path $fullPath
+            foreach ($symbol in @($freezeExemptions[$fullPath])) {
+                if ($handleEntryPoints -cnotcontains $symbol) {
+                    continue
+                }
+                Assert-ProductionThreadFreezeHandleScope `
+                    -RelativePath $relative `
+                    -Code $code `
+                    -Symbol $symbol
             }
         }
     }

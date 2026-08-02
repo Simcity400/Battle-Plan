@@ -353,9 +353,14 @@ if ($null -ne $preparedModsetReceipt) {
         throw "prepared product-modset binding corpus is malformed"
     }
     foreach($entry in $bindingCorpusFiles.GetEnumerator()) {
-        $matches=@($corpusRows | Where-Object { [string]$_.name -ceq [string]$entry.Key })
+        # Not $matches: that is PowerShell's automatic match-group variable, and
+        # the -cnotmatch in the condition below replaces it with its own match
+        # groups before the last clause reads $matches[0].sha256 - so the row
+        # became the hash string, the property read came back $null, and this
+        # check could not accept a corpus that was correct.
+        $corpusMatches=@($corpusRows | Where-Object { [string]$_.name -ceq [string]$entry.Key })
         $actualPath=[System.IO.Path]::GetFullPath([string]$entry.Value)
-        if ($matches.Count -ne 1 -or [int64]$matches[0].bytes -ne (Get-Item -LiteralPath $actualPath).Length -or [string]$matches[0].sha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$matches[0].sha256) {
+        if ($corpusMatches.Count -ne 1 -or [int64]$corpusMatches[0].bytes -ne (Get-Item -LiteralPath $actualPath).Length -or [string]$corpusMatches[0].sha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$corpusMatches[0].sha256) {
             throw "prepared product-modset binding corpus differs for $($entry.Key)"
         }
     }

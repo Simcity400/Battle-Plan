@@ -72,6 +72,17 @@ test-support = []
 # the passive exact-roster registry, cannot enable these UI/materialisation
 # detours.
 unshipped-a25-runtime-text-evidence = []
+# Compile the A39 character-presentation fixture installer only for an explicit
+# unshipped evidence artifact. character_presentation_live_lane still declares
+# a729-fixture-hook, and this collector still depends on that lane, so without
+# this gate the only thing standing between a production build and the fixture
+# hook is that nobody typed the feature name. Four authorities require the gate
+# by name - the package builder, the package receipt verifier (which also lists
+# it in the forbidden-feature roster it enforces), and the central Release
+# contract - and the manifest was the only place it had gone.
+unshipped-a39-character-presentation-evidence = [
+    "character_presentation_live_lane/a729-fixture-hook",
+]
 # Compile the A31 focus-item fixture installer only for an explicit unshipped
 # evidence artifact.
 unshipped-a31-focus-presentation-evidence = [

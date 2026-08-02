@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -84,6 +84,38 @@ function Write-Bytes {
     [IO.File]::WriteAllBytes($Path, $Bytes)
 }
 
+function Get-FixtureRelativePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not $full.StartsWith($repo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "self-test fixture input is outside the repository: $full"
+    }
+    return $full.Substring($repo.Length + 1)
+}
+
+function Copy-FixtureInput {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $Destination)) | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
+function Write-InertFixtureSource {
+    param([Parameter(Mandatory = $true)][string]$Destination)
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $Destination)) | Out-Null
+    [IO.File]::WriteAllText(
+        $Destination,
+        "// synthetic production source fixture`n",
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
 function Invoke-JsonScript {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -119,48 +151,305 @@ try {
     )) {
         Copy-Item -LiteralPath (Join-Path $scriptDir $name) -Destination (Join-Path $fixtureScripts $name)
     }
-    $sourceCapabilityFixtures = [ordered]@{
-        'extractor\native\recorder_host\Cargo.toml' = 'extractor\native\recorder_host\Cargo.toml'
-        'extractor\native\recorder_host\src\main.rs' = 'extractor\native\recorder_host\src\main.rs'
-        'extractor\native\recorder_host\src\early_render_launch.rs' = 'extractor\native\recorder_host\src\early_render_launch.rs'
-        'extractor\native\recorder_host\src\auto_attach.rs' = 'extractor\native\recorder_host\src\auto_attach.rs'
-        'extractor\native\recorder_host\src\auto_attach\product_runtime.rs' = 'extractor\native\recorder_host\src\auto_attach\product_runtime.rs'
-        'extractor\native\Cargo.toml' = 'extractor\native\Cargo.toml'
-        'extractor\native\collector\Cargo.toml' = 'extractor\native\collector\Cargo.toml'
-        'extractor\native\collector\src\lib.rs' = 'extractor\native\collector\src\lib.rs'
-        'extractor\native\lanes\character_presentation_live\Cargo.toml' = 'extractor\native\lanes\character_presentation_live\Cargo.toml'
-        'extractor\native\lanes\focus_research_decisions_depth_live\Cargo.toml' = 'extractor\native\lanes\focus_research_decisions_depth_live\Cargo.toml'
-        'extractor\native\compact_contract\src\passive_ready.rs' = 'extractor\native\compact_contract\src\passive_ready.rs'
-        'extractor\native\compact_contract\src\build_profile.rs' = 'extractor\native\compact_contract\src\build_profile.rs'
-        'extractor\native\compact_contract\src\control_transport\payloads.rs' = 'extractor\native\compact_contract\src\control_transport\payloads.rs'
-        'replay_interface\native\replay_app\src\lib.rs' = 'replay_interface\native\replay_app\src\lib.rs'
-        'replay_interface\native\replay_app\src\recording_open.rs' = 'replay_interface\native\replay_app\src\recording_open.rs'
-        'replay_interface\native\replay_app\src\win32.rs' = 'replay_interface\native\replay_app\src\win32.rs'
+    # Deriving the fixture from the authority's own walk means this file no
+    # longer double-checks that walk by restating it. The pin below is the
+    # compensation: a hand-written manifest graph with a hand-written expected
+    # answer, so a traversal that stops following lane-to-lane edges, resolves a
+    # workspace-inherited path against the wrong base, or starts reporting a
+    # production unit as one of its own dependencies still fails by name.
+    $pinnedGraphRoot = Join-Path $root '.pinned_manifest_graph'
+    $pinnedGraphManifests = [ordered]@{
+        'extractor\native\Cargo.toml' = @'
+[workspace]
+members = ["collector", "recorder_host", "lanes/lane_alpha", "lanes/lane_beta"]
+
+[workspace.dependencies]
+pinned_workspace_dep = { path = "pinned/workspace_dep" }
+'@
+        'extractor\native\Cargo.lock' = @'
+version = 3
+'@
+        'extractor\native\recorder_host\Cargo.toml' = @'
+[package]
+name = "recorder_host"
+'@
+        'extractor\native\collector\Cargo.toml' = @'
+[package]
+name = "collector"
+
+[dependencies]
+lane_alpha = { path = "../lanes/lane_alpha" }
+shared_alpha = { path = "../shared_alpha" }
+'@
+        'extractor\native\lanes\lane_alpha\Cargo.toml' = @'
+[package]
+name = "lane_alpha"
+
+[dependencies]
+lane_beta = { path = "../lane_beta" }
+pinned_workspace_dep = { workspace = true }
+'@
+        'extractor\native\lanes\lane_beta\Cargo.toml' = @'
+[package]
+name = "lane_beta"
+'@
+        'extractor\native\shared_alpha\Cargo.toml' = @'
+[package]
+name = "shared_alpha"
+'@
+        'extractor\native\pinned\workspace_dep\Cargo.toml' = @'
+[package]
+name = "pinned_workspace_dep"
+'@
+        'replay_interface\native\Cargo.toml' = @'
+[workspace]
+members = ["replay_app"]
+'@
+        'replay_interface\native\Cargo.lock' = @'
+version = 3
+'@
+        'replay_interface\native\replay_app\Cargo.toml' = @'
+[package]
+name = "replay_app"
+
+[dependencies]
+replay_shared = { path = "../replay_shared" }
+'@
+        'replay_interface\native\replay_shared\Cargo.toml' = @'
+[package]
+name = "replay_shared"
+'@
     }
-    foreach ($entry in $sourceCapabilityFixtures.GetEnumerator()) {
-        $destination = Join-Path $root $entry.Key
-        [IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
-        Copy-Item -LiteralPath (Join-Path $repoRoot $entry.Value) -Destination $destination
+    foreach ($pinnedManifest in $pinnedGraphManifests.GetEnumerator()) {
+        $pinnedManifestPath = Join-Path $pinnedGraphRoot $pinnedManifest.Key
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $pinnedManifestPath)) | Out-Null
+        [IO.File]::WriteAllText(
+            $pinnedManifestPath,
+            ([string]$pinnedManifest.Value + "`n"),
+            [Text.UTF8Encoding]::new($false)
+        )
     }
+    $pinnedGraphClosure = @(
+        Get-ProductionUnitDependencyClosure -RepoRoot $pinnedGraphRoot
+    )
+    $pinnedGraphUnits = @(
+        $pinnedGraphClosure | ForEach-Object { [string]$_.unit } | Sort-Object
+    )
+    Assert-Case 'pinned manifest graph resolves the exact production unit closure' (
+        ($pinnedGraphUnits -join '|') -ceq (@(
+            'extractor/native/collector',
+            'extractor/native/lanes/lane_alpha',
+            'extractor/native/lanes/lane_beta',
+            'extractor/native/recorder_host',
+            'replay_interface/native/replay_app'
+        ) -join '|')
+    )
+    $pinnedGraphDependencyRoots = @(
+        $pinnedGraphClosure |
+            ForEach-Object { @($_.dependencies) } |
+            Where-Object { -not $_.production_unit } |
+            ForEach-Object {
+                Get-FixtureRelativePath `
+                    -RepoRoot $pinnedGraphRoot `
+                    -Path ([string]$_.root)
+            } |
+            Sort-Object -Unique
+    )
+    Assert-Case 'pinned manifest graph resolves the exact dependency roots' (
+        ($pinnedGraphDependencyRoots -join '|') -ceq (@(
+            'extractor\native\pinned\workspace_dep',
+            'extractor\native\shared_alpha',
+            'replay_interface\native\replay_shared'
+        ) -join '|')
+    )
+    $pinnedGraphWorkspaceInputs = @(
+        $pinnedGraphClosure | ForEach-Object {
+            '{0}=>{1}+{2}' -f
+                [string]$_.unit,
+                (Get-FixtureRelativePath -RepoRoot $pinnedGraphRoot -Path ([string]$_.lock_path)),
+                (Get-FixtureRelativePath -RepoRoot $pinnedGraphRoot -Path ([string]$_.workspace_cargo_path))
+        } | Sort-Object
+    )
+    Assert-Case 'pinned manifest graph binds every unit to its owning lock and workspace manifest' (
+        ($pinnedGraphWorkspaceInputs -join '|') -ceq (@(
+            'extractor/native/collector=>extractor\native\Cargo.lock+extractor\native\Cargo.toml',
+            'extractor/native/lanes/lane_alpha=>extractor\native\Cargo.lock+extractor\native\Cargo.toml',
+            'extractor/native/lanes/lane_beta=>extractor\native\Cargo.lock+extractor\native\Cargo.toml',
+            'extractor/native/recorder_host=>extractor\native\Cargo.lock+extractor\native\Cargo.toml',
+            'replay_interface/native/replay_app=>replay_interface\native\Cargo.lock+replay_interface\native\Cargo.toml'
+        ) -join '|')
+    )
+
+    # This fixture used to name every file it created. The production authority
+    # does not work from a list: it walks each production unit's Cargo manifest
+    # and reads whatever those path edges reach. The two drifted, and the walk
+    # then demanded a crate the list had never heard of
+    # (extractor\native\compact_stream, pulled in by verbatim-copied lane
+    # manifests), which aborted this self-test before its first case ran.
+    #
+    # The SHAPE of the fixture is now derived from the authority's own walk -
+    # Get-ProductionUnitDependencyClosure, the function the classification
+    # itself calls - so there is one traversal and no transcription of it. The
+    # cost is that this fixture is no longer an independent check of that walk;
+    # a pinned case below feeds the same function a hand-written manifest graph
+    # with a hand-written expected answer, so a traversal regression still has a
+    # named failing case.
+    #
+    # CONTENT stays the fixture's own decision. The files listed here are the
+    # ones the authority makes content assertions about, so they are mirrored
+    # byte for byte; every other source file the walk reaches is created at its
+    # real relative path with an inert body. The fixture is a product tree that
+    # has to pass, not a copy of the repository - copying the repository's own
+    # lane sources would import their forbidden client-capability symbols and
+    # this self-test would only ever restate that the repository is what it is.
+    $verbatimFixtureSources = @(
+        'extractor\native\recorder_host\src\main.rs',
+        'extractor\native\recorder_host\src\early_render_launch.rs',
+        'extractor\native\recorder_host\src\auto_attach.rs',
+        'extractor\native\recorder_host\src\auto_attach\product_runtime.rs',
+        'extractor\native\collector\src\lib.rs',
+        'extractor\native\compact_contract\src\passive_ready.rs',
+        'extractor\native\compact_contract\src\build_profile.rs',
+        'extractor\native\compact_contract\src\control_transport\payloads.rs',
+        'replay_interface\native\replay_app\src\main.rs',
+        'replay_interface\native\replay_app\src\recording_open.rs',
+        'replay_interface\native\replay_app\src\win32.rs'
+    )
+    $repoRootFull = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+    $productionClosureUnits = @(
+        Get-ProductionUnitDependencyClosure -RepoRoot $repoRoot
+    )
     $productionLaneRoots = @(Get-CollectorProductionLaneRoots -RepoRoot $repoRoot)
-    foreach ($laneRoot in $productionLaneRoots) {
-        $laneName = Split-Path -Leaf $laneRoot
-        $fixtureLaneRoot = Join-Path $root "extractor\native\lanes\$laneName"
-        $fixtureLaneCargo = Join-Path $fixtureLaneRoot 'Cargo.toml'
-        [IO.Directory]::CreateDirectory($fixtureLaneRoot) | Out-Null
-        Copy-Item `
-            -LiteralPath (Join-Path $laneRoot 'Cargo.toml') `
-            -Destination $fixtureLaneCargo `
-            -Force
-        $fixtureLaneLib = Join-Path $fixtureLaneRoot 'src\lib.rs'
-        if (-not (Test-Path -LiteralPath $fixtureLaneLib -PathType Leaf)) {
-            [IO.Directory]::CreateDirectory((Split-Path -Parent $fixtureLaneLib)) | Out-Null
-            [IO.File]::WriteAllText(
-                $fixtureLaneLib,
-                "// synthetic production-linked lane source fixture`n",
-                [Text.UTF8Encoding]::new($false)
-            )
+    # Every production unit must have an owning Cargo.lock and the workspace
+    # manifest beside it: the capability closure walks up from the unit to the
+    # lock to find its workspace root and to resolve inherited dependency
+    # paths and locked versions. Those come out of the walk, not out of a list.
+    $fixtureManifestInputs = [System.Collections.Generic.List[string]]::new()
+    $fixtureSourceRoots = [System.Collections.Generic.List[string]]::new()
+    foreach ($closureUnit in $productionClosureUnits) {
+        foreach ($manifestInput in @(
+            [string]$closureUnit.manifest_path,
+            [string]$closureUnit.lock_path,
+            [string]$closureUnit.workspace_cargo_path
+        )) {
+            if ((Test-Path -LiteralPath $manifestInput -PathType Leaf) -and
+                -not $fixtureManifestInputs.Contains($manifestInput)) {
+                $fixtureManifestInputs.Add($manifestInput)
+            }
         }
+        $closureUnitRoot = [string]$closureUnit.unit_root
+        if (-not $fixtureSourceRoots.Contains($closureUnitRoot)) {
+            $fixtureSourceRoots.Add($closureUnitRoot)
+        }
+        foreach ($dependency in @($closureUnit.dependencies)) {
+            # A dependency that is itself a production unit is already a root
+            # here, and a registry crate is read out of the real cargo source
+            # cache by both the authority and this fixture, so neither is
+            # materialised.
+            if ($dependency.production_unit -or -not $dependency.path_dependency) {
+                continue
+            }
+            $dependencyRoot = [string]$dependency.root
+            if (-not $dependencyRoot.StartsWith(
+                    $repoRootFull + '\',
+                    [StringComparison]::OrdinalIgnoreCase
+                )) {
+                continue
+            }
+            if (-not $fixtureSourceRoots.Contains($dependencyRoot)) {
+                $fixtureSourceRoots.Add($dependencyRoot)
+            }
+            $dependencyManifest = Join-Path $dependencyRoot 'Cargo.toml'
+            if ((Test-Path -LiteralPath $dependencyManifest -PathType Leaf) -and
+                -not $fixtureManifestInputs.Contains($dependencyManifest)) {
+                $fixtureManifestInputs.Add($dependencyManifest)
+            }
+        }
+    }
+    if ($fixtureSourceRoots.Count -eq 0 -or $fixtureManifestInputs.Count -eq 0) {
+        throw 'self-test fixture derived no production roots from the source authority'
+    }
+    foreach ($manifestInput in $fixtureManifestInputs) {
+        Copy-FixtureInput `
+            -Source $manifestInput `
+            -Destination (Join-Path $root (
+                Get-FixtureRelativePath -RepoRoot $repoRoot -Path $manifestInput
+            ))
+    }
+    $fixtureSourceExtensions = @(Get-ProductionInteractionSourceExtensions)
+    $fixtureMaterialisedSources = [System.Collections.Generic.List[string]]::new()
+    foreach ($fixtureSourceRoot in $fixtureSourceRoots) {
+        foreach ($sourceFile in @(
+            Get-ChildItem -LiteralPath $fixtureSourceRoot -Recurse -Force -File
+        )) {
+            if ($fixtureSourceExtensions -notcontains $sourceFile.Extension) {
+                continue
+            }
+            $relativeSource =
+                Get-FixtureRelativePath -RepoRoot $repoRoot -Path $sourceFile.FullName
+            $destination = Join-Path $root $relativeSource
+            if ($verbatimFixtureSources -ccontains $relativeSource) {
+                Copy-FixtureInput -Source $sourceFile.FullName -Destination $destination
+            }
+            else {
+                Write-InertFixtureSource -Destination $destination
+            }
+            $fixtureMaterialisedSources.Add($relativeSource)
+        }
+    }
+    # A cited file the walk never reaches is the failure that started this: it
+    # used to surface as Copy-Item throwing on a path that does not exist, with
+    # nothing to say which authority was supposed to read it.
+    $unreachedVerbatimSources = @(
+        $verbatimFixtureSources |
+            Where-Object { $fixtureMaterialisedSources -cnotcontains $_ }
+    )
+    if ($unreachedVerbatimSources.Count -ne 0) {
+        throw (
+            'self-test fixture cites a source the production traversal never ' +
+            "reaches: $($unreachedVerbatimSources -join ', ')"
+        )
+    }
+
+    # The rejection loop far below mutates one source per role, and those four
+    # are named by hand rather than derived. A name that is not in the fixture
+    # used to surface as ReadAllText on a missing path three hours into the run,
+    # behind every case above it - which is exactly how the citation of a lib.rs
+    # in replay_app, a crate whose root is main.rs and which has never had a
+    # lib.rs in any commit, survived. They are resolved and checked here, beside
+    # the fixture that has to contain them.
+    $sourceRejectionRoles = @(
+        [pscustomobject]@{
+            Name = 'recorder'
+            Path = Join-Path $root 'extractor\native\recorder_host\src\main.rs'
+        },
+        [pscustomobject]@{
+            Name = 'collector'
+            Path = Join-Path $root 'extractor\native\collector\src\lib.rs'
+        },
+        [pscustomobject]@{
+            Name = 'replay'
+            # main.rs carries no self-UI exception, so the whole roster still
+            # has to be rejected in it.
+            Path = Join-Path $root 'replay_interface\native\replay_app\src\main.rs'
+        },
+        [pscustomobject]@{
+            Name = 'production-lane'
+            Path = Join-Path $root 'extractor\native\lanes\active_command_abilities_live\src\lib.rs'
+        }
+    )
+    $missingSourceRejectionRoles = @(
+        $sourceRejectionRoles |
+            Where-Object {
+                -not (Test-Path -LiteralPath ([string]$_.Path) -PathType Leaf)
+            } |
+            ForEach-Object { "$($_.Name)=$([string]$_.Path)" }
+    )
+    if ($missingSourceRejectionRoles.Count -ne 0) {
+        throw (
+            'self-test source-rejection role names a fixture source that does ' +
+            "not exist: $($missingSourceRejectionRoles -join ', ')"
+        )
     }
     $fixtureProductionLaneRoots = @(
         Get-CollectorProductionLaneRoots -RepoRoot $root
@@ -332,6 +621,60 @@ dependencies.path = "../lanes/active_command_abilities_live"
         -LiteralPath (Join-Path $scriptDir 'verify_speed5_stream.py') `
         -Destination (Join-Path $fixtureScripts 'verify_speed5_stream.py')
 
+    # The accepted suspending-code-mutation inventory is pinned per tree: the
+    # repository's own pin names the exact files and call counts of the lanes
+    # that patch live code, and this fixture deliberately does not carry those
+    # sources. So the fixture measures its own inventory with the authority's
+    # own functions and writes it as the fixture's pin. On its own that would be
+    # a gate that cannot fail, so it is bracketed: the case below pins that the
+    # fixture reaches exactly the units the committed repository pin says
+    # delegate, with the digest that pin accepted, and a later case drives the
+    # builder against a fixture pin that has drifted and requires a rejection.
+    $fixtureSuspendingBaselinePath =
+        Get-ProductionSuspendingCodeMutationBaselinePath -RepoRoot $root
+    $fixtureSuspendingBaseline = Get-ProductionSuspendingCodeMutationBaseline `
+        -Findings (Get-ProductionSuspendingCodeMutationFindings `
+            -RepoRoot $root `
+            -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root))
+    [IO.File]::WriteAllText(
+        $fixtureSuspendingBaselinePath,
+        ($fixtureSuspendingBaseline | ConvertTo-Json -Depth 8),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $repoSuspendingBaseline = Read-ProductionSuspendingCodeMutationBaseline `
+        -Path (Get-ProductionSuspendingCodeMutationBaselinePath -RepoRoot $repoRoot)
+    $repoDelegatingUnits = @(
+        $repoSuspendingBaseline.units |
+            Where-Object { [bool]$_.delegates_suspending_code_mutation } |
+            ForEach-Object { [string]$_.unit } |
+            Sort-Object
+    )
+    $repoAcceptedPatcherDigests = @(
+        $repoSuspendingBaseline.units |
+            ForEach-Object { @($_.delegated_patchers) } |
+            Where-Object { [string]$_.package -ceq 'minhook' } |
+            ForEach-Object { [string]$_.capability_digest } |
+            Select-Object -Unique
+    )
+    $fixtureBaselineUnits = @($fixtureSuspendingBaseline.units)
+    $fixtureBaselineUnitNames = @(
+        $fixtureBaselineUnits | ForEach-Object { [string]$_.unit } | Sort-Object
+    )
+    Assert-Case 'fixture reaches the exact accepted delegating unit closure' (
+        $repoDelegatingUnits.Count -gt 0 -and
+        $repoAcceptedPatcherDigests.Count -eq 1 -and
+        ($fixtureBaselineUnitNames -join '|') -ceq ($repoDelegatingUnits -join '|') -and
+        @($fixtureBaselineUnits | Where-Object {
+            [bool]$_.performs_suspending_code_mutation -or
+            -not [bool]$_.delegates_suspending_code_mutation -or
+            @($_.direct_evidence).Count -ne 0 -or
+            @($_.delegated_patchers).Count -ne 1 -or
+            [string]@($_.delegated_patchers)[0].package -cne 'minhook' -or
+            [string]@($_.delegated_patchers)[0].capability_digest -cne
+                $repoAcceptedPatcherDigests[0]
+        }).Count -eq 0
+    )
+
     $fixtureBuilder = Join-Path $fixtureScripts 'New-PortableProductPackage.ps1'
     $fixtureVerifier = Join-Path $fixtureScripts 'Test-PortableProductPackageReceipt.ps1'
     $fixtureHelper = Join-Path $fixtureScripts 'ProductionArtifact.Attestation.ps1'
@@ -411,6 +754,42 @@ dependencies.path = "../lanes/active_command_abilities_live"
             'OpenProcess|VirtualAllocEx|VirtualFreeEx|WriteProcessMemory|CreateRemoteThread|LoadLibraryW|FreeLibrary'
     )
 
+    # The fixture's accepted inventory is measured, so on its own it can only
+    # agree with itself. This drives the drift gate the other way: one accepted
+    # unit is taken out of the pin while the tree still reaches it, which is
+    # exactly the shape of "a unit started suspending and nobody accepted it".
+    $fixtureBaselineOriginal = [IO.File]::ReadAllText($fixtureSuspendingBaselinePath)
+    $driftedBaseline = $fixtureBaselineOriginal | ConvertFrom-Json
+    $driftedBaseline.units = @(
+        @($driftedBaseline.units) | Select-Object -Skip 1
+    )
+    if (@($driftedBaseline.units).Count -ne ($fixtureBaselineUnits.Count - 1)) {
+        throw 'self-test could not drift the fixture suspending-code-mutation pin'
+    }
+    [IO.File]::WriteAllText(
+        $fixtureSuspendingBaselinePath,
+        ($driftedBaseline | ConvertTo-Json -Depth 8),
+        [Text.UTF8Encoding]::new($false)
+    )
+    try {
+        Invoke-ExpectFailure 'accepted suspending-code-mutation drift is rejected' {
+            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
+                '-RecorderExe', $recorder,
+                '-ReplayExe', $replay,
+                '-CollectorDll', $collector,
+                '-OutputZip', (Join-Path $releaseRoot 'drifted-suspending-baseline.zip'),
+                '-Version', '0.1.0'
+            ) | Out-Null
+        }
+    }
+    finally {
+        [IO.File]::WriteAllText(
+            $fixtureSuspendingBaselinePath,
+            $fixtureBaselineOriginal,
+            [Text.UTF8Encoding]::new($false)
+        )
+    }
+
     $evidenceRecorder = Join-Path $releaseRoot 'collector_record_evidence_marker.exe'
     $evidenceRecorderBytes = [byte[]][IO.File]::ReadAllBytes($recorder).Clone()
     $evidenceMarker = [Text.Encoding]::ASCII.GetBytes('BATTLE_PLAN_CLIENT_DRIVING_EVIDENCE_V1')
@@ -476,9 +855,22 @@ dependencies.path = "../lanes/active_command_abilities_live"
         ) | Out-Null
     }
 
-    $fixedForbiddenMarkerCount = 121
+    # Repinned deliberately, three times. The roster gained the thread-handle
+    # acquisition and consumption surface it was missing: the Zw
+    # suspend/resume/terminate aliases, Nt/Zw SetContextThread, the alert and
+    # alert-resume pairs, Nt/Zw SetInformationThread and ImpersonateThread, the
+    # QueueUserAPC2 and QueueApcThreadEx2 forms, SetThreadToken,
+    # SetThreadInformation, CancelSynchronousIo, the Nt/Zw OpenThread pair, and
+    # the scheduling setters. NtOpenThread in particular meant the ban on
+    # obtaining another thread's handle had never been in force at all, since
+    # only the Win32 spelling was listed.
+    #
+    # Each of three review rounds found more of this surface, so expect this
+    # census to move again. It is a census, not a proof that the thread-control
+    # surface is closed. Two files pin it and both have to move together.
+    $fixedForbiddenMarkerCount = 147
     $fixedForbiddenMarkerRosterSha256 =
-        '59dbc468c67c2abbe5fc8b7b30ae4f1136ce0c43e7429b11d339451c5feb1c4f'
+        '3068b0722bf931718c471cbeb998998b05ff9cca2ae72a4ecb2ce8a9a8bcf617'
     $forbiddenMarkerRoster = @(Get-ForbiddenProductionInteractionMarkers)
     Assert-Case 'forbidden interaction marker roster is the fixed reviewed census' (
         $forbiddenMarkerRoster.Count -eq $fixedForbiddenMarkerCount -and
@@ -886,24 +1278,7 @@ workspace_additive_alias = {
         )
     }
 
-    foreach ($sourceRole in @(
-        [pscustomobject]@{
-            Name = 'recorder'
-            Path = Join-Path $root 'extractor\native\recorder_host\src\main.rs'
-        },
-        [pscustomobject]@{
-            Name = 'collector'
-            Path = Join-Path $root 'extractor\native\collector\src\lib.rs'
-        },
-        [pscustomobject]@{
-            Name = 'replay'
-            Path = Join-Path $root 'replay_interface\native\replay_app\src\lib.rs'
-        },
-        [pscustomobject]@{
-            Name = 'production-lane'
-            Path = Join-Path $root 'extractor\native\lanes\active_command_abilities_live\src\lib.rs'
-        }
-    )) {
+    foreach ($sourceRole in $sourceRejectionRoles) {
         $sourceOriginal = [IO.File]::ReadAllText([string]$sourceRole.Path)
         $allSourceCapabilitiesRejected = $true
         foreach ($symbol in @(Get-ForbiddenProductionClientCapabilitySymbols)) {
@@ -1011,18 +1386,39 @@ pub fn observer_only() {}
     finally {
         Remove-Item -LiteralPath $fixtureShadowEarlyRender -Force
     }
+    # This used to append `use minhook::MinHook; ... MinHook::enable_hook(..)`
+    # to a lane that already declares minhook and require a rejection. It could
+    # never get one, and it had never been run: the authority binds a unit to a
+    # delegated patcher by the MANIFEST EDGE, not by the callsite text - by
+    # design, because a re-export lets a crate use a patcher without ever
+    # writing its name - and that lane's edge was already in the accepted
+    # inventory, so the mutation changed nothing the gate keys on.
+    #
+    # The mutation now has the shape the authority actually enforces: a lane
+    # with no minhook edge takes one on, which is a new delegated patcher and
+    # has to be accepted again. air_loss_stats_live is in the production
+    # closure and declares no minhook today; its owning lock resolves minhook
+    # 0.9.0, so the classification reaches the same registry source as the
+    # lanes that do.
+    #
+    # Limit worth stating: a lane that reaches minhook only through another
+    # in-repo crate's re-export still has no minhook edge of its own, and a
+    # pure re-exporter has no suspend/mutate site of its own to be classified
+    # on. That path is covered neither here nor by the authority.
     $fixtureProductionLane =
-        Join-Path $root 'extractor\native\lanes\active_command_abilities_live\src\lib.rs'
+        Join-Path $root 'extractor\native\lanes\air_loss_stats_live\Cargo.toml'
     $fixtureProductionLaneOriginal = [IO.File]::ReadAllText($fixtureProductionLane)
+    if ($fixtureProductionLaneOriginal.Contains('minhook')) {
+        throw 'self-test lane already declares the suspending primitive it plants'
+    }
     [IO.File]::WriteAllText(
         $fixtureProductionLane,
         ($fixtureProductionLaneOriginal +
-            "`nuse minhook::MinHook; fn forbidden() { let _ = unsafe { MinHook::enable_hook(" +
-            "core::ptr::null_mut()) }; }`n"),
+            "`n[target.'cfg(windows)'.dependencies]`nminhook = `"0.9.0`"`n"),
         [Text.UTF8Encoding]::new($false)
     )
     try {
-        Invoke-ExpectFailure 'production-linked lane rejects suspending MinHook primitive' {
+        Invoke-ExpectFailure 'production-linked lane cannot take on the suspending MinHook primitive' {
             Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
                 '-RecorderExe', $recorder,
                 '-ReplayExe', $replay,
@@ -1880,7 +2276,6 @@ fn synthetic_structural_d71_passive_gate() {
                     target = 'collector_record'
                     default_features = $false
                     enabled_features = @()
-                    all_non_default_features_disabled = $true
                     artifact_sha256 = [string]$attested.artifact_sha256['recorder_host']
                 }
                 collector_dll = [ordered]@{
@@ -1889,6 +2284,13 @@ fn synthetic_structural_d71_passive_gate() {
                     crate_types = @('cdylib', 'rlib')
                     default_features = $false
                     enabled_features = @()
+                    # This belongs to collector_dll, which is where
+                    # Invoke-CentralRustValidation emits it and where the
+                    # receipt verifier reads it. The fixture had it on
+                    # recorder_host, where nothing produces it and nothing
+                    # reads it, so the verifier hit a missing property under
+                    # Set-StrictMode instead of checking the closure.
+                    all_non_default_features_disabled = $true
                     forbidden_features = @(
                         'test-support',
                         'unshipped-a25-runtime-text-evidence',
