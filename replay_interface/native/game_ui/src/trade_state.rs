@@ -21,15 +21,21 @@ use replay_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const TRADE_RESOURCE_ORDER: [&str; 7] = [
-    "oil",
-    "aluminium",
-    "rubber",
-    "tungsten",
-    "steel",
-    "chromium",
-    "coal",
-];
+/// The frame's resource set, in visible order, taken from `TradeView`.
+///
+/// This replaced a compiled-in list of vanilla's seven resource names.
+/// `common/resources` is moddable content: the panel renders whatever set the
+/// recording states, in the order the recording states, and `replay_core` has
+/// already authenticated that statement's shape (dense `visible_order`,
+/// distinct measured names, bounded count).
+fn trade_resource_order(view: &TradeView) -> Option<Vec<String>> {
+    let Leaf::Measured(rows) = &view.resource_rows else {
+        return None;
+    };
+    rows.iter()
+        .map(|row| row.resource.measured().cloned())
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeScreenUnavailable {
@@ -247,6 +253,12 @@ fn admit_resource_pools(view: &TradeView) -> TradeData<Vec<TradeResourcePoolCard
     if let Some(issue) = completeness_issue(&view.resource_pools_complete) {
         return TradeData::Unavailable(issue);
     }
+    // The pools are keyed by resource name and carry no order of their own.
+    // Without the rows there is no stated order, and inventing one would put
+    // the panel's cards in an order the game never had.
+    let Some(order) = trade_resource_order(view) else {
+        return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
+    };
     let maps = [
         &view.produced,
         &view.imported,
@@ -260,10 +272,8 @@ fn admit_resource_pools(view: &TradeView) -> TradeData<Vec<TradeResourcePoolCard
         let Leaf::Measured(map) = map else {
             return TradeData::Unavailable(leaf_issue(map));
         };
-        if map.len() != TRADE_RESOURCE_ORDER.len()
-            || !TRADE_RESOURCE_ORDER
-                .iter()
-                .all(|resource| map.contains_key(*resource))
+        if map.len() != order.len()
+            || !order.iter().all(|resource| map.contains_key(resource))
         {
             return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
         }
@@ -274,18 +284,18 @@ fn admit_resource_pools(view: &TradeView) -> TradeData<Vec<TradeResourcePoolCard
         _ => None,
     };
     TradeData::Available(
-        TRADE_RESOURCE_ORDER
+        order
             .iter()
             .map(|resource| TradeResourcePoolCard {
-                resource: (*resource).to_string(),
-                produced: measured[0][*resource],
-                imported: measured[1][*resource],
-                used: measured[2][*resource],
-                to_export: measured[3][*resource],
-                base_export: measured[4][*resource],
-                exported: measured[5][*resource],
+                resource: resource.clone(),
+                produced: measured[0][resource],
+                imported: measured[1][resource],
+                used: measured[2][resource],
+                to_export: measured[3][resource],
+                base_export: measured[4][resource],
+                exported: measured[5][resource],
                 available_derived: available
-                    .and_then(|values| values.get(*resource).copied())
+                    .and_then(|values| values.get(resource).copied())
                     .map(TradeData::Available)
                     .unwrap_or_else(|| TradeData::Unavailable(leaf_issue(&view.available_derived))),
             })
@@ -300,13 +310,9 @@ fn admit_resource_cards(view: &TradeView) -> TradeData<Vec<TradeResourceCard>> {
     let Leaf::Measured(rows) = &view.resource_rows else {
         return TradeData::Unavailable(leaf_issue(&view.resource_rows));
     };
-    if rows.len() != TRADE_RESOURCE_ORDER.len() {
-        return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
-    }
     let mut cards = Vec::with_capacity(rows.len());
     for (index, row) in rows.iter().enumerate() {
-        let expected = TRADE_RESOURCE_ORDER[index];
-        let Some(card) = measured_resource_card(row, expected, index) else {
+        let Some(card) = measured_resource_card(row, index) else {
             return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
         };
         cards.push(card);
@@ -316,12 +322,13 @@ fn admit_resource_cards(view: &TradeView) -> TradeData<Vec<TradeResourceCard>> {
 
 fn measured_resource_card(
     row: &TradeResourceRow,
-    expected_resource: &str,
     expected_order: usize,
 ) -> Option<TradeResourceCard> {
     let resource = measured(&row.resource)?.clone();
     let visible_order = *measured(&row.visible_order)?;
-    if resource != expected_resource || visible_order != expected_order as i64 {
+    // The order is authenticated; the NAME is not compared against anything,
+    // because the recording is the only authority on what the resources are.
+    if visible_order != expected_order as i64 {
         return None;
     }
     let balance = *measured(&row.balance)?;
@@ -348,11 +355,15 @@ fn measured_resource_card(
     let needed_current = row.needed_current.measured().copied();
     let needed_max = row.needed_max.measured().copied();
     let needed_type = measured(&row.needed_type)?.clone();
-    let needed_semantics = if expected_resource == "oil" {
-        needed_current.is_some_and(exact_trade_i32_value)
+    // The current/max needed form belongs to the engine's cached first
+    // resource -- vanilla's oil -- and the producer emits it for slot 0 only.
+    // Keying on `needed_type` plus that slot keeps the rule exactly as strong
+    // as it was without naming a resource a mod is free to rename.
+    let needed_semantics = if needed_type == "current_max" {
+        expected_order == 0
+            && needed_current.is_some_and(exact_trade_i32_value)
             && needed_max.is_some_and(exact_trade_i32_value)
             && needed_current == Some(needed)
-            && needed_type == "current_max"
     } else {
         matches!(&row.needed_current, Leaf::Absent)
             && matches!(&row.needed_max, Leaf::Absent)
@@ -428,7 +439,7 @@ fn measured_deal_card(row: &ResourceTradeDealRow, expected_order: usize) -> Opti
     if deal_id <= 0
         || counterpart.trim().is_empty()
         || !["import", "export"].contains(&direction.as_str())
-        || !TRADE_RESOURCE_ORDER.contains(&resource.as_str())
+        || resource.trim().is_empty()
         || !requested.is_finite()
         || requested.fract() != 0.0
         || !delivered.is_finite()
@@ -1112,7 +1123,8 @@ pub fn apply_trade_to_compose_options(
 }
 
 fn format_needed(row: &TradeResourceCard) -> String {
-    if row.resource == "oil" {
+    // Keyed on the row's own semantics, not on a resource name.
+    if row.needed_type == "current_max" {
         match (row.needed_current, row.needed_max) {
             (Some(current), Some(maximum)) => {
                 format!(

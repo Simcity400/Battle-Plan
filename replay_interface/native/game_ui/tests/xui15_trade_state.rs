@@ -629,3 +629,153 @@ fn shipped_gui_scene_and_compositor_accept_exact_trade_cards() {
         .iter()
         .any(|rect| rect.name == "xui15_resource_0_balance"));
 }
+
+
+// -------------------------------------------------------------------------
+// The resource set is whatever the recording states, not a list compiled into
+// the panel. `common/resources` is moddable content.
+// -------------------------------------------------------------------------
+
+/// Vanilla's seven, plus a resource vanilla does not have, in an order vanilla
+/// does not use. Every card is built, in the recording's order.
+#[test]
+fn xui15_trade_panel_renders_a_modded_eight_resource_set_in_the_recordings_order() {
+    // The first slot is deliberately NOT named "oil": a mod may rename the
+    // engine's cached first resource, and the current/max needed form belongs
+    // to that SLOT, not to that name.
+    let modded = [
+        "petroleum", "steel", "rubber", "tungsten", "aluminium", "chromium", "coal", "uranium",
+    ];
+    let mut view = view();
+    view.resource_rows = Leaf::Measured(resource_rows_for(&modded));
+    let pools = pool_map_for(&modded);
+    view.produced = pools.clone();
+    view.imported = pools.clone();
+    view.used = pools.clone();
+    view.exported = pools.clone();
+    view.to_export = pools.clone();
+    view.base_export = pools.clone();
+    view.available_derived = pools;
+
+    let AdmittedTradeScreen::Visible(screen) =
+        admit_trade_screen(ViewStatus::Present, "GER", Some(&view))
+    else {
+        panic!("modded trade view must be visible");
+    };
+
+    let TradeData::Available(cards) = &screen.resource_cards else {
+        panic!("resource cards unavailable: {:?}", screen.resource_cards);
+    };
+    assert_eq!(cards.len(), 8);
+    for (index, resource) in modded.iter().enumerate() {
+        assert_eq!(cards[index].resource, *resource);
+        assert_eq!(cards[index].visible_order, index as i64);
+    }
+
+    let TradeData::Available(pool_cards) = &screen.resource_pools else {
+        panic!("pool cards unavailable: {:?}", screen.resource_pools);
+    };
+    assert_eq!(pool_cards.len(), 8);
+    for (index, resource) in modded.iter().enumerate() {
+        assert_eq!(pool_cards[index].resource, *resource);
+    }
+}
+
+/// The pools are keyed by name and carry no order of their own. Without rows
+/// there is no stated order, and the panel must say so rather than invent one:
+/// rendering the map's own key order would put cards in a sequence the game
+/// never had.
+#[test]
+fn xui15_trade_panel_withholds_pool_cards_when_no_resource_order_is_stated() {
+    let mut view = view();
+    view.resource_rows = Leaf::Unobtained;
+
+    let AdmittedTradeScreen::Visible(screen) =
+        admit_trade_screen(ViewStatus::Present, "GER", Some(&view))
+    else {
+        panic!("trade view must be visible");
+    };
+
+    assert!(
+        matches!(
+            &screen.resource_pools,
+            TradeData::Unavailable(TradeDataIssue::InvalidExactOrder)
+        ),
+        "expected InvalidExactOrder, got {:?}",
+        screen.resource_pools
+    );
+}
+
+/// A pool map keyed by a set the rows do not state is not this frame's pools.
+#[test]
+fn xui15_trade_panel_withholds_pool_cards_whose_keys_disagree_with_the_rows() {
+    let mut view = view();
+    let mut disagreeing = BTreeMap::new();
+    for (index, resource) in ORDER.iter().enumerate() {
+        let key = if index == 6 { "uranium" } else { resource };
+        disagreeing.insert(key.to_string(), 0.0);
+    }
+    view.produced = Leaf::Measured(disagreeing);
+
+    let AdmittedTradeScreen::Visible(screen) =
+        admit_trade_screen(ViewStatus::Present, "GER", Some(&view))
+    else {
+        panic!("trade view must be visible");
+    };
+
+    assert!(
+        matches!(
+            &screen.resource_pools,
+            TradeData::Unavailable(TradeDataIssue::InvalidExactOrder)
+        ),
+        "expected InvalidExactOrder, got {:?}",
+        screen.resource_pools
+    );
+}
+
+fn pool_map_for(resources: &[&str]) -> Leaf<BTreeMap<String, f64>> {
+    Leaf::Measured(
+        resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| ((*resource).to_string(), index as f64))
+            .collect(),
+    )
+}
+
+/// Rows for an arbitrary resource set. The current/max needed form belongs to
+/// slot 0 -- the engine's cached first resource -- and every other slot carries
+/// the surplus/deficit form; nothing here depends on a resource's name.
+fn resource_rows_for(resources: &[&str]) -> Vec<TradeResourceRow> {
+    resources
+        .iter()
+        .enumerate()
+        .map(|(visible_order, resource)| {
+            let first = visible_order == 0;
+            TradeResourceRow {
+                resource: Leaf::Measured((*resource).to_string()),
+                visible_order: Leaf::Measured(visible_order as i64),
+                balance: Leaf::Measured(0.0),
+                produced: Leaf::Measured(0.0),
+                imported: Leaf::Measured(0.0),
+                exported: Leaf::Measured(0.0),
+                special_project: Leaf::Measured(0.0),
+                production_line: Leaf::Measured(0.0),
+                needed: Leaf::Measured(0.0),
+                needed_current: if first {
+                    Leaf::Measured(0.0)
+                } else {
+                    Leaf::Absent
+                },
+                needed_max: if first {
+                    Leaf::Measured(0.0)
+                } else {
+                    Leaf::Absent
+                },
+                needed_type: Leaf::Measured(
+                    if first { "current_max" } else { "surplus" }.into(),
+                ),
+            }
+        })
+        .collect()
+}

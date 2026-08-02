@@ -43,10 +43,17 @@ pub const MARKET_TRADE_LEND_LEASE_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_LEND_LEASE_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_LEND_LEASE_ROW_LEN: usize = 48;
 pub const MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
+/// v1 exported-only slice and v2 six-kind matrix both pin the per-row value
+/// vector to seven `i64`s and the header field at `+24` to the seven-bit mask
+/// `0x7F`, which is why an eighth strategic resource could not be stated. v3 is
+/// the same six-kind matrix with a count-prefixed, variable-width vector.
 pub const MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION: u16 = 1;
-pub const MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION: u16 = 2;
+pub const MARKET_TRADE_RESOURCE_FLOW_FIXED7_SCHEMA_VERSION: u16 = 2;
+pub const MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION: u16 = 3;
 pub const MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN: usize = 32;
-pub const MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+/// v1/v2 only: 16 bytes of row header plus seven `i64`s.
+pub const MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize = 72;
+pub const MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize = 16;
 pub const MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED: u32 = 1;
 pub const MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED: u32 = 2;
 pub const MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED: u32 = 3;
@@ -60,10 +67,18 @@ pub const MARKET_TRADE_FACTORY_HEADER_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_FACTORY_HEADER_HEADER_LEN: usize = 24;
 pub const MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
 pub const MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
-pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 1;
+/// v1 pinned the header's `resource_count` to seven; v2 admits the count the
+/// live resource database reported, under the shared admission ceiling.
+pub const MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_TRADE_RESOURCE_ROW_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
-pub const MARKET_TRADE_RESOURCE_COUNT: u32 = 7;
+/// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
+pub const MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = 7;
+/// The one shared admission ceiling for a count-prefixed resource vector: the
+/// same contract constant the collector and the fold bound their counts with.
+pub const MAX_STRATEGIC_RESOURCE_COUNT: u32 =
+    compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT;
 pub const MARKET_TRADE_RESOURCE_NEEDED_SURPLUS: u32 = 1;
 pub const MARKET_TRADE_RESOURCE_NEEDED_DEFICIT: u32 = 2;
 pub const MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX: u32 = 3;
@@ -259,12 +274,14 @@ pub struct LendLeaseMappingRow {
     pub source_record_kind: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResourceFlowRow {
     pub tag_db_id: u32,
     pub flow_kind: u32,
-    pub resource_mask: u32,
-    pub values_raw: [i64; 7],
+    /// v1/v2 echo the seven-bit mask here; v3 echoes the resource count.
+    pub resource_mask_or_count: u32,
+    /// As wide as the resource count the trailer stated.
+    pub values_raw: Vec<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -422,7 +439,10 @@ pub struct MarketTradePayloadSummary {
     pub resource_flow_country_rows: u32,
     pub resource_flow_exported_rows: u32,
     pub resource_flow_scale_raw: u32,
+    /// Raw `+24` header field: the seven-bit mask in v1/v2, the count in v3.
     pub resource_flow_resource_mask: u32,
+    /// Resource-set width the trailer states, whichever version declared it.
+    pub resource_flow_resource_count: u32,
     pub resource_flow_kind_mask: u32,
     pub factory_header_trailer_present: bool,
     pub factory_header_rows: u32,
@@ -930,7 +950,11 @@ pub fn residual_badge_rows(
                     MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u32
                 }
                 "lend_lease_market_contract_mapping" => MARKET_TRADE_LEND_LEASE_ROW_LEN as u32,
-                "country_resource_import_export_flows" => MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u32,
+                // The badge quotes the shipped seven-resource row width; a
+                // v3 row is `16 + 8 * resource_count` and has no one number.
+                "country_resource_import_export_flows" => {
+                    MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN as u32
+                }
                 _ => 0,
             },
             source_ref_id: badge.gap_id,
@@ -1109,7 +1133,40 @@ pub fn encode_lend_lease_trailer(rows: &[LendLeaseMappingRow]) -> Vec<u8> {
     payload
 }
 
-pub fn encode_resource_flow_trailer(rows: &[ResourceFlowRow]) -> Vec<u8> {
+/// Row width of an `MTRF` v3 row for a given resource count. The encoder and
+/// `decode_resource_flow_trailer` derive the width from the same function, so a
+/// producer cannot write a row length the decoder would not compute.
+pub fn resource_flow_row_len(resource_count: u32) -> usize {
+    MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN
+        .saturating_add((resource_count as usize).saturating_mul(8))
+}
+
+/// Encodes `MTRF` v3, or `None` when the input could only produce a trailer a
+/// decoder must refuse.
+///
+/// The encoder applies the SAME admission predicate the decoders apply, for two
+/// reasons: an encoder that can emit an out-of-bound count is a second opinion
+/// about what is legal, and `Vec::with_capacity` here is sized from
+/// `8 * resource_count`, so an unbounded count sizes an allocation before
+/// anything has refused it.
+pub fn encode_resource_flow_trailer(
+    rows: &[ResourceFlowRow],
+    resource_count: u32,
+) -> Option<Vec<u8>> {
+    if !(1..=MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count) {
+        return None;
+    }
+    // Every field the decoder validates per row, the encoder validates before
+    // writing it. Checking only `values_raw.len()` left two ways to emit a
+    // stream every decoder refuses: a row echoing a different count at `+8`,
+    // and a row carrying a flow kind outside the six-kind matrix.
+    if rows.iter().any(|row| {
+        row.values_raw.len() != resource_count as usize
+            || row.resource_mask_or_count != resource_count
+            || !(1..=6).contains(&row.flow_kind)
+    }) {
+        return None;
+    }
     let row_count = rows.len().min(u32::MAX as usize) as u32;
     let country_count = rows
         .iter()
@@ -1117,30 +1174,30 @@ pub fn encode_resource_flow_trailer(rows: &[ResourceFlowRow]) -> Vec<u8> {
         .collect::<BTreeSet<_>>()
         .len()
         .min(u32::MAX as usize) as u32;
+    let row_len = resource_flow_row_len(resource_count);
 
-    let mut payload = Vec::with_capacity(
-        MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN + rows.len() * MARKET_TRADE_RESOURCE_FLOW_ROW_LEN,
-    );
+    let mut payload =
+        Vec::with_capacity(MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN + rows.len() * row_len);
     payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
     payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION.to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN as u16).to_le_bytes());
-    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(row_len.min(u16::MAX as usize) as u16).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
     payload.extend_from_slice(&row_count.to_le_bytes());
     payload.extend_from_slice(&country_count.to_le_bytes());
     payload.extend_from_slice(&MARKET_TRADE_SCALE_RAW.to_le_bytes());
-    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+    payload.extend_from_slice(&resource_count.to_le_bytes());
     payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.to_le_bytes());
     for row in rows {
         payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
         payload.extend_from_slice(&row.flow_kind.to_le_bytes());
-        payload.extend_from_slice(&row.resource_mask.to_le_bytes());
+        payload.extend_from_slice(&row.resource_mask_or_count.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
-        for value in row.values_raw {
+        for value in &row.values_raw {
             payload.extend_from_slice(&value.to_le_bytes());
         }
     }
-    payload
+    Some(payload)
 }
 
 pub fn encode_factory_header_trailer(rows: &[FactoryHeaderRow]) -> Vec<u8> {
@@ -1723,12 +1780,26 @@ fn decode_resource_row_trailer(
     summary.resource_rows = row_count;
     summary.resource_row_country_count = country_count;
     summary.resource_row_resource_count = resource_count;
-    if version != MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION
+    // The count is a wire field, not a constant: `common/resources` is
+    // moddable, so the width comes off the stream. v1 keeps its exactly-seven
+    // rule; v2 admits the discovered count under the shared ceiling. Any other
+    // version -- including a future one -- falls through to `false` and is
+    // refused with a reason, never reinterpreted under a grammar it did not
+    // declare.
+    let version_admits_count = match version {
+        MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION => {
+            resource_count == MARKET_TRADE_FIXED7_RESOURCE_COUNT
+        }
+        MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION => {
+            (1..=MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
+        }
+        _ => false,
+    };
+    if !version_admits_count
         || header_len != MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
         || row_len != MARKET_TRADE_RESOURCE_ROW_LEN
         || reserved0 != 0
         || reserved1 != 0
-        || resource_count != MARKET_TRADE_RESOURCE_COUNT
         || display_scale != 1
         || row_count != country_count.saturating_mul(resource_count)
     {
@@ -1774,8 +1845,8 @@ fn decode_resource_row_trailer(
                 row.tag_db_id
             ));
         }
-        if row.resource_index >= MARKET_TRADE_RESOURCE_COUNT
-            || row.visible_order >= MARKET_TRADE_RESOURCE_COUNT
+        if row.resource_index >= resource_count
+            || row.visible_order >= resource_count
             || row.descriptor_db_index == 0
             || row.flags & !MARKET_TRADE_RESOURCE_FLAGS_KNOWN != 0
             || reserved != 0
@@ -1932,7 +2003,7 @@ fn decode_classic_deal_trailer(
         if !witnesses.contains(&row.owner_tag_db_id)
             || !witnesses.contains(&row.counterpart_tag_db_id)
             || row.owner_tag_db_id == row.counterpart_tag_db_id
-            || row.resource_index >= MARKET_TRADE_RESOURCE_COUNT
+            || row.resource_index >= MAX_STRATEGIC_RESOURCE_COUNT
             || ![
                 MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
                 MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
@@ -2446,29 +2517,63 @@ fn decode_resource_flow_trailer(
     let row_count = read_u32_le(trailer, 12);
     let country_count_or_exported = read_u32_le(trailer, 16);
     let scale_raw = read_u32_le(trailer, 20);
-    let resource_mask = read_u32_le(trailer, 24);
+    // `+24` is a seven-bit resource MASK in v1/v2 and the resource COUNT in v3.
+    let mask_or_count = read_u32_le(trailer, 24);
     let kind_mask = read_u32_le(trailer, 28);
 
     summary.resource_flow_rows = row_count;
-    summary.resource_flow_country_rows = if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION {
-        country_count_or_exported
-    } else {
-        0
-    };
+    summary.resource_flow_country_rows =
+        if version == MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION {
+            0
+        } else {
+            country_count_or_exported
+        };
     summary.resource_flow_scale_raw = scale_raw;
-    summary.resource_flow_resource_mask = resource_mask;
+    summary.resource_flow_resource_mask = mask_or_count;
     summary.resource_flow_kind_mask = kind_mask;
 
-    if ![
-        MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION,
-        MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION,
-    ]
-    .contains(&version)
-        || header_len != MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN
-        || row_len != MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
-    {
+    // The version decides whether `+24` reads as a mask or as a count. A stream
+    // is never read under a grammar it did not declare, and an unknown version
+    // is refused with a reason rather than reinterpreted.
+    let resource_count = match version {
+        MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION
+        | MARKET_TRADE_RESOURCE_FLOW_FIXED7_SCHEMA_VERSION => {
+            if mask_or_count != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: resource_flow_resource_mask {mask_or_count:#X} != {MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK:#X}"
+                ));
+            }
+            MARKET_TRADE_FIXED7_RESOURCE_COUNT
+        }
+        MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION => {
+            if !(1..=MAX_STRATEGIC_RESOURCE_COUNT).contains(&mask_or_count) {
+                // Return: `expected_len` below multiplies by a row length
+                // derived from this count, so an out-of-bound count must not be
+                // trusted to size anything.
+                summary.parse_errors.push(format!(
+                    "offset {offset}: resource_flow_resource_count {mask_or_count} is outside 1..={MAX_STRATEGIC_RESOURCE_COUNT}"
+                ));
+                return None;
+            }
+            mask_or_count
+        }
+        _ => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: unsupported resource-flow trailer version {version}"
+            ));
+            return None;
+        }
+    };
+    summary.resource_flow_resource_count = resource_count;
+    let expected_row_len = if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION {
+        MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN
+            .saturating_add((resource_count as usize).saturating_mul(8))
+    } else {
+        MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN
+    };
+    if header_len != MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN || row_len != expected_row_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: unsupported resource-flow trailer version {version} header_len {header_len} row_len {row_len}"
+            "offset {offset}: resource-flow trailer version {version} header_len {header_len} row_len {row_len} != {expected_row_len}"
         ));
         return None;
     }
@@ -2482,7 +2587,7 @@ fn decode_resource_flow_trailer(
             "offset {offset}: legacy resource-flow trailer reserved header field is nonzero"
         ));
     }
-    if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION
+    if version != MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION
         && kind_mask != MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
     {
         summary.parse_errors.push(format!(
@@ -2496,7 +2601,7 @@ fn decode_resource_flow_trailer(
             "offset {offset}: legacy resource_flow_exported_rows {country_count_or_exported} != row_count {row_count}"
         ));
     }
-    if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION
+    if version != MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION
         && row_count != country_count_or_exported.saturating_mul(6)
     {
         summary.parse_errors.push(format!(
@@ -2508,13 +2613,8 @@ fn decode_resource_flow_trailer(
             "offset {offset}: resource_flow_scale_raw {scale_raw} != {MARKET_TRADE_SCALE_RAW}"
         ));
     }
-    if resource_mask != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
-        summary.parse_errors.push(format!(
-            "offset {offset}: resource_flow_resource_mask {resource_mask:#X} != {MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK:#X}"
-        ));
-    }
     let expected_len = MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN
-        .saturating_add((row_count as usize).saturating_mul(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN));
+        .saturating_add((row_count as usize).saturating_mul(expected_row_len));
     if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
             "offset {offset}: resource-flow trailer is {} byte(s), expected at least {expected_len}",
@@ -2527,24 +2627,34 @@ fn decode_resource_flow_trailer(
     let mut seen_keys = BTreeSet::new();
     let mut seen_tag_masks = BTreeMap::<u32, u32>::new();
     let mut computed_exported = 0u32;
+    let expected_row_mask_or_count = if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION {
+        resource_count
+    } else {
+        MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+    };
     for row_index in 0..row_count {
-        let mut row = ResourceFlowRow {
+        let row = ResourceFlowRow {
             tag_db_id: read_u32_le(trailer, cursor),
             flow_kind: read_u32_le(trailer, cursor + 4),
-            resource_mask: read_u32_le(trailer, cursor + 8),
-            values_raw: [0; 7],
+            resource_mask_or_count: read_u32_le(trailer, cursor + 8),
+            values_raw: (0..resource_count as usize)
+                .map(|resource_index| {
+                    read_i64_le(
+                        trailer,
+                        cursor + MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN + resource_index * 8,
+                    )
+                })
+                .collect(),
         };
         let reserved = read_u32_le(trailer, cursor + 12);
-        for (resource_index, value) in row.values_raw.iter_mut().enumerate() {
-            *value = read_i64_le(trailer, cursor + 16 + resource_index * 8);
-        }
-        cursor += MARKET_TRADE_RESOURCE_FLOW_ROW_LEN;
+        cursor += expected_row_len;
 
         validate_resource_flow_row(
             offset,
             row_index as usize,
             &row,
             reserved,
+            expected_row_mask_or_count,
             version == MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION,
             summary,
         );
@@ -2571,7 +2681,7 @@ fn decode_resource_flow_trailer(
             "offset {offset}: legacy resource_flow_exported_rows header {country_count_or_exported} != decoded {computed_exported}"
         ));
     }
-    if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION {
+    if version != MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION {
         if seen_tag_masks.len() != country_count_or_exported as usize {
             summary.parse_errors.push(format!(
                 "offset {offset}: decoded resource-flow country count {} != header {country_count_or_exported}",
@@ -2594,6 +2704,7 @@ fn validate_resource_flow_row(
     row_index: usize,
     row: &ResourceFlowRow,
     reserved: u32,
+    expected_mask_or_count: u32,
     legacy: bool,
     summary: &mut MarketTradePayloadSummary,
 ) {
@@ -2611,10 +2722,10 @@ fn validate_resource_flow_row(
             row.flow_kind
         ));
     }
-    if row.resource_mask != MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+    if row.resource_mask_or_count != expected_mask_or_count {
         summary.parse_errors.push(format!(
-            "offset {offset}: resource-flow row {row_index} resource_mask 0x{:X} != 0x{:X}",
-            row.resource_mask, MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+            "offset {offset}: resource-flow row {row_index} states 0x{:X}, header states 0x{expected_mask_or_count:X}",
+            row.resource_mask_or_count
         ));
     }
     if reserved != 0 {
@@ -3853,20 +3964,35 @@ mod tests {
     }
 
     fn append_test_mtrr(payload: &mut Vec<u8>, countries: &[u32]) {
+        append_test_mtrr_with_count(
+            payload,
+            countries,
+            MARKET_TRADE_FIXED7_RESOURCE_COUNT,
+            MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION,
+        );
+    }
+
+    /// `resource_count` is a parameter because the wire is count-prefixed: a
+    /// test that could only build seven-resource payloads could not exercise
+    /// the case the fixed width made impossible.
+    fn append_test_mtrr_with_count(
+        payload: &mut Vec<u8>,
+        countries: &[u32],
+        resource_count: u32,
+        version: u16,
+    ) {
         payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
-        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION.to_le_bytes());
+        payload.extend_from_slice(&version.to_le_bytes());
         payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_HEADER_LEN as u16).to_le_bytes());
         payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_LEN as u16).to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
-        payload.extend_from_slice(
-            &((countries.len() as u32) * MARKET_TRADE_RESOURCE_COUNT).to_le_bytes(),
-        );
+        payload.extend_from_slice(&((countries.len() as u32) * resource_count).to_le_bytes());
         payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
-        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_COUNT.to_le_bytes());
+        payload.extend_from_slice(&resource_count.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         for &tag_db_id in countries {
-            for resource_index in 0..MARKET_TRADE_RESOURCE_COUNT {
+            for resource_index in 0..resource_count {
                 let oil = resource_index == 0;
                 let balance = if oil { -10 } else { resource_index as i32 };
                 for value in [
@@ -4433,26 +4559,12 @@ mod tests {
             amount_raw: 30_000_000,
             ..PurchaseContractDetailRow::default()
         };
-        let resource_rows = [
-            MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED,
-            MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED,
-            MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
-            MARKET_TRADE_RESOURCE_FLOW_KIND_USED,
-            MARKET_TRADE_RESOURCE_FLOW_KIND_TO_EXPORT,
-            MARKET_TRADE_RESOURCE_FLOW_KIND_BASE_EXPORT,
-        ]
-        .map(|flow_kind| ResourceFlowRow {
-            tag_db_id: 67,
-            flow_kind,
-            resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
-            values_raw: if flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
-                [800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000]
-            } else {
-                [0; 7]
-            },
-        });
+        let resource_rows = six_kind_flow_rows(
+            67,
+            &[800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000],
+        );
         let mut payload = encode_payload_with_detail_rows(0, 0, 0, 0, &[], &[detail]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows));
+        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows, 7).expect("seven-wide rows encode"));
 
         let decoded = decode_payload(0, &payload);
 
@@ -4498,18 +4610,30 @@ mod tests {
         assert_eq!(summary.resource_flow_exported_rows_total, 1);
     }
 
+    /// One country's complete six-kind flow matrix, as wide as `exported`.
+    /// The width is a parameter, not seven: that is the whole point of the
+    /// count-prefixed vector.
+    fn six_kind_flow_rows(tag_db_id: u32, exported: &[i64]) -> Vec<ResourceFlowRow> {
+        let resource_count = exported.len() as u32;
+        (1..=6)
+            .map(|flow_kind| ResourceFlowRow {
+                tag_db_id,
+                flow_kind,
+                resource_mask_or_count: resource_count,
+                values_raw: if flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+                    exported.to_vec()
+                } else {
+                    vec![0; exported.len()]
+                },
+            })
+            .collect()
+    }
+
     #[test]
     fn resource_flow_trailer_preserves_complete_all_zero_country() {
-        let resource_rows = (1..=6)
-            .map(|flow_kind| ResourceFlowRow {
-                tag_db_id: 67,
-                flow_kind,
-                resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
-                values_raw: [0; 7],
-            })
-            .collect::<Vec<_>>();
+        let resource_rows = six_kind_flow_rows(67, &[0; 7]);
         let mut payload = encode_payload(0, 0, 0, 0, &[]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows));
+        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows, 7).expect("seven-wide rows encode"));
 
         let decoded = decode_payload(0, &payload);
 
@@ -5348,5 +5472,331 @@ mod tests {
         assert!(decoded.parse_errors.iter().any(|error| {
             error.contains("MTS1 country row 1 has invalid tag/range/completeness")
         }));
+    }
+
+    // ---------------------------------------------------------------------
+    // Count-prefixed resource vector: MTRF v3 / MTRR v2.
+    //
+    // Each of these is the visible half of a mutation. `runs/resource_wire/`
+    // records which production edit turns which of them red.
+    // ---------------------------------------------------------------------
+
+    /// (a) The case the fixed seven-wide vector made unrepresentable: a mod's
+    /// eighth strategic resource, encoded by the producer and read back by the
+    /// decoder with every slot intact.
+    ///
+    /// Reverting the decoder's width handling to the fixed 72-byte row while
+    /// leaving the producer widened -- the producer-wider-than-consumer drift
+    /// class -- turns this red, because the eighth slot lands past the row the
+    /// consumer would read.
+    #[test]
+    fn d43_mtrf_v3_round_trips_an_eight_resource_vector() {
+        let exported = [800_000i64, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000, -4_250_000];
+        let rows = six_kind_flow_rows(67, &exported);
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&encode_resource_flow_trailer(&rows, 8).expect("eight-wide rows encode"));
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert_eq!(decoded.resource_flow_resource_count, 8);
+        assert_eq!(decoded.resource_flow_rows, 6);
+        assert_eq!(decoded.resource_flow_country_rows, 1);
+        assert_eq!(decoded.resource_flow_rows_decoded, rows);
+        let exported_row = decoded
+            .resource_flow_rows_decoded
+            .iter()
+            .find(|row| row.flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED)
+            .expect("exported row");
+        assert_eq!(exported_row.values_raw, exported.to_vec());
+        assert_eq!(exported_row.resource_mask_or_count, 8);
+    }
+
+    /// (b) The vanilla width still round-trips, byte for byte, through the same
+    /// count-prefixed path.
+    #[test]
+    fn d43_mtrf_v3_round_trips_the_seven_resource_vector() {
+        let exported = [800_000i64, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000];
+        let rows = six_kind_flow_rows(67, &exported);
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode"));
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert_eq!(decoded.resource_flow_resource_count, 7);
+        assert_eq!(decoded.resource_flow_rows_decoded, rows);
+        assert_eq!(
+            resource_flow_row_len(7),
+            MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN,
+            "a seven-wide v3 row is the same width the fixed row always was"
+        );
+    }
+
+    /// (c) A stream written before the widening still reads. v2 pins the vector
+    /// to seven and puts the seven-bit mask at `+24`; nothing about that
+    /// changed, and the new decoder applies exactly the v2 rules to it.
+    #[test]
+    fn d43_mtrf_v2_fixed_seven_stream_is_still_read() {
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&encode_fixed7_resource_flow_trailer(
+            67,
+            MARKET_TRADE_RESOURCE_FLOW_FIXED7_SCHEMA_VERSION,
+        ));
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert_eq!(decoded.resource_flow_resource_count, 7);
+        assert_eq!(
+            decoded.resource_flow_resource_mask,
+            MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+        );
+        assert_eq!(decoded.resource_flow_rows, 6);
+        for row in &decoded.resource_flow_rows_decoded {
+            assert_eq!(row.values_raw.len(), 7);
+        }
+    }
+
+    /// (c) The same, for `MTRR` v1.
+    #[test]
+    fn d43_mtrr_v1_fixed_seven_stream_is_still_read() {
+        let mut payload = complete_market_payload(1);
+        append_test_mtrr_with_count(
+            &mut payload,
+            &[47],
+            MARKET_TRADE_FIXED7_RESOURCE_COUNT,
+            MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION,
+        );
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert_eq!(decoded.resource_row_resource_count, 7);
+        assert_eq!(decoded.resource_view_rows.len(), 7);
+    }
+
+    /// (d) The decisive one for version safety. A stream one version PAST what
+    /// this decoder knows is refused with its version named -- it is never
+    /// reinterpreted under the grammar the decoder does know.
+    ///
+    /// This is the code path an older decoder takes when it meets a v3 stream:
+    /// the accepted-version set is the discriminator, so stamping a version
+    /// outside the set exercises exactly that branch. It matters because `+24`
+    /// is a mask in v1/v2 and a count in v3 -- reading a v3 header under the v2
+    /// rules would compare a small count against `0x7F` and mis-size every row.
+    #[test]
+    fn d43_mtrf_refuses_a_version_it_does_not_know_and_never_reinterprets_it() {
+        let rows = six_kind_flow_rows(67, &[0; 7]);
+        let mut trailer = encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode");
+        let future = MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION + 1;
+        trailer[4..6].copy_from_slice(&future.to_le_bytes());
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&trailer);
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(!decoded.ok());
+        assert!(
+            decoded.parse_errors.iter().any(|error| {
+                error.contains("unsupported resource-flow trailer version")
+                    && error.contains(&future.to_string())
+            }),
+            "refusal must name the version: {:?}",
+            decoded.parse_errors
+        );
+        assert!(
+            decoded.resource_flow_rows_decoded.is_empty(),
+            "an unknown version must decode no rows at all"
+        );
+    }
+
+    /// (d) The same for `MTRR`.
+    #[test]
+    fn d43_mtrr_refuses_a_version_it_does_not_know() {
+        let mut payload = complete_market_payload(1);
+        append_test_mtrr_with_count(
+            &mut payload,
+            &[47],
+            MARKET_TRADE_FIXED7_RESOURCE_COUNT,
+            MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION + 1,
+        );
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(!decoded.ok());
+        assert!(
+            decoded
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("invalid MTRR shape version")),
+            "{:?}",
+            decoded.parse_errors
+        );
+        assert!(decoded.resource_view_rows.is_empty());
+    }
+
+    /// (e) A count past the shared admission ceiling is refused before anything
+    /// is sized from it. Without the bound, `row_count * resource_count * 8` is
+    /// two stream-supplied `u32`s driving an allocation.
+    #[test]
+    fn d43_mtrf_v3_refuses_a_resource_count_above_the_admission_bound() {
+        let rows = six_kind_flow_rows(67, &[0; 7]);
+        let mut trailer = encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode");
+        let over = MAX_STRATEGIC_RESOURCE_COUNT + 1;
+        trailer[24..28].copy_from_slice(&over.to_le_bytes());
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&trailer);
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(!decoded.ok());
+        assert!(
+            decoded.parse_errors.iter().any(|error| {
+                error.contains("resource_flow_resource_count")
+                    && error.contains(&format!("outside 1..={MAX_STRATEGIC_RESOURCE_COUNT}"))
+            }),
+            "{:?}",
+            decoded.parse_errors
+        );
+        assert!(decoded.resource_flow_rows_decoded.is_empty());
+    }
+
+    /// (e) The same for `MTRR` v2, and for a zero count -- an empty resource set
+    /// is not a resource set.
+    ///
+    /// The over-bound trailer is otherwise COMPLETE: it emits all 65 rows per
+    /// country, so nothing but the ceiling stands between it and admission. A
+    /// fixture that declared 65 and emitted no rows would stay refusable as
+    /// truncated even with the ceiling gone, and would prove nothing.
+    #[test]
+    fn d43_mtrr_v2_refuses_a_resource_count_outside_the_admission_bound() {
+        for count in [0, MAX_STRATEGIC_RESOURCE_COUNT + 1] {
+            let mut payload = complete_market_payload(1);
+            append_test_mtrr_with_count(
+                &mut payload,
+                &[47],
+                count,
+                MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION,
+            );
+
+            let decoded = decode_payload(0, &payload);
+
+            assert!(!decoded.ok(), "count {count} must be refused");
+            assert!(
+                decoded
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains("invalid MTRR shape")),
+                "count {count}: {:?}",
+                decoded.parse_errors
+            );
+            assert!(decoded.resource_view_rows.is_empty());
+        }
+    }
+
+    /// The encoder applies the decoders' predicate. An encoder that can emit a
+    /// count no decoder admits is a second opinion about what is legal -- and
+    /// its `Vec::with_capacity` is sized from `8 * resource_count`, so an
+    /// unbounded count sizes an allocation before anything refuses it.
+    #[test]
+    fn d43_resource_flow_encoder_refuses_a_count_outside_the_admission_bound() {
+        for count in [0, MAX_STRATEGIC_RESOURCE_COUNT + 1] {
+            let rows = six_kind_flow_rows(67, &vec![0i64; count as usize]);
+            assert!(
+                encode_resource_flow_trailer(&rows, count).is_none(),
+                "count {count} must not encode"
+            );
+        }
+    }
+
+    /// A row narrower or wider than the stated count cannot be encoded either:
+    /// the header would describe rows the payload does not contain.
+    #[test]
+    fn d43_resource_flow_encoder_refuses_rows_that_disagree_with_the_count() {
+        let mut rows = six_kind_flow_rows(67, &[0; 7]);
+        rows[3].values_raw.push(0);
+        assert!(encode_resource_flow_trailer(&rows, 7).is_none());
+        assert!(encode_resource_flow_trailer(&rows, 8).is_none());
+    }
+
+    /// The encoder applies EVERY per-row predicate the decoder applies. A row
+    /// echoing a different count, or carrying a flow kind outside the six-kind
+    /// matrix, is a stream every decoder refuses -- so the encoder must not be
+    /// able to write it.
+    #[test]
+    fn d43_resource_flow_encoder_refuses_rows_the_decoder_would_refuse() {
+        let mut echo_disagrees = six_kind_flow_rows(67, &[0; 7]);
+        echo_disagrees[2].resource_mask_or_count = 6;
+        assert!(
+            encode_resource_flow_trailer(&echo_disagrees, 7).is_none(),
+            "a row echoing a count the header does not state must not encode"
+        );
+
+        for bad_kind in [0u32, 7] {
+            let mut bad_flow_kind = six_kind_flow_rows(67, &[0; 7]);
+            bad_flow_kind[4].flow_kind = bad_kind;
+            assert!(
+                encode_resource_flow_trailer(&bad_flow_kind, 7).is_none(),
+                "flow_kind {bad_kind} must not encode"
+            );
+        }
+    }
+
+    /// A row that states a different width from its header is refused. Without
+    /// this, header and rows could drift and the decoder would read whichever
+    /// the header happened to say.
+    ///
+    /// The mismatch is patched into the BYTES, not built with the encoder: the
+    /// encoder applies the decoder's predicate, so it cannot emit this stream,
+    /// and a decoder test that needed it to would be testing the wrong thing.
+    #[test]
+    fn d43_mtrf_v3_refuses_a_row_whose_count_disagrees_with_the_header() {
+        let rows = six_kind_flow_rows(67, &[0; 7]);
+        let mut trailer =
+            encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode");
+        let row2 = MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN + 2 * resource_flow_row_len(7);
+        trailer[row2 + 8..row2 + 12].copy_from_slice(&6u32.to_le_bytes());
+        let mut payload = encode_payload(0, 0, 0, 0, &[]);
+        payload.extend_from_slice(&trailer);
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(!decoded.ok());
+        assert!(
+            decoded
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("resource-flow row 2 states")),
+            "{:?}",
+            decoded.parse_errors
+        );
+    }
+
+    /// A `MTRF` v1/v2 trailer, hand-built: seven fixed `i64` slots and the
+    /// seven-bit mask at `+24` and in every row.
+    fn encode_fixed7_resource_flow_trailer(tag_db_id: u32, version: u16) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
+        payload.extend_from_slice(&version.to_le_bytes());
+        payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN as u16).to_le_bytes());
+        payload
+            .extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&6u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.to_le_bytes());
+        for flow_kind in 1u32..=6 {
+            payload.extend_from_slice(&tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&flow_kind.to_le_bytes());
+            payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            for slot in 0..7i64 {
+                payload.extend_from_slice(&(slot * 1_000).to_le_bytes());
+            }
+        }
+        payload
     }
 }

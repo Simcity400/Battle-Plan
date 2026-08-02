@@ -5318,6 +5318,146 @@ fn chunk3_folds_d45_v5_direct_history_as_cumulative_pointer_free_root() {
     assert_eq!(rows[0]["original_returned"], json!(true));
     assert_eq!(snapshot["_r2_direct_frd_transitions"]["hook_epoch"], json!(1));
     assert!(rows[0].get("pointer").is_none());
+    // delta_replay lane: the frame carries a v4 per-frame delta. The first
+    // frame's delta IS the whole history so far (base 1, cumulative 1); replay
+    // folds these deltas back into the full cumulative history.
+    let frd = &snapshot["_r2_direct_frd_transitions"];
+    assert_eq!(frd["schema_version"], json!(4));
+    assert_eq!(frd["delta_base_sequence"], json!(1));
+    assert_eq!(frd["cumulative_count"], json!(1));
+}
+
+/// delta_replay lane: two hours, each with one new FRD transition. The
+/// snapshots must carry DISJOINT, CONTIGUOUS per-hour deltas — hour 0 emits
+/// sequence 1 (base 1, cumulative 1), hour 1 emits ONLY sequence 2 (base 2,
+/// cumulative 2), never re-emitting hour 0's history. This is the property the
+/// replay accumulator folds back; a producer that re-shipped the whole history
+/// each hour would carry both rows in the second frame.
+#[test]
+fn chunk3_folds_d45_v5_direct_history_as_disjoint_per_hour_deltas() {
+    use direct_frd_transitions_live::{
+        DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let h0 = 16_959_360i64;
+    let h1 = h0 + 1;
+    let raw0 = raw_for(h0);
+    let raw1 = raw_for(h1);
+
+    let mut carrier = DirectEventCarrier::new();
+    let owner = carrier.allocate_instance_id().unwrap();
+    let subject = carrier.allocate_instance_id().unwrap();
+    let make_row = |game_hour_raw: i32| UnsequencedDirectEventRow {
+        kind: DirectEventKind::FocusCompleted,
+        thread_id: 23,
+        game_hour_raw,
+        root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+        owner_instance_id: owner,
+        subject_instance_id: subject,
+        argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+        owner_key: 1,
+        subject_token_hash: 1,
+        subject_key: 0,
+        input_bits: 0,
+        return_bits: 1,
+        before: DirectEventStateSummary::default(),
+        after: DirectEventStateSummary {
+            state_bits: 1 << 63,
+            ..DirectEventStateSummary::default()
+        },
+    };
+    let mask = DirectEventKind::FocusCompleted.root_mask_bit();
+    let root_mask = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK;
+
+    // Hour 0: capture + drain one row (sequence 1), drain_sequence 1.
+    carrier.capture(make_row(raw0)).unwrap();
+    let rows0 = carrier.drain_rows().unwrap();
+    let batch0 = DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 1,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: 2,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: rows0,
+    };
+    // Hour 1: the SAME carrier continues at sequence 2, drain_sequence 2.
+    carrier.capture(make_row(raw1)).unwrap();
+    let rows1 = carrier.drain_rows().unwrap();
+    let batch1 = DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 2,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: 3,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: rows1,
+    };
+
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push = |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+        seq += 1;
+        push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+    };
+    push(
+        &mut stream,
+        raw0,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&batch0),
+    );
+    push(
+        &mut stream,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+    push(
+        &mut stream,
+        raw1,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&batch1),
+    );
+    push(
+        &mut stream,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("chunk3_delta_test");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2, "two hours -> two snapshots");
+    let s0 = parse(&snaps[0].2);
+    let s1 = parse(&snaps[1].2);
+
+    let frd0 = &s0["_r2_direct_frd_transitions"];
+    assert_eq!(frd0["schema_version"], json!(4));
+    assert_eq!(frd0["delta_base_sequence"], json!(1));
+    assert_eq!(frd0["cumulative_count"], json!(1));
+    let rows0 = frd0["transitions"].as_array().expect("hour0 delta");
+    assert_eq!(rows0.len(), 1);
+    assert_eq!(rows0[0]["sequence"], json!(1));
+
+    let frd1 = &s1["_r2_direct_frd_transitions"];
+    assert_eq!(frd1["schema_version"], json!(4));
+    // Hour 1 carries ONLY its own new row (base 2), NOT hour 0's history.
+    assert_eq!(frd1["delta_base_sequence"], json!(2));
+    assert_eq!(frd1["cumulative_count"], json!(2));
+    let rows1 = frd1["transitions"].as_array().expect("hour1 delta");
+    assert_eq!(rows1.len(), 1, "second frame carries only its own delta");
+    assert_eq!(rows1[0]["sequence"], json!(2));
 }
 
 #[test]
@@ -10119,16 +10259,33 @@ fn append_d43_mts1_stockpiles(payload: &mut Vec<u8>, countries: &[(u32, &[(u32, 
 }
 
 fn append_d43_mtrf_resource_flow(payload: &mut Vec<u8>, countries: &[(u32, [[i64; 7]; 6])]) {
+    let widened = countries
+        .iter()
+        .map(|(tag_db_id, pools)| (*tag_db_id, pools.iter().map(|p| p.to_vec()).collect()))
+        .collect::<Vec<(u32, Vec<Vec<i64>>)>>();
+    append_d43_mtrf_resource_flow_with_count(payload, &widened, 7);
+}
+
+/// MTRF v3 with an explicit resource count. The width is a parameter because
+/// the value vector is count-prefixed: a builder that could only make
+/// seven-wide rows could not exercise the case the fixed vector made
+/// impossible.
+fn append_d43_mtrf_resource_flow_with_count(
+    payload: &mut Vec<u8>,
+    countries: &[(u32, Vec<Vec<i64>>)],
+    resource_count: u32,
+) {
+    let row_len = MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN + (resource_count as usize) * 8;
     payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
     payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION.to_le_bytes());
     payload
         .extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN as u16).to_le_bytes());
-    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(row_len as u16).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
     payload.extend_from_slice(&((countries.len() * 6) as u32).to_le_bytes());
     payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
-    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+    payload.extend_from_slice(&resource_count.to_le_bytes());
     payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.to_le_bytes());
     let kinds = [
         MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED,
@@ -10142,7 +10299,7 @@ fn append_d43_mtrf_resource_flow(payload: &mut Vec<u8>, countries: &[(u32, [[i64
         for (flow_kind, values_raw) in kinds.into_iter().zip(pools) {
             payload.extend_from_slice(&tag_db_id.to_le_bytes());
             payload.extend_from_slice(&flow_kind.to_le_bytes());
-            payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+            payload.extend_from_slice(&resource_count.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             for value in values_raw {
                 payload.extend_from_slice(&value.to_le_bytes());
@@ -10170,18 +10327,35 @@ fn append_d43_mtrh_factory_headers(payload: &mut Vec<u8>, rows: &[(u32, i32, i32
 }
 
 fn append_d43_mtrr_resource_rows(payload: &mut Vec<u8>, tag_db_ids: &[u32]) {
+    append_d43_mtrr_resource_rows_with_count(
+        payload,
+        tag_db_ids,
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+}
+
+/// The resource count is a parameter because `MTRR` is count-prefixed: a
+/// builder that could only make seven-resource trailers could not exercise the
+/// width the fixed vector made unrepresentable.
+fn append_d43_mtrr_resource_rows_with_count(
+    payload: &mut Vec<u8>,
+    tag_db_ids: &[u32],
+    resource_count: u32,
+    version: u16,
+) {
     payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
-    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&version.to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
-    payload.extend_from_slice(&(tag_db_ids.len() as u32 * 7).to_le_bytes());
+    payload.extend_from_slice(&(tag_db_ids.len() as u32 * resource_count).to_le_bytes());
     payload.extend_from_slice(&(tag_db_ids.len() as u32).to_le_bytes());
-    payload.extend_from_slice(&7u32.to_le_bytes());
+    payload.extend_from_slice(&resource_count.to_le_bytes());
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
     for tag_db_id in tag_db_ids {
-        for resource_index in 0..7u32 {
+        for resource_index in 0..resource_count {
             let oil = resource_index == 0;
             let balance = if oil { -4 } else { resource_index as i32 };
             payload.extend_from_slice(&tag_db_id.to_le_bytes());
@@ -10219,6 +10393,18 @@ fn append_d43_mtrr_resource_rows(payload: &mut Vec<u8>, tag_db_ids: &[u32]) {
 }
 
 fn append_d43_mtrd_classic_deal(payload: &mut Vec<u8>, exporter: u32, importer: u32) {
+    append_d43_mtrd_classic_deal_for_resource(payload, exporter, importer, 4);
+}
+
+/// The resource SLOT is a parameter: an MTRD row names a resource by slot and
+/// states no count of its own, so a fixture must be able to name a slot outside
+/// what the fold can name.
+fn append_d43_mtrd_classic_deal_for_resource(
+    payload: &mut Vec<u8>,
+    exporter: u32,
+    importer: u32,
+    resource_index: u32,
+) {
     payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
     payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION.to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes());
@@ -10237,7 +10423,7 @@ fn append_d43_mtrd_classic_deal(payload: &mut Vec<u8>, exporter: u32, importer: 
     // witness cannot silently drift away from the row fields.
     let deal_id = (u64::from(exporter) << 32)
         | (u64::from(importer) << 16)
-        | (u64::from(4u32) << 8)
+        | (u64::from(resource_index) << 8)
         | 1;
     for (owner, counterpart, direction) in [
         (
@@ -10253,7 +10439,7 @@ fn append_d43_mtrd_classic_deal(payload: &mut Vec<u8>, exporter: u32, importer: 
     ] {
         payload.extend_from_slice(&owner.to_le_bytes());
         payload.extend_from_slice(&counterpart.to_le_bytes());
-        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&resource_index.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&direction.to_le_bytes());
         payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA.to_le_bytes());
@@ -21824,5 +22010,253 @@ fn d93_equal_rosters_fold_identically_with_no_drop_note() {
             }),
         "equal rosters must fold with no skip and no drop note: {:?}",
         snap["provenance"]["notes"]
+    );
+}
+
+// -------------------------------------------------------------------------
+// Count-prefixed resource vector at the fold.
+// -------------------------------------------------------------------------
+
+/// (a) An eight-resource payload -- the shape the fixed vector could not state
+/// -- decodes through the fold's own parsers with every slot intact.
+///
+/// The fold's PROJECTION cannot name an eighth resource (see the boundary test
+/// below), so this exercises the decode path directly. Reverting either parser
+/// to a fixed seven-wide vector turns it red.
+#[test]
+fn d43_fold_parsers_decode_an_eight_resource_payload() {
+    let mut payload = d43_empty_payload();
+    let pools: Vec<Vec<i64>> = (0..6)
+        .map(|kind| (0..8i64).map(|slot| (kind + 1) * 1_000 + slot).collect())
+        .collect();
+    let mtrf_at = payload.len();
+    append_d43_mtrf_resource_flow_with_count(&mut payload, &[(67, pools.clone())], 8);
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        8,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+
+    let (flow, flow_count, flow_end) =
+        parse_market_trade_resource_flow_trailer(&payload, mtrf_at)
+            .expect("eight-resource MTRF must parse");
+    assert_eq!(flow_count, 8);
+    assert_eq!(flow_end, mtrr_at);
+    let country = flow.get(&67).expect("country pools");
+    assert_eq!(country.produced.as_deref(), Some(pools[0].as_slice()));
+    assert_eq!(country.base_export.as_deref(), Some(pools[5].as_slice()));
+
+    let (rows, row_count, rows_end) =
+        parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+            .expect("eight-resource MTRR must parse");
+    assert_eq!(row_count, 8);
+    assert_eq!(rows_end, payload.len());
+    let country_rows = rows.get(&67).expect("country rows");
+    assert_eq!(country_rows.len(), 8);
+    assert_eq!(country_rows[7].visible_order, 7);
+    assert_eq!(country_rows[7].descriptor_db_index, 8);
+}
+
+/// (e) A count past the shared admission ceiling is refused before the parser
+/// sizes anything from it.
+/// The trailer is CONSISTENT at the over-bound width -- matching `row_len`,
+/// matching row echoes, matching row bytes -- so the only thing standing
+/// between it and admission is the ceiling. A fixture that was over-bound only
+/// in its count field would be refused on width even with the ceiling removed,
+/// and would prove nothing.
+#[test]
+fn d43_fold_refuses_a_resource_count_above_the_admission_bound() {
+    let over = MAX_STRATEGIC_RESOURCE_COUNT + 1;
+    let mut payload = d43_empty_payload();
+    let mtrf_at = payload.len();
+    append_d43_mtrf_resource_flow_with_count(
+        &mut payload,
+        &[(67, vec![vec![0i64; over as usize]; 6])],
+        over,
+    );
+
+    let error = parse_market_trade_resource_flow_trailer(&payload, mtrf_at)
+        .expect_err("a count past the ceiling must be refused");
+    assert!(
+        error.contains("resource_count") && error.contains(&over.to_string()),
+        "{error}"
+    );
+}
+
+/// The `MTRF` row match that dispatches on `flow_kind` has an `unreachable!()`
+/// arm, and it is unreachable only because the validation above it is
+/// exhaustive over versions. Naming the current version there instead of "not
+/// legacy" left v2 unvalidated and turned a malformed stream into a panic.
+#[test]
+fn d43_fold_refuses_an_mtrf_v2_row_with_an_unsupported_flow_kind() {
+    let mut payload = d43_empty_payload();
+    let mtrf_at = payload.len();
+    append_d43_mtrf_resource_flow_v2_fixed_seven(&mut payload, 67);
+    // Row 0's flow_kind: 1 -> 7, outside the six-kind matrix.
+    let row0 = mtrf_at + MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN;
+    payload[row0 + 4..row0 + 8].copy_from_slice(&7u32.to_le_bytes());
+
+    let error = parse_market_trade_resource_flow_trailer(&payload, mtrf_at)
+        .expect_err("an unsupported v2 flow_kind must be refused, not panicked on");
+    assert!(error.contains("unsupported flow_kind 7"), "{error}");
+}
+
+/// The identity gate read its width from `MTRR`/`MTRF` only. A payload carrying
+/// classic deals and neither of those walked past it, and the projection then
+/// silently withheld the country's deals instead of refusing.
+#[test]
+fn d43_fold_refuses_an_mtrd_only_payload_that_names_a_slot_it_cannot_name() {
+    let mut payload = d43_empty_payload();
+    // Slot 7 is inside the admission ceiling and outside what the fold can name.
+    append_d43_mtrd_classic_deal_for_resource(&mut payload, 34, 67, 7);
+
+    let mut fold = WorldFold::new("d43_mtrd_only_identity_boundary");
+    let error = fold
+        .fold_market_trade(&payload)
+        .expect_err("an unnameable deal slot must be refused, not silently withheld");
+    assert!(
+        error.contains("resource identity is not carried on the wire")
+            && error.contains("MTRD")
+            && error.contains("slot 7"),
+        "{error}"
+    );
+}
+
+/// `MTRF` v2: the pre-widening six-kind matrix, seven `i64`s per row and the
+/// seven-bit mask at `+24` and in every row.
+fn append_d43_mtrf_resource_flow_v2_fixed_seven(payload: &mut Vec<u8>, tag_db_id: u32) {
+    payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION.to_le_bytes());
+    payload
+        .extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&6u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.to_le_bytes());
+    for flow_kind in 1u32..=6 {
+        payload.extend_from_slice(&tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&flow_kind.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for slot in 0..7i64 {
+            payload.extend_from_slice(&(slot * 1_000).to_le_bytes());
+        }
+    }
+}
+
+/// (d) A stream one version past what this decoder knows is refused with its
+/// version named -- never reinterpreted under the grammar the decoder knows.
+/// This is the branch an older decoder takes on a v3 stream.
+#[test]
+fn d43_fold_refuses_a_resource_flow_version_it_does_not_know() {
+    let mut payload = d43_empty_payload();
+    let mtrf_at = payload.len();
+    append_d43_mtrf_resource_flow_with_count(&mut payload, &[(67, vec![vec![0i64; 7]; 6])], 7);
+    let future = MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION + 1;
+    payload[mtrf_at + 4..mtrf_at + 6].copy_from_slice(&future.to_le_bytes());
+
+    let error = parse_market_trade_resource_flow_trailer(&payload, mtrf_at)
+        .expect_err("an unknown version must be refused");
+    assert!(
+        error.contains("version") && error.contains(&future.to_string()),
+        "{error}"
+    );
+}
+
+/// (c) A pre-widening stream still reads. `MTRR` v1 pins the count to seven and
+/// the new decoder applies exactly the v1 rule to it.
+#[test]
+fn d43_fold_still_reads_a_legacy_mtrr_v1_trailer() {
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
+    );
+
+    let (rows, count, _) = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect("a v1 trailer must still parse");
+    assert_eq!(count, 7);
+    assert_eq!(rows.get(&67).expect("rows").len(), 7);
+}
+
+/// v1 is exactly-seven and nothing else: a v1 header claiming eight is refused,
+/// so widening a stream cannot be done by editing the count under the old
+/// version stamp.
+#[test]
+fn d43_fold_refuses_a_legacy_mtrr_v1_trailer_that_claims_eight() {
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        8,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
+    );
+
+    let error = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect_err("v1 admits seven and nothing else");
+    assert!(error.contains("MTRR header shape is invalid"), "{error}");
+}
+
+/// The BOUNDARY, asserted rather than assumed: the wire states an eight-
+/// resource set, the fold decodes it, and the fold refuses to PROJECT it --
+/// because the only resource token it has is a positional table of vanilla's
+/// seven names, and naming a mod's eighth resource from that table would be a
+/// fabricated identity.
+///
+/// The refusal is typed and names both counts. Deleting the gate is the
+/// mutation; that would put the eighth slot into a `MARKET_TRADE_RESOURCE_NAMES`
+/// lookup that cannot answer for it.
+#[test]
+fn d43_fold_refuses_to_project_a_resource_set_it_cannot_name() {
+    let mut payload = d43_empty_payload();
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        8,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+
+    let mut fold = WorldFold::new("d43_resource_wire_boundary");
+    let error = fold
+        .fold_market_trade(&payload)
+        .expect_err("an unnameable resource set must be refused, not projected");
+    assert!(
+        error.contains("resource identity is not carried on the wire")
+            && error.contains("states 8 resources")
+            && error.contains("can name only 7"),
+        "{error}"
+    );
+}
+
+/// Two trailers in one payload that state different widths describe two
+/// different games; picking either would publish one family against the
+/// other's slot numbering.
+#[test]
+fn d43_fold_refuses_a_payload_whose_two_trailers_state_different_widths() {
+    let mut payload = d43_empty_payload();
+    append_d43_mtrf_resource_flow_with_count(&mut payload, &[(67, vec![vec![0i64; 8]; 6])], 8);
+    append_d43_mtrr_resource_rows_with_count(
+        &mut payload,
+        &[67],
+        7,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+    );
+
+    let mut fold = WorldFold::new("d43_resource_wire_boundary");
+    let error = fold
+        .fold_market_trade(&payload)
+        .expect_err("disagreeing widths must be refused");
+    assert!(
+        error.contains("MTRF resource_count 8 != MTRR resource_count 7"),
+        "{error}"
     );
 }

@@ -1012,6 +1012,8 @@ mod tests {
                 observed_kind_mask: 1 << 5,
                 producer_complete: true,
                 evidence_fixture,
+                delta_base_sequence: None,
+                cumulative_count: None,
                 transitions: vec![row.clone()],
             }),
             transitions: vec![row],

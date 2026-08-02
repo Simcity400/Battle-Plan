@@ -173,6 +173,100 @@ Validated current-build direct offsets:
 - `CPurchaseContract+0x1E0`: factory CIC progress raw, 63/63 exact.
 - `CPurchaseContract+0x1E8`: equipment-transfer progress raw, 63/63 exact.
 
+## Strategic-resource trailers: `MTRR` and `MTRF`
+
+Two trailers carry a country's strategic resources. **Neither has a fixed
+width**: `common/resources` is moddable content, so the resource count is a
+field on the wire, discovered from the live `CStrategicResourceDatabase`, and
+every reader takes it from the stream.
+
+### `MTRR` -- per-country, per-resource display rows
+
+| offset | width | field |
+|---|---|---|
+| `+0`  | `[u8; 4]` | magic `MTRR` |
+| `+4`  | `u16` | schema version -- `1` fixed-seven, `2` count-prefixed |
+| `+6`  | `u16` | header length, `32` |
+| `+8`  | `u16` | row length, `64` |
+| `+10` | `u16` | reserved, `0` |
+| `+12` | `u32` | row count, `= country_count * resource_count` |
+| `+16` | `u32` | country count |
+| `+20` | `u32` | **resource count** |
+| `+24` | `u32` | display scale, `1` |
+| `+28` | `u32` | reserved, `0` |
+
+Rows are 64 bytes and unchanged between versions. `resource_index` and
+`visible_order` are bounded by the header's `resource_count`, not by seven, and
+each country's `visible_order` set must be exactly `0..resource_count`.
+
+- **v1** admits `resource_count == 7` and nothing else. A v1 header claiming any
+  other count is refused, so a stream cannot be widened by editing the count
+  under the old version stamp.
+- **v2** admits `1..=MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`. Producers emit v2.
+
+### `MTRF` -- per-country resource-flow pools
+
+| offset | width | field |
+|---|---|---|
+| `+0`  | `[u8; 4]` | magic `MTRF` |
+| `+4`  | `u16` | schema version -- `1` legacy exported-only, `2` fixed-seven six-kind matrix, `3` count-prefixed six-kind matrix |
+| `+6`  | `u16` | header length, `32` |
+| `+8`  | `u16` | row length -- `72` in v1/v2, `16 + 8 * resource_count` in v3 |
+| `+10` | `u16` | reserved, `0` |
+| `+12` | `u32` | row count |
+| `+16` | `u32` | exported rows (v1) / country count (v2, v3) |
+| `+20` | `u32` | scale, `100000` |
+| `+24` | `u32` | **resource mask `0x7F` (v1, v2) / resource count (v3)** |
+| `+28` | `u32` | reserved `0` (v1) / kind mask `0x3F` (v2, v3) |
+
+Row:
+
+| offset | width | field |
+|---|---|---|
+| `+0`  | `u32` | `tag_db_id` |
+| `+4`  | `u32` | `flow_kind`, `1..=6` |
+| `+8`  | `u32` | resource mask `0x7F` (v1, v2) / resource count echo (v3) |
+| `+12` | `u32` | reserved, `0` |
+| `+16` | `i64 * resource_count` | per-resource values |
+
+The row's `+8` must equal the header's `+24`, so the header and the rows cannot
+drift apart. Producers emit v3.
+
+### Version policy
+
+**A version never changes meaning; a reading is never inferred.** `+24` is a
+seven-bit mask in v1/v2 and a count in v3, and the *version field* -- never the
+value -- decides which. A decoder that meets a version outside its accepted set
+refuses the trailer with the version in the reason and decodes no rows. That is
+what makes an old reader safe against a new stream: it cannot read a v3 header
+under the v2 grammar, compare a small count against `0x7F`, and mis-size every
+row.
+
+v1 and v2 stay readable under exactly the validation they shipped with. No
+compact stream carrying these trailers exists on disk (the `.battleplan`
+fixtures are fold output, not compact records), so this is insurance for
+retained streams rather than a data obligation.
+
+### Admission bound
+
+`compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT` is the
+one ceiling the producer and every consumer apply. It is the collector's own
+already-shipped structural guard on the `CStrategicResourceDatabase` item count
+at `+0x34`, promoted to a shared constant so no side invents its own; the
+constant carries its full provenance, including that it is a structural guard
+rather than an engine-proven maximum. A count outside `1..=MAX` is refused
+before anything is sized from it, so `row_count * resource_count * 8` cannot be
+driven by two stream-supplied `u32`s.
+
+### Boundary: resource identity is not on this wire
+
+The trailers carry each resource's SLOT and its `descriptor_db_index`. They do
+not carry its token. The fold's only source of a resource name is a positional
+table of vanilla's seven, so a set that table cannot name is refused at fold
+ingest with a reason naming both counts -- decoded, never projected under a
+fabricated identity. Closing this needs one RE offset: the descriptor's own
+token or name hash inside `CStrategicResource`, carried as an `MTRR` row column.
+
 ## Optional Lend-Lease Mapping Trailer
 
 Lane-local `MTLL` trailer, appended after the v1 purchase-contract rows:

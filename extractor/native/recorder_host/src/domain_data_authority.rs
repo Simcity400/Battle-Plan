@@ -303,15 +303,22 @@ pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
 // MTRF: optional market-trade resource-flow trailer (per-country resource
 // import/export flow), appended AFTER the MTD1 detail trailer. 32-byte header
 // (magic, version u16, header_len u16, row_len u16, reserved u16, row_count u32,
-// row_count-dup u32, scale u32, resource_mask u32, reserved u32); then row_count
-// fixed 72-byte rows (tag_db_id u32, flow_kind u32, resource_mask u32, reserved
-// u32, then 7 x i64 per-resource values). Mirrors the collector's
+// row_count-dup/country_count u32, scale u32, resource_mask-or-count u32,
+// reserved/kind_mask u32); then row_count rows of (tag_db_id u32, flow_kind u32,
+// resource_mask-or-count u32, reserved u32, then N x i64 per-resource values).
+//
+// N is seven in v1 and v2, which is why a mod defining an eighth strategic
+// resource could not be published. v3 states the count at `+24` and derives
+// `row_len` from it. Mirrors the collector's
 // append_compact_market_trade_resource_flow_trailer wire layout.
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 2;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION: u16 = 2;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 3;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = 32;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+/// v1/v2 only. A v3 row is `ROW_HEADER_LEN + 8 * resource_count`.
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize = 72;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize = 16;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = 0x3F;
 pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = b"MTRH";
@@ -319,10 +326,15 @@ pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 = 1;
 pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = 24;
 pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 2;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
-pub const COMPACT_MARKET_TRADE_RESOURCE_COUNT: u32 = 7;
+/// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
+pub const COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = 7;
+/// The one shared admission ceiling for a count-prefixed resource vector.
+pub const COMPACT_MAX_STRATEGIC_RESOURCE_COUNT: u32 =
+    compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 = 1;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 2;
@@ -11170,7 +11182,7 @@ fn decode_compact_market_trade_data_payload(
                 offset,
                 payload,
                 cursor,
-                COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION,
+                &[COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION],
                 COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN,
                 COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN,
                 "MTRH",
@@ -11182,7 +11194,10 @@ fn decode_compact_market_trade_data_payload(
                 offset,
                 payload,
                 cursor,
-                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+                &[
+                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
+                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+                ],
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN,
                 "MTRR",
@@ -11643,21 +11658,50 @@ fn decode_compact_market_trade_resource_flow_trailer(
     let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
     let count_or_country_count = read_u32_le(payload, trailer_offset + 16) as usize;
     let scale_raw = read_u32_le(payload, trailer_offset + 20);
-    let resource_mask = read_u32_le(payload, trailer_offset + 24);
+    // `+24` is a seven-bit resource MASK in v1/v2 and the resource COUNT in v3.
+    // The version decides which reading applies; a stream is never read under a
+    // grammar it did not declare.
+    let mask_or_count = read_u32_le(payload, trailer_offset + 24);
     let reserved_or_kind_mask = read_u32_le(payload, trailer_offset + 28);
 
-    if ![
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION,
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION,
-    ]
-    .contains(&version)
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF version {version} is unsupported"
-        ));
-    }
+    let resource_count = match version {
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION
+        | COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION => {
+            if mask_or_count != COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTRF resource_mask {mask_or_count:#x} != {:#x}",
+                    COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
+                ));
+            }
+            COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT
+        }
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION => {
+            if !(1..=COMPACT_MAX_STRATEGIC_RESOURCE_COUNT).contains(&mask_or_count) {
+                // Return early: `expected_len` below multiplies by a row length
+                // derived from this count, so an out-of-bound count must not be
+                // trusted to size anything.
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTRF v3 resource_count {mask_or_count} is outside 1..={COMPACT_MAX_STRATEGIC_RESOURCE_COUNT}"
+                ));
+                return trailer_offset;
+            }
+            mask_or_count
+        }
+        _ => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTRF version {version} is unsupported"
+            ));
+            return trailer_offset;
+        }
+    };
+    let expected_row_len = if version == COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION {
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN
+            .saturating_add((resource_count as usize).saturating_mul(8))
+    } else {
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN
+    };
     if header_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN
-        || row_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
+        || row_len != expected_row_len
         || reserved0 != 0
     {
         // Return early: `expected_len` below multiplies by the attacker-supplied
@@ -11681,18 +11725,12 @@ fn decode_compact_market_trade_resource_flow_trailer(
         || reserved_or_kind_mask != COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF v2 country/kind shape is invalid"
+            "offset {offset}: market trade MTRF country/kind shape is invalid"
         ));
     }
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
         summary.parse_errors.push(format!(
             "offset {offset}: market trade MTRF scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
-        ));
-    }
-    if resource_mask != COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF resource_mask {resource_mask:#x} != {:#x}",
-            COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
         ));
     }
 
@@ -11715,7 +11753,7 @@ fn decode_compact_market_trade_sized_trailer(
     offset: usize,
     payload: &[u8],
     trailer_offset: usize,
-    expected_version: u16,
+    accepted_versions: &[u16],
     expected_header_len: usize,
     expected_row_len: usize,
     label: &str,
@@ -11743,13 +11781,13 @@ fn decode_compact_market_trade_sized_trailer(
     let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
     let reserved0 = read_u16_le(payload, trailer_offset + 10);
     let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
-    if version != expected_version
+    if !accepted_versions.contains(&version)
         || header_len != expected_header_len
         || row_len != expected_row_len
         || reserved0 != 0
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade {label} header shape is invalid"
+            "offset {offset}: market trade {label} header shape is invalid (version {version})"
         ));
         return trailer_offset;
     }
@@ -11763,11 +11801,21 @@ fn decode_compact_market_trade_sized_trailer(
         let resource_count = read_u32_le(payload, trailer_offset + 20);
         let display_scale = read_u32_le(payload, trailer_offset + 24);
         let reserved1 = read_u32_le(payload, trailer_offset + 28);
-        resource_count == COMPACT_MARKET_TRADE_RESOURCE_COUNT
+        // The count is a wire field. v1 pinned it to seven; v2 admits whatever
+        // the live resource database reported, under the one shared ceiling.
+        // This is the SAME predicate the fold applies -- both sides bound the
+        // count by `MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`, so neither can admit
+        // a stream the other refuses.
+        let count_admitted = if version == COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION
+        {
+            resource_count == COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT
+        } else {
+            (1..=COMPACT_MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
+        };
+        count_admitted
             && display_scale == 1
             && reserved1 == 0
-            && row_count
-                == country_count.saturating_mul(COMPACT_MARKET_TRADE_RESOURCE_COUNT as usize)
+            && row_count == country_count.saturating_mul(resource_count as usize)
     } else {
         false
     };

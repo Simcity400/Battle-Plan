@@ -1105,6 +1105,33 @@ hash would strand physically-present, losslessly-encoded data behind a version m
 versioning inconvenience into unreadable data. A reader that meets an unknown hash *and* cannot
 find its definition refuses that domain and reports a gap; with the definition present it decodes.
 
+### Content counts are never constants
+
+**A count that a mod can change is a field, not a constant** — on the wire, in the producer, and
+in every reader. The rule is not about a particular domain: `common/resources` decides how many
+strategic resources exist, `common/ideologies` how many ideologies, and a format that compiles any
+of those numbers in cannot publish the mod's game at all. It publishes nothing, because a producer
+that finds a width it cannot state fails closed.
+
+Three properties make a stated count safe, and all three are required:
+
+- **An upper admission bound from a contract constant with recorded provenance**, shared by the
+  producer and every consumer, so a corrupt count cannot drive an allocation and no side admits a
+  stream another refuses.
+- **A version that selects the grammar.** When widening reinterprets a field — a mask becoming a
+  count, say — the version field decides the reading, never the value. A reader meeting a version
+  outside its accepted set refuses with the version in its reason; it must never read the new
+  header under the old grammar.
+- **One count per payload.** Two segments of one payload that each state a width and disagree
+  describe two different games; either choice publishes one family against the other's numbering.
+
+The identities are a separate obligation from the count, and a count-prefixed vector does not
+discharge it: a reader that knows how many resources there are but names them from a compiled-in
+list has moved the defect, not removed it. Carry the content token, or refuse to name.
+
+The compact `H4CR` trailers (§14, superseded) `MTRR` v2 and `MTRF` v3 are the worked example, and
+`extractor/native/lanes/market_trade_live/README.md` records their grammar.
+
 A schema change — game build, mod set, cadence, field added or retired — starts a new block under
 the new hash. **The state part forces a `BASELINE` in that block. The event part does not**: it has
 no baselines, and its continuity is carried by the frontier, which crosses a schema change unbroken
