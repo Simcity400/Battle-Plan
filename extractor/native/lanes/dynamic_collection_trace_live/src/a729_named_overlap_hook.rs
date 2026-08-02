@@ -15,6 +15,7 @@ use crate::{
     TraceFrame,
 };
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
@@ -262,9 +263,9 @@ impl A729NamedOverlapHookOwner {
             if let Err(status) = unsafe { inline_detour::enable(targets[index] as *mut c_void) } {
                 CALLBACKS_OPEN.store(false, Ordering::Release);
                 for target in targets.iter().take(index) {
-                    let _ = unsafe { MinHook::disable_hook(*target as *mut c_void) };
+                    let _ = unsafe { inline_detour::disable(*target as *mut c_void) };
                 }
-                let _ = unsafe { MinHook::disable_hook(targets[5] as *mut c_void) };
+                let _ = unsafe { inline_detour::disable(targets[5] as *mut c_void) };
                 wait_for_quiescence(Duration::from_secs(30)).map_err(|error| {
                     format!("named-overlap rollback left disabled hooks installed: {error}")
                 })?;
@@ -308,10 +309,10 @@ impl A729NamedOverlapHookOwner {
         CALLBACKS_OPEN.store(false, Ordering::Release);
         // Stop all producers before removing the shared layout consumer.
         for target in self.targets.iter().take(5) {
-            match unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+            match unsafe { inline_detour::disable(*target as *mut c_void) } {
                 Ok(())
-                | Err(MH_STATUS::MH_ERROR_DISABLED)
-                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                 Err(status) => {
                     return Err(format!(
                         "named-overlap hook {target:#x} disable failed: {status}"
@@ -319,10 +320,10 @@ impl A729NamedOverlapHookOwner {
                 }
             }
         }
-        match unsafe { MinHook::disable_hook(self.targets[5] as *mut c_void) } {
+        match unsafe { inline_detour::disable(self.targets[5] as *mut c_void) } {
             Ok(())
-            | Err(MH_STATUS::MH_ERROR_DISABLED)
-            | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 return Err(format!(
                     "named-overlap layout hook disable failed: {status}"
@@ -332,8 +333,9 @@ impl A729NamedOverlapHookOwner {
         wait_for_quiescence(Duration::from_secs(30))?;
         let mut removal_failures = Vec::new();
         for target in self.targets.iter().rev() {
-            match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
-                Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            match unsafe { inline_detour::remove(*target as *mut c_void) } {
+                Ok(())
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                 Err(status) => removal_failures.push(format!(
                     "named-overlap hook {target:#x} removal failed: {status}"
                 )),
@@ -813,8 +815,8 @@ fn remove_created(
     created: usize,
 ) {
     for index in (0..created).rev() {
-        let _ = unsafe { MinHook::disable_hook(targets[index] as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(targets[index] as *mut c_void) };
+        let _ = unsafe { inline_detour::disable(targets[index] as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(targets[index] as *mut c_void) };
         originals[index].store(0, Ordering::Release);
     }
 }

@@ -57,11 +57,6 @@ const MEM_RELEASE: Dword = 0x8000;
 const PAGE_READWRITE: Dword = 0x04;
 const PAGE_EXECUTE_READ: Dword = 0x20;
 const PAGE_EXECUTE_READWRITE: Dword = 0x40;
-const TH32CS_SNAPTHREAD: Dword = 0x0000_0004;
-const THREAD_SUSPEND_RESUME: Dword = 0x0002;
-const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
-const ERROR_INVALID_HANDLE: Dword = 6;
-const ERROR_INVALID_PARAMETER: Dword = 87;
 const RELAY_LEN: usize = 14;
 const ALLOCATION_GRANULARITY: usize = 0x1_0000;
 const MAX_REL32_DISTANCE: usize = 0x7FFF_0000;
@@ -82,17 +77,6 @@ const D90_HOOK_EXPECTATION: ExpectedRvaHook = ExpectedRvaHook {
     primitive_id: D90_REL32_CALLSITE_PRIMITIVE_ID,
     original_prefix: &A729_CALL_BYTES,
 };
-
-#[repr(C)]
-struct ThreadEntry32 {
-    size: Dword,
-    usage: Dword,
-    thread_id: Dword,
-    owner_process_id: Dword,
-    base_priority: i32,
-    delta_priority: i32,
-    flags: Dword,
-}
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -118,18 +102,8 @@ extern "system" {
         bytes_read: *mut usize,
     ) -> Bool;
     fn GetCurrentProcess() -> Handle;
-    fn GetCurrentProcessId() -> Dword;
-    fn GetCurrentThreadId() -> Dword;
     fn GetModuleHandleW(module_name: *const u16) -> Handle;
     fn GetModuleFileNameW(module: Handle, filename: *mut u16, size: Dword) -> Dword;
-    fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
-    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn OpenThread(access: Dword, inherit: Bool, thread_id: Dword) -> Handle;
-    fn SuspendThread(thread: Handle) -> Dword;
-    fn ResumeThread(thread: Handle) -> Dword;
-    fn CloseHandle(handle: Handle) -> Bool;
-    fn GetLastError() -> Dword;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,10 +197,16 @@ pub enum ConvoyTerminalInstallError {
     RelayFree,
     RelayDrift,
     Rel32OutOfRange,
-    ThreadSnapshot,
-    ThreadEnumeration,
-    ThreadOpen(Dword),
-    ThreadSuspend(Dword),
+    /// The process could not be frozen, so NOTHING was patched or unpatched.
+    /// The typed refusal is the shared one: which thread, why, and the fact
+    /// that no target byte was touched. The four separate thread-failure
+    /// variants this replaced could each be produced by a different reading of
+    /// the same OS condition, and none of them could say "the enumeration was
+    /// truncated" at all.
+    FreezeRefused(inline_detour::FreezeRefusal),
+    /// A frozen thread was stopped inside the bytes about to be rewritten, so
+    /// restoring or installing them would tear its instruction stream.
+    InstructionPointerInPatchSite,
     ByteGateDrift,
     PatchProtect,
     PatchFlush,
@@ -1571,7 +1551,22 @@ fn install_convoy_terminal_hook_inner(
             return Err(ConvoyTerminalInstallError::Rel32OutOfRange);
         }
     };
-    let suspended = unsafe { SuspendedProcessThreads::suspend_all_other_threads()? };
+    let suspended = suspend_all_other_threads()?;
+    // The five bytes about to be rewritten, and the relay they will branch to.
+    // Both are asked about while the freeze is held, so the answer cannot go
+    // stale between here and the write below.
+    let patch_ranges = [
+        (
+            prepared.hook_address,
+            prepared.hook_address + A729_CALL_BYTES.len(),
+        ),
+        (relay as usize, relay as usize + RELAY_LEN),
+    ];
+    if let Err(error) = patch_sites_are_clear(&suspended, &patch_ranges) {
+        drop(suspended);
+        unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+        return Err(error);
+    }
     if prepare_a729_hook(&memory, module_base, executable_sha256).is_err() {
         drop(suspended);
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
@@ -1800,7 +1795,19 @@ fn restore_and_quiesce_convoy_terminal_hook(
     };
     TEARDOWN.store(true, Ordering::Release);
     if !installed.patch_restored {
-        let suspended = unsafe { SuspendedProcessThreads::suspend_all_other_threads()? };
+        let suspended = suspend_all_other_threads()?;
+        // Restoring the callsite tears the instruction stream of a thread
+        // parked inside it exactly as installing does, and the relay is freed
+        // afterwards, so a thread inside the relay is the same fault one step
+        // later. Both are refused here rather than discovered afterwards.
+        let patch_ranges = [
+            (installed.callsite, installed.callsite + 5),
+            (installed.relay, installed.relay + RELAY_LEN),
+        ];
+        if let Err(error) = patch_sites_are_clear(&suspended, &patch_ranges) {
+            drop(suspended);
+            return Err(error);
+        }
         let memory = ProcessMemory;
         let mut current = [0u8; 5];
         if !memory.read_exact(installed.callsite, &mut current) {
@@ -2148,78 +2155,129 @@ unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), ConvoyTerminalI
     Ok(())
 }
 
-struct SuspendedProcessThreads {
-    handles: Vec<Handle>,
+/// The process freeze D90 patches under.
+///
+/// It used to be hand-rolled here, with three holes the shared freeze closes:
+/// the enumeration ended on any `Thread32Next` stop and only checked
+/// `GetLastError` afterwards, which reads a stale code as often as a fresh one;
+/// it enumerated exactly once, so a thread created after the snapshot ran
+/// through the patch; and it opened threads without `THREAD_GET_CONTEXT`, so it
+/// could not ask where a suspended thread was stopped and therefore never
+/// asked. The shared freeze refuses a broken enumeration, iterates to a fixed
+/// point, and hands back handles this module can read a context from -- which
+/// is what makes `patch_sites_are_clear_of_every_frozen_thread` below possible
+/// at all.
+fn suspend_all_other_threads() -> Result<inline_detour::ProcessFreeze, ConvoyTerminalInstallError> {
+    inline_detour::freeze_process().map_err(ConvoyTerminalInstallError::FreezeRefused)
 }
 
-impl SuspendedProcessThreads {
-    unsafe fn suspend_all_other_threads() -> Result<Self, ConvoyTerminalInstallError> {
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err(ConvoyTerminalInstallError::ThreadSnapshot);
-        }
-        let process_id = unsafe { GetCurrentProcessId() };
-        let current_thread_id = unsafe { GetCurrentThreadId() };
-        let mut entry = ThreadEntry32 {
-            size: core::mem::size_of::<ThreadEntry32>() as Dword,
-            usage: 0,
-            thread_id: 0,
-            owner_process_id: 0,
-            base_priority: 0,
-            delta_priority: 0,
-            flags: 0,
-        };
-        let mut handles = Vec::new();
-        let mut present = unsafe { Thread32First(snapshot, &mut entry) } != 0;
-        while present {
-            if entry.owner_process_id == process_id && entry.thread_id != current_thread_id {
-                let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.thread_id) };
-                if handle.is_null() {
-                    let error = unsafe { GetLastError() };
-                    if error == ERROR_INVALID_PARAMETER {
-                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                    unsafe { CloseHandle(snapshot) };
-                    resume_and_close(&mut handles);
-                    return Err(ConvoyTerminalInstallError::ThreadOpen(entry.thread_id));
-                }
-                if unsafe { SuspendThread(handle) } == Dword::MAX {
-                    let error = unsafe { GetLastError() };
-                    unsafe { CloseHandle(handle) };
-                    if error == ERROR_INVALID_HANDLE || error == ERROR_INVALID_PARAMETER {
-                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                    unsafe { CloseHandle(snapshot) };
-                    resume_and_close(&mut handles);
-                    return Err(ConvoyTerminalInstallError::ThreadSuspend(entry.thread_id));
-                }
-                handles.push(handle);
-            }
-            present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-        }
-        let enumeration_error = unsafe { GetLastError() };
-        unsafe { CloseHandle(snapshot) };
-        if enumeration_error != 0 && enumeration_error != 18 {
-            resume_and_close(&mut handles);
-            return Err(ConvoyTerminalInstallError::ThreadEnumeration);
-        }
-        Ok(Self { handles })
+/// Refuse if any frozen thread is stopped inside the bytes about to be
+/// rewritten.
+///
+/// NEW WITH THE MIGRATION, and stated as such: the hand-rolled suspender could
+/// not ask this question, so D90 used to rewrite its five-byte callsite with a
+/// thread possibly parked inside it. The relay is included because the restore
+/// path frees it, and a thread inside a freed relay is the same crash one step
+/// later.
+fn patch_sites_are_clear(
+    suspended: &inline_detour::ProcessFreeze,
+    ranges: &[(usize, usize)],
+) -> Result<(), ConvoyTerminalInstallError> {
+    if suspended
+        .any_instruction_pointer_in(ranges)
+        .map_err(ConvoyTerminalInstallError::FreezeRefused)?
+    {
+        return Err(ConvoyTerminalInstallError::InstructionPointerInPatchSite);
     }
+    Ok(())
 }
 
-impl Drop for SuspendedProcessThreads {
-    fn drop(&mut self) {
-        resume_and_close(&mut self.handles);
+#[cfg(test)]
+mod freeze_call_site_tests {
+    /// This module's production text, up to its test modules.
+    ///
+    /// A text pin for the same reason ARC1's is: D90's installer refuses before
+    /// it reaches the freeze unless the running process is the exact a729
+    /// `hoi4.exe`, so no offline test can drive it far enough to observe a
+    /// freeze counter move.
+    fn production_code() -> String {
+        let source = include_str!("convoy_terminal_hook_windows.rs").replace("\r\n", "\n");
+        source
+            .split_once("#[cfg(test)]\nmod ")
+            .expect("this module has a test module")
+            .0
+            .to_string()
     }
-}
 
-fn resume_and_close(handles: &mut Vec<Handle>) {
-    for handle in handles.drain(..).rev() {
-        unsafe {
-            ResumeThread(handle);
-            CloseHandle(handle);
+    /// Falsifiable: fails if D90 ever rewrites its five-byte callsite without
+    /// the shared process freeze, or without first proving no frozen thread is
+    /// parked inside the callsite or the relay.
+    ///
+    /// The instruction-pointer check is NEW with the migration -- the
+    /// hand-rolled suspender opened threads without `THREAD_GET_CONTEXT` and so
+    /// could not ask -- which makes it exactly the kind of guard a later edit
+    /// removes as redundant. It is not: a thread stopped inside those five
+    /// bytes resumes into a half-old, half-new instruction stream, and the
+    /// restore path additionally frees the relay underneath it.
+    #[test]
+    fn every_d90_code_mutation_happens_under_the_shared_freeze() {
+        let production = production_code();
+        for (signature, write) in [
+            ("fn install_convoy_terminal_hook_inner(", "write_code(prepared.hook_address"),
+            (
+                "fn restore_and_quiesce_convoy_terminal_hook(",
+                "write_code(installed.callsite",
+            ),
+        ] {
+            let body = production
+                .split_once(signature)
+                .unwrap_or_else(|| panic!("{signature} is declared in production"))
+                .1;
+            let freeze = body
+                .find("suspend_all_other_threads()")
+                .unwrap_or_else(|| panic!("{signature} must freeze the process"));
+            let clear = body
+                .find("patch_sites_are_clear(&suspended,")
+                .unwrap_or_else(|| {
+                    panic!("{signature} must prove the patch sites are clear of frozen threads")
+                });
+            let mutation = body
+                .find(write)
+                .unwrap_or_else(|| panic!("{signature} must still contain {write}"));
+            assert!(
+                freeze < clear && clear < mutation,
+                "{signature}: the order must be freeze, then check, then write \
+                 (freeze at {freeze}, check at {clear}, write at {mutation})"
+            );
         }
+    }
+
+    /// Falsifiable: fails if this module reaches for a private suspender again.
+    ///
+    /// The names are assembled from fragments rather than written whole. This
+    /// file is scanned by `inline_detour`'s workspace-wide suspender ban, and a
+    /// literal list here would BE a violation of it -- which is exactly how the
+    /// first version of this test failed: green in its own crate, red in the
+    /// workspace run that scans this file.
+    #[test]
+    fn d90_declares_no_thread_suspender_of_its_own() {
+        let production = production_code();
+        for (prefix, call) in [
+            ("Suspend", "Thread("),
+            ("Open", "Thread("),
+            ("Thread32", "First("),
+            ("Thread32", "Next("),
+        ] {
+            let banned = format!("{prefix}{call}");
+            assert!(
+                !production.contains(&banned),
+                "D90 must not call {banned} itself; its private suspender read any \
+                 stop of the thread walk as the end of the list, and enumerated once"
+            );
+        }
+        assert!(
+            production.contains("inline_detour::freeze_process()"),
+            "D90 rewrites live bytes and must take the shared freeze"
+        );
     }
 }

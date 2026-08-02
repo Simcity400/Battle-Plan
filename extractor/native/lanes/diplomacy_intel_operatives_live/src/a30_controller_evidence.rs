@@ -19,6 +19,7 @@ use crate::cipher_controller::{
 };
 use crate::extractor::{Domain53Memory, ExtractError};
 use core::{cell::RefCell, ffi::c_void, mem, ptr};
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -647,8 +648,8 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
     }
     let drained = drain()?;
     for target in [sites.cipher_outer, sites.agency_outer, sites.cipher_row, sites.agency_materializer, sites.agency_filter, sites.agency_owner_resolver] {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A30 hook remove failed at 0x{target:X}: {status}")),
         }
     }
@@ -1002,8 +1003,10 @@ fn verify_sentinel(address: usize, expected: &[u8]) -> Result<(), String> {
     Ok(())
 }
 fn disable(target: usize) -> Result<(), String> {
-    match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-        Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => Ok(()),
+    match unsafe { inline_detour::disable(target as *mut c_void) } {
+        Ok(())
+        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => Ok(()),
         Err(status) => Err(format!("A30 hook disable failed at 0x{target:X}: {status}")),
     }
 }
@@ -1011,8 +1014,8 @@ fn rollback_created(created: &[usize]) -> Result<(), String> {
     for target in created.iter().rev().copied() { disable(target)?; }
     wait_for_callbacks()?;
     for target in created.iter().rev().copied() {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A30 rollback remove failed at 0x{target:X}: {status}")),
         }
     }

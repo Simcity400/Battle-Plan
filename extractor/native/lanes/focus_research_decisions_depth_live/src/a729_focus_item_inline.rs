@@ -13,6 +13,15 @@
 //! relay restores the two displaced instructions before returning to the
 //! original indirect call.  The joint relay tail-jumps to an ABI-compatible
 //! Rust detour which invokes the original target exactly once.
+//!
+//! Thread exclusion is NOT this module's own.  Because neither site is a
+//! function entry, MinHook cannot own these patches -- but the freeze that has
+//! to hold across them is the same freeze every other patch in the workspace
+//! takes, so `write_code` below calls [`inline_detour::freeze_process`] and
+//! asks the returned guard about the range it is about to rewrite.  The
+//! hand-rolled suspender that used to live here read a broken `Thread32Next`
+//! as the end of the thread list and enumerated once, so it could certify a
+//! truncated list and could not see a thread created after its snapshot.
 
 #![cfg(windows)]
 
@@ -33,13 +42,6 @@ const PAGE_EXECUTE_READWRITE: Dword = 0x40;
 const ALLOCATION_GRANULARITY: usize = 0x1_0000;
 const MAX_REL32_DISTANCE: usize = 0x7fff_0000;
 const RELAY_CAPACITY: usize = 0x1000;
-const TH32CS_SNAPTHREAD: Dword = 0x0000_0004;
-const THREAD_SUSPEND_RESUME: Dword = 0x0002;
-const THREAD_GET_CONTEXT: Dword = 0x0008;
-const CONTEXT_CONTROL_AMD64: Dword = 0x0010_0001;
-const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
-const ERROR_INVALID_HANDLE: Dword = 6;
-const ERROR_INVALID_PARAMETER: Dword = 87;
 
 pub const DISPLAY_PERCENT_CALLSITE_RVA: usize = 0x01bb_636e;
 pub const JOINT_COUNTRY_CALLSITE_RVA: usize = 0x0137_9e5f;
@@ -65,158 +67,6 @@ extern "system" {
     ) -> Bool;
     fn FlushInstructionCache(process: Handle, address: *const c_void, size: usize) -> Bool;
     fn GetCurrentProcess() -> Handle;
-    fn GetCurrentProcessId() -> Dword;
-    fn GetCurrentThreadId() -> Dword;
-    fn GetLastError() -> Dword;
-    fn CloseHandle(handle: Handle) -> Bool;
-    fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
-    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn OpenThread(access: Dword, inherit: Bool, thread_id: Dword) -> Handle;
-    fn SuspendThread(thread: Handle) -> Dword;
-    fn ResumeThread(thread: Handle) -> Dword;
-    fn GetThreadContext(thread: Handle, context: *mut ThreadContext64) -> Bool;
-}
-
-#[repr(C)]
-struct ThreadEntry32 {
-    size: Dword,
-    usage: Dword,
-    thread_id: Dword,
-    owner_process_id: Dword,
-    base_priority: i32,
-    delta_priority: i32,
-    flags: Dword,
-}
-
-#[repr(C, align(16))]
-struct ThreadContext64 {
-    homes: [u64; 6],
-    context_flags: Dword,
-    mx_csr: Dword,
-    segments: [u16; 6],
-    eflags: Dword,
-    debug_registers: [u64; 6],
-    registers_through_r15: [u64; 16],
-    rip: u64,
-    extended: [u8; 976],
-}
-
-impl ThreadContext64 {
-    fn control() -> Self {
-        let mut value: Self = unsafe { core::mem::zeroed() };
-        value.context_flags = CONTEXT_CONTROL_AMD64;
-        value
-    }
-}
-const _: [(); 1232] = [(); core::mem::size_of::<ThreadContext64>()];
-
-/// Every other thread in this process, suspended for the duration.
-///
-/// Patching live code while the engine runs is not safe on its own: a thread
-/// executing inside the replaced bytes sees a torn instruction stream, which is
-/// how an in-flight the game thread ends up decoding a call to a garbage address.
-/// The sibling MinHook path gets thread suspension from MinHook itself; these
-/// two mid-function sites are not function entries, so this module has to do it.
-struct SuspendedOtherThreads {
-    handles: Vec<Handle>,
-}
-
-impl SuspendedOtherThreads {
-    unsafe fn capture() -> Result<Self, String> {
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err("A31 inline patch thread snapshot failed".into());
-        }
-        let process_id = unsafe { GetCurrentProcessId() };
-        let current_thread_id = unsafe { GetCurrentThreadId() };
-        let mut entry = ThreadEntry32 {
-            size: core::mem::size_of::<ThreadEntry32>() as Dword,
-            usage: 0,
-            thread_id: 0,
-            owner_process_id: 0,
-            base_priority: 0,
-            delta_priority: 0,
-            flags: 0,
-        };
-        let mut handles: Vec<Handle> = Vec::new();
-        let mut present = unsafe { Thread32First(snapshot, &mut entry) } != 0;
-        while present {
-            if entry.owner_process_id == process_id && entry.thread_id != current_thread_id {
-                let handle = unsafe {
-                    OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, 0, entry.thread_id)
-                };
-                if handle.is_null() {
-                    let error = unsafe { GetLastError() };
-                    if error == ERROR_INVALID_PARAMETER {
-                        // The thread exited between the snapshot and this open.
-                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                    unsafe { CloseHandle(snapshot) };
-                    resume_and_close(&mut handles);
-                    // The OS code is carried in the message because it is the
-                    // only thing that distinguishes a thread that merely exited
-                    // from one this process genuinely may not touch, and the
-                    // refusal is otherwise indistinguishable to any caller.
-                    return Err(format!(
-                        "A31 inline patch could not open thread {} (os error {error})",
-                        entry.thread_id
-                    ));
-                }
-                if unsafe { SuspendThread(handle) } == Dword::MAX {
-                    let error = unsafe { GetLastError() };
-                    unsafe { CloseHandle(handle) };
-                    if error == ERROR_INVALID_HANDLE || error == ERROR_INVALID_PARAMETER {
-                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                    unsafe { CloseHandle(snapshot) };
-                    resume_and_close(&mut handles);
-                    return Err(format!(
-                        "A31 inline patch could not suspend thread {} (os error {error})",
-                        entry.thread_id
-                    ));
-                }
-                handles.push(handle);
-            }
-            present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-        }
-        unsafe { CloseHandle(snapshot) };
-        Ok(Self { handles })
-    }
-
-    /// Fail closed if any suspended thread is stopped inside the bytes about to
-    /// be rewritten. Suspending is not sufficient on its own: a thread parked
-    /// mid-sequence would resume into a half-old, half-new instruction stream.
-    fn any_instruction_pointer_in(&self, start: usize, end: usize) -> Result<bool, String> {
-        for handle in &self.handles {
-            let mut context = ThreadContext64::control();
-            if unsafe { GetThreadContext(*handle, &mut context) } == 0 {
-                return Err("A31 inline patch could not read a suspended thread context".into());
-            }
-            let rip = context.rip as usize;
-            if rip >= start && rip < end {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-}
-
-impl Drop for SuspendedOtherThreads {
-    fn drop(&mut self) {
-        resume_and_close(&mut self.handles);
-    }
-}
-
-fn resume_and_close(handles: &mut Vec<Handle>) {
-    for handle in handles.drain(..).rev() {
-        unsafe {
-            ResumeThread(handle);
-            CloseHandle(handle);
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -463,8 +313,18 @@ unsafe fn write_code(address: usize, expected: &[u8], replacement: &[u8]) -> Res
     // bytes and the instruction cache are both consistent again. Writing these
     // five bytes underneath running engine threads is a torn-instruction race:
     // a thread inside the sequence resumes into a mix of old and new bytes.
-    let suspended = unsafe { SuspendedOtherThreads::capture() }?;
-    if suspended.any_instruction_pointer_in(address, address + replacement.len())? {
+    //
+    // The freeze is the workspace's shared one. This module used to roll its
+    // own, which read a broken `Thread32Next` as the end of the thread list and
+    // enumerated exactly once, so a thread created after the snapshot was
+    // patched around while it ran. `inline_detour::freeze_process` refuses a
+    // truncated enumeration and iterates to a fixed point instead.
+    let suspended = inline_detour::freeze_process()
+        .map_err(|refusal| format!("A31 inline patch refused: {refusal}"))?;
+    if suspended
+        .any_instruction_pointer_in(&[(address, address + replacement.len())])
+        .map_err(|refusal| format!("A31 inline patch refused: {refusal}"))?
+    {
         return Err(format!(
             "A31 inline patch refused: a thread is executing inside {address:#x}..{:#x}",
             address + replacement.len()
@@ -559,122 +419,106 @@ fn display_relay_body(callback: usize) -> Vec<u8> {
 #[cfg(test)]
 mod suspension_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
-    /// Captures the suspend guard, retrying when a thread belonging to the
-    /// *test harness* happens to exit mid-capture.
-    ///
-    /// PRODUCTION GAP THIS WORKS AROUND — reported, deliberately NOT fixed
-    /// here. `SuspendedOtherThreads::capture` already tolerates a thread that
-    /// dies between the toolhelp snapshot and `OpenThread`/`SuspendThread`, but
-    /// only for `ERROR_INVALID_PARAMETER` (87) and `ERROR_INVALID_HANDLE` (6).
-    /// The code Windows actually returns from `SuspendThread` for a thread that
-    /// has already terminated is `ERROR_ACCESS_DENIED` (5) — measured by
-    /// instrumenting `GetLastError` here, which printed 5 on all five
-    /// reproductions. So `capture` fails closed on a thread that is merely
-    /// dead: it reproduced in 2 of 40 standalone runs of this module, and in 1
-    /// of 8 full `--workspace` runs.
-    ///
-    /// That gap is real in production too — the game also has threads exiting
-    /// while a patch installs — but closing it means having `OpenThread` also
-    /// request `THREAD_QUERY_LIMITED_INFORMATION` and gating the skip on
-    /// `GetExitCodeThread() != STILL_ACTIVE`, which changes which threads a
-    /// safety-critical code patcher is willing to leave running. That is the
-    /// owning lane's decision, so it is escalated rather than changed here.
-    ///
-    /// Retrying is sound for THESE tests because `capture` is fixture setup,
-    /// not the property under test — both callers assert about the guard's
-    /// behaviour once it exists. It cannot make either assertion pass
-    /// vacuously: the panic below still fires if capture never succeeds, and a
-    /// capture that succeeded still suspends every live thread, which is what
-    /// `capture_suspends_other_threads_and_resumes_them_on_drop` measures.
-    ///
-    /// ONLY that one refusal is retried. Retrying every `Err` would let a
-    /// genuinely intermittent `capture` — a failed toolhelp snapshot, or a
-    /// thread this process really may not open — succeed on a later attempt and
-    /// report a passing test, which is the exact failure this helper exists to
-    /// avoid introducing. Any other refusal panics on the first attempt.
-    fn capture_suspended() -> SuspendedOtherThreads {
-        const MAX_ATTEMPTS: u32 = 10;
-        // What `SuspendThread` reports for an already-terminated thread. Inside a
-        // test process every thread is one of ours, so this code cannot arrive
-        // from a thread genuinely outside this process's rights.
-        const TERMINATED_THREAD_REFUSAL: &str = "(os error 5)";
-        let mut last = String::new();
-        for _ in 0..MAX_ATTEMPTS {
-            match unsafe { SuspendedOtherThreads::capture() } {
-                Ok(suspended) => return suspended,
-                Err(error) => {
-                    assert!(
-                        error.contains(TERMINATED_THREAD_REFUSAL),
-                        "capture refused for a reason that is not the \
-                         terminated-thread race: {error}"
-                    );
-                    last = error;
-                }
-            }
-            std::thread::yield_now();
-        }
-        panic!("suspending the process's other threads must succeed: {last:?}");
+    /// A page this test may legitimately rewrite, standing in for the game's
+    /// live code. `write_code` refuses on a byte mismatch before it freezes
+    /// anything, so the seed has to be the exact expected sequence.
+    struct ScratchCode {
+        base: *mut u8,
     }
 
-    /// The whole point of the guard is that live engine threads are stopped
-    /// while code bytes are rewritten, and reliably restarted afterwards.
-    #[test]
-    fn capture_suspends_other_threads_and_resumes_them_on_drop() {
-        let running = Arc::new(AtomicBool::new(true));
-        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let worker_running = Arc::clone(&running);
-        let worker_ticks = Arc::clone(&ticks);
-        let worker = std::thread::spawn(move || {
-            while worker_running.load(Ordering::Relaxed) {
-                worker_ticks.fetch_add(1, Ordering::Relaxed);
-                std::thread::yield_now();
-            }
-        });
-
-        // Let the worker get going so it is genuinely running when suspended.
-        while ticks.load(Ordering::Relaxed) == 0 {
-            std::thread::yield_now();
+    impl ScratchCode {
+        fn seeded_with(bytes: &[u8]) -> Self {
+            let base = unsafe {
+                VirtualAlloc(
+                    ptr::null_mut(),
+                    RELAY_CAPACITY,
+                    MEM_RESERVE | MEM_COMMIT,
+                    PAGE_EXECUTE_READWRITE,
+                ) as *mut u8
+            };
+            assert!(!base.is_null(), "the scratch code page must allocate");
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), base, bytes.len()) };
+            Self { base }
         }
 
-        let suspended = capture_suspended();
-        let frozen = ticks.load(Ordering::Relaxed);
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        let still_frozen = ticks.load(Ordering::Relaxed);
+        fn address(&self) -> usize {
+            self.base as usize
+        }
+
+        fn read(&self, len: usize) -> Vec<u8> {
+            unsafe { std::slice::from_raw_parts(self.base, len) }.to_vec()
+        }
+    }
+
+    impl Drop for ScratchCode {
+        fn drop(&mut self) {
+            unsafe { VirtualFree(self.base.cast(), 0, MEM_RELEASE) };
+        }
+    }
+
+    /// Falsifiable, and THE guard on this module's migration: fails if
+    /// `write_code` ever rewrites live bytes without taking the shared process
+    /// freeze first.
+    ///
+    /// The observable is `inline_detour`'s per-thread freeze counter, which is
+    /// exact under concurrency where the process-wide one is not. Delete the
+    /// `inline_detour::freeze_process()` call and the count stops moving, which
+    /// fails here by name; reinstate a private suspender in this module instead
+    /// and it fails here as well, because a private suspender does not touch
+    /// that counter.
+    ///
+    /// The freeze is taken and dropped INSIDE `write_code`. Nothing is joined
+    /// or waited on while it is held, which is the rule the shared crate's own
+    /// removed ceiling test was removed for breaking.
+    #[test]
+    fn rewriting_code_takes_the_shared_process_freeze() {
+        let scratch = ScratchCode::seeded_with(&DISPLAY_ORIGINAL);
+        let patch = make_rel32_call(scratch.address(), scratch.address() + 0x40)
+            .expect("a relay 0x40 bytes along is inside rel32 range");
+
+        let before = inline_detour::freeze_attempts_on_this_thread();
+        unsafe { write_code(scratch.address(), &DISPLAY_ORIGINAL, &patch) }
+            .expect("a scratch page with the expected bytes must be patchable");
         assert_eq!(
-            frozen, still_frozen,
-            "a suspended thread must not advance while code is being patched"
+            inline_detour::freeze_attempts_on_this_thread(),
+            before + 1,
+            "write_code must freeze the process exactly once before rewriting bytes"
         );
+        assert_eq!(scratch.read(patch.len()), patch.to_vec());
 
-        drop(suspended);
-
-        // After the guard drops the worker must make progress again, otherwise
-        // a failed patch would leave the game permanently frozen.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while ticks.load(Ordering::Relaxed) == still_frozen {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "threads were never resumed after the patch guard dropped"
-            );
-            std::thread::yield_now();
-        }
-
-        running.store(false, Ordering::Relaxed);
-        worker.join().expect("worker thread must exit cleanly");
+        // And back, so the restore path is pinned to the same freeze.
+        let before = inline_detour::freeze_attempts_on_this_thread();
+        unsafe { write_code(scratch.address(), &patch, &DISPLAY_ORIGINAL) }
+            .expect("the restore must be patchable too");
+        assert_eq!(
+            inline_detour::freeze_attempts_on_this_thread(),
+            before + 1,
+            "restoring the original bytes must freeze the process too"
+        );
+        assert_eq!(
+            scratch.read(DISPLAY_ORIGINAL.len()),
+            DISPLAY_ORIGINAL.to_vec()
+        );
     }
 
-    /// A range no thread is executing in must not be reported as occupied, or
-    /// every patch would refuse to install.
+    /// Falsifiable: fails if a byte-gate mismatch is ever allowed to reach the
+    /// freeze, let alone the write.
+    ///
+    /// The pre-write verification is what makes the refusal free of side
+    /// effects; a mismatch that froze the process first would stop every game
+    /// thread to discover it had nothing to do.
     #[test]
-    fn an_unoccupied_range_is_reported_clear() {
-        let suspended = capture_suspended();
-        // A deliberately unmapped, non-executable address window.
-        let occupied = suspended
-            .any_instruction_pointer_in(0x1000, 0x1000 + 5)
-            .expect("reading suspended thread contexts must succeed");
-        drop(suspended);
-        assert!(!occupied, "no thread can be executing at a reserved-null page");
+    fn a_byte_mismatch_refuses_before_the_process_is_frozen() {
+        let scratch = ScratchCode::seeded_with(&JOINT_ORIGINAL);
+        let before = inline_detour::freeze_attempts_on_this_thread();
+        let refusal = unsafe { write_code(scratch.address(), &DISPLAY_ORIGINAL, &JOINT_ORIGINAL) }
+            .expect_err("the seeded bytes are not the expected ones");
+        assert!(refusal.contains("inline pre-write"), "{refusal}");
+        assert_eq!(
+            inline_detour::freeze_attempts_on_this_thread(),
+            before,
+            "a byte-gate refusal must not stop the world on the way out"
+        );
     }
 }

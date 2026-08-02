@@ -449,7 +449,7 @@ pub(crate) fn uninstall() -> Result<(), String> {
     let specs = hook_specs(base);
     let mut failures = Vec::new();
     for (target, _, _) in specs.iter().rev() {
-        if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::disable(*target as *mut c_void) } {
             failures.push(format!("0x{target:X}: {status}"));
         }
     }
@@ -466,7 +466,7 @@ pub(crate) fn uninstall() -> Result<(), String> {
         thread::yield_now();
     }
     for (target, _, original) in specs.iter().rev() {
-        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+        match unsafe { inline_detour::remove(*target as *mut c_void) } {
             Ok(()) => original.store(0, Ordering::Release),
             Err(status) => failures.push(format!("0x{target:X}: {status}")),
         }
@@ -498,12 +498,12 @@ fn rollback(specs: &[HookSpec], created: usize, enabled: usize) -> String {
     DRAINING.store(true, Ordering::Release);
     let mut failures = Vec::new();
     for (target, _, _) in specs.iter().take(enabled).rev() {
-        if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::disable(*target as *mut c_void) } {
             failures.push(format!("0x{target:X} disable: {status}"));
         }
     }
     for (target, _, original) in specs.iter().take(created).rev() {
-        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+        match unsafe { inline_detour::remove(*target as *mut c_void) } {
             Ok(()) => original.store(0, Ordering::Release),
             Err(status) => failures.push(format!("0x{target:X} remove: {status}")),
         }

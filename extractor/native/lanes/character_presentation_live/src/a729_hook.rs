@@ -12,6 +12,7 @@ use crate::{
 };
 use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
@@ -3020,8 +3021,10 @@ fn disable_and_remove(addresses: InstalledAddresses) -> HookRemovalOutcome {
     let mut all_removed = true;
     let mut disable_failed = false;
     for target in targets(addresses) {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 disable_failed = true;
                 first_error.get_or_insert_with(|| {
@@ -3044,8 +3047,8 @@ fn disable_and_remove(addresses: InstalledAddresses) -> HookRemovalOutcome {
         };
     }
     for target in targets(addresses) {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 all_removed = false;
                 first_error.get_or_insert_with(|| {

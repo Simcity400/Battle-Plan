@@ -20,5 +20,8 @@ scripted_state_flags_variables_live_lane = { path = "../scripted_state_flags_var
 production_hook_receipt = { path = "../production_hook_receipt" }
 compact_contract = { path = "../../compact_contract" }
 
+[target.'cfg(windows)'.dependencies]
+inline_detour = { path = "../../inline_detour" }
+
 [dev-dependencies]
 scripted_state_flags_variables_live_lane = { path = "../scripted_state_flags_variables_live", features = ["test-support"] }

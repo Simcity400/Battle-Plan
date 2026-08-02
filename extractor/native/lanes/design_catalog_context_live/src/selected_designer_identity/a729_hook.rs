@@ -15,6 +15,7 @@ use super::{
     PRODUCER_MANIFEST_SHA256, REFERENCED_DIVISION_TEMPLATE_TYPE,
 };
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -242,8 +243,9 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
             Err(status) => {
                 let mut cleanup_failures = Vec::new();
                 for rollback in created.iter().rev() {
-                    match unsafe { MinHook::remove_hook(*rollback as *mut c_void) } {
-                        Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                    match unsafe { inline_detour::remove(*rollback as *mut c_void) } {
+                        Ok(())
+                        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                         Err(error) => cleanup_failures.push(format!(
                             "remove {rollback:#x}: {error}"
                         )),
@@ -269,10 +271,10 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
         if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
             let mut cleanup_failures = Vec::new();
             for rollback in created.iter().rev() {
-                match unsafe { MinHook::disable_hook(*rollback as *mut c_void) } {
+                match unsafe { inline_detour::disable(*rollback as *mut c_void) } {
                     Ok(())
-                    | Err(MH_STATUS::MH_ERROR_DISABLED)
-                    | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                    | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                    | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                     Err(error) => cleanup_failures.push(format!(
                         "disable {rollback:#x}: {error}"
                     )),
@@ -285,8 +287,9 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
             }
             if cleanup_failures.is_empty() {
                 for rollback in created.iter().rev() {
-                    match unsafe { MinHook::remove_hook(*rollback as *mut c_void) } {
-                        Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                    match unsafe { inline_detour::remove(*rollback as *mut c_void) } {
+                        Ok(())
+                        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                         Err(error) => cleanup_failures.push(format!(
                             "remove {rollback:#x}: {error}"
                         )),
@@ -338,10 +341,10 @@ pub fn uninstall_fixture_hooks() -> Result<(), String> {
     let mut first_error = None;
     if needs_disable {
         for target in &targets {
-            match unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+            match unsafe { inline_detour::disable(*target as *mut c_void) } {
                 Ok(())
-                | Err(MH_STATUS::MH_ERROR_DISABLED)
-                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                 Err(status) => {
                     first_error.get_or_insert_with(|| format!("A40 hook disable at {target:#x} failed: {status}"));
                 }
@@ -354,8 +357,8 @@ pub fn uninstall_fixture_hooks() -> Result<(), String> {
     }
     wait_for_quiescence()?;
     for target in targets {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 first_error.get_or_insert_with(|| format!("A40 hook removal at {target:#x} failed: {status}"));
             }

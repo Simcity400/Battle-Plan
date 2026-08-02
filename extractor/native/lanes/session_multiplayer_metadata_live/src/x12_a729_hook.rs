@@ -6,6 +6,7 @@
 //! claiming sub-hour history.
 
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
@@ -866,10 +867,11 @@ pub fn seal_and_reserve_terminal_batch() -> Result<SpeedPauseDrainReservation, S
         let mut disabled = [false; 3];
         let mut failures = Vec::new();
         for (index, (target, name)) in targets.iter().copied().enumerate() {
-            match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+            match unsafe { inline_detour::disable(target as *mut c_void) } {
                 Ok(())
-                | Err(MH_STATUS::MH_ERROR_DISABLED)
-                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => disabled[index] = true,
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => disabled[index] = true,
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
@@ -1431,7 +1433,7 @@ fn remove_hook_owned_by_receipt_custody(
         .lock()
         .map_err(|_| "X12 hook receipt mutex poisoned before removal")?
         .removed_by_custody[receipt_index];
-    match unsafe { MinHook::remove_hook(target as *mut c_void) } {
+    match unsafe { inline_detour::remove(target as *mut c_void) } {
         Ok(()) => {
             HOOK_RECEIPTS
                 .lock()
@@ -1439,8 +1441,8 @@ fn remove_hook_owned_by_receipt_custody(
                 .removed_by_custody[receipt_index] = true;
             Ok(())
         }
-        Err(MH_STATUS::MH_ERROR_NOT_CREATED) if already_removed => Ok(()),
-        Err(MH_STATUS::MH_ERROR_NOT_CREATED) => Err(format!(
+        Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) if already_removed => Ok(()),
+        Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => Err(format!(
             "remove {name}: hook was not created and this custody has no prior removal"
         )),
         Err(status) => Err(format!("remove {name}: {status}")),
@@ -1456,10 +1458,10 @@ fn disable_hook_owned_by_receipt_custody(
         .lock()
         .map_err(|_| "X12 hook receipt mutex poisoned before disable")?
         .removed_by_custody[receipt_index];
-    match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-        Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) => Ok(()),
-        Err(MH_STATUS::MH_ERROR_NOT_CREATED) if already_removed => Ok(()),
-        Err(MH_STATUS::MH_ERROR_NOT_CREATED) => Err(format!(
+    match unsafe { inline_detour::disable(target as *mut c_void) } {
+        Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED)) => Ok(()),
+        Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) if already_removed => Ok(()),
+        Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => Err(format!(
             "disable {name}: hook was not created and this custody has no prior removal"
         )),
         Err(status) => Err(format!("disable {name}: {status}")),
@@ -1495,8 +1497,8 @@ fn rollback_created(addresses: &InstalledAddresses) -> Result<(), String> {
         addresses.pause_toggle,
         addresses.pause_forced,
     ] {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("remove created hook at 0x{target:X}: {status}")),
         }
     }

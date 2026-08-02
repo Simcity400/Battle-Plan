@@ -441,6 +441,7 @@ name = "fired_event_popups_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "inline_detour",
  "production_hook_receipt",
  "scripted_state_flags_variables_live_lane",
  "serde",
@@ -652,6 +653,7 @@ name = "naval_combat_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "inline_detour",
  "production_hook_receipt",
  "serde",
  "serde_json",

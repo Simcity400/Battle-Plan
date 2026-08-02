@@ -108,7 +108,7 @@ pub fn install() -> Result<InstalledHookAddress, String> {
     ORIGINAL_REFRESH.store(original as usize, Ordering::Release);
     MODULE_BASE.store(base, Ordering::Release);
     if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-        let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(target as *mut c_void) };
         ORIGINAL_REFRESH.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("A27 designer refresh hook enable failed: {status}"));
@@ -124,9 +124,9 @@ pub fn uninstall() -> Result<(), String> {
         return Ok(());
     }
     let target = MODULE_BASE.load(Ordering::Acquire) + DESIGNER_REFRESH_RVA as usize;
-    unsafe { MinHook::disable_hook(target as *mut c_void) }
+    unsafe { inline_detour::disable(target as *mut c_void) }
         .map_err(|status| format!("A27 designer refresh hook disable failed: {status}"))?;
-    unsafe { MinHook::remove_hook(target as *mut c_void) }
+    unsafe { inline_detour::remove(target as *mut c_void) }
         .map_err(|status| format!("A27 designer refresh hook removal failed: {status}"))?;
     ORIGINAL_REFRESH.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);

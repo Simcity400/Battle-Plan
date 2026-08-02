@@ -858,6 +858,7 @@ mod installed_owner {
     use super::*;
     use crate::{validate_frame, ExactPowerBalancePresentationSource};
     use core::ffi::c_void;
+    use inline_detour::InlineDetourReleaseError;
     use minhook::{MinHook, MH_STATUS};
     use std::collections::BTreeMap;
     use std::mem;
@@ -1169,7 +1170,7 @@ mod installed_owner {
         ORIGINAL_POST_REFRESH.store(original as usize, Ordering::Release);
         MODULE_BASE.store(base, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
             MODULE_BASE.store(0, Ordering::Release);
             ORIGINAL_POST_REFRESH.store(0, Ordering::Release);
             return Err(format!("A37 hook enable failed: {status}"));
@@ -1258,8 +1259,10 @@ mod installed_owner {
             return Ok(());
         }
         let target = MODULE_BASE.load(Ordering::Acquire) + POST_REFRESH_RVA as usize;
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A37 hook disable failed: {status}")),
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1269,8 +1272,8 @@ mod installed_owner {
             }
             std::thread::yield_now();
         }
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A37 hook removal failed: {status}")),
         }
         ORIGINAL_POST_REFRESH.store(0, Ordering::Release);

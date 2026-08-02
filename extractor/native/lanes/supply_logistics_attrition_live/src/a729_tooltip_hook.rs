@@ -1,6 +1,7 @@
 //! Sentinel-gated exact-a729 producer/formatter pairing for province supply.
 
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -108,7 +109,7 @@ pub fn install() -> Result<(), String> {
     } {
         Ok(value) => value,
         Err(status) => {
-            let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };
+            let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
             ORIGINAL_PRODUCER.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             return Err(format!("supply tooltip formatter hook creation failed: {status}"));
@@ -118,17 +119,17 @@ pub fn install() -> Result<(), String> {
     // Enable the nested sink before the outer producer so no opened trace can
     // run without its authenticated sink.
     if let Err(status) = unsafe { inline_detour::enable(formatter as *mut c_void) } {
-        let _ = unsafe { MinHook::remove_hook(formatter as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("supply tooltip formatter hook enable failed: {status}"));
     }
     if let Err(status) = unsafe { inline_detour::enable(producer as *mut c_void) } {
-        let _ = unsafe { MinHook::disable_hook(formatter as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(formatter as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };
+        let _ = unsafe { inline_detour::disable(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
@@ -136,10 +137,10 @@ pub fn install() -> Result<(), String> {
     }
     let state = STATE.get_or_init(|| Mutex::new(VecDeque::new()));
     let Ok(mut queue) = state.lock() else {
-        let _ = unsafe { MinHook::disable_hook(producer as *mut c_void) };
-        let _ = unsafe { MinHook::disable_hook(formatter as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::disable(producer as *mut c_void) };
+        let _ = unsafe { inline_detour::disable(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
@@ -150,10 +151,10 @@ pub fn install() -> Result<(), String> {
     DROPPED_ROWS.store(0, Ordering::Release);
     let hook_epoch = NEXT_HOOK_EPOCH.fetch_add(1, Ordering::AcqRel);
     if hook_epoch == 0 {
-        let _ = unsafe { MinHook::disable_hook(producer as *mut c_void) };
-        let _ = unsafe { MinHook::disable_hook(formatter as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(producer as *mut c_void) };
-        let _ = unsafe { MinHook::remove_hook(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::disable(producer as *mut c_void) };
+        let _ = unsafe { inline_detour::disable(formatter as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
@@ -189,12 +190,14 @@ pub fn uninstall() -> Result<(), String> {
     let targets = [base + PRODUCER_RVA as usize, base + FORMATTER_RVA as usize];
     let mut errors = Vec::new();
     for target in targets {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("disable {target:#x}: {status}")),
         }
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("remove {target:#x}: {status}")),
         }
     }

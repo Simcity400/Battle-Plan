@@ -16,6 +16,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::mem;
 use core::ptr;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released,
@@ -1220,8 +1221,10 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
     };
     let mut errors = Vec::new();
     for target in [sites.normal_writer, sites.overrun_writer] {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("disable 0x{target:X}: {status}")),
         }
     }
@@ -1231,8 +1234,10 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
         }
     }
     if errors.is_empty() {
-        match unsafe { MinHook::disable_hook(sites.record_allocator as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(sites.record_allocator as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("disable 0x{:X}: {status}", sites.record_allocator)),
         }
     }
@@ -1257,8 +1262,8 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
     .enumerate()
     .rev()
     {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {
                 CREATED_HOOK_MASK.fetch_and(!(1usize << index), Ordering::AcqRel);
             }
             Err(status) => errors.push(format!("remove 0x{target:X}: {status}")),
@@ -1389,8 +1394,8 @@ fn release_hook_receipts(
     .enumerate()
     .rev()
     {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {
                 CREATED_HOOK_MASK.fetch_and(!(1usize << index), Ordering::AcqRel);
             }
             Err(status) => {
@@ -1540,10 +1545,10 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
     }
     if let Some(sites) = sites {
         for target in [sites.normal_writer, sites.overrun_writer] {
-            match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+            match unsafe { inline_detour::disable(target as *mut c_void) } {
                 Ok(())
-                | Err(MH_STATUS::MH_ERROR_DISABLED)
-                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                 Err(status) => {
                     return Err(format!(
                         "terminal writer seal failed at 0x{target:X}: {status}"
@@ -1552,8 +1557,10 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
             }
         }
         wait_for_writer_quiescence()?;
-        match unsafe { MinHook::disable_hook(sites.record_allocator as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(sites.record_allocator as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 return Err(format!(
                     "terminal allocator seal failed at 0x{:X}: {status}",

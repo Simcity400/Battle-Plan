@@ -1,4 +1,5 @@
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -48,6 +49,16 @@ static ORIGINAL_TASKFORCE_FRAME: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+/// A release left a detour PATCHED INTO THE GAME, so this unit's sites can
+/// never be reasoned about as clean again.
+///
+/// Deliberately one-way, like the module pin: nothing clears it. `INSTALLED`
+/// goes false on a retained teardown, which on its own would let the next
+/// `install` walk into `create_hook` on a target that is still hooked, take
+/// the `MH_ERROR_ALREADY_CREATED` arm, and clear the originals underneath the
+/// live detour -- or spin forever draining callbacks that detour is still
+/// producing. Refusing to install again is the only outcome that stays true.
+static RETAINED_LIVE: AtomicBool = AtomicBool::new(false);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static LATEST: OnceLock<Mutex<LatestFrames>> = OnceLock::new();
 static LIFECYCLE: Mutex<()> = Mutex::new(());
@@ -94,6 +105,19 @@ pub fn install() -> Result<(), String> {
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(());
     }
+    // A previous release left a detour live. `INSTALLED` is false, so without
+    // this the installer below would run against sites that are still hooked:
+    // `create_hook` answers MH_ERROR_ALREADY_CREATED, the failure arm calls
+    // `rollback(&[])` -- which has nothing to disable, so it reports no
+    // retention -- and the originals are cleared under a live detour, or the
+    // callback drain never finishes because that detour is still producing
+    // callbacks.
+    if RETAINED_LIVE.load(Ordering::Acquire) {
+        return Err(
+            "spotted-unit hooks cannot be reinstalled: a previous release left a live detour"
+                .into(),
+        );
+    }
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
         return Err("spotted-unit hook module unavailable".into());
@@ -109,27 +133,31 @@ pub fn install() -> Result<(), String> {
         let target = match base.checked_add(rva as usize) {
             Some(target) => target,
             None => {
-                rollback(&created);
-                clear_originals();
+                if !rollback(&created) {
+                    clear_originals();
+                }
                 return Err("spotted-unit hook address overflow".into());
             }
         };
         let mut actual = vec![0u8; sentinel.len()];
         if let Err(error) = read_exact(target, &mut actual) {
-            rollback(&created);
-            clear_originals();
+            if !rollback(&created) {
+                clear_originals();
+            }
             return Err(error);
         }
         if actual != sentinel {
-            rollback(&created);
-            clear_originals();
+            if !rollback(&created) {
+                clear_originals();
+            }
             return Err(format!("spotted-unit hook sentinel mismatch at RVA {rva:#x}"));
         }
         let original = match unsafe { MinHook::create_hook(target as *mut c_void, detour) } {
             Ok(value) => value,
             Err(status) => {
-                rollback(&created);
-                clear_originals();
+                if !rollback(&created) {
+                    clear_originals();
+                }
                 return Err(format!("spotted-unit hook creation failed at RVA {rva:#x}: {status}"));
             }
         };
@@ -143,8 +171,9 @@ pub fn install() -> Result<(), String> {
     {
         Ok(latest) => latest,
         Err(_) => {
-            rollback(&created);
-            clear_originals();
+            if !rollback(&created) {
+                clear_originals();
+            }
             MODULE_BASE.store(0, Ordering::Release);
             return Err("spotted-unit latest frames poisoned".into());
         }
@@ -153,8 +182,9 @@ pub fn install() -> Result<(), String> {
     drop(latest);
     for target in &created {
         if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
-            rollback(&created);
-            clear_originals();
+            if !rollback(&created) {
+                clear_originals();
+            }
             MODULE_BASE.store(0, Ordering::Release);
             return Err(format!("spotted-unit hook enable failed: {status}"));
         }
@@ -208,24 +238,43 @@ pub fn uninstall() -> Result<(), String> {
     }
     let base = MODULE_BASE.swap(0, Ordering::AcqRel);
     let mut errors = Vec::new();
+    // A detour the process could not be frozen for is still LIVE. The wait
+    // below is for callbacks to drain, and a live detour keeps admitting them,
+    // so entering it after a retained disable spins for the life of the
+    // process. Track retention and skip both the wait and the removal.
+    let mut retained = false;
     for rva in [TASKFORCE_FRAME_RVA, LAND_ELIGIBILITY_RVA, LAND_FRAME_RVA, INTEL_GETTER_RVA] {
         let target = base.saturating_add(rva as usize) as *mut c_void;
-        match unsafe { MinHook::disable_hook(target) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
-            Err(status) => errors.push(format!("spotted-unit hook disable failed: {status}")),
+        match unsafe { inline_detour::disable(target) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
+            Err(status) => {
+                // Same rule as `rollback`: every status that is not one of the
+                // two "nothing was patched" answers leaves the target patched.
+                retained |= !status.already_released();
+                errors.push(format!("spotted-unit hook disable failed: {status}"));
+            }
         }
     }
-    while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
-        std::thread::yield_now();
-    }
-    for rva in [TASKFORCE_FRAME_RVA, LAND_ELIGIBILITY_RVA, LAND_FRAME_RVA, INTEL_GETTER_RVA] {
-        let target = base.saturating_add(rva as usize) as *mut c_void;
-        match unsafe { MinHook::remove_hook(target) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
-            Err(status) => errors.push(format!("spotted-unit hook removal failed: {status}")),
+    if !retained {
+        while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+            std::thread::yield_now();
+        }
+        for rva in [TASKFORCE_FRAME_RVA, LAND_ELIGIBILITY_RVA, LAND_FRAME_RVA, INTEL_GETTER_RVA] {
+            let target = base.saturating_add(rva as usize) as *mut c_void;
+            match unsafe { inline_detour::remove(target) } {
+                Ok(())
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
+                Err(status) => errors.push(format!("spotted-unit hook removal failed: {status}")),
+            }
         }
     }
-    clear_originals();
+    if retained {
+        RETAINED_LIVE.store(true, Ordering::Release);
+    } else {
+        clear_originals();
+    }
     LAND_BUILD.with(|slot| *slot.borrow_mut() = None);
     TASKFORCE_BUILD.with(|slot| *slot.borrow_mut() = None);
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
@@ -350,16 +399,43 @@ fn next_sequence() -> Option<u64> {
     (value != 0).then_some(value)
 }
 
-fn rollback(created: &[usize]) {
+/// Undo a partial installation. Returns TRUE when a detour is still live
+/// because the process could not be frozen to restore it.
+///
+/// A `true` here forbids the caller from clearing the originals. A live detour
+/// whose `ORIGINAL_*` slot reads zero returns WITHOUT calling the engine's own
+/// function, which silently changes what the game computes -- a worse outcome
+/// than the leaked trampoline this path already accepts.
+#[must_use]
+fn rollback(created: &[usize]) -> bool {
+    // Same rule as `uninstall`: a retained detour is still admitting
+    // callbacks, so the drain below would never finish. Leaving the
+    // trampolines allocated is the strictly better failure -- the module is
+    // pinned against unload, so a poised entrant keeps running real code.
+    let mut retained = false;
     for target in created.iter().rev() {
-        let _ = unsafe { MinHook::disable_hook(*target as *mut c_void) };
+        if let Err(status) = unsafe { inline_detour::disable(*target as *mut c_void) } {
+            // NOT `detour_retained()`, which answers only "the freeze was
+            // refused". `MH_DisableHook` also returns MH_ERROR_MEMORY_PROTECT
+            // and MH_ERROR_MEMORY_ALLOC with the target STILL PATCHED, and
+            // reading those as a release is how the drain below starts
+            // spinning against a detour that is still admitting callbacks.
+            // Only the two statuses that mean there was nothing patched to
+            // begin with are a release.
+            retained |= !status.already_released();
+        }
+    }
+    if retained {
+        RETAINED_LIVE.store(true, Ordering::Release);
+        return true;
     }
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
         std::thread::yield_now();
     }
     for target in created.iter().rev() {
-        let _ = unsafe { MinHook::remove_hook(*target as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(*target as *mut c_void) };
     }
+    false
 }
 fn clear_originals() {
     ORIGINAL_GETTER.store(0, Ordering::Release);
@@ -385,6 +461,133 @@ fn read_exact(address: usize, out: &mut [u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The production text of this module, up to its test module.
+    ///
+    /// Line endings are normalised because the scans below match
+    /// multi-line shapes, and git hands this file back with CRLF on a
+    /// fresh checkout. Without this the guards go red on a clean tree
+    /// and green on the tree that wrote them -- the worst direction.
+    fn production_code() -> String {
+        let source = include_str!("a729.rs").replace("\r\n", "\n");
+        source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("a729.rs has a test module")
+            .0
+            .to_string()
+    }
+
+    /// Law: the `ORIGINAL_*` slots are never cleared while a detour is still
+    /// patched into the game.
+    ///
+    /// Each detour reads its slot and RETURNS WITHOUT CALLING the engine's own
+    /// function when the slot is zero. So clearing the slots under a live
+    /// detour does not merely leak a hook, it deletes engine behaviour from a
+    /// running game and the capture keeps going as though nothing happened --
+    /// strictly worse than the leaked trampoline this teardown already
+    /// accepts. `inline_detour::disable` refuses rather than restore bytes it
+    /// cannot restore safely, so "the release failed" and "the detour is gone"
+    /// stopped being the same thing, and every clear has to be guarded.
+    ///
+    /// A source scan because the guarded paths are the failure arms of an
+    /// installer that only runs against a real image: there is no way to drive
+    /// them offline, and asserting nothing at all would be worse. Delete any
+    /// guard below and this names the file.
+    #[test]
+    fn no_path_clears_the_originals_while_a_detour_may_still_be_live() {
+        let production = production_code();
+        let clears = production.matches("clear_originals()").count();
+        assert!(
+            clears >= 2,
+            "expected the teardown and rollback clears to still exist, found {clears}"
+        );
+        for (guarded, count) in [
+            ("if !rollback(&created) {", 6usize),
+            ("if !retained {", 1usize),
+            ("if retained {\n        RETAINED_LIVE.store(true, Ordering::Release);\n    } else {\n        clear_originals();\n    }", 1usize),
+        ] {
+            assert_eq!(
+                production.matches(guarded).count(),
+                count,
+                "every `clear_originals()` must sit behind a retention check;                  `{guarded}` no longer appears {count} times"
+            );
+        }
+        let before_rollback = production
+            .split_once("fn rollback(")
+            .expect("rollback is declared in production")
+            .0;
+        assert!(
+            before_rollback.trim_end().ends_with("#[must_use]"),
+            "rollback's retention answer must be impossible to drop on the floor"
+        );
+    }
+
+    /// Law: "the release failed" is decided by what is still PATCHED, not by
+    /// which component refused.
+    ///
+    /// `detour_retained()` answers only "the freeze was refused".
+    /// `MH_DisableHook` also returns MH_ERROR_MEMORY_PROTECT and
+    /// MH_ERROR_MEMORY_ALLOC with the target still patched, so keying
+    /// retention on `detour_retained()` reports a live detour as released --
+    /// and then the callback drain spins against a detour that is still
+    /// producing callbacks, and the originals are cleared under it. Only
+    /// `already_released()` -- MH_ERROR_DISABLED and MH_ERROR_NOT_CREATED,
+    /// the two answers that mean nothing was patched -- is a release.
+    ///
+    /// A source scan for the same reason as the law above: these are the
+    /// failure arms of a teardown that only runs against a real image.
+    #[test]
+    fn retention_is_decided_by_what_is_still_patched_not_by_who_refused() {
+        let production = production_code();
+        assert_eq!(
+            production.matches("retained |= !status.already_released();").count(),
+            2,
+            "both the rollback and the teardown release loops must decide \
+             retention from `already_released()`"
+        );
+        assert!(
+            !production.contains("status.detour_retained()"),
+            "`detour_retained()` is narrower than the question being asked: it \
+             says the FREEZE refused, not that the target is still patched"
+        );
+    }
+
+    /// Law: a unit that retained a live detour never installs again.
+    ///
+    /// A retained teardown clears `INSTALLED` but leaves the sites hooked. The
+    /// next `install` would then reach `create_hook` on an already-hooked
+    /// target, take the MH_ERROR_ALREADY_CREATED arm, call `rollback(&[])` --
+    /// which has nothing to disable and therefore reports no retention -- and
+    /// clear the originals under the live detour, or spin forever draining
+    /// callbacks that detour is still producing. The latch is one-way for the
+    /// same reason the module pin is: there is no state in which it becomes
+    /// safe again.
+    #[test]
+    fn a_retained_release_permanently_refuses_the_next_install() {
+        let production = production_code();
+        assert_eq!(
+            production.matches("RETAINED_LIVE.store(true, Ordering::Release)").count(),
+            2,
+            "both retention sites -- rollback and teardown -- must set the latch"
+        );
+        assert!(
+            !production.contains("RETAINED_LIVE.store(false"),
+            "the latch is one-way; there is no state in which reinstalling is \
+             safe again"
+        );
+        let install = production
+            .split_once("pub fn install()")
+            .expect("install is declared in production")
+            .1
+            .split_once("let base = unsafe")
+            .expect("install resolves the module base")
+            .0;
+        assert!(
+            install.contains("RETAINED_LIVE.load(Ordering::Acquire)"),
+            "install must refuse BEFORE it touches a target that may still be \
+             hooked"
+        );
+    }
 
     #[test]
     fn current_spotted_frames_are_reusable_across_speed_five_hourly_drains() {

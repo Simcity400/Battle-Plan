@@ -21,6 +21,7 @@ use crate::a729_air_mio_controller::{
 };
 use crate::RectI32;
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -173,7 +174,7 @@ impl A729AirSelectionHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
             ORIGINAL_MATERIALIZE.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             GAME_CLOCK_ADDRESS.store(0, Ordering::Release);
@@ -246,13 +247,15 @@ impl A729AirSelectionHookOwner {
             .lock()
             .map_err(|_| "A28 air install mutex poisoned".to_string())?;
         CALLBACKS_OPEN.store(false, Ordering::Release);
-        match unsafe { MinHook::disable_hook(self.target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(self.target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A28 air hook disable failed: {status}")),
         }
         wait_for_quiescence(Duration::from_secs(30))?;
-        match unsafe { MinHook::remove_hook(self.target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(self.target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A28 air hook removal failed: {status}")),
         }
         ORIGINAL_MATERIALIZE.store(0, Ordering::Release);

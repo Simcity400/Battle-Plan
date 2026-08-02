@@ -24,6 +24,7 @@
 //!   [`HOOK_ENTRY_OBSERVED_BITS`] only in the entry summary.
 
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
@@ -686,10 +687,10 @@ fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
     ];
     let mut disable_errors = Vec::new();
     for (target, name) in targets.into_iter().zip(names) {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
             Ok(())
-            | Err(MH_STATUS::MH_ERROR_DISABLED)
-            | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => disable_errors.push(format!("disable {name}: {status}")),
         }
     }
@@ -723,8 +724,8 @@ fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
     INSTALLED.store(false, Ordering::Release);
     let mut remove_errors = Vec::new();
     for (target, name) in targets.into_iter().zip(names) {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => remove_errors.push(format!("remove {name}: {status}")),
         }
     }
@@ -987,10 +988,11 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
         let mut disabled = [false; 12];
         let mut failures = Vec::new();
         for (index, (target, name)) in hook_targets.into_iter().zip(names).enumerate() {
-            match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+            match unsafe { inline_detour::disable(target as *mut c_void) } {
                 Ok(())
-                | Err(MH_STATUS::MH_ERROR_DISABLED)
-                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => disabled[index] = true,
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => disabled[index] = true,
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
@@ -2046,10 +2048,10 @@ fn rollback(targets: &[usize; 12]) -> Result<(), String> {
     set_rollback_retry_required(true)?;
     let mut errors = Vec::new();
     for target in targets {
-        match unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+        match unsafe { inline_detour::disable(*target as *mut c_void) } {
             Ok(())
-            | Err(MH_STATUS::MH_ERROR_DISABLED)
-            | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("disable {target:#x}: {status}")),
         }
     }
@@ -2059,8 +2061,8 @@ fn rollback(targets: &[usize; 12]) -> Result<(), String> {
     QUIESCED.store(true, Ordering::Release);
     wait_for_callback_quiescence()?;
     for target in targets.iter().rev() {
-        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(*target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("remove {target:#x}: {status}")),
         }
     }

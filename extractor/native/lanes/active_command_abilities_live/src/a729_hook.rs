@@ -1243,7 +1243,7 @@ pub fn uninstall_a729_ability_transition_hook() -> Result<(), String> {
     let specs = hook_specs(installed_addresses(base));
     let mut disable_failures = Vec::new();
     for (target, _, _) in specs.iter().rev() {
-        if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::disable(*target as *mut c_void) } {
             disable_failures.push(format!("0x{target:X}: {status}"));
         }
     }
@@ -1267,7 +1267,7 @@ pub fn uninstall_a729_ability_transition_hook() -> Result<(), String> {
     }
     let mut remove_failures = Vec::new();
     for (target, _, original) in specs.iter().rev() {
-        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+        match unsafe { inline_detour::remove(*target as *mut c_void) } {
             Ok(()) => original.store(0, Ordering::Release),
             Err(status) => remove_failures.push(format!("0x{target:X}: {status}")),
         }
@@ -1296,7 +1296,7 @@ fn rollback(
     DRAINING.store(true, Ordering::Release);
     let mut failures = Vec::new();
     for (target, _, _) in specs.iter().take(enabled).rev() {
-        if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+        if let Err(status) = unsafe { inline_detour::disable(*target as *mut c_void) } {
             failures.push(format!("0x{target:X} disable: {status}"));
         }
     }
@@ -1312,7 +1312,7 @@ fn rollback(
     }
     if failures.is_empty() {
         for (target, _, original) in specs.iter().take(created).rev() {
-            match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+            match unsafe { inline_detour::remove(*target as *mut c_void) } {
                 Ok(()) => original.store(0, Ordering::Release),
                 Err(status) => failures.push(format!("0x{target:X}: {status}")),
             }

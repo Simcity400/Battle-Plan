@@ -180,7 +180,7 @@ impl A729ResolvedTooltipHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
             ORIGINAL_CONTROLLER.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             return Err(format!(
@@ -229,10 +229,10 @@ impl A729ResolvedTooltipHookOwner {
             .lock()
             .map_err(|_| "A26 install mutex poisoned".to_string())?;
         CALLBACKS_OPEN.store(false, Ordering::Release);
-        unsafe { MinHook::disable_hook(self.target as *mut c_void) }
+        unsafe { inline_detour::disable(self.target as *mut c_void) }
             .map_err(|status| format!("A26 controller disable failed: {status}"))?;
         wait_for_quiescence(Duration::from_secs(30))?;
-        unsafe { MinHook::remove_hook(self.target as *mut c_void) }
+        unsafe { inline_detour::remove(self.target as *mut c_void) }
             .map_err(|status| format!("A26 controller removal failed: {status}"))?;
         ORIGINAL_CONTROLLER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);

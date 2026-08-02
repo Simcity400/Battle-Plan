@@ -7,6 +7,7 @@
 #![cfg(windows)]
 
 use core::{cell::RefCell, ffi::c_void, mem, ptr};
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
@@ -2291,15 +2292,17 @@ fn observe_pending_release_receipts() -> Result<(), String> {
 
 fn cleanup_hooks(sites: InstalledHookAddresses) -> Result<(), String> {
     for target in [sites.hourly_update, sites.definition_cancel] {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A19 hook disable failed: {status}")),
         }
     }
     wait_for_callbacks()?;
     for target in [sites.hourly_update, sites.definition_cancel] {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A19 hook remove failed: {status}")),
         }
     }

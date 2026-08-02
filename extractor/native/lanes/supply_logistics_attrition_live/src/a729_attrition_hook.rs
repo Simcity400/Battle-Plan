@@ -31,13 +31,6 @@ const MEM_RESERVE: Dword = 0x2000;
 const MEM_RELEASE: Dword = 0x8000;
 const PAGE_EXECUTE_READ: Dword = 0x20;
 const PAGE_EXECUTE_READWRITE: Dword = 0x40;
-const TH32CS_SNAPTHREAD: Dword = 0x0000_0004;
-const THREAD_SUSPEND_RESUME: Dword = 0x0002;
-const THREAD_GET_CONTEXT: Dword = 0x0008;
-const CONTEXT_CONTROL_AMD64: Dword = 0x0010_0001;
-const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
-const ERROR_INVALID_HANDLE: Dword = 6;
-const ERROR_INVALID_PARAMETER: Dword = 87;
 const ALLOCATION_GRANULARITY: usize = 0x1_0000;
 const STUB_ALLOCATION_LEN: usize = 0x1000;
 const MAX_REL32_DISTANCE: usize = 0x7000_0000;
@@ -50,39 +43,6 @@ pub const CHECKPOINT_SENTINEL_JOB_ID: &str =
     "20260721T085011Z-wave6-arc1-inline-sites-root-confirm-f06bc8e0";
 pub const CHECKPOINT_SENTINEL_ARTIFACT_SHA256: &str =
     "739d4221cd6de08e7909d31cfac16a052977a30b8d46cca71a33356da55bafd7";
-
-#[repr(C)]
-struct ThreadEntry32 {
-    size: Dword,
-    usage: Dword,
-    thread_id: Dword,
-    owner_process_id: Dword,
-    base_priority: i32,
-    delta_priority: i32,
-    flags: Dword,
-}
-
-#[repr(C, align(16))]
-struct ThreadContext64 {
-    homes: [u64; 6],
-    context_flags: Dword,
-    mx_csr: Dword,
-    segments: [u16; 6],
-    eflags: Dword,
-    debug_registers: [u64; 6],
-    registers_through_r15: [u64; 16],
-    rip: u64,
-    extended: [u8; 976],
-}
-
-impl ThreadContext64 {
-    fn control() -> Self {
-        let mut value: Self = unsafe { core::mem::zeroed() };
-        value.context_flags = CONTEXT_CONTROL_AMD64;
-        value
-    }
-}
-const _: [(); 1232] = [(); core::mem::size_of::<ThreadContext64>()];
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -101,17 +61,6 @@ extern "system" {
     ) -> Bool;
     fn FlushInstructionCache(process: Handle, address: *const c_void, size: usize) -> Bool;
     fn GetCurrentProcess() -> Handle;
-    fn GetCurrentProcessId() -> Dword;
-    fn GetCurrentThreadId() -> Dword;
-    fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
-    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
-    fn OpenThread(access: Dword, inherit: Bool, thread_id: Dword) -> Handle;
-    fn SuspendThread(thread: Handle) -> Dword;
-    fn ResumeThread(thread: Handle) -> Dword;
-    fn CloseHandle(handle: Handle) -> Bool;
-    fn GetLastError() -> Dword;
-    fn GetThreadContext(thread: Handle, context: *mut ThreadContext64) -> Bool;
     fn GetModuleHandleW(module_name: *const u16) -> Handle;
     fn ReadProcessMemory(
         process: Handle,
@@ -623,7 +572,7 @@ pub fn install() -> Result<(), String> {
         });
     }
 
-    let suspended = match unsafe { SuspendedProcessThreads::suspend_all_other_threads() } {
+    let suspended = match suspend_all_other_threads() {
         Ok(value) => value,
         Err(error) => { free_stubs(&mut hooks); return Err(error); }
     };
@@ -631,7 +580,7 @@ pub fn install() -> Result<(), String> {
         .iter()
         .map(|hook| (hook.target as usize, hook.target as usize + hook.original.len()))
         .collect();
-    let inside = match suspended.any_instruction_pointer_in(&ranges) {
+    let inside = match any_instruction_pointer_in(&suspended, &ranges) {
         Ok(value) => value,
         Err(error) => { drop(suspended); free_stubs(&mut hooks); return Err(error); }
     };
@@ -735,7 +684,7 @@ pub fn uninstall() -> Result<(), String> {
     let mut lifecycle = LIFECYCLE.lock().map_err(|_| "ARC1 lifecycle poisoned")?;
     let Some(set) = lifecycle.as_mut() else { return Ok(()); };
     let reopen_admission = ADMISSION_OPEN.swap(false, Ordering::AcqRel);
-    let suspended = match unsafe { SuspendedProcessThreads::suspend_all_other_threads() } {
+    let suspended = match suspend_all_other_threads() {
         Ok(value) => value,
         Err(error) => {
             if reopen_admission { ADMISSION_OPEN.store(true, Ordering::Release); }
@@ -743,7 +692,7 @@ pub fn uninstall() -> Result<(), String> {
         }
     };
     let in_flight = CALLBACKS_IN_FLIGHT.load(Ordering::Acquire);
-    let inside = match suspended.any_instruction_pointer_in(&set.execution_ranges()) {
+    let inside = match any_instruction_pointer_in(&suspended, &set.execution_ranges()) {
         Ok(value) => value,
         Err(error) => {
             drop(suspended);
@@ -903,68 +852,127 @@ fn free_stubs(hooks: &mut Vec<InstalledHook>) {
     }
 }
 
-struct SuspendedProcessThreads { handles: Vec<Handle> }
-
-impl SuspendedProcessThreads {
-    unsafe fn suspend_all_other_threads() -> Result<Self, String> {
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        if snapshot == INVALID_HANDLE_VALUE { return Err("ARC1 thread snapshot failed".into()); }
-        let process_id = unsafe { GetCurrentProcessId() };
-        let current_thread_id = unsafe { GetCurrentThreadId() };
-        let mut entry = ThreadEntry32 {
-            size: core::mem::size_of::<ThreadEntry32>() as Dword,
-            usage: 0, thread_id: 0, owner_process_id: 0,
-            base_priority: 0, delta_priority: 0, flags: 0,
-        };
-        let mut handles = Vec::new();
-        let mut present = unsafe { Thread32First(snapshot, &mut entry) } != 0;
-        while present {
-            if entry.owner_process_id == process_id && entry.thread_id != current_thread_id {
-                let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, 0, entry.thread_id) };
-                if handle.is_null() {
-                    let error = unsafe { GetLastError() };
-                    if error != ERROR_INVALID_PARAMETER {
-                        unsafe { CloseHandle(snapshot); }
-                        resume_and_close(&mut handles);
-                        return Err(format!("ARC1 thread open failed: {}", entry.thread_id));
-                    }
-                } else if unsafe { SuspendThread(handle) } == Dword::MAX {
-                    let error = unsafe { GetLastError() };
-                    unsafe { CloseHandle(handle); }
-                    if error != ERROR_INVALID_HANDLE && error != ERROR_INVALID_PARAMETER {
-                        unsafe { CloseHandle(snapshot); }
-                        resume_and_close(&mut handles);
-                        return Err(format!("ARC1 thread suspend failed: {}", entry.thread_id));
-                    }
-                } else {
-                    handles.push(handle);
-                }
-            }
-            present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-        }
-        unsafe { CloseHandle(snapshot); }
-        Ok(Self { handles })
-    }
-
-    fn any_instruction_pointer_in(&self, ranges: &[(usize, usize)]) -> Result<bool, String> {
-        for handle in &self.handles {
-            let mut context = ThreadContext64::control();
-            if unsafe { GetThreadContext(*handle, &mut context) } == 0 {
-                return Err(format!("ARC1 GetThreadContext failed: {}", unsafe { GetLastError() }));
-            }
-            let rip = context.rip as usize;
-            if ranges.iter().any(|(start, end)| rip >= *start && rip < *end) { return Ok(true); }
-        }
-        Ok(false)
-    }
+/// The process freeze this module patches under.
+///
+/// It used to be hand-rolled here: a single toolhelp pass that read any
+/// `Thread32Next` stop as the end of the list, so it could certify a truncated
+/// enumeration and could not see a thread created after its snapshot. Both
+/// holes are closed by `inline_detour`'s freeze, which refuses a broken
+/// enumeration and iterates to a fixed point; ARC1 keeps its own error
+/// vocabulary by rendering the typed refusal into an ARC1 message.
+fn suspend_all_other_threads() -> Result<inline_detour::ProcessFreeze, String> {
+    inline_detour::freeze_process().map_err(|refusal| format!("ARC1 patch refused: {refusal}"))
 }
 
-impl Drop for SuspendedProcessThreads {
-    fn drop(&mut self) { resume_and_close(&mut self.handles); }
+/// Is any frozen thread stopped inside a range about to be rewritten?
+///
+/// Fail-closed exactly as before: a context that cannot be read is a refusal,
+/// never "not inside".
+fn any_instruction_pointer_in(
+    suspended: &inline_detour::ProcessFreeze,
+    ranges: &[(usize, usize)],
+) -> Result<bool, String> {
+    suspended
+        .any_instruction_pointer_in(ranges)
+        .map_err(|refusal| format!("ARC1 patch refused: {refusal}"))
 }
 
-fn resume_and_close(handles: &mut Vec<Handle>) {
-    for handle in handles.drain(..).rev() {
-        unsafe { ResumeThread(handle); CloseHandle(handle); }
+#[cfg(test)]
+mod freeze_call_site_tests {
+    /// This module's production text, up to its test modules.
+    ///
+    /// A text pin rather than a behavioural one, and the reason is the same one
+    /// the shared freeze's own call-site pin gives: `install` and `uninstall`
+    /// here refuse before they reach the freeze unless the running process is
+    /// the exact a729 `hoi4.exe`, so no offline test can drive either far
+    /// enough to observe a freeze counter move. What CAN be stated is that the
+    /// freeze is taken, that it is asked about the patch sites, and that both
+    /// happen before the first byte is rewritten.
+    fn production_code() -> String {
+        let source = include_str!("a729_attrition_hook.rs").replace("\r\n", "\n");
+        source
+            .split_once("#[cfg(test)]\nmod ")
+            .expect("this module has a test module")
+            .0
+            .to_string()
+    }
+
+    fn body_of(production: &str, signature: &str) -> String {
+        production
+            .split_once(signature)
+            .unwrap_or_else(|| panic!("{signature} is declared in production"))
+            .1
+            .split_once("\npub fn ")
+            .map(|(body, _)| body.to_string())
+            .unwrap_or_else(|| {
+                production
+                    .split_once(signature)
+                    .expect("checked above")
+                    .1
+                    .to_string()
+            })
+    }
+
+    /// Falsifiable: fails if ARC1 ever rewrites a live callsite without the
+    /// shared process freeze, or without asking where the frozen threads are.
+    ///
+    /// The mutations this catches, spelled as a future edit would write them:
+    /// deleting the `suspend_all_other_threads()` call from `install` or
+    /// `uninstall`; deleting the `any_instruction_pointer_in` check so a thread
+    /// parked in a five-byte site is patched around; or reordering either after
+    /// `patch_rel32`/`restore_hook`, which would rewrite the bytes first and
+    /// stop the world afterwards.
+    #[test]
+    fn every_arc1_code_mutation_happens_under_the_shared_freeze() {
+        let production = production_code();
+        for (signature, write) in [
+            ("pub fn install() -> Result<(), String> {", "patch_rel32("),
+            ("pub fn uninstall() -> Result<(), String> {", "restore_hook("),
+        ] {
+            let body = body_of(&production, signature);
+            let freeze = body
+                .find("suspend_all_other_threads()")
+                .unwrap_or_else(|| panic!("{signature} must freeze the process"));
+            let clear = body
+                .find("any_instruction_pointer_in(&suspended,")
+                .unwrap_or_else(|| {
+                    panic!("{signature} must ask where the frozen threads are stopped")
+                });
+            let mutation = body
+                .find(write)
+                .unwrap_or_else(|| panic!("{signature} must still contain {write}"));
+            assert!(
+                freeze < clear && clear < mutation,
+                "{signature}: the order must be freeze, then check, then write \
+                 (freeze at {freeze}, check at {clear}, write at {mutation})"
+            );
+        }
+    }
+
+    /// Falsifiable: fails if this module reaches for a private suspender again.
+    ///
+    /// `inline_detour`'s workspace scan is the enforcement; this is the local
+    /// copy, so a lane editing THIS file sees the failure in its own crate
+    /// rather than in a crate it may not be building.
+    #[test]
+    fn arc1_declares_no_thread_suspender_of_its_own() {
+        let production = production_code();
+        for fragment in ["Suspend", "Open", "Thread32", "GetThread"] {
+            let banned = format!("{fragment}{}", match fragment {
+                "Suspend" | "Open" => "Thread(",
+                "Thread32" => "First(",
+                _ => "Context(",
+            });
+            assert!(
+                !production.contains(&banned),
+                "ARC1 must not call {banned} itself; the shared freeze owns thread \
+                 suspension, and every private copy of it certified a truncated \
+                 thread list"
+            );
+        }
+        assert!(
+            production.contains("inline_detour::freeze_process()"),
+            "ARC1 rewrites live bytes and must take the shared freeze"
+        );
     }
 }

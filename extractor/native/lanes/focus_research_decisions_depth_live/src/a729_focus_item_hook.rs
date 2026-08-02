@@ -22,6 +22,7 @@ use compact_contract::national_focus_presentation::{
     MAX_UI_PASS_OPERATIONS, RUNTIME_ROOT_IDENTITY,
 };
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::collections::{BTreeMap, BTreeSet};
 use std::cell::Cell;
@@ -1185,8 +1186,10 @@ fn disable_and_remove(resolved: InstalledAddresses) -> Result<(), String> {
         errors.push(format!("restore inline instrumentation: {error}"));
     }
     for target in targets(resolved) {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("disable {target:#x}: {status}")),
         }
     }
@@ -1207,8 +1210,8 @@ fn disable_and_remove(resolved: InstalledAddresses) -> Result<(), String> {
         return Err(format!("release inline relays: {error}"));
     }
     for target in targets(resolved) {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("remove {target:#x}: {status}")),
         }
     }

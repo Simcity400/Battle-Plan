@@ -11,6 +11,7 @@ use crate::{
     CollectionTrace, ExactControllerTraceSource, MaterializedSlotTrace, RectI32, SourceItemTrace,
 };
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::collections::{BTreeSet, VecDeque};
 use std::mem;
@@ -139,7 +140,7 @@ impl A729FacilitySmoothListHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
             ORIGINAL_SETUP.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             return Err(format!("A28 facility hook enable failed: {status}"));
@@ -191,17 +192,17 @@ impl A729FacilitySmoothListHookOwner {
             .lock()
             .map_err(|_| "A28 facility install mutex poisoned".to_string())?;
         CALLBACKS_OPEN.store(false, Ordering::Release);
-        match unsafe { MinHook::disable_hook(self.target as *mut c_void) } {
+        match unsafe { inline_detour::disable(self.target as *mut c_void) } {
             Ok(())
-            | Err(MH_STATUS::MH_ERROR_DISABLED)
-            | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 return Err(format!("A28 facility hook disable failed: {status}"));
             }
         }
         wait_for_quiescence(Duration::from_secs(30))?;
-        match unsafe { MinHook::remove_hook(self.target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(self.target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => {
                 return Err(format!("A28 facility hook removal failed: {status}"));
             }

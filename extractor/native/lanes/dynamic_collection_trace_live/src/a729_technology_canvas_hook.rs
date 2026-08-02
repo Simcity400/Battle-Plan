@@ -19,6 +19,7 @@ use crate::a729_technology_canvas::{
     TECHNOLOGY_MODE,
 };
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -268,7 +269,7 @@ impl A729TechnologyCanvasHookOwner {
                 OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
                 COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
                 for rollback in [refresh_target, population_target, owner_target] {
-                    let _ = unsafe { MinHook::disable_hook(rollback as *mut c_void) };
+                    let _ = unsafe { inline_detour::disable(rollback as *mut c_void) };
                 }
                 if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
                     return Err(format!(
@@ -286,7 +287,7 @@ impl A729TechnologyCanvasHookOwner {
             OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
             COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
             for rollback in [refresh_target, population_target, owner_target] {
-                let _ = unsafe { MinHook::disable_hook(rollback as *mut c_void) };
+                let _ = unsafe { inline_detour::disable(rollback as *mut c_void) };
             }
             if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
                 return Err(format!(
@@ -349,10 +350,10 @@ impl A729TechnologyCanvasHookOwner {
             (self.population_target, "population"),
             (self.owner_target, "owner"),
         ] {
-            match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+            match unsafe { inline_detour::disable(target as *mut c_void) } {
                 Ok(())
-                | Err(MH_STATUS::MH_ERROR_DISABLED)
-                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                 Err(status) => {
                     return Err(format!(
                         "technology canvas {label} hook disable failed: {status}"
@@ -367,8 +368,9 @@ impl A729TechnologyCanvasHookOwner {
             (self.population_target, "population"),
             (self.owner_target, "owner"),
         ] {
-            match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-                Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            match unsafe { inline_detour::remove(target as *mut c_void) } {
+                Ok(())
+                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
                 Err(status) => failures.push(format!("{label} removal failed: {status}")),
             }
         }
@@ -656,7 +658,7 @@ fn cleanup_created_hooks(targets: &[usize]) {
     OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
     COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
     for target in targets {
-        let _ = unsafe { MinHook::remove_hook(*target as *mut c_void) };
+        let _ = unsafe { inline_detour::remove(*target as *mut c_void) };
     }
     ORIGINAL_REFRESH_COMMIT.store(0, Ordering::Release);
     ORIGINAL_POPULATION_COMMIT.store(0, Ordering::Release);

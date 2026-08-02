@@ -7,6 +7,7 @@
 //! its same-hour active research-slot walk.
 
 use core::ffi::c_void;
+use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -503,8 +504,10 @@ fn rollback_install(
 fn disable_targets(resolved: InstalledAddresses) -> Result<(), String> {
     let mut errors = Vec::new();
     for target in targets(resolved) {
-        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("disable {target:#x}: {status}")),
         }
     }
@@ -518,8 +521,8 @@ fn disable_targets(resolved: InstalledAddresses) -> Result<(), String> {
 fn remove_targets(resolved: InstalledAddresses) -> Result<(), String> {
     let mut errors = Vec::new();
     for target in targets(resolved) {
-        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+        match unsafe { inline_detour::remove(target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => errors.push(format!("remove {target:#x}: {status}")),
         }
     }
