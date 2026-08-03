@@ -551,9 +551,15 @@ MARKER_BITS = {11}
 BIT13_VALID_DOMAINS = {"diplomacy_live", "diplomacy_intel_operatives_live"}
 KNOWN_MASK = (1 << 15) - 1
 
-# Lane-local overlays (d49/d51: compact_contract lib.rs:181-205; d53:
-# diplomacy_intel_operatives_live/domain44_compact.rs; d60:
-# capitulation_war_state_live/src/compact.rs).
+# Lane-local overlays. The AUTHORITY is
+# `compact_contract::lane_local_status_mask` (lib.rs), which registers exactly
+# d49, d51, d53, d60 and d99; the lane declarations alias the contract
+# constants so lane and contract cannot drift. This table is a COPY of that
+# registry and is pinned against it by
+# `compact_contract/tests/script_status_vocabulary_sweep.rs` -- an incomplete
+# copy here does not merely mislabel, it makes `classify_bits` report a
+# registered badge as "UNKNOWN status bits (contract drift)" and block C0 on
+# it, which is what a missing d60 bit 17 did.
 LANE_LOCAL = {
     "naval_combat_lifecycle_live": {
         11: ("LANE:LOCATION_CANDIDATE_UNVALIDATED", True,
@@ -584,6 +590,21 @@ LANE_LOCAL = {
         # MANDATORY semantics badge whenever war rows exist - informational.
         16: ("LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR", False,
              "CapturedSemantic: running accumulator"),
+        # v2 frame shape: every war row carries the complete exact H-B5
+        # residual block. Informational for the same reason bit 16 is - it
+        # describes the shape of a COMPLETE frame, not a shortfall. Absent
+        # from this table the census called it "UNKNOWN status bits 0x20000
+        # (contract drift)" and blocked, on the majority of every capture:
+        # 245 of the 394 d60 frames of runs/live_unlock/t15 carry it.
+        17: ("LANE:WAR_RESIDUALS_EXACT", False,
+             "CapturedSemantic: all rows carry exact residuals"),
+    },
+    "division_combat_stats_live": {
+        16: ("LANE:TORN_ROWS_PRESENT", True, "Failed/TornRead"),
+        17: ("LANE:STAT_BLOCK_NULL_PRESENT", True, "Failed/StatBlockNull"),
+        18: ("LANE:INCOMPLETE_OBSERVATION", True,
+             "CapturedPartial: discarded observations, rows are not the "
+             "complete round set"),
     },
 }
 

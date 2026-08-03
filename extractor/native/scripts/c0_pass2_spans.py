@@ -87,11 +87,28 @@ DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
         21: StatusSpec('LANE:FACTION_GROUP_UNVALIDATED', True),
         22: StatusSpec('LANE:INTEL_NETWORK_GRAPH_UNVALIDATED', True),
     },
-    60: {16: StatusSpec('LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR', False)},
+    60: {
+        16: StatusSpec('LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR', False),
+        # The v2 all-rows-carry-residuals frame shape. Without this entry the
+        # bit fell through to `UNKNOWN_BIT_17`, whose spec is failure-class
+        # True, so the majority of every d60 capture reconciled as an
+        # unexplained failure incidence and exited 1.
+        17: StatusSpec('LANE:WAR_RESIDUALS_EXACT', False),
+    },
+    99: {
+        16: StatusSpec('LANE:TORN_ROWS_PRESENT', True),
+        17: StatusSpec('LANE:STAT_BLOCK_NULL_PRESENT', True),
+        18: StatusSpec('LANE:INCOMPLETE_OBSERVATION', True),
+    },
 }
+# Derived, never hand-maintained: two hand-written tables in one file that both
+# claim to be the lane-local registry is the drift this census exists to
+# detect. `DOMAIN_STATUS_BITS` above is the single declaration, and it is
+# itself pinned against `compact_contract::lane_local_status_mask` by
+# `compact_contract/tests/script_status_vocabulary_sweep.rs`.
 LANE_LOCAL_MASKS = {
-    49: 1 << 11,
-    51: (1 << 11) | (1 << 12) | (1 << 13),
+    domain: sum(1 << bit for bit in bits)
+    for domain, bits in DOMAIN_STATUS_BITS.items()
 }
 DEFAULT_RUN_NAMES = (
     'production_speed5_ShortSpeed5_20260711_113625',

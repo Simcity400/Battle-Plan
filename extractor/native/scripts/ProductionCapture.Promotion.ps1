@@ -11,6 +11,49 @@ $script:ProductionPromotionFailureMask = [uint32]0x13CF
 # extension.
 $script:ProductionPromotionUnknownStatusMask =
     [uint32]::Parse('FFFF8000', [Globalization.NumberStyles]::HexNumber)
+# Domain-scoped lane-local status vocabulary, mirroring
+# `compact_contract::lane_local_status_mask`. These bits are DEFINED -- they are
+# just defined per domain rather than globally, which is why the manifest tags
+# their rows `status_flags_scope = raw_global_plus_lane_local`. d53's bits
+# 16..=22 and d60's 16..=17 sit above the assigned v1 vocabulary, so applying
+# the unknown-status mask to the RAW per-domain word made every capture
+# containing either domain throw "lacks real-source completeness" for a bit the
+# contract names: runs/live_unlock/t15 publishes d53=0x530300 and d60=0x30300.
+# The word must be globalized (raw AND NOT the domain's registered mask) before
+# the unknown-status test, exactly as
+# `compact_status_for_global_interpretation` does in the Rust consumers.
+# Pinned against the contract by
+# `compact_contract/tests/script_status_vocabulary_sweep.rs`.
+$script:ProductionPromotionLaneLocalStatusMask = @{
+    49 = [uint32]0x00000800
+    51 = [uint32]0x00003800
+    53 = [uint32]0x007F0000
+    60 = [uint32]0x00030000
+    99 = [uint32]0x00070000
+}
+
+function Get-ProductionPromotionGlobalStatusFlags {
+    <#
+    .SYNOPSIS
+    One per-domain status word as the GLOBAL vocabulary sees it.
+
+    .DESCRIPTION
+    Strips only the bits the contract has registered as that domain's
+    lane-local badges. Nothing else is masked: an undefined bit survives this
+    and is still caught by the unknown-status test, which is the whole point of
+    that test.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$DomainId,
+        [Parameter(Mandatory = $true)][uint32]$StatusFlags
+    )
+    $laneLocal = [uint32]0
+    if ($script:ProductionPromotionLaneLocalStatusMask.ContainsKey($DomainId)) {
+        $laneLocal = $script:ProductionPromotionLaneLocalStatusMask[$DomainId]
+    }
+    return [uint32]($StatusFlags -band (-bnot $laneLocal))
+}
+
 $script:ProductionPromotionStatuses = @(
     'existing',
     'production_complete',
@@ -463,6 +506,16 @@ function Get-ProductionCapturePromotionEvidence {
         $rawStatusFlags = [uint32](Get-ProductionPromotionProperty $row 'status_flags_or')
         $effectiveStatusFlags =
             [uint32](Get-ProductionPromotionProperty $row 'effective_failure_status_flags_or')
+        # The lane-local mask is selected by the PLAN's domain id, never by the
+        # manifest's, so a manifest cannot nominate the exemption it wants. The
+        # two are required to agree by the first clause below.
+        $globalStatusFlags = Get-ProductionPromotionGlobalStatusFlags `
+            -DomainId ([int]$expectedDomains[$index].id) -StatusFlags $rawStatusFlags
+        # Definedness is tested on the globalized word: a REGISTERED lane badge
+        # is defined, and an undefined bit still survives the strip. The failure
+        # mask deliberately stays on the RAW word -- whether a lane-local badge
+        # that collides with a global failure bit (d51 bit 12) should block
+        # promotion is a policy question this gate keeps answering "yes" to.
         if ($null -eq $row -or
             [int](Get-ProductionPromotionProperty $row 'domain_id') -ne
                 [int]$expectedDomains[$index].id -or
@@ -470,7 +523,7 @@ function Get-ProductionCapturePromotionEvidence {
             [int64](Get-ProductionPromotionProperty $row 'data_record_count') -ne $frameCount -or
             ($rawStatusFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
             ($effectiveStatusFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
-            ($rawStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
+            ($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
             ($effectiveStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0) {
             throw "production domain $($expectedDomains[$index].id) lacks real-source completeness"
         }
@@ -488,7 +541,7 @@ function Get-ProductionCapturePromotionEvidence {
                     $frameCount -and
                 ($rawStatusFlags -band $script:ProductionPromotionFailureMask) -eq 0 -and
                 ($effectiveStatusFlags -band $script:ProductionPromotionFailureMask) -eq 0 -and
-                ($rawStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -eq 0 -and
+                ($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -eq 0 -and
                 ($effectiveStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -eq 0)
         })
     }

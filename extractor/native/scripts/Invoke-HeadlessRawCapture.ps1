@@ -1037,6 +1037,9 @@ $gradedWindowStarted = $false
 $clientDrivingOptInSuspended = $null
 $recorderDeadline = $null
 $scriptExitCode = 1
+# Set only by the raw-capture report's UNDEFINED-STATUS-BIT verdict (exit 2).
+# Declared here so the teardown path can read it whatever happened upstream.
+$undefinedStatusBitFailure = $null
 $passiveWitnessPath = Join-Path $OutDir 'passive_speed5_witness.jsonl'
 # The hooks-free paired control, written during settle only. Separate file from
 # the witness so the verdict authority's schema and its stall policy stay
@@ -2146,6 +2149,22 @@ if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and
         if ($reportResult.ExitCode -ne 0) {
             Write-Host "report failed: exit code $($reportResult.ExitCode)"
         }
+        # Exit code 2 is report_raw_capture.py's UNDEFINED-STATUS-BIT class and
+        # it is the one report verdict this harness refuses to walk past. Every
+        # other non-zero exit is an ordinary residual failure (a PARTIAL_DATA
+        # hour, a silent domain): classifiable outcomes that a graded capture is
+        # allowed to carry and that the operator weighs. A status bit no
+        # contract defines is not weighable -- the replay fold, the gate and the
+        # promotion check all read that same word and none of them can say what
+        # it means, so the capture's status is not merely bad, it is unreadable.
+        # Kept OUT of $scriptExitCode's normal recorder-exit path deliberately:
+        # this must surface even when the recorder itself exited 0.
+        if ($reportResult.ExitCode -eq 2) {
+            $undefinedStatusBitFailure =
+                "capture published status bits no compact-stream contract defines; see the " +
+                "CONTRACT VIOLATION section above. Declare the bit in compact_contract " +
+                "(and register it in lane_local_status_mask) or stop the producer writing it."
+        }
     } catch {
         Write-Host "report failed: $($_.Exception.Message)"
     }
@@ -2313,5 +2332,13 @@ if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
 if ($gradedWindowStarted) {
     Write-Error 'Capture ended without closing the passive graded window.'
     exit 1
+}
+# Placed after teardown so the capture is still finalized, receipted and left on
+# disk -- the artifact is exactly what someone has to read to fix the producer.
+# It is the harness VERDICT that fails, and it fails even when the recorder
+# exited 0, because a status word nothing defines is not a gradable capture.
+if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
+    Write-Error "undefined compact status bits: $undefinedStatusBitFailure"
+    exit 2
 }
 exit $scriptExitCode

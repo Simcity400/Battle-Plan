@@ -96,6 +96,18 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
             $attempts | Format-Table -AutoSize | Out-String | Write-Host
             exit 0
         }
+        # Exit 2 is the UNDEFINED-STATUS-BIT verdict: a producer wrote a status
+        # bit no contract defines. That is deterministic in the code, not in the
+        # injection race this driver exists to retry around, so every remaining
+        # attempt would reproduce it. Stop and report it instead of burning the
+        # budget proving it again.
+        if ($reportExit -eq 2) {
+            Write-Host ""
+            Write-Host "UNDEFINED COMPACT STATUS BITS on attempt $attempt : $outDir"
+            Write-Host "Retrying cannot clear this - fix the producer or declare the bit."
+            $attempts | Format-Table -AutoSize | Out-String | Write-Host
+            exit 2
+        }
         # A finalized-but-flagged capture is still the useful artifact to read;
         # keep going only if attempts remain.
         Write-Host "attempt $attempt finalized but the domain report flagged problems."
