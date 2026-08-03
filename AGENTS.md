@@ -16,81 +16,32 @@
   identity, mode, job ID, request/manifest hashes, and artifact hashes.
 - Agent/subagent concurrency limits are unrelated to Ghidra shard count.
 
-## Indexed Ghidra queries — try these BEFORE exporting
+## Ghidra evidence: query the index before exporting
 
-A SQLite index over the export store answers most "what do we already know?"
-questions in milliseconds, without launching Ghidra. Exporting to rediscover
-something already on disk is the single biggest source of wasted time and
-storage in this repo: the store held 2,080,565 artifact files covering only
-248,629 distinct contents, because agents had no way to ask first.
+A SQLite index over the export store answers "what do we already know?" in
+milliseconds without launching Ghidra. Re-exporting indexed evidence is the
+biggest source of wasted time and storage here, and exports are far larger than
+they look: `depth=0` is not seed-only, since each seed's direct callers come too.
 
-**Start every function-level investigation with a query, not an export:**
+- Find — `ghidra_coverage` (is this already exported?), `ghidra_search_decompiled`,
+  `ghidra_functions_for`, `ghidra_subsystems_of`
+- Read — `ghidra_get_function`
+- Traverse — `ghidra_callers`, `ghidra_callees`, `ghidra_path_between`
+- Export — `ghidra_export_functions`, only once a query shows the address is
+  genuinely unindexed
 
-- `ghidra_coverage` — for a list of addresses: what is already exported, in which
-  jobs, and what claims exist. The "has anyone looked at this?" call.
-- `ghidra_get_function` — decompiled C, disassembly, p-code and call graph for an
-  address, straight from the index.
-- `ghidra_search_decompiled` — FTS5 search across the decompiled corpus when you
-  have a term but no address.
-- `ghidra_callers` / `ghidra_callees` / `ghidra_path_between` — traverse the
-  global call graph instead of exporting closures to discover relationships.
-- `ghidra_functions_for` / `ghidra_subsystems_of` — reach functions by subsystem
-  name rather than guessing addresses.
-- `ghidra_index_status` — index counts and build metadata.
+Completed exports fold themselves into the index before the call returns, so new
+evidence is queryable immediately; the response's `index_refresh` reports how it
+went, and a lagging cache never means lost evidence.
 
-Call `ghidra_export_functions` only when a query shows the function is genuinely
-not indexed, or a fresh export is required. Export limits are unchanged
-(`depth` 0..3, 1..32 addresses) and nothing here caps what you may ask for. Note
-that `depth=0` is not seed-only — the exporter always adds each seed's direct
-callers, so a depth-0 job routinely yields hundreds to thousands of functions.
+**The index is advisory.** Results report what was indexed at build time and never
+assert that anything is still current. `ghidra_verify` is the only tool that
+compares cache against disk: call it and cite the identity it actually reports
+before publishing a claim. `ghidra_annotate_function` is the only writing tool.
 
-### The index is ADVISORY — it never claims to be current
-
-Query results report **what was indexed at build time**. They carry
-`indexed_sha256` and `indexed_bytes` (build-time values, not fresh measurements)
-plus a full citation: `job_id`, `job_dir`, `artifact_relative_path`,
-`canonical_path`, `path`. No query result asserts that anything is verified, and
-`indexed: true` means "the index knows about it", never "it is present and
-unchanged on disk".
-
-`ghidra_verify` is the only tool that compares cache against disk. It rereads the
-cited file, reports `agrees` with actual hash and size, and — when the canonical
-copy disagrees — points to a provenance copy that still matches.
-
-**Before publishing a claim in a findings packet: cite the artifact path plus
-`indexed_sha256`, call `ghidra_verify`, and record the actual identity it
-reports.** Hash agreement proves the bytes are unchanged; it does not validate
-the semantic conclusion drawn from them, which remains yours to defend.
-
-`ghidra_annotate_function` appends a finding to the shared `hoi4_re` claim
-registry and is the only indexed tool that writes. A claim's
-`registry_claim_status` is claim-lifecycle metadata from that registry; a value
-of `verified` there is an editorial state, not artifact confirmation.
-
-### The index maintains itself
-
-You do not have to remember to rebuild it. A completed `ghidra_export_functions`
-or `ghidra_search_strings` job folds itself into the index before the call
-returns, so **the moment an export finishes, its functions are queryable** and
-the next agent's `ghidra_coverage` finds them.
-
-The response carries an `index_refresh` object: `refreshed`/`queryable`,
-`jobs_indexed`, `jobs_failed`, `seconds`. If `queryable` is false the evidence
-still landed on disk — only the cache lagged — and the next export's refresh
-picks it up, because each refresh is a full incremental pass rather than a
-single-job one. Nothing is lost; a query may simply answer "not indexed" for a
-short window.
-
-The durable `job.json` receipt is unaffected by this: `index_refresh` appears in
-the MCP response only, never in the evidence receipt that citations depend on.
-
-### Storage note
-
-Export artifacts are deduplicated (hardlinked) and LZX-compressed in place.
-Compression is transparent — reads return identical bytes and hashes are
-unchanged — so no tool needs special handling. Never rewrite artifacts inside a
-completed job directory: many paths share one physical file, so an in-place edit
-would corrupt every job that cites it. Derive new evidence into a new job.
+**Never rewrite artifacts inside a completed job directory.** They are hardlink-
+deduplicated, so many paths share one physical file and an in-place edit would
+corrupt every job citing it. Derive new evidence into a new job.
 
 Operating guide: `replay_interface/tools/ghidra/README.md`.
 
