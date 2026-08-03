@@ -2131,8 +2131,17 @@ Get-ChildItem -LiteralPath $OutDir -Force | Sort-Object Length -Descending |
 # the outputs is reporting, not a gate: it must never turn a failed attempt into
 # a terminating error for whatever is driving this script.
 $manifestPath = Join-Path $OutDir 'native_session_manifest.json'
-if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and
-    (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+$haveManifest = Test-Path -LiteralPath $manifestPath -PathType Leaf
+$haveStreamReport = Test-Path -LiteralPath $streamReport -PathType Leaf
+if ($haveManifest -and -not $haveStreamReport) {
+    # A finalized capture with no reporter is an UNASKED question, and the two
+    # conditions are tested apart precisely so this case cannot hide inside a
+    # combined `-and` and fall through to the "no manifest" branch below.
+    $undefinedStatusBitFailure =
+        "the raw-capture report is missing ($streamReport), so whether this capture " +
+        "published an undefined status bit was never asked."
+}
+if ($haveStreamReport -and $haveManifest) {
     try {
         $reportResult = Invoke-BoundedNativeCapture `
             -FilePath $pythonExe `
@@ -2183,6 +2192,8 @@ if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and
             "the raw-capture report did not complete ($($_.Exception.Message)), so whether " +
             "this capture published an undefined status bit is UNKNOWN."
     }
+} elseif (-not $haveStreamReport) {
+    Write-Host "raw-capture report not found: $streamReport"
 } elseif ($gameDied) {
     Write-Host 'no manifest: the game died during capture, so there is nothing to finalize'
 } else {
@@ -2353,7 +2364,12 @@ if ($gradedWindowStarted) {
 # It is the harness VERDICT that fails, and it fails even when the recorder
 # exited 0, because a status word nothing defines is not a gradable capture.
 if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
-    Write-Error "compact status verdict: $undefinedStatusBitFailure"
+    # NOT Write-Error: $ErrorActionPreference is 'Stop' for this whole script,
+    # which makes Write-Error TERMINATING, so the `exit 2` below never runs and
+    # PowerShell 5.1 returns 1 instead. The distinct code is the entire point of
+    # this branch -- callers separate "undefined status bits" from every
+    # ordinary capture failure by it -- so the message goes straight to stderr.
+    [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
     exit 2
 }
 exit $scriptExitCode

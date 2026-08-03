@@ -59,25 +59,47 @@ fn registered_domains() -> BTreeMap<u16, u32> {
         .collect()
 }
 
-/// The text of the brace-delimited value that follows `marker`, exclusive of
-/// the outermost braces. Handles `{`, `@{` and quoted strings (the badge names
-/// in these tables contain `:` and `{`-free but quoted text).
-fn block_after(text: &str, marker: &str) -> String {
-    let start = text
-        .find(marker)
-        .unwrap_or_else(|| panic!("marker {marker:?} not found"));
-    let rest = &text[start + marker.len()..];
-    let open = rest
-        .find('{')
-        .unwrap_or_else(|| panic!("no block opens after {marker:?}"));
-    let bytes: Vec<char> = rest[open..].chars().collect();
-    let mut depth = 0i32;
+// --- Parsers -----------------------------------------------------------------
+//
+// These read the tables out of Python and PowerShell source, so every one of
+// them is FAIL-CLOSED by construction: anything it cannot account for is a
+// panic, never a skip. A parser that silently ignores what it does not
+// understand would let this sweep pass while the table it is guarding is
+// wrong -- e.g. `23 + 0: "badge"` is a valid Python key that the runtime turns
+// into a stripped bit 23, and a key parser that "only collects integer keys"
+// would never see it. Same class of hole as the drift being guarded against,
+// one level up.
+
+/// Replaces every `#` line comment outside a string with spaces.
+///
+/// Both languages here use `#` to end of line. Nothing downstream is
+/// comment-aware, and it must not have to be: a `# }` inside a table would
+/// otherwise end a block early and hide every entry after it, and the runtime
+/// would still read those entries.
+fn strip_line_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
     let mut quote: Option<char> = None;
-    let mut out = String::new();
-    for (index, ch) in bytes.iter().copied().enumerate() {
+    let mut escaped = false;
+    let mut in_comment = false;
+    for ch in text.chars() {
+        if ch == '\n' {
+            in_comment = false;
+            quote = None;
+            escaped = false;
+            out.push(ch);
+            continue;
+        }
+        if in_comment {
+            out.push(' ');
+            continue;
+        }
         if let Some(q) = quote {
             out.push(ch);
-            if ch == q {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
                 quote = None;
             }
             continue;
@@ -87,57 +109,85 @@ fn block_after(text: &str, marker: &str) -> String {
                 quote = Some(ch);
                 out.push(ch);
             }
-            '{' => {
-                depth += 1;
-                if depth > 1 {
-                    out.push(ch);
-                }
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return out;
-                }
-                out.push(ch);
+            '#' => {
+                in_comment = true;
+                out.push(' ');
             }
             _ => out.push(ch),
         }
-        let _ = index;
     }
-    panic!("unterminated block after {marker:?}");
+    out
 }
 
-/// The text of the parenthesised expression that follows `marker`, exclusive
-/// of the outermost parentheses.
-fn paren_expr_after(text: &str, marker: &str) -> String {
-    let start = text
-        .find(marker)
-        .unwrap_or_else(|| panic!("marker {marker:?} not found"));
+/// Byte offset of `marker`, requiring it to occur EXACTLY once.
+///
+/// A marker that matches twice would silently bind the parser to whichever
+/// copy came first, which is how a "checked" table quietly stops being the
+/// table the runtime reads.
+fn unique_marker(text: &str, marker: &str) -> usize {
+    let count = text.matches(marker).count();
+    assert_eq!(
+        count, 1,
+        "marker {marker:?} must occur exactly once in the script, found {count}"
+    );
+    text.find(marker).expect("counted above")
+}
+
+/// The delimited value that follows `marker`, exclusive of the outermost pair.
+/// `text` must already be comment-stripped.
+fn delimited_after(text: &str, marker: &str, open_ch: char, close_ch: char) -> String {
+    let start = unique_marker(text, marker);
     let rest = &text[start + marker.len()..];
-    let open = rest
-        .find('(')
-        .unwrap_or_else(|| panic!("no parenthesised expression after {marker:?}"));
+    let open = rest.find(open_ch).unwrap_or_else(|| {
+        panic!("no {open_ch:?}-delimited value opens after {marker:?}")
+    });
     let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
     let mut out = String::new();
     for ch in rest[open..].chars() {
-        match ch {
-            '(' => {
-                depth += 1;
-                if depth > 1 {
-                    out.push(ch);
-                }
+        if let Some(q) = quote {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
             }
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return out;
-                }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            out.push(ch);
+            continue;
+        }
+        if ch == open_ch {
+            depth += 1;
+            if depth > 1 {
                 out.push(ch);
             }
-            _ => out.push(ch),
+            continue;
         }
+        if ch == close_ch {
+            depth -= 1;
+            if depth == 0 {
+                return out;
+            }
+            out.push(ch);
+            continue;
+        }
+        out.push(ch);
     }
-    panic!("unterminated parenthesised expression after {marker:?}");
+    panic!("unterminated {open_ch:?}-delimited value after {marker:?}");
+}
+
+fn block_after(text: &str, marker: &str) -> String {
+    delimited_after(text, marker, '{', '}')
+}
+
+fn paren_expr_after(text: &str, marker: &str) -> String {
+    delimited_after(text, marker, '(', ')')
 }
 
 /// Collapses every run of whitespace to a single space, so a source check is
@@ -146,149 +196,128 @@ fn squeeze(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Top-level `<key>: { <inner> }` entries of a Python dict literal, as
-/// `(key text, inner text)`. Quote-aware; nested braces inside the inner block
-/// are kept.
-fn nested_entries(block: &str) -> Vec<(String, String)> {
-    let chars: Vec<char> = block.chars().collect();
+/// Splits a literal's body at its TOP-LEVEL commas, quote- and nesting-aware.
+/// Empty trailing elements (a trailing comma) are dropped; everything else is
+/// returned verbatim for the caller to account for.
+fn top_level_elements(block: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut key = String::new();
-    let mut index = 0usize;
+    let mut current = String::new();
+    let mut depth = 0i32;
     let mut quote: Option<char> = None;
-    while index < chars.len() {
-        let ch = chars[index];
+    let mut escaped = false;
+    for ch in block.chars() {
         if let Some(q) = quote {
-            key.push(ch);
-            if ch == q {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
                 quote = None;
             }
-            index += 1;
             continue;
         }
         match ch {
             '\'' | '"' => {
                 quote = Some(ch);
-                key.push(ch);
-                index += 1;
+                current.push(ch);
             }
-            '#' => {
-                while index < chars.len() && chars[index] != '\n' {
-                    index += 1;
-                }
+            '{' | '[' | '(' => {
+                depth += 1;
+                current.push(ch);
             }
-            ':' => {
-                // The value follows. If it opens a block, capture it.
-                let mut cursor = index + 1;
-                while cursor < chars.len() && chars[cursor].is_whitespace() {
-                    cursor += 1;
-                }
-                if cursor < chars.len() && chars[cursor] == '{' {
-                    let mut depth = 0i32;
-                    let mut inner = String::new();
-                    let mut inner_quote: Option<char> = None;
-                    while cursor < chars.len() {
-                        let c = chars[cursor];
-                        if let Some(q) = inner_quote {
-                            inner.push(c);
-                            if c == q {
-                                inner_quote = None;
-                            }
-                            cursor += 1;
-                            continue;
-                        }
-                        match c {
-                            '\'' | '"' => {
-                                inner_quote = Some(c);
-                                inner.push(c);
-                            }
-                            '{' => {
-                                depth += 1;
-                                if depth > 1 {
-                                    inner.push(c);
-                                }
-                            }
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    cursor += 1;
-                                    break;
-                                }
-                                inner.push(c);
-                            }
-                            _ => inner.push(c),
-                        }
-                        cursor += 1;
-                    }
-                    out.push((key.trim().to_string(), inner));
-                    key.clear();
-                    index = cursor;
-                } else {
-                    key.clear();
-                    index += 1;
-                }
+            '}' | ']' | ')' => {
+                depth -= 1;
+                current.push(ch);
             }
-            ',' => {
-                key.clear();
-                index += 1;
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut current));
             }
-            _ => {
-                key.push(ch);
-                index += 1;
-            }
+            _ => current.push(ch),
         }
+    }
+    out.push(current);
+    assert!(quote.is_none(), "unterminated string literal in {block:?}");
+    out.into_iter()
+        .filter(|element| !element.trim().is_empty())
+        .collect()
+}
+
+/// Top-level `<key>: { <inner> }` entries of a Python dict literal.
+///
+/// FAIL-CLOSED: every top-level element must have this exact shape. An element
+/// whose value is not a brace literal, or which has no `:` at all, panics
+/// rather than being skipped.
+fn nested_entries(block: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for element in top_level_elements(block) {
+        let colon = top_level_colon(&element).unwrap_or_else(|| {
+            panic!("dict element has no top-level `:`: {element:?}")
+        });
+        let (key, value) = element.split_at(colon);
+        let value = value[1..].trim();
+        assert!(
+            value.starts_with('{') && value.ends_with('}'),
+            "dict element value is not a brace literal (this sweep only \
+             understands `<key>: {{...}}`, and refuses to skip what it cannot \
+             read): {element:?}"
+        );
+        out.push((
+            key.trim().to_string(),
+            value[1..value.len() - 1].to_string(),
+        ));
     }
     out
 }
 
-/// Integer keys of a Python dict literal: every `<int>:` at the top level of
-/// `block`. Quote- and comment-aware, so a `:` inside a badge name or a
-/// comment is not a key separator.
-fn int_keys(block: &str) -> BTreeSet<u32> {
-    let chars: Vec<char> = block.chars().collect();
-    let mut out = BTreeSet::new();
-    let mut token = String::new();
+/// Byte offset of the first `:` at nesting depth 0 and outside a string.
+fn top_level_colon(element: &str) -> Option<usize> {
     let mut depth = 0i32;
-    let mut index = 0usize;
     let mut quote: Option<char> = None;
-    while index < chars.len() {
-        let ch = chars[index];
+    let mut escaped = false;
+    for (offset, ch) in element.char_indices() {
         if let Some(q) = quote {
-            if ch == q {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
                 quote = None;
             }
-            index += 1;
             continue;
         }
         match ch {
-            '\'' | '"' => {
-                quote = Some(ch);
-                token.clear();
-            }
-            '#' => {
-                while index < chars.len() && chars[index] != '\n' {
-                    index += 1;
-                }
-                token.clear();
-                continue;
-            }
-            '(' | '[' | '{' => {
-                depth += 1;
-                token.clear();
-            }
-            ')' | ']' | '}' => {
-                depth -= 1;
-                token.clear();
-            }
-            ':' if depth == 0 => {
-                if let Ok(bit) = token.trim().parse::<u32>() {
-                    out.insert(bit);
-                }
-                token.clear();
-            }
-            ',' => token.clear(),
-            _ => token.push(ch),
+            '\'' | '"' => quote = Some(ch),
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => depth -= 1,
+            ':' if depth == 0 => return Some(offset),
+            _ => {}
         }
-        index += 1;
+    }
+    None
+}
+
+/// Integer keys of a Python dict literal.
+///
+/// FAIL-CLOSED: every top-level element must be `<integer literal>: <value>`.
+/// A computed key (`23 + 0:`), a `**spread`, or a non-integer key panics --
+/// the runtime would honour them and this sweep must never claim to have
+/// checked a table it only partly read.
+fn int_keys(block: &str) -> BTreeSet<u32> {
+    let mut out = BTreeSet::new();
+    for element in top_level_elements(block) {
+        let colon = top_level_colon(&element).unwrap_or_else(|| {
+            panic!("dict element has no top-level `:`: {element:?}")
+        });
+        let key = element[..colon].trim();
+        let bit: u32 = key.parse().unwrap_or_else(|_| {
+            panic!(
+                "status-bit key {key:?} is not a plain integer literal; this \
+                 sweep refuses to guess what the runtime would compute"
+            )
+        });
+        assert!(bit < 32, "status-bit key {bit} is outside a u32 status word");
+        assert!(out.insert(bit), "status-bit key {bit} is declared twice");
     }
     out
 }
@@ -296,6 +325,7 @@ fn int_keys(block: &str) -> BTreeSet<u32> {
 fn mask_of(bits: &BTreeSet<u32>) -> u32 {
     bits.iter().fold(0u32, |mask, bit| mask | (1u32 << bit))
 }
+
 
 /// One script table, reduced to `domain id -> mask`.
 fn check_table(label: &str, observed: &BTreeMap<u16, u32>) {
@@ -312,7 +342,7 @@ fn check_table(label: &str, observed: &BTreeMap<u16, u32>) {
 
 #[test]
 fn report_raw_capture_lane_local_table_matches_the_contract() {
-    let text = read_script("report_raw_capture.py");
+    let text = strip_line_comments(&read_script("report_raw_capture.py"));
     let block = block_after(&text, "LANE_LOCAL_BITS = ");
     let mut observed = BTreeMap::new();
     for (key, inner) in nested_entries(&block) {
@@ -328,6 +358,7 @@ fn report_raw_capture_lane_local_table_matches_the_contract() {
 #[test]
 fn report_raw_capture_global_masks_match_the_contract() {
     let text = read_script("report_raw_capture.py");
+    let stripped = strip_line_comments(&text);
     // Production change that makes this fail: assigning status bit 15 in the
     // contract without widening the report's KNOWN_MASK, which would make the
     // report call the new assigned bit undefined and block every capture that
@@ -347,10 +378,20 @@ fn report_raw_capture_global_masks_match_the_contract() {
     let failure_bits: BTreeSet<u32> = (0..32)
         .filter(|bit| COMPACT_STATUS_FAILURE_MASK & (1u32 << bit) != 0)
         .collect();
-    let declared: BTreeSet<u32> = paren_expr_after(&text, "FAILURE_MASK = ")
+    let declared: BTreeSet<u32> = paren_expr_after(&stripped, "FAILURE_MASK = ")
         .split('|')
-        .map(|term| term.trim().trim_matches(['(', ')']).trim())
-        .filter_map(|term| term.strip_prefix("1 <<")?.trim().parse().ok())
+        .map(|term| term.trim().trim_matches(['(', ')']).trim().to_string())
+        .map(|term| {
+            // Fail closed: a term this sweep cannot read is a term it cannot
+            // vouch for, and skipping it would let an extra bit ride along.
+            let shift = term
+                .strip_prefix("1 <<")
+                .unwrap_or_else(|| panic!("FAILURE_MASK term {term:?} is not `1 << <bit>`"));
+            shift
+                .trim()
+                .parse::<u32>()
+                .unwrap_or_else(|_| panic!("FAILURE_MASK term {term:?} has a non-literal shift"))
+        })
         .collect();
     assert_eq!(
         declared, failure_bits,
@@ -361,7 +402,7 @@ fn report_raw_capture_global_masks_match_the_contract() {
 
 #[test]
 fn c0_domain_census_lane_local_table_matches_the_contract() {
-    let text = read_script("c0_domain_census.py");
+    let text = strip_line_comments(&read_script("c0_domain_census.py"));
     let block = block_after(&text, "LANE_LOCAL = ");
     let mut observed = BTreeMap::new();
     for (key, inner) in nested_entries(&block) {
@@ -375,7 +416,8 @@ fn c0_domain_census_lane_local_table_matches_the_contract() {
 
 #[test]
 fn c0_pass2_spans_lane_local_table_matches_the_contract() {
-    let text = read_script("c0_pass2_spans.py");
+    let raw = read_script("c0_pass2_spans.py");
+    let text = strip_line_comments(&raw);
     let block = block_after(&text, "DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = ");
     let mut observed = BTreeMap::new();
     for (key, inner) in nested_entries(&block) {
@@ -390,7 +432,7 @@ fn c0_pass2_spans_lane_local_table_matches_the_contract() {
     // hand-written registry: two local copies in one file drifted apart from
     // each other before they drifted from the contract.
     assert!(
-        squeeze(&text).contains(
+        squeeze(&raw).contains(
             "LANE_LOCAL_MASKS = { domain: sum(1 << bit for bit in bits) \
              for domain, bits in DOMAIN_STATUS_BITS.items() }"
         ),
@@ -400,17 +442,20 @@ fn c0_pass2_spans_lane_local_table_matches_the_contract() {
 
 #[test]
 fn production_promotion_lane_local_table_matches_the_contract() {
-    let text = read_script("ProductionCapture.Promotion.ps1");
+    let text = strip_line_comments(&read_script("ProductionCapture.Promotion.ps1"));
     let block = block_after(&text, "$script:ProductionPromotionLaneLocalStatusMask = ");
     let mut observed = BTreeMap::new();
     for line in block.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
-        let Some((domain, value)) = line.split_once('=') else {
-            continue;
-        };
+        // Fail closed: every non-blank line in this hashtable must be an entry
+        // this sweep can read. Skipping the rest is how a second, unchecked
+        // entry would ride along unseen.
+        let (domain, value) = line.split_once('=').unwrap_or_else(|| {
+            panic!("promotion lane-local hashtable line is not `<domain> = <mask>`: {line:?}")
+        });
         let domain: u16 = domain
             .trim()
             .parse()
@@ -467,5 +512,228 @@ fn production_promotion_tests_definedness_on_the_globalized_word() {
     assert!(
         text.contains("function Get-ProductionPromotionGlobalStatusFlags"),
         "the promotion gate has no globalization helper"
+    );
+}
+
+// --- Parser regression tests -------------------------------------------------
+//
+// These pin the parsers against the ways a hand-written parser silently
+// under-reads. Each one is a shape a real script edit could take that the
+// RUNTIME would honour; if the parser skipped it instead of panicking, this
+// sweep would keep reporting "table matches the contract" about a table it had
+// only partly read.
+
+#[test]
+fn a_comment_cannot_truncate_a_block() {
+    // `# }` inside the table: Python ignores it, and an unstripped scanner
+    // would end the block there and never see bit 23.
+    let source = "TABLE = {\n    53: {16: 'a'},  # }\n    60: {23: 'b'},\n}\n";
+    let block = block_after(&strip_line_comments(source), "TABLE = ");
+    let entries = nested_entries(&block);
+    assert_eq!(
+        entries.len(),
+        2,
+        "the comment truncated the block: {entries:?}"
+    );
+    assert_eq!(mask_of(&int_keys(&entries[1].1)), 1 << 23);
+}
+
+#[test]
+fn a_comment_cannot_truncate_a_paren_expression() {
+    let source = "MASK = (\n    (1 << 0)  # )\n    | (1 << 9)\n)\n";
+    let expr = paren_expr_after(&strip_line_comments(source), "MASK = ");
+    assert_eq!(expr.split('|').count(), 2, "the comment truncated: {expr:?}");
+}
+
+#[test]
+#[should_panic(expected = "not a plain integer literal")]
+fn a_computed_key_is_refused_not_skipped() {
+    // Valid Python. The runtime derives bit 23 from it and strips that bit;
+    // a parser that only collected integer keys would report mask 0x10000.
+    int_keys("16: 'a', 23 + 0: 'b'");
+}
+
+#[test]
+#[should_panic(expected = "declared twice")]
+fn a_duplicated_bit_key_is_refused() {
+    int_keys("16: 'a', 16: 'b'");
+}
+
+#[test]
+#[should_panic(expected = "outside a u32 status word")]
+fn a_bit_key_beyond_the_status_word_is_refused() {
+    int_keys("32: 'a'");
+}
+
+#[test]
+#[should_panic(expected = "not a brace literal")]
+fn a_non_dict_table_value_is_refused_not_skipped() {
+    // `dict(...)` and a bare alias are both valid Python that the runtime would
+    // expand into real bits.
+    nested_entries("53: {16: 'a'}, 60: dict(((17, 'b'),))");
+}
+
+#[test]
+#[should_panic(expected = "must occur exactly once")]
+fn an_ambiguous_marker_is_refused() {
+    // Two candidate tables and a parser that silently takes the first is a
+    // "checked" table that is no longer the one the runtime reads.
+    block_after("TABLE = {53: {16: 'a'}}\nTABLE = {53: {}}\n", "TABLE = ");
+}
+
+#[test]
+fn a_hash_inside_a_string_is_not_a_comment() {
+    // The badge names in these tables are quoted text; stripping a `#` inside
+    // one would corrupt the source the later scanners read.
+    let source = "TABLE = {\n    53: {16: 'a#}b'},\n}\n";
+    let block = block_after(&strip_line_comments(source), "TABLE = ");
+    assert_eq!(mask_of(&int_keys(&nested_entries(&block)[0].1)), 1 << 16);
+}
+
+#[test]
+fn a_colon_inside_a_badge_name_is_not_a_key_separator() {
+    // Every real badge name in these tables contains a `:` (`d53:intel_map_...`,
+    // `LANE:TORN_ROWS_PRESENT`), so this is the live case, not a hypothetical.
+    assert_eq!(
+        mask_of(&int_keys(
+            "16: \"d53:operations_detail_resisted\", 17: 'LANE:X'"
+        )),
+        (1 << 16) | (1 << 17)
+    );
+}
+
+// --- The harness verdict actually reaches the caller -------------------------
+
+/// Extracts the body of `if (<condition>) {` ... matching `}` from a
+/// PowerShell script, condition included, as executable text.
+fn powershell_if_block(text: &str, condition: &str) -> String {
+    let marker = format!("if ({condition}) {{");
+    let start = unique_marker(text, &marker);
+    let rest = &text[start..];
+    let mut depth = 0i32;
+    for (offset, ch) in rest.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return rest[..=offset].to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unterminated if block for {condition:?}");
+}
+
+/// The exit-2 branch is the whole point of this lane's change: callers separate
+/// "undefined status bits" from every ordinary capture failure by that code.
+///
+/// This does NOT retype the branch -- it lifts the exact lines out of the
+/// harness and runs them, because the defect it pins is invisible to reading:
+/// the harness sets `$ErrorActionPreference = 'Stop'`, under which `Write-Error`
+/// is TERMINATING, so a `Write-Error` immediately before `exit 2` means `exit 2`
+/// never executes and PowerShell 5.1 returns 1 instead. The branch looked
+/// correct and silently produced the wrong code.
+#[test]
+#[cfg(windows)]
+fn the_harness_undefined_status_branch_really_exits_two() {
+    use std::io::Write;
+
+    let harness = read_script("Invoke-HeadlessRawCapture.ps1");
+    let branch = powershell_if_block(
+        &harness,
+        "-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)",
+    );
+    // Deliberately NOT a `branch.contains("exit 2")` guard: the branch's own
+    // comment contains that text, so such a guard passes while the code exits
+    // 1. Only running it decides. Same reason the defect survived review.
+
+    // Same preamble the harness runs under. Anything else would prove nothing.
+    let preference = "$ErrorActionPreference = 'Stop'";
+    assert!(
+        harness.contains(preference),
+        "the harness no longer sets {preference}, so this proof no longer \
+         reproduces its conditions"
+    );
+    let script = format!(
+        "{preference}\n$undefinedStatusBitFailure = 'proof'\n{branch}\nexit 0\n"
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "hoi4_lane_i_exit_probe_{}.ps1",
+        std::process::id()
+    ));
+    let mut file = fs::File::create(&path).expect("create probe script");
+    file.write_all(script.as_bytes()).expect("write probe script");
+    drop(file);
+
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(&path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("run powershell");
+    let _ = fs::remove_file(&path);
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "the harness's undefined-status branch does not deliver exit code 2 \
+         under its own $ErrorActionPreference; a terminating Write-Error before \
+         `exit 2` collapses it to 1. Branch was:\n{branch}"
+    );
+}
+
+/// A capture that finalized with no reporter present is an UNASKED question.
+/// The two Test-Path conditions are checked apart precisely so this case cannot
+/// hide inside a combined `-and` and fall through to a plain informational
+/// message with the recorder's own exit code.
+#[test]
+fn a_missing_reporter_is_not_a_pass() {
+    let harness = read_script("Invoke-HeadlessRawCapture.ps1");
+    assert!(
+        !harness.contains(
+            "if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and\n    (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {"
+        ) && !harness.contains(
+            "if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and\r\n    (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {"
+        ),
+        "the reporter and manifest existence checks are combined again, which \
+         makes a finalized capture with a missing reporter exit 0"
+    );
+    let branch = powershell_if_block(&harness, "$haveManifest -and -not $haveStreamReport");
+    assert!(
+        branch.contains("$undefinedStatusBitFailure ="),
+        "a finalized capture with no reporter does not set the blocking verdict: {branch}"
+    );
+}
+
+/// Every way the report can fail to answer must set the blocking verdict.
+/// Invoke-BoundedNativeCapture THROWS on timeout, so the catch is on this path,
+/// not off it.
+#[test]
+fn an_unanswered_report_is_not_a_pass() {
+    let harness = squeeze(&read_script("Invoke-HeadlessRawCapture.ps1"));
+    for required in [
+        // the undefined verdict itself
+        "if ($reportResult.ExitCode -eq 2) { $undefinedStatusBitFailure =",
+        // an exit code outside the report's own vocabulary
+        "} elseif ($reportResult.ExitCode -notin @(0, 1)) {",
+        // timeout / launch failure, which arrives as a throw
+        "} catch { Write-Host \"report failed: $($_.Exception.Message)\"",
+    ] {
+        assert!(
+            harness.contains(required),
+            "the harness no longer covers an unanswered report: missing {required:?}"
+        );
+    }
+    assert_eq!(
+        harness.matches("$undefinedStatusBitFailure =").count(),
+        5,
+        "expected the declaration plus exactly four assignments of the blocking \
+         verdict (missing reporter, report exit 2, report exit outside its own \
+         vocabulary, report threw); a removed one is a reopened fail-open, and \
+         an added one is a path this test has not been told about"
     );
 }
