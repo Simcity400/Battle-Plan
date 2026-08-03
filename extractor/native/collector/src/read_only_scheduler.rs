@@ -834,8 +834,11 @@ impl ReadOnlyScheduler {
             let domain = self.domains[index];
             if let Some(evicted) = self.domain_requests[index].latest_pending.replace(request) {
                 if index == 0 {
-                    // Counted once per HOUR, not once per domain. This is the
-                    // hour that will open no frame at all.
+                    // Counted once per HOUR, not once per domain. This hour is
+                    // never swept. It may still end up inside a FRAME_END: the
+                    // Backpressure range accounting it is closed by
+                    // `FRAME_END(range_end)`, so the last hour of a coalesced
+                    // run carries a frame with no domain record in it.
                     self.telemetry.evicted_pending_hours =
                         self.telemetry.evicted_pending_hours.saturating_add(1);
                 }
@@ -1490,9 +1493,11 @@ mod tests {
         assert_eq!(s.telemetry().post_terminal_observations, 1);
     }
 
-    /// The 146-hours-with-no-frame shape, in miniature. A frame that outlives
-    /// its game hour causes the NEXT hour's request to be replaced before any
-    /// reader can take it; that hour opens no frame at all.
+    /// The never-swept-hour shape, in miniature. A frame that outlives its game
+    /// hour causes the NEXT hour's request to be replaced before any reader can
+    /// take it, so that hour is never swept. (Measured live as 146 of 762 hours
+    /// with no FRAME_END in run t15, plus a further 221 that carry only the
+    /// gap-only FRAME_END closing a coalesced range.)
     ///
     /// The counter matters because it is the only way to learn the number
     /// without subtracting published frames from an advanced-hour span --
