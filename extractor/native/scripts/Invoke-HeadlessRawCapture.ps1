@@ -2164,9 +2164,24 @@ if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and
                 "capture published status bits no compact-stream contract defines; see the " +
                 "CONTRACT VIOLATION section above. Declare the bit in compact_contract " +
                 "(and register it in lane_local_status_mask) or stop the producer writing it."
+        } elseif ($reportResult.ExitCode -notin @(0, 1)) {
+            # An exit code outside the report's own vocabulary means it did not
+            # reach a verdict. "The check did not run" must never read as "the
+            # check passed" -- that is the fail-open this whole change exists to
+            # remove.
+            $undefinedStatusBitFailure =
+                "the raw-capture report exited $($reportResult.ExitCode), which is not one of " +
+                "its verdicts (0 clean / 1 blocking / 2 undefined status bits), so whether " +
+                "this capture published an undefined status bit is UNKNOWN."
         }
     } catch {
         Write-Host "report failed: $($_.Exception.Message)"
+        # Same reason: a timed-out or unlaunchable report is an unanswered
+        # question, not an answer. Invoke-BoundedNativeCapture THROWS on
+        # timeout, so without this the 60 s bound silently skipped the check.
+        $undefinedStatusBitFailure =
+            "the raw-capture report did not complete ($($_.Exception.Message)), so whether " +
+            "this capture published an undefined status bit is UNKNOWN."
     }
 } elseif ($gameDied) {
     Write-Host 'no manifest: the game died during capture, so there is nothing to finalize'
@@ -2338,7 +2353,7 @@ if ($gradedWindowStarted) {
 # It is the harness VERDICT that fails, and it fails even when the recorder
 # exited 0, because a status word nothing defines is not a gradable capture.
 if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
-    Write-Error "undefined compact status bits: $undefinedStatusBitFailure"
+    Write-Error "compact status verdict: $undefinedStatusBitFailure"
     exit 2
 }
 exit $scriptExitCode
