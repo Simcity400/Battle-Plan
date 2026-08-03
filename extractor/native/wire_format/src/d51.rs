@@ -264,12 +264,12 @@ pub const ROW_KNOWN_FLAGS: u32 = ROW_FLAG_KEY_PRESENT
 /// reference implementation and must not pull in the shipping contract crate.
 /// [`the_status_bits_match_the_shipping_contract`] pins every one of these.
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
-/// `DOMAIN51_STATUS_FLAG_NAMES_PARTIAL` (`status_flags_base.rs:49`) — lane-local
+/// `DOMAIN51_STATUS_FLAG_NAMES_PARTIAL` (`status_flags_base.rs:69`) — lane-local
 /// bit 11, registered in `lane_local_status_mask` (`compact_contract/src/lib.rs:141`).
 pub const STATUS_FLAG_NAMES_PARTIAL: u32 = 1 << 11;
-/// `DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED` (`status_flags_base.rs:50`).
+/// `DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED` (`status_flags_base.rs:70`).
 pub const STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED: u32 = 1 << 12;
-/// `DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED` (`status_flags_base.rs:51`).
+/// `DOMAIN51_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED` (`status_flags_base.rs:71`).
 pub const STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED: u32 = 1 << 13;
 
 /// `SCRIPTED_STATE_MIN_DELAYED_EVENT_ID` / `_MAX_`, `world_fold.rs:948`-`:949`.
@@ -3446,7 +3446,7 @@ mod tests {
 
     #[test]
     fn the_status_bits_match_the_shipping_contract() {
-        // `compact_contract/src/status_flags_base.rs:16`, `:49`-`:51`. The three
+        // `compact_contract/src/status_flags_base.rs:16`, `:69`-`:71`. The three
         // lane-local badges alias globally-assigned bits 11, 12 and 13, which is
         // why the failure classification has to run through
         // `compact_status_for_global_interpretation` — see `bin/bench_real_d51.rs`.

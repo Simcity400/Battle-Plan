@@ -793,16 +793,16 @@ the stream passes.** Rules the review rounds established:
 - A stream cut exactly at a FRAME_END boundary is a well-formed shorter stream: accept it.
 - **Reject an unassigned status bit BEFORE classifying the record.** The failure predicate and
   its partial-tolerance sibling are classifiers over the *assigned* v1 status bits
-  (`compact_contract/src/status_flags_base.rs:21`–`:24`); an unassigned bit has no defined
+  (`compact_contract/src/status_flags_base.rs:40`–`:44`); an unassigned bit has no defined
   classification and is not evidence of a future informational status, so a record carrying one
-  refuses the stream rather than falling through to "success" (`bin/bench_real_d16.rs:305`–
-  `:330`, test `an_unassigned_status_bit_is_refused_not_classified` at `:1141`). This defect was
+  refuses the stream rather than falling through to "success" (`bin/bench_real_d16.rs:559`–
+  `:566`, test `an_unassigned_status_bit_is_refused_not_classified` at `:1141`). This defect was
   present in every bench bin written before d16 and is flagged for a sweep — do not copy an
   earlier bin's status handling without checking it.
 - **Then check `lane_local_status_mask(domain)` before writing ANY status handling — a lane-local
   badge can ALIAS an assigned bit, and stripping before classification is mandatory.** The rule
   above rejects an *unassigned* bit; d51 is the converse hazard. Its three lane-local badges are
-  bits 11, 12 and 13 (`compact_contract/src/status_flags_base.rs:49`–`:54`), which globally are
+  bits 11, 12 and 13 (`compact_contract/src/status_flags_base.rs:69`–`:74`), which globally are
   `TRANSITION_BASELINE_RESET`, `CONTROL_INVALID` and `WAR_SEGMENT_ABSENT` — all *assigned*, and
   `CONTROL_INVALID` sits inside `COMPACT_STATUS_FAILURE_MASK` (`lib.rs:155`–`:163`). Bit 11 rides
   **514 of 514** hours of d51's capture. Two ways to get it wrong, both silent: classify the raw
