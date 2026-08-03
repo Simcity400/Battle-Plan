@@ -2356,8 +2356,12 @@ mod freeze_call_site_tests {
 mod resolver_refusal_tests {
     use super::{classify_resolver_receipt, ResolverRefusal};
 
-    /// Law: "the H-CONVOY publication never ran" is never reported as a clock
-    /// disagreement.
+    /// Law: "no H-CONVOY publication is currently in effect" is never reported
+    /// as a clock disagreement.
+    ///
+    /// The classifier sees only the current receipt, so that -- and not
+    /// "publication never ran" -- is the whole of what sequence zero
+    /// establishes.
     ///
     /// An unpublished receipt carries `publication_sequence == 0` and an unset
     /// `game_hour_raw`. The original guard was
