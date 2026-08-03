@@ -32,6 +32,21 @@ $gameSpeedOffset = 0x4BCL
 # Non-zero holds the hour still while pause (CInGameIdler+0x6C1) stays clear, so
 # it is a distinct engine state from a pause and must be sampled separately.
 $gameTickInhibitOffset = 0x4C0L
+# The engine's own in-game-session latch, and the SAME offset
+# Control-Hoi4Game.ps1 refuses on as $gameStatePlayerInputGateOffset. Reported
+# here, never gated on: this helper is the read-only witness, so it states what
+# the byte is and the harness decides what that means.
+#
+# A bool member of CGameState, reached only through the gamestate.h accessor.
+# .text holds four direct disp32 writes to a +0xA39 displacement and exactly two
+# are on DAT_143316E90: FUN_1401E0190 zeroes it at construction, and the
+# generated setter FUN_1401EDC70 is called from six sites -- five clearing it
+# (game reset, frontend InitMap, exit-to-frontend, LOADING_SAVEGAME_NO_NAME, and
+# one virtual) and exactly one setting it, FUN_140DC5310, the ingameidler.cpp
+# in-game session setup, at its own entry 0x140DC543D. So zero here means the
+# campaign is loading, at the frontend or resetting -- NOT that it is in play,
+# which the singleton checks above cannot distinguish.
+$gameStatePlayerInputGateOffset = 0xA39L
 $clockSingletonARva = 0x33172E0L
 $clockSingletonBRva = 0x33172E8L
 $clockVtableRva = 0x2952510L
@@ -311,6 +326,13 @@ try {
     $finalTickInhibit = Read-RemoteByte `
         $processHandle `
         ($gameState + $gameTickInhibitOffset)
+    # Sampled with the closing reads so the reported value is the freshest one
+    # inside the bracket, and inside it so the identity re-check below still
+    # covers it. Deliberately NOT range-checked: this observer must not acquire
+    # a new refusal, and the raw byte is the evidence a caller reasons from.
+    $playerInputGate = Read-RemoteByte `
+        $processHandle `
+        ($gameState + $gameStatePlayerInputGateOffset)
     if ($finalPaused -gt 1) {
         throw "Pause field is outside the authenticated 0..1 range: $finalPaused."
     }
@@ -366,6 +388,11 @@ try {
         PauseForced = [bool]$finalPauseForced
         InitialTickInhibited = [bool]$initialTickInhibit
         TickInhibited = [bool]$finalTickInhibit
+        # The raw CGameState+0xA39 byte. Zero means the engine is loading, at
+        # the frontend or resetting; non-zero means the in-game session is live.
+        # Reported as the observed integer rather than a bool so a caller can
+        # see the value the engine actually holds.
+        PlayerInputGate = [int]$playerInputGate
         # Sampled on every poll, so a hold that begins and ends between the two
         # endpoint reads is still reported. These are what the verdict
         # authority classifies on; the endpoint fields are kept as evidence.

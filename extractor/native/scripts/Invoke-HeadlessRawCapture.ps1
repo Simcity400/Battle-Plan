@@ -886,6 +886,7 @@ $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c4
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1')
 . (Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1')
+. (Join-Path $scriptDir 'Hoi4WorldReady.Gate.ps1')
 $reuseRunningGame = -not $EvidenceOnlyDriveGame
 if ($EvidenceOnlyDriveGame) {
     if ($UseRunningGame) {
@@ -1514,37 +1515,62 @@ function Get-Hoi4Processes {
     return @(Get-Process -Name the game -ErrorAction SilentlyContinue)
 }
 
+# Readiness is "the campaign is loaded AND in play", not "the singletons are
+# readable". Those are not the same condition and the gap between them is a
+# whole savegame load: the CGameState and CInGameIdler singletons are coherent,
+# the speed is already deserialised and the pause latch is set well before the
+# engine finishes entering the session. This phase used to accept that state,
+# and the harness then reached the evidence-mode unpause mid-load, where
+# Control-Hoi4Game.ps1 correctly refuses to mirror a transition the engine
+# itself would decline -- reporting one unlucky sample as a permanent state and
+# aborting the whole capture.
+#
+# The engine's own statement of the missing condition is CGameState+0xA39; the
+# provenance is in Hoi4WorldReady.Gate.ps1. Waiting for it belongs HERE and not
+# in a second wait bolted after this phase, for three reasons:
+#
+#   * this phase already claims the condition. Its parameter is documented as
+#     the wait "for the loaded campaign to expose stable world singletons", and
+#     the singleton set was only ever a proxy for "the campaign is loaded".
+#   * every consumer downstream needs it. The line right after this one asserts
+#     on $readyState.Speed, which mid-load is a deserialised-but-not-live value;
+#     settle, attach and the recorder all assume a live session.
+#   * a second wait would only cover the evidence-drive path, because that is
+#     the only path that invokes the control helper. The PASSIVE path -- the
+#     shipped default -- would keep attaching the recorder to a process that is
+#     still loading. Fixing the unshipped path and leaving the shipped one
+#     exposed is the wrong place to put it.
+#
+# The budget is this phase's existing one. A refusal is still a refusal: it now
+# says how long it waited rather than reporting a single sample.
 function Wait-Hoi4WorldReady {
     param(
         [Parameter(Mandatory = $true)][int]$TargetProcessId,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc
     )
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $lastError = 'not attempted'
-    while ([DateTime]::UtcNow -lt $deadline) {
-        $probe = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
-        if ($null -eq $probe) { throw "the game PID $TargetProcessId exited before the world became ready." }
-        try {
-            $remainingSeconds = [Math]::Max(
-                1,
-                [Math]::Min(
-                    30,
-                    [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
-                )
-            )
-            $state = Invoke-BoundedHoi4Observation `
+    return (Wait-Hoi4WorldReadyState `
+        -TargetProcessId $TargetProcessId `
+        -TimeoutSeconds $TimeoutSeconds `
+        -Observe {
+            param($RemainingSeconds)
+            Invoke-BoundedHoi4Observation `
                 -TargetProcessId $TargetProcessId `
-                -TimeoutSeconds $remainingSeconds `
+                -TimeoutSeconds $RemainingSeconds `
                 -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc
-            if ($null -ne $state) { return $state }
-        } catch {
-            # CGameState / CInGameIdler do not exist until the save is loaded.
-            $lastError = $_.Exception.Message
-        }
-        Start-Sleep -Milliseconds 750
-    }
-    throw "the game PID $TargetProcessId did not expose stable world singletons within $TimeoutSeconds s. Last probe error: $lastError"
+        }.GetNewClosure() `
+        -TestAlive {
+            $null -ne (Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue)
+        }.GetNewClosure() `
+        -ReportProgress {
+            param($Progress)
+            Write-Host (
+                "phase=world_ready_wait pid=$($Progress.TargetProcessId) " +
+                "waited_s=$($Progress.WaitedSeconds) remaining_s=$($Progress.RemainingSeconds) " +
+                "observed=$($Progress.SawObservation) " +
+                "player_input_gate=$(if ($null -eq $Progress.PlayerInputGate) { 'none' } else { $Progress.PlayerInputGate })"
+            )
+        })
 }
 
 # --- Phase 1: obtain a live campaign process -------------------------------
@@ -1648,7 +1674,7 @@ $readyState = Wait-Hoi4WorldReady `
     -TargetProcessId $gamePid `
     -TimeoutSeconds $WorldReadyTimeoutSeconds `
     -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
-Write-Host "phase=world_ready pid=$gamePid initial_paused=$($readyState.Paused) initial_speed=$($readyState.Speed)"
+Write-Host "phase=world_ready pid=$gamePid initial_paused=$($readyState.Paused) initial_speed=$($readyState.Speed) player_input_gate=$($readyState.PlayerInputGate)"
 
 if ($EvidenceOnlyDriveGame) {
     # This is unshipped setup, before the graded attach boundary. The sharp
