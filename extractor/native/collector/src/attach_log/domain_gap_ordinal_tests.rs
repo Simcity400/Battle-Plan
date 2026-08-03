@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use compact_contract::domain_gap::DomainGapRecordV1;
 
@@ -81,4 +81,95 @@ fn coalesced_scheduler_gaps_remain_record_ordinaled_across_dropped_pending_frame
         [0, 1, 2],
         "ordinals count emitted outcomes, not represented hours, and published state survives a dropped pending frame"
     );
+}
+
+/// Reproduces the five remaining t8 ordinal holes. D81 can build its own H4DG
+/// before the common clock-bracket reconciliation discovers that the same
+/// domain tore. Replacing that already-staged H4DG is one outcome rewrite, not
+/// a second outcome, so it must keep the ordinal already present in the bytes.
+///
+/// Mutation proof: selecting the current map value unconditionally in
+/// `replace_rejected_domain_records_with_gaps` changes the replacement from 0
+/// to 1 and the following scheduler outcome from 1 to 2.
+#[test]
+fn replacing_an_already_staged_h4dg_does_not_spend_a_second_ordinal() {
+    use compact_contract::domain_gap::{DomainGapPart, DomainGapReason};
+
+    let hour = FIRST_HOUR;
+    let domain_id = COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE;
+    let key = (domain_id, DomainGapPart::State.code());
+    let original = DomainGapRecordV1 {
+        part: DomainGapPart::State,
+        reason: DomainGapReason::ClockUnreadable,
+        target_hour_raw: hour,
+        range_start_hour_raw: hour,
+        range_end_hour_raw: hour,
+        tick_before: 0,
+        tick_after: 0,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("canonical staged D81 gap");
+    let mut records = Vec::new();
+    append_compact_record(
+        &mut records,
+        1,
+        hour,
+        domain_id,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        0,
+        &original,
+    );
+    let mut ordinals = BTreeMap::from([(key, 1)]);
+    let torn = DomainClockBracket {
+        tag: domain_id,
+        opening: Some((hour, 1)),
+        closing: Some((hour + 1, 2)),
+        worker_panicked: false,
+    };
+
+    let (next_sequence, rejected) = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        &[torn],
+        &mut ordinals,
+    )
+    .expect("staged H4DG replacement");
+    assert_eq!(next_sequence, 2);
+    assert_eq!(rejected, BTreeSet::from([domain_id]));
+    let header = compact_contract::parse_compact_record_header(&records).unwrap();
+    let replacement = DomainGapRecordV1::decode(
+        &records[compact_contract::COMPACT_RECORD_HEADER_LEN..header.record_len()],
+    )
+    .unwrap();
+    assert_eq!(replacement.reason, DomainGapReason::Torn);
+    assert_eq!(replacement.outcome_ordinal, 0);
+    assert_eq!(ordinals.get(&key), Some(&1));
+
+    let next_range = DomainGapRange {
+        domain_id,
+        epoch: 1,
+        first_hour_raw: hour + 1,
+        last_hour_raw: hour + 1,
+        kind: GapKind::Backpressure,
+        force_next_baseline: false,
+        tick_before: 7,
+        tick_after: 7,
+        queue_capacity: 1,
+        queue_depth: 1,
+        queue_dropped: 1,
+    };
+    let next = build_scheduler_gap_frames(&[next_range], &[domain_id], 2, 0, &mut ordinals)
+        .expect("next scheduler gap");
+    let next_header = compact_contract::parse_compact_record_header(&next[0].0).unwrap();
+    let next_gap = DomainGapRecordV1::decode(
+        &next[0].0[compact_contract::COMPACT_RECORD_HEADER_LEN..next_header.record_len()],
+    )
+    .unwrap();
+    assert_eq!(next_gap.outcome_ordinal, 1);
+    assert_eq!(ordinals.get(&key), Some(&2));
 }
