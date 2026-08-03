@@ -566,6 +566,7 @@ pub(super) fn drive_compact_frame(
         None,
         None,
         None,
+        None,
     );
 
     let mut records = Vec::new();

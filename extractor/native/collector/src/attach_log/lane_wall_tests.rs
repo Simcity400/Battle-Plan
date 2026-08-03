@@ -181,7 +181,9 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
     ];
     let summary = summarize_lane_spans(&spans);
     let mut out = Vec::new();
-    append_compact_lane_wall_probe_record(&mut out, 7, 123, 5, 900, 125, Some(2), &summary);
+    append_compact_lane_wall_probe_record(
+        &mut out, 7, 123, 5, 900, 125, Some(2), 130, 700, &summary,
+    );
     let header =
         compact_contract::parse_compact_record_header(&out).expect("well-formed record header");
     assert_eq!(header.domain_id, RC_PROBE_DOMAIN_ID);

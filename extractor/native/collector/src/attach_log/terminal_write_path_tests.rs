@@ -411,10 +411,40 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         code_only(capture_loop.1)
             .matches("scheduler_stream_closed_by_write = true")
             .count(),
-        4,
+        3,
         "every site that reaches teardown after a write committed a rollover sets it: the \
-         scheduler DATA write, the scheduler H4DG write, the frame-refusal publication, and \
-         the terminal DATA write"
+         scheduler DATA publication, the frame-refusal publication, and the terminal DATA \
+         write"
+    );
+    // THREE, not four. The scheduler H4DG write used to be the fourth, because
+    // it called `write_compact_frame` and so took its own campaign-identity
+    // observation, which could commit a rollover of its own.
+    //
+    // It no longer observes anything. The gap frames are staged behind the DATA
+    // frame and published under the one boundary result the DATA publication
+    // already admitted, through `write_preboundary_compact_frame` -- which is
+    // exactly the API for "records assembled for the currently admitted
+    // identity", and which has no rollover ending to reach. A site that cannot
+    // commit a rollover has no flag to set, so a fourth assignment here would
+    // be dead code claiming to guard a window that closed.
+    let gap_publication = capture_loop
+        .1
+        .split_once("if let Some(runtime) = read_only_scheduler_runtime.as_ref() {")
+        .expect("scheduler control-gap block")
+        .1
+        .split_once("// THE OVERLAP")
+        .expect("scheduler control-gap block terminator")
+        .0;
+    let gap_publication = code_only(gap_publication);
+    assert!(
+        gap_publication.contains("StagedPublicationKind::ControlGap"),
+        "the H4DG frames are staged for publication, not written inline"
+    );
+    assert!(
+        !gap_publication.contains("write_compact_frame"),
+        "an inline `write_compact_frame` here would take a SECOND identity observation and \
+         could commit a rollover that nothing above records -- which is the fourth site this \
+         count deliberately no longer has"
     );
     // The refusal publication reports a committed rollover and an identity that
     // never settled through different channels, and only the first closes the
@@ -543,22 +573,21 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
         .split_once("'capture: while Instant::now() <= deadline {")
         .expect("capture loop")
         .1;
-    for (label, anchor) in [
-        ("scheduler DATA write", "DATA write for hour {pending_hour}, closing the logical"),
-        ("scheduler H4DG write", "scheduler H4DG write, closing the logical"),
-    ] {
-        assert!(
-            capture_loop.contains(anchor),
-            "the {label} states the committed rollover as its terminal cause"
-        );
-    }
+    // ONE scheduler site observes a boundary now, not two. The H4DG frames are
+    // staged behind the DATA frame and published under the boundary result that
+    // site already admitted, so there is no second observation to roll over.
+    assert!(
+        capture_loop.contains(
+            "DATA publication for hour {pending_hour}, \\\n                                         closing the logical stream"
+        ),
+        "the scheduler DATA publication states the committed rollover as its terminal cause"
+    );
 
-    let data_rollover = capture_loop
-        .split_once("CompactFrameWrite::RolledOver => {")
+    let (data_rollover, rest) = capture_loop
+        .split_once("PreboundaryPublication::RolledOver => {")
         .expect("scheduler DATA rollover arm")
-        .1;
-    let (data_rollover, rest) = data_rollover
-        .split_once("CompactFrameWrite::RetryUncertainBoundary => {")
+        .1
+        .split_once("write_compact_phase_timing(compact_phase_file.as_mut(), &timing);\n                        // RELEASE READ CUSTODY")
         .expect("scheduler DATA rollover arm terminator");
     let data_rollover = code_only(data_rollover);
     assert!(
@@ -567,19 +596,10 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
         "the scheduler DATA rollover arm aborts and says so; it does not invoke a reset that \
          cannot run"
     );
-
-    let gap_rollover = rest
-        .split_once("CompactFrameWrite::RolledOver => {")
-        .expect("scheduler H4DG rollover arm")
-        .1
-        .split_once("CompactFrameWrite::RetryUncertainBoundary => {")
-        .expect("scheduler H4DG rollover arm terminator")
-        .0;
-    let gap_rollover = code_only(gap_rollover);
     assert!(
-        !gap_rollover.contains("reset_campaign_scoped_capture_state!")
-            && gap_rollover.contains("break 'capture"),
-        "the scheduler H4DG rollover arm aborts and says so"
+        data_rollover.contains("scheduler_stream_closed_by_write = true"),
+        "and it records that the stream is closed, so the terminal H4DG publication does not \
+         put old-stream ranges on the successor"
     );
 
     // The legacy (scheduler-off) write still resets and continues, because
