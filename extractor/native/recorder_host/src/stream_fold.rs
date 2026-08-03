@@ -90,8 +90,46 @@ fn validate_frame_end_seal_fields(payload: &[u8]) -> Result<(u32, u32), String> 
     Ok((emitted_domains, scheduled_domains))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ExcludedDomainDataRecord {
+    pub stream_offset: u64,
+    pub game_hour_raw: i32,
+    pub domain_id: u16,
+    pub validation_reason: String,
+}
+
+pub fn excluded_domain_data_json(records: &[ExcludedDomainDataRecord]) -> serde_json::Value {
+    let mut per_domain = BTreeMap::<u16, u64>::new();
+    for record in records {
+        *per_domain.entry(record.domain_id).or_default() += 1;
+    }
+    serde_json::json!({
+        "complete": records.is_empty(),
+        "total_records": records.len(),
+        "per_domain": per_domain
+            .into_iter()
+            .map(|(domain_id, count)| (domain_id.to_string(), serde_json::json!(count)))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+        "records": records,
+    })
+}
+
+pub fn validate_excluded_domain_data_accounting(
+    excluded_count: u64,
+    records: &[ExcludedDomainDataRecord],
+) -> Result<(), String> {
+    if excluded_count != records.len() as u64 {
+        return Err(format!(
+            "incomplete DOMAIN_DATA exclusion accounting: excluded_count={excluded_count} ledger_records={}",
+            records.len(),
+        ));
+    }
+    Ok(())
+}
+
 /// Accounting for one streaming fold pass (mirrors the `fold_check` totals so the
-/// two can be cross-checked). Never grows with stream length.
+/// two can be cross-checked). The required exclusion ledger grows only with the
+/// number of exact-invalid DOMAIN_DATA records.
 #[derive(Debug, Default, Clone)]
 pub struct FoldStreamStats {
     /// Total decoded H4CR bytes (independent of raw vs zstd on-disk storage).
@@ -112,6 +150,9 @@ pub struct FoldStreamStats {
     /// most one entry per registered domain, so retaining the first exact
     /// decoder reason cannot grow with capture duration.
     pub malformed_payload_domains: BTreeMap<u16, MalformedPayloadDomainStats>,
+    /// Complete ledger of every framed DOMAIN_DATA record excluded from state
+    /// because its domain payload failed exact validation.
+    pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
     pub frame_end_records: u64,
     pub perf_records: u64,
     /// Ordinary non-DATA/non-PERF/non-FRAME_END records; excludes CID1.
@@ -703,15 +744,13 @@ impl BoundaryTracker {
     }
 }
 
-/// One fail-closed certification verdict shared by extractor-side stream
-/// consumers. Diagnostic/raw recovery may still yield complete prefix hours,
-/// but no certification gate may accept framing stops, torn tails, malformed
-/// domain payloads, or a stream that does not end on a clean closed-hour
-/// boundary.
+/// One fail-closed structural certification verdict shared by extractor-side
+/// stream consumers. Fully-framed DOMAIN_DATA payload rejections are excluded
+/// and accounted separately; framing, tail, and closed-boundary failures stay
+/// fatal.
 pub fn strict_stream_certification_verdict(
     stop_reason: Option<&str>,
     truncated_tail_bytes: u64,
-    malformed_payload_records: u64,
     ends_at_frame_end: bool,
     boundary_error: Option<&str>,
 ) -> Result<(), String> {
@@ -722,11 +761,6 @@ pub fn strict_stream_certification_verdict(
     if truncated_tail_bytes != 0 {
         failures.push(format!(
             "truncated/corrupt tail contains {truncated_tail_bytes} byte(s)"
-        ));
-    }
-    if malformed_payload_records != 0 {
-        failures.push(format!(
-            "{malformed_payload_records} DOMAIN_DATA payload record(s) failed exact validation"
         ));
     }
     if let Some(reason) = boundary_error {
@@ -752,9 +786,11 @@ pub fn strict_stream_certification_verdict(
 /// that is guaranteed unreadable under the sealed-source strictness
 /// (container re-gate round 2, finding 3). Runs the same hour-aware state
 /// machine as `drive_fold_compressed` but folds nothing: hard-errors on any
-/// framing error, malformed domain payload, residual tail bytes, an hour left
-/// open at EOF, or a stream that closes no hour.
-pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
+/// framing error, residual tail bytes, an hour left open at EOF, or a stream
+/// that closes no hour. Exact-invalid DATA records are returned as exclusions.
+pub fn verify_stream_logical_boundary(
+    stream_path: &Path,
+) -> io::Result<Vec<ExcludedDomainDataRecord>> {
     verify_stream_logical_boundary_with_identity_mode(stream_path, StreamIdentityMode::Legacy)
 }
 
@@ -764,13 +800,14 @@ pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
 pub fn verify_stream_logical_boundary_with_identity_mode(
     stream_path: &Path,
     identity_mode: StreamIdentityMode,
-) -> io::Result<()> {
+) -> io::Result<Vec<ExcludedDomainDataRecord>> {
     let mut reader = compact_stream::open(stream_path)?;
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
     let mut tracker = BoundaryTracker::default();
     let mut validator = stream_validator(identity_mode);
+    let mut excluded = Vec::new();
     loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
@@ -813,24 +850,21 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
                 continue;
             }
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                validate_domain_data_payload_at(
+                if let Err(validation_reason) = validate_domain_data_payload_at(
                     header.domain_id,
                     payload,
                     header.record_flags,
                     header.sequence,
                     header.game_hour_raw,
                     processed + off as u64,
-                )
-                    .map_err(|reason| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "seal-time boundary check: domain {} DATA payload failed exact validation at byte {}: {reason}",
-                                header.domain_id,
-                                processed + off as u64
-                            ),
-                        )
-                    })?;
+                ) {
+                    excluded.push(ExcludedDomainDataRecord {
+                        stream_offset: processed + off as u64,
+                        game_hour_raw: header.game_hour_raw,
+                        domain_id: header.domain_id,
+                        validation_reason,
+                    });
+                }
             }
             tracker.observe(&header, payload, processed + off as u64);
             off += record_len;
@@ -843,7 +877,8 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
             io::ErrorKind::InvalidData,
             format!("seal-time boundary check: {reason}"),
         )
-    })
+    })?;
+    Ok(excluded)
 }
 
 /// Default worker count for the parallel post-capture fold. The fold is OFFLINE
@@ -1327,6 +1362,12 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                     stats.records_total += 1;
                     stats.data_records += 1;
                     stats.malformed_payload_records += 1;
+                    stats.excluded_domain_data_records.push(ExcludedDomainDataRecord {
+                        stream_offset: processed + off as u64,
+                        game_hour_raw: header.game_hour_raw,
+                        domain_id: header.domain_id,
+                        validation_reason: reason.clone(),
+                    });
                     let malformed = stats
                         .malformed_payload_domains
                         .entry(header.domain_id)
@@ -3263,7 +3304,7 @@ mod tests {
     }
 
     #[test]
-    fn seal_time_boundary_rejects_malformed_domain_data() {
+    fn seal_time_boundary_accounts_for_malformed_domain_data() {
         let mut stream = Vec::new();
         push_record(
             &mut stream,
@@ -3285,12 +3326,38 @@ mod tests {
         let dir = TmpDir::new("malformed_data_boundary");
         let path = dir.0.join("malformed.bin");
         std::fs::write(&path, stream).unwrap();
-        let err = verify_stream_logical_boundary(&path).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("domain 18 DATA payload failed exact validation"),
-            "{err}"
-        );
+        let excluded = verify_stream_logical_boundary(&path)
+            .expect("a framed, closed stream remains sealable");
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].stream_offset, 0);
+        assert_eq!(excluded[0].game_hour_raw, raw_for(HOUR_A));
+        assert_eq!(excluded[0].domain_id, 18);
+        assert!(!excluded[0].validation_reason.is_empty());
+    }
+
+    #[test]
+    fn structural_certification_classes_remain_fatal() {
+        let framing = strict_stream_certification_verdict(
+            Some("bad H4CR magic at byte 64"),
+            0,
+            true,
+            None,
+        )
+        .expect_err("a framing stop must refuse sealing");
+        assert!(framing.contains("framing stopped"), "{framing}");
+
+        let tail = strict_stream_certification_verdict(None, 7, true, None)
+            .expect_err("a truncated/corrupt tail must refuse sealing");
+        assert!(tail.contains("truncated/corrupt tail"), "{tail}");
+
+        let boundary = strict_stream_certification_verdict(
+            None,
+            0,
+            false,
+            Some("game hour 42 left open at EOF"),
+        )
+        .expect_err("an unclosed boundary must refuse sealing");
+        assert!(boundary.contains("stream boundary is not closed"), "{boundary}");
     }
 
     fn expect_frame_end_seal_rejection(tag: &str, frame_payload: &[u8], expected: &str) {

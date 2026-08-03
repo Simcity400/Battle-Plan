@@ -80,15 +80,17 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 use recorder_host::stream_fold::{
-    strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
-    FoldStreamStats,
+    strict_stream_certification_verdict, validate_domain_data_payload,
+    validate_excluded_domain_data_accounting, BoundaryTracker, FoldStreamStats,
 };
 /// The DOMAIN_DATA payload's own embedded status, from the single payload
 /// authority that already decodes every domain. Re-exported through this facade
 /// so a certifier reading the stream classifies the payload status with the
 /// same call `validate_domain_data_payload` makes, rather than re-deriving each
 /// domain's status offset and drifting from `WorldFold`.
-pub use recorder_host::stream_fold::domain_data_payload_status;
+pub use recorder_host::stream_fold::{
+    domain_data_payload_status, excluded_domain_data_json, ExcludedDomainDataRecord,
+};
 use recorder_host::world_fold::{schema_version, FoldedSnapshotFile, WorldFold};
 use snapshot::container::{Container, ExpectedIdentity};
 use snapshot::sha256::{to_hex, Sha256};
@@ -612,8 +614,11 @@ pub struct DecodeStats {
     pub data_records: u64,
     /// Framed DOMAIN_DATA records rejected by the production fold's exact
     /// structural payload validator. Their domain state is degraded/unknown;
-    /// they are never eligible for strict certification.
+    /// the enclosing stream may certify only when every rejection is exposed
+    /// through `excluded_domain_data_records`.
     pub malformed_payload_records: u64,
+    /// Exact ledger for every fully-framed DATA record excluded from the fold.
+    pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
     pub frame_end_records: u64,
     pub perf_records: u64,
     pub other_records: u64,
@@ -631,14 +636,17 @@ pub struct DecodeStats {
 }
 
 impl DecodeStats {
-    /// Fail-closed certification verdict. Prefix recovery remains available to
-    /// ordinary decoder callers, but hash/equivalence gates must require this
-    /// result before treating any emitted hours as authoritative.
+    /// Fail-closed structural certification verdict. Prefix recovery remains
+    /// available to ordinary decoder callers, while exact-invalid DATA records
+    /// remain visible in the exclusion ledger rather than failing this check.
     pub fn certification_verdict(&self) -> Result<(), String> {
+        validate_excluded_domain_data_accounting(
+            self.malformed_payload_records,
+            &self.excluded_domain_data_records,
+        )?;
         strict_stream_certification_verdict(
             self.stop_reason.as_deref(),
             self.truncated_tail_bytes,
-            self.malformed_payload_records,
             self.ends_at_frame_end,
             self.boundary_error.as_deref(),
         )
@@ -1079,6 +1087,7 @@ pub struct CertifiedReplayArtifacts {
     pub production_render_blob_dir: PathBuf,
     pub production_render_blob_count: u64,
     pub production_render_blob_bytes: u64,
+    pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
 }
 
 /// Fold a complete raw H4CR source once and build the certified production
@@ -1198,6 +1207,7 @@ pub fn build_certified_replay_artifacts(
         }
         pending = Some((hour, start_offset));
     }
+    let excluded_domain_data_records = cursor.stats().excluded_domain_data_records.clone();
     let stream_index = cursor
         .take_index()
         .map_err(|error| OpenError::Certification(error.to_string()))?;
@@ -1351,6 +1361,7 @@ pub fn build_certified_replay_artifacts(
         production_render_blob_dir,
         production_render_blob_count,
         production_render_blob_bytes,
+        excluded_domain_data_records,
     })
 }
 
@@ -1489,6 +1500,12 @@ fn fold_compact_stream_file_identity_aware(
                     validate_domain_data_payload(header.domain_id, payload, header.record_flags)
                 {
                     stats.malformed_payload_records += 1;
+                    stats.excluded_domain_data_records.push(ExcludedDomainDataRecord {
+                        stream_offset: record_at,
+                        game_hour_raw: header.game_hour_raw,
+                        domain_id: header.domain_id,
+                        validation_reason: reason.clone(),
+                    });
                     fold.record_malformed_domain_payload(
                         header.game_hour_raw,
                         header.domain_id,
@@ -1652,10 +1669,14 @@ fn fold_raw_h4cr_open_file_spooled_with_identity_mode(
         boundary_error,
         campaign_identity: _,
     } = fold_compact_stream_file_identity_aware(source, &game_id, &snapshot_dir, identity_mode)?;
+    validate_excluded_domain_data_accounting(
+        stats.malformed_payload_records,
+        &stats.excluded_domain_data_records,
+    )
+    .map_err(OpenError::Certification)?;
     strict_stream_certification_verdict(
         stats.stop_reason.as_deref(),
         stats.truncated_tail_bytes,
-        stats.malformed_payload_records,
         stats.ends_at_frame_end,
         boundary_error.as_deref(),
     )
@@ -2317,6 +2338,14 @@ impl HourCursor {
                 if let Some(reason) = malformed_reason {
                     if exact_payload_error.is_some() {
                         self.stats.malformed_payload_records += 1;
+                        self.stats.excluded_domain_data_records.push(
+                            ExcludedDomainDataRecord {
+                                stream_offset: record_start_abs,
+                                game_hour_raw: header.game_hour_raw,
+                                domain_id: header.domain_id,
+                                validation_reason: reason.clone(),
+                            },
+                        );
                     }
                     self.fold.record_malformed_domain_payload(
                         header.game_hour_raw,

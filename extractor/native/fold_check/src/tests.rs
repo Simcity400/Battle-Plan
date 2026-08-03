@@ -776,7 +776,7 @@ fn truncated_tail_is_rejected_even_when_complete_prefix_hours_exist() {
 }
 
 #[test]
-fn malformed_domain_payload_is_rejected_even_at_a_closed_hour_boundary() {
+fn malformed_domain_payload_is_excluded_at_a_closed_hour_boundary() {
     let mut stream = Vec::new();
     let mut malformed = country_identity_payload(&[(47, "GER")]);
     malformed.push(0xAA);
@@ -796,11 +796,15 @@ fn malformed_domain_payload_is_rejected_even_at_a_closed_hour_boundary() {
         COMPACT_RECORD_TYPE_FRAME_END,
         &empty_frame_end_payload(),
     );
-    let err = match collect_run(Cursor::new(stream.clone()), stream.len() as u64) {
-        Ok(_) => panic!("fold_check must reject malformed DOMAIN_DATA"),
-        Err(err) => err,
-    };
-    assert!(err.contains("failed exact validation"), "{err}");
+    let run = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
+        .expect("exact-invalid DOMAIN_DATA is a recorded exclusion, not a structural refusal");
+    assert_eq!(run.totals.malformed_payload_records, 1);
+    assert_eq!(run.totals.excluded_domain_data_records.len(), 1);
+    let excluded = &run.totals.excluded_domain_data_records[0];
+    assert_eq!(excluded.stream_offset, 0);
+    assert_eq!(excluded.game_hour_raw, raw_for(HOUR_A));
+    assert_eq!(excluded.domain_id, 18);
+    assert!(!excluded.validation_reason.is_empty(), "{excluded:?}");
 }
 
 #[test]

@@ -316,7 +316,7 @@ fn truncated_tail_yields_complete_hours_only() {
 }
 
 #[test]
-fn malformed_domain_payload_degrades_for_diagnostics_but_cannot_certify() {
+fn malformed_domain_payload_is_excluded_and_structural_stream_certifies() {
     let mut stream = Vec::new();
     let mut malformed = country_identity_payload(&[(47, "GER")]);
     malformed.push(0xAA); // exact decoder must reject unconsumed residue
@@ -349,11 +349,16 @@ fn malformed_domain_payload_degrades_for_diagnostics_but_cannot_certify() {
     assert_eq!(hours.len(), 1);
     assert_eq!(cursor.stats().malformed_payload_records, 1);
     assert!(cursor.stats().ends_at_frame_end);
-    let err = cursor
+    cursor
         .stats()
         .certification_verdict()
-        .expect_err("malformed payload must fail certification");
-    assert!(err.contains("failed exact validation"), "{err}");
+        .expect("a closed, framed stream remains structurally certifiable");
+    assert_eq!(cursor.stats().excluded_domain_data_records.len(), 1);
+    let excluded = &cursor.stats().excluded_domain_data_records[0];
+    assert_eq!(excluded.stream_offset, 0);
+    assert_eq!(excluded.game_hour_raw, raw_for(HOUR_A));
+    assert_eq!(excluded.domain_id, 18);
+    assert!(!excluded.validation_reason.is_empty(), "{excluded:?}");
 }
 
 #[test]
