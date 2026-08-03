@@ -509,6 +509,7 @@ fn convoy_transport_attack_payload(
             resolver_member_bindings: 3,
             resolver_route_bindings: 1,
             resolver_unbound_convoy_clients: 0,
+            resolver_ever_partial: false,
             telemetry: naval4950::ConvoyTransportAttackTelemetry {
                 callbacks_seen: emitted_total,
                 original_calls: emitted_total,
@@ -19676,6 +19677,7 @@ fn h_convoy_domain90_incomplete_witness_is_sticky_unobtainable() {
         resolver_member_bindings: 3,
         resolver_route_bindings: 1,
         resolver_unbound_convoy_clients: 0,
+        resolver_ever_partial: false,
         telemetry: naval4950::ConvoyTransportAttackTelemetry {
             callbacks_seen: 2,
             original_calls: 2,

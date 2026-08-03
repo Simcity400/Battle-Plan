@@ -37,7 +37,8 @@ use crate::convoy_terminal_attribution::{
     A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
 };
 use crate::convoy_terminal_runtime::{
-    clear_convoy_terminal_resolver_snapshot, current_convoy_terminal_publication_receipt,
+    clear_convoy_terminal_resolver_snapshot, convoy_terminal_resolver_ever_partial,
+    current_convoy_terminal_publication_receipt,
     try_current_convoy_terminal_resolver_snapshot, ResolverPublicationReceipt,
 };
 use crate::convoy_transport_attack::{
@@ -158,6 +159,9 @@ pub struct ConvoyTerminalDrain {
     pub producer_sequence_next: u64,
     pub queue_mutation_generation: u64,
     pub resolver: ResolverPublicationReceipt,
+    /// Monotonic latch: some publication in this capture was partial. Read at
+    /// drain time so rolled-back rows carry it into every later batch.
+    pub resolver_ever_partial: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -840,6 +844,7 @@ fn peek_convoy_terminal_events_inner(
         producer_sequence_next: producer_after,
         queue_mutation_generation,
         resolver: resolver_after.unwrap_or_default(),
+        resolver_ever_partial: convoy_terminal_resolver_ever_partial(),
     };
     let reservation_id = reservation.next_reservation_id;
     reservation.next_reservation_id = reservation
@@ -1023,6 +1028,7 @@ fn encode_convoy_transport_attack_drain(
         resolver_member_bindings: drain.resolver.member_bindings,
         resolver_route_bindings: drain.resolver.route_bindings,
         resolver_unbound_convoy_clients: drain.resolver.unbound_convoy_clients,
+        resolver_ever_partial: drain.resolver_ever_partial,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry.callbacks_seen,
             original_calls: telemetry.original_calls,

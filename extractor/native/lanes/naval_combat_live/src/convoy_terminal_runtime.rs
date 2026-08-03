@@ -9,7 +9,7 @@
 //! misses remain explicit unavailable state and never synthesize a route.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use serde::Serialize;
 
@@ -26,6 +26,27 @@ const MAX_ACTIVE_ROUTE_BINDINGS: usize = 65_536;
 
 static NEXT_PUBLICATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static RESOLVER_STATE: OnceLock<RwLock<Arc<ResolverSnapshot>>> = OnceLock::new();
+
+/// Set the first time any publication is installed with unbound convoy
+/// members, and never cleared for the life of the process.
+///
+/// The per-publication `unbound_convoy_clients` count is a PER-FRAME value and
+/// can legitimately return to zero on the next frame. Batch rows do not stay in
+/// the frame that drained them: a batch that decodes incomplete is published
+/// but its queue reservation is rolled back, so the very same events are
+/// re-drained on a later frame. Without a latch those events could be re-encoded
+/// under a later, complete resolver and claim `exact_events_complete` -- shedding
+/// the partiality they were actually captured under.
+///
+/// Every other input to that claim (the drop counters) is monotonic for exactly
+/// this reason. This makes resolver partiality monotonic too, so it cannot be
+/// laundered by a rollback and re-drain.
+static RESOLVER_EVER_PARTIAL: AtomicBool = AtomicBool::new(false);
+
+/// Whether any resolver publication in this process has ever been partial.
+pub fn convoy_terminal_resolver_ever_partial() -> bool {
+    RESOLVER_EVER_PARTIAL.load(Ordering::Acquire)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuthenticatedLiveRouteBinding {
@@ -327,6 +348,11 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
         }
     }
 
+    // Latch BEFORE the snapshot goes live, so no callback can observe a
+    // partial resolver that the latch does not already describe.
+    if unbound_convoy_clients != 0 {
+        RESOLVER_EVER_PARTIAL.store(true, Ordering::Release);
+    }
     let publication_sequence = NEXT_PUBLICATION_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     if publication_sequence == 0 {
         return Err("resolver publication sequence exhausted".into());

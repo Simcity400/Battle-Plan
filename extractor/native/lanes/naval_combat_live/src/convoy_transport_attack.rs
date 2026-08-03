@@ -24,8 +24,21 @@ pub const BATCH_HEADER_LEN: usize = 192;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
 pub const BATCH_FLAG_HOOK_INSTALLED: u32 = 1 << 1;
-pub const BATCH_KNOWN_FLAGS: u32 =
-    BATCH_FLAG_COMPLETE_EXACT_EVENTS | BATCH_FLAG_HOOK_INSTALLED;
+/// Some resolver publication in this capture was PARTIAL -- it could not bind
+/// every convoy member the d49/d50 walk saw.
+///
+/// Monotonic and never cleared, unlike the per-batch
+/// `resolver_unbound_convoy_clients` count. A batch that decodes incomplete is
+/// published but its queue reservation is rolled back, so its rows are
+/// re-drained on a later frame; if the only marker of partiality were the
+/// per-frame count, those rows could be re-encoded under a later complete
+/// resolver and claim an exhaustive event set they were never captured under.
+/// Every other input to `exact_events_complete` is monotonic for the same
+/// reason.
+pub const BATCH_FLAG_RESOLVER_EVER_PARTIAL: u32 = 1 << 2;
+pub const BATCH_KNOWN_FLAGS: u32 = BATCH_FLAG_COMPLETE_EXACT_EVENTS
+    | BATCH_FLAG_HOOK_INSTALLED
+    | BATCH_FLAG_RESOLVER_EVER_PARTIAL;
 pub const MAX_BATCH_ROWS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +132,9 @@ pub struct ConvoyTransportAttackWitness {
     /// refuse per event. It is the wire-visible denominator that keeps a
     /// partial batch from being read as an exhaustive one.
     pub resolver_unbound_convoy_clients: u32,
+    /// Monotonic: any publication in this capture was partial. See
+    /// [`BATCH_FLAG_RESOLVER_EVER_PARTIAL`].
+    pub resolver_ever_partial: bool,
     pub telemetry: ConvoyTransportAttackTelemetry,
 }
 
@@ -134,6 +150,10 @@ impl ConvoyTransportAttackWitness {
             // counter alone does not say WHICH subsystem lost them; this makes
             // the resolver's own partiality independently disqualifying.
             && self.resolver_unbound_convoy_clients == 0
+            // The monotonic form of the same fact. The count above describes
+            // only the publication in force for THIS batch; rolled-back rows
+            // outlive their batch, so the latch is what they cannot shed.
+            && !self.resolver_ever_partial
             // A freshly installed observer can produce a complete measured-
             // empty drain before the first d49/d50 resolver publication. Any
             // callback in that interval increments a drop counter, so only a
@@ -204,7 +224,8 @@ pub fn encode_convoy_transport_attack_batch(
     write_u16(&mut out, 8, BATCH_ROW_LEN as u16);
     write_u32(&mut out, 12, rows.len() as u32);
     let flags = u32::from(witness.exact_events_complete()) * BATCH_FLAG_COMPLETE_EXACT_EVENTS
-        | u32::from(witness.hook_installed) * BATCH_FLAG_HOOK_INSTALLED;
+        | u32::from(witness.hook_installed) * BATCH_FLAG_HOOK_INSTALLED
+        | u32::from(witness.resolver_ever_partial) * BATCH_FLAG_RESOLVER_EVER_PARTIAL;
     write_u32(&mut out, 16, flags);
     write_u64(&mut out, 24, witness.producer_sequence_next);
     let telemetry_values = [
@@ -302,6 +323,7 @@ pub fn decode_convoy_transport_attack_batch(
         .collect::<Result<Vec<_>, _>>()?;
     let witness = ConvoyTransportAttackWitness {
         hook_installed: flags & BATCH_FLAG_HOOK_INSTALLED != 0,
+        resolver_ever_partial: flags & BATCH_FLAG_RESOLVER_EVER_PARTIAL != 0,
         queue_drain_complete: match read_u32(bytes, 164)? {
             0 => false,
             1 => true,
@@ -591,6 +613,7 @@ mod tests {
             resolver_member_bindings: 4,
             resolver_route_bindings: 2,
             resolver_unbound_convoy_clients: 0,
+            resolver_ever_partial: false,
             telemetry: ConvoyTransportAttackTelemetry {
                 callbacks_seen: emitted,
                 original_calls: emitted,
@@ -671,6 +694,45 @@ mod tests {
             decode_convoy_transport_attack_batch(&encoded),
             Err(BatchDecodeError::InvalidWitness("complete_flag"))
         );
+    }
+
+    /// Law: partiality cannot be laundered by a rollback and re-drain.
+    ///
+    /// A batch that decodes incomplete is published but its queue reservation
+    /// is rolled back, so its rows are drained again on a later frame. If the
+    /// only marker of a partial resolver were the per-frame count, those rows
+    /// would re-encode under the next complete publication (count back to 0)
+    /// and claim an exhaustive event set they were never captured under. The
+    /// monotonic latch is what they cannot shed.
+    #[test]
+    fn cta2_rows_redrained_under_a_later_complete_resolver_stay_incomplete() {
+        let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
+
+        // Frame N: partial resolver. Incomplete, and the collector rolls the
+        // reservation back, so these rows survive into a later drain.
+        let mut partial = witness(&rows);
+        partial.resolver_unbound_convoy_clients = 2;
+        partial.resolver_ever_partial = true;
+        let encoded = encode_convoy_transport_attack_batch(&rows, partial).unwrap();
+        assert!(!decode_convoy_transport_attack_batch(&encoded)
+            .unwrap()
+            .exact_events_complete);
+
+        // Frame N+1: the publication in force is now complete, so the
+        // per-frame count is 0 -- but the latch persists and the SAME rows
+        // still cannot claim exhaustiveness.
+        let mut later = witness(&rows);
+        later.resolver_unbound_convoy_clients = 0;
+        later.resolver_ever_partial = true;
+        let encoded = encode_convoy_transport_attack_batch(&rows, later).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        assert!(decoded.witness.resolver_ever_partial, "latch must round-trip");
+        assert!(
+            !decoded.exact_events_complete,
+            "a capture that was ever partial can never claim an exhaustive event set"
+        );
+        // The rows themselves are still published -- partial data still seals.
+        assert_eq!(decoded.rows, rows);
     }
 
     #[test]

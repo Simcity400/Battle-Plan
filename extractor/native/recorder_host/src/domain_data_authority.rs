@@ -18872,6 +18872,7 @@ mod tests {
     ) -> naval4950::ConvoyTransportAttackWitness {
         naval4950::ConvoyTransportAttackWitness {
             resolver_unbound_convoy_clients,
+            resolver_ever_partial: resolver_unbound_convoy_clients != 0,
             hook_installed: true,
             queue_drain_complete: true,
             producer_sequence_next: 2,
