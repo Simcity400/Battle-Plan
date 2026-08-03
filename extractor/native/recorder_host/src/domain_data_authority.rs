@@ -18863,7 +18863,15 @@ mod tests {
     fn convoy_transport_attack_test_witness(
         exact: bool,
     ) -> naval4950::ConvoyTransportAttackWitness {
+        convoy_transport_attack_test_witness_with_unbound(exact, 0)
+    }
+
+    fn convoy_transport_attack_test_witness_with_unbound(
+        exact: bool,
+        resolver_unbound_convoy_clients: u32,
+    ) -> naval4950::ConvoyTransportAttackWitness {
         naval4950::ConvoyTransportAttackWitness {
+            resolver_unbound_convoy_clients,
             hook_installed: true,
             queue_drain_complete: true,
             producer_sequence_next: 2,
@@ -18952,6 +18960,52 @@ mod tests {
         );
     }
 
+    /// Law: rows captured under a PARTIAL resolver reach the authority, and
+    /// the partiality reaches it with them as an exact count.
+    ///
+    /// Both halves are load-bearing. If the collector goes back to discarding
+    /// a walk with any unreadable convoy member, `emitted_rows` here is 0. If
+    /// the count stops being carried, the problem entry disappears and a
+    /// consumer can no longer tell this batch from one that covered every
+    /// convoy member the walk saw.
+    #[test]
+    fn convoy_transport_attack_summary_publishes_partial_resolver_rows_and_counts_them() {
+        let row = convoy_transport_attack_test_row();
+        let payload = naval4950::encode_convoy_transport_attack_batch(
+            &[row],
+            convoy_transport_attack_test_witness_with_unbound(true, 7),
+        )
+        .expect("a partial-resolver batch is structurally valid and must encode");
+        let authority = summarize_domain_data_payload(
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            &payload,
+            DomainDataContext::default(),
+        )
+        .expect("a partial-resolver batch is decoded, not refused");
+
+        // The readable event survives.
+        assert_eq!(authority.emitted_rows, 1);
+        assert_eq!(authority.data_units["convoy_transport_attack_rows"], 1);
+        // The partiality is on the record, exactly.
+        assert_eq!(
+            authority.data_units["convoy_transport_attack_resolver_unbound_convoy_clients"],
+            7
+        );
+        assert_eq!(
+            authority.problems["convoy_transport_attack_resolver_unbound_convoy_clients"],
+            7
+        );
+        // And the batch does not claim to be exhaustive.
+        assert_eq!(
+            authority.data_units["convoy_transport_attack_incomplete_batches"],
+            1
+        );
+        assert_eq!(
+            authority.problems["convoy_transport_attack_incomplete_witness"],
+            1
+        );
+    }
+
     #[test]
     fn convoy_transport_attack_summary_rejects_cta2_reserved_bytes() {
         let row = convoy_transport_attack_test_row();
@@ -18960,7 +19014,9 @@ mod tests {
             convoy_transport_attack_test_witness(true),
         )
         .expect("valid exact CTA2 payload");
-        payload[188] = 1;
+        // Word 188 became `resolver_unbound_convoy_clients` in CTA2 v2; word
+        // 20 is still reserved-zero and is what this law is about.
+        payload[20] = 1;
 
         let error = summarize_domain_data_payload(
             COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,

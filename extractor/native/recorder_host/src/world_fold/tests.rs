@@ -508,6 +508,7 @@ fn convoy_transport_attack_payload(
                 .unwrap_or(raw_for(16_959_360)),
             resolver_member_bindings: 3,
             resolver_route_bindings: 1,
+            resolver_unbound_convoy_clients: 0,
             telemetry: naval4950::ConvoyTransportAttackTelemetry {
                 callbacks_seen: emitted_total,
                 original_calls: emitted_total,
@@ -19674,6 +19675,7 @@ fn h_convoy_domain90_incomplete_witness_is_sticky_unobtainable() {
         resolver_game_hour_raw: raw,
         resolver_member_bindings: 3,
         resolver_route_bindings: 1,
+        resolver_unbound_convoy_clients: 0,
         telemetry: naval4950::ConvoyTransportAttackTelemetry {
             callbacks_seen: 2,
             original_calls: 2,
