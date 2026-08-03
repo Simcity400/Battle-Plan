@@ -47,6 +47,11 @@ fn read_script(name: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
+/// One script, with every non-executable region blanked under ITS OWN dialect.
+fn read_code(name: &str) -> String {
+    strip_non_code_in(&read_script(name), dialect_of(name))
+}
+
 /// Every domain the contract registers a lane-local vocabulary for. Derived,
 /// never listed: a new registration is picked up here without editing this
 /// file, and every script table is then required to carry it.
@@ -88,7 +93,32 @@ fn registered_domains() -> BTreeMap<u16, u32> {
 ///     comment, so the checked value could be commented out beside a live
 ///     wrong one. `<# ... #>` is not hypothetical here -- this repo's
 ///     PowerShell uses comment-based help blocks.
+/// Which language's lexical rules apply. Conflating them is not a nicety: a
+/// backslash is an escape in Python and an ORDINARY CHARACTER in PowerShell,
+/// and `ProductionCapture.Promotion.ps1` really does contain `TrimEnd('\')`.
+/// Treating that backslash as an escape swallows the closing quote, and the
+/// live code after it is then read as string body -- or a `#` after it stops
+/// being a comment. Either way the sweep is reading something other than what
+/// the runtime runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Dialect {
+    Python,
+    PowerShell,
+}
+
+fn dialect_of(script_name: &str) -> Dialect {
+    if script_name.ends_with(".ps1") || script_name.ends_with(".psm1") {
+        Dialect::PowerShell
+    } else {
+        Dialect::Python
+    }
+}
+
 fn strip_non_code(text: &str) -> String {
+    strip_non_code_in(text, Dialect::Python)
+}
+
+fn strip_non_code_in(text: &str, dialect: Dialect) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut index = 0usize;
@@ -112,9 +142,9 @@ fn strip_non_code(text: &str) -> String {
 
     while index < chars.len() {
         let ch = chars[index];
-        // PowerShell block comment. Not nestable in PowerShell, so the first
-        // `#>` closes it.
-        if ch == '<' && chars.get(index + 1) == Some(&'#') {
+
+        // PowerShell block comment. Not nestable, so the first `#>` closes it.
+        if dialect == Dialect::PowerShell && ch == '<' && chars.get(index + 1) == Some(&'#') {
             let mut end = index + 2;
             let mut closed = false;
             while end < chars.len() {
@@ -135,6 +165,39 @@ fn strip_non_code(text: &str) -> String {
             index = end;
             continue;
         }
+
+        // PowerShell here-string: `@"` ... newline `"@` (or the `@'` form).
+        // Blanked entirely -- it is data, it may contain anything (a `<#`, a
+        // table-shaped literal), and neither the comment scanner nor a
+        // `contains` check may see inside it.
+        if dialect == Dialect::PowerShell
+            && ch == '@'
+            && matches!(chars.get(index + 1), Some('"') | Some('\''))
+        {
+            let quote = chars[index + 1];
+            let mut end = index + 2;
+            let mut closed = false;
+            while end < chars.len() {
+                // The terminator is only a terminator at the start of a line.
+                let at_line_start = end == 0 || chars[end - 1] == '\n';
+                if at_line_start && chars[end] == quote && chars.get(end + 1) == Some(&'@') {
+                    closed = true;
+                    break;
+                }
+                end += 1;
+            }
+            assert!(
+                closed,
+                "unterminated here-string at character {index}; the script does \
+                 not parse, and this sweep refuses to report on a file it \
+                 cannot read"
+            );
+            let end = end + 2;
+            blank(&mut out, index, end);
+            index = end;
+            continue;
+        }
+
         // Line comment, both languages.
         if ch == '#' {
             let mut end = index;
@@ -145,10 +208,14 @@ fn strip_non_code(text: &str) -> String {
             index = end;
             continue;
         }
+
         if ch == '"' || ch == '\'' {
-            // Triple-quoted Python block. Inert wherever these tables live, and
-            // the idiomatic way to comment a block out.
-            if chars.get(index + 1) == Some(&ch) && chars.get(index + 2) == Some(&ch) {
+            // Triple-quoted Python block: inert, and the idiomatic way to
+            // comment a block out. PowerShell has no such form.
+            if dialect == Dialect::Python
+                && chars.get(index + 1) == Some(&ch)
+                && chars.get(index + 2) == Some(&ch)
+            {
                 let mut end = index + 3;
                 let mut closed = false;
                 let mut escaped = false;
@@ -185,26 +252,32 @@ fn strip_non_code(text: &str) -> String {
                 index = end;
                 continue;
             }
+
             // Ordinary string: kept VERBATIM, because the badge names live in
             // these and the downstream parsers rely on seeing them. Only the
-            // EXTENT matters, and both escape conventions are honoured: the
-            // Python backslash and the PowerShell backtick. Ending a string
-            // early at an escaped quote would expose the rest of it as code,
-            // and a `#` inside would then blank the live code after it.
+            // EXTENT matters, and the escape rule is the DIALECT'S:
             //
-            // A doubled-quote rule (`''`/`""`, PowerShell's other escape) is
-            // deliberately ABSENT. Dropping it only re-pairs one string into
-            // two adjacent ones, which shifts the in/out partition by a whole
-            // quote pair and so preserves parity: every `#` stays on the side
-            // it was on. Verified by exhaustive search over every string of
-            // length <= 8 in `' " # a \n ;` -- 1,963,046 inputs, zero
-            // differences. A rule that cannot change an outcome would only
-            // carry a test that cannot fail.
+            //   * Python escapes with a backslash, in both quote styles;
+            //   * PowerShell escapes with a backtick, and ONLY inside a
+            //     double-quoted string. A backslash there is an ordinary
+            //     character -- `TrimEnd('\')` is real code in this repo.
+            //
+            // A doubled-quote rule (`''`/`""`) is deliberately absent: dropping
+            // it only re-pairs one string into two adjacent ones, which shifts
+            // the in/out partition by a whole quote pair and so preserves
+            // parity -- every `#` stays on the side it was on. Verified by
+            // exhaustive search over every string of length <= 8 in
+            // `' " # a \n ;`: 1,963,046 inputs, zero differences.
+            let escape = match (dialect, ch) {
+                (Dialect::Python, _) => Some('\\'),
+                (Dialect::PowerShell, '"') => Some('`'),
+                (Dialect::PowerShell, _) => None,
+            };
             out.push(ch);
             index += 1;
             while index < chars.len() {
                 let c = chars[index];
-                if c == '\\' || c == '`' {
+                if Some(c) == escape {
                     out.push(c);
                     index += 1;
                     if index < chars.len() {
@@ -227,10 +300,6 @@ fn strip_non_code(text: &str) -> String {
     out
 }
 
-/// Retained name for the code-stripping pass; see [`strip_non_code`].
-fn strip_line_comments(text: &str) -> String {
-    strip_non_code(text)
-}
 
 /// Byte offset of `marker`, requiring it to occur EXACTLY once.
 ///
@@ -458,8 +527,8 @@ fn mask_of(bits: &BTreeSet<u32>) -> u32 {
 /// script could keep the expected text commented out beside a later, wrong,
 /// live assignment and the check would stay green. Exactly-once also rules out
 /// shadowing: two assignments where the runtime uses the second.
-fn assert_code_contains_once(text: &str, needle: &str, what: &str) {
-    let count = strip_line_comments(text).matches(needle).count();
+fn assert_code_contains_once(text: &str, dialect: Dialect, needle: &str, what: &str) {
+    let count = strip_non_code_in(text, dialect).matches(needle).count();
     assert_eq!(
         count, 1,
         "{what}: expected exactly one executable occurrence of {needle:?}, found \
@@ -469,8 +538,8 @@ fn assert_code_contains_once(text: &str, needle: &str, what: &str) {
 }
 
 /// The same, over whitespace-squeezed code, for multi-line expressions.
-fn assert_squeezed_code_contains_once(text: &str, needle: &str, what: &str) {
-    let count = squeeze(&strip_line_comments(text)).matches(needle).count();
+fn assert_squeezed_code_contains_once(text: &str, dialect: Dialect, needle: &str, what: &str) {
+    let count = squeeze(&strip_non_code_in(text, dialect)).matches(needle).count();
     assert_eq!(
         count, 1,
         "{what}: expected exactly one executable occurrence of {needle:?}, found {count}"
@@ -493,7 +562,7 @@ fn check_table(label: &str, observed: &BTreeMap<u16, u32>) {
 
 #[test]
 fn report_raw_capture_lane_local_table_matches_the_contract() {
-    let text = strip_line_comments(&read_script("report_raw_capture.py"));
+    let text = read_code("report_raw_capture.py");
     let block = block_after(&text, "LANE_LOCAL_BITS = ");
     let mut observed = BTreeMap::new();
     for (key, inner) in nested_entries(&block) {
@@ -509,7 +578,7 @@ fn report_raw_capture_lane_local_table_matches_the_contract() {
 #[test]
 fn report_raw_capture_global_masks_match_the_contract() {
     let text = read_script("report_raw_capture.py");
-    let stripped = strip_line_comments(&text);
+    let stripped = strip_non_code_in(&text, Dialect::Python);
     // Production change that makes this fail: assigning status bit 15 in the
     // contract without widening the report's KNOWN_MASK, which would make the
     // report call the new assigned bit undefined and block every capture that
@@ -517,6 +586,7 @@ fn report_raw_capture_global_masks_match_the_contract() {
     let known_shift = COMPACT_STATUS_V1_KNOWN_MASK.count_ones();
     assert_code_contains_once(
         &text,
+        Dialect::Python,
         &format!("KNOWN_MASK = (1 << {known_shift}) - 1"),
         &format!(
             "report_raw_capture.py KNOWN_MASK must be the contract's \
@@ -556,7 +626,7 @@ fn report_raw_capture_global_masks_match_the_contract() {
 
 #[test]
 fn c0_domain_census_lane_local_table_matches_the_contract() {
-    let text = strip_line_comments(&read_script("c0_domain_census.py"));
+    let text = read_code("c0_domain_census.py");
     let block = block_after(&text, "LANE_LOCAL = ");
     let mut observed = BTreeMap::new();
     for (key, inner) in nested_entries(&block) {
@@ -571,7 +641,7 @@ fn c0_domain_census_lane_local_table_matches_the_contract() {
 #[test]
 fn c0_pass2_spans_lane_local_table_matches_the_contract() {
     let raw = read_script("c0_pass2_spans.py");
-    let text = strip_line_comments(&raw);
+    let text = strip_non_code_in(&raw, Dialect::Python);
     let block = block_after(&text, "DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = ");
     let mut observed = BTreeMap::new();
     for (key, inner) in nested_entries(&block) {
@@ -587,6 +657,7 @@ fn c0_pass2_spans_lane_local_table_matches_the_contract() {
     // each other before they drifted from the contract.
     assert_squeezed_code_contains_once(
         &raw,
+        Dialect::Python,
         "LANE_LOCAL_MASKS = { domain: sum(1 << bit for bit in bits) \
          for domain, bits in DOMAIN_STATUS_BITS.items() }",
         "c0_pass2_spans.py LANE_LOCAL_MASKS must be DERIVED from DOMAIN_STATUS_BITS",
@@ -595,7 +666,7 @@ fn c0_pass2_spans_lane_local_table_matches_the_contract() {
 
 #[test]
 fn production_promotion_lane_local_table_matches_the_contract() {
-    let text = strip_line_comments(&read_script("ProductionCapture.Promotion.ps1"));
+    let text = read_code("ProductionCapture.Promotion.ps1");
     let block = block_after(&text, "$script:ProductionPromotionLaneLocalStatusMask = ");
     let mut observed = BTreeMap::new();
     for line in block.lines() {
@@ -633,6 +704,7 @@ fn production_promotion_unknown_status_mask_is_the_contract_complement() {
     let expected = format!("{:08X}", !COMPACT_STATUS_V1_KNOWN_MASK);
     assert_code_contains_once(
         &text,
+        Dialect::PowerShell,
         &format!("[uint32]::Parse('{expected}'"),
         &format!(
             "ProductionCapture.Promotion.ps1's unknown-status mask must be the \
@@ -643,6 +715,7 @@ fn production_promotion_unknown_status_mask_is_the_contract_complement() {
     let expected_failure = format!("[uint32]0x{:X}", COMPACT_STATUS_FAILURE_MASK);
     assert_code_contains_once(
         &text,
+        Dialect::PowerShell,
         &format!("$script:ProductionPromotionFailureMask = {expected_failure}"),
         "ProductionCapture.Promotion.ps1's failure mask must be COMPACT_STATUS_FAILURE_MASK",
     );
@@ -656,7 +729,7 @@ fn production_promotion_unknown_status_mask_is_the_contract_complement() {
 fn production_promotion_tests_definedness_on_the_globalized_word() {
     // Comment-stripped throughout: a `contains` over raw source is satisfied by
     // the text sitting in a comment, and this file's comments quote both forms.
-    let code = strip_line_comments(&read_script("ProductionCapture.Promotion.ps1"));
+    let code = read_code("ProductionCapture.Promotion.ps1");
     assert!(
         !code.contains("($rawStatusFlags -band $script:ProductionPromotionUnknownStatusMask)"),
         "the promotion gate applies the unknown-status mask to the RAW per-domain status \
@@ -673,6 +746,7 @@ fn production_promotion_tests_definedness_on_the_globalized_word() {
     );
     assert_code_contains_once(
         &code,
+        Dialect::PowerShell,
         "function Get-ProductionPromotionGlobalStatusFlags",
         "the promotion gate's globalization helper",
     );
@@ -691,7 +765,7 @@ fn a_comment_cannot_truncate_a_block() {
     // `# }` inside the table: Python ignores it, and an unstripped scanner
     // would end the block there and never see bit 23.
     let source = "TABLE = {\n    53: {16: 'a'},  # }\n    60: {23: 'b'},\n}\n";
-    let block = block_after(&strip_line_comments(source), "TABLE = ");
+    let block = block_after(&strip_non_code(source), "TABLE = ");
     let entries = nested_entries(&block);
     assert_eq!(
         entries.len(),
@@ -704,7 +778,7 @@ fn a_comment_cannot_truncate_a_block() {
 #[test]
 fn a_comment_cannot_truncate_a_paren_expression() {
     let source = "MASK = (\n    (1 << 0)  # )\n    | (1 << 9)\n)\n";
-    let expr = paren_expr_after(&strip_line_comments(source), "MASK = ");
+    let expr = paren_expr_after(&strip_non_code(source), "MASK = ");
     assert_eq!(expr.split('|').count(), 2, "the comment truncated: {expr:?}");
 }
 
@@ -749,7 +823,7 @@ fn a_hash_inside_a_string_is_not_a_comment() {
     // The badge names in these tables are quoted text; stripping a `#` inside
     // one would corrupt the source the later scanners read.
     let source = "TABLE = {\n    53: {16: 'a#}b'},\n}\n";
-    let block = block_after(&strip_line_comments(source), "TABLE = ");
+    let block = block_after(&strip_non_code(source), "TABLE = ");
     assert_eq!(mask_of(&int_keys(&nested_entries(&block)[0].1)), 1 << 16);
 }
 
@@ -770,7 +844,7 @@ fn a_powershell_block_comment_cannot_satisfy_a_code_check() {
     // `<# ... #>` is inert, and this repo's PowerShell uses comment-based help
     // blocks, so a checked mask could sit in one beside a live wrong value.
     let source = "<#\n.SYNOPSIS\n$Mask = [uint32]0x13CF\n#>\n$Mask = [uint32]0x0001\n";
-    let code = strip_non_code(source);
+    let code = strip_non_code_in(source, Dialect::PowerShell);
     assert!(
         !code.contains("[uint32]0x13CF"),
         "a `<# ... #>` block comment survived stripping: {code:?}"
@@ -784,7 +858,7 @@ fn a_powershell_block_comment_cannot_satisfy_a_code_check() {
 #[test]
 fn a_powershell_block_comment_cannot_truncate_a_block() {
     let source = "TABLE = @{\n    53 = 1  <# } #>\n    60 = 2\n}\n";
-    let block = block_after(&strip_non_code(source), "TABLE = ");
+    let block = block_after(&strip_non_code_in(source, Dialect::PowerShell), "TABLE = ");
     assert!(
         block.contains("60 = 2"),
         "a commented-out closing brace truncated the block: {block:?}"
@@ -1085,6 +1159,12 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
     fs::write(&reporter, "").expect("write probe reporter");
     let absent = dir.join("does_not_exist");
 
+    // The probe starts with the STANDING VERDICT set, exactly as the harness
+    // does from the moment the capture goes live. So every "does not block"
+    // case below is asserting that the dispatch actively CLEARED it, which is
+    // the only thing that may retire it -- not merely that the dispatch left a
+    // null alone.
+    //
     // The report proves it reached a verdict by printing a receipt on STDERR
     // (stdout carries the --json document and must stay parseable);
     // an exit code alone is not evidence, because python exits 1 on a
@@ -1143,7 +1223,7 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
              \x20 param($FilePath, $Arguments, $TimeoutSeconds, $Purpose, [switch]$AllowNonzeroExit)\n\
              \x20 {body}\n\
              }}\n\
-             $undefinedStatusBitFailure = $null\n\
+             $undefinedStatusBitFailure = 'standing verdict from capture start'\n\
              $manifestPath = '{manifest}'\n\
              $streamReport = '{reporter}'\n\
              $pythonExe = 'python.exe'\n\
@@ -1193,9 +1273,7 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
 /// and the recorder's own exit code.
 #[test]
 fn the_reporter_and_manifest_checks_are_not_recombined() {
-    let code = squeeze(&strip_line_comments(&read_script(
-        "Invoke-HeadlessRawCapture.ps1",
-    )));
+    let code = squeeze(&read_code("Invoke-HeadlessRawCapture.ps1"));
     assert!(
         !code.contains(
             "if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and \
@@ -1209,33 +1287,78 @@ fn the_reporter_and_manifest_checks_are_not_recombined() {
 /// The behavioural route test reconstructs the harness's nesting; this pins
 /// that the harness still USES it. A faithful reconstruction proves nothing
 /// about a file that has stopped nesting the arbitration point.
+///
+/// Balanced-brace parsing, not substring counting: a substring check is
+/// satisfied by `try { cleanup } finally { }` followed by the arbitration
+/// OUTSIDE the inner finally, which reopens the cleanup-prefix fail-open while
+/// looking identical to a reader and to a `contains`.
 #[test]
 fn the_harness_arbitration_is_nested_inside_the_cleanup_finally() {
-    let code = strip_non_code(&read_script("Invoke-HeadlessRawCapture.ps1"));
+    let code = read_code("Invoke-HeadlessRawCapture.ps1");
     let arbitration = "if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {";
     let position = code
         .find(arbitration)
         .expect("the harness has no compact-status arbitration point");
-    // Everything from the outer `finally` to the arbitration point must open
-    // one more `try {` than it closes, i.e. the arbitration sits inside an
-    // inner `try`'s `finally`.
+
+    // The outer cleanup `finally`, found by its first statement.
     let outer = code
         .find("} finally {\n    $cleanupFatalMessage = $null")
         .or_else(|| code.find("} finally {\r\n    $cleanupFatalMessage = $null"))
         .expect("the harness's outer cleanup finally moved");
-    let prefix = &code[outer..position];
+
+    // The first `try {` after it opens the wrapper around the cleanup prefix.
+    let inner_try = outer
+        + code[outer..]
+            .find("try {")
+            .expect("no `try` wraps the cleanup prefix, so a terminating error \
+                    in it abandons the block before the verdict is delivered");
+
+    // Walk from that `try` to its matching close, then require the next thing
+    // to be `finally {` and compute THAT block's extent. The arbitration must
+    // lie strictly inside it.
+    let after_try_body = matching_close(&code, inner_try + "try ".len())
+        .expect("the cleanup-prefix `try` block is unterminated");
+    let tail = &code[after_try_body..];
+    let finally_at = tail
+        .find('{')
+        .expect("the cleanup-prefix `try` is not followed by a block");
     assert!(
-        prefix.contains("    try {"),
-        "the arbitration point is no longer nested inside a `try` wrapping the \
-         cleanup prefix, so a terminating error in that prefix (every failing \
-         cmdlet is terminating under $ErrorActionPreference = 'Stop') abandons \
-         the block before the verdict is delivered"
+        tail[..finally_at].contains("finally"),
+        "the cleanup-prefix `try` is not followed by a `finally`: {:?}",
+        &tail[..finally_at.min(80)]
     );
+    let inner_finally_open = after_try_body + finally_at;
+    let inner_finally_close = matching_close(&code, inner_finally_open)
+        .expect("the inner `finally` block is unterminated");
+
     assert!(
-        prefix.rfind("} finally {").map(|at| at > 0).unwrap_or(false)
-            && prefix.matches("} finally {").count() >= 2,
-        "the arbitration point is not the body of an INNER finally: {prefix:?}"
+        position > inner_finally_open && position < inner_finally_close,
+        "the arbitration point is not INSIDE the inner `finally` that wraps the \
+         cleanup prefix (arbitration at {position}, inner finally spans \
+         {inner_finally_open}..{inner_finally_close}). Outside it, a terminating \
+         error in the cleanup prefix -- every failing cmdlet is terminating \
+         under $ErrorActionPreference = 'Stop' -- abandons the block before the \
+         verdict is delivered."
     );
+}
+
+/// Byte offset just past the `}` matching the first `{` at or after `from`.
+fn matching_close(text: &str, from: usize) -> Option<usize> {
+    let open = from + text[from..].find('{')?;
+    let mut depth = 0i32;
+    for (offset, ch) in text[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[test]
@@ -1243,7 +1366,7 @@ fn the_harness_arbitration_is_nested_inside_the_cleanup_finally() {
 fn an_unterminated_block_comment_is_refused() {
     // The script does not parse. Blanking it through end-of-file would let this
     // sweep vouch for a file the runtime cannot read.
-    strip_non_code("$Mask = 1\n<# never closed\n$Mask = 2\n");
+    strip_non_code_in("$Mask = 1\n<# never closed\n$Mask = 2\n", Dialect::PowerShell);
 }
 
 #[test]
@@ -1279,7 +1402,7 @@ fn a_powershell_backtick_escape_does_not_end_a_string_early() {
     // inside it then reads as a line comment, blanking everything after it on
     // that line, including live code.
     let source = "$a = \"has a `\" quote and a # hash\"; $Mask = [uint32]0x1\n";
-    let code = strip_non_code(source);
+    let code = strip_non_code_in(source, Dialect::PowerShell);
     assert!(
         code.contains("# hash"),
         "the `#` inside the string was taken for a comment, so the string ended \
@@ -1298,7 +1421,7 @@ fn a_doubled_quote_re_pairs_without_changing_what_counts_as_code() {
     // pair, so every `#` stays on the side it was on. This pins the OUTCOME
     // (which is what the sweep depends on), not a rule that does not exist.
     let source = "$a = 'it''s fine # not a comment'; $Mask = [uint32]0x1\n";
-    let code = strip_non_code(source);
+    let code = strip_non_code_in(source, Dialect::PowerShell);
     assert!(
         code.contains("# not a comment"),
         "the `#` inside the doubled-quote string was taken for a comment: {code:?}"
@@ -1324,4 +1447,159 @@ fn blanking_preserves_byte_length_for_non_ascii() {
     );
     let block = block_after(&code, "TABLE = ");
     assert_eq!(mask_of(&int_keys(&nested_entries(&block)[0].1)), 1 << 16);
+}
+
+#[test]
+fn a_powershell_backslash_is_not_an_escape() {
+    // `TrimEnd('\')` is real code in ProductionCapture.Promotion.ps1. Treating
+    // the backslash as an escape swallows the closing quote, so the string runs
+    // on: the live code after it is read as string body, and a following `#`
+    // stops being a comment.
+    // All on ONE line: the damage from a wrong escape rule is that the string
+    // does not close, so everything after it -- including the `#` that should
+    // start a comment -- is swallowed as string body. A fixture that puts the
+    // live code on the NEXT line cannot see this, because the string ends at
+    // the newline either way.
+    let source = concat!(
+        r"$root = $Dir.TrimEnd('\'); $Mask = [uint32]0x13CF  # note",
+        "\n"
+    );
+    let code = strip_non_code_in(source, Dialect::PowerShell);
+    assert!(
+        code.contains("$Mask = [uint32]0x13CF"),
+        "a lone backslash in a PowerShell string swallowed the live code after \
+         it: {code:?}"
+    );
+    assert!(
+        !code.contains("# note"),
+        "the trailing comment was not stripped, so the string never closed and \
+         the backslash was wrongly treated as an escape: {code:?}"
+    );
+}
+
+#[test]
+fn a_powershell_here_string_is_inert() {
+    // Here-strings are DATA and may contain anything -- a `<#`, a table-shaped
+    // literal, an expected mask. None of it may satisfy a code check, and a
+    // `<#` inside one must not trigger the unterminated-block-comment panic.
+    let source = r#"$c = @"
+$script:ProductionPromotionFailureMask = [uint32]0x13CF
+an unclosed <# inside data
+"@
+$script:ProductionPromotionFailureMask = [uint32]0x0001
+"#;
+    let code = strip_non_code_in(source, Dialect::PowerShell);
+    assert!(
+        !code.contains("[uint32]0x13CF"),
+        "here-string contents survived stripping and can satisfy a code check: {code:?}"
+    );
+    assert!(
+        code.contains("[uint32]0x0001"),
+        "stripping removed the live assignment after the here-string: {code:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unterminated here-string")]
+fn an_unterminated_here_string_is_refused() {
+    let source = "$c = @\"\nnever closed\n";
+    strip_non_code_in(source, Dialect::PowerShell);
+}
+
+#[test]
+fn the_two_dialects_really_differ() {
+    // The same input must be read the OTHER way under Python, where a backslash
+    // IS the escape. If both dialects agreed here, the argument would be inert
+    // and every "dialect-aware" claim in this file would be decoration.
+    let source = "x = 'a\\' + '#b'\n";
+    let python = strip_non_code_in(source, Dialect::Python);
+    let powershell = strip_non_code_in(source, Dialect::PowerShell);
+    assert_ne!(
+        python, powershell,
+        "the dialects produced identical output for an input whose escape rule \
+         differs between them, so the dialect argument is doing nothing"
+    );
+}
+
+/// The verdict DEFAULTS to blocking from the moment a capture exists.
+///
+/// Before this, everything between injection and the report -- a passive-witness
+/// write, a control call, any bug -- could throw straight into cleanup with the
+/// verdict still null, and null meant "checked and clean" when nothing had been
+/// checked. Now the standing verdict is set beside `$collectorInjectionStarted`
+/// and only an ANSWER retires it: a report exit of 0 or 1 with a matching
+/// receipt, or the explicitly accepted game-died route.
+#[test]
+fn the_verdict_defaults_to_blocking_once_a_capture_exists() {
+    let code = read_code("Invoke-HeadlessRawCapture.ps1");
+
+    let injection = code
+        .find("$collectorInjectionStarted = $true")
+        .expect("the harness no longer marks injection start");
+    let standing = code
+        .find("$undefinedStatusBitFailure =\n    'the capture started but never reached")
+        .or_else(|| {
+            code.find("$undefinedStatusBitFailure =\r\n    'the capture started but never reached")
+        })
+        .expect(
+            "the harness does not arm a standing compact-status verdict when the \
+             capture goes live, so a throw before the report reads as checked-and-clean",
+        );
+    assert!(
+        standing > injection && standing - injection < 900,
+        "the standing verdict is not armed immediately after injection start \
+         (injection at {injection}, standing verdict at {standing}); anything \
+         between them that throws escapes the check"
+    );
+
+    // Exactly two routes may RETIRE it, and both are ANSWERS. The third
+    // occurrence is the declaration before any capture exists, which is
+    // correct: with no capture there is nothing to have checked.
+    let assignments: Vec<usize> = code
+        .match_indices("$undefinedStatusBitFailure = $null")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(
+        assignments.len(),
+        3,
+        "expected the pre-capture declaration plus exactly two places that clear \
+         the standing verdict -- a report exit of 0 or 1 backed by a matching \
+         receipt, and the game-died route -- found {}. Each extra one is a new \
+         way for an unchecked capture to report as clean.",
+        assignments.len()
+    );
+    assert!(
+        assignments[0] < injection,
+        "the only assignment before injection must be the declaration"
+    );
+    assert!(
+        assignments[1] > standing && assignments[2] > standing,
+        "a route clears the standing verdict before it is even armed"
+    );
+}
+
+/// Every script must be read under ITS OWN dialect.
+///
+/// The lexical rules genuinely conflict -- a backslash escapes in Python and is
+/// an ordinary character in PowerShell -- so routing a `.ps1` through the Python
+/// reader means the sweep is checking something other than what the runtime
+/// runs. Pinned directly because the table tests reach `strip_non_code_in` by
+/// way of `read_code`, and a `dialect_of` that always answered Python would
+/// leave most of them green.
+#[test]
+fn each_script_is_read_under_its_own_dialect() {
+    for name in ["ProductionCapture.Promotion.ps1", "Invoke-HeadlessRawCapture.ps1"] {
+        assert_eq!(
+            dialect_of(name),
+            Dialect::PowerShell,
+            "{name} is not read as PowerShell"
+        );
+    }
+    for name in [
+        "report_raw_capture.py",
+        "c0_domain_census.py",
+        "c0_pass2_spans.py",
+    ] {
+        assert_eq!(dialect_of(name), Dialect::Python, "{name} is not read as Python");
+    }
 }

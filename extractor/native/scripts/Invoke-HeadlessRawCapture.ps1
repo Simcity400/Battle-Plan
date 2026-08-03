@@ -1915,6 +1915,16 @@ $recorderProcess = Start-Process -FilePath $collectorRecord `
 # from here on there may be a recorder holding hook custody, and every cleanup
 # decision below turns on knowing that.
 $collectorInjectionStarted = $true
+# From this instant a capture EXISTS, so "was it checked for undefined status
+# bits?" has a real answer, and until something produces one the answer is NO.
+# The default is therefore the blocking verdict, cleared only by an actual
+# answer further down. Set here rather than at the report because everything
+# between here and the report can throw -- a passive-witness write, a control
+# call, any bug -- and a throw jumps straight to cleanup, where a null verdict
+# used to mean "checked and clean" when nothing had been checked at all.
+$undefinedStatusBitFailure =
+    'the capture started but never reached the raw-capture report, so whether it ' +
+    'published an undefined status bit was never asked.'
 # Take a real handle on the child NOW, while it is alive.
 #
 # `Start-Process -PassThru` under Windows PowerShell 5.1 hands back a Process
@@ -2200,13 +2210,18 @@ if ($haveStreamReport -and $haveManifest) {
                 "capture published status bits no compact-stream contract defines; see the " +
                 "CONTRACT VIOLATION section above. Declare the bit in compact_contract " +
                 "(and register it in lane_local_status_mask) or stop the producer writing it."
-        } elseif ($reportResult.ExitCode -ne 0 -and $reportResult.ExitCode -ne 1) {
+        } elseif ($reportResult.ExitCode -eq 0 -or $reportResult.ExitCode -eq 1) {
+            # The ONLY place the verdict is CLEARED. Exit 0 and 1 are the
+            # report's two answers ("clean" and "blocking domains"), both backed
+            # by a matching receipt, so the definedness check demonstrably ran
+            # and said no undefined bits. Every other route leaves the standing
+            # verdict set, which is the point: it defaults to blocking from the
+            # moment the capture starts and only an ANSWER retires it.
+            $undefinedStatusBitFailure = $null
+        } else {
             # Exit 3 is the report's own "I reached NO verdict" code (it crashed,
             # or could not read the run), and anything outside its vocabulary
-            # means the same thing. Only 0 and 1 are ANSWERS. "The check did not
-            # run" must never read as "the check passed" -- that is the
-            # fail-open this whole change exists to remove, and it is why the
-            # report grew a distinct code instead of crashing onto 1.
+            # means the same thing.
             $undefinedStatusBitFailure =
                 "the raw-capture report exited $($reportResult.ExitCode) and reached no verdict " +
                 "(0 clean / 1 blocking / 2 undefined status bits / 3 report error), so whether " +
@@ -2225,8 +2240,11 @@ if ($haveStreamReport -and $haveManifest) {
     Write-Host "raw-capture report not found: $streamReport"
 } elseif ($gameDied) {
     # The one case where the absence is EXPLAINED: the game died, so there is no
-    # capture to grade and no status word to read. The death is its own signal.
+    # capture to grade and no status word to read. The death is its own signal,
+    # and it is the only route other than an actual report ANSWER that retires
+    # the standing verdict.
     Write-Host 'no manifest: the game died during capture, so there is nothing to finalize'
+    $undefinedStatusBitFailure = $null
 } else {
     # The game lived and the recorder still produced no manifest. Nothing was
     # graded, so nothing may be reported as graded-and-clean.
@@ -2419,24 +2437,32 @@ $scriptExitCode = [int]$recorderExit
     # while 2 exists precisely so a caller can key on it and is gone forever if
     # anything else exits first.
     if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
-        # NOT Write-Error: $ErrorActionPreference is 'Stop' for this whole
-        # script, which makes Write-Error TERMINATING, so the `exit 2` below
-        # would never run and PowerShell 5.1 would return 1. Straight to stderr.
-        if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
-            [Console]::Error.WriteLine("cleanup failure: $cleanupFatalMessage")
-        }
-        if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
+        # The DIAGNOSTICS are wrapped and the `exit 2` is in their `finally`, so
+        # the code is delivered even if reporting it is not. Every write below
+        # can throw -- a closed or failing stderr writer is enough -- and under
+        # $ErrorActionPreference = 'Stop' that abandons this block and returns 1,
+        # losing the one signal callers key on. The message is best-effort; the
+        # exit code is not.
+        try {
+            # NOT Write-Error: 'Stop' makes it TERMINATING, so it would jump out
+            # of this try and skip the messages after it. Straight to stderr.
+            if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
+                [Console]::Error.WriteLine("cleanup failure: $cleanupFatalMessage")
+            }
+            if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
+                [Console]::Error.WriteLine(
+                    'Capture ended without an authenticated collector teardown receipt.')
+            }
+            if ($gradedWindowStarted) {
+                [Console]::Error.WriteLine(
+                    'Capture ended without closing the passive graded window.')
+            }
+            [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
             [Console]::Error.WriteLine(
-                'Capture ended without an authenticated collector teardown receipt.')
+                'Exit code 2 reports the compact status verdict. Any failure printed above still needs an operator.')
+        } finally {
+            exit 2
         }
-        if ($gradedWindowStarted) {
-            [Console]::Error.WriteLine(
-                'Capture ended without closing the passive graded window.')
-        }
-        [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
-        [Console]::Error.WriteLine(
-            'Exit code 2 reports the compact status verdict. Any failure printed above still needs an operator.')
-        exit 2
     }
     }
     if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
