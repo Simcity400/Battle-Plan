@@ -252,12 +252,18 @@ pub fn install() -> Result<(), String> {
     // silently receipt-less install is how a domain reports itself installed
     // while the READY evidence describes no patch at all.
     if let Err(error) = HOOK_RECEIPTS.observe_installed(base, detours()) {
-        if !rollback(&created) {
+        let retained = rollback(&created);
+        if !retained {
             clear_originals();
+            // Only once the detours are provably gone. A retained detour is
+            // still in the executable, and the partial custody `observe_installed`
+            // persisted for the sites it DID attest is evidence that a patch
+            // exists -- discarding it would delete that. `RETAINED_LIVE` is the
+            // primary record and is one-way, but the two are independent
+            // answers on purpose and neither is thrown away while the other
+            // could be wrong.
+            HOOK_RECEIPTS.discard_all_custody();
         }
-        // Only after the detours are provably gone. A discard while a site is
-        // still patched would erase the one record that a patch exists.
-        HOOK_RECEIPTS.discard_all_custody();
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("spotted-unit hook receipt refused: {error}"));
     }
@@ -676,13 +682,31 @@ mod tests {
             clears >= 2,
             "expected the teardown and rollback clears to still exist, found {clears}"
         );
+        // The receipt observation added on 2026-08-03 is a seventh way
+        // `install` can fail after sites have been created, and it rolls back
+        // through the same retention check. It binds the answer first --
+        // `let retained = rollback(&created);` -- because it needs it twice: to
+        // guard the `clear_originals()` and to decide whether the receipt
+        // custody may be discarded. So the count below stays at the original
+        // six and the seventh site is asserted in its own bound form.
+        assert_eq!(
+            production.matches("let retained = rollback(&created);").count(),
+            1,
+            "the receipt-failure rollback must keep the retention answer"
+        );
+        assert!(
+            production.contains(
+                "let retained = rollback(&created);\n        if !retained {\n            \
+                 clear_originals();"
+            ),
+            "the receipt-failure path's `clear_originals()` must sit behind its \
+             retention answer, like every other clear in this module"
+        );
         for (guarded, count) in [
-            // Seven, not the original six: the receipt observation added on
-            // 2026-08-03 is a seventh way `install` can fail after sites have
-            // been created, and it must roll back through the same retention
-            // check rather than clearing the originals under a live detour.
-            ("if !rollback(&created) {", 7usize),
-            ("if !retained {", 1usize),
+            ("if !rollback(&created) {", 6usize),
+            // Two: the teardown's own retention branch, and the receipt-failure
+            // rollback added on 2026-08-03.
+            ("if !retained {", 2usize),
             ("if retained {\n        RETAINED_LIVE.store(true, Ordering::Release);\n    } else {\n        clear_originals();\n    }", 1usize),
         ] {
             assert_eq!(
