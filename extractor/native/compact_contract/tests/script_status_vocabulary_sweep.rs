@@ -167,9 +167,14 @@ fn strip_non_code_in(text: &str, dialect: Dialect) -> String {
         }
 
         // PowerShell here-string: `@"` ... newline `"@` (or the `@'` form).
-        // Blanked entirely -- it is data, it may contain anything (a `<#`, a
+        // Blanked -- it is data, it may contain anything (a `<#`, a
         // table-shaped literal), and neither the comment scanner nor a
         // `contains` check may see inside it.
+        //
+        // EXCEPT that the double-quoted form is not wholly data: it interpolates,
+        // and `$( ... )` inside it is EXECUTABLE. Blanking that would hide live
+        // code from the sweep. None of the four scripts has one today, so rather
+        // than write a subexpression parser this fails closed on the first one.
         if dialect == Dialect::PowerShell
             && ch == '@'
             && matches!(chars.get(index + 1), Some('"') | Some('\''))
@@ -192,6 +197,16 @@ fn strip_non_code_in(text: &str, dialect: Dialect) -> String {
                  not parse, and this sweep refuses to report on a file it \
                  cannot read"
             );
+            if quote == '"' {
+                let body: String = chars[index + 2..end].iter().collect();
+                assert!(
+                    !body.contains("$("),
+                    "double-quoted here-string at character {index} contains a \
+                     `$( ... )` subexpression, which is EXECUTABLE code. Blanking \
+                     it would hide live code from this sweep. Parse the \
+                     subexpression or move it out of the here-string."
+                );
+            }
             let end = end + 2;
             blank(&mut out, index, end);
             index = end;
@@ -210,9 +225,21 @@ fn strip_non_code_in(text: &str, dialect: Dialect) -> String {
         }
 
         if ch == '"' || ch == '\'' {
+            // An `f` prefix makes the string EXECUTABLE: its `{ ... }`
+            // replacement fields are expressions. `c0_pass2_spans.py` really
+            // has `f'''  RUN VERDICT: {'RECONCILED' if reconciled else ...}'''`.
+            // So an f-prefixed triple-quoted string is NOT the inert
+            // commented-out-code form and must not be blanked; it falls through
+            // to the ordinary-string path, which keeps it verbatim. Only a plain
+            // triple-quoted block is inert, and only that is blanked.
+            let f_prefixed = index > 0
+                && matches!(chars[index - 1], 'f' | 'F')
+                && (index < 2 || !chars[index - 2].is_alphanumeric());
+
             // Triple-quoted Python block: inert, and the idiomatic way to
             // comment a block out. PowerShell has no such form.
             if dialect == Dialect::Python
+                && !f_prefixed
                 && chars.get(index + 1) == Some(&ch)
                 && chars.get(index + 2) == Some(&ch)
             {
@@ -1545,36 +1572,80 @@ fn the_verdict_defaults_to_blocking_once_a_capture_exists() {
             "the harness does not arm a standing compact-status verdict when the \
              capture goes live, so a throw before the report reads as checked-and-clean",
         );
+    // NOTHING may sit between them. A byte-distance bound is not enough: a
+    // `throw` fits inside any window, and the whole point is that no statement
+    // can run -- and therefore fail -- before the verdict is armed. The span is
+    // measured on the COMMENT-STRIPPED text, so the explanatory comment there
+    // is already blanked.
+    assert!(standing > injection, "the standing verdict precedes injection start");
+    let between = &code[injection + "$collectorInjectionStarted = $true".len()..standing];
     assert!(
-        standing > injection && standing - injection < 900,
-        "the standing verdict is not armed immediately after injection start \
-         (injection at {injection}, standing verdict at {standing}); anything \
-         between them that throws escapes the check"
+        between.trim().is_empty(),
+        "there is executable code between `$collectorInjectionStarted = $true` \
+         and the standing compact-status verdict; anything there that throws \
+         jumps to cleanup before the verdict is armed, and a null verdict reads \
+         as checked-and-clean. Found: {:?}",
+        between.trim()
     );
 
-    // Exactly two routes may RETIRE it, and both are ANSWERS. The third
-    // occurrence is the declaration before any capture exists, which is
-    // correct: with no capture there is nothing to have checked.
-    let assignments: Vec<usize> = code
-        .match_indices("$undefinedStatusBitFailure = $null")
-        .map(|(at, _)| at)
-        .collect();
+    // EVERY assignment is audited, not just the literal `= $null` ones. The
+    // arbitration tests the verdict with `IsNullOrWhiteSpace`, so `= ''` and
+    // `= '   '` retire it just as effectively as `$null` while leaving a
+    // `$null`-only count unchanged.
+    let mut retiring = Vec::new();
+    let mut arming = Vec::new();
+    for (at, _) in code.match_indices("$undefinedStatusBitFailure =") {
+        let rest = &code[at + "$undefinedStatusBitFailure =".len()..];
+        // The assignment's VALUE: the rest of this line, plus continuation lines
+        // while the previous one ends in `+` (PowerShell string concatenation).
+        // Anything beyond that belongs to the next statement and must not be
+        // read as part of this one.
+        // A value may begin on the SAME line as the `=` or on the next one, so
+        // leading blank lines are part of this statement, not the next.
+        let mut value = String::new();
+        for line in rest.lines() {
+            let blank_so_far = value.trim().is_empty();
+            value.push_str(line);
+            value.push('\n');
+            if !blank_so_far && !line.trim_end().ends_with('+') {
+                break;
+            }
+            if blank_so_far && !line.trim().is_empty() && !line.trim_end().ends_with('+') {
+                break;
+            }
+        }
+        // Can this value be null, empty, or whitespace? A value carrying any
+        // alphanumeric character cannot; one that does not, retires the verdict.
+        let carries_text = value.chars().any(|c| c.is_alphanumeric()) && !value.contains("$null");
+        if carries_text {
+            arming.push(at);
+        } else {
+            retiring.push(at);
+        }
+    }
     assert_eq!(
-        assignments.len(),
+        retiring.len(),
         3,
-        "expected the pre-capture declaration plus exactly two places that clear \
-         the standing verdict -- a report exit of 0 or 1 backed by a matching \
-         receipt, and the game-died route -- found {}. Each extra one is a new \
-         way for an unchecked capture to report as clean.",
-        assignments.len()
+        "expected exactly three assignments that can leave the verdict \
+         null/empty/whitespace -- the pre-capture declaration, and the two \
+         routes that may RETIRE it (a report exit of 0 or 1 backed by a matching \
+         receipt, and the game-died route). Found {} at {:?}. Each extra one is \
+         a new way for an unchecked capture to report as clean, and an empty \
+         string counts because the arbitration uses IsNullOrWhiteSpace.",
+        retiring.len(),
+        retiring
     );
     assert!(
-        assignments[0] < injection,
-        "the only assignment before injection must be the declaration"
+        retiring[0] < injection,
+        "the only verdict-retiring assignment before injection must be the declaration"
     );
     assert!(
-        assignments[1] > standing && assignments[2] > standing,
-        "a route clears the standing verdict before it is even armed"
+        retiring[1] > standing && retiring[2] > standing,
+        "a route retires the standing verdict before it is even armed"
+    );
+    assert!(
+        !arming.is_empty(),
+        "no assignment sets a verdict MESSAGE, so nothing can ever block"
     );
 }
 
@@ -1602,4 +1673,55 @@ fn each_script_is_read_under_its_own_dialect() {
     ] {
         assert_eq!(dialect_of(name), Dialect::Python, "{name} is not read as Python");
     }
+}
+
+#[test]
+#[should_panic(expected = "subexpression")]
+fn a_double_quoted_here_string_with_a_subexpression_is_refused() {
+    // `@" ... "@` INTERPOLATES: a `$( ... )` inside it is executable code, so
+    // blanking the here-string would hide it from this sweep. None of the four
+    // scripts has one, so this fails closed rather than guessing.
+    let source = "$c = @\"\nvalue is $($Mask -band 1)\n\"@\n";
+    strip_non_code_in(source, Dialect::PowerShell);
+}
+
+#[test]
+fn a_single_quoted_here_string_is_still_inert() {
+    // `@' ... '@` does NOT interpolate, so it is data all the way down and the
+    // `$(` rule must not fire on it.
+    let source = "$c = @'\nliteral $($Mask -band 1) text\n'@\n$Mask = [uint32]0x1\n";
+    let code = strip_non_code_in(source, Dialect::PowerShell);
+    assert!(
+        !code.contains("literal"),
+        "single-quoted here-string contents survived stripping: {code:?}"
+    );
+    assert!(code.contains("$Mask = [uint32]0x1"));
+}
+
+#[test]
+fn a_triple_quoted_f_string_is_not_treated_as_inert() {
+    // An `f` prefix makes the string EXECUTABLE -- its `{ ... }` fields are
+    // expressions -- so it is not the commented-out-code form and must not be
+    // blanked. `c0_pass2_spans.py` really contains
+    // `f'''  RUN VERDICT: {'RECONCILED' if reconciled else 'UNRECONCILED'}'''`.
+    let source = "x = f'''value {compute_mask()} here'''\n";
+    let code = strip_non_code(source);
+    assert!(
+        code.contains("compute_mask()"),
+        "an f-string's replacement expression was blanked as if it were an inert \
+         commented-out block: {code:?}"
+    );
+}
+
+#[test]
+fn a_plain_triple_quoted_block_is_still_inert() {
+    // The converse: without the `f`, it IS the inert form and must be blanked,
+    // or a commented-out mask could satisfy a code check.
+    let source = "'''\nKNOWN_MASK = (1 << 15) - 1\n'''\nKNOWN_MASK = (1 << 9) - 1\n";
+    let code = strip_non_code(source);
+    assert!(
+        !code.contains("(1 << 15) - 1"),
+        "a plain triple-quoted block survived stripping: {code:?}"
+    );
+    assert!(code.contains("(1 << 9) - 1"));
 }
