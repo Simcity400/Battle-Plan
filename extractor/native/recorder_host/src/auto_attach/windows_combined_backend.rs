@@ -1986,3 +1986,241 @@ fn duration_to_wait_ms(duration: Duration) -> Dword {
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+#[cfg(test)]
+mod h4cr_read_path_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const GENERIC_WRITE: Dword = 0x4000_0000;
+    const OPEN_EXISTING: Dword = 3;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: Dword,
+            share: Dword,
+            security: *mut c_void,
+            creation: Dword,
+            flags: Dword,
+            template: Handle,
+        ) -> Handle;
+        fn GetCurrentProcessId() -> Dword;
+    }
+
+    static NEXT_PIPE: AtomicU32 = AtomicU32::new(0);
+
+    /// A connected H4CR pipe pair built from the real [`create_pipe`], so
+    /// these tests exercise the production server handle -- its flags, its
+    /// byte-mode framing, and its kernel buffer sizing -- rather than a
+    /// stand-in that could be sized differently from what ships.
+    struct Pair {
+        server: WindowsOverlappedPipe,
+        client: OwnedHandle,
+    }
+
+    fn connected_pair() -> Pair {
+        let name = format!(
+            r"\\.\pipe\battle-plan_collector_test_{}_{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server = create_pipe(
+            &name,
+            "H4CR",
+            PIPE_ACCESS_INBOUND,
+            RestrictiveSecurityPolicy::default(),
+            ControlDeadline::after(Duration::from_secs(30)).expect("deadline"),
+            &ControlCancellation::new(),
+        )
+        .expect("create H4CR server pipe");
+        let wide_name = wide(&name);
+        let client = OwnedHandle::new(unsafe {
+            CreateFileW(
+                wide_name.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            )
+        })
+        .expect("connect H4CR client");
+        // The client attached first, so ConnectNamedPipe completes at once
+        // with ERROR_PIPE_CONNECTED; either outcome means connected.
+        let mut operation = PendingOperation::new(Vec::new()).expect("connect operation");
+        if unsafe { ConnectNamedPipe(server.raw(), &mut operation.overlapped) } == 0 {
+            let error = unsafe { GetLastError() };
+            assert!(
+                error == ERROR_PIPE_CONNECTED || error == ERROR_IO_PENDING,
+                "ConnectNamedPipe failed with {error}"
+            );
+        }
+        let peer =
+            OwnedHandle::new(unsafe { OpenProcess(SYNCHRONIZE, 0, GetCurrentProcessId()) })
+                .expect("open self as peer");
+        Pair {
+            server: WindowsOverlappedPipe::new(server, peer, ControlCancellation::new()),
+            client,
+        }
+    }
+
+    fn blocking_write(client: &OwnedHandle, bytes: &[u8]) {
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let mut written: Dword = 0;
+            let chunk = &bytes[offset..];
+            let ok = unsafe {
+                WriteFile(
+                    client.raw(),
+                    chunk.as_ptr().cast(),
+                    chunk.len() as Dword,
+                    &mut written,
+                    ptr::null_mut(),
+                )
+            };
+            assert!(
+                ok != 0,
+                "client WriteFile failed: {}",
+                io::Error::last_os_error()
+            );
+            assert!(written > 0, "client WriteFile made no progress");
+            offset += written as usize;
+        }
+    }
+
+    /// Record sizes chosen to straddle every boundary the read path has: well
+    /// under the chunk, exactly at it, over it (so one exact read needs
+    /// several `ReadFile` passes), and small records immediately after large
+    /// ones (so a stale scratch buffer would be visible).
+    fn sizes() -> Vec<usize> {
+        vec![
+            32,
+            64,
+            H4CR_READ_CHUNK_BYTES - 1,
+            H4CR_READ_CHUNK_BYTES,
+            H4CR_READ_CHUNK_BYTES + 1,
+            17,
+            3 * H4CR_READ_CHUNK_BYTES + 12_345,
+            48,
+            1,
+        ]
+    }
+
+    fn pattern(seed: usize, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| (i.wrapping_mul(31).wrapping_add(seed.wrapping_mul(7))) as u8)
+            .collect()
+    }
+
+    /// Every record must come back byte-for-byte, in order, at its exact
+    /// length.
+    ///
+    /// This is the guard on the length actually submitted to `ReadFile`. The
+    /// scratch buffer is `H4CR_READ_CHUNK_BYTES` long and the pipe holds
+    /// several records at once, so submitting the scratch's own length
+    /// instead of `min(dest.len(), chunk)` would pull the FOLLOWING record's
+    /// bytes out of the pipe and drop them when only `dest.len()` were copied
+    /// out -- every later record would come back shifted.
+    #[test]
+    fn exact_reads_preserve_record_framing_across_a_reused_scratch() {
+        let Pair { mut server, client } = connected_pair();
+        let records: Vec<Vec<u8>> = sizes()
+            .into_iter()
+            .enumerate()
+            .map(|(i, len)| pattern(i + 1, len))
+            .collect();
+        let stream: Vec<u8> = records.iter().flat_map(|r| r.iter().copied()).collect();
+        let writer = std::thread::spawn(move || {
+            blocking_write(&client, &stream);
+            client
+        });
+
+        for (index, expected) in records.iter().enumerate() {
+            let mut got = vec![0u8; expected.len()];
+            server
+                .recv_exact_cancellable(&mut got)
+                .unwrap_or_else(|error| panic!("record {index} read failed: {error}"));
+            assert!(
+                got == *expected,
+                "record {index} ({} bytes) did not match the bytes written",
+                expected.len()
+            );
+        }
+        drop(writer.join().expect("writer thread"));
+    }
+
+    /// The fix is the reuse itself: one buffer, allocated and zeroed once,
+    /// handed to every `ReadFile`. Reverting to a per-call
+    /// `vec![0; remaining]` reintroduces the quadratic zeroing this lane
+    /// measured at 28x the bytes actually moved, and it is not observable
+    /// from the delivered bytes, so assert the allocation identity directly.
+    #[test]
+    fn the_read_scratch_is_allocated_once_and_reused() {
+        let Pair { mut server, client } = connected_pair();
+        // The middle record is larger than the scratch, so its exact read
+        // needs several passes and each pass must reuse the same buffer.
+        let records: Vec<Vec<u8>> = [64usize, 2 * H4CR_READ_CHUNK_BYTES + 9, 128]
+            .into_iter()
+            .enumerate()
+            .map(|(i, len)| pattern(i + 100, len))
+            .collect();
+        let stream: Vec<u8> = records.iter().flat_map(|r| r.iter().copied()).collect();
+        let writer = std::thread::spawn(move || {
+            blocking_write(&client, &stream);
+            client
+        });
+
+        assert!(
+            server.read_scratch.is_none(),
+            "the scratch must not be allocated before the first read"
+        );
+        let mut first = vec![0u8; records[0].len()];
+        server.recv_exact_cancellable(&mut first).expect("first read");
+        assert!(first == records[0], "the first record did not match");
+        let scratch = server.read_scratch.as_ref().expect("scratch after a read");
+        assert_eq!(
+            scratch.len(),
+            H4CR_READ_CHUNK_BYTES,
+            "the scratch is sized to the chunk, not to the record"
+        );
+        let identity = scratch.as_ptr();
+
+        for (index, expected) in records.iter().enumerate().skip(1) {
+            let mut got = vec![0u8; expected.len()];
+            server
+                .recv_exact_cancellable(&mut got)
+                .unwrap_or_else(|error| panic!("record {index} read failed: {error}"));
+            assert!(got == *expected, "record {index} did not match");
+            let scratch = server.read_scratch.as_ref().expect("scratch is retained");
+            assert_eq!(
+                scratch.as_ptr(),
+                identity,
+                "record {index} reallocated the scratch instead of reusing it"
+            );
+            assert_eq!(
+                scratch.len(),
+                H4CR_READ_CHUNK_BYTES,
+                "record {index} resized the scratch"
+            );
+        }
+        drop(writer.join().expect("writer thread"));
+    }
+
+    /// The data pipe and the control pipe are sized independently: the H4CR
+    /// buffer was raised for bulk record throughput and must not drag the
+    /// small bounded H4CT control frames along with it.
+    #[test]
+    fn the_data_and_control_pipes_are_sized_independently() {
+        assert!(
+            H4CR_PIPE_BUFFER_BYTES > H4CT_PIPE_BUFFER_BYTES,
+            "the data pipe carries whole frames and must be the larger of the two"
+        );
+        assert_eq!(
+            H4CR_READ_CHUNK_BYTES, H4CR_PIPE_BUFFER_BYTES,
+            "asking for more than the pipe can return in one call only grows the scratch"
+        );
+    }
+}
