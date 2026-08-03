@@ -924,20 +924,12 @@ fn domain_summary_entry(
 }
 
 fn validate_status_flags(offset: usize, label: &str, status_flags: u32, errors: &mut Vec<String>) {
-    const KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE
-        | compact_contract::COMPACT_STATUS_PROFILE_MISMATCH
-        | compact_contract::COMPACT_STATUS_NO_CLOCK
-        | compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE
-        | compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED
-        | compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE
-        | compact_contract::COMPACT_STATUS_WORKER_PANIC
-        | compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE
-        | compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
-        | compact_contract::COMPACT_STATUS_PARTIAL_DATA
-        | compact_contract::COMPACT_STATUS_DELTA_DATA
-        | compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET
-        | compact_contract::COMPACT_STATUS_CONTROL_INVALID
-        | compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT;
+    // Re-exported, not re-spelled. This was an OR-list of every bit the
+    // contract had assigned when it was written, which is the same local copy
+    // as a literal mask and drifts the same way: the day the contract assigned
+    // COMPACT_STATUS_SOURCE_EMPTY, this gate began rejecting a valid record as
+    // carrying an unknown bit.
+    const KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
     let unknown = status_flags & !KNOWN_STATUS_MASK;
     if unknown != 0 {
         errors.push(format!(

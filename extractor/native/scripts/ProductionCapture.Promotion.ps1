@@ -1,8 +1,16 @@
 Set-StrictMode -Version Latest
 
 $script:ProductionPromotionFailureMask = [uint32]0x13CF
+# Complement of COMPACT_STATUS_V1_KNOWN_MASK
+# (compact_contract/src/status_flags_base.rs). Bits 0..=14 are assigned; bit 14
+# is COMPACT_STATUS_SOURCE_EMPTY, the informational badge a domain publishes
+# when its read reached the source and the source's answer was empty. It is
+# deliberately NOT in the failure mask above: a measured zero is an answer, and
+# blocking promotion on it would refuse a capture that has nothing wrong with
+# it. Was 'FFFFC000', which still counted bit 14 as an unassigned wire
+# extension.
 $script:ProductionPromotionUnknownStatusMask =
-    [uint32]::Parse('FFFFC000', [Globalization.NumberStyles]::HexNumber)
+    [uint32]::Parse('FFFF8000', [Globalization.NumberStyles]::HexNumber)
 $script:ProductionPromotionStatuses = @(
     'existing',
     'production_complete',

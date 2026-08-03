@@ -39,20 +39,11 @@ pub const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const STATUS_KNOWN_MASK: u32 = compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE
-    | compact_contract::COMPACT_STATUS_PROFILE_MISMATCH
-    | compact_contract::COMPACT_STATUS_NO_CLOCK
-    | compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE
-    | compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED
-    | compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE
-    | compact_contract::COMPACT_STATUS_WORKER_PANIC
-    | compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE
-    | compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
-    | compact_contract::COMPACT_STATUS_PARTIAL_DATA
-    | compact_contract::COMPACT_STATUS_DELTA_DATA
-    | compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET
-    | compact_contract::COMPACT_STATUS_CONTROL_INVALID
-    | compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT;
+/// Re-exported, not re-spelled. This was an OR-list of every bit the contract
+/// had assigned when it was written, which drifts exactly like a literal mask:
+/// the day the contract assigned COMPACT_STATUS_SOURCE_EMPTY, this gate began
+/// rejecting a valid record as carrying an unknown bit.
+pub const STATUS_KNOWN_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 pub const SOURCE_FLAG_DLL_NATIVE: u32 = 1;
 pub const SOURCE_FLAG_SESSION_ROOT_VALIDATED: u32 = 1 << 1;
@@ -1973,6 +1964,12 @@ mod tests {
             compact_contract::COMPACT_STATUS_DELTA_DATA,
             compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
             compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            // A measured zero is an ANSWER, so this gate must admit it without
+            // a failure override. Production change that makes this fail:
+            // re-spelling this lane's known-status mask as an OR-list of the
+            // bits assigned at the time, which is what it was before and which
+            // rejected bit 14 as unknown.
+            compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
         ];
         for bit in informational_bits {
             for statuses in [(bit, 0, 0), (0, bit, 0), (0, 0, bit)] {

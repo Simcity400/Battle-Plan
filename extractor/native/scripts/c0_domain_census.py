@@ -539,12 +539,17 @@ STATUS_BITS = {
     6: "WORKER_PANIC", 7: "BRIDGE_UNAVAILABLE", 8: "SOURCE_UNAVAILABLE",
     9: "PARTIAL_DATA", 10: "DELTA_DATA", 11: "TRANSITION_BASELINE_RESET",
     12: "CONTROL_INVALID", 13: "WAR_SEGMENT_ABSENT",
+    # The read reached its source and the answer was empty. Informational:
+    # a measured zero is an ANSWER. Before bit 14 existed, a domain that
+    # legitimately observed nothing published SOURCE_UNAVAILABLE -- the word
+    # a broken reader publishes -- and this census could not separate them.
+    14: "SOURCE_EMPTY",
 }
 FAILURE_BITS = {0, 1, 2, 3, 6, 7, 8, 9, 12}
-INFORMATIONAL_BITS = {4, 5, 10}
+INFORMATIONAL_BITS = {4, 5, 10, 14}
 MARKER_BITS = {11}
 BIT13_VALID_DOMAINS = {"diplomacy_live", "diplomacy_intel_operatives_live"}
-KNOWN_MASK = (1 << 14) - 1
+KNOWN_MASK = (1 << 15) - 1
 
 # Lane-local overlays (d49/d51: compact_contract lib.rs:181-205; d53:
 # diplomacy_intel_operatives_live/domain44_compact.rs; d60:
@@ -856,7 +861,7 @@ def classify_bits(name, flags, blocking, notes):
     if unknown:
         blocking.append(f"{name}: UNKNOWN status bits 0x{unknown:x} "
                         "(contract drift - census cannot classify)")
-    for bit in sorted(set(range(14)) | set(lane)):
+    for bit in sorted(set(range(15)) | set(lane)):
         if not flags & (1 << bit):
             continue
         if bit in lane:
@@ -1362,8 +1367,10 @@ def selftest():
     cases.append(("fold-problem", run_m(
         lambda m: pd(m)["divisions"].update(
             problems=["delta_before_baseline"])), 1))
+    # Bit 15, not 14: bit 14 is the assigned SOURCE_EMPTY badge now, so it is
+    # classified rather than reported as contract drift.
     cases.append(("unknown-bit", run_m(
-        lambda m: pd(m)["fuel_live"].update(status_flags_or=1 << 14)), 1))
+        lambda m: pd(m)["fuel_live"].update(status_flags_or=1 << 15)), 1))
     cases.append(("d51-lane-bit13", run_m(
         lambda m: pd(m)["scripted_state_flags_variables_live"].update(
             status_flags_or=1 << 13)), 1))

@@ -60,6 +60,13 @@ GLOBAL_STATUS_BITS: Mapping[int, StatusSpec] = {
     11: StatusSpec('TRANSITION_BASELINE_RESET', False),
     12: StatusSpec('CONTROL_INVALID', True),
     13: StatusSpec('WAR_SEGMENT_ABSENT', False),
+    # The read reached its source, the source answered, and the answer was
+    # empty. NOT a failure class: a measured zero is an ANSWER, and reconciling
+    # it as a failure would put this census back where it started -- unable to
+    # tell a domain whose reader is broken from a domain whose save has nothing
+    # to report. Without this entry the bit falls through to
+    # `UNKNOWN_BIT_14`, whose spec is failure-class `True`.
+    14: StatusSpec('SOURCE_EMPTY', False),
 }
 
 # Domain-specific vocabulary. d49/d51 overlap global bits and therefore must

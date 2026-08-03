@@ -33,8 +33,15 @@ STATUS_BITS = {
     1 << 11: "transition_baseline_reset",
     1 << 12: "control_invalid",
     1 << 13: "war_segment_absent",
+    # The read reached its source, the source answered, and the answer was
+    # empty. Informational, and deliberately absent from FAILURE_MASK below: a
+    # measured zero is an ANSWER, not a missing hour. Before this bit existed a
+    # domain that legitimately observed nothing published `source_unavailable`,
+    # which is what a BROKEN reader publishes, and this report could not tell
+    # them apart.
+    1 << 14: "source_empty",
 }
-KNOWN_MASK = (1 << 14) - 1
+KNOWN_MASK = (1 << 15) - 1
 FAILURE_MASK = (
     (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 6)
     | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12)

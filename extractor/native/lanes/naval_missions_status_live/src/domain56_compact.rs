@@ -2066,6 +2066,12 @@ mod tests {
             compact_contract::COMPACT_STATUS_DELTA_DATA,
             compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
             compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            // A measured zero is an ANSWER, so this gate must admit it without
+            // a failure override. Production change that makes this fail:
+            // re-spelling this lane's known-status mask as an OR-list of the
+            // bits assigned at the time, which is what it was before and which
+            // rejected bit 14 as unknown.
+            compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
         ];
         for bit in informational_bits {
             for statuses in [(bit, 0, 0), (0, bit, 0), (0, 0, bit)] {
