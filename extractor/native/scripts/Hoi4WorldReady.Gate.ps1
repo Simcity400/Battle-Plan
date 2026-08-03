@@ -143,8 +143,13 @@ function Test-Hoi4PlayerInputGateSet {
 .DESCRIPTION
     The two outcomes are different diagnoses and must not collapse into one
     message. "No coherent observation ever came back" points at the process or
-    the offsets; "observations came back and the session never went live" points
-    at the campaign, and is the one that names how long it waited.
+    the offsets; "observations came back and none of them saw the session live"
+    points at the campaign, and is the one that names how long it waited.
+
+    The second message is worded to claim only what polling establishes. It
+    cannot say the byte was continuously zero -- nothing sampled the engine
+    between observations -- so every statement in it is scoped to the
+    observations that were actually taken.
 #>
 function New-Hoi4WorldReadyTimeoutMessage {
     param(
@@ -164,9 +169,10 @@ function New-Hoi4WorldReadyTimeoutMessage {
     }
     $observed = if ($null -eq $LastPlayerInputGate) { 'unknown' } else { [string]$LastPlayerInputGate }
     return (
-        "the game PID $TargetProcessId exposed stable world singletons, but its in-game-session " +
-        "latch CGameState+0xA39 never left zero: waited $WaitedSeconds s and it never became " +
-        "non-zero (budget $TimeoutSeconds s, last observed value $observed). Exactly one " +
+        "the game PID $TargetProcessId exposed stable world singletons, but no observation saw " +
+        "its in-game-session latch CGameState+0xA39 set: waited $WaitedSeconds s and it " +
+        "never became non-zero in any observation taken in that window " +
+        "(budget $TimeoutSeconds s, last observed value $observed). Exactly one " +
         'enumerated engine routine sets that byte -- FUN_140DC5310, the in-game session ' +
         'setup -- and the savegame-load, frontend and reset paths clear it. What is ' +
         'established is that NO observation in that window saw it set, which means the ' +

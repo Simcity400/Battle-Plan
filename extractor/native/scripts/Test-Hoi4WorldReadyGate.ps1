@@ -148,6 +148,15 @@ Assert-True -Condition $threw `
     -Message 'a gate that never arrives is refused'
 Assert-True -Condition ($message -match 'waited \d+ s and it never became non-zero') `
     -Message 'the refusal states how long it waited'
+# ...and scopes that to the observations. Polling never sampled the engine
+# BETWEEN observations, so an unscoped "it never became non-zero" asserts a
+# continuous history the harness cannot know -- the owner returning to the main
+# menu mid-wait produces exactly the entered-then-cleared history it would deny.
+# RED WHEN: the scoping is dropped from the refusal wording.
+Assert-True -Condition ($message -match 'never became non-zero in any observation taken') `
+    -Message 'the refusal claims only what polling establishes'
+Assert-True -Condition ($message -match 'entered and left it between observations') `
+    -Message 'the refusal names the history polling cannot rule out'
 Assert-True -Condition ($message -match 'CGameState\+0xA39') `
     -Message 'the refusal names the engine condition it waited on'
 Assert-True -Condition ($message -notmatch 'did not expose stable world singletons') `
