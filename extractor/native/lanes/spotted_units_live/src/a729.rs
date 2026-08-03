@@ -702,6 +702,31 @@ mod tests {
             "the receipt-failure path's `clear_originals()` must sit behind its \
              retention answer, like every other clear in this module"
         );
+        // And the receipt discard with it. `clear_originals()` and
+        // `discard_all_custody()` are two DIFFERENT records of the same fact --
+        // that a detour exists -- and a retained detour must lose neither. The
+        // first version of this guard checked only the clear, so the discard sat
+        // outside the branch and every test here still passed.
+        //
+        // Mutation proof: move `HOOK_RECEIPTS.discard_all_custody();` out of the
+        // `if !retained` block and this fails.
+        assert_eq!(
+            production.matches("HOOK_RECEIPTS.discard_all_custody();").count(),
+            1,
+            "there is exactly one receipt discard, on the failed-install path"
+        );
+        let discard_block = production
+            .split_once("let retained = rollback(&created);")
+            .expect("the receipt-failure rollback is declared in production")
+            .1
+            .split_once("\n        }")
+            .expect("the retention branch is closed")
+            .0;
+        assert!(
+            discard_block.contains("HOOK_RECEIPTS.discard_all_custody();"),
+            "the receipt custody may only be discarded once the rollback has \
+             PROVED the detours are gone; a retained detour keeps both records"
+        );
         for (guarded, count) in [
             ("if !rollback(&created) {", 6usize),
             // Two: the teardown's own retention branch, and the receipt-failure

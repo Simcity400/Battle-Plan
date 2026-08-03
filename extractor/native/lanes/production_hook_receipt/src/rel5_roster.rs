@@ -372,15 +372,56 @@ mod tests {
         assert!(ROSTER.target(usize::MAX, 0).is_err());
     }
 
-    /// A discarded roster holds nothing on either side. This is the state a
+    /// A discarded roster holds nothing on EITHER side. This is the state a
     /// failed install must leave behind, and the registry's release plan reads
     /// it.
+    ///
+    /// The roster is SEEDED on both sides first. An earlier version of this
+    /// test discarded an already-empty roster and asserted it was still empty,
+    /// which passed with `discard_all_custody` replaced by an empty function and
+    /// never looked at released custody at all despite its name -- a test that
+    /// could not fail.
+    ///
+    /// Mutation proof: delete either `*installed = [None; N]` or
+    /// `*released = [None; N]` from `discard_all_custody` and this fails on the
+    /// corresponding side.
+    #[cfg(feature = "test-support")]
     #[test]
     fn discard_clears_both_sides() {
         static DISCARDED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
+        {
+            let mut installed = DISCARDED.lock_installed().unwrap();
+            installed[0] = Some(crate::mint_test_installed_receipt(SPECS[0], 1));
+            installed[1] = Some(crate::mint_test_installed_receipt(SPECS[1], 2));
+        }
+        {
+            let mut released = DISCARDED.lock_released().unwrap();
+            released[1] = Some(crate::mint_test_released_receipt(SPECS[1], 2));
+        }
+        // Seeded, so the assertions below are about the discard rather than
+        // about an empty starting state.
+        assert!(DISCARDED.has_complete_installed_custody());
+        assert!(DISCARDED.may_still_hold_installed_custody());
+        assert!(DISCARDED.has_any_custody());
+
         DISCARDED.discard_all_custody();
+
         assert!(!DISCARDED.has_complete_installed_custody());
+        assert!(!DISCARDED.may_still_hold_installed_custody());
+        assert!(
+            !DISCARDED.has_any_custody(),
+            "the released side must be cleared too, which is what this test's \
+             name claims and what an empty-roster version never checked"
+        );
         assert!(DISCARDED.installed_receipts().is_err());
+        assert!(
+            DISCARDED.take_released_receipts().is_err(),
+            "a discarded roster has no release to hand the registry"
+        );
+        // Read the stores directly as well: the accessors above could in
+        // principle refuse for a reason other than emptiness.
+        assert!(DISCARDED.lock_installed().unwrap().iter().all(Option::is_none));
+        assert!(DISCARDED.lock_released().unwrap().iter().all(Option::is_none));
     }
 
     /// The width of the reported roster is the width of the declared spec list.
