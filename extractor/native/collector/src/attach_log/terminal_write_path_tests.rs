@@ -613,6 +613,64 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
     );
 }
 
+/// THE STAGING SLOT IS EMPTIED ON BOTH ENDINGS, AND ONCE.
+///
+/// `staged_publications` outlives the loop body so a `break` between staging a
+/// frame and publishing it can still be flushed below the loop. That lifetime
+/// is what makes emptying it load-bearing, in two opposite ways:
+///
+///   * not cleared after a SUCCESSFUL resolve, the next sweep's own guard sees
+///     this hour's published frames sitting in the slot and reads them as last
+///     hour's unpublished ones -- every capture would abort on its second sweep,
+///     and no offline test can reach a second sweep because that needs a live
+///     game clock;
+///   * not cleared after a FAILED resolve, the post-loop flush re-offers buffers
+///     the publisher already wrote, putting duplicate records on the stream.
+///
+/// So the clear must sit between the resolve and the `break`, not inside either
+/// arm. This checks exactly that placement.
+///
+/// Mutation proof: move `staged_publications.clear()` above the resolve call and
+/// the borrow no longer compiles; move it after the `break 'capture` and the
+/// ordering assertion below fails; delete it and the "cleared exactly once"
+/// count fails.
+#[test]
+fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
+    let capture_loop = COLLECTOR_SOURCE
+        .split_once("'capture: while Instant::now() <= deadline {")
+        .expect("capture loop")
+        .1;
+    let resolve_block = capture_loop
+        .split_once("let resolution = resolve_staged_publications(")
+        .expect("the in-loop resolution")
+        .1
+        .split_once("if let Some(reservation) = deferred_gap_reservation.take()")
+        .expect("resolution block terminator")
+        .0;
+    let resolve_block = code_only(resolve_block);
+    let clear_at = resolve_block
+        .find("staged_publications.clear();")
+        .expect("the slot is emptied after the resolve");
+    let break_at = resolve_block
+        .find("break 'capture;")
+        .expect("a failed resolution ends the capture");
+    assert!(
+        clear_at < break_at,
+        "the clear must run on the failure path too; after the `break` it never runs, and the \
+         post-loop flush would re-offer buffers the publisher already wrote"
+    );
+    assert_eq!(
+        resolve_block.matches("staged_publications.clear();").count(),
+        1,
+        "cleared once, unconditionally -- a clear inside either match arm covers one ending only"
+    );
+    assert!(
+        !resolve_block.contains("Ok(()) => {}"),
+        "the clear is unconditional, so the resolution is not matched into per-arm blocks that \
+         could each forget it"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn the_d75_terminal_writer_refuses_an_uncertain_boundary_instead_of_claiming_a_write() {
