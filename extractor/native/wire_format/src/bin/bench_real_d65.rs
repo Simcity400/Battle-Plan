@@ -63,10 +63,14 @@
 //!    `status_flags_base.rs:21`-`:24`). `scan_stream` does that. d65's payload
 //!    authority does **not**: it records the status word
 //!    (`domain_data_authority.rs:12323`) and adds no parse error for an
-//!    unassigned bit, and bit 14 is outside `COMPACT_STATUS_FAILURE_MASK`, so
-//!    production folds such a record normally. A payload with
-//!    `status_flags = 0x4000` is therefore accepted by the recorder and refused
-//!    here. The strictness is kept, not relaxed: falling through to "success" on
+//!    unassigned bit, and an unassigned bit is outside
+//!    `COMPACT_STATUS_FAILURE_MASK`, so production folds such a record
+//!    normally. A payload with `status_flags = 0x8000` is therefore accepted by
+//!    the recorder and refused here. (This example read `0x4000` until the
+//!    contract assigned bit 14 to `COMPACT_STATUS_SOURCE_EMPTY`; that bit is
+//!    now a KNOWN informational status which both sides accept, and it is no
+//!    longer an instance of this divergence.) The strictness is kept, not
+//!    relaxed: falling through to "success" on
 //!    a bit whose meaning is undefined is how a future failure status would be
 //!    silently measured as healthy, and every other measurement bin in this
 //!    crate applies the same rule. The gap is on production's side and is
