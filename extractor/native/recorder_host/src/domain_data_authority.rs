@@ -140,6 +140,12 @@ pub const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 =
     compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
 pub const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 =
     compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+/// The measured-zero badge. Informational, so it is deliberately absent from
+/// [`COMPACT_STATUS_FAILURE_MASK`] and from the recorder's gap-eligible mask: a
+/// domain that measured zero rows produced an ANSWER, and turning that answer
+/// into a gap would put the recorder back in the state this badge exists to
+/// leave — unable to say whether an hour is missing data or simply has none.
+pub const COMPACT_STATUS_SOURCE_EMPTY: u32 = compact_contract::COMPACT_STATUS_SOURCE_EMPTY;
 pub const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
 pub const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
 pub const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;

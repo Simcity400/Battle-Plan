@@ -133,7 +133,9 @@ const F_INVALID_ORDERS_OBSERVED: u32 = 1 << 30;
 const F_INVALID_ORDERS_VISIBLE: u32 = 1 << 31;
 
 const BLOCK_HOURS: usize = 48;
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 fn u32_at(b: &[u8], off: usize) -> u32 {
@@ -1331,7 +1333,7 @@ mod tests {
 
     #[test]
     fn an_unassigned_status_bit_is_refused_not_classified() {
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
                 for rows in [Vec::new(), vec![division_row(1, 42)]] {
@@ -1605,7 +1607,7 @@ mod tests {
                 frame_end_sealed(2, 100, 0, 1, 0, 0),
             ),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad_seals.push((
                 format!("unknown bit {bit}"),
                 frame_end_sealed(2, 100, 0, 0, 1 << bit, 0),

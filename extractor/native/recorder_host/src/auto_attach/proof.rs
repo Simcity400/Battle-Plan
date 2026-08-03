@@ -498,7 +498,9 @@ impl ValidatedCompactRecordProof {
     }
 }
 
-const FIRST_PROOF_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+/// Re-exported, not re-declared: a local `(1 << 14) - 1` silently rejected the
+/// measured-empty badge the moment the contract assigned bit 14.
+const FIRST_PROOF_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// Incremental, bounded gate for the first semantically valid world record.
 /// A proof requires a clean full-baseline PERF -> DATA pair for an actually

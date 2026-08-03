@@ -296,7 +296,9 @@ struct StreamScan {
     shipped_upgrade_rows: usize,
 }
 
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 const AUTHORITY_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const AUTHORITY_MAX_UPGRADE_INDEX: u32 = 256;
@@ -1137,7 +1139,7 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, and combined with a known
             // informational bit; with rows and without (145 of d39's 146 hours are
@@ -1695,7 +1697,7 @@ mod tests {
             frame_end_sealed(2, 100, 0, 0, 0, 1),
             frame_end_sealed(2, 100, 0, 1, 0, 0),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {

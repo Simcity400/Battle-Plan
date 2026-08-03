@@ -153,7 +153,9 @@ const PERF_STATUS_OFFSET: usize = 32;
 
 /// Every globally-defined compact status occupies one of bits 0..=13
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from the seal's domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -2157,7 +2159,7 @@ mod tests {
             );
         }
         // Every unassigned v1 bit, 14..=31, alone and beside an informational one.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             for extra in [0u32, 1 << 10] {
                 let mut s = Vec::new();
                 s.extend(perf(1, 100, D94, (1 << bit) | extra));
@@ -2549,7 +2551,7 @@ mod tests {
             ("emitted != scheduled".to_string(), frame_end_sealed(5, 100, 2, 3, 0, 0)),
             ("counts disagree with observed PERF".to_string(), frame_end_sealed(5, 100, 1, 1, 0, 0)),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad.push((
                 format!("unknown seal status bit {bit}"),
                 frame_end_sealed(5, 100, 2, 2, 1 << bit, 0),

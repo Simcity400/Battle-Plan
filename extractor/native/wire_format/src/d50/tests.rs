@@ -955,7 +955,7 @@ fn the_mapper_rejects_every_row_the_lane_rejects() {
         assert!(key_from_row(&vec![0u8; len]).is_err());
     }
     // Every flag bit outside KNOWN_FLAGS (lane `:1972`).
-    for bit in 14..32u32 {
+    for bit in 15..32u32 {
         let mut raw = ship();
         raw.flags |= 1 << bit;
         assert!(parse_row(&raw.bytes()).is_err(), "flag bit {bit}");

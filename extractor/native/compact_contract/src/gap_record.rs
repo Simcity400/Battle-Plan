@@ -971,6 +971,26 @@ mod tests {
         );
     }
 
+    /// A measured-empty hour is not a recording gap.
+    ///
+    /// A gap is evidence that some game-state bytes were NOT OBSERVED. A domain
+    /// that reached its source and found nothing observed all of them; there
+    /// are simply no rows. Admitting it here would recreate the ambiguity the
+    /// badge exists to remove, one layer further down: the section-8 ledger
+    /// would carry an hour of missing data that is not missing.
+    ///
+    /// Production change that makes this fail: adding SOURCE_EMPTY to
+    /// `GAP_STATUS_MASK`, or to the recorder's `GAP_ELIGIBLE_STATUS_MASK`
+    /// (which is what feeds this function).
+    #[test]
+    fn a_measured_empty_status_word_is_never_a_gap_reason() {
+        assert_eq!(
+            GapReason::canonical_for_status_bits(crate::COMPACT_STATUS_SOURCE_EMPTY),
+            None
+        );
+        assert_eq!(GAP_STATUS_MASK & crate::COMPACT_STATUS_SOURCE_EMPTY, 0);
+    }
+
     #[test]
     fn composite_witness_proves_status_and_coverage_without_overlap() {
         let record = GapRecord {

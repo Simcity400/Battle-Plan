@@ -6642,6 +6642,36 @@ mod tests {
         })
     }
 
+    /// The certifier admits a measured-empty domain without an override.
+    ///
+    /// This gate is the third party to the status contract (collector publishes,
+    /// fold applies, this accepts), and the project has repeatedly shipped
+    /// status words that meant one thing to the producer and another here. Bit
+    /// 14 is new vocabulary, so BOTH halves are pinned: it must not read as an
+    /// unassigned bit (which this gate rejects outright), and it must not read
+    /// as a failure bit (which would need `allow_partial_or_source_failure` to
+    /// certify a capture that has nothing wrong with it).
+    ///
+    /// Production changes that make this fail: dropping SOURCE_EMPTY from
+    /// `COMPACT_STATUS_V1_KNOWN_MASK`, or adding it to
+    /// `COMPACT_STATUS_FAILURE_MASK`.
+    #[test]
+    fn a_measured_empty_domain_certifies_without_a_failure_override() {
+        let empty = compact_contract::COMPACT_STATUS_SOURCE_EMPTY;
+        assert_eq!(domain_status_unknown_bits(36, empty), 0);
+        assert_eq!(rejected_domain_failure_bits(36, empty, false), 0);
+        assert_eq!(rejected_global_failure_bits(empty, false), 0);
+
+        let contract = test_contract(36, "air_variant_reserves");
+        let manifest = test_domain_manifest(36, json!(empty));
+        let mut errors = Vec::new();
+        validate_domain_manifest(&manifest, contract, 1, &GateOptions::default(), &mut errors);
+        assert!(
+            errors.is_empty(),
+            "a positively measured empty source was rejected: {errors:?}"
+        );
+    }
+
     #[test]
     fn d51_lane_local_bit12_is_not_global_control_invalid() {
         let bit12 = compact_contract::DOMAIN51_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED;

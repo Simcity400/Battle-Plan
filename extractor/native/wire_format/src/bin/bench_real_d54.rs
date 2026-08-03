@@ -298,7 +298,9 @@ struct StreamScan {
     max_orders: usize,
 }
 
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
@@ -1293,7 +1295,7 @@ fn assert_status_predicates_agree() {
     // as the recipe requires; this proves the two agree on every assigned status
     // word, so following the predicate is following the fold.
     let fold_mask = COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_PARTIAL_DATA;
-    for status in 0u32..(1 << 14) {
+    for status in 0u32..(1 << 15) {
         if compact_status_unknown_flags_v1(status) != 0 {
             continue;
         }

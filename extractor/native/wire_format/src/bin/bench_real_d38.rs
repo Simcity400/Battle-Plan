@@ -225,7 +225,9 @@ struct StreamScan {
 /// carries the frame-wide aggregate, so lane-local interpretations do not apply
 /// there and any higher bit is an unknown wire-contract extension
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from the seal's domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`; the collector's own
@@ -1180,7 +1182,7 @@ mod tests {
         // v1 vocabulary and is not a validity predicate, so an unassigned bit must be
         // rejected BEFORE classification — otherwise it silently reads as "not a
         // failure", gets a baseline/delta meaning, and the hour is measured as healthy.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
                 let mut first = Vec::new();
@@ -1790,7 +1792,7 @@ mod tests {
             ),
         ];
         // Every unassigned status bit, 14..=31.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad_seals.push((
                 format!("unknown seal status bit {bit}"),
                 frame_end_sealed(2, 100, 0, 0, 1 << bit, 0),

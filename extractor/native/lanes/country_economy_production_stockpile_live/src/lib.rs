@@ -3559,6 +3559,12 @@ mod tests {
             compact_contract::COMPACT_STATUS_DELTA_DATA,
             compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
             compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            // A measured zero is an ANSWER: the read reached its source, the
+            // source answered, and the answer was empty. It joins this list
+            // rather than the fatal one because the gate above must not refuse
+            // an hour whose only remark is that a domain positively measured
+            // nothing -- which is the whole reason the bit exists.
+            compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
         ];
         assert_eq!(
             informational_bits.iter().copied().fold(

@@ -32,7 +32,11 @@ pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
 /// All currently assigned global compact-status bits. Domain 49's bit 11 is a
 /// lane-local fail-closed badge and is masked before global interpretation.
-const KNOWN_COMPACT_STATUS_FLAGS: u32 = (1 << 14) - 1;
+///
+/// Re-exported, not re-declared, for the same reason `FAILURE_STATUS_MASK`
+/// below is: a local `(1 << 14) - 1` became wrong the moment the contract
+/// assigned bit 14, and would have rejected a valid record.
+const KNOWN_COMPACT_STATUS_FLAGS: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
 pub const LIFECYCLE_ROW_DELETED: u32 = 1 << 0;

@@ -121,7 +121,9 @@ use wire_format::d48::{self, Domain48Fold, FrameMode};
 
 const D48: u16 = 48;
 const BLOCK_HOURS: usize = 48;
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 /// Every constant `d48.rs` restates from `compact_contract::build_profile` and
@@ -1639,7 +1641,12 @@ mod tests {
     #[test]
     fn an_unassigned_status_bit_is_refused_not_classified() {
         let mut payload = D48Payload::baseline();
-        payload.status_flags = 1 << 14;
+        // Bit 15, not 14: the contract assigned bit 14 to the measured-empty
+        // badge, so it is now a KNOWN informational status and refusing it
+        // would reject a valid record. The rule under test is unchanged --
+        // unassigned bits have no defined classification and must be rejected
+        // before anything classifies the word.
+        payload.status_flags = 1 << 15;
         let stream = stream_of(&[payload]);
         let err = scan(&stream).expect_err("refused");
         assert!(err.contains("unassigned v1 status bits"), "{err}");

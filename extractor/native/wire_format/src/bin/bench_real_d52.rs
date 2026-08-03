@@ -314,7 +314,9 @@ struct StreamScan {
 
 /// Every globally-defined compact status occupies one of bits 0..=13
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from the seal's domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -1064,7 +1066,7 @@ mod tests {
         // The failure helper classifies the assigned v1 vocabulary and is not a
         // validity predicate, so an unassigned bit must be rejected BEFORE
         // classification — otherwise it silently reads as "not a failure".
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
                 let mut s = Vec::new();
                 s.extend(record(
@@ -1454,7 +1456,10 @@ mod tests {
         for (label, tail) in [
             ("nonzero reserved", seal(0, 0, 0, 1)),
             ("mismatched counts", seal(1, 0, 0, 0)),
-            ("unknown status bit", seal(0, 0, 1 << 14, 0)),
+            // Bit 15, not 14: bit 14 is the contract's measured-empty badge now,
+            // so a seal carrying it names an ASSIGNED status and is not an
+            // unknown-bit refusal.
+            ("unknown status bit", seal(0, 0, 1 << 15, 0)),
             ("fatal status bit", seal(0, 0, 1, 0)),
             ("counts without PERF records", seal(2, 2, 0, 0)),
         ] {

@@ -40,10 +40,15 @@ use crate::world_fold::{FoldedSnapshotFile, WorldFold};
 /// Read granularity for the streaming fold. Bounded and independent of stream size.
 const CHUNK: usize = 8 * 1024 * 1024;
 
-/// Every globally-defined compact status currently occupies one of bits 0..=13.
 /// FRAME_END carries the frame-wide aggregate, so lane-local interpretations do
-/// not apply there and any higher bit is an unknown wire-contract extension.
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+/// not apply there and any bit outside the assigned vocabulary is an unknown
+/// wire-contract extension.
+///
+/// Re-exported, not re-declared. This was a literal `(1 << 14) - 1`, and the
+/// moment the contract assigned bit 14 it became a local copy that rejected a
+/// bit the contract had defined — the same drift that once pinned this file's
+/// diagnostic trailer to version 1 while the producer wrote version 2.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 fn validate_frame_end_seal_fields(payload: &[u8]) -> Result<(u32, u32), String> {
     if payload.len() != compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN {

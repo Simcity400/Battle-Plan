@@ -217,14 +217,14 @@ pub const FAILURE_STATUS_MASK: u32 = (1 << 0)   // STATE_UNAVAILABLE
     | (1 << 9)  // PARTIAL_DATA
     | (1 << 12); // CONTROL_INVALID
 
-/// The assigned v1 status vocabulary: bits 0..=13
+/// The assigned v1 status vocabulary: bits 0..=14
 /// (`compact_contract/src/status_flags_base.rs:21`-`:24` — everything above is
 /// unassigned and `compact_status_unknown_flags_v1` reports it). The v3 decoder
 /// rejects an unassigned bit outright (`naval_history.rs:344`-`:346`), before
 /// anything classifies the word, so for this domain the rule is part of the
 /// grammar rather than a harness convention. Same drift note as
 /// [`FAILURE_STATUS_MASK`].
-pub const KNOWN_STATUS_MASK_V1: u32 = (1 << 14) - 1;
+pub const KNOWN_STATUS_MASK_V1: u32 = (1 << 15) - 1;
 
 /// `SunkConvoyHistoryAuthority`, `naval_history.rs:84`-`:92`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1529,11 +1529,11 @@ mod tests {
 
     #[test]
     fn split_payload_refuses_an_unassigned_status_bit_before_classifying_it() {
-        // `naval_history.rs:344`-`:346`. Bits 14..=31 have no defined
+        // `naval_history.rs:344`-`:346`. Bits 15..=31 have no defined
         // classification, so a payload carrying one is refused rather than read
         // as "not a failure" — the validity-before-classification rule, here
         // built into the grammar itself rather than added by a harness.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             for extra in [0u32, 1, 1 << 10] {
                 let status = (1u32 << bit) | extra;
                 assert!(

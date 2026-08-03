@@ -334,7 +334,9 @@ struct StreamScan {
 /// carries the frame-wide aggregate, so lane-local interpretations do not apply
 /// there and any higher bit is an unknown wire-contract extension
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from the seal's domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -1675,7 +1677,7 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — on d67's own records and on
         // the d18 records this harness classifies to model the roster.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, COMPACT_STATUS_PARTIAL_DATA] {
                 let mut s = Vec::new();
@@ -2446,7 +2448,7 @@ mod tests {
         for (offset, patch) in [
             (COMPACT_RECORD_HEADER_LEN + 28, 1u32.to_le_bytes().to_vec()),
             (COMPACT_RECORD_HEADER_LEN + 16, 1u32.to_le_bytes().to_vec()),
-            (COMPACT_RECORD_HEADER_LEN + 24, (1u32 << 14).to_le_bytes().to_vec()),
+            (COMPACT_RECORD_HEADER_LEN + 24, (1u32 << 15).to_le_bytes().to_vec()),
             (
                 COMPACT_RECORD_HEADER_LEN + 24,
                 COMPACT_STATUS_PARTIAL_DATA.to_le_bytes().to_vec(),

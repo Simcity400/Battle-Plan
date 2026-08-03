@@ -30,11 +30,29 @@
 //!
 //! * [`ReadCompletion`] — did the read finish, and if not, how did it stop.
 //! * [`AnswerExtent`] — does what was published stand for the whole answer.
+//! * [`AnswerPresence`] — did the answer contain anything.
 //!
 //! They are separate on purpose. "The read did not complete" and "what we
 //! published is not everything" are different observations that co-occur, and a
 //! single enum forced the producer to pick one, which is how a domain that both
 //! failed and truncated ended up reporting only one of the two.
+//!
+//! # An empty answer is an answer
+//!
+//! [`AnswerPresence`] is the third fact, and it exists because the first two
+//! could not say "the source answered, and there was nothing there". A producer
+//! with that observation had one bit available —
+//! [`COMPACT_STATUS_SOURCE_UNAVAILABLE`], which means the read did not get
+//! through — so it published the word a BROKEN reader publishes. Measured on a
+//! live capture, 5,127 domain-hours carried that bit, and the stream could not
+//! separate the ones that were a defect from the ones that were a fact about
+//! the save.
+//!
+//! The separation is only worth anything if it cannot be claimed cheaply, so
+//! `Empty` has exactly one constructor, [`DomainOutcome::measured_empty`], and
+//! it pins `Completed` + `Whole` alongside it. A read that did not finish has
+//! no answer to call empty; a read that cannot prove exhaustiveness has not
+//! measured that there is nothing. Both remain what they were.
 //!
 //! # Deriving the bits, not writing them
 //!
@@ -66,7 +84,7 @@
 use crate::diagnostic_channel::{Authority, DiagUnit, LocatorLevel, Predicate};
 use crate::status_flags_base::{
     COMPACT_STATUS_CONTROL_INVALID, COMPACT_STATUS_NO_CLOCK, COMPACT_STATUS_PARTIAL_DATA,
-    COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_WORKER_PANIC,
+    COMPACT_STATUS_SOURCE_EMPTY, COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_WORKER_PANIC,
 };
 
 // ---------------------------------------------------------------------------
@@ -160,6 +178,14 @@ pub const READ_PREDICATE_CAPTURED_PAYLOAD_OFFERED: u32 = 0x0002_000E;
 /// frame's state, not a fault of the domain, which is what the outcome's
 /// [`Authority`] field is there to say.
 pub const READ_PREDICATE_FRAME_STATUS_PERMITTED_READ: u32 = 0x0002_000F;
+/// The source answered, and its answer was empty.
+///
+/// The one predicate that is not a check the producer FAILED. It names the
+/// check that decided the record: the walk reached the whole extent, rejected
+/// nothing, and found no rows. Published so a consumer can tell a measured zero
+/// from the two other things that look like one on the wire — a delta frame
+/// with no changes, and a reader that could not run at all.
+pub const READ_PREDICATE_SOURCE_ANSWERED_EMPTY: u32 = 0x0002_0010;
 
 /// Every domain read predicate, for the uniqueness and non-zero checks.
 ///
@@ -204,6 +230,10 @@ pub const READ_PREDICATES: &[(u32, &str)] = &[
     (
         READ_PREDICATE_FRAME_STATUS_PERMITTED_READ,
         "frame_status_permitted_read",
+    ),
+    (
+        READ_PREDICATE_SOURCE_ANSWERED_EMPTY,
+        "source_answered_empty",
     ),
 ];
 
@@ -292,6 +322,46 @@ impl AnswerExtent {
     }
 }
 
+/// Did the answer the read obtained contain anything.
+///
+/// The third orthogonal fact, and separate from [`AnswerExtent`] for the same
+/// reason [`ReadCompletion`] is separate from it. Extent asks whether what was
+/// published stands for the WHOLE answer; presence asks what that answer
+/// CONTAINS. A read can reach the whole extent and find nothing there
+/// (`Whole` + `Empty`) — that pair is a measurement, and until this fact
+/// existed the producer had to express it by claiming the read did not
+/// complete.
+///
+/// `Empty` is reachable only through [`DomainOutcome::measured_empty`], which
+/// pins `Completed`/`Whole` alongside it. That is deliberate and load-bearing:
+/// a read that did not complete has no answer to call empty, and a read that
+/// cannot prove exhaustiveness has not measured that there is nothing — it is
+/// [`AnswerExtent::Unprovable`]. Making `Empty` unreachable in either state is
+/// what keeps a broken reader from being relabelled as an empty one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AnswerPresence {
+    /// The answer carries the domain's rows — or the site is not claiming
+    /// anything about presence, which is the same thing on the wire: no badge.
+    #[default]
+    Present = 1,
+    /// The source answered and its answer contained nothing.
+    Empty = 2,
+}
+
+impl AnswerPresence {
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Empty => "empty",
+        }
+    }
+}
+
 /// Was the frame's game hour readable for this domain's label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClockPresence {
@@ -352,7 +422,8 @@ pub const DERIVED_STATUS_MASK: u32 = COMPACT_STATUS_SOURCE_UNAVAILABLE
     | COMPACT_STATUS_PARTIAL_DATA
     | COMPACT_STATUS_WORKER_PANIC
     | COMPACT_STATUS_NO_CLOCK
-    | COMPACT_STATUS_CONTROL_INVALID;
+    | COMPACT_STATUS_CONTROL_INVALID
+    | COMPACT_STATUS_SOURCE_EMPTY;
 
 // ---------------------------------------------------------------------------
 // The outcome
@@ -376,6 +447,10 @@ pub struct DomainOutcome {
     pub reason: String,
     pub completion: ReadCompletion,
     pub extent: AnswerExtent,
+    /// Whether the answer this read obtained contained anything. Only
+    /// [`DomainOutcome::measured_empty`] can set it to
+    /// [`AnswerPresence::Empty`].
+    pub presence: AnswerPresence,
     pub clock: ClockPresence,
     pub authority_state: ReadAuthority,
     /// The status word this outcome's derivation produced AND the site
@@ -413,6 +488,41 @@ impl DomainOutcome {
             reason: String::new(),
             completion: ReadCompletion::Completed,
             extent: AnswerExtent::Whole,
+            presence: AnswerPresence::Present,
+            clock: ClockPresence::Readable,
+            authority_state: ReadAuthority::Valid,
+            derived_status: None,
+        }
+    }
+
+    /// The outcome of a read that reached its whole extent and found nothing.
+    ///
+    /// The ONLY constructor that produces [`AnswerPresence::Empty`], and it
+    /// pins [`ReadCompletion::Completed`] and [`AnswerExtent::Whole`] with it
+    /// rather than taking them as arguments. There is no builder that flips
+    /// presence on afterwards either. A caller who wants to badge an empty
+    /// answer must therefore be at a site that can honestly claim BOTH that the
+    /// read finished and that it saw the whole extent — which is precisely the
+    /// evidence "there is nothing here" requires, and precisely what a broken
+    /// reader cannot supply.
+    ///
+    /// `reason` names the source that answered and what it was asked, so the
+    /// record says WHICH emptiness this is rather than only that it is one.
+    pub fn measured_empty(
+        domain_id: u16,
+        predicate: Predicate,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            domain_id,
+            predicate,
+            authority: Authority::SelfDomain,
+            locator: Vec::new(),
+            units: Vec::new(),
+            reason: reason.into(),
+            completion: ReadCompletion::Completed,
+            extent: AnswerExtent::Whole,
+            presence: AnswerPresence::Empty,
             clock: ClockPresence::Readable,
             authority_state: ReadAuthority::Valid,
             derived_status: None,
@@ -436,6 +546,9 @@ impl DomainOutcome {
             reason: reason.into(),
             completion,
             extent,
+            // A failure never claims to have measured an empty answer. There is
+            // no argument for this field here on purpose.
+            presence: AnswerPresence::Present,
             clock: ClockPresence::Readable,
             authority_state: ReadAuthority::Valid,
             derived_status: None,
@@ -530,6 +643,11 @@ impl DomainOutcome {
     }
 
     /// Is this outcome a failure at all?
+    ///
+    /// [`AnswerPresence`] is deliberately NOT consulted. A measured zero is an
+    /// answer, so an empty outcome is not a failure, does not make its domain
+    /// an offender, and does not displace an earlier real failure in the
+    /// ledger — the same asymmetry `record` already applies to a success.
     pub const fn is_failure(&self) -> bool {
         !matches!(
             (
@@ -563,10 +681,19 @@ impl DomainOutcome {
     /// | `Unprovable`                     | `PARTIAL_DATA` 0x200       |
     /// | `ClockPresence::Unreadable`      | `NO_CLOCK` 0x4             |
     /// | `ReadAuthority::Invalid`         | `CONTROL_INVALID` 0x1000   |
+    /// | `AnswerPresence::Empty`          | `SOURCE_EMPTY` 0x4000      |
     ///
     /// `SOURCE_UNAVAILABLE` means the read did not complete. It has never meant
     /// "there is no source", and a migration that quietly gave it the intuitive
-    /// meaning would relabel every retained capture.
+    /// meaning would relabel every retained capture. `SOURCE_EMPTY` is the
+    /// statement it was mistaken for: the read DID complete, over the whole
+    /// extent, and there was nothing there.
+    ///
+    /// The two can never appear together. `measured_empty` is the only way to
+    /// reach `Empty` and it pins `Completed`/`Whole`, so the guard below is
+    /// unreachable today; it is written anyway because the cost of it being
+    /// wrong later is a broken reader published as a measured zero, which is
+    /// the one outcome this bit must never be able to express.
     pub fn derive_status(&self, base: u32) -> DerivedStatus {
         let mut bits = base;
         match self.completion {
@@ -580,6 +707,12 @@ impl DomainOutcome {
                 bits |= COMPACT_STATUS_PARTIAL_DATA
             }
         }
+        if matches!(self.presence, AnswerPresence::Empty)
+            && matches!(self.completion, ReadCompletion::Completed)
+            && matches!(self.extent, AnswerExtent::Whole)
+        {
+            bits |= COMPACT_STATUS_SOURCE_EMPTY;
+        }
         if matches!(self.clock, ClockPresence::Unreadable) {
             bits |= COMPACT_STATUS_NO_CLOCK;
         }
@@ -592,13 +725,14 @@ impl DomainOutcome {
     /// A one-line rendering for a log or a refusal text.
     pub fn render(&self) -> String {
         format!(
-            "d{} {}#{} {} {}/{} reason={}",
+            "d{} {}#{} {} {}/{}/{} reason={}",
             self.domain_id,
             self.predicate.name,
             self.predicate.code.get(),
             self.authority.render(),
             self.completion.label(),
             self.extent.label(),
+            self.presence.label(),
             self.reason
         )
     }
@@ -960,6 +1094,114 @@ mod tests {
                 | COMPACT_STATUS_PARTIAL_DATA
                 | COMPACT_STATUS_CONTROL_INVALID
         );
+    }
+
+    #[test]
+    fn a_measured_empty_read_derives_empty_and_never_unavailable() {
+        // The defect this lane exists to close. Production change that makes
+        // this fail: mapping `AnswerPresence::Empty` back onto
+        // `SOURCE_UNAVAILABLE`, or dropping the presence arm from
+        // `derive_status` so an empty answer derives a clean word that is
+        // indistinguishable from a delta frame with no changes.
+        let empty = DomainOutcome::measured_empty(
+            36,
+            read_predicate(READ_PREDICATE_SOURCE_ANSWERED_EMPTY).unwrap(),
+            "the authenticated air-variant container held no variants",
+        );
+        let bits = empty.derive_status(0).bits();
+        assert_eq!(bits, COMPACT_STATUS_SOURCE_EMPTY);
+        assert_eq!(bits & COMPACT_STATUS_SOURCE_UNAVAILABLE, 0);
+        assert_eq!(bits & COMPACT_STATUS_PARTIAL_DATA, 0);
+        assert_eq!(bits & COMPACT_STATUS_WORKER_PANIC, 0);
+        assert!(
+            !empty.is_failure(),
+            "a measured zero is an answer, not a failure"
+        );
+        assert_eq!(
+            bits & crate::COMPACT_STATUS_FAILURE_MASK,
+            0,
+            "SOURCE_EMPTY must not reach any consumer's failure classification"
+        );
+    }
+
+    #[test]
+    fn a_read_that_did_not_complete_can_never_be_published_as_empty() {
+        // The failure mode that would be strictly worse than the status quo:
+        // relabelling a broken reader as an empty one. `measured_empty` is the
+        // only door to `Empty` and it pins `Completed`/`Whole`, so the only way
+        // to reach this combination at all is to build the struct literally --
+        // which is what this test does, to prove the DERIVATION refuses it too
+        // rather than relying on the constructor alone.
+        //
+        // Production change that makes this fail: dropping either the
+        // completion or the extent condition from the presence arm of
+        // `derive_status`.
+        for (completion, extent) in [
+            (ReadCompletion::DidNotComplete, AnswerExtent::Whole),
+            (ReadCompletion::WorkerPanicked, AnswerExtent::Whole),
+            (ReadCompletion::Completed, AnswerExtent::Incomplete),
+            (ReadCompletion::Completed, AnswerExtent::Unprovable),
+            (ReadCompletion::DidNotComplete, AnswerExtent::Unprovable),
+        ] {
+            let mut forged = outcome(completion, extent);
+            forged.presence = AnswerPresence::Empty;
+            let bits = forged.derive_status(0).bits();
+            assert_eq!(
+                bits & COMPACT_STATUS_SOURCE_EMPTY,
+                0,
+                "{}/{} derived a measured-zero badge it cannot substantiate",
+                completion.label(),
+                extent.label()
+            );
+        }
+    }
+
+    #[test]
+    fn every_failure_constructor_leaves_presence_alone() {
+        // `failed` and `succeeded` take no presence argument; if either ever
+        // grew one, or a `with_answer_presence` builder appeared, a failing
+        // site could opt into the badge without gaining any evidence for it.
+        let failed = DomainOutcome::failed(
+            5,
+            read_predicate(READ_PREDICATE_PAYLOAD_ENCODED).unwrap(),
+            ReadCompletion::DidNotComplete,
+            AnswerExtent::Whole,
+            "encoder refused",
+        );
+        assert_eq!(failed.presence, AnswerPresence::Present);
+        assert_eq!(
+            failed.derive_status(0).bits(),
+            COMPACT_STATUS_SOURCE_UNAVAILABLE
+        );
+        let ok =
+            DomainOutcome::succeeded(5, read_predicate(READ_PREDICATE_WORKER_COMPLETED).unwrap());
+        assert_eq!(ok.presence, AnswerPresence::Present);
+        assert_eq!(ok.derive_status(0).bits(), 0);
+    }
+
+    #[test]
+    fn a_measured_empty_outcome_never_erases_an_earlier_failure() {
+        // Same asymmetry as a success, for the same reason: a domain whose
+        // worker panicked and whose fallback then measured zero must keep the
+        // panic. Production change that makes this fail: making
+        // `is_failure` consult presence, or making `record` overwrite on a
+        // non-failure.
+        let mut ledger = DomainOutcomeLedger::new();
+        ledger.record(DomainOutcome::failed(
+            36,
+            read_predicate(READ_PREDICATE_WORKER_COMPLETED).unwrap(),
+            ReadCompletion::WorkerPanicked,
+            AnswerExtent::Whole,
+            "air variant worker panicked",
+        ));
+        ledger.record(DomainOutcome::measured_empty(
+            36,
+            read_predicate(READ_PREDICATE_SOURCE_ANSWERED_EMPTY).unwrap(),
+            "container held no variants",
+        ));
+        let entry = ledger.get(36).expect("domain 36 has an outcome");
+        assert_eq!(entry.completion, ReadCompletion::WorkerPanicked);
+        assert!(entry.is_failure());
     }
 
     #[test]

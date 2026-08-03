@@ -206,7 +206,9 @@ struct StreamScan {
     coverage: Coverage,
 }
 
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 /// Whether the arm opens a BASELINE for this measured hour.
@@ -1153,7 +1155,7 @@ mod tests {
             frame_end_sealed(2, 100, 0, 1, 0, 0),
             frame_end_sealed(2, 100, 1, 0, 0, 0),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -1288,7 +1290,7 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, 1, 1 << 10] {
                 for rows in [Vec::new(), vec![row(68, 14, 12_627, 1)]] {

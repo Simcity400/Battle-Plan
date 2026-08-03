@@ -242,7 +242,9 @@ struct StreamScan {
 
 /// Every globally-defined compact status occupies one of bits 0..=13
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from seal domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -1960,7 +1962,7 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             for extra in [
                 0u32,
@@ -2096,7 +2098,10 @@ mod tests {
         for (emitted, scheduled, status, reserved) in [
             (1u32, 2u32, 0u32, 0u32),
             (1, 1, 0, 1),
-            (1, 1, 1 << 14, 0),
+            // Bit 15, not 14: bit 14 is the contract's measured-empty badge now
+            // and is a known status, so it is no longer an unassigned bit and a
+            // seal carrying it is not refused on that ground.
+            (1, 1, 1 << 15, 0),
             (1, 1, 1 << 9, 0),
         ] {
             let mut s = Vec::new();

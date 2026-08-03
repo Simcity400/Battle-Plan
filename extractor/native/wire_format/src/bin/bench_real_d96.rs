@@ -203,7 +203,9 @@ const D96: u16 = 96;
 const D92: u16 = 92;
 const D18: u16 = 18;
 const BLOCK_HOURS: usize = 48;
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 /// The library half restates `COMPACT_STATUS_FAILURE_MASK` because it takes no
@@ -2492,7 +2494,7 @@ mod tests {
         // vocabulary is not a failure bit, so `validate_snapshot` takes the clean
         // branch and the record reaches the harness's classifier, which is where
         // the rule has to fire.
-        let unassigned = ptw_payload(&[], 1, 1, 0, 1 << 14);
+        let unassigned = ptw_payload(&[], 1, 1, 0, 1 << 15);
         let err = refusal(
             &[(100, d18, p92, unassigned)],
             "an unassigned status bit must refuse the stream",

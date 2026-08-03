@@ -239,7 +239,9 @@ struct StreamScan {
     taskforce_max: usize,
 }
 
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
@@ -2202,7 +2204,7 @@ mod tests {
             frame_end_sealed(3, 100, 0, 1, 0, 0),
             frame_end_sealed(3, 100, 1, 0, 0, 0),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad.push(frame_end_sealed(3, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -2447,7 +2449,7 @@ mod tests {
         // tests the failure mask alone and then commits the roster
         // (`world_fold.rs:13922`). Excluding those hours would exclude hours the
         // recorder measures. The bits are reported instead.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let fold = d18_roster(&d18_payload(1 << bit, &[(368, "D04")], None))
                 .unwrap_or_else(|e| panic!("bit {bit} must not be refused: {e}"));
             assert_eq!(
@@ -2465,7 +2467,7 @@ mod tests {
             100,
             D18,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &d18_payload(1 << 14, &[(1, "GER"), (368, "D04")], None),
+            &d18_payload(1 << 15, &[(1, "GER"), (368, "D04")], None),
         ));
         s.extend(d95_record(2, 100, 10));
         s.extend(frame_end(3, 100));

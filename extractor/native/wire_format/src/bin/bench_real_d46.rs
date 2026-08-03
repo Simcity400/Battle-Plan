@@ -341,7 +341,9 @@ fn encode_wire_hour(
 
 /// Every globally-defined compact status occupies one of bits 0..=13
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from the seal's domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -1389,7 +1391,7 @@ mod tests {
     fn an_unassigned_status_bit_is_refused_not_classified() {
         // Bits 14..=31 have no defined classification, so a record carrying one
         // refuses the stream rather than falling through to "not a failure".
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let mut sequence = 1u64;
             let s = hour(
                 &mut sequence,

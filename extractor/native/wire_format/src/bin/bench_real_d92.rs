@@ -199,7 +199,9 @@ use wire_format::d92::{self, Symbols};
 const D92: u16 = 92;
 const D18: u16 = 18;
 const BLOCK_HOURS: usize = 48;
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 // --- FRAME_END seal (`stream_fold.rs:46`-`:89`). -----------------------------

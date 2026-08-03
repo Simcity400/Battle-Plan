@@ -37,7 +37,9 @@ const D54: u16 = 54;
 const DOMAINS: [u16; 4] = [D49, D50, D51, D54];
 const BLOCK_HOURS: usize = 48;
 const PROBE_DOMAIN_ID: u16 = 250;
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const EXPECTED_CAPTURE_BYTES: u64 = 3_598_209_757;
 const EXPECTED_CAMPAIGN_START_RAW: i32 = 60_759_371;
 // This corpus contains hourly observations only. The measurement therefore uses

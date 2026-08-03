@@ -441,9 +441,42 @@ pub fn validate_frame_degraded_payload(payload: &[u8]) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::{
-        COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        COMPACT_STATUS_STATE_UNAVAILABLE,
+        COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_EMPTY,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_STATE_UNAVAILABLE,
     };
+
+    /// A domain that MEASURED an empty source is complete, and the frame it
+    /// sits in is not degraded by it.
+    ///
+    /// This classifier is shared by the collector (what to publish), the fold
+    /// (what to apply) and the certifier (what to accept), so getting it wrong
+    /// here would make a measured zero unusable in all three at once — the
+    /// domain's rows would be discarded and its accumulator retained, which is
+    /// the exact behaviour the badge exists to stop.
+    ///
+    /// Production change that makes this fail: adding SOURCE_EMPTY to
+    /// `COMPACT_STATUS_FAILURE_MASK`.
+    #[test]
+    fn a_measured_empty_domain_is_complete_and_degrades_no_frame() {
+        assert_eq!(
+            compact_domain_completeness(36, COMPACT_STATUS_SOURCE_EMPTY),
+            CompactDomainCompleteness::Complete
+        );
+        assert!(FrameDegradedDomain::from_status(
+            36,
+            COMPACT_STATUS_SOURCE_EMPTY,
+            "the authenticated air-variant container held no variants",
+        )
+        .is_none());
+        // ... and the badge does not launder a real failure sitting beside it.
+        let both = COMPACT_STATUS_SOURCE_EMPTY | COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        assert_eq!(
+            compact_domain_completeness(36, both),
+            CompactDomainCompleteness::Degraded {
+                non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            }
+        );
+    }
 
     fn sample() -> FrameDegradedRecordV1 {
         FrameDegradedRecordV1 {

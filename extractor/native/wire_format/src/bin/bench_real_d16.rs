@@ -209,7 +209,9 @@ struct StreamScan {
     totals: Totals,
 }
 
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
@@ -1150,7 +1152,7 @@ mod tests {
             frame_end_sealed(2, 100, 0, 1, 0, 0),
             frame_end_sealed(2, 100, 1, 0, 0, 0),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -1722,7 +1724,7 @@ mod tests {
         // helpers classify the v1 vocabulary and are not validity predicates, so an
         // unassigned bit must be rejected BEFORE classification — otherwise it
         // silently reads as "not a failure" and the hour is measured as healthy.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             // With rows, without rows, and combined with a known failure bit and a
             // known informational bit: the rejection must not depend on any of it.

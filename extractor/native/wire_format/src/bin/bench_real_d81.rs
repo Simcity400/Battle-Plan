@@ -45,7 +45,9 @@ const D81: u16 = 81;
 const D18: u16 = 18;
 const BLOCK_HOURS: usize = 48;
 const PROBE_DOMAIN_ID: u16 = 250;
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const DEFINITION_PATH: &str = "map/definition.csv";
 
 #[derive(Clone, Debug)]

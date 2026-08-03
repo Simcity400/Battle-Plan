@@ -174,7 +174,9 @@ struct StreamScan {
 
 /// Every globally-defined compact status occupies one of bits 0..=13
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from seal domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -986,7 +988,7 @@ mod tests {
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure", `fold_payload` gives it a baseline/delta meaning, and
         // the hour is measured as healthy.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, and combined with the
             // informational DELTA_DATA bit; as the first record and after a
@@ -1363,7 +1365,7 @@ mod tests {
             frame_end_sealed(2, 100, 0, 0, 0, 1),
             frame_end_sealed(2, 100, 0, 1, 0, 0),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad_seals.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {

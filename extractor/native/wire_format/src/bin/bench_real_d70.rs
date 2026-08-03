@@ -284,11 +284,13 @@ struct StreamScan {
     max_ordinal: u64,
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13. FRAME_END
-/// carries the frame-wide aggregate, so lane-local interpretations do not apply
-/// there and any higher bit is an unknown wire-contract extension
+/// FRAME_END carries the frame-wide aggregate, so lane-local interpretations do
+/// not apply there and any UNASSIGNED bit is an unknown wire-contract extension
 /// (`recorder_host/src/stream_fold.rs:43`).
-const FRAME_END_KNOWN_STATUS_MASK: u32 = (1 << 14) - 1;
+///
+/// Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
+/// the contract assigned bit 14 to the measured-empty badge.
+const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 /// The reader-context probe domain, excluded from the seal's domain accounting
 /// (`recorder_host/src/stream_fold.rs:330`).
@@ -1587,7 +1589,7 @@ mod tests {
         // (`naval_history.rs:344`-`:346`), before anything classifies the word.
         // The check is here anyway, swept, because the *reason* it holds must not
         // depend on which layer happens to implement it today.
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             for extra in [0u32, 1, 1 << 10] {
                 let mut payload = d70_payload(1, HOUR_A, 5);
                 payload[12..16].copy_from_slice(&((1u32 << bit) | extra).to_le_bytes());
@@ -2038,7 +2040,7 @@ mod tests {
                 frame_end_sealed(2, HOUR_A, 0, 1, 0, 0),
             ),
         ];
-        for bit in 14..32u32 {
+        for bit in 15..32u32 {
             bad_seals.push((
                 format!("unknown seal status bit {bit}"),
                 frame_end_sealed(2, HOUR_A, 0, 0, 1 << bit, 0),
