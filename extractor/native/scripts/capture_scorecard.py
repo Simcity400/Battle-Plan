@@ -106,6 +106,28 @@ def score(manifest):
         skipped_hours_covered += end - start + 1
     hours_unaccounted = hours_unobserved - skipped_hours_covered
 
+    # `reader_silent` is the seal saying a scheduled domain produced neither a
+    # data record nor any statement about why. It is an honest floor, not a
+    # clean outcome: the hour IS now accounted, which is the whole point, but
+    # the thing being accounted is a producer that returned nothing. Counted on
+    # its own axis so it can never pass as an ordinary explained gap.
+    reader_silent_by_domain = collections.Counter()
+    for outcome in stream.get("domain_gap_outcomes", []) or []:
+        if outcome.get("reason") == "reader_silent":
+            reader_silent_by_domain[outcome.get("domain_id")] += 1
+
+    # The host counts gap records per domain while building `per_domain`, and
+    # the outcome ledger is scanned separately. They describe the same records,
+    # so a divergence means one of them is not counting something.
+    gap_count_disagreements = {}
+    for name, info in per_domain.items():
+        declared = info.get("gap_record_count")
+        if declared is None:
+            continue
+        observed = gaps_by_id.get(info.get("domain_id"), 0)
+        if int(declared) != observed:
+            gap_count_disagreements[name] = (int(declared), observed)
+
     # A domain can be absent from `per_domain` and still be emitting gaps, so
     # name both shapes: it is the shape the per-domain report cannot see.
     known_ids = {info.get("domain_id") for info in per_domain.values()}
@@ -163,6 +185,14 @@ def score(manifest):
                    for n, v in sorted(unresolved_by_domain.items()))
          + f"  [of {domain_hours} domain-hours = {frames} frames x {len(expected)} domains, "
            f"{data_records} data + {gap_records} gap]"),
+        ("domain-hours a producer left with no outcome at all",
+         sum(reader_silent_by_domain.values()),
+         "; ".join(f"d{domain_id}={n}"
+                   for domain_id, n in sorted(reader_silent_by_domain.items()))
+         or "none"),
+        ("per-domain gap counts disagreeing with the outcome ledger",
+         len(gap_count_disagreements),
+         json.dumps(gap_count_disagreements) if gap_count_disagreements else "none"),
         ("expected domains with no per-domain record", len(absent),
          ", ".join(absent) or "none"),
         ("domains emitting gaps but absent from per-domain", len(absent_but_gapping),
