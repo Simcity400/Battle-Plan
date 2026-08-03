@@ -198,12 +198,23 @@ fn strip_non_code_in(text: &str, dialect: Dialect) -> String {
                  cannot read"
             );
             if quote == '"' {
-                let body: String = chars[index + 2..end].iter().collect();
+                // A BACKTICK-ESCAPED `` `$( `` is a literal, not a
+                // subexpression, so only an unescaped one counts. An odd run of
+                // backticks before the `$` escapes it; an even run does not
+                // (the backticks escape each other).
+                let body = &chars[index + 2..end];
+                let live_subexpression = body.windows(2).enumerate().any(|(at, pair)| {
+                    if pair != ['$', '('] {
+                        return false;
+                    }
+                    let backticks = body[..at].iter().rev().take_while(|c| **c == '`').count();
+                    backticks % 2 == 0
+                });
                 assert!(
-                    !body.contains("$("),
-                    "double-quoted here-string at character {index} contains a \
-                     `$( ... )` subexpression, which is EXECUTABLE code. Blanking \
-                     it would hide live code from this sweep. Parse the \
+                    !live_subexpression,
+                    "double-quoted here-string at character {index} contains an \
+                     unescaped `$( ... )` subexpression, which is EXECUTABLE code. \
+                     Blanking it would hide live code from this sweep. Parse the \
                      subexpression or move it out of the here-string."
                 );
             }
@@ -232,9 +243,22 @@ fn strip_non_code_in(text: &str, dialect: Dialect) -> String {
             // commented-out-code form and must not be blanked; it falls through
             // to the ordinary-string path, which keeps it verbatim. Only a plain
             // triple-quoted block is inert, and only that is blanked.
-            let f_prefixed = index > 0
-                && matches!(chars[index - 1], 'f' | 'F')
-                && (index < 2 || !chars[index - 2].is_alphanumeric());
+            //
+            // The WHOLE prefix token is read, not just the character before the
+            // quote: `rf'''` and `fr'''` are both valid Python and both
+            // executable, and looking at one character sees `r` in one case and
+            // an alphanumeric neighbour in the other.
+            let prefix: String = chars[..index]
+                .iter()
+                .rev()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect();
+            let prefix_is_a_token = prefix.len() == chars[..index].len()
+                || !chars[index - prefix.len() - 1].is_alphanumeric()
+                    && chars[index - prefix.len() - 1] != '_';
+            let f_prefixed = prefix_is_a_token
+                && prefix.len() <= 2
+                && prefix.chars().any(|c| c == 'f' || c == 'F');
 
             // Triple-quoted Python block: inert, and the idiomatic way to
             // comment a block out. PowerShell has no such form.
@@ -1614,9 +1638,33 @@ fn the_verdict_defaults_to_blocking_once_a_capture_exists() {
                 break;
             }
         }
-        // Can this value be null, empty, or whitespace? A value carrying any
-        // alphanumeric character cannot; one that does not, retires the verdict.
-        let carries_text = value.chars().any(|c| c.is_alphanumeric()) && !value.contains("$null");
+        // Can this value be null, empty, or whitespace? Decided by recognising
+        // the exact forms, and FAIL-CLOSED on anything else: "contains a letter,
+        // so it must be a message" put `[string]::Empty` in the arming bucket
+        // and silently dropped it from the audit, even though
+        // IsNullOrWhiteSpace([string]::Empty) is true and it retires the verdict.
+        let trimmed = value.trim();
+        let retires = trimmed == "$null"
+            || trimmed == "''"
+            || trimmed == "\"\""
+            || trimmed == "[string]::Empty"
+            || trimmed == "[String]::Empty"
+            || (trimmed.starts_with('\'')
+                && trimmed.ends_with('\'')
+                && !trimmed[1..trimmed.len() - 1].chars().any(|c| !c.is_whitespace()))
+            || (trimmed.starts_with('"')
+                && trimmed.ends_with('"')
+                && !trimmed[1..trimmed.len() - 1].chars().any(|c| !c.is_whitespace()));
+        // A value this audit can PROVE non-empty: a quoted literal with a word
+        // in it, optionally concatenated across lines.
+        let arms = trimmed.starts_with('\'') || trimmed.starts_with('"');
+        assert!(
+            retires || (arms && trimmed.chars().any(|c| c.is_alphanumeric())),
+            "assignment to $undefinedStatusBitFailure at {at} has a value this \
+             audit cannot classify as either verdict-retiring or \
+             verdict-arming, so it cannot vouch for the gate. Value: {trimmed:?}"
+        );
+        let carries_text = !retires;
         if carries_text {
             arming.push(at);
         } else {
@@ -1724,4 +1772,58 @@ fn a_plain_triple_quoted_block_is_still_inert() {
         "a plain triple-quoted block survived stripping: {code:?}"
     );
     assert!(code.contains("(1 << 9) - 1"));
+}
+
+#[test]
+fn combined_f_string_prefixes_are_recognised() {
+    // `rf'''` and `fr'''` are both valid Python and both EXECUTABLE. Reading
+    // only the character before the quote sees `r` in one case and an
+    // alphanumeric neighbour in the other, and blanks the replacement fields as
+    // if the string were an inert commented-out block.
+    for source in [
+        "x = rf'''value {compute_mask()} here'''\n",
+        "x = fr'''value {compute_mask()} here'''\n",
+        "x = F'''value {compute_mask()} here'''\n",
+    ] {
+        let code = strip_non_code(source);
+        assert!(
+            code.contains("compute_mask()"),
+            "an f-string prefix was not recognised, so its replacement \
+             expression was blanked: {source:?} -> {code:?}"
+        );
+    }
+}
+
+#[test]
+fn a_raw_triple_quoted_block_without_an_f_is_still_inert() {
+    // The converse: `r'''...'''` has no replacement fields and IS the inert
+    // commented-out form, so it must still be blanked.
+    let source = "r'''\nKNOWN_MASK = (1 << 15) - 1\n'''\nKNOWN_MASK = (1 << 9) - 1\n";
+    let code = strip_non_code(source);
+    assert!(
+        !code.contains("(1 << 15) - 1"),
+        "a raw (non-f) triple-quoted block survived stripping: {code:?}"
+    );
+}
+
+#[test]
+fn an_escaped_subexpression_in_a_here_string_is_not_a_subexpression() {
+    // In PowerShell `` `$( `` is a LITERAL, not a subexpression, so it must not
+    // stop the sweep. A false panic here reports on nothing at all.
+    let source = "$c = @\"\nliteral `$(not code) text\n\"@\n$Mask = [uint32]0x1\n";
+    let code = strip_non_code_in(source, Dialect::PowerShell);
+    assert!(
+        code.contains("$Mask = [uint32]0x1"),
+        "the here-string was not blanked: {code:?}"
+    );
+    assert!(!code.contains("literal"), "here-string contents survived: {code:?}");
+}
+
+#[test]
+#[should_panic(expected = "unescaped")]
+fn a_doubly_escaped_backtick_still_leaves_a_live_subexpression() {
+    // ``` ``$( ``` is an escaped BACKTICK followed by a live subexpression: the
+    // backticks escape each other, so the `$` is not escaped at all.
+    let source = "$c = @\"\nvalue ``$($Mask -band 1)\n\"@\n";
+    strip_non_code_in(source, Dialect::PowerShell);
 }
