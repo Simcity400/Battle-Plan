@@ -12,7 +12,8 @@ use crate::record_semantics::{
     validate_domain_gap_payload, COMPACT_DOMAIN_GAP_MAGIC, COMPACT_DOMAIN_GAP_PAYLOAD_LEN,
     COMPACT_DOMAIN_GAP_VERSION, DOMAIN_GAP_PART_BOTH, DOMAIN_GAP_PART_EVENT, DOMAIN_GAP_PART_STATE,
     DOMAIN_GAP_REASON_BACKPRESSURE, DOMAIN_GAP_REASON_CLOCK_UNREADABLE, DOMAIN_GAP_REASON_OVERRUN,
-    DOMAIN_GAP_REASON_TORN, DOMAIN_GAP_REASON_WORKER_PANIC,
+    DOMAIN_GAP_REASON_READER_SILENT, DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE, DOMAIN_GAP_REASON_TORN,
+    DOMAIN_GAP_REASON_WORKER_PANIC,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +24,13 @@ pub enum DomainGapReason {
     Backpressure = DOMAIN_GAP_REASON_BACKPRESSURE,
     ClockUnreadable = DOMAIN_GAP_REASON_CLOCK_UNREADABLE,
     WorkerPanic = DOMAIN_GAP_REASON_WORKER_PANIC,
+    /// The reader completed and could not produce a payload. Distinct from
+    /// `ClockUnreadable`: the clock was read, the SOURCE was unavailable.
+    SourceUnavailable = DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE,
+    /// The domain was scheduled and the frame sealed with neither a DATA
+    /// record nor a gap from the domain itself. Minted by the seal so the hour
+    /// is named loss instead of an absence nothing can detect.
+    ReaderSilent = DOMAIN_GAP_REASON_READER_SILENT,
 }
 
 impl DomainGapReason {
@@ -37,6 +45,8 @@ impl DomainGapReason {
             DOMAIN_GAP_REASON_BACKPRESSURE => Ok(Self::Backpressure),
             DOMAIN_GAP_REASON_CLOCK_UNREADABLE => Ok(Self::ClockUnreadable),
             DOMAIN_GAP_REASON_WORKER_PANIC => Ok(Self::WorkerPanic),
+            DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE => Ok(Self::SourceUnavailable),
+            DOMAIN_GAP_REASON_READER_SILENT => Ok(Self::ReaderSilent),
             other => Err(DomainGapError::InvalidSemantics(format!(
                 "DOMAIN_GAP reason {other} is unknown"
             ))),

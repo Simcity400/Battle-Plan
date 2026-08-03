@@ -36,6 +36,17 @@ pub const DOMAIN_GAP_REASON_OVERRUN: u16 = 2;
 pub const DOMAIN_GAP_REASON_BACKPRESSURE: u16 = 3;
 pub const DOMAIN_GAP_REASON_CLOCK_UNREADABLE: u16 = 4;
 pub const DOMAIN_GAP_REASON_WORKER_PANIC: u16 = 5;
+/// The reader ran to completion inside its clock bracket and could not produce
+/// a payload: a root, header, or object invariant it depends on was not
+/// available this hour. The clock was read fine, which is exactly why this is
+/// not `CLOCK_UNREADABLE`; the per-domain PERF diagnostics carry the typed
+/// stage and reason.
+pub const DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE: u16 = 6;
+/// The domain was scheduled and the frame sealed without it emitting either a
+/// DATA record or a gap naming why there is none. This reason asserts only what
+/// is actually known -- that no outcome was recorded -- and exists so that such
+/// an hour is a NAMED loss rather than an absence no ledger can see.
+pub const DOMAIN_GAP_REASON_READER_SILENT: u16 = 7;
 pub const DOMAIN_GAP_PART_STATE: u16 = 0;
 pub const DOMAIN_GAP_PART_EVENT: u16 = 1;
 pub const DOMAIN_GAP_PART_BOTH: u16 = 2;
@@ -199,6 +210,8 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
             | DOMAIN_GAP_REASON_BACKPRESSURE
             | DOMAIN_GAP_REASON_CLOCK_UNREADABLE
             | DOMAIN_GAP_REASON_WORKER_PANIC
+            | DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE
+            | DOMAIN_GAP_REASON_READER_SILENT
     ) {
         return Err(format!("DOMAIN_GAP reason {reason} is unknown"));
     }
@@ -296,6 +309,27 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
             if range_start == range_end
                 && target_hour == range_start
                 && tick_before == tick_after
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        // The reader held a bracket, so the two tick witnesses are a real,
+        // non-advancing clock reading for the hour it failed in. One hour, no
+        // queue: nothing was dropped, the source simply was not there.
+        DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE
+            if range_start == range_end
+                && target_hour == range_start
+                && tick_before == tick_after
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        // No per-domain witness of any kind exists -- that absence IS the
+        // claim -- so both ticks are required to be zero rather than carrying a
+        // borrowed reading that would assert more than is known.
+        DOMAIN_GAP_REASON_READER_SILENT
+            if range_start == range_end
+                && target_hour == range_start
+                && tick_before == 0
+                && tick_after == 0
                 && queue_capacity == 0
                 && queue_depth == 0
                 && queue_dropped == 0 => {}
