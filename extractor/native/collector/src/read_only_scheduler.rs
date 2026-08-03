@@ -157,6 +157,11 @@ pub struct SchedulerTelemetry {
     pub control_lane_compactions: u64,
     pub reloads: u64,
     pub max_request_depth: u32,
+    /// Deepest publication custody ever held (0 or 1). One means the capture
+    /// ran the pipelined publication path at least once; the scheduler makes a
+    /// second concurrent publication a terminal anomaly, so this can never
+    /// exceed one.
+    pub max_publishing_depth: u32,
     pub max_control_depth: u32,
     pub request_cap: u32,
     pub control_cap: u32,
@@ -187,8 +192,15 @@ pub struct HourLedger {
     pub abandoned: u64,
     /// Admitted hours dropped by the teardown flush.
     pub flushed_pending: u64,
-    /// Admitted hours still held (in flight and/or pending) right now.
+    /// Admitted hours still held right now: in read custody, in publication
+    /// custody, and/or pending.
     pub outstanding: u64,
+    /// The SUBSET of `outstanding` whose reader has finished and whose frame
+    /// is awaiting its sink outcome. Broken out because it is the only
+    /// disposition an hour can sit in while a LATER hour is already being
+    /// read, and a reader of the ledger must not mistake that for a queued
+    /// read.
+    pub publishing: u64,
     /// Hours never admitted: elapsed between two stable observations.
     pub unobserved_overrun: u64,
     /// Hours never admitted: elapsed while the clock was unreadable.
@@ -255,6 +267,11 @@ pub struct ReadOnlyScheduler {
 struct DomainRequestSlot {
     /// Exactly one capture may be owned by the reader at a time.
     in_flight: Option<CaptureRequest>,
+    /// An hour whose reader has FINISHED and whose bytes are immutable, but
+    /// which has not yet been resolved by its publication outcome. See
+    /// [`ReadOnlyScheduler::release_read_custody`] for why this is a separate
+    /// slot and not a second `in_flight`.
+    publishing: Option<CaptureRequest>,
     /// While a reader is in flight, only the newest observed frontier is kept.
     /// Replaced frontiers become typed ranges on the independent control lane.
     latest_pending: Option<CaptureRequest>,
@@ -326,6 +343,7 @@ impl ReadOnlyScheduler {
             abandoned: t.abandoned_hours,
             flushed_pending: t.flushed_pending_hours,
             outstanding: self.outstanding_hours(),
+            publishing: self.publishing_hours(),
             slots_uniform: self.slots_uniform(),
             unobserved_overrun: t.unobserved_overrun_hours,
             unobserved_clock_unknown: t.unobserved_clock_unknown_hours,
@@ -339,8 +357,17 @@ impl ReadOnlyScheduler {
     /// zero is the canonical view -- but only while the slots agree.
     fn outstanding_hours(&self) -> u64 {
         self.domain_requests.first().map_or(0, |slot| {
-            u64::from(slot.in_flight.is_some()) + u64::from(slot.latest_pending.is_some())
+            u64::from(slot.in_flight.is_some())
+                + u64::from(slot.publishing.is_some())
+                + u64::from(slot.latest_pending.is_some())
         })
+    }
+
+    /// The subset of [`Self::outstanding_hours`] awaiting a sink outcome.
+    fn publishing_hours(&self) -> u64 {
+        self.domain_requests
+            .first()
+            .map_or(0, |slot| u64::from(slot.publishing.is_some()))
     }
 
     /// Whether every domain slot holds the same pair of requests.
@@ -354,9 +381,11 @@ impl ReadOnlyScheduler {
         let Some(first) = self.domain_requests.first() else {
             return true;
         };
-        self.domain_requests
-            .iter()
-            .all(|slot| slot.in_flight == first.in_flight && slot.latest_pending == first.latest_pending)
+        self.domain_requests.iter().all(|slot| {
+            slot.in_flight == first.in_flight
+                && slot.publishing == first.publishing
+                && slot.latest_pending == first.latest_pending
+        })
     }
 
     /// Admit one stable `CGameState+0x468` observation. The caller is
@@ -586,6 +615,65 @@ impl ReadOnlyScheduler {
         Some(request)
     }
 
+    /// Hand an in-flight request from READ custody to PUBLICATION custody.
+    ///
+    /// `in_flight` used to mean two unrelated things at once:
+    ///
+    /// 1. "a reader owns this hour" -- the fact that makes the queue capacity
+    ///    of one meaningful. A second concurrent read would have to be QUEUED,
+    ///    and a queued read observes a later world than its label, which is
+    ///    silent misattribution. This meaning must never be relaxed.
+    /// 2. "this hour's frame has not been resolved by a sink outcome yet" --
+    ///    a fact about immutable bytes that have already been read, already
+    ///    been labelled, and can no longer observe anything.
+    ///
+    /// Only (1) is a reason to refuse the next read. Conflating them made the
+    /// synchronous sink write sit on the critical path of the NEXT hour's
+    /// sweep: hour N+1 could not be claimed until hour N's bytes had reached
+    /// the pipe. That is 29.55 ms of a 149.36 ms frame against a 77.73 ms
+    /// per-hour budget, and every hour a frame overruns is evicted into a
+    /// `Backpressure` gap by `enqueue_request`.
+    ///
+    /// After this call the slot holds no read custody, so
+    /// [`Self::take_current_request`] may claim the successor -- which is
+    /// still, and only, `latest_pending`, i.e. the frontier the observer
+    /// thread saw most recently. The successor is therefore read AT its own
+    /// hour, exactly as before; nothing is queued and no label moves. The
+    /// hour released here stays accounted as `outstanding` until its
+    /// publication outcome lands.
+    ///
+    /// At most ONE hour may be in publication custody at a time. A second
+    /// release without an intervening accept/reject would mean two unresolved
+    /// frames, which the depth-one handoff cannot produce; it is a terminal
+    /// counter anomaly rather than a silently deeper queue.
+    ///
+    /// Returns the number of domain slots moved, so a caller can distinguish a
+    /// real release from a no-op without inspecting private state.
+    pub fn release_read_custody(&mut self, request: CaptureRequest) -> usize {
+        if self
+            .domain_requests
+            .iter()
+            .any(|slot| slot.publishing.is_some())
+        {
+            self.telemetry.terminal = Some(TerminalOutcome::CounterAnomaly);
+            return 0;
+        }
+        let mut moved = 0usize;
+        for slot in &mut self.domain_requests {
+            if slot.in_flight == Some(request) {
+                slot.in_flight = None;
+                slot.publishing = Some(request);
+                moved += 1;
+            }
+        }
+        if moved == 0 {
+            self.telemetry.terminal = Some(TerminalOutcome::CounterAnomaly);
+            return 0;
+        }
+        self.telemetry.max_publishing_depth = self.telemetry.max_publishing_depth.max(1);
+        moved
+    }
+
     /// Resolve an in-flight request whose frame published with at least one
     /// domain unknown.
     ///
@@ -605,7 +693,13 @@ impl ReadOnlyScheduler {
     pub fn accept_request(&mut self, request: CaptureRequest) {
         let mut matched = false;
         for slot in &mut self.domain_requests {
-            if slot.in_flight == Some(request) {
+            // Publication custody first: a pipelined caller released read
+            // custody before the write, a synchronous one did not, and both
+            // resolve the same hour exactly once.
+            if slot.publishing == Some(request) {
+                slot.publishing = None;
+                matched = true;
+            } else if slot.in_flight == Some(request) {
                 slot.in_flight = None;
                 matched = true;
             }
@@ -646,7 +740,9 @@ impl ReadOnlyScheduler {
             .domain_requests
             .iter()
             .enumerate()
-            .filter(|(_, slot)| slot.in_flight == Some(request))
+            .filter(|(_, slot)| {
+                slot.publishing == Some(request) || slot.in_flight == Some(request)
+            })
             .map(|(index, _)| self.domains[index])
             .collect();
         if rejected.is_empty() {
@@ -654,7 +750,10 @@ impl ReadOnlyScheduler {
             return 0;
         }
         for slot in &mut self.domain_requests {
-            if slot.in_flight == Some(request) {
+            // Same two-custody resolution as `accept_request`.
+            if slot.publishing == Some(request) {
+                slot.publishing = None;
+            } else if slot.in_flight == Some(request) {
                 slot.in_flight = None;
             }
         }
@@ -850,6 +949,16 @@ impl ReadOnlyScheduler {
         }
     }
 
+    /// Close the requests a clock-unknown or reload boundary invalidates.
+    ///
+    /// Deliberately does NOT touch `publishing`. An hour in publication
+    /// custody has already been read, at its own hour, inside its own clock
+    /// bracket; its bytes are immutable and are on their way to the sink. A
+    /// later boundary says nothing about it, and gapping it would either
+    /// double-report an hour that then publishes, or claim a throughput loss
+    /// that did not happen. It stays `outstanding` until its own sink outcome
+    /// resolves it, and the ledger keeps balancing because `outstanding`
+    /// counts it.
     fn gap_all_pending(&mut self, kind: GapKind) {
         for index in 0..self.domains.len() {
             let domain = self.domains[index];
@@ -1582,6 +1691,178 @@ mod tests {
             5,
             "hours 2 (refused), 3, 4, 5 and 6 put no domain data on the wire"
         );
+    }
+
+    /// THE PIPELINE, and the exact property that makes it legal.
+    ///
+    /// Releasing READ custody lets hour N+1 be claimed while hour N's frame is
+    /// still on its way to the sink. The thing that must survive is that the
+    /// claimed successor is the frontier the observer saw MOST RECENTLY -- not
+    /// a queued older hour -- because a read labelled with an hour it did not
+    /// observe is exactly the misattribution the capacity-of-one rule exists
+    /// to prevent.
+    ///
+    /// So: hours 100 (read, released, publishing), then 101 and 102 arrive
+    /// while the write is outstanding. The next claim must be 102, the current
+    /// frontier -- never 101, which is evicted with a `Backpressure` gap just
+    /// as it is on the synchronous path.
+    ///
+    /// Mutation proof: change `take_current_request` to prefer an evicted
+    /// older frontier (e.g. return the request `enqueue_request` displaced
+    /// instead of `latest_pending`) and the `hour_raw == 102` assertion fails.
+    /// Delete the `slot.publishing = Some(request)` line from
+    /// `release_read_custody` and the `publishing == 1` / `balanced`
+    /// assertions fail -- hour 100 would vanish from the ledger entirely while
+    /// its bytes were still in flight.
+    #[test]
+    fn releasing_read_custody_claims_the_current_frontier_not_a_queued_hour() {
+        let mut s = scheduler(&[10, 11, 12], 1, 64);
+        s.observe_stable(100, 1);
+        let first = s.take_current_request().expect("hour 100 is takeable");
+
+        // The reader for 100 has finished; its bytes are immutable and the
+        // sink write has not happened yet.
+        assert_eq!(s.release_read_custody(first), 3);
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.publishing, 1, "hour 100 is awaiting its sink outcome");
+        assert_eq!(ledger.outstanding, 1);
+        assert_eq!(ledger.accepted, 0, "nothing has published yet");
+        assert!(ledger.balanced(), "{ledger:?}");
+
+        // Two hours arrive while the write is outstanding.
+        s.observe_stable(101, 2);
+        s.observe_stable(102, 3);
+
+        let successor = s
+            .take_current_request()
+            .expect("read custody was released, so the successor is claimable");
+        assert_eq!(
+            successor.stamp.hour_raw, 102,
+            "the successor must be the CURRENT frontier; claiming 101 here would \
+             label a read of the 102 world as hour 101"
+        );
+
+        // 101 is lost exactly as it is on the synchronous path -- evidenced,
+        // not silently relabelled.
+        let gaps: Vec<_> = s.drain_control().collect();
+        assert_eq!(gaps.len(), 3, "one Backpressure range per domain: {gaps:?}");
+        for gap in &gaps {
+            assert_eq!(gap.kind, GapKind::Backpressure);
+            assert_eq!(gap.first_hour_raw, 101);
+            assert_eq!(gap.last_hour_raw, 101);
+        }
+
+        // And the two hours resolve independently: the write of 100 lands
+        // while 102 is still being read.
+        s.accept_request(first);
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.accepted, 1);
+        assert_eq!(ledger.publishing, 0);
+        assert_eq!(ledger.evicted_pending, 1, "hour 101");
+        assert_eq!(ledger.outstanding, 1, "hour 102 is still being read");
+        assert!(ledger.balanced(), "{ledger:?}");
+    }
+
+    /// The pipeline is exactly one frame deep, and a second unresolved
+    /// publication is a stated anomaly rather than a deeper queue.
+    ///
+    /// A queue of publications would be harmless for LABELS, but it would let
+    /// an unbounded number of hours sit in a state no gap range accounts for
+    /// while the sink fell behind. The bound is what keeps the ledger's
+    /// `outstanding` term small and knowable.
+    ///
+    /// Mutation proof: delete the leading `any(|slot| slot.publishing.is_some())`
+    /// guard from `release_read_custody` and the terminal assertion fails.
+    #[test]
+    fn a_second_unresolved_publication_is_terminal_not_a_deeper_queue() {
+        let mut s = scheduler(&[10, 11], 1, 64);
+        s.observe_stable(100, 1);
+        let first = s.take_current_request().unwrap();
+        assert_eq!(s.release_read_custody(first), 2);
+
+        s.observe_stable(101, 2);
+        let second = s.take_current_request().expect("successor is claimable");
+        assert_eq!(s.terminal(), None);
+
+        // Hour 100's write has still not resolved. Releasing 101 too would
+        // make two frames unresolved at once.
+        assert_eq!(
+            s.release_read_custody(second),
+            0,
+            "the second release must be refused, not silently queued"
+        );
+        assert_eq!(s.terminal(), Some(TerminalOutcome::CounterAnomaly));
+
+        // Releasing a request nobody holds is the same stated anomaly.
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(1, 1);
+        let held = s.take_current_request().unwrap();
+        let stranger = CaptureRequest {
+            stamp: ClockStamp {
+                epoch: 9,
+                hour_raw: 9,
+                observation_ordinal: 9,
+            },
+            force_baseline: false,
+        };
+        assert_eq!(s.release_read_custody(stranger), 0);
+        assert_eq!(s.terminal(), Some(TerminalOutcome::CounterAnomaly));
+        let _ = held;
+    }
+
+    /// A released hour is still resolvable both ways, and a boundary that
+    /// invalidates the READ lane leaves it alone.
+    ///
+    /// The bytes of a publishing hour were read inside their own clock
+    /// bracket and are immutable. A later clock-unknown interval says nothing
+    /// about them, so `gap_all_pending` must not convert them into a gap --
+    /// that would either double-report the hour when the write lands, or
+    /// claim a throughput loss that never happened.
+    ///
+    /// Mutation proof: add a `publishing` arm to `gap_all_pending` that gaps
+    /// and counts it `abandoned`, and the `accepted == 1` /
+    /// `gapped_domain_hours` assertions below fail.
+    #[test]
+    fn a_publishing_hour_survives_a_clock_boundary_and_still_resolves() {
+        let mut s = scheduler(&[10, 11], 1, 64);
+        s.observe_stable(100, 1);
+        let published = s.take_current_request().unwrap();
+        s.release_read_custody(published);
+        let _ = s.drain_control().count();
+
+        // The clock goes unreadable while the write is outstanding.
+        s.note_clock_unreadable();
+        let ledger = s.hour_ledger();
+        assert_eq!(
+            ledger.publishing, 1,
+            "the boundary must not touch publication custody"
+        );
+        assert_eq!(ledger.abandoned, 0, "nothing was in read custody to abandon");
+        assert!(ledger.balanced(), "{ledger:?}");
+        assert_eq!(
+            s.telemetry().gapped_domain_hours,
+            0,
+            "a frame already handed to the sink is not a throughput gap"
+        );
+
+        // The write lands afterwards and resolves the hour normally.
+        s.accept_request(published);
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.accepted, 1);
+        assert_eq!(ledger.publishing, 0);
+        assert!(ledger.balanced(), "{ledger:?}");
+
+        // And the refusal half works from publication custody too.
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(5, 1);
+        let refused = s.take_current_request().unwrap();
+        s.release_read_custody(refused);
+        assert_eq!(s.reject_request(refused), 1);
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.refused, 1);
+        assert_eq!(ledger.publishing, 0);
+        assert!(ledger.balanced(), "{ledger:?}");
+        assert_eq!(s.terminal(), None, "a normal refusal is not an anomaly");
     }
 
     /// `balanced` is a claim about the whole-frame lane. The per-domain API can
