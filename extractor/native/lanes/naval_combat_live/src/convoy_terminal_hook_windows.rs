@@ -1147,6 +1147,53 @@ unsafe extern "system" fn convoy_terminal_hook(
     result
 }
 
+/// Why a resolver receipt refuses a candidate observation.
+///
+/// These are two different failures with two different owners and they were
+/// counted as one. `publication_sequence == 0` means the collector's H-CONVOY
+/// publication NEVER RAN for this frame -- the receipt carries no hour, so no
+/// hour was ever compared -- while `game_hour_raw != hour` means it ran and
+/// the engine has since moved on.
+///
+/// Measured, which is why this is separated at all: in
+/// `runs/live_unlock/t15` all 19,470 convoy-attack callbacks were dropped and
+/// all 19,470 were attributed to `dropped_hour_or_epoch`, with
+/// `dropped_resolver` at zero. The frames' own diagnostics carry
+/// `h_convoy_resolver_error_hash = 14547190417989963716`, which is
+/// FNV-1a-64 of "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0
+/// client handles" -- so the publication was refused every frame, the
+/// snapshot was cleared, and the receipt's sequence was zero. Not one of
+/// those drops had anything to do with the clock, and the counter sent every
+/// reader to the wrong subsystem.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResolverRefusal {
+    /// No H-CONVOY publication has ever succeeded, so there is no binding set
+    /// to resolve against.
+    Unpublished,
+    /// A publication exists but describes a different game hour.
+    HourMismatch,
+}
+
+/// `None` when the receipt admits the candidate.
+#[cfg(windows)]
+fn classify_resolver_receipt(
+    publication_sequence: u64,
+    receipt_game_hour_raw: i32,
+    engine_hour: i32,
+) -> Option<ResolverRefusal> {
+    if publication_sequence == 0 {
+        // Checked FIRST and reported on its own: an unpublished receipt's
+        // `game_hour_raw` is not a stale hour, it is an unset field, and
+        // reading it as a clock disagreement is what hid this defect.
+        return Some(ResolverRefusal::Unpublished);
+    }
+    if receipt_game_hour_raw != engine_hour {
+        return Some(ResolverRefusal::HourMismatch);
+    }
+    None
+}
+
 fn prepare_observation(
     game_state: usize,
     count: u32,
@@ -1167,9 +1214,16 @@ fn prepare_observation(
         return None;
     };
     let receipt = resolver.receipt();
-    if receipt.publication_sequence == 0 || receipt.game_hour_raw != hour {
-        DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
-        return None;
+    match classify_resolver_receipt(receipt.publication_sequence, receipt.game_hour_raw, hour) {
+        None => {}
+        Some(ResolverRefusal::Unpublished) => {
+            DROP_RESOLVER.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(ResolverRefusal::HourMismatch) => {
+            DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
     }
     let sequence = PRODUCER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     if sequence == 0 {
@@ -2279,5 +2333,55 @@ mod freeze_call_site_tests {
             production.contains("inline_detour::freeze_process()"),
             "D90 rewrites live bytes and must take the shared freeze"
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod resolver_refusal_tests {
+    use super::{classify_resolver_receipt, ResolverRefusal};
+
+    /// Law: "the H-CONVOY publication never ran" is never reported as a clock
+    /// disagreement.
+    ///
+    /// An unpublished receipt carries `publication_sequence == 0` and an unset
+    /// `game_hour_raw`. The original guard was
+    /// `publication_sequence == 0 || game_hour_raw != hour`, so an unset field
+    /// that happened to differ from the engine hour was counted as
+    /// `dropped_hour_or_epoch` -- which is what ALL 19,470 dropped
+    /// convoy-attack events in `runs/live_unlock/t15` were labelled, with
+    /// `dropped_resolver` at zero, while the real cause was the d49/d50
+    /// client-handle refusal named by those frames' own
+    /// `h_convoy_resolver_error_hash = 14547190417989963716` (FNV-1a-64 of
+    /// "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0 client
+    /// handles").
+    ///
+    /// Restore the collapsed `||` guard and the first case below fails: it
+    /// answers `HourMismatch`.
+    #[test]
+    fn an_unpublished_receipt_is_not_an_hour_disagreement() {
+        assert_eq!(
+            classify_resolver_receipt(0, 0, 4_211),
+            Some(ResolverRefusal::Unpublished)
+        );
+        // Even when the unset hour happens to equal the engine's, an
+        // unpublished receipt has no bindings and must still refuse -- so the
+        // answer cannot be derived from the hour comparison at all.
+        assert_eq!(
+            classify_resolver_receipt(0, 4_211, 4_211),
+            Some(ResolverRefusal::Unpublished)
+        );
+    }
+
+    #[test]
+    fn a_published_receipt_from_another_hour_is_an_hour_disagreement() {
+        assert_eq!(
+            classify_resolver_receipt(7, 4_210, 4_211),
+            Some(ResolverRefusal::HourMismatch)
+        );
+    }
+
+    #[test]
+    fn a_published_receipt_for_this_hour_admits_the_candidate() {
+        assert_eq!(classify_resolver_receipt(7, 4_211, 4_211), None);
     }
 }

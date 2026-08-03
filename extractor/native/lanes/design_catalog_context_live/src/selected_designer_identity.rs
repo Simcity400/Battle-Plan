@@ -130,7 +130,21 @@ pub struct SelectedDesignerTransportFrame {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SelectedDesignerError {
+    /// The lane itself is compiled out of production: one of the two static
+    /// authority bindings behind [`PRODUCTION_ACTIVATION`] is false.
     ActivationBlocked,
+    /// The lane is activated, but its a729 producer detour is not patched into
+    /// the running game, so no selection can ever be observed.
+    ///
+    /// Split out of `ActivationBlocked` because the two answers name different
+    /// work and the capture could not tell them apart. `PRODUCTION_ACTIVATION`
+    /// is a compile-time `true` on this build, so every `ActivationBlocked`
+    /// d85 has ever published on the wire was in fact THIS -- and the reason
+    /// string said only "ActivationBlocked", which reads as "the lane is
+    /// switched off" and sent readers to the wrong place. See
+    /// `runs/live_unlock/t15`: 396/396 d85 frames carry
+    /// `A40 selected-designer frame did not encode: ActivationBlocked`.
+    HookNotInstalled,
     UnauthenticatedSource,
     Source(String),
     Invalid(String),

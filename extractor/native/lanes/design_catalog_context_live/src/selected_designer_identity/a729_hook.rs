@@ -416,8 +416,18 @@ pub fn encode_latest(
     frame_hour: u64,
     elapsed_wall_ms: u64,
 ) -> Result<Vec<u8>, SelectedDesignerError> {
-    if !super::PRODUCTION_ACTIVATION || !INSTALLED.load(Ordering::Acquire) {
+    // Two structurally different answers, deliberately not one. The combined
+    // `||` published `ActivationBlocked` for both, and because
+    // `PRODUCTION_ACTIVATION` is a compile-time `true` on this build, the
+    // reason d85 actually carries on every capture -- "the producer detour was
+    // never patched in" -- was reported as "the lane is switched off". Naming
+    // the installation state is what makes d85's failure the same actionable
+    // sentence d79 and d95 already publish.
+    if !super::PRODUCTION_ACTIVATION {
         return Err(SelectedDesignerError::ActivationBlocked);
+    }
+    if !INSTALLED.load(Ordering::Acquire) {
+        return Err(SelectedDesignerError::HookNotInstalled);
     }
     let observed = {
         let state = STATE
@@ -1000,6 +1010,34 @@ mod tests {
         assert!(!state
             .latest
             .contains_key(&SelectedDesignerFamily::VariantUpgrade));
+    }
+
+    /// Law: an activated lane whose detour is not patched in says so, rather
+    /// than reporting itself switched off.
+    ///
+    /// `PRODUCTION_ACTIVATION` is a compile-time `true`, so with `INSTALLED`
+    /// false -- the state every passive production capture runs in, because
+    /// the A40 install site sits behind `!passive_product_capture` in
+    /// `collector/src/attach_log.rs` -- the ONLY reachable answer is
+    /// "not installed". Restore the original
+    /// `if !PRODUCTION_ACTIVATION || !INSTALLED.load(..)` guard and this fails
+    /// with `ActivationBlocked`, which is exactly the reason all 396 d85
+    /// frames in `runs/live_unlock/t15` carry today.
+    #[test]
+    fn an_activated_lane_with_no_detour_reports_the_detour_not_the_activation() {
+        assert!(
+            super::super::PRODUCTION_ACTIVATION,
+            "this build activates the lane; if that changes the law below is \
+             about a different state"
+        );
+        assert!(
+            !INSTALLED.load(Ordering::Acquire),
+            "the test process never patches hoi4.exe, so the hook is not installed"
+        );
+        assert_eq!(
+            encode_latest(1, 0),
+            Err(SelectedDesignerError::HookNotInstalled)
+        );
     }
 
     #[test]

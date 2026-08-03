@@ -468,6 +468,18 @@ pub fn diagnostics() -> HookDiagnostics {
     }
 }
 
+/// Whether this lane's a729 refresh detours are patched into the running game.
+///
+/// [`observations`] answers the empty vector for BOTH "the detour is not
+/// installed" and "the detour is installed and this hour produced nothing",
+/// and the collector's d88 read reported the two with the same
+/// `exact_refresh_observation_unavailable` reason. That is exactly the
+/// distinction between a broken reader and a legitimately quiet one, so the
+/// state has to be askable separately.
+pub fn installed() -> bool {
+    INSTALLED.load(Ordering::Acquire)
+}
+
 pub fn observations() -> Vec<ControllerObservation> {
     STATE
         .get()
