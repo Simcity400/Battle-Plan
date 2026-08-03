@@ -1620,6 +1620,112 @@ mod tests {
         );
     }
 
+    /// Law: a probe PERF record beside a domain's GAP is not a duplicate
+    /// terminal outcome, and that domain's OWN PERF beside its GAP still is.
+    ///
+    /// This is the carrier d81 needs. Its gap branch computes a typed failure
+    /// reason and could not publish it: a d81 PERF record in the same hour as
+    /// d81's GAP is a second terminal outcome for the domain-hour and the fold
+    /// rejects the frame, so the reason was computed and dropped, and run t15
+    /// cannot say which of the 19 source-unavailable reasons fired. Domain 250
+    /// is exempt -- it is not a folded domain and PERF is not a terminal
+    /// outcome for it -- so the units ride 250 instead.
+    ///
+    /// Mutation proof: remove the `is_probe` guard from the terminal-outcome
+    /// check and the first half fails; remove the whole check and the second
+    /// half fails.
+    #[test]
+    fn a_probe_record_beside_a_d81_gap_is_not_a_duplicate_terminal_outcome() {
+        const D81: u16 = 81;
+        const PROBE: u16 = 250;
+        let hour = raw_for(HOUR_A);
+        let gap = compact_contract::DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::State,
+            reason: compact_contract::DomainGapReason::SourceUnavailable,
+            target_hour_raw: hour,
+            range_start_hour_raw: hour,
+            range_end_hour_raw: hour,
+            tick_before: hour as u64,
+            tick_after: hour as u64,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        }
+        .encode()
+        .expect("canonical d81 gap fixture");
+
+        // A minimal, semantically valid PERF payload: the fixed 40-byte base
+        // with no diagnostic trailer.
+        let perf = [0u8; compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN];
+
+        // Two probe PERF records and then d81's GAP, exactly the shape the
+        // collector emits when a frame already carried a lane-wall probe.
+        let mut admitted = BoundaryTracker::default();
+        let mut seq = 1u64;
+        for _ in 0..2 {
+            admitted.observe(
+                &boundary_header(
+                    seq,
+                    hour,
+                    PROBE,
+                    COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    perf.len(),
+                    0,
+                ),
+                &perf,
+                0,
+            );
+            seq += 1;
+        }
+        admitted.observe(
+            &boundary_header(
+                seq,
+                hour,
+                D81,
+                COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                gap.len(),
+                0,
+            ),
+            &gap,
+            0,
+        );
+        assert!(
+            admitted.violation.is_none(),
+            "the probe carrier must not consume d81's one terminal outcome, got {:?}",
+            admitted.violation
+        );
+
+        // The rule the probe is routing around is still enforced for d81
+        // itself, which is why the units cannot simply ride d81's own record.
+        let mut rejected = BoundaryTracker::default();
+        rejected.observe(
+            &boundary_header(
+                1,
+                hour,
+                D81,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                perf.len(),
+                0,
+            ),
+            &perf,
+            0,
+        );
+        rejected.observe(
+            &boundary_header(2, hour, D81, COMPACT_RECORD_TYPE_DOMAIN_GAP, gap.len(), 0),
+            &gap,
+            0,
+        );
+        assert!(
+            rejected
+                .violation
+                .as_ref()
+                .is_some_and(|violation| violation.contains("duplicate terminal outcome")),
+            "d81 PERF plus d81 GAP in one hour must still be refused, got {:?}",
+            rejected.violation
+        );
+    }
+
     /// Law: a refusal closes the hour that is OPEN, and refuses the hour its
     /// own envelope names.
     ///
