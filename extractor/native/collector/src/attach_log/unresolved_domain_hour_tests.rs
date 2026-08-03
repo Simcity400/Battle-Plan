@@ -277,16 +277,26 @@ fn each_minted_gap_spends_exactly_one_outcome_ordinal() {
 }
 
 /// The behavioural tests above call the pass directly, so on their own they
-/// keep saying "ok" if the seal simply stops calling it -- which is exactly how
-/// this hole existed in the first place. This pins the call: one definition,
-/// one production call site, and it runs before FRAME_END is appended, because
-/// FRAME_END carries the emitted-domain counts the pass adjusts and
-/// `stream_fold` checks those words against the terminal outcomes it observes.
+/// keep saying "ok" if the seal stops calling it -- which is how this hole
+/// existed in the first place. This is a LEXICAL coupling check, and its limits
+/// are worth stating because a check that is trusted for more than it proves is
+/// how the next hole gets in:
 ///
-/// Mutation proof: delete the call from the seal and the count is 1; move it
-/// below `append_compact_frame_end_record` and the ordering assertion fails.
+///  * it proves the call exists, is the only one, is handed the ROSTER, has its
+///    emission count consumed, and precedes the FRAME_END that closes a read
+///    frame;
+///  * it does NOT prove the pass runs on every path that appends a FRAME_END --
+///    the `state == None` early return appends one before this call and is
+///    deliberately not covered (see `close_unresolved_domain_hours`);
+///  * it does NOT prove the pass is handed the frame's real record buffer.
+///
+/// Mutation proof: delete the call and the count is 1; pass anything but the
+/// roster helper and the argument assertion fails; drop
+/// `emitted_domains.saturating_add(closed.newly_emitted)` and the consumption
+/// assertion fails; move the call below the read frame's FRAME_END and the
+/// ordering assertion fails.
 #[test]
-fn the_seal_closes_unresolved_hours_exactly_once_before_frame_end() {
+fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
     const COLLECTOR_SOURCE: &str = include_str!("../attach_log.rs");
     let code = COLLECTOR_SOURCE
         .lines()
@@ -306,9 +316,26 @@ fn the_seal_closes_unresolved_hours_exactly_once_before_frame_end() {
     let call = code
         .find("let silent_domains = match close_unresolved_domain_hours(")
         .expect("the seal closes unresolved domain-hours");
-    // Anchored to a newline plus exactly four spaces: the seal's own call sits
-    // at the top level of the gate function, while the two earlier ones are
-    // nested deeper and would otherwise match on their indent's tail.
+
+    // The roster is what makes this a check on every scheduled domain rather
+    // than on whichever domains happened to leave a record behind.
+    let call_args = &code[call..call + 400];
+    assert!(
+        call_args.contains("&compact_scheduled_emitted_domain_ids(control)"),
+        "the pass must be handed the expanded scheduled roster, or a domain that emitted \
+         nothing at all is invisible to it too:\n{call_args}"
+    );
+    // And the emission count it returns has to actually reach FRAME_END, or the
+    // minted gaps disagree with the seal's own words.
+    assert!(
+        code[call..].contains("emitted_domains.saturating_add(closed.newly_emitted)"),
+        "the seal must consume the pass's emission count"
+    );
+
+    // Anchored to a newline plus exactly four spaces: the read frame's own
+    // FRAME_END sits at the top level of the gate function, while the earlier
+    // ones -- including the `state == None` early return's -- are nested deeper
+    // and would otherwise match on their indent's tail.
     let frame_end = code
         .find("\n    append_compact_frame_end_record(")
         .expect("the seal appends FRAME_END");
