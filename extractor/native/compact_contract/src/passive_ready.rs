@@ -423,8 +423,17 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
     // sentinel -- the exact original prefix the five-byte REL5 patch lands on
     // and the same constant the installer's sentinel check reads -- following
     // the `gameplay.d99.land_combat_round_entry` precedent. The collector-side
-    // tests `pinned_d85_*`, `pinned_d95_*` and `pinned_d97_*` bind each digest
-    // to its lane, so a spec and a lane cannot drift apart silently.
+    // `the_recovered_domain_specs_match_their_lanes_hook_authority` binds each
+    // digest to its lane, so a spec and a lane cannot drift apart silently.
+    //
+    // The sentinels themselves were checked against the binary rather than
+    // taken from the lanes on trust. On 2026-08-03 all fourteen were compared
+    // byte-for-byte against the Ghidra export store for
+    // hoi4.exe 1.19.2.0.a729 (sha256 870ebf1f…c41c65ad), and every one matched
+    // its function's first sixteen bytes exactly, with `body_min` equal to the
+    // pinned address -- so each RVA is a FUNCTION ENTRY, not a mid-function
+    // offset a five-byte REL5 patch would straddle. 14 of 14, no mismatches,
+    // none missing.
     pinned_rva!(
         "gameplay.d78.designer_refresh",
         0x17797A0,
