@@ -8,6 +8,8 @@
 
 mod custody_record;
 pub mod engine_slot;
+#[cfg(windows)]
+pub mod rel5_roster;
 
 use custody_record::{perform_recorded_cas, reconcile_recorded_cas};
 pub use engine_slot::{
