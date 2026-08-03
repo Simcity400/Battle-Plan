@@ -1094,8 +1094,15 @@ fn the_harness_status_verdict_survives_every_route_out() {
         let mut file = fs::File::create(&path).expect("create probe script");
         file.write_all(script.as_bytes()).expect("write probe script");
         drop(file);
+        // `-ExecutionPolicy Bypass` applies to this child process only and changes
+        // no machine setting. Without it a host whose policy is Restricted -- the
+        // Windows client default, and the state of this machine at every scope --
+        // refuses to load the probe at all: every route exits 1 before reaching the
+        // arbitration point, and the no-verdict case exits 1 instead of 0. That is
+        // indistinguishable from the defect this test exists to catch, so the flag
+        // is what keeps the proof about the harness rather than about the host.
         let status = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1125,7 +1132,7 @@ fn the_harness_status_verdict_survives_every_route_out() {
     file.write_all(script.as_bytes()).expect("write probe script");
     drop(file);
     let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1296,7 +1303,7 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
         file.write_all(script.as_bytes()).expect("write probe");
         drop(file);
         let status = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
