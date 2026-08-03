@@ -24,10 +24,21 @@ pub const BOUND_TRIP_FOCUS_COUNT: usize = 1;
 pub const BOUND_TRIP_COMPLETED_TECH_COUNT: usize = 2;
 pub const BOUND_TRIP_OWNER_TAG_DB_ID: usize = 3;
 pub const BOUND_TRIP_PLAYER_TAG_DB_ID: usize = 4;
+/// A country-database id fell outside the LIVE database's tag range
+/// (`0 <= id < *(int32 *)(country_database + 0x0C)`; see
+/// [`crate::country_tag_db`]). Before the bound was derived from the engine
+/// this was a hardcoded `1024`, and the unit name keeps that suffix so the
+/// diagnostic key stays comparable across captures either side of the change.
 pub const BOUND_TRIP_TAG_DB_ID_1024: usize = 5;
 pub const BOUND_TRIP_FACTION_SLOTS: usize = 6;
 pub const BOUND_TRIP_FACTION_MEMBERS: usize = 7;
-pub const BOUND_TRIP_ID_COUNT: usize = 8;
+/// A country-database id could not be validated at all: no tag-database size
+/// has been observed, so there is nothing to range-check against. Deliberately
+/// separate from [`BOUND_TRIP_TAG_DB_ID_1024`] - "the id was out of range" and
+/// "we never learned the range" are different defects with different fixes,
+/// and merging them is how a trip counter comes to mean nothing in particular.
+pub const BOUND_TRIP_TAG_DB_ID_UNRESOLVED: usize = 8;
+pub const BOUND_TRIP_ID_COUNT: usize = 9;
 
 /// `(per-frame trip counter unit, last-observed raw value unit)` per bound id.
 /// The counter unit is summable in the recorder; the `_sample` suffix routes
@@ -52,6 +63,10 @@ pub const BOUND_TRIP_UNITS: [(&str, &str); BOUND_TRIP_ID_COUNT] = [
     ("bt_tag_db_id_1024_trips", "bt_tag_db_id_1024_raw_sample"),
     ("bt_faction_slots_trips", "bt_faction_slots_raw_sample"),
     ("bt_faction_members_trips", "bt_faction_members_raw_sample"),
+    (
+        "bt_tag_db_id_unresolved_trips",
+        "bt_tag_db_id_unresolved_raw_sample",
+    ),
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -207,6 +222,70 @@ pub fn bound_exceeded_u32(value: u32, max: u32, id: usize) -> bool {
     }
 }
 
+/// Engine-exact country-database id gate, in the `bound_exceeded_*` polarity:
+/// `true` (and records the trip) iff `id` is not a valid country-database id
+/// for the live game.
+///
+/// The range is the database's own - `0 <= id < *(int32 *)(country_database +
+/// 0x0C)`, see [`crate::country_tag_db`] - never a constant. Callers holding a
+/// `CountryTagTable` should use its `len` through [`tag_db_id_out_of_table`]
+/// instead: that cannot go stale.
+///
+/// This is a RANGE gate only, exactly like the `bound_exceeded_u32(id, 1024,
+/// ..)` calls it replaces: `id == 0` is the no-country sentinel, which is in
+/// range and passes without a trip. Sites that must not emit the null country
+/// keep their own `id == 0` arm, so a vacant slot stays a vacancy rather than
+/// becoming a bound violation.
+///
+/// With no observed database size the id is not validatable, so it is rejected
+/// and attributed to [`BOUND_TRIP_TAG_DB_ID_UNRESOLVED`]. Accepting instead
+/// would let a heap-scan candidate word through, which is the one thing this
+/// gate exists to prevent.
+#[inline]
+pub fn tag_db_id_out_of_range(id: u32) -> bool {
+    match crate::country_tag_db::observed_tag_db_size() {
+        Some(size) => {
+            if id < size {
+                false
+            } else {
+                record_bound_trip(BOUND_TRIP_TAG_DB_ID_1024, u64::from(id));
+                true
+            }
+        }
+        None => {
+            record_bound_trip(BOUND_TRIP_TAG_DB_ID_UNRESOLVED, u64::from(id));
+            true
+        }
+    }
+}
+
+/// [`tag_db_id_out_of_range`] in the `gate_u32` polarity.
+#[inline]
+pub fn gate_tag_db_id(id: u32) -> Option<u32> {
+    (!tag_db_id_out_of_range(id)).then_some(id)
+}
+
+/// Engine-exact country-database id gate against a size the caller already
+/// read from the table the id indexes (`0 <= id < table_size`). Records a trip
+/// on an out-of-table id so a silently skipped row still names itself. Like
+/// [`tag_db_id_out_of_range`] this is a range gate: the null country is in
+/// range and each caller keeps its own `id == 0` policy.
+#[inline]
+pub fn tag_db_id_out_of_table(id: u32, table_size: u32) -> bool {
+    if crate::country_tag_db::tag_db_id_in_table(id, table_size) {
+        false
+    } else {
+        record_bound_trip(BOUND_TRIP_TAG_DB_ID_1024, u64::from(id));
+        true
+    }
+}
+
+/// [`tag_db_id_out_of_table`] in the `gate_u32` polarity.
+#[inline]
+pub fn gate_tag_db_id_in_table(id: u32, table_size: u32) -> Option<u32> {
+    (!tag_db_id_out_of_table(id, table_size)).then_some(id)
+}
+
 /// Drain per-frame trip counts (resetting them) and read each bound's
 /// last-observed raw value. Index-aligned with [`BOUND_TRIP_UNITS`]. The
 /// last-raw cell is intentionally NOT reset: it is a `_sample` (last observed
@@ -233,6 +312,107 @@ mod tests {
 
     fn lock_registry() -> MutexGuard<'static, ()> {
         REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The tag-db gate reads a process-global published size, so a test that
+    /// publishes must also hold the country-database publish lock.
+    fn lock_tag_db() -> MutexGuard<'static, ()> {
+        crate::country_tag_db::test_support::lock_publish()
+    }
+
+    #[test]
+    fn tag_db_gate_follows_the_live_database_not_a_constant() {
+        let _guard = lock_registry();
+        let _db_guard = lock_tag_db();
+        drain_frame_trips(); // clean slate
+        let id = BOUND_TRIP_TAG_DB_ID_1024;
+
+        // A 440-row vanilla database (the size the t11 capture measures: 439
+        // country tags plus slot 0). The old 1024 admitted 584 ids the
+        // engine's own accessor refuses.
+        assert!(crate::country_tag_db::publish_observed_tag_db_size(440, 1_024));
+        assert_eq!(gate_tag_db_id(1), Some(1));
+        assert_eq!(gate_tag_db_id(439), Some(439));
+        assert_eq!(gate_tag_db_id(440), None, "size is exclusive");
+        assert_eq!(gate_tag_db_id(1_000), None, "the old 1024 admitted this");
+        assert_eq!(
+            gate_tag_db_id(0),
+            Some(0),
+            "the null country is in range; refusing it is caller policy"
+        );
+        let drained = drain_frame_trips();
+        assert_eq!(
+            drained[id].0, 2,
+            "440 and 1000 trip; the zero id is a vacant slot, never a bound trip"
+        );
+        assert_eq!(drained[id].1, 1_000);
+        assert_eq!(
+            drained[BOUND_TRIP_TAG_DB_ID_UNRESOLVED].0, 0,
+            "an observed database is never reported unresolved"
+        );
+
+        // A total-conversion database with 12_000 tags: ids the old ceiling
+        // silently dropped are ordinary rows here.
+        assert!(crate::country_tag_db::publish_observed_tag_db_size(12_000, 16_384));
+        assert_eq!(gate_tag_db_id(1_025), Some(1_025));
+        assert_eq!(gate_tag_db_id(11_999), Some(11_999));
+        assert_eq!(gate_tag_db_id(12_000), None);
+        let drained = drain_frame_trips();
+        assert_eq!(drained[id].0, 1);
+        assert_eq!(drained[id].1, 12_000);
+
+        crate::country_tag_db::forget_observed_tag_db_size();
+    }
+
+    #[test]
+    fn tag_db_gate_rejects_and_attributes_when_no_database_was_observed() {
+        let _guard = lock_registry();
+        let _db_guard = lock_tag_db();
+        drain_frame_trips(); // clean slate
+        crate::country_tag_db::forget_observed_tag_db_size();
+
+        // Unvalidatable is NOT "valid": a heap-scan candidate word must not
+        // reach a row just because the database was unreadable. 1_131_650_984
+        // is a real raw sample from the t11 capture's discovery scan.
+        assert_eq!(gate_tag_db_id(1), None);
+        assert_eq!(gate_tag_db_id(1_131_650_984), None);
+        assert!(
+            tag_db_id_out_of_range(0),
+            "not even the null country validates without a database"
+        );
+        assert!(tag_db_id_out_of_range(7));
+
+        let drained = drain_frame_trips();
+        assert_eq!(drained[BOUND_TRIP_TAG_DB_ID_UNRESOLVED].0, 4);
+        assert_eq!(drained[BOUND_TRIP_TAG_DB_ID_UNRESOLVED].1, 7);
+        assert_eq!(
+            drained[BOUND_TRIP_TAG_DB_ID_1024].0, 0,
+            "an unobserved database is not an out-of-range id"
+        );
+    }
+
+    #[test]
+    fn tag_db_table_gate_uses_the_callers_own_count() {
+        let _guard = lock_registry();
+        let _db_guard = lock_tag_db();
+        drain_frame_trips(); // clean slate
+        // Deliberately publish a DIFFERENT size: the table form must not
+        // consult the global at all.
+        assert!(crate::country_tag_db::publish_observed_tag_db_size(9, 16));
+
+        assert_eq!(gate_tag_db_id_in_table(1, 440), Some(1));
+        assert_eq!(gate_tag_db_id_in_table(439, 440), Some(439));
+        assert_eq!(gate_tag_db_id_in_table(440, 440), None);
+        assert_eq!(gate_tag_db_id_in_table(0, 440), Some(0));
+        let drained = drain_frame_trips();
+        assert_eq!(drained[BOUND_TRIP_TAG_DB_ID_1024].0, 1);
+        assert_eq!(drained[BOUND_TRIP_TAG_DB_ID_1024].1, 440);
+        assert_eq!(
+            drained[BOUND_TRIP_TAG_DB_ID_UNRESOLVED].0, 0,
+            "the table form never reports an unresolved database"
+        );
+
+        crate::country_tag_db::forget_observed_tag_db_size();
     }
 
     #[test]

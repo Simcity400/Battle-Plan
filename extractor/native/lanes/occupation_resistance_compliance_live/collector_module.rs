@@ -484,14 +484,19 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
         country_count,
         ..CountryOccupationStatusSummary::default()
     };
-    if !is_heap_ptr(country_table)
-        || country_count == 0
-        || compact_contract::bound_trips::bound_exceeded_u32(
-            country_count,
-            MAX_TAG_DB_ID,
-            compact_contract::bound_trips::BOUND_TRIP_TAG_DB_ID_1024,
-        )
-    {
+    // `country_count` is the CGameState country table's own extent, read the
+    // `iVar4 < *(int *)(CGameState + 0x31C)`, an `int` comparison, so a word
+    // with the high bit set is a table the engine's own loop declines to walk
+    // rather than a table of two billion slots.
+    //
+    // The former `MAX_TAG_DB_ID` (1024) ceiling was not an engine quantity at
+    // all. How many countries a game defines is CONTENT, and a total
+    // conversion above the guess did not get a shorter roster here - it got
+    // `Ok(empty)`, i.e. the occupation domain silently reporting no occupied
+    // country anywhere. That is the CLAMP-DROP shape the bound-trip registry
+    // exists to make visible, at whole-domain scale.
+    let country_count_walkable = i32::try_from(country_count).is_ok_and(|signed| signed > 0);
+    if !is_heap_ptr(country_table) || country_count == 0 || !country_count_walkable {
         return Ok((BTreeMap::new(), summary));
     }
 
