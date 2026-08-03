@@ -613,7 +613,7 @@ fn scan_stream<R: Read>(
             // many words: "Callers handling untrusted status words must first
             // reject a non-zero `compact_status_unknown_flags_v1` result;
             // otherwise an unassigned bit has no defined classification." Bits
-            // 15..=31 are unassigned (`status_flags_base.rs:21`-`:24`).
+            // 15..=31 are unassigned (`status_flags_base.rs:40`-`:44`).
             //
             // The unassigned test runs on the GLOBALLY interpretable view — the
             // lane-local mask stripped first — because bit 11 is d49's own badge

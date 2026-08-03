@@ -1206,8 +1206,15 @@ mod tests {
 
     #[test]
     fn a_derivation_never_reaches_outside_its_own_mask() {
-        // The outcome speaks for five bits. If it ever set a sixth, a migrated
-        // site would be making a claim about a fact it does not carry.
+        // The outcome speaks for six bits: SOURCE_UNAVAILABLE, PARTIAL_DATA,
+        // WORKER_PANIC, NO_CLOCK, CONTROL_INVALID and — since this lane —
+        // SOURCE_EMPTY. If it ever set a seventh, a migrated site would be
+        // making a claim about a fact it does not carry.
+        //
+        // Presence is enumerated alongside completion and extent rather than
+        // left at its default. It is the newest fact and the only one with its
+        // own suppression rule, so a sweep that skipped it would assert over
+        // five of the six bits while claiming to cover the mask.
         for completion in [
             ReadCompletion::Completed,
             ReadCompletion::DidNotComplete,
@@ -1218,20 +1225,33 @@ mod tests {
                 AnswerExtent::Incomplete,
                 AnswerExtent::Unprovable,
             ] {
-                let bits = outcome(completion, extent)
-                    .with_clock(ClockPresence::Unreadable)
-                    .with_read_authority(ReadAuthority::Invalid)
-                    .derive_status(0)
-                    .bits();
-                assert_eq!(
-                    bits & !DERIVED_STATUS_MASK,
-                    0,
-                    "{}/{} derived a bit outside DERIVED_STATUS_MASK",
-                    completion.label(),
-                    extent.label()
-                );
+                for presence in [AnswerPresence::Present, AnswerPresence::Empty] {
+                    let mut candidate = outcome(completion, extent)
+                        .with_clock(ClockPresence::Unreadable)
+                        .with_read_authority(ReadAuthority::Invalid);
+                    candidate.presence = presence;
+                    let bits = candidate.derive_status(0).bits();
+                    assert_eq!(
+                        bits & !DERIVED_STATUS_MASK,
+                        0,
+                        "{}/{}/{} derived a bit outside DERIVED_STATUS_MASK",
+                        completion.label(),
+                        extent.label(),
+                        presence.label()
+                    );
+                }
             }
         }
+
+        // And the mask is exactly the six bits, so a seventh added to
+        // `DERIVED_STATUS_MASK` without a fact to justify it is caught here
+        // rather than silently widening what an outcome may claim.
+        assert_eq!(
+            DERIVED_STATUS_MASK.count_ones(),
+            6,
+            "DERIVED_STATUS_MASK gained or lost a bit; an outcome speaks for \
+             exactly the facts it carries"
+        );
     }
 
     #[test]

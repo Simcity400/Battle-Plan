@@ -575,7 +575,7 @@ fn scan_stream(
             // VALIDITY BEFORE CLASSIFICATION. The failure predicate classifies the
             // assigned v1 status vocabulary and is not a validity predicate
             // (`compact_contract/src/lib.rs:121`-`:123`); bits 15..=31 are
-            // unassigned (`status_flags_base.rs:21`-`:24`) and an unassigned bit
+            // unassigned (`status_flags_base.rs:40`-`:44`) and an unassigned bit
             // "is not evidence of a future informational status", so a record
             // carrying one refuses the stream rather than reading as "not a
             // failure" and being measured as healthy.

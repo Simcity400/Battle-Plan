@@ -48,7 +48,7 @@
 //!   status exclusion**, so a success+failure pair in one hour cannot slip
 //!   through;
 //! - **unassigned v1 status bits refused BEFORE classification**
-//!   (`compact_contract/src/status_flags_base.rs:21`-`:24`): the failure helper
+//!   (`compact_contract/src/status_flags_base.rs:40`-`:44`): the failure helper
 //!   classifies the assigned vocabulary and is not a validity predicate, so an
 //!   unassigned bit would otherwise read as "not a failure" and be measured as a
 //!   healthy hour;

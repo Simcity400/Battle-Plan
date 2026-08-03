@@ -78,7 +78,7 @@
 //! any exclusion, or a success+failure pair in one hour slips through. An
 //! unassigned v1 status bit refuses the stream BEFORE classification: the
 //! failure predicate classifies the *assigned* vocabulary only
-//! (`compact_contract/src/status_flags_base.rs:21`-`:24`), so an unassigned bit
+//! (`compact_contract/src/status_flags_base.rs:40`-`:44`), so an unassigned bit
 //! has no defined classification and is not evidence of a future informational
 //! status. A stream cut exactly at a FRAME_END boundary is a well-formed shorter
 //! stream and is accepted as such.

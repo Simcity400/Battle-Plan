@@ -60,7 +60,7 @@
 //!    to reject a non-zero `compact_status_unknown_flags_v1` before applying any
 //!    failure/informational classification, because an unassigned bit has no
 //!    defined classification (`compact_contract/src/lib.rs:121`-`:123`,
-//!    `status_flags_base.rs:21`-`:24`). `scan_stream` does that. d65's payload
+//!    `status_flags_base.rs:40`-`:44`). `scan_stream` does that. d65's payload
 //!    authority does **not**: it records the status word
 //!    (`domain_data_authority.rs:12323`) and adds no parse error for an
 //!    unassigned bit, and an unassigned bit is outside
@@ -606,7 +606,7 @@ fn scan_stream(
             // many words: "Callers handling untrusted status words must first
             // reject a non-zero `compact_status_unknown_flags_v1` result;
             // otherwise an unassigned bit has no defined classification." Bits
-            // 15..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // 15..=31 are unassigned (`status_flags_base.rs:40`-`:44`), and an
             // unassigned bit "is not evidence of a future informational status".
             //
             // Without this, a record with `status_flags = 1 << 14` reads as "not

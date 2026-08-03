@@ -87,7 +87,7 @@
 //!    is not this grammar. No record in either capture takes this path.
 //! 3. **Stream rejection, before classification** — an unassigned v1 status bit.
 //!    The failure predicate classifies the *assigned* bits only
-//!    (`compact_contract/src/status_flags_base.rs:21`-`:24`), so an unassigned bit
+//!    (`compact_contract/src/status_flags_base.rs:40`-`:44`), so an unassigned bit
 //!    has no defined classification and must be refused rather than read as
 //!    "not a failure".
 //!

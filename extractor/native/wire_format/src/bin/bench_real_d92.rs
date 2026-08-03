@@ -1077,7 +1077,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
 
             // VALIDITY BEFORE CLASSIFICATION. The failure predicate is a
             // classifier over the *assigned* v1 status bits
-            // (`status_flags_base.rs:21`-`:24`); an unassigned bit has no defined
+            // (`status_flags_base.rs:40`-`:44`); an unassigned bit has no defined
             // classification and is not evidence of a future informational
             // status, so a record carrying one refuses the stream rather than
             // falling through to "success".

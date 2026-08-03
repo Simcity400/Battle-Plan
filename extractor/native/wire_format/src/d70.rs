@@ -218,7 +218,7 @@ pub const FAILURE_STATUS_MASK: u32 = (1 << 0)   // STATE_UNAVAILABLE
     | (1 << 12); // CONTROL_INVALID
 
 /// The assigned v1 status vocabulary: bits 0..=14
-/// (`compact_contract/src/status_flags_base.rs:21`-`:24` — everything above is
+/// (`compact_contract/src/status_flags_base.rs:40`-`:44` — everything above is
 /// unassigned and `compact_status_unknown_flags_v1` reports it). The v3 decoder
 /// rejects an unassigned bit outright (`naval_history.rs:344`-`:346`), before
 /// anything classifies the word, so for this domain the rule is part of the

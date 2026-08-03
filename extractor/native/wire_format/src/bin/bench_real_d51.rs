@@ -57,7 +57,7 @@
 //!   status exclusion**, so a success+failure pair in one hour cannot slip
 //!   through;
 //! - **unassigned v1 status bits refused BEFORE classification**
-//!   (`compact_contract/src/status_flags_base.rs:21`-`:24`). d51 makes this rule
+//!   (`compact_contract/src/status_flags_base.rs:40`-`:44`). d51 makes this rule
 //!   sharper than usual: its three lane-local badges ALIAS globally-assigned bits
 //!   11, 12 and 13, and are registered in `lane_local_status_mask`
 //!   (`compact_contract/src/lib.rs:141`), so the validity check must run over

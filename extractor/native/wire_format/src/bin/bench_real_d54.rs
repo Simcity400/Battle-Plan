@@ -539,7 +539,7 @@ fn tally(
 ///
 /// The failure predicate and its partial-tolerance sibling classify the
 /// *assigned* v1 status vocabulary and are not validity checks
-/// (`compact_contract/src/status_flags_base.rs:21`-`:24`); an unassigned bit has
+/// (`compact_contract/src/status_flags_base.rs:40`-`:44`); an unassigned bit has
 /// no defined classification and is not evidence of a future informational
 /// status, so a record carrying one refuses the stream rather than falling
 /// through to "success".
