@@ -1315,14 +1315,15 @@ impl DeadlineControlIo for WindowsControlIo {
 }
 
 /// Largest length the process-lifetime H4CR read submits to a single
-/// `ReadFile`, and therefore the size of the one reusable scratch buffer.
+/// `ReadFile`, and therefore the fixed size of the reusable scratch buffer.
 ///
-/// A byte-mode named pipe returns at most what its kernel buffer holds, so
-/// asking for more than [`H4CR_PIPE_BUFFER_BYTES`] in one call never moves
-/// more bytes; it only decides how much memory the reader has to own. Keeping
-/// the two equal makes the common case a single `ReadFile` per record while
-/// the scratch stays at one megabyte no matter how large a record gets.
-const H4CR_READ_CHUNK_BYTES: usize = H4CR_PIPE_BUFFER_BYTES;
+/// Bounding the request is what lets the landing buffer be a constant instead
+/// of growing to the largest record the stream happens to contain: t15 has
+/// records up to 8.96 MiB, and the reader has no business owning a buffer
+/// that size permanently. One mebibyte keeps the overwhelming majority of
+/// records to a single `ReadFile` (t15's 99th percentile record is 0.91 MiB)
+/// while capping even the largest at nine.
+const H4CR_READ_CHUNK_BYTES: usize = 1024 * 1024;
 
 struct WindowsOverlappedPipe {
     handle: Option<OwnedHandle>,
@@ -1645,25 +1646,6 @@ fn wait_pending_transfer_cancellable(
     }
 }
 
-/// Kernel buffer the H4CR data pipe is created with.
-///
-/// The collector publishes a whole frame in one `WriteFileSync` and blocks
-/// until this side has drained it, so the buffer sets how many
-/// producer-blocks/consumer-drains a frame costs. t15 frames average 7.46 MiB
-/// with single records up to 8.96 MiB; against the previous 64 KiB that was
-/// well over a hundred handoffs per frame. One megabyte of nonpaged pool per
-/// pipe is a rounding error next to the multi-gigabyte stream it carries.
-///
-/// This is a transport throughput constant only. It does not change which
-/// records are produced, their contents, their order, or their framing.
-const H4CR_PIPE_BUFFER_BYTES: usize = 1024 * 1024;
-
-/// Kernel buffer for the H4CT control pipe, which carries small bounded
-/// control frames rather than bulk records. Unchanged from the original
-/// sizing; called out separately so raising the data pipe cannot silently
-/// drag the control pipe along with it.
-const H4CT_PIPE_BUFFER_BYTES: usize = 64 * 1024;
-
 fn create_pipe(
     name: &str,
     kind: &'static str,
@@ -1672,12 +1654,9 @@ fn create_pipe(
     deadline: ControlDeadline,
     cancellation: &ControlCancellation,
 ) -> Result<OwnedHandle, WindowsCombinedBackendError> {
-    let (prefix, buffer_bytes) = match kind {
-        "H4CR" => (
-            r"\\.\pipe\battle-plan_collector_",
-            H4CR_PIPE_BUFFER_BYTES,
-        ),
-        "H4CT" => (r"\\.\pipe\battle-plan_control_", H4CT_PIPE_BUFFER_BYTES),
+    let prefix = match kind {
+        "H4CR" => r"\\.\pipe\battle-plan_collector_",
+        "H4CT" => r"\\.\pipe\battle-plan_control_",
         _ => return Err(WindowsCombinedBackendError::InvalidPipeName(kind)),
     };
     if !name.starts_with(prefix)
@@ -1697,8 +1676,8 @@ fn create_pipe(
             access | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            buffer_bytes as Dword,
-            buffer_bytes as Dword,
+            64 * 1024,
+            64 * 1024,
             0,
             &mut attributes,
         )
@@ -2209,18 +2188,4 @@ mod h4cr_read_path_tests {
         drop(writer.join().expect("writer thread"));
     }
 
-    /// The data pipe and the control pipe are sized independently: the H4CR
-    /// buffer was raised for bulk record throughput and must not drag the
-    /// small bounded H4CT control frames along with it.
-    #[test]
-    fn the_data_and_control_pipes_are_sized_independently() {
-        assert!(
-            H4CR_PIPE_BUFFER_BYTES > H4CT_PIPE_BUFFER_BYTES,
-            "the data pipe carries whole frames and must be the larger of the two"
-        );
-        assert_eq!(
-            H4CR_READ_CHUNK_BYTES, H4CR_PIPE_BUFFER_BYTES,
-            "asking for more than the pipe can return in one call only grows the scratch"
-        );
-    }
 }
