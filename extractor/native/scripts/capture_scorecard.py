@@ -35,6 +35,55 @@ def load_manifest(run_dir):
     raise SystemExit(f"no session manifest in {run_dir}")
 
 
+def descheduled(manifest):
+    """The domains the capture deliberately did not schedule.
+
+    Returned separately from `score` because this is not an axis: zero
+    descheduled domains is not better than five. It exists so a reader can tell
+    "we chose not to capture this" from "this failed to produce" — the two look
+    identical once a domain is simply absent from every ledger.
+    """
+    stream = manifest.get("compact_stream", {}) or {}
+    return stream.get("descheduled_domains", {}) or {}
+
+
+def registry_descheduled(native_root=None):
+    """(id, wire name) pairs the domain registry marks out of capture scope.
+
+    An external expectation is what makes the record check more than a
+    non-emptiness test: without it a manifest can drop four of five entries, or
+    invent one, and still look complete. Returns None when the registry is not
+    reachable — the scorecard is runnable against a run directory copied away
+    from the tree, and an unavailable cross-check must not masquerade as a
+    passing one.
+
+    This is the registry in the CHECKOUT BESIDE THIS SCRIPT, not one pinned to
+    the build that sealed the manifest, so this one axis asks "does this capture
+    match the capture contract as it stands now" rather than "was it correct
+    when it was sealed". That is the right question for the normal use — scoring
+    a capture the current tree just produced — but it means an archived manifest
+    can change verdict on this axis as the contract evolves. The fault messages
+    say which side each disagreement came from so that is legible rather than
+    mysterious.
+    """
+    if native_root is None:
+        native_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(native_root, "domain_registry.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            registry = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    rows = registry.get("domains")
+    if not isinstance(rows, list) or not rows:
+        return None
+    return {
+        (row.get("id"), row.get("name"))
+        for row in rows
+        if isinstance(row, dict) and row.get("capture_scheduled") is False
+    }
+
+
 def score(manifest):
     """Every axis on which the capture can be short of complete.
 
@@ -161,6 +210,58 @@ def score(manifest):
     artifact = manifest.get("replay_artifact", {}) or {}
     hourly = manifest.get("hourly_requirement", {}) or {}
 
+    # A production capture must not expect a domain the owner ruled out of
+    # capture scope: if it does, some roster path did not get the deschedule and
+    # the capture is about to count hundreds of empty frames against a domain
+    # nobody asked for. An evidence capture that deliberately passes
+    # `--scheduled-domain` for one of them will also show these two axes; that
+    # is a deliberate configuration showing up as expected, not a silent one.
+    descheduled_block = descheduled(manifest)
+    descheduled_names = {
+        entry.get("domain")
+        for entry in descheduled_block.get("domains", []) or []
+    }
+    descheduled_but_expected = sorted(descheduled_names & set(expected))
+    descheduled_but_reported = sorted(descheduled_names & set(per_domain))
+
+    # The record itself is an axis. A capture whose roster shrank but whose
+    # manifest carries no reasoned account of why is exactly the D81 shape this
+    # whole mechanism exists to prevent, and it must not score COMPLETE.
+    record_faults = []
+    if not descheduled_block:
+        record_faults.append(
+            "no descheduled_domains block in the manifest — a current recorder always "
+            "seals one, so this is either a dropped record or a manifest sealed before "
+            "the block existed")
+    else:
+        if not descheduled_names:
+            record_faults.append("descheduled_domains block names no domains")
+        if any(not name for name in descheduled_names):
+            record_faults.append("a descheduled domain has no wire name")
+        for field in ("reason", "decided_on", "decided_by", "authority"):
+            if not str(descheduled_block.get(field) or "").strip():
+                record_faults.append(f"descheduled_domains.{field} is missing or empty")
+        # Non-emptiness alone lets a record drop entries or invent one. Compare
+        # it against the registry, which owns the decision.
+        expected_pairs = registry_descheduled()
+        if expected_pairs is None:
+            record_faults.append(
+                "cannot reach domain_registry.json to verify the record names the "
+                "domains the registry rules out of capture scope")
+        else:
+            recorded_pairs = {
+                (entry.get("domain_id"), entry.get("domain"))
+                for entry in descheduled_block.get("domains", []) or []
+            }
+            for missing in sorted(expected_pairs - recorded_pairs, key=lambda p: (p[0] or 0)):
+                record_faults.append(
+                    f"the checkout's registry rules d{missing[0]} {missing[1]} out of "
+                    "capture scope but the manifest record omits it")
+            for extra in sorted(recorded_pairs - expected_pairs, key=lambda p: (p[0] or 0)):
+                record_faults.append(
+                    f"the manifest records d{extra[0]} {extra[1]} as descheduled but the "
+                    "checkout's registry does not")
+
     # The two gap ledgers describe the same stream and must agree wherever they
     # share a reason; a divergence means one of them is not counting something.
     shared = set(gap_ledger) & set(gap_outcomes)
@@ -203,6 +304,12 @@ def score(manifest):
          ", ".join(zero_rows) or "none"),
         ("domains reporting dropped or incomplete events", len(dropped),
          "; ".join(f"{n} {json.dumps(p)}" for n, p in sorted(dropped.items())) or "none"),
+        ("faults in the deliberately-not-scheduled record", len(record_faults),
+         "; ".join(record_faults) or "none"),
+        ("descheduled domains still in the expected roster", len(descheduled_but_expected),
+         ", ".join(descheduled_but_expected) or "none"),
+        ("descheduled domains that reported data", len(descheduled_but_reported),
+         ", ".join(descheduled_but_reported) or "none"),
         ("refused frames", int(stream.get("frame_refused_record_count", 0) or 0), ""),
         ("degraded frames", int(stream.get("frame_degraded_record_count", 0) or 0), ""),
         ("records excluded from the seal", int(excluded.get("total_records", 0) or 0), ""),
@@ -239,6 +346,7 @@ def main():
     manifest, manifest_path = load_manifest(run_dir)
     axes = score(manifest)
     misses = [axis for axis in axes if axis[1]]
+    not_scheduled = descheduled(manifest)
 
     if args.json:
         json.dump({
@@ -246,6 +354,7 @@ def main():
             "manifest": manifest_path,
             "complete": not misses,
             "axes": [{"axis": a, "count": n, "detail": d} for a, n, d in axes],
+            "descheduled_domains": not_scheduled,
         }, sys.stdout, indent=2)
         print()
         return 0 if not misses else 1
@@ -259,6 +368,22 @@ def main():
         print(f"{mark} {axis:{width}s} {count}")
         if detail and count:
             print(f"  {'':{width}s}   {detail}")
+
+    # Printed unconditionally, and outside the axis table, because a clean
+    # scorecard must still say what it was not asked to capture. A capture that
+    # scores COMPLETE over a silently shrunken roster is the failure this
+    # section exists to prevent.
+    names = [entry.get("domain") for entry in not_scheduled.get("domains", []) or []]
+    if names:
+        print(f"\n  deliberately not scheduled ({len(names)}): {', '.join(names)}")
+        print(f"    reason:    {not_scheduled.get('reason', '?')}")
+        print(f"    decided:   {not_scheduled.get('decided_on', '?')}"
+              f" by {not_scheduled.get('decided_by', '?')}"
+              f" ({not_scheduled.get('authority', '?')})")
+    else:
+        print("\n  deliberately not scheduled: no record in this manifest"
+              " (see the record-fault axis above)")
+
     if misses:
         print(f"\nINCOMPLETE: {len(misses)} of {len(axes)} axes carry a miss\n")
         return 1

@@ -1771,9 +1771,18 @@ pub fn observer_only() {}
     $registry = Get-Content -LiteralPath (Join-Path $root 'extractor\native\domain_registry.json') -Raw |
         ConvertFrom-Json
     $promotionStatuses = @('existing', 'production_complete', 'production_complete_base')
+    # Must match Get-ProductionPromotionExpectedDomains in
+    # ProductionCapture.Promotion.ps1 exactly, including its exclusion of
+    # domains the owner ruled out of capture scope (`capture_scheduled: false`,
+    # absent when a domain is still scheduled). A synthetic roster that carries
+    # a domain the real gate drops fails the gate it is meant to exercise.
     $domains = @(
         $registry.domains |
-            Where-Object { $_.schedulable -eq $true -and $promotionStatuses -ccontains [string]$_.status } |
+            Where-Object {
+                $_.schedulable -eq $true -and
+                $_.capture_scheduled -ne $false -and
+                $promotionStatuses -ccontains [string]$_.status
+            } |
             Sort-Object { [int]$_.id }
     )
     $canonicalRoster = @(

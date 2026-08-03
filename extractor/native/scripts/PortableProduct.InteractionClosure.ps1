@@ -1256,10 +1256,18 @@ function Get-ProductionPassiveSourceAdmissionClosure {
     }
     $registry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json
     $productionStatuses = @('existing', 'production_complete', 'production_complete_base')
+    # `capture_scheduled: false` marks a domain the owner ruled out of capture
+    # scope; the key is absent for every domain that is still scheduled. These
+    # are not production sources, so asking whether their source is statically
+    # impossible is the wrong question: their producer hooks are deliberately
+    # never installed in a passive capture, which is exactly the shape this
+    # closure blocks the package for. Owned by
+    # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
     $productionIds = @(
         $registry.domains |
             Where-Object {
                 $_.schedulable -eq $true -and
+                $_.capture_scheduled -ne $false -and
                 $productionStatuses -ccontains [string]$_.status
             } |
             Sort-Object { [int]$_.id } |

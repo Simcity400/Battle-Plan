@@ -424,6 +424,12 @@ def main() -> int:
         ],
         "silent_domains": [r["domain"] for r in silent],
         "domains_with_problems": [r["domain"] for r in with_problems],
+        # This report builds its rows from `per_domain`, so a domain that never
+        # produced anything is invisible to every list above. For a domain that
+        # was never scheduled that absence is correct but unexplained, so carry
+        # the decision through verbatim rather than leaving the roster short by
+        # five with no reason attached.
+        "descheduled_domains": stream.get("descheduled_domains", {}) or {},
         "all_domains": rows if args.all_domains else None,
     }
 
@@ -446,6 +452,19 @@ def main() -> int:
     line("unique hours / skipped", f"{report['unique_game_hour_count']} / {report['skipped_game_hours']}")
     line("frames (frame_end records)", report["frame_end_record_count"])
     line("domains in stream / expected", f"{report['domain_count']} / {report['expected_domain_count']}")
+    not_scheduled = [
+        entry.get("domain")
+        for entry in report["descheduled_domains"].get("domains", []) or []
+    ]
+    if not_scheduled:
+        block = report["descheduled_domains"]
+        line("deliberately not scheduled", f"{len(not_scheduled)}: {', '.join(not_scheduled)}")
+        line("  decision", f"{block.get('decided_on', '?')}"
+                           f" by {block.get('decided_by', '?')}"
+                           f" ({block.get('authority', '?')})")
+        # Without the reason the line reads as an unexplained shortfall, which
+        # is the thing this record exists to stop it being.
+        line("  reason", block.get("reason", "?"))
 
     print("\n--- gate verdict ---")
     line("hourly requirement met", report["hourly_requirement_met"])

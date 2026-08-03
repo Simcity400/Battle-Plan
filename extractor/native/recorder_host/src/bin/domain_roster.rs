@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
-    assigned_descriptor_by_id, domain_status_registry_key, passive_production_admits,
-    status_in_production_profile, CompactDomainId,
+    assigned_descriptor_by_id, domain_status_registry_key, is_descheduled_from_capture,
+    passive_production_admits, status_in_production_profile, CompactDomainId,
 };
 
 fn usage() -> ! {
@@ -104,14 +104,34 @@ fn main() {
             ));
         }
 
+        // The deschedule is a third fact the two authorities must agree on, and
+        // it is the one a reader is most likely to change in only one place:
+        // the registry row is the human-facing surface, the id list is what
+        // every roster actually filters on. Absent key means scheduled.
+        let registry_capture_scheduled = entry["capture_scheduled"].as_bool().unwrap_or(true);
+        let descriptor_descheduled = is_descheduled_from_capture(id);
+        if registry_capture_scheduled == descriptor_descheduled {
+            problems.push(format!(
+                "domain {id} ({name}): registry capture_scheduled={registry_capture_scheduled}, \
+                 compact_contract descheduled={descriptor_descheduled}"
+            ));
+        }
+
         // Production-profile status is not admissibility. The collector refuses
         // a few production-profile domains outright in the shipped passive
         // product, and emitting them here produced a roster that every live
         // passive capture was guaranteed to reject at attach time. The refusal
         // set is owned by compact_contract so this cannot drift again.
+        //
+        // A descheduled domain is excluded here for a different reason — the
+        // owner ruled it out of capture scope, not the transport. This tool's
+        // stdout cannot say so (see the output note below), so the record that
+        // keeps the shorter roster explicable is
+        // `compact_stream.descheduled_domains` in the session manifest.
         if schedulable
             && status_in_production_profile(descriptor.status)
             && passive_production_admits(id)
+            && !descriptor_descheduled
         {
             roster.insert(id, (name, descriptor.wire_name));
         }
@@ -129,6 +149,24 @@ fn main() {
         std::process::exit(1);
     }
 
+    // BOTH output streams are byte-contracts and neither may carry the
+    // deschedule note.
+    //
+    // Plain stdout is parsed as a bare newline-separated wire-name list; this
+    // file's own header records the day a text pipeline handed the recorder
+    // "fuel_live\r" and every trial silently failed to inject.
+    //
+    // `--json` stdout is written verbatim to
+    // `production_domain_roster_authority.json` by
+    // `Start-Hoi4ProductionCaptureSafe.ps1`, which invokes this tool with
+    // `2>&1` and then `ConvertFrom-Json`s the result. Anything on stderr lands
+    // in that file and makes it invalid JSON; anything but a flat array of
+    // {id, name, wire_name} rows fails the promotion gate's shape and count
+    // checks in `ProductionCapture.Promotion.ps1`.
+    //
+    // The audit record for the deschedule therefore lives where a reader of a
+    // sealed capture actually looks: `compact_stream.descheduled_domains` in
+    // the session manifest, alongside this file in the same run directory.
     if as_json {
         let rows: Vec<serde_json::Value> = roster
             .iter()

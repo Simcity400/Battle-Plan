@@ -48,6 +48,36 @@ The user experience is the contract:
 - **Instrumentation is minimised, not categorically banned.** Executable instrumentation is permitted only where a value is provably unsampleable, through one audited primitive, and every point is registered and justified. Readable state stays on the read path. Hooks do not grant authority to mutate simulation state or control the client.
 - **The file is as small as it can be without costing fidelity, and the order matters.** Fidelity is never traded for bytes: no dropped field, no collapsed distinction between absent, zero and unknown, no quantization of a value whose exact magnitude explains what happened **or decides what is drawn**. Subject to that, size is minimised aggressively — silence when nothing changed, compression that sees across hours, symbols carried as ids. **3–8 GB per campaign is a ceiling, not a budget to spend.** A design that comes in far under it is better, and "we are within the ceiling" is not a reason to stop reducing.
 
+### Out of capture scope: POV-local presentation
+
+**Owner decision, 2026-08-03.** These five domains are not scheduled in any production capture:
+
+| # | Domain |
+|---|---|
+| d72 | `resolved_tooltip_instances_live` |
+| d75 | `fired_event_popups_live` |
+| d79 | `hud_surface_activation_live` |
+| d88 | `active_command_abilities_live` |
+| d89 | `national_focus_presentation_live` |
+
+They capture POV-local presentation — what one client's screen had already resolved — which **Observer
+only** puts outside what the recorder records. The replay is an observer-mode model: it derives each of
+these panels from authoritative captured domains at render time rather than replaying one player's
+screen, so capturing them adds nothing the viewer can use.
+
+This is a scheduling decision, not a deletion. The producers stay in the tree and the domains keep their
+production-complete status, so the decision is cheap to reverse and the domains remain individually
+schedulable for evidence work.
+
+**Not covered by this decision:** d85 `selected_designer_identity_live`, d95 `pov_spotted_units_live` and
+d97 `peace_conference_live` stay scheduled. d95 in particular is in-scope class A.
+
+A domain that was deliberately not scheduled must never be indistinguishable from one that failed to
+produce. The set is owned by `compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS`, mirrored into
+`extractor/native/domain_registry.json` as `capture_scheduled: false`, and published positively into
+every sealed manifest as `compact_stream.descheduled_domains` — absence from a ledger is never the only
+record of the choice.
+
 ## Sessions, campaigns and files
 
 - **One campaign is one file, for its whole life.** Across any number of game or recorder restarts. The engine campaign id and seed decide identity.

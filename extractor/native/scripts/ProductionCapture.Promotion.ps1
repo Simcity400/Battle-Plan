@@ -327,10 +327,17 @@ function Get-ProductionCapturePromotionEvidence {
         'battle-plan.compact_domain_registry.v1') {
         throw 'production domain registry schema is invalid'
     }
+    # `capture_scheduled: false` marks a domain the owner ruled out of capture
+    # scope; the key is absent for every domain that is still scheduled. The
+    # capture plan's scheduled roster is derived from the same authority, so
+    # leaving these in would make every promotion fail the roster count and
+    # ordering checks below. Owned by
+    # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
     $expectedDomains = @(
         @(Get-ProductionPromotionProperty $registry 'domains') |
             Where-Object {
                 $_.schedulable -eq $true -and
+                $_.capture_scheduled -ne $false -and
                 $script:ProductionPromotionStatuses -ccontains [string]$_.status
             } |
             Sort-Object { [int]$_.id }

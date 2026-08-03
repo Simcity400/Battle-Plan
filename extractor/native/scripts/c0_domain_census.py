@@ -106,12 +106,12 @@ ROSTER = {
     "tech_sharing_groups_live": (69, True),
     "sunk_convoy_history_live": (70, False),
     "dynamic_collection_trace_live": (71, True),
-    "resolved_tooltip_instances_live": (72, True),
+    "resolved_tooltip_instances_live": (72, False),
     "power_balance_presentation_live": (74, False),
-    "fired_event_popups_live": (75, True),
+    "fired_event_popups_live": (75, False),
     "production_render_submits_live": (77, False),
     "design_catalog_context_live": (78, True),
-    "hud_surface_activation_live": (79, True),
+    "hud_surface_activation_live": (79, False),
     "production_map_content_snapshot_live": (80, False),
     "rail_replay_state_live": (81, True),
     "character_presentation_live": (82, False),
@@ -125,7 +125,43 @@ ROSTER = {
     "convoy_transport_attack_live": (90, True),
     "frame": (1000, False),
 }
+# d72, d75, d79, d88 and d89 are pinned out of the profile because the owner
+# ruled them out of capture scope on 2026-08-03 (POV-local presentation; see
+# `documents/DECISIONS.md`). They keep a production status and stay schedulable,
+# so `schedulable and status` alone still classifies them as in-profile;
+# `descheduled_capture_ids()` is what makes the computed value agree with these
+# pins. See the KNOWN GATE DRIFT note below for what this file still owes.
 PROFILE = {n: i for n, (i, p) in ROSTER.items() if p}
+
+# KNOWN GATE DRIFT (pre-existing, not closed here): ROSTER pins 79 domains
+# against a compiled registry of 88 and predates d91-d99, so
+# `registry_drift` reports a roster-length finding and this gate blocks before
+# it evaluates any manifest. Closing that needs a deliberate re-pin pass over
+# the full descriptor table, including `c0_registry_golden.json`, which also
+# still carries d79 as ValidatedSlice against a compiled ProductionComplete.
+
+
+def descheduled_capture_ids(native_root=NATIVE_ROOT):
+    """Domain ids the JSON mirror marks as ruled out of capture scope.
+
+    This is the MIRROR, not the authority. The compiled `registry_dump` emits
+    `capture_scheduled` per row and that is what profile membership is computed
+    from; this exists so the two can be compared and a disagreement reported.
+
+    Fail closed: an unreadable or malformed registry raises rather than quietly
+    returning an empty set, which would turn a real drift into agreement.
+    """
+    path = os.path.join(native_root, "domain_registry.json")
+    with open(path, encoding="utf-8") as handle:
+        registry = json.load(handle)
+    domains = registry.get("domains")
+    if type(domains) is not list or not domains:
+        raise ValueError(f"domain registry has no usable domains array: {path}")
+    return {
+        row["id"]
+        for row in domains
+        if type(row) is dict and row.get("capture_scheduled") is False
+    }
 PROFILE_EXCLUDED_NOTE = {
     "country_identity": "ActiveIntegration (documented profile exclusion; "
                         "pending integration - NOT silently dark)",
@@ -369,16 +405,27 @@ DESCRIPTOR_FIELDS = (
 )
 
 
+# Emitted by the compiled dump but deliberately NOT compared against
+# `c0_registry_golden.json`, which predates the field. Optional so the golden
+# still validates; required on compiled entries, which is enforced where profile
+# membership is computed rather than here.
+OPTIONAL_DESCRIPTOR_FIELDS = ("capture_scheduled",)
+
+
 def _validate_descriptor(entry, location):
     required = set(DESCRIPTOR_FIELDS)
+    allowed = required | set(OPTIONAL_DESCRIPTOR_FIELDS)
     if type(entry) is not dict:
         raise ValueError(f"{location} is not a JSON object")
-    if set(entry) != required:
+    if not required <= set(entry) or not set(entry) <= allowed:
         missing = sorted(required - set(entry))
-        extra = sorted(set(entry) - required)
+        extra = sorted(set(entry) - allowed)
         raise ValueError(
             f"{location} descriptor keys differ "
             f"(missing={missing}, extra={extra})")
+    for key in OPTIONAL_DESCRIPTOR_FIELDS:
+        if key in entry and type(entry[key]) is not bool:
+            raise ValueError(f"{location} {key} is not a bool")
     if type(entry["id"]) is not int or entry["id"] <= 0:
         raise ValueError(f"{location} id is not a positive int")
     for key in ("wire_name", "internal_name", "status"):
@@ -506,12 +553,40 @@ def registry_drift(dump_text, golden_loader=load_registry_golden):
     if len(entries) != len(ROSTER):
         findings.append(f"compiled registry has {len(entries)} descriptors, "
                         f"semantic roster has {len(ROSTER)}")
+    # The deschedule has two authorities and the compiled one wins. Reading only
+    # the JSON mirror would let compiled Rust reinstate a domain into the
+    # shipped roster while this gate still scored it as excluded — a gate-local
+    # false green. So take the value from the dump, and report the mirror
+    # disagreeing rather than silently preferring one.
+    try:
+        mirrored_descheduled = descheduled_capture_ids()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
+        return findings + [
+            f"cannot read the descheduled-domain mirror (fail closed): {e}"]
+    compiled_descheduled = set()
+    for entry in entries:
+        if "capture_scheduled" not in entry:
+            return findings + [
+                f"compiled registry entry {entry['wire_name']!r} carries no "
+                "capture_scheduled field; registry_dump is older than the "
+                "deschedule contract (fail closed)"]
+        if not entry["capture_scheduled"]:
+            compiled_descheduled.add(entry["id"])
+    if compiled_descheduled != mirrored_descheduled:
+        findings.append(
+            "descheduled-domain drift: compiled registry says "
+            f"{sorted(compiled_descheduled)}, domain_registry.json says "
+            f"{sorted(mirrored_descheduled)}")
+
     seen = {}
     for entry in entries:
         domain_id = entry["id"]
         wire = entry["wire_name"]
+        # Schedulable + production status is not the whole profile: a domain the
+        # owner ruled out of capture scope keeps both and is still not captured.
         in_profile = (entry["schedulable"]
-                      and entry["status"] in PROFILE_STATUSES)
+                      and entry["status"] in PROFILE_STATUSES
+                      and domain_id not in compiled_descheduled)
         if wire in seen:
             findings.append(f"compiled registry duplicates wire name {wire!r}")
         seen[wire] = (domain_id, in_profile)
@@ -1248,7 +1323,16 @@ def selftest():
 
     def compiled_descriptors():
         # JSON round-trip makes nested alias arrays independent for mutations.
-        return json.loads(json.dumps(load_registry_golden()))
+        descriptors = json.loads(json.dumps(load_registry_golden()))
+        # The golden predates `capture_scheduled` and is deliberately not
+        # updated, but a real compiled dump always emits it and `registry_drift`
+        # fails closed without it. Stand the fixture up as the compiler would,
+        # from the same mirror the drift check compares against, so the
+        # self-test exercises that requirement instead of tripping over it.
+        mirrored = descheduled_capture_ids()
+        for descriptor in descriptors:
+            descriptor["capture_scheduled"] = descriptor["id"] not in mirrored
+        return descriptors
 
     def dump_descriptors(descriptors):
         return "".join(json.dumps(descriptor, separators=(",", ":")) + "\n"

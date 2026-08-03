@@ -131,10 +131,16 @@ function Get-RegistryCaptureDomains {
     if ([string](Get-ObjectProperty $registry "schema") -ne "battle-plan.compact_domain_registry.v1") {
         throw "unsupported domain registry schema in $RegistryPath"
     }
+    # `capture_scheduled: false` marks a domain the owner ruled out of capture
+    # scope; the key is absent for every domain that is still scheduled. The
+    # recorder does not schedule these, so demanding a data record for them
+    # would fail every capture. Owned by
+    # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
     $domains = @(
         $registry.domains |
             Where-Object {
                 $_.schedulable -eq $true -and
+                $_.capture_scheduled -ne $false -and
                 $script:ProductionDomainStatuses -contains ([string]$_.status)
             } |
             Sort-Object { [int]$_.id }

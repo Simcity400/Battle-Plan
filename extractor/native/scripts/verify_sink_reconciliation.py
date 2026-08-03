@@ -475,7 +475,16 @@ def canonical_production_domain_roster(problems: list[str]) -> list[tuple[int, s
         if not isinstance(row, dict):
             problems.append(f"canonical_domain_registry_row_{index}_invalid")
             continue
-        if row.get("schedulable") is True and row.get("status") in PRODUCTION_DOMAIN_STATUSES:
+        # `capture_scheduled: false` marks a domain the owner ruled out of
+        # capture scope; the key is absent for every domain that is still
+        # scheduled. The recorder never schedules these, so reconciling a sink
+        # against them would report a permanent shortfall. Owned by
+        # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
+        if (
+            row.get("schedulable") is True
+            and row.get("capture_scheduled") is not False
+            and row.get("status") in PRODUCTION_DOMAIN_STATUSES
+        ):
             domain_id = row.get("id")
             name = row.get("name")
             require(

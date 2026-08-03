@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use compact_contract::ASSIGNED_COMPACT_DOMAINS;
+use compact_contract::{is_descheduled_from_capture, ASSIGNED_COMPACT_DOMAINS};
 
 fn write_json_string(output: &mut impl Write, value: &str) -> io::Result<()> {
     output.write_all(b"\"")?;
@@ -31,10 +31,17 @@ fn main() -> io::Result<()> {
         write_json_string(&mut output, descriptor.canonical_name)?;
         output.write_all(b",\"status\":")?;
         write_json_string(&mut output, &format!("{:?}", descriptor.status))?;
+        // `capture_scheduled` is NOT a descriptor field: descheduling leaves
+        // status and `schedulable` alone, so a consumer cannot derive it from
+        // the rest of this row. Emitting it here is what lets the C0 census
+        // compute profile membership from compiled truth instead of trusting
+        // the JSON mirror, and lets it cross-check the two.
         write!(
             output,
-            ",\"schedulable\":{},\"requires_data_record\":{},\"tags\":[",
-            descriptor.schedulable, descriptor.requires_data_record
+            ",\"schedulable\":{},\"capture_scheduled\":{},\"requires_data_record\":{},\"tags\":[",
+            descriptor.schedulable,
+            !is_descheduled_from_capture(descriptor.id),
+            descriptor.requires_data_record
         )?;
         for (index, tag) in descriptor.aliases.iter().enumerate() {
             if index != 0 {
