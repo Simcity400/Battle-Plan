@@ -2254,7 +2254,7 @@ mod freeze_call_site_tests {
     /// it reaches the freeze unless the running process is the exact a729
     /// `hoi4.exe`, so no offline test can drive it far enough to observe a
     /// freeze counter move.
-    fn production_code() -> String {
+    pub(super) fn production_code() -> String {
         let source = include_str!("convoy_terminal_hook_windows.rs").replace("\r\n", "\n");
         source
             .split_once("#[cfg(test)]\nmod ")
@@ -2347,16 +2347,27 @@ mod resolver_refusal_tests {
     /// `game_hour_raw`. The original guard was
     /// `publication_sequence == 0 || game_hour_raw != hour`, so an unset field
     /// that happened to differ from the engine hour was counted as
-    /// `dropped_hour_or_epoch` -- which is what ALL 19,470 dropped
-    /// convoy-attack events in `runs/live_unlock/t15` were labelled, with
-    /// `dropped_resolver` at zero, while the real cause was the d49/d50
-    /// client-handle refusal named by those frames' own
+    /// `dropped_hour_or_epoch` -- the label ALL 19,470 dropped convoy-attack
+    /// events in `runs/live_unlock/t15` carry, with `dropped_resolver` at
+    /// zero, while the resolver was demonstrably never published: those
+    /// frames' own
     /// `h_convoy_resolver_error_hash = 14547190417989963716` (FNV-1a-64 of
     /// "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0 client
     /// handles").
     ///
-    /// Restore the collapsed `||` guard and the first case below fails: it
-    /// answers `HourMismatch`.
+    /// What the t15 aggregate does NOT prove: that every one of those 19,470
+    /// callbacks reached the receipt check. `DROP_HOUR_OR_EPOCH` is also
+    /// incremented when the pre-call stable hour read fails, and twice more in
+    /// `complete_observation`. The counters do exclude the second of those --
+    /// no callback got past `prepare_observation` in t15, since every D70 drop
+    /// counter and `events_emitted` are zero -- but "all callbacks failed the
+    /// pre-call hour read" is not formally excluded by that capture. Splitting
+    /// the counter is what makes the NEXT capture discriminate the two: an
+    /// unpublished receipt will land in `dropped_resolver` and a failed or
+    /// disagreeing hour in `dropped_hour_or_epoch`.
+    ///
+    /// Restore the collapsed `||` guard in `classify_resolver_receipt` and the
+    /// first case below fails: it answers `HourMismatch`.
     #[test]
     fn an_unpublished_receipt_is_not_an_hour_disagreement() {
         assert_eq!(
@@ -2383,5 +2394,49 @@ mod resolver_refusal_tests {
     #[test]
     fn a_published_receipt_for_this_hour_admits_the_candidate() {
         assert_eq!(classify_resolver_receipt(7, 4_211, 4_211), None);
+    }
+
+    /// Law: the classifier's two answers reach two DIFFERENT counters.
+    ///
+    /// Without this the classifier is decoration: reverting only the match in
+    /// `prepare_observation` so both arms increment `DROP_HOUR_OR_EPOCH`
+    /// leaves every assertion above green while the wire goes back to
+    /// misattributing every unpublished-resolver drop to the clock -- which is
+    /// the entire defect.
+    ///
+    /// A source pin because `prepare_observation` is a detour callback: it
+    /// runs only inside an injected `hoi4.exe`, so no offline test can move
+    /// the counters.
+    #[test]
+    fn each_refusal_reaches_its_own_counter() {
+        let production = super::freeze_call_site_tests::production_code();
+        let routing = production
+            .split_once("match classify_resolver_receipt(")
+            .expect("prepare_observation classifies the receipt")
+            .1
+            .split_once("let sequence = PRODUCER_SEQUENCE")
+            .expect("the routing precedes the sequence mint")
+            .0;
+        for (arm, counter) in [
+            ("Some(ResolverRefusal::Unpublished) => {", "DROP_RESOLVER"),
+            ("Some(ResolverRefusal::HourMismatch) => {", "DROP_HOUR_OR_EPOCH"),
+        ] {
+            let body = routing
+                .split_once(arm)
+                .unwrap_or_else(|| panic!("{arm} must be routed explicitly"))
+                .1
+                .split_once("}")
+                .expect("arm body")
+                .0;
+            assert!(
+                body.contains(&format!("{counter}.fetch_add(1, Ordering::Relaxed);")),
+                "{arm} must increment {counter}; collapsing the two arms onto one \
+                 counter is the defect this split exists to remove"
+            );
+        }
+        assert!(
+            !routing.contains("publication_sequence == 0 ||"),
+            "the collapsed guard must not come back alongside the classifier"
+        );
     }
 }
