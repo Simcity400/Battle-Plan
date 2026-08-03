@@ -46,6 +46,15 @@ impl DomainGapReason {
     /// fails that test -- including the case `position` alone cannot see, where
     /// a new variant takes the next free position and is simply never added to
     /// this array.
+    ///
+    /// The claim is therefore exactly: complete for every `from_code`-decodable
+    /// reason. It is NOT a claim about every declared variant. A variant added
+    /// to neither this array nor `from_code` is invisible to the test -- but it
+    /// is also unreachable by any consumer, because every one of them reaches a
+    /// reason by decoding a record, and `decode` rejects an unknown code at
+    /// `from_code`. Such a variant would be an encoder/decoder asymmetry (the
+    /// contract encoding a payload its own decoder refuses), which is a
+    /// different defect from the one this array exists to prevent.
     pub const ALL: [DomainGapReason; 7] = [
         Self::Torn,
         Self::Overrun,
