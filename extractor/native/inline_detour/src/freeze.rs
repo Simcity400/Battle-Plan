@@ -1128,11 +1128,17 @@ mod tests {
     /// WHAT THIS IS NOT, stated because the gap is invisible otherwise: it is
     /// a lexical guard over a named list of allocating constructs, not a proof
     /// of allocation freedom. A future body that allocates by calling some
-    /// helper of ours that allocates internally passes this test. Proving the
-    /// stronger property needs a `#[global_allocator]` shim that panics while
-    /// a freeze is held, which this crate does not have. The list below is
-    /// therefore the shapes a future edit is LIKELY to reach for, and its job
-    /// is to make the invariant visible at the point of edit.
+    /// helper of ours that allocates internally passes this test. The list
+    /// below is therefore the shapes a future edit is LIKELY to reach for, and
+    /// its job is to make the invariant visible at the point of edit.
+    ///
+    /// Nothing available here proves the stronger property either. The closest
+    /// is a `#[global_allocator]` shim that ABORTS when it is entered while a
+    /// freeze is held -- abort and not panic, because unwinding out of a
+    /// `GlobalAlloc` method is undefined behaviour -- run in a dedicated
+    /// process so the abort cannot take the shared test binary down. Even that
+    /// would only catch the paths a run actually exercises, so it is a
+    /// detector and not a proof. This crate has neither.
     #[test]
     fn the_recycled_id_predicate_builds_no_list_while_the_process_is_frozen() {
         let production = production_code();
