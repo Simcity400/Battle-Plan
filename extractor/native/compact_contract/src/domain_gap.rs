@@ -37,8 +37,15 @@ impl DomainGapReason {
     /// Every reason, for consumers that must handle all of them but cannot be
     /// forced to by a `match` -- report tables keyed by name, mask decoders,
     /// round-trip coverage. Those are hand-maintained lists, and a hand list
-    /// checked against another hand list proves nothing; this is the one the
-    /// compiler stands behind, via [`DomainGapReason::position`].
+    /// checked against another hand list proves nothing.
+    ///
+    /// What makes this one complete is `all_covers_every_decodable_reason`,
+    /// which rebuilds the set from [`DomainGapReason::from_code`] by sweeping
+    /// the whole u16 code space. `from_code` is the only way a reason enters the
+    /// process from the wire, so a variant that can arrive and is missing here
+    /// fails that test -- including the case `position` alone cannot see, where
+    /// a new variant takes the next free position and is simply never added to
+    /// this array.
     pub const ALL: [DomainGapReason; 7] = [
         Self::Torn,
         Self::Overrun,
@@ -49,9 +56,15 @@ impl DomainGapReason {
         Self::ReaderSilent,
     ];
 
-    /// This match is exhaustive, so a new variant does not compile until it is
-    /// named here; `all_is_exhaustive` then fails until it is also in `ALL`.
-    /// Together that is what makes `ALL` complete rather than merely current.
+    /// Declared slot in [`DomainGapReason::ALL`]. The match is exhaustive, so a
+    /// new variant does not compile until it is given a slot; `all_is_exhaustive`
+    /// then pins each entry of `ALL` to its own slot, which is what catches a
+    /// variant listed twice or in the wrong order.
+    ///
+    /// This alone does NOT prove `ALL` is complete -- a new variant given the
+    /// next free slot and never added to the array leaves both this match and
+    /// that test satisfied. `all_covers_every_decodable_reason` is what closes
+    /// that, by rebuilding the set from the wire decoder instead of from a list.
     const fn position(self) -> usize {
         match self {
             Self::Torn => 0,
@@ -274,6 +287,35 @@ mod tests {
     /// `ALL`, so a variant that has a position but is missing from `ALL` -- or
     /// listed twice -- fails here. Consumers that iterate `ALL` inherit that
     /// guarantee instead of maintaining a second hand list.
+    /// `ALL` covers everything that can arrive off the wire.
+    ///
+    /// Rebuilt from `from_code` over the entire u16 space rather than compared
+    /// against a second hand-written list: a list checked against a list is
+    /// satisfied by forgetting the variant in both. This is the check that
+    /// catches the shape `position` cannot -- an eighth variant that takes slot
+    /// 7, decodes fine, and is never added to `ALL`. Every consumer that
+    /// iterates `ALL` to name or route a reason depends on this.
+    #[test]
+    fn all_covers_every_decodable_reason() {
+        let decodable: Vec<DomainGapReason> = (0..=u16::MAX)
+            .filter_map(|code| DomainGapReason::from_code(code).ok())
+            .collect();
+        assert_eq!(
+            decodable.len(),
+            DomainGapReason::ALL.len(),
+            "the wire decodes {} reason(s) but ALL lists {}: {decodable:?}",
+            decodable.len(),
+            DomainGapReason::ALL.len()
+        );
+        for reason in decodable {
+            assert!(
+                DomainGapReason::ALL.contains(&reason),
+                "{reason:?} can be decoded from the wire but is absent from ALL, so every \
+                 consumer that iterates ALL would silently drop it"
+            );
+        }
+    }
+
     #[test]
     fn all_is_exhaustive() {
         for (slot, reason) in DomainGapReason::ALL.iter().enumerate() {
