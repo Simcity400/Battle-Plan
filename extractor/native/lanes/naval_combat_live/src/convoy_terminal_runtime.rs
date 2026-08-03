@@ -406,3 +406,71 @@ pub fn clear_convoy_terminal_resolver_snapshot() -> Result<(), String> {
         Arc::new(ResolverSnapshot::default());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Law: resolver partiality is MONOTONIC once published.
+    ///
+    /// This drives the production store, not a hand-set field. The per-frame
+    /// `unbound_convoy_clients` count legitimately returns to zero on the next
+    /// frame, but D90 rows outlive the frame that drained them: a batch that
+    /// decodes incomplete is published while its queue reservation is rolled
+    /// back, so the same rows are re-drained later. If the latch cleared with
+    /// the count, those rows would re-encode under the next complete
+    /// publication and claim an exhaustive event set they were never captured
+    /// under.
+    ///
+    /// Deleting the `RESOLVER_EVER_PARTIAL.store` in
+    /// `publish_convoy_terminal_resolver_bindings_with_hashes`, or clearing the
+    /// latch anywhere, fails this.
+    #[test]
+    fn a_partial_publication_latches_partiality_for_the_rest_of_the_capture() {
+        // Empty bindings and routes: this test is about the latch, and an
+        // empty publication is a legitimate one.
+        let publish = |unbound: u32| {
+            publish_convoy_terminal_resolver_bindings_with_hashes(
+                &[],
+                &[],
+                61_000_000,
+                [0; 32],
+                unbound,
+            )
+            .expect("empty publication is valid")
+        };
+
+        // A complete publication must not raise the latch on its own, or the
+        // flag would be meaningless.
+        let receipt = publish(0);
+        assert_eq!(receipt.unbound_convoy_clients, 0);
+
+        // The first partial publication raises it...
+        let receipt = publish(4);
+        assert_eq!(receipt.unbound_convoy_clients, 4);
+        assert!(
+            convoy_terminal_resolver_ever_partial(),
+            "a partial publication must latch"
+        );
+
+        // ...and a later COMPLETE publication does not lower it. This is the
+        // whole point: the next frame's clean receipt cannot launder the rows
+        // captured while the resolver was partial.
+        let receipt = publish(0);
+        assert_eq!(
+            receipt.unbound_convoy_clients, 0,
+            "the per-frame count does reset"
+        );
+        assert!(
+            convoy_terminal_resolver_ever_partial(),
+            "but the latch does not"
+        );
+
+        // Clearing the snapshot is teardown, not absolution.
+        clear_convoy_terminal_resolver_snapshot().expect("clear");
+        assert!(
+            convoy_terminal_resolver_ever_partial(),
+            "clearing the resolver must not clear the latch"
+        );
+    }
+}
