@@ -1162,9 +1162,20 @@ unsafe extern "system" fn convoy_terminal_hook(
 /// `h_convoy_resolver_error_hash = 14547190417989963716`, which is
 /// FNV-1a-64 of "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0
 /// client handles" -- so the publication was refused every frame, the
-/// snapshot was cleared, and the receipt's sequence was zero. Not one of
-/// those drops had anything to do with the clock, and the counter sent every
-/// reader to the wrong subsystem.
+/// snapshot was cleared, and the receipt's sequence was zero whenever a
+/// callback reached this check.
+///
+/// What that capture does NOT establish is that every one of those callbacks
+/// DID reach it: `DROP_HOUR_OR_EPOCH` is also incremented by the pre-call
+/// stable-hour read below, and twice more in `complete_observation`. The
+/// counters exclude the latter two -- no callback got past
+/// `prepare_observation` in t15, since every D70 drop counter and
+/// `events_emitted` are zero -- but "all callbacks failed the pre-call hour
+/// read" is not formally excluded. Splitting the counter is what lets the
+/// NEXT capture tell the two apart. What is certain either way is that the
+/// resolver was never published, so `dropped_hour_or_epoch` was at best an
+/// ambiguous label for 19,470 events and at worst the wrong subsystem
+/// entirely.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResolverRefusal {
