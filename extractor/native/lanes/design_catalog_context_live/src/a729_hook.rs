@@ -5,6 +5,11 @@ use crate::{
 };
 use core::ffi::c_void;
 use minhook::MinHook;
+use production_hook_receipt::rel5_roster::Rel5HookRoster;
+use production_hook_receipt::{
+    ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+};
 use std::cell::Cell;
 use std::mem;
 use std::ptr;
@@ -22,6 +27,29 @@ pub const DESIGNER_ROW_BIND_RVA: u32 = 0x0149_2B70;
 const REFRESH_SENTINEL: [u8; 16] = [
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x48, 0x8B, 0x89, 0xA0, 0xF3, 0x00, 0x00,
 ];
+/// This module owns exactly one production site.
+pub const HOOK_RECEIPT_COUNT: usize = 1;
+
+/// The post-refresh observer at `0x1417797A0`.
+///
+/// The logical name says `d78` because that is whose producer this is: the
+/// designer view context. It is nonetheless part of D85's install unit, and
+/// therefore of `StandardHookReceiptGroup::D85`'s pinned roster, because d85
+/// cannot produce a row without it -- `install_a729_selected_designer_hooks`
+/// installs this first and calls it the "d78 prerequisite", since equipment
+/// family ordering is joined to this refresh. There is no D78 group to put it
+/// in; when one is added, this name moves rather than being duplicated.
+pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [ExpectedRvaHook {
+    logical_name: "gameplay.d78.designer_refresh",
+    requested_rva: DESIGNER_REFRESH_RVA as u64,
+    target_patch_len: 5,
+    primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    original_prefix: &REFRESH_SENTINEL,
+}];
+
+static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
+    Rel5HookRoster::new("D78", PRODUCTION_HOOK_SPECS);
+
 const VIEW_HANDLER: usize = 0x3788;
 const VIEW_MODE: usize = 0x3790;
 const VIEW_INTEL_CONTAINER: usize = 0xF3A0;
@@ -113,10 +141,53 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("A27 designer refresh hook enable failed: {status}"));
     }
+    // Fail closed on identity. The observation re-derives the module from the
+    // running process, refuses anything that is not an exact-a729 `hoi4.exe`,
+    // re-checks the admitted original prefix against that file's own bytes at
+    // this RVA, and binds the installed relay to this detour. An installation
+    // that cannot be attested is rolled back rather than shipped.
+    if let Err(error) = HOOK_RECEIPTS.observe_installed(base, [hook_refresh as *const () as usize])
+    {
+        let disabled = unsafe { inline_detour::disable(target as *mut c_void) };
+        if disabled.is_err() {
+            // The target may still be patched, so the custody record is the
+            // only remaining evidence that it is. Keep it.
+            return Err(format!(
+                "A27 designer refresh hook receipt refused: {error}; rollback failed: {}",
+                disabled.unwrap_err()
+            ));
+        }
+        let _ = unsafe { inline_detour::remove(target as *mut c_void) };
+        HOOK_RECEIPTS.discard_all_custody();
+        ORIGINAL_REFRESH.store(0, Ordering::Release);
+        MODULE_BASE.store(0, Ordering::Release);
+        return Err(format!("A27 designer refresh hook receipt refused: {error}"));
+    }
     INSTALLED.store(true, Ordering::Release);
     Ok(InstalledHookAddress {
         designer_refresh: target,
     })
+}
+
+/// True once this module owns an enabled, receipt-observed production hook.
+pub fn installed() -> bool {
+    INSTALLED.load(Ordering::Acquire)
+}
+
+/// The exact enabled-byte receipt for the single d78 refresh site.
+pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+    HOOK_RECEIPTS.installed_receipts()
+}
+
+/// Consume the release receipt. One-shot, like every other lane's take.
+pub fn take_released_hook_receipts(
+) -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+    HOOK_RECEIPTS.take_released_receipts()
+}
+
+/// True while this module holds receipt custody it has not released.
+pub fn release_pending() -> bool {
+    !installed() && HOOK_RECEIPTS.has_complete_installed_custody()
 }
 
 pub fn uninstall() -> Result<(), String> {
@@ -128,6 +199,18 @@ pub fn uninstall() -> Result<(), String> {
         .map_err(|status| format!("A27 designer refresh hook disable failed: {status}"))?;
     unsafe { inline_detour::remove(target as *mut c_void) }
         .map_err(|status| format!("A27 designer refresh hook removal failed: {status}"))?;
+    // Mint the release receipt only for a teardown that provably restored the
+    // target. Both calls above returned clean to reach here, and
+    // `observe_released_set` then independently re-reads the site's bytes and
+    // refuses unless the admitted original prefix is back.
+    //
+    // `relay_freed: true` is the truth of this path: `inline_detour::remove` is
+    // MinHook's `MH_RemoveHook` and frees the trampoline.
+    if HOOK_RECEIPTS.has_complete_installed_custody() {
+        HOOK_RECEIPTS
+            .publish_release(true)
+            .map_err(|error| format!("A27 designer refresh release receipt refused: {error}"))?;
+    }
     ORIGINAL_REFRESH.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
     if let Some(state) = STATE.get().and_then(|state| state.lock().ok()) {
@@ -420,6 +503,23 @@ fn read_usize(address: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Law: the single pinned spec describes the site this module patches.
+    ///
+    /// The name says `d78` because that is whose producer it is; D85's install
+    /// unit owns it because d85 cannot produce a row without this refresh.
+    ///
+    /// Mutation proof: change `DESIGNER_REFRESH_RVA` or `REFRESH_SENTINEL`
+    /// without changing the spec, and this fails.
+    #[test]
+    fn the_receipt_spec_matches_the_site_this_module_patches() {
+        let spec = PRODUCTION_HOOK_SPECS[0];
+        assert_eq!(spec.logical_name, "gameplay.d78.designer_refresh");
+        assert_eq!(spec.requested_rva, u64::from(DESIGNER_REFRESH_RVA));
+        assert_eq!(spec.original_prefix, &REFRESH_SENTINEL[..]);
+        assert_eq!(spec.target_patch_len, 5);
+        assert_eq!(spec.primitive_id, MINHOOK_NORMAL_REL5_PRIMITIVE_ID);
+    }
 
     #[test]
     fn sentinel_is_exact_a729_prologue() {

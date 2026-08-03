@@ -17,6 +17,11 @@ use super::{
 use core::ffi::c_void;
 use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
+use production_hook_receipt::rel5_roster::Rel5HookRoster;
+use production_hook_receipt::{
+    ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::mem;
@@ -61,6 +66,72 @@ const VARIANT_UPGRADE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x54,
     0x41, 0x56,
 ];
+
+/// The five selected-designer sites this module patches. D85's install unit
+/// also owns the d78 designer-refresh prerequisite in the parent module, so the
+/// group's roster is these five plus that one.
+pub const HOOK_RECEIPT_COUNT: usize = 5;
+
+/// The exact production-hook specifications this module may install, in the
+/// same order as the `specs`/`hooks` tables `install_for_fixture` walks and as
+/// the detour list `observe_installed` is handed.
+///
+/// Each `original_prefix` is the SAME constant the installer's own
+/// `verify_sentinel` loop reads, so the byte gate and the receipt cannot end up
+/// describing different functions.
+pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
+    ExpectedRvaHook {
+        logical_name: "gameplay.d85.equipment_selection",
+        requested_rva: EQUIPMENT_SELECTION_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &EQUIPMENT_SELECTION_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d85.equipment_autodesign_success",
+        requested_rva: EQUIPMENT_AUTODESIGN_SUCCESS_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d85.division_order",
+        requested_rva: DIVISION_ORDER_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &DIVISION_ORDER_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d85.division_selection",
+        requested_rva: DIVISION_SELECTION_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &DIVISION_SELECTION_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d85.variant_upgrade_selection",
+        requested_rva: VARIANT_UPGRADE_SELECTION_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &VARIANT_UPGRADE_SENTINEL,
+    },
+];
+
+static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
+    Rel5HookRoster::new("D85", PRODUCTION_HOOK_SPECS);
+
+/// The detour addresses, in `PRODUCTION_HOOK_SPECS` order. A function rather
+/// than a `const` because a function item's address is not an integer at
+/// compile time.
+fn detours() -> [usize; HOOK_RECEIPT_COUNT] {
+    [
+        hook_equipment_selection as *const () as usize,
+        hook_equipment_autodesign_success as *const () as usize,
+        hook_division_order as *const () as usize,
+        hook_division_selection as *const () as usize,
+        hook_variant_upgrade_selection as *const () as usize,
+    ]
+}
 
 const VIEW_MODE: usize = 0x3790;
 const DIVISION_HANDLER: usize = 0x2B58;
@@ -307,8 +378,91 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
             return Err(format!("A40 hook enable at {target:#x} failed: {status}"));
         }
     }
+    // Fail closed on identity, exactly as D94 does. The observation re-derives
+    // the module from the running process, refuses anything that is not an
+    // exact-a729 `hoi4.exe`, re-checks each admitted original prefix against
+    // that file's own bytes at the site's RVA, and binds each installed relay
+    // to the detour this module actually passed to MinHook. An installation
+    // that cannot be attested is rolled back rather than shipped.
+    if let Err(error) = HOOK_RECEIPTS.observe_installed(base, detours()) {
+        let cleanup = release_created_sites(&created);
+        if !cleanup.is_empty() {
+            return Err(format!(
+                "A40 selected-designer hook receipt refused: {error}; rollback failed: {}",
+                cleanup.join(", ")
+            ));
+        }
+        // Only once the detours are provably gone. Discarding custody while a
+        // site is still patched would erase the one record that a patch exists.
+        HOOK_RECEIPTS.discard_all_custody();
+        clear_originals();
+        MODULE_BASE.store(0, Ordering::Release);
+        return Err(format!(
+            "A40 selected-designer hook receipt refused: {error}"
+        ));
+    }
     INSTALLED.store(true, Ordering::Release);
     Ok(addresses)
+}
+
+/// Disable, quiesce and remove every site this install created, in reverse
+/// order. Returns the failures; an empty result means every target's original
+/// bytes are back and nothing is patched.
+///
+/// The ordering matches the enable-failure arm above and is load-bearing: the
+/// quiescence wait only terminates once nothing is admitting callbacks, so a
+/// disable that failed must stop the sequence rather than let the wait spin
+/// against a live detour.
+fn release_created_sites(created: &[usize]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for target in created.iter().rev() {
+        match unsafe { inline_detour::disable(*target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
+            Err(error) => failures.push(format!("disable {target:#x}: {error}")),
+        }
+    }
+    if !failures.is_empty() {
+        return failures;
+    }
+    if let Err(error) = wait_for_quiescence() {
+        failures.push(error);
+        return failures;
+    }
+    for target in created.iter().rev() {
+        match unsafe { inline_detour::remove(*target as *mut c_void) } {
+            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
+            Err(error) => failures.push(format!("remove {target:#x}: {error}")),
+        }
+    }
+    failures
+}
+
+/// True once this module owns enabled, receipt-observed production hooks.
+pub fn installed() -> bool {
+    INSTALLED.load(Ordering::Acquire)
+}
+
+/// The exact enabled-byte receipts for the five selected-designer sites.
+pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+    HOOK_RECEIPTS.installed_receipts()
+}
+
+/// Consume the release receipts. One-shot: a second call after the registry has
+/// taken custody reports them unavailable rather than minting a second release.
+pub fn take_released_hook_receipts(
+) -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+    HOOK_RECEIPTS.take_released_receipts()
+}
+
+/// True while this module holds receipt custody it has not released.
+///
+/// `uninstall_fixture_hooks` clears `INSTALLED` as soon as the disables succeed
+/// and before the removals run, so `installed()` alone goes false while sites
+/// may still be created.
+pub fn release_pending() -> bool {
+    !installed() && HOOK_RECEIPTS.has_complete_installed_custody()
 }
 
 /// Normal production installer. It shares the exact sentinel-gated hook owner
@@ -366,6 +520,25 @@ pub fn uninstall_fixture_hooks() -> Result<(), String> {
     }
     if let Some(error) = first_error {
         return Err(error);
+    }
+    // Mint the release receipts only for a teardown that provably restored
+    // every target. Reaching here means every disable AND every removal
+    // returned clean; `observe_released_set` then independently re-reads each
+    // site's bytes and refuses unless the admitted original prefix is back.
+    //
+    // `relay_freed: true` is the truth of this path: it calls
+    // `inline_detour::remove`, which is MinHook's `MH_RemoveHook` and frees the
+    // trampoline.
+    //
+    // A module that never observed receipts -- a fixture install predating this
+    // custody, or a second uninstall after the registry already took the
+    // receipts -- has nothing to release, and that is not an error.
+    if HOOK_RECEIPTS.has_complete_installed_custody() {
+        if let Err(error) = HOOK_RECEIPTS.publish_release(true) {
+            return Err(format!(
+                "A40 selected-designer hook release receipt refused: {error}"
+            ));
+        }
     }
     clear_originals();
     MODULE_BASE.store(0, Ordering::Release);
@@ -985,6 +1158,51 @@ fn read_usize(address: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Law: the receipt roster describes the sites the installer actually
+    /// patches, in the order the installer patches them. See the D97 twin in
+    /// `a40_peace_evidence.rs` for why positional agreement is load-bearing.
+    ///
+    /// Mutation proof: swap two entries of `PRODUCTION_HOOK_SPECS`, or point
+    /// one `original_prefix` at a different sentinel, and this fails.
+    #[test]
+    fn the_receipt_specs_match_the_installers_own_site_table() {
+        let expected: [(u32, &[u8]); HOOK_RECEIPT_COUNT] = [
+            (EQUIPMENT_SELECTION_RVA, &EQUIPMENT_SELECTION_SENTINEL),
+            (
+                EQUIPMENT_AUTODESIGN_SUCCESS_RVA,
+                &EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL,
+            ),
+            (DIVISION_ORDER_RVA, &DIVISION_ORDER_SENTINEL),
+            (DIVISION_SELECTION_RVA, &DIVISION_SELECTION_SENTINEL),
+            (VARIANT_UPGRADE_SELECTION_RVA, &VARIANT_UPGRADE_SENTINEL),
+        ];
+        for (index, (rva, sentinel)) in expected.iter().enumerate() {
+            let spec = PRODUCTION_HOOK_SPECS[index];
+            assert_eq!(spec.requested_rva, u64::from(*rva), "{}", spec.logical_name);
+            assert_eq!(spec.original_prefix, *sentinel, "{}", spec.logical_name);
+            assert_eq!(spec.target_patch_len, 5);
+            assert_eq!(spec.primitive_id, MINHOOK_NORMAL_REL5_PRIMITIVE_ID);
+            assert!(spec.logical_name.starts_with("gameplay.d85."));
+        }
+        let mut names = PRODUCTION_HOOK_SPECS
+            .iter()
+            .map(|spec| spec.logical_name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), HOOK_RECEIPT_COUNT, "receipt names must be distinct");
+        let detours = detours();
+        assert!(detours.iter().all(|address| *address != 0));
+        let mut distinct = detours.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            HOOK_RECEIPT_COUNT,
+            "each selected-designer site needs its own detour"
+        );
+    }
 
     #[test]
     fn exact_hook_rvas_and_sentinels_are_frozen() {
