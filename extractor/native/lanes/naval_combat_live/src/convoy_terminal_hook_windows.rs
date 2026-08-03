@@ -1150,10 +1150,14 @@ unsafe extern "system" fn convoy_terminal_hook(
 /// Why a resolver receipt refuses a candidate observation.
 ///
 /// These are two different failures with two different owners and they were
-/// counted as one. `publication_sequence == 0` means the collector's H-CONVOY
-/// publication NEVER RAN for this frame -- the receipt carries no hour, so no
-/// hour was ever compared -- while `game_hour_raw != hour` means it ran and
-/// the engine has since moved on.
+/// counted as one. `publication_sequence == 0` means NO RESOLVER SNAPSHOT IS
+/// CURRENTLY PUBLISHED -- the receipt is the default the runtime installs, so
+/// its `game_hour_raw` is an unset field and no hour was ever compared. It
+/// does NOT say the publication never ran: clearing the snapshot puts the same
+/// default back, and a clear can follow an earlier successful publication or a
+/// current attempt that failed. `game_hour_raw != hour` means a snapshot IS
+/// published and describes a different hour -- which is a disagreement, not
+/// necessarily the engine having moved forward.
 ///
 /// Measured, which is why this is separated at all: in
 /// `runs/live_unlock/t15` all 19,470 convoy-attack callbacks were dropped and
@@ -1179,8 +1183,9 @@ unsafe extern "system" fn convoy_terminal_hook(
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResolverRefusal {
-    /// No H-CONVOY publication has ever succeeded, so there is no binding set
-    /// to resolve against.
+    /// No H-CONVOY publication is currently in effect, so there is no binding
+    /// set to resolve against. Says nothing about whether one ever succeeded:
+    /// a clear restores the same default receipt.
     Unpublished,
     /// A publication exists but describes a different game hour.
     HourMismatch,
@@ -2443,6 +2448,17 @@ mod resolver_refusal_tests {
                 body.contains(&format!("{counter}.fetch_add(1, Ordering::Relaxed);")),
                 "{arm} must increment {counter}; collapsing the two arms onto one \
                  counter is the defect this split exists to remove"
+            );
+            // Counting the drop is only half of a refusal. Without the return,
+            // a refused receipt falls through to the sequence mint below and
+            // becomes an ADMITTED observation -- a failed resolver check
+            // turned into a successful read, which is the one outcome this
+            // project forbids outright. Pinned separately because an edit that
+            // only touched the counters would otherwise leave this green.
+            assert!(
+                body.contains("return None;"),
+                "{arm} must REFUSE, not merely count: without the return the \
+                 candidate reaches the sequence mint and is admitted"
             );
         }
         assert!(
