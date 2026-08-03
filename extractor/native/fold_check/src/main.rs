@@ -169,11 +169,37 @@ fn gap_reason_names(mask: u32) -> Vec<&'static str> {
         (DomainGapReason::Backpressure, "Backpressure"),
         (DomainGapReason::ClockUnreadable, "ClockUnreadable"),
         (DomainGapReason::WorkerPanic, "WorkerPanic"),
+        (DomainGapReason::SourceUnavailable, "SourceUnavailable"),
+        (DomainGapReason::ReaderSilent, "ReaderSilent"),
     ]
     .into_iter()
     .filter(|(reason, _)| mask & (1u32 << reason.code()) != 0)
     .map(|(_, name)| name)
     .collect()
+}
+
+/// A reason missing from `gap_reason_names` is not a compile error -- the table
+/// is a list, not a `match` -- so it would silently drop out of every report
+/// while the mask still carried its bit. This is what makes the table
+/// exhaustive in practice.
+#[test]
+fn every_gap_reason_has_a_report_name() {
+    for reason in [
+        DomainGapReason::Torn,
+        DomainGapReason::Overrun,
+        DomainGapReason::Backpressure,
+        DomainGapReason::ClockUnreadable,
+        DomainGapReason::WorkerPanic,
+        DomainGapReason::SourceUnavailable,
+        DomainGapReason::ReaderSilent,
+    ] {
+        assert_eq!(
+            gap_reason_names(1u32 << reason.code()).len(),
+            1,
+            "{reason:?} has no name in the report table, so it would vanish from every \
+             fold_check verdict while still setting its bit in the mask"
+        );
+    }
 }
 
 fn gap_part_names(mask: u32) -> Vec<&'static str> {
