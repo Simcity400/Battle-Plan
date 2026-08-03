@@ -29,10 +29,19 @@ they look: `depth=0` is not seed-only, since each seed's direct callers come too
 - Traverse — `ghidra_callers`, `ghidra_callees`, `ghidra_path_between`
 - Export — `ghidra_export_functions`, only once a query shows the address is
   genuinely unindexed
+- **Record — `ghidra_annotate_function`, before you call the investigation done**
 
 Completed exports fold themselves into the index before the call returns, so new
 evidence is queryable immediately; the response's `index_refresh` reports how it
 went, and a lagging cache never means lost evidence.
+
+**Recording is not optional.** The index saves Ghidra's *output* automatically —
+decompiled C, disassembly, p-code, call graphs — but it cannot save what you
+worked out. As of 2026-08-03 the registry holds **12 claims against 65,464
+exported functions**, so the next agent to open a function you already understood
+sees the same raw decompile and pays your analysis cost again. Exports no longer
+get repeated; conclusions still do. An investigation that ends without a claim has
+not finished, it has only been done privately.
 
 **The index is advisory.** Results report what was indexed at build time and never
 assert that anything is still current. `ghidra_verify` is the only tool that
