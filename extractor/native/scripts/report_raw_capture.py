@@ -143,6 +143,21 @@ EXIT_UNDEFINED_STATUS_BITS = 2
 # definedness check that never ran.
 EXIT_REPORT_ERROR = 3
 
+# Printed on the LAST line of stdout by every path that reaches a verdict, and
+# by no other path. An exit code alone cannot be trusted: a SyntaxError, a
+# failed import, or a missing interpreter kills python BEFORE any code in this
+# file runs, and the process exits 1 -- which is this report's code for "I read
+# the status words and some domain is failing", an ANSWER that a caller is
+# entitled to walk past. The receipt is the difference between "the check said
+# 1" and "something exited 1". A caller that does not see it must treat the
+# definedness check as never having run.
+VERDICT_RECEIPT_PREFIX = "COMPACT_STATUS_VERDICT="
+
+
+def emit_verdict_receipt(code: int) -> int:
+    print(f"{VERDICT_RECEIPT_PREFIX}{code}")
+    return code
+
 
 def verdict_exit_code(undefined: list, blocking: list, hourly: dict) -> int:
     if undefined:
@@ -266,10 +281,20 @@ def selftest() -> int:
         ("a missing manifest reaches no verdict", None, False),
     )
 
+    def has_receipt(out, code):
+        """The receipt must be present and must agree with the exit code.
+
+        Checked on EVERY case, not in a case of its own: the receipt exists so
+        a caller can tell "this report said 1" from "something exited 1", and a
+        verdict path that forgot to emit it is indistinguishable from a python
+        that died before this file ran.
+        """
+        return f"{VERDICT_RECEIPT_PREFIX}{code}" in out
+
     failures = 0
     for label, domains, want_code, want_text, forbidden in cases:
         code, out = run(domains)
-        ok = code == want_code and want_text in out
+        ok = code == want_code and want_text in out and has_receipt(out, code)
         if forbidden is not None and forbidden in out:
             ok = False
         print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
@@ -279,7 +304,8 @@ def selftest() -> int:
             print(out)
     for label, raw, write in error_cases:
         code, out = run({}, raw_manifest=raw, write_manifest=write)
-        ok = code == EXIT_REPORT_ERROR and "REPORT ERROR" in out
+        ok = (code == EXIT_REPORT_ERROR and "REPORT ERROR" in out
+              and has_receipt(out, code))
         print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
               f"(want {EXIT_REPORT_ERROR}): {label}")
         if not ok:
@@ -500,19 +526,18 @@ def main() -> int:
 def guarded_main() -> int:
     """`main` with every unexpected failure mapped to EXIT_REPORT_ERROR.
 
-    Deliberately catches BaseException-minus-SystemExit rather than a list of
-    expected types: the whole point is that a failure this file did not
-    anticipate must not be reported as an ordinary verdict. `argparse` exits
-    via SystemExit for a usage error and keeps its own code.
+    Catches Exception rather than a list of expected types: a failure this file
+    did not anticipate must not be reported as an ordinary verdict. `SystemExit`
+    (argparse usage errors) and `KeyboardInterrupt` (the operator cancelled)
+    both propagate untouched -- neither is a report crash, and relabelling a
+    cancellation as one would be a lie about what happened.
     """
     try:
-        return main()
+        code = main()
     except ReportError as error:
         print(f"\nREPORT ERROR: {error}", file=sys.stderr)
-        return EXIT_REPORT_ERROR
-    except SystemExit:
-        raise
-    except BaseException as error:  # noqa: BLE001 -- see docstring
+        return emit_verdict_receipt(EXIT_REPORT_ERROR)
+    except Exception as error:  # noqa: BLE001 -- see docstring
         import traceback
 
         traceback.print_exc()
@@ -522,7 +547,8 @@ def guarded_main() -> int:
             "is clean, and it is not evidence that it is dirty.",
             file=sys.stderr,
         )
-        return EXIT_REPORT_ERROR
+        return emit_verdict_receipt(EXIT_REPORT_ERROR)
+    return emit_verdict_receipt(code)
 
 
 if __name__ == "__main__":

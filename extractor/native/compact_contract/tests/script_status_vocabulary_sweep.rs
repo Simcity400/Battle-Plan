@@ -70,53 +70,100 @@ fn registered_domains() -> BTreeMap<u16, u32> {
 // would never see it. Same class of hole as the drift being guarded against,
 // one level up.
 
-/// Replaces every `#` line comment outside a string with spaces.
+/// Blanks everything that is NOT executable code, preserving offsets and line
+/// structure: `#` line comments, PowerShell `<# ... #>` block comments, and
+/// Python triple-quoted strings (which are inert wherever these tables live and
+/// are the idiomatic way to comment a block out).
 ///
-/// Both languages here use `#` to end of line. Nothing downstream is
-/// comment-aware, and it must not have to be: a `# }` inside a table would
-/// otherwise end a block early and hide every entry after it, and the runtime
-/// would still read those entries.
-fn strip_line_comments(text: &str) -> String {
+/// Nothing downstream is comment-aware, and it must not have to be. Two
+/// distinct failures need this:
+///
+///   * a commented-out `}` or `)` inside a table would end a block early and
+///     hide every entry after it, while the runtime still read them;
+///   * a `contains` check is satisfied by the expected text sitting in a
+///     comment, so the checked value could be commented out beside a live
+///     wrong one. `<# ... #>` is not hypothetical here -- this repo's
+///     PowerShell uses comment-based help blocks.
+fn strip_non_code(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut in_comment = false;
-    for ch in text.chars() {
-        if ch == '\n' {
-            in_comment = false;
-            quote = None;
-            escaped = false;
+    let mut index = 0usize;
+
+    // Blanks `count` characters from `index`, keeping newlines so line
+    // structure (and every "is this the first thing after the marker" test)
+    // still holds.
+    let blank = |out: &mut String, from: usize, to: usize| {
+        for ch in &chars[from..to] {
+            out.push(if *ch == '\n' { '\n' } else { ' ' });
+        }
+    };
+
+    while index < chars.len() {
+        let ch = chars[index];
+        // PowerShell block comment.
+        if ch == '<' && chars.get(index + 1) == Some(&'#') {
+            let mut end = index + 2;
+            while end < chars.len() && !(chars[end] == '#' && chars.get(end + 1) == Some(&'>')) {
+                end += 1;
+            }
+            let end = (end + 2).min(chars.len());
+            blank(&mut out, index, end);
+            index = end;
+            continue;
+        }
+        // Line comment, both languages.
+        if ch == '#' {
+            let mut end = index;
+            while end < chars.len() && chars[end] != '\n' {
+                end += 1;
+            }
+            blank(&mut out, index, end);
+            index = end;
+            continue;
+        }
+        // Triple-quoted Python string.
+        if ch == '"' || ch == '\'' {
+            let triple = chars.get(index + 1) == Some(&ch) && chars.get(index + 2) == Some(&ch);
+            if triple {
+                let mut end = index + 3;
+                while end + 2 < chars.len()
+                    && !(chars[end] == ch && chars[end + 1] == ch && chars[end + 2] == ch)
+                {
+                    end += 1;
+                }
+                let end = (end + 3).min(chars.len());
+                blank(&mut out, index, end);
+                index = end;
+                continue;
+            }
+            // Ordinary string: kept verbatim, because the badge NAMES live in
+            // these and downstream parsers rely on seeing them.
             out.push(ch);
-            continue;
-        }
-        if in_comment {
-            out.push(' ');
-            continue;
-        }
-        if let Some(q) = quote {
-            out.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == q {
-                quote = None;
+            index += 1;
+            let mut escaped = false;
+            while index < chars.len() {
+                let c = chars[index];
+                out.push(c);
+                index += 1;
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == ch || c == '\n' {
+                    break;
+                }
             }
             continue;
         }
-        match ch {
-            '\'' | '"' => {
-                quote = Some(ch);
-                out.push(ch);
-            }
-            '#' => {
-                in_comment = true;
-                out.push(' ');
-            }
-            _ => out.push(ch),
-        }
+        out.push(ch);
+        index += 1;
     }
     out
+}
+
+/// Retained name for the code-stripping pass; see [`strip_non_code`].
+fn strip_line_comments(text: &str) -> String {
+    strip_non_code(text)
 }
 
 /// Byte offset of `marker`, requiring it to occur EXACTLY once.
@@ -652,6 +699,59 @@ fn a_colon_inside_a_badge_name_is_not_a_key_separator() {
     );
 }
 
+#[test]
+fn a_powershell_block_comment_cannot_satisfy_a_code_check() {
+    // `<# ... #>` is inert, and this repo's PowerShell uses comment-based help
+    // blocks, so a checked mask could sit in one beside a live wrong value.
+    let source = "<#\n.SYNOPSIS\n$Mask = [uint32]0x13CF\n#>\n$Mask = [uint32]0x0001\n";
+    let code = strip_non_code(source);
+    assert!(
+        !code.contains("[uint32]0x13CF"),
+        "a `<# ... #>` block comment survived stripping: {code:?}"
+    );
+    assert!(
+        code.contains("$Mask = [uint32]0x0001"),
+        "stripping removed live code: {code:?}"
+    );
+}
+
+#[test]
+fn a_powershell_block_comment_cannot_truncate_a_block() {
+    let source = "TABLE = @{\n    53 = 1  <# } #>\n    60 = 2\n}\n";
+    let block = block_after(&strip_non_code(source), "TABLE = ");
+    assert!(
+        block.contains("60 = 2"),
+        "a commented-out closing brace truncated the block: {block:?}"
+    );
+}
+
+#[test]
+fn a_python_triple_quoted_block_cannot_satisfy_a_code_check() {
+    // Commenting a block out with a triple-quoted string is idiomatic Python
+    // and leaves the text inert.
+    let source = "\"\"\"\nKNOWN_MASK = (1 << 15) - 1\n\"\"\"\nKNOWN_MASK = (1 << 9) - 1\n";
+    let code = strip_non_code(source);
+    assert!(
+        !code.contains("(1 << 15) - 1"),
+        "a triple-quoted block survived stripping: {code:?}"
+    );
+    assert!(
+        code.contains("KNOWN_MASK = (1 << 9) - 1"),
+        "stripping removed live code: {code:?}"
+    );
+}
+
+#[test]
+fn stripping_preserves_offsets_so_a_marker_still_opens_its_literal() {
+    // `delimited_after` requires the delimiter to be the first non-whitespace
+    // thing after the marker, so the stripper must blank rather than delete.
+    let source = "TABLE = {  # note\n    53: {16: 'a'},\n}\n";
+    let code = strip_non_code(source);
+    assert_eq!(code.len(), source.len(), "stripping changed the length");
+    let block = block_after(&code, "TABLE = ");
+    assert_eq!(mask_of(&int_keys(&nested_entries(&block)[0].1)), 1 << 16);
+}
+
 // --- The harness verdict actually reaches the caller -------------------------
 
 /// EVERY `if (<condition>) { ... }` in a PowerShell script, condition
@@ -711,17 +811,19 @@ fn powershell_if_block(text: &str, condition: &str) -> String {
 /// "undefined status bits" from every ordinary capture failure by that code, and
 /// it is the ONLY signal here with a distinct code to lose.
 ///
-/// There are TWO places that must deliver it -- the terminal branch, and the
-/// cleanup-fatal branch inside `finally`, because a `throw` from `finally`
-/// terminates the script there and would otherwise swallow the code. This test
-/// lifts EVERY such branch out of the harness and runs each one; it does not
-/// retype them, because the defect it pins is invisible to reading: the harness
-/// sets `$ErrorActionPreference = 'Stop'`, under which `Write-Error` is
-/// TERMINATING, so a `Write-Error` immediately before `exit 2` means `exit 2`
-/// never executes and PowerShell 5.1 returns 1. The branch looked correct.
+/// There must be exactly ONE arbitration point, and it must live at the end of
+/// the harness's `finally`. That is the only place that runs on every route out
+/// of the script. This test lifts it and runs it in each of those routes; it
+/// does not retype it, because both defects it pins are invisible to reading:
+///
+///   * the harness sets `$ErrorActionPreference = 'Stop'`, under which
+///     `Write-Error` is TERMINATING, so a `Write-Error` immediately before
+///     `exit 2` means `exit 2` never runs and PowerShell 5.1 returns 1;
+///   * an exception in flight from the try body resumes AFTER `finally` and
+///     skips anything placed below it, also returning 1.
 #[test]
 #[cfg(windows)]
-fn every_harness_undefined_status_branch_really_exits_two() {
+fn the_harness_status_verdict_survives_every_route_out() {
     use std::io::Write;
 
     let harness = read_script("Invoke-HeadlessRawCapture.ps1");
@@ -731,18 +833,19 @@ fn every_harness_undefined_status_branch_really_exits_two() {
     );
     assert_eq!(
         branches.len(),
-        2,
-        "expected exactly two branches that convert the verdict into exit 2 \
-         (the cleanup-fatal branch inside `finally`, which must pre-empt the \
-         `throw` that would otherwise terminate the script there, and the \
-         terminal branch); found {}",
+        1,
+        "expected exactly ONE arbitration point converting the verdict into \
+         exit 2. More than one means some route out of the script is served by \
+         a copy that can drift; none means the verdict cannot be delivered at \
+         all. Found {}",
         branches.len()
     );
-    // Deliberately NOT a `branch.contains("exit 2")` guard: the branches' own
-    // comments contain that text, so such a guard passes while the code exits
-    // 1. Only running it decides. Same reason the defect survived review.
+    let arbitration = &branches[0];
+    // Deliberately NOT an `arbitration.contains("exit 2")` guard: the block's
+    // own comment contains that text, so such a guard passes while the code
+    // exits 1. Only running it decides -- the reason the defect survived review.
 
-    // Same preamble the harness runs under. Anything else would prove nothing.
+    // The same preamble the harness runs under. Anything else proves nothing.
     let preference = "$ErrorActionPreference = 'Stop'";
     assert!(
         harness.contains(preference),
@@ -750,25 +853,40 @@ fn every_harness_undefined_status_branch_really_exits_two() {
          reproduces its conditions"
     );
 
-    for (index, branch) in branches.iter().enumerate() {
+    // Each route out of the script, as the shape that reaches `finally`.
+    let routes: &[(&str, &str)] = &[
+        ("normal completion", "try { } finally { BODY }"),
+        // A throw from the try body: an unauthenticated teardown, a null
+        // recorder exit code, or any bug. Without an exit inside `finally`
+        // this resumes after it and returns 1.
+        ("pending exception from the try body", "try { throw 'boom' } finally { BODY }"),
+        // The cleanup-fatal throw lives after the arbitration point in the
+        // real `finally`; this reproduces "a throw is about to happen here".
+        (
+            "cleanup fatal about to throw",
+            "try { } finally { BODY\n throw 'cleanup fatal' }",
+        ),
+    ];
+
+    let dir = std::env::temp_dir().join(format!("hoi4_lane_i_exit2_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let mut failures = Vec::new();
+    for (label, shape) in routes.iter().copied() {
         let script = format!(
             "{preference}\n\
              $undefinedStatusBitFailure = 'proof'\n\
              $cleanupFatalMessage = 'proof cleanup failure'\n\
-             $collectorInjectionStarted = $false\n\
-             $collectorTeardownAuthenticated = $true\n\
-             $gradedWindowStarted = $false\n\
-             {branch}\n\
-             exit 0\n"
+             $collectorInjectionStarted = $true\n\
+             $collectorTeardownAuthenticated = $false\n\
+             $gradedWindowStarted = $true\n\
+             {body}\n\
+             exit 0\n",
+            body = shape.replace("BODY", arbitration),
         );
-        let path = std::env::temp_dir().join(format!(
-            "hoi4_lane_i_exit_probe_{}_{index}.ps1",
-            std::process::id()
-        ));
+        let path = dir.join(format!("probe_{}.ps1", label.replace(' ', "_")));
         let mut file = fs::File::create(&path).expect("create probe script");
         file.write_all(script.as_bytes()).expect("write probe script");
         drop(file);
-
         let status = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-File"])
             .arg(&path)
@@ -776,16 +894,51 @@ fn every_harness_undefined_status_branch_really_exits_two() {
             .stderr(std::process::Stdio::null())
             .status()
             .expect("run powershell");
+        if status.code() != Some(2) {
+            failures.push(format!("{label}: exit={:?} (wanted 2)", status.code()));
+        }
         let _ = fs::remove_file(&path);
-
-        assert_eq!(
-            status.code(),
-            Some(2),
-            "harness undefined-status branch {index} does not deliver exit code 2 \
-             under its own $ErrorActionPreference; a terminating Write-Error before \
-             `exit 2` collapses it to 1. Branch was:\n{branch}"
-        );
     }
+
+    // And the converse: with NO verdict set, the arbitration point must be
+    // invisible. A block that exits 2 unconditionally would pass every case
+    // above while destroying every ordinary capture.
+    let script = format!(
+        "{preference}\n\
+         $undefinedStatusBitFailure = $null\n\
+         $cleanupFatalMessage = ''\n\
+         $collectorInjectionStarted = $false\n\
+         $collectorTeardownAuthenticated = $true\n\
+         $gradedWindowStarted = $false\n\
+         try {{ }} finally {{ {arbitration} }}\n\
+         exit 0\n"
+    );
+    let path = dir.join("probe_no_verdict.ps1");
+    let mut file = fs::File::create(&path).expect("create probe script");
+    file.write_all(script.as_bytes()).expect("write probe script");
+    drop(file);
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(&path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("run powershell");
+    if status.code() != Some(0) {
+        failures.push(format!(
+            "no verdict set: exit={:?} (wanted 0 -- the arbitration point must \
+             be invisible when there is nothing to report)",
+            status.code()
+        ));
+    }
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        failures.is_empty(),
+        "the harness's compact-status arbitration point does not deliver exit 2 on \
+         every route out of the script:\n  {}\nArbitration point was:\n{arbitration}",
+        failures.join("\n  ")
+    );
 }
 
 /// A whole `if (...) { } elseif (...) { } else { }` chain, as executable text.
@@ -850,31 +1003,54 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
     fs::write(&reporter, "").expect("write probe reporter");
     let absent = dir.join("does_not_exist");
 
+    // The report proves it reached a verdict by printing a receipt on stdout;
+    // an exit code alone is not evidence, because python exits 1 on a
+    // SyntaxError before any of the report's own code runs, and 1 is the
+    // report's code for an ANSWER.
+    let receipt = |code: i32| format!("COMPACT_STATUS_VERDICT={code}");
+
     // (label, report stub behaviour, manifest present, reporter present,
     //  game died, expected: does the verdict block?)
-    let cases: &[(&str, &str, bool, bool, bool, bool)] = &[
-        ("report says clean", "@{Stdout='';Stderr='';ExitCode=0}", true, true, false, false),
-        ("report says blocking", "@{Stdout='';Stderr='';ExitCode=1}", true, true, false, false),
-        ("report says undefined bits", "@{Stdout='';Stderr='';ExitCode=2}", true, true, false, true),
+    let cases: Vec<(&str, String, bool, bool, bool, bool)> = vec![
+        ("report says clean",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), true, true, false, false),
+        ("report says blocking",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=1}}", receipt(1)), true, true, false, false),
+        ("report says undefined bits",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=2}}", receipt(2)), true, true, false, true),
         // The defect this case exists for: the report used to crash onto 1,
         // which the harness reads as an ANSWER and walks past.
-        ("report crashed (3)", "@{Stdout='';Stderr='';ExitCode=3}", true, true, false, true),
-        ("report exited outside its vocabulary", "@{Stdout='';Stderr='';ExitCode=9}", true, true, false, true),
+        ("report crashed (3)",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=3}}", receipt(3)), true, true, false, true),
+        ("report exited outside its vocabulary",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=9}}", receipt(9)), true, true, false, true),
+        // python died BEFORE the report's own code ran (SyntaxError, failed
+        // import, missing interpreter): exit 1 and no receipt. The exit code
+        // alone would read as an answered blocking verdict.
+        ("report died before its own code ran",
+         "@{Stdout='';Stderr='SyntaxError';ExitCode=1}".to_string(), true, true, false, true),
+        ("report printed a receipt that disagrees with its exit code",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(2)), true, true, false, true),
         // Invoke-BoundedNativeCapture throws on timeout.
-        ("report timed out (throw)", "throw 'raw-capture report timed out'", true, true, false, true),
-        ("reporter missing", "@{Stdout='';Stderr='';ExitCode=0}", true, false, false, true),
-        ("no manifest, game lived", "@{Stdout='';Stderr='';ExitCode=0}", false, true, false, true),
+        ("report timed out (throw)",
+         "throw 'raw-capture report timed out'".to_string(), true, true, false, true),
+        ("reporter missing",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), true, false, false, true),
+        ("no manifest, game lived",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), false, true, false, true),
         // The one explained absence: the game died, so there is nothing to grade.
-        ("no manifest, game died", "@{Stdout='';Stderr='';ExitCode=0}", false, true, true, false),
+        ("no manifest, game died",
+         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), false, true, true, false),
     ];
 
     let mut failures = Vec::new();
-    for (label, stub, have_manifest, have_reporter, game_died, want_block) in cases.iter().copied()
-    {
+    for (label, stub, have_manifest, have_reporter, game_died, want_block) in cases.iter() {
+        let (label, have_manifest, have_reporter, game_died, want_block) =
+            (*label, *have_manifest, *have_reporter, *game_died, *want_block);
         let manifest_path = if have_manifest { &manifest } else { &absent };
         let reporter_path = if have_reporter { &reporter } else { &absent };
         let body = if stub.starts_with("throw") {
-            stub.to_string()
+            stub.clone()
         } else {
             format!("[pscustomobject]{stub}")
         };

@@ -2168,7 +2168,31 @@ if ($haveStreamReport -and $haveManifest) {
         # it means, so the capture's status is not merely bad, it is unreadable.
         # Kept OUT of $scriptExitCode's normal recorder-exit path deliberately:
         # this must surface even when the recorder itself exited 0.
-        if ($reportResult.ExitCode -eq 2) {
+        #
+        # The exit code is only believed when the report also printed its
+        # verdict receipt. A SyntaxError, a failed import or a missing
+        # interpreter kills python BEFORE any of the report's own code runs and
+        # exits 1 -- which is the report's code for an ANSWER, and this harness
+        # walks past answers. The receipt is printed only by paths that reached
+        # a verdict, so its ABSENCE means the check did not run.
+        $verdictReceipt = $null
+        if (-not [string]::IsNullOrWhiteSpace($reportResult.Stdout)) {
+            $verdictReceipt = @(
+                $reportResult.Stdout -split "`n" |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { $_ -like 'COMPACT_STATUS_VERDICT=*' }
+            ) | Select-Object -Last 1
+        }
+        if ($null -eq $verdictReceipt) {
+            $undefinedStatusBitFailure =
+                "the raw-capture report exited $($reportResult.ExitCode) without printing its " +
+                "verdict receipt (COMPACT_STATUS_VERDICT=), so its own code never ran and " +
+                "whether this capture published an undefined status bit is UNKNOWN."
+        } elseif ($verdictReceipt -ne "COMPACT_STATUS_VERDICT=$($reportResult.ExitCode)") {
+            $undefinedStatusBitFailure =
+                "the raw-capture report exited $($reportResult.ExitCode) but its receipt says " +
+                "'$verdictReceipt'; the two disagree, so its verdict is UNKNOWN."
+        } elseif ($reportResult.ExitCode -eq 2) {
             $undefinedStatusBitFailure =
                 "capture published status bits no compact-stream contract defines; see the " +
                 "CONTRACT VIOLATION section above. Declare the bit in compact_contract " +
@@ -2355,54 +2379,52 @@ $scriptExitCode = [int]$recorderExit
             Write-SettingsGuardNonThrowingWarning -Message "Settings guard restored IsReadOnly=$settingsGuardPriorReadOnly on '$settingsPath', but could not remove sentinel '$settingsGuardSentinel'. Remove it manually after verifying the attribute. Error: $($_.Exception.Message)"
         }
     }
-    if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
-        # A throw from `finally` terminates the script THERE: it skips the
-        # undefined-status branch after this block entirely, and an uncaught
-        # PowerShell throw returns 1. So a capture that published an undefined
-        # status bit AND hit a cleanup failure silently lost its exit code 2 --
-        # the one code callers were told to key on.
-        #
-        # Both messages are reported either way. What is decided here is only
-        # which one owns the EXIT CODE, and it goes to the undefined-status
-        # verdict because that is the one with a distinct code to lose: a
-        # cleanup fatal has no machine-readable code of its own (it is 1, like
-        # every other failure), so nothing machine-readable is given up.
-        if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
+    # --- the single compact-status arbitration point -------------------------
+    #
+    # This MUST live at the end of `finally`, and there must be exactly one of
+    # it. `finally` is the only place that runs on every route out of this
+    # script: the normal path, a `throw` from the try body (an unauthenticated
+    # teardown, a null recorder exit code, any bug), and the cleanup-fatal
+    # `throw` below. Anywhere else and the verdict is lost:
+    #
+    #   * a `throw` from the try body resumes AFTER `finally` and skips
+    #     everything below this block, returning 1;
+    #   * a `throw` from `finally` itself terminates the script right here.
+    #
+    # `exit` from `finally` beats a pending exception in PowerShell 5.1 -- that
+    # is measured, not assumed (`every_harness_undefined_status_branch_...`
+    # runs this block with an exception already in flight).
+    #
+    # Exit code 2 wins over every co-occurring failure, and every one of them is
+    # still PRINTED. That is a decision, not an accident: each of the others
+    # reports through exit code 1 and so has no machine-readable code to lose,
+    # while 2 exists precisely so a caller can key on it and is gone forever if
+    # anything else exits first.
+    if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
+        # NOT Write-Error: $ErrorActionPreference is 'Stop' for this whole
+        # script, which makes Write-Error TERMINATING, so the `exit 2` below
+        # would never run and PowerShell 5.1 would return 1. Straight to stderr.
+        if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
             [Console]::Error.WriteLine("cleanup failure: $cleanupFatalMessage")
-            [Console]::Error.WriteLine(
-                "compact status verdict: $undefinedStatusBitFailure")
-            [Console]::Error.WriteLine(
-                'Both failed. Exit code 2 reports the compact status verdict; the cleanup failure above still needs an operator.')
-            exit 2
         }
+        if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
+            [Console]::Error.WriteLine(
+                'Capture ended without an authenticated collector teardown receipt.')
+        }
+        if ($gradedWindowStarted) {
+            [Console]::Error.WriteLine(
+                'Capture ended without closing the passive graded window.')
+        }
+        [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
+        [Console]::Error.WriteLine(
+            'Exit code 2 reports the compact status verdict. Any failure printed above still needs an operator.')
+        exit 2
+    }
+    if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
         throw $cleanupFatalMessage
     }
 }
 
-# Every remaining failure below reports through exit code 1, so none of them can
-# LOSE information by yielding the code -- while the compact status verdict has a
-# distinct code (2) that exists precisely so a caller can key on it, and that is
-# gone forever if some other exit 1 runs first. So the status verdict is checked
-# FIRST and every co-occurring failure is still printed.
-#
-# Placed after teardown, not before, so the capture is still finalized,
-# receipted and left on disk: the artifact is exactly what someone has to read
-# to fix the producer.
-if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
-    # NOT Write-Error: $ErrorActionPreference is 'Stop' for this whole script,
-    # which makes Write-Error TERMINATING, so the `exit 2` below would never run
-    # and PowerShell 5.1 would return 1 instead. Straight to stderr.
-    if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
-        [Console]::Error.WriteLine(
-            'Capture ended without an authenticated collector teardown receipt.')
-    }
-    if ($gradedWindowStarted) {
-        [Console]::Error.WriteLine(
-            'Capture ended without closing the passive graded window.')
-    }
-    [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
-    exit 2
-}
 if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
     Write-Error 'Capture ended without an authenticated collector teardown receipt.'
     exit 1
