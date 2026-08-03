@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use crate::adapter::{
-    build_lane_frame_from_adapter_input, AdapterBuildStats, AdapterInput, AdvisorRoot,
-    CharacterPortraitInput, CharacterRoot, CountryLeaderRoleRoot, CountryPoliticsRoot,
+    build_lane_frame_from_adapter_input_ref, AdapterBuildStats, AdapterInput, AdapterInputRef,
+    AdvisorRoot, CharacterPortraitInput, CharacterRoot, CountryLeaderRoleRoot, CountryPoliticsRoot,
     TraitDefinitionRoot, UnitLeaderRoot,
 };
 use crate::domain47_characters_leaders_cabinet_live as compact;
@@ -87,8 +87,15 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
 ) -> NativeScheduledRead {
     let started = Instant::now();
     let (frame, stats) = if cache.has_stable_roots() {
-        let adapter_input = adapter_input_from_cache(cache, frame_input);
-        let adapter_result = build_lane_frame_from_adapter_input(
+        // BORROW the cached roots instead of deep-cloning them into an owned
+        // `AdapterInput` (d47 critical-path work, 2026-08-03). The frame walk
+        // only reads them, and the clone was thousands of per-hour `String`
+        // allocations that were dropped again at the end of the same frame.
+        // `adapter_input_from_cache` still exists and still produces the same
+        // owned value for the fixture/benchmark entry points; both forms feed
+        // the identical builder over the identical data.
+        let adapter_input = adapter_input_ref_from_cache(cache, &frame_input);
+        let adapter_result = build_lane_frame_from_adapter_input_ref(
             mem,
             &cache.roots.expect("checked by has_stable_roots"),
             &adapter_input,
@@ -167,6 +174,29 @@ pub fn adapter_input_from_cache(
         countries: frame_input.countries,
         advisors: cache.advisors.clone(),
         portraits: cache.portraits.clone(),
+    }
+}
+
+/// Allocation-free twin of [`adapter_input_from_cache`]: the same field-for-field
+/// projection, borrowing the cache's root vectors and the frame's country vector
+/// instead of cloning them. `adapter_input_ref_from_cache(c, &f)` is
+/// `adapter_input_from_cache(c, f).as_ref()` by construction —
+/// `adapter_input_ref_matches_owned_projection` pins that equality.
+pub fn adapter_input_ref_from_cache<'a>(
+    cache: &'a NativeRootCache,
+    frame_input: &'a NativeFrameInput,
+) -> AdapterInputRef<'a> {
+    AdapterInputRef {
+        elapsed_wall_ms: frame_input.elapsed_wall_ms,
+        status_flags: frame_input.status_flags,
+        skipped_input_rows: frame_input.skipped_input_rows,
+        characters: &cache.characters,
+        unit_leaders: &cache.unit_leaders,
+        unit_leader_trait_tokens: &cache.unit_leader_trait_tokens,
+        country_leader_roles: &cache.country_leader_roles,
+        countries: &frame_input.countries,
+        advisors: &cache.advisors,
+        portraits: &cache.portraits,
     }
 }
 
@@ -379,6 +409,175 @@ mod tests {
         let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
         assert_ne!(decoded.status_flags & compact::STATUS_PARTIAL_DATA, 0);
         assert!(decoded.rows.is_empty());
+    }
+
+    /// Fixture with EVERY root family populated, so an equality assertion over
+    /// the adapter input cannot pass vacuously.
+    fn borrowed_input_fixture() -> (FakeMemory, NativeRootCache, NativeFrameInput) {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        let leader = 0x2000;
+        let skill_source = 0x2100;
+        let trait_data = 0x2200;
+        let trait_def = 0x2300;
+        let country_leader = 0x3000;
+        let country = 0x4000;
+        let advisor = 0x5000;
+
+        write_character(&mut mem, character, 1458, 2);
+        mem.write_u64(leader, ARMY_VT);
+        mem.write_u32(leader + CUNIT_LEADER_TYPE_OFF, CUNIT_LEADER_TYPE_ID);
+        mem.write_u32(leader + CUNIT_LEADER_ID_OFF, 500);
+        mem.write_u32(leader + CUNIT_LEADER_CHARACTER_ID_COPY_OFF, 1458);
+        mem.write_i32(leader + CUNIT_LEADER_EXPERIENCE_RAW_OFF, 42_000);
+        mem.write_u64(leader + CUNIT_LEADER_SKILL_SOURCE_PTR_OFF, skill_source);
+        mem.write_u32(skill_source + CUNIT_LEADER_SKILL_VALUE_OFF, 4);
+        mem.write_u8(leader + CARMY_LEADER_ATTACK_OFF, 6);
+        mem.write_u8(leader + CARMY_LEADER_DEFENSE_OFF, 7);
+        mem.write_u8(leader + CARMY_LEADER_PLANNING_OFF, 5);
+        mem.write_u8(leader + CARMY_LEADER_LOGISTICS_OFF, 8);
+        mem.write_u64(leader + CUNIT_LEADER_TRAIT_DATA_OFF, trait_data);
+        mem.write_u32(leader + CUNIT_LEADER_TRAIT_CAPACITY_OFF, 1);
+        mem.write_u32(leader + CUNIT_LEADER_TRAIT_SIZE_OFF, 1);
+        mem.write_u64(trait_data, trait_def);
+        mem.write_u64(trait_def, TRAIT_VT);
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character);
+        mem.write_u64(advisor, ADVISOR_VT);
+        mem.write_u64(advisor + CADVISOR_CHARACTER_PTR_OFF, character);
+
+        let cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            skipped_root_rows: 0,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            unit_leaders: vec![UnitLeaderRoot {
+                leader_addr: leader,
+                country_tag_db_id: 2,
+                leader_kind: compact::UNIT_LEADER_ARMY,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            unit_leader_trait_tokens: vec![TraitDefinitionRoot {
+                trait_addr: trait_def,
+                token: "old_guard".to_string(),
+            }],
+            country_leader_roles: vec![CountryLeaderRoleRoot {
+                country_leader_addr: country_leader,
+                country_tag_db_id: 2,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            advisors: vec![AdvisorRoot {
+                advisor_addr: advisor,
+                idea_token: "ENG_maxwell_aitken".to_string(),
+                slot: Some("political_advisor".to_string()),
+                ledger: None,
+            }],
+            portraits: vec![CharacterPortraitInput {
+                country_tag_db_id: 2,
+                char_id: 1458,
+                role: "civilian".to_string(),
+                size: "large".to_string(),
+                gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
+            }],
+        };
+        let frame_input = NativeFrameInput {
+            elapsed_wall_ms: 88,
+            status_flags: 0,
+            skipped_input_rows: 3,
+            countries: vec![CountryPoliticsRoot {
+                country_addr: country,
+                country_tag_db_id: 2,
+                ruling_party: Some("democratic".to_string()),
+                ruler_name: Some("Maxwell Aitken".to_string()),
+                ruler_token: Some("ENG_maxwell_aitken".to_string()),
+                active_idea_tokens: vec!["ENG_maxwell_aitken".to_string()],
+            }],
+        };
+        (mem, cache, frame_input)
+    }
+
+    /// The borrowed projection must be the owned projection, field for field.
+    ///
+    /// MUTATION: point any field of `adapter_input_ref_from_cache` at a
+    /// different cache vector (e.g. `advisors: &cache.portraits`… or simply
+    /// swap `characters` and `country_leader_roles`), or drop
+    /// `skipped_input_rows` — this equality fails.
+    #[test]
+    fn adapter_input_ref_matches_owned_projection() {
+        let (_mem, cache, frame_input) = borrowed_input_fixture();
+        let owned = adapter_input_from_cache(&cache, frame_input.clone());
+        let borrowed = adapter_input_ref_from_cache(&cache, &frame_input);
+        assert_eq!(borrowed, owned.as_ref());
+        // Non-vacuity: every root family carries at least one row.
+        assert!(!borrowed.characters.is_empty());
+        assert!(!borrowed.unit_leaders.is_empty());
+        assert!(!borrowed.unit_leader_trait_tokens.is_empty());
+        assert!(!borrowed.country_leader_roles.is_empty());
+        assert!(!borrowed.countries.is_empty());
+        assert!(!borrowed.advisors.is_empty());
+        assert!(!borrowed.portraits.is_empty());
+        assert_eq!(borrowed.skipped_input_rows, 3);
+    }
+
+    /// End-to-end: the scheduled read (which now BORROWS the root cache) must
+    /// produce the byte-identical payload, row count and adapter stats that the
+    /// owned clone-then-build path produces.
+    ///
+    /// SCOPE, stated honestly: `build_lane_frame_from_adapter_input` DELEGATES
+    /// to the `_ref` builder, so this test cannot detect a change inside the
+    /// shared builder body — that is what the pre-existing adapter tests cover.
+    /// What it does pin is everything the borrowed path does DIFFERENTLY: the
+    /// `adapter_input_ref_from_cache` projection and the PARTIAL/clean wrapping
+    /// in `read_native_scheduled_frame` that consumes it.
+    ///
+    /// MUTATION: make `adapter_input_ref_from_cache` hand the builder an empty
+    /// `countries` slice (or any wrong/missing root family), or drop the
+    /// `adapter_input.skipped_input_rows != 0` arm from the scheduled reader —
+    /// the payload diverges and this fails.
+    #[test]
+    fn borrowed_scheduled_read_matches_owned_build() {
+        let (mem, cache, frame_input) = borrowed_input_fixture();
+        // The fixture deliberately carries skipped_input_rows, which makes the
+        // scheduled reader emit the rowless-PARTIAL frame; compare the CLEAN
+        // build too so the row-bearing path is covered.
+        let mut clean_input = frame_input.clone();
+        clean_input.skipped_input_rows = 0;
+
+        for input in [frame_input, clean_input] {
+            let read = read_native_scheduled_frame(&mem, &cache, input.clone());
+            let owned = adapter_input_from_cache(&cache, input);
+            let owned_result = crate::adapter::build_lane_frame_from_adapter_input(
+                &mem,
+                &cache.roots.expect("fixture has roots"),
+                &owned,
+            );
+            let expected_frame = if cache.skipped_root_rows != 0
+                || owned_result.stats.has_rejections()
+                || owned.skipped_input_rows != 0
+            {
+                let mut frame = LaneFrame::new(owned.elapsed_wall_ms);
+                frame.status_flags = owned.status_flags | compact::STATUS_PARTIAL_DATA;
+                frame
+            } else {
+                owned_result.frame.clone()
+            };
+            assert_eq!(
+                read.payload,
+                encode_frame_payload(&expected_frame),
+                "payload must be byte-identical to the owned build"
+            );
+            assert_eq!(read.adapter_stats, owned_result.stats);
+            assert_eq!(read.status_flags, {
+                let gate = compact::decode_payload(0, &read.payload);
+                gate.status_flags_or | expected_frame.status_flags
+            });
+        }
     }
 
     #[test]

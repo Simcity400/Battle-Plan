@@ -36,6 +36,44 @@ pub struct AdapterInput {
     pub portraits: Vec<CharacterPortraitInput>,
 }
 
+/// Borrowed twin of [`AdapterInput`]. The frame walk only ever READS its root
+/// lists, but the scheduled reader used to hand it an owned `AdapterInput`
+/// deep-cloned out of the persistent root cache — thousands of `String`
+/// allocations per hour purely to be dropped again at the end of the frame.
+/// The build below is written against this borrowed form and [`AdapterInput`]
+/// simply lends its vectors to it, so both entry points execute the identical
+/// code over the identical data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdapterInputRef<'a> {
+    pub elapsed_wall_ms: u64,
+    pub status_flags: u32,
+    pub skipped_input_rows: u32,
+    pub characters: &'a [CharacterRoot],
+    pub unit_leaders: &'a [UnitLeaderRoot],
+    pub unit_leader_trait_tokens: &'a [TraitDefinitionRoot],
+    pub country_leader_roles: &'a [CountryLeaderRoleRoot],
+    pub countries: &'a [CountryPoliticsRoot],
+    pub advisors: &'a [AdvisorRoot],
+    pub portraits: &'a [CharacterPortraitInput],
+}
+
+impl AdapterInput {
+    pub fn as_ref(&self) -> AdapterInputRef<'_> {
+        AdapterInputRef {
+            elapsed_wall_ms: self.elapsed_wall_ms,
+            status_flags: self.status_flags,
+            skipped_input_rows: self.skipped_input_rows,
+            characters: &self.characters,
+            unit_leaders: &self.unit_leaders,
+            unit_leader_trait_tokens: &self.unit_leader_trait_tokens,
+            country_leader_roles: &self.country_leader_roles,
+            countries: &self.countries,
+            advisors: &self.advisors,
+            portraits: &self.portraits,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharacterRoot {
     pub character_addr: u64,
@@ -180,6 +218,14 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     roots: &ResolvedTypeRoots,
     input: &AdapterInput,
 ) -> AdapterBuildResult {
+    build_lane_frame_from_adapter_input_ref(mem, roots, &input.as_ref())
+}
+
+pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
+    mem: &M,
+    roots: &ResolvedTypeRoots,
+    input: &AdapterInputRef<'_>,
+) -> AdapterBuildResult {
     let mut frame = LaneFrame::new(input.elapsed_wall_ms);
     frame.status_flags = input.status_flags;
     let mut stats = AdapterBuildStats::default();
@@ -194,7 +240,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     let mut characters_by_id = BTreeMap::<u32, CharacterRecord>::new();
     let mut ambiguous_character_ids = BTreeSet::new();
     stats.character_roots_seen = input.characters.len().min(u32::MAX as usize) as u32;
-    for root in &input.characters {
+    for root in input.characters {
         match read_character_raw_fields(mem, roots, root.character_addr) {
             Ok(raw) => {
                 if ambiguous_character_ids.contains(&raw.char_id) {
@@ -251,7 +297,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     stats.character_rows = frame.characters.len().min(u32::MAX as usize) as u32;
 
     stats.unit_leader_roots_seen = input.unit_leaders.len().min(u32::MAX as usize) as u32;
-    for root in &input.unit_leaders {
+    for root in input.unit_leaders {
         match read_unit_leader(mem, roots, root, &trait_tokens) {
             Ok((leader, traits, missing_trait_tokens)) => {
                 known_characters.insert((leader.country_tag_db_id, leader.char_id));
@@ -275,7 +321,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
 
     stats.country_leader_roots_seen =
         input.country_leader_roles.len().min(u32::MAX as usize) as u32;
-    for root in &input.country_leader_roles {
+    for root in input.country_leader_roles {
         match read_country_leader_role(mem, roots, root) {
             Ok(row) => {
                 known_characters.insert((row.country_tag_db_id, row.char_id));
@@ -294,7 +340,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     stats.country_leader_role_rows = frame.country_leader_roles.len().min(u32::MAX as usize) as u32;
 
     stats.country_roots_seen = input.countries.len().min(u32::MAX as usize) as u32;
-    for root in &input.countries {
+    for root in input.countries {
         match read_active_ruler_from_country(
             mem,
             roots,
@@ -327,7 +373,7 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     stats.active_ruler_rows = frame.active_rulers.len().min(u32::MAX as usize) as u32;
 
     stats.advisor_roots_seen = input.advisors.len().min(u32::MAX as usize) as u32;
-    for root in &input.advisors {
+    for root in input.advisors {
         match read_advisor_raw_fields(mem, roots, root.advisor_addr) {
             Ok(raw) => {
                 known_characters.insert((raw.country_tag_db_id, raw.char_id));
@@ -361,12 +407,12 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     // empty list. Leveled/modded idea identities remain fail-closed because
     // only literal identity equality is admitted.
     frame.appointed_advisors =
-        appointed_advisors_from_country_active_ideas(&frame.advisor_roster, &input.countries);
+        appointed_advisors_from_country_active_ideas(&frame.advisor_roster, input.countries);
     stats.appointed_advisor_rows =
         frame.appointed_advisors.len().min(u32::MAX as usize) as u32;
 
     stats.portrait_inputs_seen = input.portraits.len().min(u32::MAX as usize) as u32;
-    for portrait in &input.portraits {
+    for portrait in input.portraits {
         if known_characters.contains(&(portrait.country_tag_db_id, portrait.char_id)) {
             frame.character_portraits.push(CharacterPortraitRecord {
                 country_tag_db_id: portrait.country_tag_db_id,
