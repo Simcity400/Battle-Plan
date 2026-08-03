@@ -81,10 +81,30 @@ def score(manifest):
 
     # The hours the clock advanced through but no frame observed, and the part
     # of that which no skipped-hour gap explains.
-    hours_unobserved = advanced - observed
-    hours_unaccounted = hours_unobserved - sum(
-        count for reason, count in gap_ledger.items() if reason in SKIPPED_HOUR_REASONS
-    )
+    #
+    # Two traps here, both of which produced wrong numbers on t15 and both of
+    # which are the reason this quantity must not be eyeballed:
+    #
+    # 1. `game_hours_advanced` is a DELTA (last_hour - first_hour), while
+    #    `unique_game_hour_count` is a COUNT. Subtracting one from the other
+    #    drops the inclusive endpoint and reports one hour too few -- 145 where
+    #    the capture really has 146. The span is `advanced + 1` hours.
+    # 2. `skipped_hour` gap entries are COALESCED RANGES, so counting the
+    #    records counts runs, not hours. t15 carries 125 such records covering
+    #    exactly 146 hours (105 runs of 1, 19 of 2, 1 of 3). Comparing 146
+    #    against 125 invents 20 unexplained hours that do not exist.
+    span_hours = advanced + 1 if advanced or observed else 0
+    hours_unobserved = span_hours - observed
+    skipped_hours_covered = 0
+    for gap in stream.get("gaps", []) or []:
+        if gap.get("reason") not in SKIPPED_HOUR_REASONS:
+            continue
+        start = gap.get("hour_start")
+        end = gap.get("hour_end")
+        if start is None or end is None or end < start:
+            continue
+        skipped_hours_covered += end - start + 1
+    hours_unaccounted = hours_unobserved - skipped_hours_covered
 
     # A domain can be absent from `per_domain` and still be emitting gaps, so
     # name both shapes: it is the shape the per-domain report cannot see.
@@ -130,10 +150,12 @@ def score(manifest):
 
     axes = [
         ("hours the clock advanced but no frame observed", hours_unobserved,
-         f"{observed} observed of {advanced} advanced"),
+         f"{observed} observed of {span_hours} in span "
+         f"(game_hours_advanced={advanced} is a delta, so the span is +1)"),
         ("...of those, hours no skipped-hour gap explains", hours_unaccounted,
          f"manifest declares skipped_game_hours={skipped_declared}, "
-         f"ledger carries {gap_ledger.get('skipped_hour', 0)} skipped_hour gaps"),
+         f"ledger carries {gap_ledger.get('skipped_hour', 0)} skipped_hour "
+         f"records covering {skipped_hours_covered} hours"),
         ("domain-hours with a gap instead of data", sum(gap_outcomes.values()),
          ", ".join(f"{r}={n}" for r, n in sorted(gap_outcomes.items())) or "none"),
         ("domain-hours no ledger accounts for", unresolved_domain_hours,
