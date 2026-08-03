@@ -8930,6 +8930,10 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             "convoy_transport_attack_resolver_route_bindings",
             witness.resolver_route_bindings as u64,
         );
+        add_unit(
+            "convoy_transport_attack_resolver_unbound_convoy_clients",
+            witness.resolver_unbound_convoy_clients as u64,
+        );
         add_unit("convoy_transport_attack_dropped_events", dropped_events);
         for (name, count) in drop_counts {
             add_unit(name, count);
@@ -8944,6 +8948,17 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             1,
         );
     }
+    // Reported as its own problem, not folded into the incomplete witness: a
+    // batch can be incomplete for reasons that have nothing to do with the
+    // resolver, and a consumer deciding whether these rows cover every convoy
+    // member needs the resolver's own partiality named. Zero here with an
+    // incomplete witness means the loss was elsewhere.
+    add_compact_domain_problem(
+        summary,
+        COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+        "convoy_transport_attack_resolver_unbound_convoy_clients",
+        witness.resolver_unbound_convoy_clients as u64,
+    );
     add_compact_domain_problem(
         summary,
         COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,

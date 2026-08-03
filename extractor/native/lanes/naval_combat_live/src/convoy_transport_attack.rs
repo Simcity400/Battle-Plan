@@ -590,6 +590,7 @@ mod tests {
             resolver_game_hour_raw: 61_000_000,
             resolver_member_bindings: 4,
             resolver_route_bindings: 2,
+            resolver_unbound_convoy_clients: 0,
             telemetry: ConvoyTransportAttackTelemetry {
                 callbacks_seen: emitted,
                 original_calls: emitted,
@@ -610,6 +611,66 @@ mod tests {
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
         assert!(decoded.exact_events_complete);
         assert_eq!(decoded.rows, expected);
+    }
+
+    /// The partial batch must SURVIVE. If the collector ever goes back to
+    /// discarding a drain whose resolver was partial, these rows disappear and
+    /// this fails on the row assertions.
+    #[test]
+    fn cta2_publishes_rows_captured_under_a_partial_resolver() {
+        let expected = vec![
+            row(7, ConvoyD70MutationKind::IncrementExisting),
+            row(8, ConvoyD70MutationKind::AppendFirstSeen),
+        ];
+        let mut witness = witness(&expected);
+        witness.resolver_unbound_convoy_clients = 1;
+        let encoded = encode_convoy_transport_attack_batch(&expected, witness).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        // The readable events are on the wire...
+        assert_eq!(decoded.rows, expected);
+        // ...and the batch does not claim to be exhaustive.
+        assert!(!decoded.exact_events_complete);
+    }
+
+    /// The partiality must be RECORDED, and must survive the round trip as an
+    /// exact count rather than a bit. If the field is dropped from the header
+    /// the count reads back 0 and this fails.
+    #[test]
+    fn cta2_carries_the_exact_unbound_convoy_client_count() {
+        let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
+        for unbound in [0u32, 1, 9_865, u32::MAX] {
+            let mut witness = witness(&rows);
+            witness.resolver_unbound_convoy_clients = unbound;
+            let encoded = encode_convoy_transport_attack_batch(&rows, witness).unwrap();
+            let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+            assert_eq!(
+                decoded.witness.resolver_unbound_convoy_clients, unbound,
+                "unbound count must round-trip exactly"
+            );
+            assert_eq!(
+                decoded.exact_events_complete,
+                unbound == 0,
+                "a partial resolver must disqualify the exhaustive claim"
+            );
+        }
+    }
+
+    /// A batch whose header claims completeness while carrying unbound clients
+    /// is refused outright, so the flag cannot be forged independently of the
+    /// count.
+    #[test]
+    fn cta2_rejects_a_complete_flag_over_a_partial_resolver() {
+        let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
+        let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
+        assert!(decode_convoy_transport_attack_batch(&encoded)
+            .unwrap()
+            .exact_events_complete);
+        // Flip only the count; the COMPLETE flag in the header stays set.
+        encoded[188..192].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            decode_convoy_transport_attack_batch(&encoded),
+            Err(BatchDecodeError::InvalidWitness("complete_flag"))
+        );
     }
 
     #[test]
