@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 
+#[path = "src/domain44_contract.rs"]
+mod domain44_contract;
+
 pub const DOMAIN_ID: u16 = 44;
 pub const DOMAIN_NAME: &str = "supply_logistics_attrition_live";
 pub const HEADER_LEN_LEGACY: usize = 48;
@@ -10,45 +13,66 @@ pub const FIXED_SCALE_RAW: u32 = 100_000;
 
 pub const STATUS_COMPACT_HEALTH_OK: u32 = 0;
 
-pub const ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
-pub const ROW_KIND_DIVISION_SUPPLY: u32 = 2;
-pub const ROW_KIND_COMPUTED_BADGE: u32 = 3;
-pub const ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
-pub const ROW_KIND_COUNTRY_DISRUPTED_SUPPLY: u32 = 5;
+pub const ROW_KIND_PROVINCE_LOGISTICS: u32 = domain44_contract::ROW_KIND_PROVINCE_LOGISTICS;
+pub const ROW_KIND_DIVISION_SUPPLY: u32 = domain44_contract::ROW_KIND_DIVISION_SUPPLY;
+pub const ROW_KIND_COMPUTED_BADGE: u32 = domain44_contract::ROW_KIND_COMPUTED_BADGE;
+pub const ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 =
+    domain44_contract::ROW_KIND_CSUPPLY_PROVINCE_INPUT;
+pub const ROW_KIND_COUNTRY_DISRUPTED_SUPPLY: u32 =
+    domain44_contract::ROW_KIND_COUNTRY_DISRUPTED_SUPPLY;
 // Keep this lane-local, explicitly non-production candidate on a disjoint id.
-pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 = 6;
+pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 =
+    domain44_contract::ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE;
 
-pub const ROW_FLAG_RAIL: u32 = 1;
-pub const ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;
-pub const ROW_FLAG_NAVAL_SUPPLY_HUB: u32 = 1 << 2;
-pub const ROW_FLAG_INFRASTRUCTURE: u32 = 1 << 3;
-pub const ROW_FLAG_LIVE_BUILDING_VECTOR: u32 = 1 << 4;
-pub const ROW_FLAG_DIVISION_CURRENT_SUPPLY: u32 = 1 << 5;
-pub const ROW_FLAG_DIVISION_MAX_SUPPLY: u32 = 1 << 6;
-pub const ROW_FLAG_DIVISION_SUPPLY_GAIN: u32 = 1 << 7;
-pub const ROW_FLAG_DIVISION_OWNER: u32 = 1 << 8;
-pub const ROW_FLAG_EXACT_SUPPLY_WALL: u32 = 1 << 9;
-pub const ROW_FLAG_ATTRITION_WALL: u32 = 1 << 10;
-pub const ROW_FLAG_PROXY_VALUE: u32 = 1 << 11;
-pub const ROW_FLAG_DIVISION_SUPPLY_DEFICIT: u32 = 1 << 12;
-pub const ROW_FLAG_DIVISION_FUEL: u32 = 1 << 13;
-pub const ROW_FLAG_MOTORIZATION_WALL: u32 = 1 << 14;
-pub const ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
-pub const ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
-pub const ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
-pub const ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
-pub const ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT: u32 = 1 << 19;
-pub const ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: u32 = 1 << 20;
-pub const ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE: u32 = 1 << 21;
-pub const ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT: u32 = 1 << 22;
-pub const ROW_ID_DELETED: u32 = 1 << 31;
+pub const ROW_FLAG_RAIL: u32 = domain44_contract::ROW_FLAG_RAIL;
+pub const ROW_FLAG_SUPPLY_NODE: u32 = domain44_contract::ROW_FLAG_SUPPLY_NODE;
+pub const ROW_FLAG_NAVAL_SUPPLY_HUB: u32 = domain44_contract::ROW_FLAG_NAVAL_SUPPLY_HUB;
+pub const ROW_FLAG_INFRASTRUCTURE: u32 = domain44_contract::ROW_FLAG_INFRASTRUCTURE;
+pub const ROW_FLAG_LIVE_BUILDING_VECTOR: u32 = domain44_contract::ROW_FLAG_LIVE_BUILDING_VECTOR;
+pub const ROW_FLAG_DIVISION_CURRENT_SUPPLY: u32 =
+    domain44_contract::ROW_FLAG_DIVISION_CURRENT_SUPPLY;
+pub const ROW_FLAG_DIVISION_MAX_SUPPLY: u32 = domain44_contract::ROW_FLAG_DIVISION_MAX_SUPPLY;
+pub const ROW_FLAG_DIVISION_SUPPLY_GAIN: u32 = domain44_contract::ROW_FLAG_DIVISION_SUPPLY_GAIN;
+pub const ROW_FLAG_DIVISION_OWNER: u32 = domain44_contract::ROW_FLAG_DIVISION_OWNER;
+pub const ROW_FLAG_EXACT_SUPPLY_WALL: u32 = domain44_contract::ROW_FLAG_EXACT_SUPPLY_WALL;
+pub const ROW_FLAG_ATTRITION_WALL: u32 = domain44_contract::ROW_FLAG_ATTRITION_WALL;
+pub const ROW_FLAG_PROXY_VALUE: u32 = domain44_contract::ROW_FLAG_PROXY_VALUE;
+pub const ROW_FLAG_DIVISION_SUPPLY_DEFICIT: u32 =
+    domain44_contract::ROW_FLAG_DIVISION_SUPPLY_DEFICIT;
+pub const ROW_FLAG_DIVISION_FUEL: u32 = domain44_contract::ROW_FLAG_DIVISION_FUEL;
+pub const ROW_FLAG_MOTORIZATION_WALL: u32 = domain44_contract::ROW_FLAG_MOTORIZATION_WALL;
+pub const ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = domain44_contract::ROW_FLAG_CONVOY_PRESSURE_WALL;
+pub const ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 =
+    domain44_contract::ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED;
+pub const ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = domain44_contract::ROW_FLAG_CSUPPLY_EFFICIENCY;
+pub const ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 =
+    domain44_contract::ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
+pub const ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT: u32 =
+    domain44_contract::ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT;
+pub const ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: u32 =
+    domain44_contract::ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE;
+pub const ROW_FLAG_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: u32 =
+    domain44_contract::ROW_FLAG_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
+pub const ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE: u32 =
+    domain44_contract::ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE;
+pub const ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT: u32 =
+    domain44_contract::ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT;
+pub const ROW_ID_DELETED: u32 = domain44_contract::ROW_ID_DELETED;
 
-pub const BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 = 1;
-pub const BADGE_ATTRITION_RUNTIME_COMPUTED: i32 = 2;
-pub const BADGE_MOTORIZATION_SETTINGS_UNPINNED: i32 = 3;
-pub const BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 = 4;
-pub const BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
-pub const BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 = 6;
+pub const BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 =
+    domain44_contract::BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT;
+pub const BADGE_ATTRITION_RUNTIME_COMPUTED: i32 =
+    domain44_contract::BADGE_ATTRITION_RUNTIME_COMPUTED;
+pub const BADGE_MOTORIZATION_SETTINGS_UNPINNED: i32 =
+    domain44_contract::BADGE_MOTORIZATION_SETTINGS_UNPINNED;
+pub const BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 =
+    domain44_contract::BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED;
+pub const BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 =
+    domain44_contract::BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE;
+pub const BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 =
+    domain44_contract::BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE;
+pub const BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: i32 =
+    domain44_contract::BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
 
 pub const MAX_PROVINCE_ID: u32 = portable_admission::SUPPLY_MAX_PROVINCE_ID;
 pub const MAX_STATE_ID: u32 = 1_081;
@@ -60,29 +84,7 @@ pub const MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 pub const MAX_BUILDING_LEVEL: i32 = 1_000;
 pub const MAX_COUNTRY_DISRUPTED_SUPPLY_RAW: i32 = FIXED_SCALE_RAW as i32;
 
-const VALID_ROW_FLAGS: u32 = ROW_FLAG_RAIL
-    | ROW_FLAG_SUPPLY_NODE
-    | ROW_FLAG_NAVAL_SUPPLY_HUB
-    | ROW_FLAG_INFRASTRUCTURE
-    | ROW_FLAG_LIVE_BUILDING_VECTOR
-    | ROW_FLAG_DIVISION_CURRENT_SUPPLY
-    | ROW_FLAG_DIVISION_MAX_SUPPLY
-    | ROW_FLAG_DIVISION_SUPPLY_GAIN
-    | ROW_FLAG_DIVISION_OWNER
-    | ROW_FLAG_EXACT_SUPPLY_WALL
-    | ROW_FLAG_ATTRITION_WALL
-    | ROW_FLAG_PROXY_VALUE
-    | ROW_FLAG_DIVISION_SUPPLY_DEFICIT
-    | ROW_FLAG_DIVISION_FUEL
-    | ROW_FLAG_MOTORIZATION_WALL
-    | ROW_FLAG_CONVOY_PRESSURE_WALL
-    | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
-    | ROW_FLAG_CSUPPLY_EFFICIENCY
-    | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY
-    | ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT
-    | ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE
-    | ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE
-    | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT;
+const VALID_ROW_FLAGS: u32 = domain44_contract::LANE_LOCAL_VALID_ROW_FLAGS;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupplyLogisticsHeader {
@@ -234,11 +236,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut seen_csupply_input_provinces = BTreeSet::new();
     let mut seen_country_disrupted_supply = BTreeSet::new();
     let mut seen_pressure_candidates = BTreeSet::new();
-    let mut has_exact_supply_wall = false;
-    let mut has_attrition_wall = false;
-    let mut has_motorization_wall = false;
-    let mut has_convoy_pressure_wall = false;
-    let mut has_csupply_candidate_rejected = false;
+    let mut seen_badge_flags = 0u32;
     let mut has_country_disrupted_source_available = false;
     let mut cursor = header_len;
     for row_index in 0..row_count {
@@ -254,11 +252,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         let aux_raw = read_i32_le(payload, cursor + 36);
         cursor += ROW_LEN;
 
-        if flags & !VALID_ROW_FLAGS != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: supply logistics row {row_index} has unknown flags {flags}"
-            ));
-        }
+        domain44_contract::validate_row_flags(
+            offset,
+            row_index,
+            row_kind,
+            flags,
+            VALID_ROW_FLAGS,
+            &mut summary.parse_errors,
+        );
         match row_kind {
             ROW_KIND_PROVINCE_LOGISTICS => {
                 decoded_province_rows = decoded_province_rows.saturating_add(1);
@@ -631,70 +632,16 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         "offset {offset}: supply logistics badge row {row_index} has nonzero reserved value fields"
                     ));
                 }
-                let badge_flags = flags
-                    & (ROW_FLAG_EXACT_SUPPLY_WALL
-                        | ROW_FLAG_ATTRITION_WALL
-                        | ROW_FLAG_MOTORIZATION_WALL
-                        | ROW_FLAG_CONVOY_PRESSURE_WALL
-                        | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
-                        | ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE);
-                if badge_flags.count_ones() != 1 {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics badge row {row_index} must carry exactly one badge flag"
-                    ));
-                }
-                if flags != badge_flags {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics badge row {row_index} has non-badge flags"
-                    ));
-                }
-                if flags & ROW_FLAG_EXACT_SUPPLY_WALL != 0 {
-                    has_exact_supply_wall = true;
-                    if value_a_raw != BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics exact-supply badge row {row_index} has invalid code {value_a_raw}"
-                        ));
-                    }
-                }
-                if flags & ROW_FLAG_ATTRITION_WALL != 0 {
-                    has_attrition_wall = true;
-                    if value_a_raw != BADGE_ATTRITION_RUNTIME_COMPUTED {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics attrition badge row {row_index} has invalid code {value_a_raw}"
-                        ));
-                    }
-                }
-                if flags & ROW_FLAG_MOTORIZATION_WALL != 0 {
-                    has_motorization_wall = true;
-                    if value_a_raw != BADGE_MOTORIZATION_SETTINGS_UNPINNED {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics motorization badge row {row_index} has invalid code {value_a_raw}"
-                        ));
-                    }
-                }
-                if flags & ROW_FLAG_CONVOY_PRESSURE_WALL != 0 {
-                    has_convoy_pressure_wall = true;
-                    if value_a_raw != BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics convoy-pressure badge row {row_index} has invalid code {value_a_raw}"
-                        ));
-                    }
-                }
-                if flags & ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED != 0 {
-                    has_csupply_candidate_rejected = true;
-                    if value_a_raw != BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics csupply candidate badge row {row_index} has invalid code {value_a_raw}"
-                        ));
-                    }
-                }
-                if flags & ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE != 0 {
-                    has_country_disrupted_source_available = true;
-                    if value_a_raw != BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics country-disrupted source badge row {row_index} has invalid code {value_a_raw}"
-                        ));
-                    }
+                if let Some(spec) = domain44_contract::validate_badge_row(
+                    offset,
+                    row_index,
+                    flags,
+                    value_a_raw,
+                    &mut summary.parse_errors,
+                ) {
+                    seen_badge_flags |= spec.flag;
+                    has_country_disrupted_source_available |=
+                        spec.flag == ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE;
                 }
                 add_unit(&mut summary, "computed_badge_rows", 1);
             }
@@ -737,22 +684,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             "offset {offset}: supply logistics disrupted rows lack exact-source availability badge"
         ));
     }
-    for (label, present) in [
-        ("exact supply wall", has_exact_supply_wall),
-        ("attrition wall", has_attrition_wall),
-        ("motorization wall", has_motorization_wall),
-        ("convoy pressure wall", has_convoy_pressure_wall),
-        (
-            "csupply candidate rejection",
-            has_csupply_candidate_rejected,
-        ),
-    ] {
-        if !present {
-            summary.parse_errors.push(format!(
-                "offset {offset}: supply logistics missing {label} badge row"
-            ));
-        }
-    }
+    domain44_contract::validate_baseline_badge_coverage(
+        offset,
+        seen_badge_flags,
+        false,
+        &mut summary.parse_errors,
+    );
 
     summary.data_rows_total = row_count as u64;
     summary.province_rows_total = decoded_province_rows as u64;

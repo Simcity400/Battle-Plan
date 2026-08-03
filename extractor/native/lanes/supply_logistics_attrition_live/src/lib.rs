@@ -6,6 +6,8 @@
 
 use std::collections::BTreeSet;
 
+pub mod domain44_contract;
+
 #[cfg(windows)]
 pub mod a729_tooltip_hook;
 #[cfg(all(windows, target_arch = "x86_64"))]
