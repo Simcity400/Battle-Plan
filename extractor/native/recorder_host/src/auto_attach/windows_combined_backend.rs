@@ -2027,14 +2027,17 @@ mod h4cr_read_path_tests {
             )
         })
         .expect("connect H4CR client");
-        // The client attached first, so ConnectNamedPipe completes at once
-        // with ERROR_PIPE_CONNECTED; either outcome means connected.
+        // The client attached before this call, so ConnectNamedPipe is
+        // documented to complete at once with ERROR_PIPE_CONNECTED. Insist on
+        // exactly that: accepting ERROR_IO_PENDING here and then dropping the
+        // operation would free an OVERLAPPED the kernel still owns, so the
+        // sequencing this harness depends on is asserted rather than assumed.
         let mut operation = PendingOperation::new(Vec::new()).expect("connect operation");
         if unsafe { ConnectNamedPipe(server.raw(), &mut operation.overlapped) } == 0 {
             let error = unsafe { GetLastError() };
-            assert!(
-                error == ERROR_PIPE_CONNECTED || error == ERROR_IO_PENDING,
-                "ConnectNamedPipe failed with {error}"
+            assert_eq!(
+                error, ERROR_PIPE_CONNECTED,
+                "the client must already be attached before ConnectNamedPipe"
             );
         }
         let peer =
@@ -2139,9 +2142,12 @@ mod h4cr_read_path_tests {
     #[test]
     fn the_read_scratch_is_allocated_once_and_reused() {
         let Pair { mut server, client } = connected_pair();
-        // The middle record is larger than the scratch, so its exact read
-        // needs several passes and each pass must reuse the same buffer.
-        let records: Vec<Vec<u8>> = [64usize, 2 * H4CR_READ_CHUNK_BYTES + 9, 128]
+        // Every record here stays well under the chunk, so no read reaches the
+        // tail of the scratch and a sentinel planted there is a valid witness
+        // that the SAME allocation was carried forward. Reuse across the
+        // multi-pass path (records larger than the chunk) is covered by
+        // `exact_reads_preserve_record_framing_across_a_reused_scratch`.
+        let records: Vec<Vec<u8>> = [64usize, 4096, 128, 9000]
             .into_iter()
             .enumerate()
             .map(|(i, len)| pattern(i + 100, len))
@@ -2159,13 +2165,19 @@ mod h4cr_read_path_tests {
         let mut first = vec![0u8; records[0].len()];
         server.recv_exact_cancellable(&mut first).expect("first read");
         assert!(first == records[0], "the first record did not match");
-        let scratch = server.read_scratch.as_ref().expect("scratch after a read");
+        let scratch = server.read_scratch.as_mut().expect("scratch after a read");
         assert_eq!(
             scratch.len(),
             H4CR_READ_CHUNK_BYTES,
             "the scratch is sized to the chunk, not to the record"
         );
         let identity = scratch.as_ptr();
+        // Pointer equality alone is not proof: an allocator may hand back the
+        // address it just freed. Plant a sentinel PAST the region the next
+        // reads can reach -- a reallocation zeroes it, and so does a
+        // free-then-same-address reuse, so only genuine carry-forward keeps it.
+        let sentinel_at = H4CR_READ_CHUNK_BYTES - 1;
+        scratch[sentinel_at] = 0xA5;
 
         for (index, expected) in records.iter().enumerate().skip(1) {
             let mut got = vec![0u8; expected.len()];
@@ -2183,6 +2195,10 @@ mod h4cr_read_path_tests {
                 scratch.len(),
                 H4CR_READ_CHUNK_BYTES,
                 "record {index} resized the scratch"
+            );
+            assert_eq!(
+                scratch[sentinel_at], 0xA5,
+                "record {index} did not carry the SAME buffer forward: the sentinel is gone"
             );
         }
         drop(writer.join().expect("writer thread"));
