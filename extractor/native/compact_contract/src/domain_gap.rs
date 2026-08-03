@@ -216,6 +216,11 @@ mod tests {
                 DomainGapReason::Backpressure => (hour(-1), hour(0), 103, 103, 8, 8, 2),
                 DomainGapReason::ClockUnreadable => (hour(0), hour(0), 0, 0, 0, 0, 0),
                 DomainGapReason::WorkerPanic => (hour(0), hour(0), 103, 103, 0, 0, 0),
+                // The reader held a bracket, so it carries a real non-advancing
+                // hour witness.
+                DomainGapReason::SourceUnavailable => (hour(0), hour(0), 103, 103, 0, 0, 0),
+                // No witness of any kind exists; both ticks must be zero.
+                DomainGapReason::ReaderSilent => (hour(0), hour(0), 0, 0, 0, 0, 0),
             };
         DomainGapRecordV1 {
             part: DomainGapPart::State,
@@ -240,6 +245,8 @@ mod tests {
             DomainGapReason::Backpressure,
             DomainGapReason::ClockUnreadable,
             DomainGapReason::WorkerPanic,
+            DomainGapReason::SourceUnavailable,
+            DomainGapReason::ReaderSilent,
         ] {
             let value = sample(reason);
             let wire = value.encode().unwrap();
@@ -346,6 +353,8 @@ mod tests {
             DomainGapReason::Overrun,
             DomainGapReason::ClockUnreadable,
             DomainGapReason::WorkerPanic,
+            DomainGapReason::SourceUnavailable,
+            DomainGapReason::ReaderSilent,
         ] {
             let mut value = sample(reason);
             value.queue_capacity = 1;
