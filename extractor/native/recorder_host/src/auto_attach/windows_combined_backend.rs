@@ -1314,10 +1314,39 @@ impl DeadlineControlIo for WindowsControlIo {
     }
 }
 
+/// Largest length the process-lifetime H4CR read submits to a single
+/// `ReadFile`, and therefore the size of the one reusable scratch buffer.
+///
+/// A byte-mode named pipe returns at most what its kernel buffer holds, so
+/// asking for more than [`H4CR_PIPE_BUFFER_BYTES`] in one call never moves
+/// more bytes; it only decides how much memory the reader has to own. Keeping
+/// the two equal makes the common case a single `ReadFile` per record while
+/// the scratch stays at one megabyte no matter how large a record gets.
+const H4CR_READ_CHUNK_BYTES: usize = H4CR_PIPE_BUFFER_BYTES;
+
 struct WindowsOverlappedPipe {
     handle: Option<OwnedHandle>,
     peer_process: OwnedHandle,
     shared_cancellation: ControlCancellation,
+    /// Reusable landing buffer for the process-lifetime H4CR read.
+    ///
+    /// Every `ReadFile` used to be handed a freshly allocated, freshly ZEROED
+    /// `Vec` sized to the whole remaining record. Because the pipe returns at
+    /// most its kernel buffer per call, a record larger than that buffer was
+    /// read in several passes and each pass re-zeroed the entire remaining
+    /// length -- the zeroing was quadratic in record size. On the t15 capture
+    /// (2.81 GiB of payload, 4,865 records over 64 KiB, largest 8.96 MiB)
+    /// that came to 78.86 GiB of memset for 2.81 GiB actually moved. The
+    /// collector blocks inside `WriteFileSync` for exactly as long as this
+    /// side takes to drain, so the amplification was charged straight to the
+    /// capture's per-frame budget.
+    ///
+    /// Reuse is sound: the buffer is only ever taken back from an operation
+    /// that COMPLETED, which means `GetOverlappedResult` has returned and the
+    /// kernel no longer owns the memory. An operation that was cancelled or
+    /// failed is quarantined together with its pipe handle by
+    /// [`retire_or_quarantine`] and its buffer never comes back here.
+    read_scratch: Option<Vec<u8>>,
 }
 
 impl WindowsOverlappedPipe {
@@ -1330,6 +1359,7 @@ impl WindowsOverlappedPipe {
             handle: Some(handle),
             peer_process,
             shared_cancellation,
+            read_scratch: None,
         }
     }
 
@@ -1398,8 +1428,7 @@ impl WindowsOverlappedPipe {
     fn recv_exact_cancellable(&mut self, mut bytes: &mut [u8]) -> io::Result<()> {
         let mut read_any = false;
         while !bytes.is_empty() {
-            let len = bytes.len().min(Dword::MAX as usize);
-            let (transferred, buffer) = match self.transfer_cancellable(len) {
+            let transferred = match self.transfer_cancellable(bytes) {
                 Ok(completed) => completed,
                 Err(error)
                     if read_any
@@ -1430,17 +1459,30 @@ impl WindowsOverlappedPipe {
                 ));
             }
             read_any = true;
-            bytes[..transferred].copy_from_slice(&buffer[..transferred]);
             bytes = &mut bytes[transferred..];
         }
         Ok(())
     }
 
-    fn transfer_cancellable(&mut self, read_len: usize) -> io::Result<(usize, Vec<u8>)> {
+    /// Read once into the front of `dest`, returning how many bytes landed.
+    ///
+    /// The submitted length is `min(dest.len(), H4CR_READ_CHUNK_BYTES)` and
+    /// never the scratch buffer's own length. That distinction is load
+    /// bearing: `ReadFile` on a byte-mode pipe hands back as much as it was
+    /// asked for and as much as is buffered, so submitting the full scratch
+    /// length would pull bytes belonging to the NEXT record out of the pipe
+    /// and then drop them on the floor when only `dest.len()` were copied
+    /// out, desynchronising the record stream.
+    fn transfer_cancellable(&mut self, dest: &mut [u8]) -> io::Result<usize> {
         if self.shared_cancellation.is_cancelled() {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
         }
-        let mut operation = PendingOperation::new(vec![0; read_len])?;
+        let submit_len = dest.len().min(H4CR_READ_CHUNK_BYTES);
+        let scratch = self
+            .read_scratch
+            .take()
+            .unwrap_or_else(|| vec![0; H4CR_READ_CHUNK_BYTES]);
+        let mut operation = PendingOperation::new(scratch)?;
         let handle = self
             .handle
             .as_ref()
@@ -1450,7 +1492,7 @@ impl WindowsOverlappedPipe {
             ReadFile(
                 handle.raw(),
                 operation.buffer.as_mut_ptr().cast(),
-                operation.buffer.len() as Dword,
+                submit_len as Dword,
                 &mut transferred,
                 &mut operation.overlapped,
             )
@@ -1473,7 +1515,14 @@ impl WindowsOverlappedPipe {
             self.handle.take();
             return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
         }
-        Ok((transferred as usize, operation.buffer))
+        // The operation completed, so the kernel has released the buffer and
+        // it can be handed back for the next read. Copy out only the bytes the
+        // pipe actually delivered -- the rest of the scratch is whatever the
+        // previous record left there.
+        let transferred = (transferred as usize).min(submit_len);
+        dest[..transferred].copy_from_slice(&operation.buffer[..transferred]);
+        self.read_scratch = Some(operation.buffer);
+        Ok(transferred)
     }
 
     fn send_all(
@@ -1596,6 +1645,25 @@ fn wait_pending_transfer_cancellable(
     }
 }
 
+/// Kernel buffer the H4CR data pipe is created with.
+///
+/// The collector publishes a whole frame in one `WriteFileSync` and blocks
+/// until this side has drained it, so the buffer sets how many
+/// producer-blocks/consumer-drains a frame costs. t15 frames average 7.46 MiB
+/// with single records up to 8.96 MiB; against the previous 64 KiB that was
+/// well over a hundred handoffs per frame. One megabyte of nonpaged pool per
+/// pipe is a rounding error next to the multi-gigabyte stream it carries.
+///
+/// This is a transport throughput constant only. It does not change which
+/// records are produced, their contents, their order, or their framing.
+const H4CR_PIPE_BUFFER_BYTES: usize = 1024 * 1024;
+
+/// Kernel buffer for the H4CT control pipe, which carries small bounded
+/// control frames rather than bulk records. Unchanged from the original
+/// sizing; called out separately so raising the data pipe cannot silently
+/// drag the control pipe along with it.
+const H4CT_PIPE_BUFFER_BYTES: usize = 64 * 1024;
+
 fn create_pipe(
     name: &str,
     kind: &'static str,
@@ -1604,9 +1672,12 @@ fn create_pipe(
     deadline: ControlDeadline,
     cancellation: &ControlCancellation,
 ) -> Result<OwnedHandle, WindowsCombinedBackendError> {
-    let prefix = match kind {
-        "H4CR" => r"\\.\pipe\battle-plan_collector_",
-        "H4CT" => r"\\.\pipe\battle-plan_control_",
+    let (prefix, buffer_bytes) = match kind {
+        "H4CR" => (
+            r"\\.\pipe\battle-plan_collector_",
+            H4CR_PIPE_BUFFER_BYTES,
+        ),
+        "H4CT" => (r"\\.\pipe\battle-plan_control_", H4CT_PIPE_BUFFER_BYTES),
         _ => return Err(WindowsCombinedBackendError::InvalidPipeName(kind)),
     };
     if !name.starts_with(prefix)
@@ -1626,8 +1697,8 @@ fn create_pipe(
             access | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            64 * 1024,
-            64 * 1024,
+            buffer_bytes as Dword,
+            buffer_bytes as Dword,
             0,
             &mut attributes,
         )
