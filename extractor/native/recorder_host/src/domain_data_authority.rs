@@ -539,15 +539,25 @@ pub const COMPACT_SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 =
 pub const COMPACT_SUPPLY_BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: i32 =
     supply44::domain44_contract::BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
 pub const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = 13_413;
-pub const COMPACT_SUPPLY_MAX_STATE_ID: u32 = 1_081;
+// The supply admission bounds have one home in `domain44_contract`; respelling
+// them here is what let this authority and the lane gate drift apart.
+pub const COMPACT_SUPPLY_MAX_STATE_ID: u32 = supply44::domain44_contract::MAX_STATE_ID;
 pub const COMPACT_SUPPLY_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_SUPPLY_MAX_DIVISION_ID: u32 = i32::MAX as u32;
-pub const COMPACT_SUPPLY_MAX_SUPPLY_RAW: i32 = 100_000_000;
-pub const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
+pub const COMPACT_SUPPLY_MAX_SUPPLY_RAW: i32 = supply44::domain44_contract::MAX_SUPPLY_RAW;
+pub const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 =
+    supply44::domain44_contract::MAX_SUPPLY_GAIN_RAW;
 pub const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
-pub const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
+pub const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = supply44::domain44_contract::MAX_BUILDING_LEVEL;
+/// Deliberately left at the fixed-point scale: the per-province CSupply input
+/// is documented as an *efficiency*, for which a 0..=1.0 range is at least
+/// plausible, and no measured capture has ever been excluded for it. That is
+/// weaker than the evidence that refuted the disrupted-supply ceiling below —
+/// this bound is unverified, not proven, and is a candidate for the same
+/// treatment if a capture is ever lost to it.
 pub const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
-pub const COMPACT_SUPPLY_MAX_DISRUPTED_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
+pub const COMPACT_SUPPLY_MAX_DISRUPTED_RAW: i32 =
+    supply44::domain44_contract::MAX_COUNTRY_DISRUPTED_SUPPLY_RAW;
 pub const COMPACT_DIVISION_TYPE: u32 = 4713;
 // A15 extends the E4 104-byte row to 120 bytes with exact counter maximum
 // organisation, supply-status, and dig-in operands.

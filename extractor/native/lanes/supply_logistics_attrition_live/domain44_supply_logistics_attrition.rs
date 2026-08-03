@@ -74,15 +74,18 @@ pub const BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 =
 pub const BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: i32 =
     domain44_contract::BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
 
+// Admission bounds live in `domain44_contract` so this gate and the recorder
+// authority cannot drift apart. See that module for the evidence behind each.
 pub const MAX_PROVINCE_ID: u32 = portable_admission::SUPPLY_MAX_PROVINCE_ID;
-pub const MAX_STATE_ID: u32 = 1_081;
+pub const MAX_STATE_ID: u32 = domain44_contract::MAX_STATE_ID;
 pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_DIVISION_ID: u32 = i32::MAX as u32;
-pub const MAX_SUPPLY_RAW: i32 = 100_000_000;
-pub const MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
+pub const MAX_SUPPLY_RAW: i32 = domain44_contract::MAX_SUPPLY_RAW;
+pub const MAX_SUPPLY_GAIN_RAW: i32 = domain44_contract::MAX_SUPPLY_GAIN_RAW;
 pub const MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
-pub const MAX_BUILDING_LEVEL: i32 = 1_000;
-pub const MAX_COUNTRY_DISRUPTED_SUPPLY_RAW: i32 = FIXED_SCALE_RAW as i32;
+pub const MAX_BUILDING_LEVEL: i32 = domain44_contract::MAX_BUILDING_LEVEL;
+pub const MAX_COUNTRY_DISRUPTED_SUPPLY_RAW: i32 =
+    domain44_contract::MAX_COUNTRY_DISRUPTED_SUPPLY_RAW;
 
 const VALID_ROW_FLAGS: u32 = domain44_contract::LANE_LOCAL_VALID_ROW_FLAGS;
 
@@ -1040,6 +1043,146 @@ mod tests {
             .any(|err| err.contains("lack exact-source availability badge")));
     }
 
+    /// Header shape matching `fixture_rows()` exactly, so a test can mutate one
+    /// field and attribute every parse error to that mutation.
+    fn fixture_header(rows: &[SupplyLogisticsRow]) -> SupplyLogisticsHeader {
+        SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: rows.len() as u32,
+            province_rows: 1,
+            division_rows: 1,
+            badge_rows: 6,
+            observed_province_roots: 1,
+            observed_division_roots: 1,
+            csupply_input_rows: 1,
+            pressure_candidate_rows: 0,
+        }
+    }
+
+    fn decode_fixture_with_disrupted_value(value_a_raw: i32) -> Domain44GateSummary {
+        let mut rows = fixture_rows();
+        rows.iter_mut()
+            .find(|row| row.row_kind == ROW_KIND_COUNTRY_DISRUPTED_SUPPLY)
+            .expect("fixture disrupted row")
+            .value_a_raw = value_a_raw;
+        let header = fixture_header(&rows);
+        decode_payload(0, &encode_payload(&header, &rows))
+    }
+
+    /// The measured defect. Every one of run `live_unlock/t12`'s 63 excluded
+    /// DOMAIN_DATA records cited only `country_disrupted_supply_raw`, at these
+    /// raw values, on an unmodded save. The old ceiling was `FIXED_SCALE_RAW`
+    /// (100_000), which asserts the field is a ratio bounded by 1.0; the engine
+    /// stores a clamp-free signed i64 fixed-point (see the constant's note).
+    ///
+    /// Fails if `MAX_COUNTRY_DISRUPTED_SUPPLY_RAW` is put back to
+    /// `FIXED_SCALE_RAW`, or to anything below 499_175.
+    #[test]
+    fn admits_country_disrupted_supply_above_the_fixed_point_scale() {
+        // The full distinct set observed in the t12 exclusion ledger.
+        const OBSERVED_T12_RAW: [i32; 24] = [
+            103_673, 108_463, 109_723, 110_982, 110_983, 123_683, 127_458, 138_897, 143_657,
+            162_695, 166_474, 176_715, 179_178, 206_947, 229_650, 293_657, 297_087, 317_178,
+            349_175, 356_947, 391_572, 443_657, 447_087, 499_175,
+        ];
+        for raw in OBSERVED_T12_RAW {
+            assert!(
+                raw > FIXED_SCALE_RAW as i32,
+                "fixture value {raw} must exceed the old ceiling or the test proves nothing"
+            );
+            let summary = decode_fixture_with_disrupted_value(raw);
+            assert!(
+                summary.parse_errors.is_empty(),
+                "t12 value {raw} must validate, got {:?}",
+                summary.parse_errors
+            );
+            assert_eq!(summary.country_disrupted_supply_rows_total, 1);
+        }
+    }
+
+    /// The widening must not open the gate. Fails if
+    /// `MAX_COUNTRY_DISRUPTED_SUPPLY_RAW` is widened to `i32::MAX`, or if the
+    /// non-negative half of the check is dropped.
+    #[test]
+    fn still_rejects_country_disrupted_supply_garbage() {
+        // Concrete values, not `MAX_COUNTRY_DISRUPTED_SUPPLY_RAW + 1`: a bound
+        // expressed in terms of itself can never catch a widened bound.
+        for raw in [
+            100_000_001, // one past the installed ceiling
+            1_000_000_000,
+            i32::MAX,
+            0x7f5a_1c30, // pointer-smear magnitude
+            -1,
+            i32::MIN,
+        ] {
+            let summary = decode_fixture_with_disrupted_value(raw);
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|err| err.contains("invalid country_disrupted_supply_raw")),
+                "garbage value {raw} must be rejected, got {:?}",
+                summary.parse_errors
+            );
+        }
+        // The boundary itself is admitted, pinning the bound rather than just
+        // its neighbourhood.
+        let summary = decode_fixture_with_disrupted_value(MAX_COUNTRY_DISRUPTED_SUPPLY_RAW);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "the bound itself must validate, got {:?}",
+            summary.parse_errors
+        );
+    }
+
+    /// `MAX_STATE_ID` was `1_081`, the vanilla state count. A mod that adds one
+    /// state made every province-logistics row invalid.
+    ///
+    /// Fails if `MAX_STATE_ID` is put back to `1_081`.
+    #[test]
+    fn admits_state_id_above_the_vanilla_state_count() {
+        const VANILLA_STATE_COUNT: u32 = 1_081;
+        let mut rows = fixture_rows();
+        rows.iter_mut()
+            .find(|row| row.row_kind == ROW_KIND_PROVINCE_LOGISTICS)
+            .expect("fixture province row")
+            .join_id = VANILLA_STATE_COUNT + 1;
+        let header = fixture_header(&rows);
+        let summary = decode_payload(0, &encode_payload(&header, &rows));
+        assert!(
+            summary.parse_errors.is_empty(),
+            "a modded state id must validate, got {:?}",
+            summary.parse_errors
+        );
+    }
+
+    /// Fails if `MAX_STATE_ID` is widened past the shared u16 representation
+    /// bound, or if the state-id check is removed entirely.
+    #[test]
+    fn still_rejects_state_id_above_the_representation_bound() {
+        // Concrete values for the same reason as the disrupted-supply garbage
+        // test: `MAX_STATE_ID + 1` tracks the bound and can never catch it
+        // being widened.
+        for state_id in [0, 65_536, 1_000_000, u32::MAX] {
+            let mut rows = fixture_rows();
+            rows.iter_mut()
+                .find(|row| row.row_kind == ROW_KIND_PROVINCE_LOGISTICS)
+                .expect("fixture province row")
+                .join_id = state_id;
+            let header = fixture_header(&rows);
+            let summary = decode_payload(0, &encode_payload(&header, &rows));
+            assert!(
+                summary
+                    .parse_errors
+                    .iter()
+                    .any(|err| err.contains("invalid state_id")),
+                "state_id {state_id} must be rejected, got {:?}",
+                summary.parse_errors
+            );
+        }
+    }
+
     #[test]
     fn rejects_header_counter_mismatch_and_missing_wall_badge() {
         let rows = vec![fixture_rows().remove(0)];
@@ -1241,25 +1384,50 @@ mod tests {
 
     #[test]
     fn rejects_malformed_badge_rows() {
-        let rows = vec![SupplyLogisticsRow {
-            row_kind: ROW_KIND_COMPUTED_BADGE,
-            entity_id: 1,
-            join_id: 2,
-            owner_tag_db_id: 3,
-            flags: ROW_FLAG_EXACT_SUPPLY_WALL | ROW_FLAG_ATTRITION_WALL | ROW_FLAG_PROXY_VALUE,
-            value_a_raw: 999,
-            value_b_raw: 1,
-            value_c_raw: 0,
-            value_d_raw: 0,
-            aux_raw: 0,
-        }];
+        // Row 0 carries the corruptions that are independent of badge
+        // identity: nonzero identity fields, nonzero reserved values, two
+        // badge bits at once, and a non-badge bit.
+        //
+        // Row 1 must be a *separate* row. `validate_badge_row` only resolves a
+        // `BadgeSpec` when `badge_flags.count_ones() == 1`, so a row carrying
+        // two wall bits can never reach the per-spec "<label> badge row ...
+        // has invalid code" branch. Asserting that message against row 0 was
+        // unreachable by construction and is what made this test fail. Row 1
+        // sets exactly one badge bit with the wrong code, which is the only
+        // shape that exercises that branch.
+        let rows = vec![
+            SupplyLogisticsRow {
+                row_kind: ROW_KIND_COMPUTED_BADGE,
+                entity_id: 1,
+                join_id: 2,
+                owner_tag_db_id: 3,
+                flags: ROW_FLAG_EXACT_SUPPLY_WALL | ROW_FLAG_ATTRITION_WALL | ROW_FLAG_PROXY_VALUE,
+                value_a_raw: 999,
+                value_b_raw: 1,
+                value_c_raw: 0,
+                value_d_raw: 0,
+                aux_raw: 0,
+            },
+            SupplyLogisticsRow {
+                row_kind: ROW_KIND_COMPUTED_BADGE,
+                entity_id: 0,
+                join_id: 0,
+                owner_tag_db_id: 0,
+                flags: ROW_FLAG_EXACT_SUPPLY_WALL,
+                value_a_raw: BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT + 1,
+                value_b_raw: 0,
+                value_c_raw: 0,
+                value_d_raw: 0,
+                aux_raw: 0,
+            },
+        ];
         let header = SupplyLogisticsHeader {
             elapsed_wall_ms: 1,
             status_flags: STATUS_COMPACT_HEALTH_OK,
-            changed_rows: 1,
+            changed_rows: 2,
             province_rows: 0,
             division_rows: 0,
-            badge_rows: 1,
+            badge_rows: 2,
             observed_province_roots: 0,
             observed_division_roots: 0,
             csupply_input_rows: 0,
@@ -1283,10 +1451,74 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("non-badge flags")));
-        assert!(summary
-            .parse_errors
-            .iter()
-            .any(|err| err.contains("exact-supply badge")));
+        // The per-spec branch, reached only via row 1. This is the assertion
+        // that used to be unreachable.
+        assert!(
+            summary.parse_errors.iter().any(|err| err
+                .contains("supply logistics exact-supply badge row 1 has invalid code")),
+            "per-spec badge code diagnosis missing from {:?}",
+            summary.parse_errors
+        );
+        // The single-badge row must NOT be accused of the multi-badge or
+        // non-badge-bit corruptions, otherwise the assertion above could be
+        // satisfied by a decoder that simply reports everything on every row.
+        assert!(
+            !summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("badge row 1 must carry exactly one badge flag")),
+            "row 1 carries exactly one badge flag: {:?}",
+            summary.parse_errors
+        );
+        assert!(
+            !summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("badge row 1 has non-badge flags")),
+            "row 1 carries no non-badge flags: {:?}",
+            summary.parse_errors
+        );
+    }
+
+    /// A badge row whose single badge bit carries the *correct* code must
+    /// produce no per-spec complaint. Without this, `rejects_malformed_badge_rows`
+    /// would still pass if `validate_badge_row` flagged every code.
+    #[test]
+    fn accepts_badge_row_with_correct_code() {
+        let rows = vec![SupplyLogisticsRow {
+            row_kind: ROW_KIND_COMPUTED_BADGE,
+            entity_id: 0,
+            join_id: 0,
+            owner_tag_db_id: 0,
+            flags: ROW_FLAG_EXACT_SUPPLY_WALL,
+            value_a_raw: BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT,
+            value_b_raw: 0,
+            value_c_raw: 0,
+            value_d_raw: 0,
+            aux_raw: 0,
+        }];
+        let header = SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: 1,
+            province_rows: 0,
+            division_rows: 0,
+            badge_rows: 1,
+            observed_province_roots: 0,
+            observed_division_roots: 0,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            !summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("exact-supply badge")),
+            "correct badge code must not be flagged: {:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
