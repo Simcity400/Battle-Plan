@@ -459,6 +459,13 @@ function Invoke-BoundedNativeCapture {
             -NoNewWindow -PassThru `
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath
+        # See the note at the recorder launch below: a `Start-Process -PassThru`
+        # object caches no process handle, so `.ExitCode` reads back $null once
+        # the child is gone -- and `[int]$null` is 0, which would make every
+        # bounded helper look like it succeeded no matter what it returned.
+        # Neither `Refresh()` nor `WaitForExit()` repairs it after the fact;
+        # the handle has to be taken while the child is alive.
+        $null = $process.Handle
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         $nextProgress = [DateTime]::UtcNow.AddSeconds(5)
         while (-not $process.HasExited) {
@@ -497,11 +504,17 @@ function Invoke-BoundedNativeCapture {
         }
         $stdout = [string]$stdout
         $stderr = [string]$stderr
-        if (-not $AllowNonzeroExit -and [int]$process.ExitCode -ne 0) {
-            throw "$Purpose exited with code $($process.ExitCode). stderr: $($stderr.Trim())"
+        # Never let an unreadable exit status become a zero. An unknown outcome
+        # is a failed helper, not a passing one.
+        $childExit = $process.ExitCode
+        if ($null -eq $childExit) {
+            throw "$Purpose exited without exposing a process exit code. stderr: $($stderr.Trim())"
+        }
+        if (-not $AllowNonzeroExit -and [int]$childExit -ne 0) {
+            throw "$Purpose exited with code $childExit. stderr: $($stderr.Trim())"
         }
         return [pscustomobject]@{
-            ExitCode = [int]$process.ExitCode
+            ExitCode = [int]$childExit
             Stdout = [string]$stdout
             Stderr = [string]$stderr
             Pid = [int]$process.Id
@@ -1870,6 +1883,25 @@ $recorderProcess = Start-Process -FilePath $collectorRecord `
 # from here on there may be a recorder holding hook custody, and every cleanup
 # decision below turns on knowing that.
 $collectorInjectionStarted = $true
+# Take a real handle on the child NOW, while it is alive.
+#
+# `Start-Process -PassThru` under Windows PowerShell 5.1 hands back a Process
+# object with no cached process handle. `HasExited` still works -- it re-queries
+# by PID -- but `.ExitCode` reads back $null forever, and neither `Refresh()`
+# nor `WaitForExit()` repairs it once the child is gone. This script read
+# `.ExitCode` at the end and threw 'collector_record did not expose a process
+# exit code', so every capture that actually SUCCEEDED was reported as a failed
+# attempt. Measured on 5.1.26100.8875: baseline null, handle touched null-free.
+#
+# Touching `.Handle` forces .NET to open and keep one, which both makes the
+# exit status readable afterwards and pins the PID against reuse. It throws if
+# the child is already gone; that is not fatal here, because the ready-wait
+# loop below reports an instantly-dead recorder with a far better message.
+try {
+    $null = $recorderProcess.Handle
+} catch {
+    Write-Host "phase=recorder_handle_unavailable reason=$($_.Exception.Message)"
+}
 $recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
 $recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
 [void](Write-PassiveWitnessSample `
