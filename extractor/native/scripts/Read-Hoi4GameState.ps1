@@ -46,6 +46,14 @@ $gameTickInhibitOffset = 0x4C0L
 # in-game session setup, at its own entry 0x140DC543D. So zero here means the
 # campaign is loading, at the frontend or resetting -- NOT that it is in play,
 # which the singleton checks above cannot distinguish.
+#
+# Stated no more strongly than the evidence allows: the setter runs at the START
+# of FUN_140DC5310, before its ~35 further setup calls, so a set byte says the
+# engine has ENTERED its in-game session and holds it eligible for player input,
+# not that its post-load work has drained. The disp32 search is exhaustive for
+# direct [reg+disp32] accesses and swept +0xA32..+0xA38 for an overlapping wider
+# scalar store, but does not cover interior-pointer, bulk-copy or vector writes,
+# so that writer set is enumerated rather than proved exhaustive.
 $gameStatePlayerInputGateOffset = 0xA39L
 $clockSingletonARva = 0x33172E0L
 $clockSingletonBRva = 0x33172E8L

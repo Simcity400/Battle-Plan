@@ -1526,8 +1526,11 @@ function Get-Hoi4Processes {
 # aborting the whole capture.
 #
 # The engine's own statement of the missing condition is CGameState+0xA39; the
-# provenance is in Hoi4WorldReady.Gate.ps1. Waiting for it belongs HERE and not
-# in a second wait bolted after this phase, for three reasons:
+# provenance, and the limits of what it proves, are in Hoi4WorldReady.Gate.ps1.
+# It says the engine has ENTERED its in-game session, not that its post-load
+# work has drained -- the settle phase below is what covers that, and this does
+# not replace it. Waiting for the gate belongs HERE rather than in a second wait
+# bolted after this phase, for three reasons:
 #
 #   * this phase already claims the condition. Its parameter is documented as
 #     the wait "for the loaded campaign to expose stable world singletons", and

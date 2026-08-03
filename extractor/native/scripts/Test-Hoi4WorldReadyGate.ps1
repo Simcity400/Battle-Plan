@@ -280,6 +280,24 @@ Assert-True -Condition ($harness -match 'return \(Wait-Hoi4WorldReadyState\b') `
 Assert-True -Condition ($harness -notmatch 'if \(\$null -ne \$state\) \{ return \$state \}') `
     -Message 'the harness does not still accept the first coherent observation as ready'
 
+# The callbacks must CLOSE OVER the values they need. Without .GetNewClosure()
+# the observer block resolves $TargetProcessId from the wait's own parameter by
+# accident and $ExpectedCreationFiletimeUtc not at all, which under StrictMode
+# turns every observation into a caught error and spends the whole budget. The
+# replica case below proves the shape works; this proves the harness uses it.
+# RED WHEN: .GetNewClosure() is dropped from either callback.
+Assert-True `
+    -Condition (@([regex]::Matches($harness, '\}\.GetNewClosure\(\)')).Count -ge 2) `
+    -Message 'the harness world-ready callbacks capture their values with .GetNewClosure()'
+# And the world-ready observation specifically -- matched through its own
+# -TimeoutSeconds $RemainingSeconds, so this cannot be satisfied by one of the
+# harness's other observation call sites -- must still hand the process epoch
+# through, or the per-observation identity assertion silently stops being made.
+Assert-True `
+    -Condition ($harness -match
+        '-TimeoutSeconds \$RemainingSeconds `\s*\r?\n\s*-ExpectedCreationFiletimeUtc \$ExpectedCreationFiletimeUtc') `
+    -Message 'the world-ready observation still carries the process creation epoch'
+
 # The observer must actually READ the offset and REPORT it. Asserting the field
 # alone leaves the read replaceable with a constant.
 $observer = Get-Content -LiteralPath (Join-Path $scriptDir 'Read-Hoi4GameState.ps1') -Raw
@@ -305,6 +323,91 @@ Assert-True -Condition ($control -match '\$gameStatePlayerInputGateOffset = 0xA3
 Assert-True `
     -Condition ($control -match 'if \(\$playerInputGate -eq 0\) \{\s+throw \(') `
     -Message 'the control helper still refuses on a zero gate, with a throw'
+
+# =============================================================================
+Write-Host 'case: the PRODUCTION closure shape resolves in a clean 5.1 child'
+# The cases above drive the wait with self-contained scriptblocks, so none of
+# them exercises what the harness actually passes: closures built inside a
+# script-scope function that CALL another script-scope function, which in turn
+# reads a script-scope variable, handed to a dot-sourced library and invoked
+# there. Review raised `.GetNewClosure()` scoping as a suspected production-only
+# failure precisely because no test covered it. This runs that exact shape in a
+# fresh `powershell.exe -File` child against the real library.
+#
+# RED WHEN: `.GetNewClosure()` is dropped from the harness callbacks (the
+# captured epoch then fails to resolve under StrictMode), when the callback
+# signature stops carrying what the observer needs, or if a future PowerShell
+# really does stop resolving script-scope commands from a closure module.
+$replicaDir = Join-Path ([IO.Path]::GetTempPath()) ("hoi4-wrg-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $replicaDir -Force | Out-Null
+try {
+    $libLiteral = "'" + (Join-Path $scriptDir 'Hoi4WorldReady.Gate.ps1').Replace("'", "''") + "'"
+    $replica = @"
+Set-StrictMode -Version Latest
+`$ErrorActionPreference = 'Stop'
+. $libLiteral
+
+# A script-scope variable the observer function must still resolve when it is
+# called from inside the closure.
+`$readOnlyObserver = 'C:\some\Read-Hoi4GameState.ps1'
+`$script:ObserveCalls = 0
+
+function Invoke-BoundedHoi4Observation {
+    param(
+        [Parameter(Mandatory = `$true)][int]`$TargetProcessId,
+        [ValidateRange(1, 120)][int]`$TimeoutSeconds = 30,
+        [uint64]`$ExpectedCreationFiletimeUtc = 0
+    )
+    if ([string]::IsNullOrEmpty(`$readOnlyObserver)) {
+        throw 'script-scope observer path did not resolve inside the closure'
+    }
+    `$script:ObserveCalls++
+    `$gate = if (`$script:ObserveCalls -ge 3) { 1 } else { 0 }
+    return [pscustomobject]@{
+        Pid = `$TargetProcessId
+        Epoch = `$ExpectedCreationFiletimeUtc
+        PlayerInputGate = `$gate
+    }
+}
+
+function Wait-Hoi4WorldReady {
+    param(
+        [Parameter(Mandatory = `$true)][int]`$TargetProcessId,
+        [Parameter(Mandatory = `$true)][int]`$TimeoutSeconds,
+        [Parameter(Mandatory = `$true)][uint64]`$ExpectedCreationFiletimeUtc
+    )
+    return (Wait-Hoi4WorldReadyState ``
+        -TargetProcessId `$TargetProcessId ``
+        -TimeoutSeconds `$TimeoutSeconds ``
+        -Observe {
+            param(`$RemainingSeconds)
+            Invoke-BoundedHoi4Observation ``
+                -TargetProcessId `$TargetProcessId ``
+                -TimeoutSeconds `$RemainingSeconds ``
+                -ExpectedCreationFiletimeUtc `$ExpectedCreationFiletimeUtc
+        }.GetNewClosure() ``
+        -TestAlive { `$null -ne (Get-Process -Id `$PID -ErrorAction SilentlyContinue) }.GetNewClosure() ``
+        -Sleep { param(`$ms) } ``
+        -ReportProgress { param(`$p) })
+}
+
+`$state = Wait-Hoi4WorldReady -TargetProcessId 4242 -TimeoutSeconds 60 ``
+    -ExpectedCreationFiletimeUtc ([uint64]133700000000000000)
+if (`$state.PlayerInputGate -ne 1) { throw "gate=`$(`$state.PlayerInputGate)" }
+if (`$state.Pid -ne 4242) { throw "closure lost TargetProcessId: `$(`$state.Pid)" }
+if (`$state.Epoch -ne 133700000000000000) { throw "closure lost the epoch: `$(`$state.Epoch)" }
+if (`$script:ObserveCalls -ne 3) { throw "calls=`$(`$script:ObserveCalls)" }
+Write-Host 'REPLICA-OK'
+"@
+    $replicaPath = Join-Path $replicaDir 'replica.ps1'
+    Set-Content -LiteralPath $replicaPath -Value $replica -Encoding UTF8
+    $child = & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+        -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $replicaPath 2>&1 | Out-String
+    Assert-True -Condition ($child -match 'REPLICA-OK') `
+        -Message "the production closure shape resolves in a clean child (child said: $($child.Trim()))"
+} finally {
+    Remove-Item -LiteralPath $replicaDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # =============================================================================
 Write-Host ''

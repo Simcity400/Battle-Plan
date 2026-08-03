@@ -41,15 +41,25 @@
     +0xA39 of a DIFFERENT object; neither function loads DAT_143316E90 into the
     base register it stores through.
 
-    So the byte is a one-way, post-load latch: cleared on every transition INTO
-    loading, the frontend or a reset, and set by exactly one routine --
-    FUN_140DC5310, which sets it at its own entry (0x140DC543D) and only then
-    performs the ~35 further setup calls that end with the load's pause write to
-    CInGameIdler+0x6C1. It is the engine's own statement that the in-game
-    session is live, and FUN_140B58C10 -- which gates the player pause toggle
-    FUN_140DCD3E0 -- tests it as the second term of its conjunction.
+    WHAT THAT SEARCH DOES AND DOES NOT COVER. It is exhaustive for a DIRECT
+    disp32 access from a register holding the object pointer, because any
+    displacement above 0x7F must be encoded that way, and +0xA32..+0xA38 were
+    swept as well so an overlapping wider scalar store would have shown up. It
+    does NOT cover a write through an interior pointer, a bulk copy over the
+    region, or a wide vector store. The list above is therefore the ENUMERATED
+    writer set, not a proved exhaustive one.
 
-    A campaign that is still deserialising therefore presents readable, coherent
+    WHAT THE BYTE MEANS, STATED NO MORE STRONGLY THAN THE EVIDENCE ALLOWS.
+    FUN_140DC5310 sets it at its own entry (0x140DC543D) and only THEN performs
+    the ~35 further setup calls that end with the load's pause write to
+    CInGameIdler+0x6C1. So a set byte says the engine has ENTERED its in-game
+    session setup and holds the session eligible for player input -- which is
+    exactly what FUN_140B58C10 tests, and exactly the precondition the player
+    pause toggle FUN_140DCD3E0 needs. It does NOT say the engine has finished
+    its post-load work. That is a different condition, and the harness has a
+    separate phase for it: settle, which requires observed clock advancement.
+
+    A campaign that is still deserialising presents readable, coherent
     CGameState and CInGameIdler singletons, a deserialised speed and a pause
     latch, and a ZERO gate. Admitting that as readiness is what let the harness
     reach the unpause step mid-load, where Control-Hoi4Game.ps1 correctly
@@ -151,10 +161,11 @@ function New-Hoi4WorldReadyTimeoutMessage {
         "the game PID $TargetProcessId exposed stable world singletons, but its in-game-session " +
         "latch CGameState+0xA39 never left zero: waited $WaitedSeconds s and it never became " +
         "non-zero (budget $TimeoutSeconds s, last observed value $observed). Exactly one " +
-        'engine routine sets that byte -- FUN_140DC5310, the in-game session setup -- and the ' +
-        'savegame-load, frontend and reset paths clear it, so the campaign never finished ' +
-        'entering play. Driving the client from here is refused, not deferred: the player ' +
-        'toggle FUN_140DCD3E0 would return at 0x140DCD409 without transitioning.'
+        'enumerated engine routine sets that byte -- FUN_140DC5310, the in-game session ' +
+        'setup -- and the savegame-load, frontend and reset paths clear it, so the campaign ' +
+        'never entered its in-game session. Driving the client from here is refused, not ' +
+        'deferred: the player toggle FUN_140DCD3E0 would return at 0x140DCD409 without ' +
+        'transitioning.'
     )
 }
 
@@ -177,6 +188,34 @@ function New-Hoi4WorldReadyTimeoutMessage {
 .OUTPUTS
     The FIRST observation whose gate is set. Never an observation with a zero
     gate: the only other exits are throws.
+
+.NOTES
+    HOW FAR PAST THE BUDGET THIS CAN RUN, with the production delegates.
+
+    The loop condition is checked before each iteration, so the last iteration
+    can begin just under the deadline. Inside it:
+
+      * the observation is allowed ceil(remaining) seconds, clamped to 1..30, so
+        within one second of the deadline its own budget is 1 s -- an
+        observation therefore ends by deadline + 1 s;
+      * Invoke-BoundedNativeCapture enforces that itself, and on expiry adds
+        Stop-ExactProcess (<= 10 s) plus a 1 s stream flush;
+      * the poll sleep adds 0.75 s.
+
+    Worst case is therefore deadline + ~12.75 s before the refusal is raised,
+    on a 600 s default budget. Get-Process and the process-epoch assertions are
+    not separately bounded, so this is a bound on the coded waits rather than on
+    the wall clock.
+
+    A SUCCESSFUL observation is returned without re-checking the deadline, and
+    that is deliberate: the budget bounds how long the harness WAITS, not how
+    late a genuinely live session is allowed to be believed. Refusing a world
+    that just became ready because a clock ticked over would discard a correct
+    observation for no gain, and the phase behaved this way before this change.
+
+    Termination depends on the injected delegates advancing the injected clock.
+    The production caller passes the real clock and Start-Sleep; the tests pass
+    a virtual clock that only advances inside Sleep. Both terminate.
 #>
 function Wait-Hoi4WorldReadyState {
     param(
