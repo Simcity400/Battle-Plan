@@ -577,9 +577,8 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
     // staged behind the DATA frame and published under the boundary result that
     // site already admitted, so there is no second observation to roll over.
     assert!(
-        capture_loop.contains(
-            "DATA publication for hour {pending_hour}, \\\n                                         closing the logical stream"
-        ),
+        capture_loop.contains("scheduler DATA publication for hour {pending_hour}")
+            && capture_loop.contains("closing the logical stream while the old scheduler still"),
         "the scheduler DATA publication states the committed rollover as its terminal cause"
     );
 
@@ -587,7 +586,7 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
         .split_once("PreboundaryPublication::RolledOver => {")
         .expect("scheduler DATA rollover arm")
         .1
-        .split_once("write_compact_phase_timing(compact_phase_file.as_mut(), &timing);\n                        // RELEASE READ CUSTODY")
+        .split_once("// RELEASE READ CUSTODY")
         .expect("scheduler DATA rollover arm terminator");
     let data_rollover = code_only(data_rollover);
     assert!(
