@@ -404,6 +404,69 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         D75_PRODUCTION_INLINE,
         "240d7500bcc91514f59d62739df026a5a76cce41f824923422cbe253e05d1cec"
     ),
+    // The d78 designer-refresh observer. It carries a d78 name because that is
+    // whose producer it is, but it belongs to `StandardHookReceiptGroup::D85`:
+    // d85 cannot produce a row without it, `install_a729_selected_designer_hooks`
+    // installs it first and calls it the d78 prerequisite, and there is no D78
+    // group to put it in. When one is added this entry moves rather than being
+    // duplicated.
+    //
+    // This and the thirteen entries below were added on 2026-08-03, when D85,
+    // D95 and D97 were moved into `ProductionHookLeaseRegistry`. Every one of
+    // their producer detours sat behind an `if !passive_product_capture` gate,
+    // which is false for every shipped capture, so none of them was ever
+    // attempted: the three domains published 396 hours of nothing each. That is
+    // the same defect that shipped D94 broken, and this roster is the half of
+    // the fix that makes the READY evidence describe the patches.
+    //
+    // Every proof digest below is SHA-256 over the lane's own sixteen-byte
+    // sentinel -- the exact original prefix the five-byte REL5 patch lands on
+    // and the same constant the installer's sentinel check reads -- following
+    // the `gameplay.d99.land_combat_round_entry` precedent. The collector-side
+    // tests `pinned_d85_*`, `pinned_d95_*` and `pinned_d97_*` bind each digest
+    // to its lane, so a spec and a lane cannot drift apart silently.
+    pinned_rva!(
+        "gameplay.d78.designer_refresh",
+        0x17797A0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "5e5e3d93a65ddd686cb3828e88035ec2401c4ba870cb5300e762e138bc08e25e"
+    ),
+    pinned_rva!(
+        "gameplay.d85.division_order",
+        0x1756C40,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "089ffa5d397c6a462479bce55968fba0a98270de5cd7d95982d14ab0e0922405"
+    ),
+    pinned_rva!(
+        "gameplay.d85.division_selection",
+        0x167AEE0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "59101a8527cdb6c743d7c610e473c3406c261a153855ebcefddd019b21c769df"
+    ),
+    pinned_rva!(
+        "gameplay.d85.equipment_autodesign_success",
+        0x147DDD0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "4826719cd89c3fe2b41f2f55063aac041807738e3a2ae872f85b9870fd218fc9"
+    ),
+    pinned_rva!(
+        "gameplay.d85.equipment_selection",
+        0x17715A0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "7096f6ab419c3d183111586bfb033bcc421b70141d60618dba728788735af757"
+    ),
+    pinned_rva!(
+        "gameplay.d85.variant_upgrade_selection",
+        0x1F5D420,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "77fc7a5ef65dc0f4739157a8a698f10a46bb4d58b0663e7583c9721504753a7f"
+    ),
     pinned_rva!(
         "gameplay.d86.attributed_record_writer",
         0x1D2C90,
@@ -448,6 +511,75 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         5,
         MINHOOK_NORMAL_REL5,
         "77e4a1c964f868a7109cead30bc7df64860f2ff5097ff4849fede855b5d9e261"
+    ),
+    // D95's four current-map-visibility detours. See the D85 block above for
+    // why they were absent until 2026-08-03.
+    pinned_rva!(
+        "gameplay.d95.intel_getter",
+        0x16068C0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "dae3cf2b2319946cd88aa78458f1e58ebb1f3181ea6356ebd028951bfb64ad85"
+    ),
+    pinned_rva!(
+        "gameplay.d95.land_eligibility",
+        0xBE2AB0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "1c054f129d99f74e20b479c69d0fb641c70ff7c6d51c77daf7aab7de4a7b5304"
+    ),
+    pinned_rva!(
+        "gameplay.d95.land_frame",
+        0x16585E0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "d274148e15e6292f1fff0c943c1b3ddd904dbe8eda6ac831d5ff2a8306e0814f"
+    ),
+    pinned_rva!(
+        "gameplay.d95.taskforce_frame",
+        0x18DDF50,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "0a8b346ff1b2343b6f2d79ab7b3f771fae1428718991c57aa453aa1d12a32d41"
+    ),
+    // D97's four peace-conference detours.
+    //
+    // `gameplay.d97.contest_breakdown` carries the SAME proof digest as
+    // `gameplay.d99.land_combat_round_entry`, and that is correct rather than a
+    // copy-paste: the digest is over a sixteen-byte ORIGINAL PREFIX, and these
+    // two unrelated functions open with the identical MSVC prologue
+    // (`48 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54`). A proof digest is
+    // evidence about the bytes the patch lands on, not a function identity --
+    // the twelve `gameplay.d45.*` entries have shared one digest since they were
+    // pinned, for the same reason. Site identity is carried by the RVA, which is
+    // distinct, and re-checked against the pinned a729 image at install.
+    pinned_rva!(
+        "gameplay.d97.claim_breakdown",
+        0x19CE290,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "56ed55bbc110f4e2da4446e35fd39241fe4c7ed8a06c8723201b609038011694"
+    ),
+    pinned_rva!(
+        "gameplay.d97.conference_refresh",
+        0x184EB30,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "6c8733ecde9a394222cb216c51504fcf6a98b1047f1721ef99b624e55bc4a84d"
+    ),
+    pinned_rva!(
+        "gameplay.d97.contest_breakdown",
+        0x19CD540,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e7f71427c3057c7ade226615453c6858a15c7ba1b80737aebe47b7a64e6cba2a"
+    ),
+    pinned_rva!(
+        "gameplay.d97.terminal_summary",
+        0xB6FF40,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "f386f95925e3467ca37d8bb7591a753ec82ef9b065342bb810744b866bf0a4a1"
     ),
     // D99's combat-resolution round detour. The production hook registry
     // installs this site unconditionally (it is `StandardHookReceiptGroup::D99`)
@@ -508,7 +640,22 @@ pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     // This literal was recomputed by this crate's own `hook_allowlist_sha256`
     // encoder over the merged spec list. It is deliberately neither parent's
     // value; taking either would have described a roster nobody runs.
+    // 2026-08-03: recomputed again after the fourteen D78/D85/D95/D97 sites
+    // were pinned. The three domains' producer detours all sat behind
+    // `!passive_product_capture` gates and were therefore never installed by a
+    // shipped capture; moving them into `ProductionHookLeaseRegistry` makes the
+    // registry mint receipts for them, and an installed receipt with no pinned
+    // spec kills every capture in `outcomes()` with "installed production hook
+    // receipt roster has unpinned entries". Nothing else about the roster
+    // changed: no existing entry's name, RVA, patch length, primitive, proof or
+    // mandatory bit was touched, and the fourteen additions are all
+    // `mandatory: false` like every other gameplay producer.
+    //
+    // Recomputed by this crate's own `hook_allowlist_sha256` encoder over the
+    // new spec list, via `pinned_allowlist_literal_matches_the_encoder`.
     // Prior values for this roster, newest first:
+    //   2e16bec7755fc97a40076b06e131622417281e5e321ceb80418dbbcbe389748a
+    //     (before D78/D85/D95/D97 were pinned)
     //   4f04dec77336c7991950910aea92bc8eb1f47b55dcf8335076ac81dd9c5acc90
     //     (producers non-mandatory, D99 and the D55 panel sites not yet pinned)
     //   b100b582f946788d45d66a4ee9192ac506a5498148582815476642c2010ce2dd
@@ -523,7 +670,7 @@ pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     //     minhook-0.9.0.normal-jmp-rel5, to the primitive the provider
     //     actually installs, patch_len 8
     //     pe64.import-address-slot.atomic-cas.v1)
-    digest_from_hex("2e16bec7755fc97a40076b06e131622417281e5e321ceb80418dbbcbe389748a");
+    digest_from_hex("d22f46e7a255f74366be4075f8ddd16210fbea9f945a551116cc5fe668720bfe");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
