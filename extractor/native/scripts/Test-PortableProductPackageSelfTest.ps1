@@ -2391,7 +2391,13 @@ fn synthetic_structural_d71_passive_gate() {
         {
             param($Value)
             $firstProperty = @($Value.compact_stream.per_domain.PSObject.Properties)[0]
-            $firstProperty.Value.status_flags_or = 0x4000
+            # Bit 15, not 14. Bit 14 is COMPACT_STATUS_SOURCE_EMPTY, an
+            # ASSIGNED informational status (the domain's read reached its
+            # source and the answer was empty), so promotion correctly accepts
+            # it and this fixture would no longer produce the failure it is
+            # asserting. The rule under test is unchanged: an UNASSIGNED status
+            # bit blocks promotion.
+            $firstProperty.Value.status_flags_or = 0x8000
         }
     & $invokeManifestPromotionFailure `
         'missing manifest speed boundary cannot be promoted' `

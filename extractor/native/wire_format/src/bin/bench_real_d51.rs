@@ -332,7 +332,7 @@ struct StreamScan {
     vocabulary: BTreeSet<String>,
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13
+/// Every globally-defined compact status occupies one of bits 0..=14
 /// (`recorder_host/src/stream_fold.rs:43`).
 // Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
 // the contract assigned bit 14 to the measured-empty badge.
@@ -590,7 +590,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 scan.counts.names_partial_hours += 1;
             }
 
-            // VALIDITY BEFORE CLASSIFICATION. Bits 14..=31 are unassigned and an
+            // VALIDITY BEFORE CLASSIFICATION. Bits 15..=31 are unassigned and an
             // unassigned bit has no defined classification, so it refuses the
             // stream rather than falling through to "success". The three
             // lane-local badges of THIS domain alias assigned bits 11..13 and are

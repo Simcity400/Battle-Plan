@@ -151,7 +151,7 @@ const BLOCK_HOURS: usize = 48;
 /// (`collector/src/attach_log.rs:60031`-`:60104`).
 const PERF_STATUS_OFFSET: usize = 32;
 
-/// Every globally-defined compact status occupies one of bits 0..=13
+/// Every globally-defined compact status occupies one of bits 0..=14
 /// (`recorder_host/src/stream_fold.rs:43`).
 // Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
 // the contract assigned bit 14 to the measured-empty badge.
@@ -2158,7 +2158,7 @@ mod tests {
                 "d94 PERF failure bit {bit}"
             );
         }
-        // Every unassigned v1 bit, 14..=31, alone and beside an informational one.
+        // Every unassigned v1 bit, 15..=31, alone and beside an informational one.
         for bit in 15..32u32 {
             for extra in [0u32, 1 << 10] {
                 let mut s = Vec::new();

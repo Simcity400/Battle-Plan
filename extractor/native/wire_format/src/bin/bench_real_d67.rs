@@ -330,7 +330,7 @@ struct StreamScan {
     counts: ScanCounts,
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13. FRAME_END
+/// Every globally-defined compact status occupies one of bits 0..=14. FRAME_END
 /// carries the frame-wide aggregate, so lane-local interpretations do not apply
 /// there and any higher bit is an unknown wire-contract extension
 /// (`recorder_host/src/stream_fold.rs:43`).
@@ -991,7 +991,7 @@ fn scan_stream(
             check_authority_payload(&frame, payload, header.record_flags, pos)?;
 
             // VALIDITY BEFORE CLASSIFICATION (`compact_contract/src/lib.rs:121`-
-            // `:123`): bits 14..=31 are unassigned and have no defined
+            // `:123`): bits 15..=31 are unassigned and have no defined
             // classification, so a record carrying one refuses the stream rather
             // than falling through to "not a failure".
             let unknown_status = compact_status_unknown_flags_v1(frame.header.status_flags);

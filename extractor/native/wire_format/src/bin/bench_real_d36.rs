@@ -172,7 +172,7 @@ struct StreamScan {
     resets: usize,
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13
+/// Every globally-defined compact status occupies one of bits 0..=14
 /// (`recorder_host/src/stream_fold.rs:43`).
 // Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
 // the contract assigned bit 14 to the measured-empty badge.
@@ -502,7 +502,7 @@ fn scan_stream(
             // `compact_contract/src/lib.rs:121`-`:123` says so in as many words:
             // "Callers handling untrusted status words must first reject a
             // non-zero `compact_status_unknown_flags_v1` result; otherwise an
-            // unassigned bit has no defined classification." Bits 14..=31 are
+            // unassigned bit has no defined classification." Bits 15..=31 are
             // unassigned (`status_flags_base.rs:21`-`:24`), and an unassigned bit
             // "is not evidence of a future informational status".
             //

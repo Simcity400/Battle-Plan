@@ -141,7 +141,7 @@ pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DA
 pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
-/// D55 uses only the shared compact-status vocabulary (bits 0..=13); it has no
+/// D55 uses only the shared compact-status vocabulary (bits 0..=14); it has no
 /// lane-local aliases. Unknown bits must not silently become non-fatal badges.
 pub const D55_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 

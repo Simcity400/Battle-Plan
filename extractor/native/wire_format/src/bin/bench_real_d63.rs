@@ -151,7 +151,7 @@ fn opens_baseline(hours_seen: usize, follows_previous: bool) -> bool {
     hours_seen % BLOCK_HOURS == 0 || !follows_previous
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13. FRAME_END
+/// Every globally-defined compact status occupies one of bits 0..=14. FRAME_END
 /// carries the frame-wide aggregate, so lane-local interpretations do not apply
 /// there and any higher bit is an unknown wire-contract extension
 /// (`recorder_host/src/stream_fold.rs:43`).
@@ -507,7 +507,7 @@ fn scan_stream(
             // many words: "Callers handling untrusted status words must first
             // reject a non-zero `compact_status_unknown_flags_v1` result;
             // otherwise an unassigned bit has no defined classification." Bits
-            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // 15..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
             // unassigned bit "is not evidence of a future informational status".
             //
             // Without this, a record with `status_flags = 1 << 14` reads as "not
@@ -1540,7 +1540,7 @@ mod tests {
                 frame_end_sealed(2, 100, 0, 1, 0, 0),
             ),
         ];
-        // Every unassigned status bit, 14..=31.
+        // Every unassigned status bit, 15..=31.
         for bit in 15..32u32 {
             bad_seals.push((
                 format!("unknown seal status bit {bit}"),

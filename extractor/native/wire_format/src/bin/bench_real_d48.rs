@@ -662,7 +662,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
             // non-zero `compact_status_unknown_flags_v1` result; otherwise an
             // unassigned bit has no defined classification." d48 registers no
             // lane-local status mask (`lib.rs:95`-`:101` covers 49 and 51 only),
-            // so bits 14..=31 are unassigned here with no exceptions.
+            // so bits 15..=31 are unassigned here with no exceptions.
             //
             // The status word lives in the PAYLOAD, so it needs the header read
             // first — but not the body, which is what `peek_header` is for.

@@ -268,7 +268,7 @@ fn encode_wire_hour(
     }
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13
+/// Every globally-defined compact status occupies one of bits 0..=14
 /// (`recorder_host/src/stream_fold.rs:43`).
 // Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
 // the contract assigned bit 14 to the measured-empty badge.
@@ -574,7 +574,7 @@ fn scan_stream(
 
             // VALIDITY BEFORE CLASSIFICATION. The failure predicate classifies the
             // assigned v1 status vocabulary and is not a validity predicate
-            // (`compact_contract/src/lib.rs:121`-`:123`); bits 14..=31 are
+            // (`compact_contract/src/lib.rs:121`-`:123`); bits 15..=31 are
             // unassigned (`status_flags_base.rs:21`-`:24`) and an unassigned bit
             // "is not evidence of a future informational status", so a record
             // carrying one refuses the stream rather than reading as "not a

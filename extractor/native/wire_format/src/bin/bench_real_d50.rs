@@ -539,7 +539,7 @@ fn scan_stream(
             // vocabulary and is not a validity check
             // (`compact_contract/src/lib.rs:121`-`:123`), so a status word carrying
             // a bit version 1 does not assign is refused before it runs — bits
-            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`) and an
+            // 15..=31 are unassigned (`status_flags_base.rs:21`-`:24`) and an
             // unassigned bit "is not evidence of a future informational status".
             // Note bit 11 is assigned in v1 and is additionally D49's lane-local
             // location-candidate badge, which the failure predicate masks for

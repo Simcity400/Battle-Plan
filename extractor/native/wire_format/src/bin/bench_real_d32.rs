@@ -396,7 +396,7 @@ impl AirWingRoster {
         // pass. The two predicates below classify the v1 status vocabulary and are
         // not validity checks (`compact_contract/src/lib.rs:121`-`:123`), so a
         // status word carrying a bit version 1 does not assign is refused before
-        // either runs — bits 14..=31 are unassigned (`status_flags_base.rs:21`-
+        // either runs — bits 15..=31 are unassigned (`status_flags_base.rs:21`-
         // `:24`) and an unassigned bit "is not evidence of a future informational
         // status". Without this, an unassigned bit reads as "not a failure", the
         // roster folds the frame, and the orphan-prune assertion below is made
@@ -758,7 +758,7 @@ fn scan_stream(
             // `:123` says so in as many words: "Callers handling untrusted status
             // words must first reject a non-zero `compact_status_unknown_flags_v1`
             // result; otherwise an unassigned bit has no defined classification."
-            // Bits 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and
+            // Bits 15..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and
             // an unassigned bit "is not evidence of a future informational
             // status".
             //

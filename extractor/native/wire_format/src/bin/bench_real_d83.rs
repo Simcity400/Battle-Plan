@@ -542,7 +542,7 @@ fn scan_stream(
             // many words: "Callers handling untrusted status words must first
             // reject a non-zero `compact_status_unknown_flags_v1` result;
             // otherwise an unassigned bit has no defined classification." Bits
-            // 14..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
+            // 15..=31 are unassigned (`status_flags_base.rs:21`-`:24`), and an
             // unassigned bit "is not evidence of a future informational status".
             //
             // Without this, a record with `status_flags = 1 << 14` reads as "not

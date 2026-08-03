@@ -312,7 +312,7 @@ struct StreamScan {
     status_flags_or: u32,
 }
 
-/// Every globally-defined compact status occupies one of bits 0..=13
+/// Every globally-defined compact status occupies one of bits 0..=14
 /// (`recorder_host/src/stream_fold.rs:43`).
 // Re-exported, not re-declared: a local `(1 << 14) - 1` became wrong the moment
 // the contract assigned bit 14 to the measured-empty badge.
@@ -574,7 +574,7 @@ fn scan_stream(
             }
             last_d52_hour = Some(header.game_hour_raw);
 
-            // VALIDITY BEFORE CLASSIFICATION. Bits 14..=31 are unassigned and an
+            // VALIDITY BEFORE CLASSIFICATION. Bits 15..=31 are unassigned and an
             // unassigned bit has no defined classification, so it refuses the
             // stream rather than falling through to "success".
             let unknown_status = compact_status_unknown_flags_v1(
