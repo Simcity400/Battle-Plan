@@ -456,7 +456,13 @@ pub struct DetailEventRow {
     pub location: Option<u32>,
     pub day: Option<u32>,
     pub duration: Option<u32>,
+    /// Participant count in this side's previous validated snapshot. Every
+    /// participant delta synthesized from the same snapshot pair carries the
+    /// same value; this is not a per-event count immediately before the row.
     pub old_side_count: u32,
+    /// Participant count in this side's current validated snapshot. See
+    /// `old_side_count`: joined and left rows are a batch diff, so either kind
+    /// may carry an equal, larger, or smaller old-to-new count.
     pub new_side_count: u32,
     pub flags: u32,
 }
@@ -3087,10 +3093,15 @@ fn validate_payload_referential_consistency(
     }
 
     for ((combat_id, generation, side), set) in participant_sets {
+        // `push_side_delta_rows` diffs two complete side snapshots and stamps
+        // every synthesized row with those snapshots' cardinalities. Direction
+        // is therefore a property of the whole batch, not of an individual
+        // joined/left row. This identity rejects missing, extra, or mislabeled
+        // participant rows while accepting replacements and mixed net changes.
         let expected = i64::from(set.old_count) + set.joined.len() as i64 - set.left.len() as i64;
         if expected != i64::from(set.new_count) {
             errors.push(format!(
-                "offset {offset}: participant delta for combat {combat_id}:{generation} {} is partial: old {} + {} joined - {} left != new {}",
+                "offset {offset}: participant delta for combat {combat_id}:{generation} {} does not balance: old {} + {} joined - {} left != new {}",
                 match side {
                     CombatSide::Attacker => "attacker",
                     CombatSide::Defender => "defender",
@@ -3613,12 +3624,6 @@ fn validate_decoded_row(
                     "offset {offset}: participant-joined row {row_index} is incorrectly unclassified"
                 ));
             }
-            if row.new_side_count <= row.old_side_count {
-                errors.push(format!(
-                    "offset {offset}: participant-joined row {row_index} has non-increasing side counts {} -> {}",
-                    row.old_side_count, row.new_side_count
-                ));
-            }
         }
         EVENT_PARTICIPANT_LEFT_UNCLASSIFIED => {
             if !side_present || !division_present {
@@ -3629,12 +3634,6 @@ fn validate_decoded_row(
             if row.flags & FLAG_SEMANTIC_UNCLASSIFIED == 0 {
                 errors.push(format!(
                     "offset {offset}: participant-left row {row_index} lacks unclassified semantic badge"
-                ));
-            }
-            if row.new_side_count >= row.old_side_count {
-                errors.push(format!(
-                    "offset {offset}: participant-left row {row_index} has non-decreasing side counts {} -> {}",
-                    row.old_side_count, row.new_side_count
                 ));
             }
         }
@@ -4817,10 +4816,13 @@ mod tests {
             participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 1, 3);
         let payload =
             encode_detail_events_payload_v4(1, STATUS_DELTA_DATA, &[partial_join], &[], &[]);
-        assert!(gate_d55_payload(&payload)
-            .errors
-            .iter()
-            .any(|error| error.contains("participant delta") && error.contains("partial")));
+        assert!(
+            gate_d55_payload(&payload)
+                .errors
+                .iter()
+                .any(|error| error.contains("participant delta")
+                    && error.contains("does not balance"))
+        );
 
         let joined = participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 1, 1);
         let left = participant_event(
@@ -4856,21 +4858,24 @@ mod tests {
             error.contains("side without flag") || error.contains("lacks side/division identity")
         }));
 
-        let wrong_join_direction =
+        let unbalanced_join_batch =
             participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 2, 1);
         let payload = encode_detail_events_payload_v4(
             1,
             STATUS_DELTA_DATA,
-            &[wrong_join_direction],
+            &[unbalanced_join_batch],
             &[],
             &[],
         );
-        assert!(gate_d55_payload(&payload)
-            .errors
-            .iter()
-            .any(|error| error.contains("participant-joined") && error.contains("non-increasing")));
+        assert!(
+            gate_d55_payload(&payload)
+                .errors
+                .iter()
+                .any(|error| error.contains("participant delta")
+                    && error.contains("does not balance"))
+        );
 
-        let wrong_leave_direction = participant_event(
+        let unbalanced_leave_batch = participant_event(
             EVENT_PARTICIPANT_LEFT_UNCLASSIFIED,
             CombatSide::Defender,
             2002,
@@ -4880,14 +4885,17 @@ mod tests {
         let payload = encode_detail_events_payload_v4(
             1,
             STATUS_DELTA_DATA,
-            &[wrong_leave_direction],
+            &[unbalanced_leave_batch],
             &[],
             &[],
         );
-        assert!(gate_d55_payload(&payload)
-            .errors
-            .iter()
-            .any(|error| error.contains("participant-left") && error.contains("non-decreasing")));
+        assert!(
+            gate_d55_payload(&payload)
+                .errors
+                .iter()
+                .any(|error| error.contains("participant delta")
+                    && error.contains("does not balance"))
+        );
     }
 
     struct TestMemory {
@@ -4932,6 +4940,68 @@ mod tests {
         assert_eq!(gate.summary.phase_ended_rows, 1);
         assert_eq!(gate.summary.participant_joined_rows, 1);
         assert_eq!(gate.summary.participant_left_unclassified_rows, 1);
+    }
+
+    #[test]
+    fn compact_gate_accepts_snapshot_batch_participant_accounting() {
+        let old = [snapshot(
+            42,
+            7,
+            1000,
+            &[1001, 1002, 1003, 1004, 1005],
+            &[2001, 2002, 2003],
+        )];
+        let new = [snapshot(
+            42,
+            7,
+            1000,
+            &[1001, 1002, 1003, 1004, 1006],
+            &[2002, 2003, 2004, 2005, 2006, 2007, 2008],
+        )];
+        let frame = build_transition_capture_frame(&old, &new, 1, 60_787_539, 1).unwrap();
+
+        let attacker_rows = frame
+            .rows
+            .iter()
+            .filter(|row| row.side == Some(CombatSide::Attacker))
+            .collect::<Vec<_>>();
+        assert_eq!(attacker_rows.len(), 2);
+        assert!(attacker_rows
+            .iter()
+            .all(|row| (row.old_side_count, row.new_side_count) == (5, 5)));
+        assert!(attacker_rows
+            .iter()
+            .any(|row| row.event_kind == EVENT_PARTICIPANT_JOINED));
+        assert!(attacker_rows
+            .iter()
+            .any(|row| row.event_kind == EVENT_PARTICIPANT_LEFT_UNCLASSIFIED));
+
+        let defender_rows = frame
+            .rows
+            .iter()
+            .filter(|row| row.side == Some(CombatSide::Defender))
+            .collect::<Vec<_>>();
+        assert_eq!(defender_rows.len(), 6);
+        assert!(defender_rows
+            .iter()
+            .all(|row| (row.old_side_count, row.new_side_count) == (3, 7)));
+        assert_eq!(
+            defender_rows
+                .iter()
+                .filter(|row| row.event_kind == EVENT_PARTICIPANT_JOINED)
+                .count(),
+            5
+        );
+        assert_eq!(
+            defender_rows
+                .iter()
+                .filter(|row| row.event_kind == EVENT_PARTICIPANT_LEFT_UNCLASSIFIED)
+                .count(),
+            1
+        );
+
+        let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
+        assert!(gate.ok, "{:?}", gate.errors);
     }
 
     #[test]
