@@ -274,6 +274,51 @@ fn a_worker_success_does_not_turn_a_partially_migrated_domain_failure_into_a_fra
     }
 }
 
+/// Regression for live_unlock/t9 and t10. D65 and D66 currently migrate only
+/// their worker-join boundary: a normal join records `worker_completed`, while
+/// failures discovered inside either reader still reach PERF only through the
+/// legacy diagnostic/status channel. Treating that successful join as proof
+/// that the ordinary failure site is migrated creates a frame-level
+/// `migrated_site_published_outcome` finding and refuses every other domain in
+/// the hour.
+///
+/// Production change that makes this fail: removing D65 or D66 from
+/// `PARTIALLY_MIGRATED_OUTCOME_DOMAINS` before all of that reader's internal
+/// non-clean return paths record a failure outcome.
+#[test]
+fn d65_and_d66_internal_read_failures_remain_domain_degradations_until_sites_are_migrated() {
+    for domain_id in [
+        COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE,
+        COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE,
+    ] {
+        assert!(
+            PARTIALLY_MIGRATED_OUTCOME_DOMAINS.contains(&domain_id),
+            "domain {domain_id} has only worker-boundary outcome migration"
+        );
+        let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        record_read_succeeded(
+            &mut outcomes,
+            domain_id,
+            compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+        );
+        let (records, _) = assembled_frame(&[(domain_id, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+        let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+
+        assert!(
+            findings.iter().all(|finding| finding.frame_finding.is_none()),
+            "domain {domain_id} internal read failure became a frame fault: {:?}",
+            findings.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+        );
+        let FrameCompletenessVerdict::Degraded(degraded) =
+            classify_frame_completeness(&findings)
+        else {
+            panic!("domain {domain_id} internal read failure must degrade only that domain");
+        };
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].domain_id, domain_id);
+    }
+}
+
 /// The complementary guard: this patch must not globally downgrade a bypassed
 /// migrated site. D72's ordinary failure sites are wired into the ledger, so a
 /// failing PERF word accompanied only by a success outcome is still an internal
