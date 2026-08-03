@@ -1,6 +1,11 @@
 use core::ffi::c_void;
 use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
+use production_hook_receipt::rel5_roster::Rel5HookRoster;
+use production_hook_receipt::{
+    ExpectedRvaHook, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem;
@@ -36,6 +41,54 @@ const TASKFORCE_FRAME_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x44,
     0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
 ];
+
+/// The canonical roster admits exactly these four D95 sites.
+pub const HOOK_RECEIPT_COUNT: usize = 4;
+
+/// The exact production-hook specifications this lane may install, in the same
+/// order as the `specs` table `install` walks and as the `detours` array
+/// `observe_installed` is handed. Every field is checked by
+/// `production_hook_receipt` against the running image before a receipt is
+/// minted: an unadmitted primitive, a patch width other than five, or an
+/// original prefix that is not this exact a729 function's first sixteen bytes
+/// is refused outright.
+///
+/// The `original_prefix` of each entry is the SAME constant the installer's own
+/// sentinel check reads, so the byte gate and the receipt cannot describe
+/// different functions.
+pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
+    ExpectedRvaHook {
+        logical_name: "gameplay.d95.intel_getter",
+        requested_rva: INTEL_GETTER_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &GETTER_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d95.land_frame",
+        requested_rva: LAND_FRAME_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &LAND_FRAME_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d95.land_eligibility",
+        requested_rva: LAND_ELIGIBILITY_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &LAND_ELIGIBILITY_SENTINEL,
+    },
+    ExpectedRvaHook {
+        logical_name: "gameplay.d95.taskforce_frame",
+        requested_rva: TASKFORCE_FRAME_RVA as u64,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &TASKFORCE_FRAME_SENTINEL,
+    },
+];
+
+static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
+    Rel5HookRoster::new("D95", PRODUCTION_HOOK_SPECS);
 
 type IntelGetterFn = unsafe extern "system" fn(usize) -> u32;
 type LandFrameFn = unsafe extern "system" fn(usize);
@@ -189,8 +242,95 @@ pub fn install() -> Result<(), String> {
             return Err(format!("spotted-unit hook enable failed: {status}"));
         }
     }
+    // Fail closed on identity, exactly as D94 does. The observation re-derives
+    // the module from the running process, refuses anything that is not an
+    // exact-a729 `hoi4.exe`, re-checks each admitted original prefix against
+    // that file's own bytes at the site's RVA, and binds each installed relay to
+    // the detour this lane actually passed to MinHook. An installation that
+    // cannot be attested is rolled back rather than shipped: without a receipt
+    // the production hook registry has nothing to put on the wire, and a
+    // silently receipt-less install is how a domain reports itself installed
+    // while the READY evidence describes no patch at all.
+    if let Err(error) = HOOK_RECEIPTS.observe_installed(base, detours()) {
+        if !rollback(&created) {
+            clear_originals();
+        }
+        // Only after the detours are provably gone. A discard while a site is
+        // still patched would erase the one record that a patch exists.
+        HOOK_RECEIPTS.discard_all_custody();
+        MODULE_BASE.store(0, Ordering::Release);
+        return Err(format!("spotted-unit hook receipt refused: {error}"));
+    }
     INSTALLED.store(true, Ordering::Release);
     Ok(())
+}
+
+/// The detour addresses, in `PRODUCTION_HOOK_SPECS` order.
+///
+/// A function rather than a `const`: a function item's address is not an
+/// integer at compile time, so this cannot be a constant. `observe_installed`
+/// refuses any site whose relay does not resolve to the address in this list,
+/// so a mis-ordered entry is a hard install failure rather than a mislabelled
+/// receipt.
+fn detours() -> [usize; HOOK_RECEIPT_COUNT] {
+    [
+        hook_intel_getter as *const () as usize,
+        hook_land_frame as *const () as usize,
+        hook_land_eligibility as *const () as usize,
+        hook_taskforce_frame as *const () as usize,
+    ]
+}
+
+/// True once this lane owns enabled, receipt-observed production hooks.
+pub fn installed() -> bool {
+    INSTALLED.load(Ordering::Acquire)
+}
+
+/// The exact enabled-byte receipts for the four D95 production hook sites.
+pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+    HOOK_RECEIPTS.installed_receipts()
+}
+
+/// Consume the release receipts. One-shot: a second call after the registry has
+/// taken custody reports them unavailable rather than minting a second release.
+pub fn take_released_hook_receipts(
+) -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+    HOOK_RECEIPTS.take_released_receipts()
+}
+
+/// Release this lane for a production install that is being given up, and
+/// report what the abort threw away.
+///
+/// D95 keeps ONE current land frame and ONE current taskforce frame rather than
+/// a queue, and they are complete map-visibility frames rather than events, so
+/// the discard total is at most two retained observations. They are drained
+/// BEFORE the uninstall: after the detours are gone `drain_latest` refuses and
+/// the evidence is unrecoverable.
+pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
+    let retained = match drain_latest() {
+        Ok(Some(_)) => 1,
+        Ok(None) => 0,
+        // "Not installed" means there was nothing to retain. Any other refusal
+        // is an answer we did not get, so it counts as a retained observation
+        // rather than as silence.
+        Err(error) if error.contains("are not installed") => 0,
+        Err(_) => 1,
+    };
+    uninstall().map_err(|error| format!("D95 install abort: {error}"))?;
+    // `uninstall` returns success whenever INSTALLED was already false, which is
+    // exactly the state a retained release leaves behind. A claimed release over
+    // a live detour is not a release.
+    if RETAINED_LIVE.load(Ordering::Acquire) {
+        return Err(
+            "D95 install abort could not prove its detours were removed; a previous release \
+             retained a live patch"
+                .into(),
+        );
+    }
+    Ok(InstallAbortDiscard {
+        retained_rows: retained,
+        ..InstallAbortDiscard::ZERO
+    })
 }
 
 pub fn drain_latest() -> Result<Option<SpottedUnitsSnapshot>, String> {
@@ -277,6 +417,26 @@ pub fn uninstall() -> Result<(), String> {
     }
     LAND_BUILD.with(|slot| *slot.borrow_mut() = None);
     TASKFORCE_BUILD.with(|slot| *slot.borrow_mut() = None);
+    // Mint the release receipts only for a teardown that provably restored
+    // every target. `observe_released_set` re-reads each site's bytes and
+    // refuses unless the admitted original prefix is back, so this cannot
+    // attest a restoration that did not happen -- but a retained detour must not
+    // even be offered to it, because the attestation would then be about the one
+    // site that came back while three others stayed patched.
+    //
+    // `relay_freed: true` is the truth of the branch above: this path calls
+    // `inline_detour::remove`, which is MinHook's `MH_RemoveHook` and frees the
+    // trampoline. The retained branch calls only `disable` and mints nothing.
+    //
+    // Receipt custody is published only when the physical release ALSO reported
+    // no errors. A removal failure leaves MinHook state this lane cannot
+    // describe, and a release receipt is the registry's evidence that the site
+    // is closed.
+    if !retained && errors.is_empty() {
+        if let Err(error) = HOOK_RECEIPTS.publish_release(true) {
+            errors.push(format!("spotted-unit hook release receipt refused: {error}"));
+        }
+    }
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
@@ -502,7 +662,11 @@ mod tests {
             "expected the teardown and rollback clears to still exist, found {clears}"
         );
         for (guarded, count) in [
-            ("if !rollback(&created) {", 6usize),
+            // Seven, not the original six: the receipt observation added on
+            // 2026-08-03 is a seventh way `install` can fail after sites have
+            // been created, and it must roll back through the same retention
+            // check rather than clearing the originals under a live detour.
+            ("if !rollback(&created) {", 7usize),
             ("if !retained {", 1usize),
             ("if retained {\n        RETAINED_LIVE.store(true, Ordering::Release);\n    } else {\n        clear_originals();\n    }", 1usize),
         ] {
@@ -586,6 +750,92 @@ mod tests {
             install.contains("RETAINED_LIVE.load(Ordering::Acquire)"),
             "install must refuse BEFORE it touches a target that may still be \
              hooked"
+        );
+    }
+
+    /// Law: the receipt roster describes the sites the installer actually
+    /// patches, in the order the installer patches them.
+    ///
+    /// The two tables are independent literals -- `install` walks its own
+    /// `specs` array and `PRODUCTION_HOOK_SPECS` is what the receipts and the
+    /// pinned allowlist are built from -- so nothing but this holds them
+    /// together. A drift here is not a cosmetic mismatch: `observe_installed`
+    /// is handed `detours()` positionally, so a reordered spec table would bind
+    /// each receipt to the wrong detour and the whole install would be refused
+    /// live, on a real image, with no offline signal.
+    ///
+    /// Mutation proof: swap two entries of `PRODUCTION_HOOK_SPECS`, or change
+    /// one `original_prefix` to a different sentinel, and this fails.
+    #[test]
+    fn the_receipt_specs_match_the_installers_own_site_table() {
+        let expected: [(u32, &[u8]); HOOK_RECEIPT_COUNT] = [
+            (INTEL_GETTER_RVA, &GETTER_SENTINEL),
+            (LAND_FRAME_RVA, &LAND_FRAME_SENTINEL),
+            (LAND_ELIGIBILITY_RVA, &LAND_ELIGIBILITY_SENTINEL),
+            (TASKFORCE_FRAME_RVA, &TASKFORCE_FRAME_SENTINEL),
+        ];
+        for (index, (rva, sentinel)) in expected.iter().enumerate() {
+            let spec = PRODUCTION_HOOK_SPECS[index];
+            assert_eq!(
+                spec.requested_rva,
+                u64::from(*rva),
+                "spec {index} ({}) must pin the RVA the installer patches",
+                spec.logical_name
+            );
+            assert_eq!(
+                spec.original_prefix, *sentinel,
+                "spec {index} ({}) must carry the same sixteen bytes the \
+                 installer's own sentinel check reads",
+                spec.logical_name
+            );
+            assert_eq!(spec.target_patch_len, 5, "MinHook writes a five-byte REL5 jump");
+            assert_eq!(spec.primitive_id, MINHOOK_NORMAL_REL5_PRIMITIVE_ID);
+            assert!(spec.logical_name.starts_with("gameplay.d95."));
+        }
+        // Distinct names and distinct sites: the registry sorts and
+        // de-duplicates receipts by logical name, so a duplicated name would
+        // silently shrink the roster it thinks it installed.
+        let mut names = PRODUCTION_HOOK_SPECS
+            .iter()
+            .map(|spec| spec.logical_name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            HOOK_RECEIPT_COUNT,
+            "every D95 receipt name must be distinct"
+        );
+        let mut rvas = PRODUCTION_HOOK_SPECS
+            .iter()
+            .map(|spec| spec.requested_rva)
+            .collect::<Vec<_>>();
+        rvas.sort_unstable();
+        rvas.dedup();
+        assert_eq!(
+            rvas.len(),
+            HOOK_RECEIPT_COUNT,
+            "every D95 site must be distinct"
+        );
+    }
+
+    /// The detour table is the same width as the spec table and holds four
+    /// distinct, non-null addresses.
+    ///
+    /// `observe_installed` binds `specs[i]` to `detours[i]`, so a repeated
+    /// address here would mean two sites claiming the same detour -- which a
+    /// live install would catch and an offline build would not.
+    #[test]
+    fn every_site_has_its_own_detour() {
+        let detours = detours();
+        assert!(detours.iter().all(|address| *address != 0));
+        let mut distinct = detours.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            HOOK_RECEIPT_COUNT,
+            "each D95 site needs its own detour"
         );
     }
 

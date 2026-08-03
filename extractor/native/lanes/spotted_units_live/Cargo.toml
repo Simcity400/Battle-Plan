@@ -12,6 +12,7 @@ compact_contract = { path = "../../compact_contract" }
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
 minhook = "0.9.0"
+production_hook_receipt = { path = "../production_hook_receipt" }
 windows-sys = { version = "0.61.2", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",

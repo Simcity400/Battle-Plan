@@ -1056,6 +1056,7 @@ dependencies = [
  "compact_contract",
  "inline_detour",
  "minhook",
+ "production_hook_receipt",
  "windows-sys",
 ]
 
