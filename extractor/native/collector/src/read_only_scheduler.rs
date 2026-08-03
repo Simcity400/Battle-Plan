@@ -1521,7 +1521,7 @@ mod tests {
         assert_eq!(ledger.accepted, 0);
         assert_eq!(
             ledger.evicted_pending, 1,
-            "hour 101 opened no frame and nothing else in the ledger claims it"
+            "hour 101 is never swept and nothing else in the ledger claims it"
         );
         assert_eq!(ledger.outstanding, 2, "100 in flight, 102 pending");
         assert!(ledger.balanced(), "{ledger:?}");
