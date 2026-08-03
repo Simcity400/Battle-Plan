@@ -155,19 +155,20 @@ Assert-True -Condition ($message -match 'waited \d+ s and it never became non-ze
 # RED WHEN: the scoping is dropped from the refusal wording.
 Assert-True -Condition ($message -match 'never became non-zero in any observation taken') `
     -Message 'the refusal claims only what polling establishes'
-# All THREE histories that fit the evidence, not just the two that are easy to
-# think of. Nothing sampled the engine after the LAST observation either, so a
-# campaign that entered during the final sleep and is in play at the moment of
-# refusal is as consistent with the evidence as one that never entered.
-# RED WHEN: any of the three is dropped from the refusal.
-Assert-True -Condition ($message -match 'may never have entered its in-game session') `
-    -Message 'the refusal names the never-entered history'
-Assert-True -Condition ($message -match 'may have entered and left between observations') `
-    -Message 'the refusal names the entered-and-left history'
-Assert-True -Condition ($message -match 'may have entered after the last observation and still be in play now') `
-    -Message 'the refusal names the entered-after-the-last-observation history'
-# And it must not make a present-tense claim about the engine, which that third
-# history would falsify.
+# The refusal must not enumerate the histories that fit the evidence, because
+# that set is not enumerable: the byte can be set and cleared any number of
+# times while unsampled, including entirely before the first observation or
+# entirely after the last. Two review rounds were spent adding a missing case to
+# a list that could never be complete. What it must state is the only sound
+# conclusion -- that the current value is unknown.
+# RED WHEN: the message goes back to claiming a complete set of histories, or
+# drops the unknown-current-value conclusion.
+Assert-True -Condition ($message -match 'may have transitioned any number of times while unsampled') `
+    -Message 'the refusal says the unsampled history is not enumerable'
+Assert-True -Condition ($message -match 'its current value is unknown') `
+    -Message 'the refusal states the sound conclusion about the current value'
+# And it must not make a present-tense claim about the engine, which an
+# unsampled set would falsify.
 # RED WHEN: the refusal reverts to asserting what the toggle would do now.
 Assert-True -Condition ($message -match 'is not a claim about the engine now') `
     -Message 'the refusal is attributed to the state last observed, not to the engine now'

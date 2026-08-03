@@ -149,12 +149,17 @@ function Test-Hoi4PlayerInputGateSet {
     The second message is worded to claim only what polling establishes. It
     cannot say the byte was continuously zero -- nothing sampled the engine
     between observations, or after the last one -- so every statement in it is
-    scoped to the observations that were actually taken. Three histories fit
-    the same evidence and the message names all three: never entered; entered
-    and left between observations; entered after the last observation and still
-    in play at the moment of refusal. The last of those also makes any
-    present-tense claim about the toggle unsound, so the message attributes the
-    refusal to the state last observed rather than to the engine now.
+    scoped to the observations that were actually taken.
+
+    It does NOT enumerate the histories that fit the evidence, because that set
+    is not enumerable: the byte may have been set and cleared any number of
+    times while unsampled, including entirely before the first observation or
+    entirely after the last. Two review rounds were spent adding a missing case
+    to a list that could never be complete. The message gives examples and then
+    states the only sound conclusion, which is that the current value is
+    unknown. That is also why the refusal is attributed to the state LAST
+    OBSERVED rather than to the engine now: a present-tense claim about the
+    toggle would be exactly the unsound step.
 #>
 function New-Hoi4WorldReadyTimeoutMessage {
     param(
@@ -180,11 +185,11 @@ function New-Hoi4WorldReadyTimeoutMessage {
         "(budget $TimeoutSeconds s, last observed value $observed). Exactly one " +
         'enumerated engine routine sets that byte -- FUN_140DC5310, the in-game session ' +
         'setup -- and the savegame-load, frontend and reset paths clear it. What is ' +
-        'established is only that no observation saw it set. The campaign may never have ' +
-        'entered its in-game session, may have entered and left between observations, or ' +
-        'may have entered after the last observation and still be in play now: nothing ' +
-        'sampled the engine between observations or after the last one, so polling cannot ' +
-        'tell those apart. The refusal is on the state LAST OBSERVED -- at that value ' +
+        'established is only that no observation saw it set. Nothing sampled the engine ' +
+        'between observations or after the last one, so the byte may have transitioned any ' +
+        'number of times while unsampled -- the campaign may never have entered its ' +
+        'in-game session, may have entered and left again, or may be in play right now -- ' +
+        'and its current value is unknown. The refusal is on the state LAST OBSERVED -- at that value ' +
         'FUN_140B58C10 returns non-zero and the player toggle FUN_140DCD3E0 returns at ' +
         '0x140DCD409 without transitioning -- and is not a claim about the engine now.'
     )
