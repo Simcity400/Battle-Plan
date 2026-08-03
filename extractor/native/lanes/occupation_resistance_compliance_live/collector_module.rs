@@ -1479,6 +1479,39 @@ mod tests {
         mem
     }
 
+    /// The CGameState country table's extent is the engine's own field, read
+    /// with the engine's signed rule. The former `MAX_TAG_DB_ID` (1024) ceiling
+    /// was not an engine quantity, and a game defining more countries than the
+    /// guess did not get a shorter roster here - it got `Ok(empty)`, the whole
+    /// occupation domain silently reporting no occupied country anywhere.
+    ///
+    /// Mutation that makes this go red: restore
+    /// `bound_exceeded_u32(country_count, MAX_TAG_DB_ID, ..)` in
+    /// `read_country_occupation_status`.
+    #[test]
+    fn a_country_table_past_the_old_ceiling_still_yields_its_occupation_rows() {
+        let mut mem = fake_memory(DIVISION_TEMPLATE_TYPE);
+        // A 2000-slot country table with the fixture's occupied country moved
+        // to a slot the old ceiling refused. Only the header changes; the
+        // country object and its whole occupation chain are the fixture's.
+        const BIG_TABLE: u64 = 0x2200000A000;
+        const BIG_SLOT: u32 = 1_500;
+        mem.write_zeroes(BIG_TABLE, 2_000 * 8);
+        mem.write_u64(GAME_STATE + CGAMESTATE_COUNTRY_TABLE as u64, BIG_TABLE);
+        mem.write_u32(GAME_STATE + CGAMESTATE_COUNTRY_COUNT as u64, 2_000);
+        mem.write_u64(BIG_TABLE + u64::from(BIG_SLOT) * 8, COUNTRY_2);
+        mem.write_u32(COUNTRY_2 + COUNTRY_OFF_TAG_DB_ID as u64, BIG_SLOT);
+
+        let (status, summary) =
+            read_country_occupation_status(&mem, GAME_STATE).expect("the walk runs");
+        assert_eq!(summary.country_count, 2_000);
+        assert!(
+            status.contains_key(&BIG_SLOT),
+            "the occupied country at slot {BIG_SLOT} is past the old 1024 ceiling \
+             and must still be found"
+        );
+    }
+
     #[test]
     fn extracts_validated_rows_and_encodes_domain52_payload() {
         let mem = fake_memory(DIVISION_TEMPLATE_TYPE);
