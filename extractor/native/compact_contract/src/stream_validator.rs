@@ -239,6 +239,14 @@ impl StatefulStreamValidator {
                 if header.domain_id == 0 {
                     return Err(StreamValidationError::ReservedDomainZero);
                 }
+                if header.record_type == crate::COMPACT_RECORD_TYPE_CAPTURE_TERMINATED
+                    && header.game_hour_raw != 0
+                {
+                    return Err(StreamValidationError::InvalidRecordSemantics(format!(
+                        "CAPTURE_TERMINATED H4CR hour {} is not the zero no-coverage sentinel",
+                        header.game_hour_raw
+                    )));
+                }
                 validate_compact_record_semantics(
                     header.domain_id,
                     header.record_type,

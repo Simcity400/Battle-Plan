@@ -17,6 +17,10 @@ pub const COMPACT_RECORD_TYPE_FRAME_REFUSED: u16 = 6;
 /// rides inside the frame it describes, before that frame's `FRAME_END`, so a
 /// consumer reads the degradation as part of the same closed hour.
 pub const COMPACT_RECORD_TYPE_FRAME_DEGRADED: u16 = 7;
+/// Frame-independent producer-abort notice. Unlike FRAME_REFUSED and
+/// FRAME_DEGRADED, this closes or qualifies no game hour and claims no domain
+/// coverage. Its H4CR envelope uses domain 1000 and game-hour sentinel zero.
+pub const COMPACT_RECORD_TYPE_CAPTURE_TERMINATED: u16 = 8;
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -139,6 +143,14 @@ pub fn validate_compact_record_semantics(
                 ));
             }
             crate::frame_degraded::validate_frame_degraded_payload(payload)
+        }
+        COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "CAPTURE_TERMINATED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::capture_termination::CaptureTerminationRecordV1::decode(payload).map(|_| ())
         }
         COMPACT_RECORD_TYPE_DOMAIN_GAP => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {

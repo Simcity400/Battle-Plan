@@ -229,6 +229,84 @@ fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them(
     assert!(notice.domains.iter().all(|domain| !domain.reason.is_empty()));
 }
 
+/// Regression for the live-only input state the hand-built happy-path fixture
+/// above did not exercise: worker-join migration recorded SUCCESS, then the
+/// returned reader published a non-clean PERF status from a downstream site
+/// that has not yet been migrated into the outcome ledger.
+///
+/// Production change that makes this fail: treating any member below as fully
+/// migrated (removing it from `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`) before its
+/// ordinary failure-producing sites record a failure outcome. That recreates
+/// the t5 `migrated_site_published_outcome` frame finding and the verdict becomes
+/// `Refused` instead of `Degraded`.
+#[test]
+fn a_worker_success_does_not_turn_a_partially_migrated_domain_failure_into_a_frame_fault() {
+    for domain_id in PARTIALLY_MIGRATED_OUTCOME_DOMAINS {
+        let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        record_read_succeeded(
+            &mut outcomes,
+            *domain_id,
+            compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+        );
+        let (records, _) =
+            assembled_frame(&[(*domain_id, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+        let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding.frame_finding.is_some())
+                .count(),
+            0,
+            "partially migrated domain {domain_id} recreated a frame-level migration finding: {:?}",
+            findings.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+        );
+        let FrameCompletenessVerdict::Degraded(degraded) =
+            classify_frame_completeness(&findings)
+        else {
+            panic!("partially migrated domain {domain_id} must remain a per-domain degradation");
+        };
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].domain_id, *domain_id);
+        assert!(degraded[0]
+            .reason
+            .contains(compact_contract::diagnostic_channel::PREDICATE_UNDECLARED_NAME));
+    }
+}
+
+/// The complementary guard: this patch must not globally downgrade a bypassed
+/// migrated site. D72's ordinary failure sites are wired into the ledger, so a
+/// failing PERF word accompanied only by a success outcome is still an internal
+/// producer contradiction and must refuse the frame.
+///
+/// Production change that makes this fail: adding D72 to the partial-migration
+/// exception, or removing the `MigratedButSilent` frame finding from the
+/// completeness walk.
+#[test]
+fn a_fully_migrated_site_that_publishes_failure_after_only_success_still_refuses() {
+    let domain_id = COMPACT_DOMAIN_RESOLVED_TOOLTIP_INSTANCES_LIVE;
+    assert!(!PARTIALLY_MIGRATED_OUTCOME_DOMAINS.contains(&domain_id));
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_read_succeeded(
+        &mut outcomes,
+        domain_id,
+        compact_contract::domain_outcome::READ_PREDICATE_PAYLOAD_ENCODED,
+    );
+    let (records, _) = assembled_frame(&[(domain_id, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+    let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+
+    assert!(findings.iter().any(|finding| {
+        finding.frame_finding.as_ref().is_some_and(|frame| {
+            frame.predicate.name
+                == compact_contract::domain_outcome::READ_PREDICATE_MIGRATED_SITE_PUBLISHED_OUTCOME_NAME
+        })
+    }));
+    assert!(matches!(
+        classify_frame_completeness(&findings),
+        FrameCompletenessVerdict::Refused
+    ));
+}
+
 /// A domain inside its expected-partial tolerance is NOT a degradation. The
 /// frame stays complete and no notice is produced -- the two states must never
 /// collapse into one another.

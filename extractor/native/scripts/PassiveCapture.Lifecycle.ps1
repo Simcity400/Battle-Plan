@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Strict authority checks for passive collector READY and teardown receipts.
 
@@ -259,6 +259,44 @@ function Get-PassiveNamedValueSha256 {
     return Get-PassiveBytesSha256 $bytes.ToArray()
 }
 
+function Get-PassivePinnedMacroMandatoryByte {
+    param(
+        [Parameter(Mandatory = $true)][string]$ContractSource,
+        [Parameter(Mandatory = $true)][string]$MacroName
+    )
+
+    $macroStart = $ContractSource.IndexOf("macro_rules! $MacroName")
+    if ($macroStart -lt 0) {
+        throw "Pinned hook macro '$MacroName' is not declared by the canonical roster source."
+    }
+    # Bound the search to THIS macro's body, ending at its own closing brace --
+    # the first `}` in column 0, since every brace inside a macro body is
+    # indented. Bounding at "the next macro_rules!" instead leaves the last
+    # macro in the file scanning to EOF, where the struct definitions, doc
+    # comments and unit tests declare `mandatory:` too; that read four literals
+    # where the macro declares one.
+    $bodyMatch = [regex]::Match(
+        $ContractSource.Substring($macroStart),
+        '^macro_rules!\s+\S+\s*\{.*?^\}',
+        (
+            [Text.RegularExpressions.RegexOptions]::Singleline -bor
+            [Text.RegularExpressions.RegexOptions]::Multiline
+        )
+    )
+    if (-not $bodyMatch.Success) {
+        throw "Pinned hook macro '$MacroName' has no closing brace in the canonical roster source."
+    }
+    $body = $bodyMatch.Value
+    # NOT $matches: that is a read/write PowerShell automatic variable which any
+    # later -match in this scope silently overwrites.
+    $mandatoryMatches = [regex]::Matches($body, 'mandatory:\s*(true|false)\s*,')
+    if ($mandatoryMatches.Count -ne 1) {
+        throw "Pinned hook macro '$MacroName' declares $($mandatoryMatches.Count) mandatory literals; expected exactly 1."
+    }
+    if ($mandatoryMatches[0].Groups[1].Value -ceq 'true') { return [byte]1 }
+    return [byte]0
+}
+
 function Get-PassivePinnedHookAllowlistAuthorityFromSource {
     param([Parameter(Mandatory = $true)][string]$ContractSource)
 
@@ -304,6 +342,17 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
         throw 'Pinned import-slot patch width is not declared by the canonical roster source.'
     }
     $importPatchLen = [uint16]$importWidthMatch.Groups[1].Value
+    # The mandatory bit is PARSED from each macro, never assumed, for the same
+    # reason the import primitive above is. It is part of the Rust allowlist
+    # preimage (`out.push(u8::from(entry.mandatory))`), so it moves the digest.
+    # This encoder previously hardcoded 1 for BOTH macros; when the gameplay
+    # producer detours became non-mandatory it kept emitting the superseded
+    # digest b100b582f946788d45d66a4ee9192ac506a5498148582815476642c2010ce2dd
+    # and rejected every otherwise-valid receipt the recorder published.
+    $importMandatory = Get-PassivePinnedMacroMandatoryByte `
+        -ContractSource $ContractSource -MacroName 'pinned_import'
+    $rvaMandatory = Get-PassivePinnedMacroMandatoryByte `
+        -ContractSource $ContractSource -MacroName 'pinned_rva'
     $importPattern =
         'pinned_import!\(\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([0-9a-f]{64})"\s*\)'
     foreach ($match in [regex]::Matches(
@@ -331,7 +380,7 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
         Add-PassiveSha256Bytes $entry $symbolSha
         Add-PassiveSha256Bytes $entry $primitiveSha
         Add-PassiveSha256Bytes $entry $match.Groups[4].Value
-        $entry.Add([byte]1)
+        $entry.Add($importMandatory)
         $entry.AddRange([byte[]]::new(7))
         $entries.Add([pscustomobject]@{
             IdentitySha256 = $identitySha
@@ -388,7 +437,7 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
         Add-PassiveSha256Bytes $entry $primitiveSha
         $entry.AddRange([byte[]]::new(24))
         Add-PassiveSha256Bytes $entry $match.Groups[5].Value
-        $entry.Add([byte]1)
+        $entry.Add($rvaMandatory)
         $entry.AddRange([byte[]]::new(7))
         $entries.Add([pscustomobject]@{
             IdentitySha256 = $identitySha
@@ -981,50 +1030,128 @@ function Test-PassiveCaptureReadyReceipt {
     $expectedHostBindingSha = Get-PassiveBytesSha256 `
         $hostBindingBytes.ToArray()
 
-    if ($ready.schema -isnot [string] -or
-        [string]$ready.schema -cne 'hoi4-capture-ready-v2' -or
-        $ready.status -isnot [string] -or
-        [string]$ready.status -cne 'ready' -or
-        $ready.capture_policy -isnot [string] -or
-        [string]$ready.capture_policy -cne 'passive-observer-only' -or
-        $receiptPid -ne $TargetPid -or
-        $creation -ne $TargetCreationFiletimeUtc -or
-        $ready.session_id -isnot [string] -or
-        [string]$ready.session_id -cne $SessionId -or
-        $ready.capture_id -isnot [string] -or
-        [string]$ready.capture_id -cne $CaptureId -or
-        $duration -ne $RequestedDurationMs -or
-        $flags -ne 255 -or
-        $domainCount -ne [uint32]$ScheduledDomainNames.Count -or
-        $queueCapacity -ne $SchedulerQueueCapacity -or
-        $workerCount -ne $SchedulerWorkerCount -or
-        $allowedHookCount -ne [uint32]$hookAuthority.Count -or
-        $activeHookCount -ne $allowedHookCount -or
-        $clockHourRaw -lt 60005999 -or
-        $clockHourRaw -gt 63071999 -or
-        $clockObservationOrdinal -eq [uint64]::MaxValue -or
-        $ready.host_validated -isnot [bool] -or
-        -not [bool]$ready.host_validated -or
-        $TargetExecutableSha256 -cne
-            '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad' -or
-        [string]$ready.target_executable_sha256 -cne $TargetExecutableSha256 -or
-        [string]$ready.collector_dll_sha256 -cne $CollectorDllSha256 -or
-        [string]$ready.validated_domain_roster_sha256 -cne $expectedRosterSha -or
-        [string]$ready.hook_allowlist_sha256 -cne
-            [string]$hookAuthority.Sha256 -or
-        [string]$ready.clock_witness_sha256 -cne $expectedClockSha -or
-        [string]$ready.scheduler_config_sha256 -cne $expectedSchedulerSha -or
-        [string]$ready.output_pipe_identity_sha256 -cne
-            $expectedOutputPipeIdentitySha -or
-        [string]$ready.pipe_token_sha256 -cne $expectedPipeTokenSha -or
-        [string]$ready.zero_mutation_policy_sha256 -cne $expectedMutationPolicySha -or
-        [string]$ready.session_id_sha256 -cne $expectedSessionSha -or
-        [string]$ready.capture_id_sha256 -cne $expectedCaptureSha -or
-        [string]$ready.control_sha256 -cne $expectedControlSha -or
-        [string]$ready.ready_payload_sha256 -cne $expectedReadyPayloadSha -or
-        [string]$ready.ready_ack_sha256 -cne $expectedReadyAckSha -or
-        [string]$ready.host_binding_sha256 -cne $expectedHostBindingSha) {
-        throw 'CaptureReadyV2 failed passive identity, epoch, configuration, hook, roster, scheduler, zero-mutation, control, or host-binding admission.'
+    # One clause per admitted property, each naming itself. A single fused
+    # `-or` chain admits and rejects identically, so a rejection said only that
+    # one of forty-one things was wrong -- which is the same as saying nothing,
+    # and cost a whole graded window per diagnostic bisection. The admission
+    # decision is unchanged: any failing clause still rejects the receipt.
+    #
+    # The accumulator is a List passed explicitly to the recorder. A nested
+    # function assigning to `$script:`-scoped state would write a DIFFERENT
+    # variable from the local this function later tests, so the guard would
+    # collect nothing and admit every receipt -- a guard that cannot fail.
+    $admissionFailures = [Collections.Generic.List[string]]::new()
+    function Add-PassiveAdmissionFailure {
+        param(
+            [Parameter(Mandatory = $true)]
+            # A mandatory collection parameter also rejects an EMPTY collection
+            # in Windows PowerShell, exactly as documented on
+            # Add-PassiveSha256Bytes above -- and the accumulator is empty on
+            # the very first clause, which is the common case of a receipt that
+            # is about to be admitted.
+            [AllowEmptyCollection()]
+            [Collections.Generic.List[string]]$Failures,
+            [Parameter(Mandatory = $true)][string]$Clause,
+            [Parameter(Mandatory = $true)][bool]$Failed,
+            $Expected = $null,
+            $Actual = $null
+        )
+        if (-not $Failed) { return }
+        if ($null -eq $Expected -and $null -eq $Actual) {
+            $Failures.Add($Clause)
+        } else {
+            $Failures.Add("$Clause (expected='$Expected' actual='$Actual')")
+        }
+    }
+
+    Add-PassiveAdmissionFailure $admissionFailures 'schema' `
+        ($ready.schema -isnot [string] -or
+            [string]$ready.schema -cne 'hoi4-capture-ready-v2') `
+        'hoi4-capture-ready-v2' $ready.schema
+    Add-PassiveAdmissionFailure $admissionFailures 'status' `
+        ($ready.status -isnot [string] -or [string]$ready.status -cne 'ready') `
+        'ready' $ready.status
+    Add-PassiveAdmissionFailure $admissionFailures 'capture_policy' `
+        ($ready.capture_policy -isnot [string] -or
+            [string]$ready.capture_policy -cne 'passive-observer-only') `
+        'passive-observer-only' $ready.capture_policy
+    Add-PassiveAdmissionFailure $admissionFailures 'pid' `
+        ($receiptPid -ne $TargetPid) $TargetPid $receiptPid
+    Add-PassiveAdmissionFailure $admissionFailures 'process_creation_filetime_utc' `
+        ($creation -ne $TargetCreationFiletimeUtc) `
+        $TargetCreationFiletimeUtc $creation
+    Add-PassiveAdmissionFailure $admissionFailures 'session_id' `
+        ($ready.session_id -isnot [string] -or
+            [string]$ready.session_id -cne $SessionId) `
+        $SessionId $ready.session_id
+    Add-PassiveAdmissionFailure $admissionFailures 'capture_id' `
+        ($ready.capture_id -isnot [string] -or
+            [string]$ready.capture_id -cne $CaptureId) `
+        $CaptureId $ready.capture_id
+    Add-PassiveAdmissionFailure $admissionFailures 'requested_duration_ms' `
+        ($duration -ne $RequestedDurationMs) $RequestedDurationMs $duration
+    Add-PassiveAdmissionFailure $admissionFailures 'readiness_flags' `
+        ($flags -ne 255) 255 $flags
+    Add-PassiveAdmissionFailure $admissionFailures 'validated_domain_count' `
+        ($domainCount -ne [uint32]$ScheduledDomainNames.Count) `
+        ([uint32]$ScheduledDomainNames.Count) $domainCount
+    Add-PassiveAdmissionFailure $admissionFailures 'scheduler_queue_capacity' `
+        ($queueCapacity -ne $SchedulerQueueCapacity) `
+        $SchedulerQueueCapacity $queueCapacity
+    Add-PassiveAdmissionFailure $admissionFailures 'scheduler_worker_count' `
+        ($workerCount -ne $SchedulerWorkerCount) `
+        $SchedulerWorkerCount $workerCount
+    Add-PassiveAdmissionFailure $admissionFailures 'allowed_hook_count' `
+        ($allowedHookCount -ne [uint32]$hookAuthority.Count) `
+        ([uint32]$hookAuthority.Count) $allowedHookCount
+    Add-PassiveAdmissionFailure $admissionFailures 'active_hook_count' `
+        ($activeHookCount -ne $allowedHookCount) $allowedHookCount $activeHookCount
+    Add-PassiveAdmissionFailure $admissionFailures 'clock_hour_raw' `
+        ($clockHourRaw -lt 60005999 -or $clockHourRaw -gt 63071999) `
+        '60005999..63071999' $clockHourRaw
+    Add-PassiveAdmissionFailure $admissionFailures 'clock_observation_ordinal' `
+        ($clockObservationOrdinal -eq [uint64]::MaxValue) `
+        'not u64::MAX' $clockObservationOrdinal
+    Add-PassiveAdmissionFailure $admissionFailures 'host_validated' `
+        ($ready.host_validated -isnot [bool] -or
+            -not [bool]$ready.host_validated) `
+        $true $ready.host_validated
+    Add-PassiveAdmissionFailure $admissionFailures 'target_executable_sha256 is the pinned a729 build' `
+        ($TargetExecutableSha256 -cne
+            '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') `
+        '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad' `
+        $TargetExecutableSha256
+
+    $digestClauses = [ordered]@{
+        'target_executable_sha256'       = $TargetExecutableSha256
+        'collector_dll_sha256'           = $CollectorDllSha256
+        'validated_domain_roster_sha256' = $expectedRosterSha
+        'hook_allowlist_sha256'          = [string]$hookAuthority.Sha256
+        'clock_witness_sha256'           = $expectedClockSha
+        'scheduler_config_sha256'        = $expectedSchedulerSha
+        'output_pipe_identity_sha256'    = $expectedOutputPipeIdentitySha
+        'pipe_token_sha256'              = $expectedPipeTokenSha
+        'zero_mutation_policy_sha256'    = $expectedMutationPolicySha
+        'session_id_sha256'              = $expectedSessionSha
+        'capture_id_sha256'              = $expectedCaptureSha
+        'control_sha256'                 = $expectedControlSha
+        'ready_payload_sha256'           = $expectedReadyPayloadSha
+        'ready_ack_sha256'               = $expectedReadyAckSha
+        'host_binding_sha256'            = $expectedHostBindingSha
+    }
+    foreach ($clause in $digestClauses.GetEnumerator()) {
+        $observed = [string]$ready.PSObject.Properties[$clause.Key].Value
+        Add-PassiveAdmissionFailure $admissionFailures $clause.Key `
+            ($observed -cne [string]$clause.Value) `
+            ([string]$clause.Value) $observed
+    }
+
+    if ($admissionFailures.Count -ne 0) {
+        throw (
+            "CaptureReadyV2 failed passive admission on " +
+            "$($admissionFailures.Count) clause(s): " +
+            ($admissionFailures -join '; ')
+        )
     }
 
     return [pscustomobject]@{

@@ -267,6 +267,43 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
         r"pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH:\s*u16\s*=\s*(\d+)\s*;",
         source,
     )
+
+    def macro_mandatory_byte(macro_name: str) -> bytes | None:
+        """Parse one macro's `mandatory:` literal, bounded to its own body.
+
+        The bit is part of the Rust allowlist preimage
+        (``out.push(u8::from(entry.mandatory))``), so it moves the digest. This
+        encoder hardcoded ``\\x01`` for BOTH macros; when the gameplay producer
+        detours became non-mandatory it kept emitting the superseded digest
+        b100b582f946788d45d66a4ee9192ac506a5498148582815476642c2010ce2dd.
+
+        The body is bounded at the macro's own closing brace -- a ``}`` in
+        column 0, since every brace inside a macro body is indented. Scanning to
+        the next ``macro_rules!`` instead leaves the file's LAST macro reading to
+        EOF, where struct definitions, doc comments and tests declare
+        ``mandatory:`` too.
+        """
+        body = re.search(
+            r"^macro_rules!\s+" + re.escape(macro_name) + r"\s*\{.*?^\}",
+            source,
+            re.DOTALL | re.MULTILINE,
+        )
+        if body is None:
+            return None
+        literals = re.findall(r"mandatory:\s*(true|false)\s*,", body.group(0))
+        if len(literals) != 1:
+            return None
+        return b"\x01" if literals[0] == "true" else b"\x00"
+
+    import_mandatory = macro_mandatory_byte("pinned_import")
+    rva_mandatory = macro_mandatory_byte("pinned_rva")
+    require(
+        import_mandatory is not None and rva_mandatory is not None,
+        "canonical_hook_authority_macro_mandatory_missing",
+        problems,
+    )
+    if import_mandatory is None or rva_mandatory is None:
+        return 0, None
     require(
         import_width_match is not None,
         "canonical_hook_authority_import_width_missing",
@@ -331,7 +368,7 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
                 "battle-plan.capture_ready.hook_primitive_id.v1", primitive
             )
             + bytes.fromhex(proof)
-            + b"\x01"
+            + import_mandatory
             + bytes(7)
         )
         entries.append((identity, body))
@@ -362,7 +399,7 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
             )
             + bytes(24)
             + bytes.fromhex(proof)
-            + b"\x01"
+            + rva_mandatory
             + bytes(7)
         )
         entries.append((identity, body))

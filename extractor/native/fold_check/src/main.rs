@@ -42,7 +42,8 @@ use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance,
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
@@ -692,6 +693,17 @@ impl CompletenessAudit {
                         "more than one FRAME_REFUSED record for hour {hour_index}"
                     ));
                 }
+            }
+            COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => {
+                let termination = compact_contract::capture_termination::
+                    CaptureTerminationRecordV1::decode(payload)
+                    .map_err(|error| format!("CAPTURE_TERMINATED payload: {error}"))?;
+                return Err(format!(
+                    "capture terminated abnormally after {} ms: reasons={:?}; detail={}",
+                    termination.elapsed_wall_ms,
+                    termination.reasons.names(),
+                    termination.detail
+                ));
             }
             other => {
                 // Not a skip. A record type this audit has not been taught is

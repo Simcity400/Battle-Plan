@@ -28,7 +28,8 @@ use compact_contract::stream_validator::{
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
@@ -273,6 +274,7 @@ pub struct BoundaryTracker {
     gap_domains: BTreeSet<u16>,
     data_domains: BTreeSet<u16>,
     prev_sequence: Option<u64>,
+    termination: Option<compact_contract::capture_termination::CaptureTerminationRecordV1>,
     violation: Option<String>,
 }
 
@@ -285,6 +287,13 @@ impl BoundaryTracker {
     ) {
         if self.violation.is_some() {
             return; // first violation is the diagnostic; state is already dirty
+        }
+        if self.termination.is_some() {
+            self.violation = Some(format!(
+                "record type {} appears at byte {at_byte} after CAPTURE_TERMINATED",
+                header.record_type
+            ));
+            return;
         }
         match self.prev_sequence {
             None if header.sequence != 1 => {
@@ -607,6 +616,31 @@ impl BoundaryTracker {
                     }
                 }
             }
+            COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => {
+                if header.game_hour_raw != 0 {
+                    self.violation = Some(format!(
+                        "CAPTURE_TERMINATED at byte {at_byte} uses game hour {}; expected zero no-coverage sentinel",
+                        header.game_hour_raw
+                    ));
+                    return;
+                }
+                if let Some(open) = self.open_hour.or(self.pending_perf_hour) {
+                    self.violation = Some(format!(
+                        "CAPTURE_TERMINATED at byte {at_byte} leaves game hour {open} open"
+                    ));
+                    return;
+                }
+                match compact_contract::capture_termination::CaptureTerminationRecordV1::decode(
+                    payload,
+                ) {
+                    Ok(record) => self.termination = Some(record),
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "CAPTURE_TERMINATED payload at byte {at_byte} is unreadable: {reason}"
+                        ));
+                    }
+                }
+            }
             // Not a frame-boundary record: it carries campaign identity and is
             // validated where identity is folded, not here.
             compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER => {}
@@ -635,6 +669,19 @@ impl BoundaryTracker {
         }
         if let Some(open) = self.open_hour {
             return Err(format!("game hour {open} left open at EOF"));
+        }
+        if let Some(termination) = &self.termination {
+            return Err(format!(
+                "capture terminated abnormally after {} ms: reasons={:?}; detail={}{}",
+                termination.elapsed_wall_ms,
+                termination.reasons.names(),
+                termination.detail,
+                if termination.detail_truncated {
+                    " [detail truncated]"
+                } else {
+                    ""
+                }
+            ));
         }
         if self.last_closed_hour.is_none() {
             return Err("stream closes no game hour (no FRAME_END or FRAME_REFUSED records)".to_string());
@@ -3684,5 +3731,37 @@ mod tests {
             let hours: Vec<i64> = par_files.iter().map(|f| f.hour_index).collect();
             assert_eq!(hours, vec![HOUR_A, HOUR_B, HOUR_C]);
         }
+    }
+
+    /// Mutation proof: deleting the CAPTURE_TERMINATED BoundaryTracker arm
+    /// changes this to an unknown-type/final-boundary error and loses the typed
+    /// producer cause. Treating H4AT as a clean boundary makes `unwrap_err`
+    /// fail. Neither regression can silently certify the stream.
+    #[test]
+    fn boundary_tracker_reports_typed_abnormal_termination_without_closing_an_hour() {
+        let reasons = compact_contract::capture_termination::CaptureTerminationReasons::from_bits(
+            compact_contract::capture_termination::
+                CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED,
+        )
+        .unwrap();
+        let payload = compact_contract::capture_termination::CaptureTerminationRecordV1::
+            encode_bounded(reasons, 1_900, "H4FR encoder rejected its detail");
+        let mut tracker = BoundaryTracker::default();
+        tracker.observe(
+            &boundary_header(
+                1,
+                0,
+                compact_contract::COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_CAPTURE_TERMINATED,
+                payload.len(),
+                0,
+            ),
+            &payload,
+            0,
+        );
+        let error = tracker.eof_check(0).unwrap_err();
+        assert!(error.contains("capture terminated abnormally"), "{error}");
+        assert!(error.contains("capture_loop_aborted"), "{error}");
+        assert!(error.contains("H4FR encoder rejected its detail"), "{error}");
     }
 }

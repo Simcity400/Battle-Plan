@@ -149,6 +149,19 @@ const ENTRY_FLAG_OFF_FRAME: u16 = 1 << 0;
 /// Bound on one reason string, so a pathological reader cannot make a refusal
 /// record unbounded.
 pub const FRAME_REFUSAL_MAX_REASON_LEN: usize = 512;
+
+/// Separator a producer places between its rendered diagnostic units and the
+/// original producer text, as in `domain 88: read_completion=1,answer_extent=1
+/// | reason=D88 source refused`.
+///
+/// It lives HERE, in the contract both sides already depend on, because the
+/// validator below must recognise it as a field boundary. When the producer
+/// owned a private copy, the validator's boundary rule accepted only a comma or
+/// end-of-string, so the final unit before this suffix was reported missing --
+/// which failed H4FR encoding and aborted the whole capture loop with no wire
+/// evidence of why. Two independently-maintained spellings of one delimiter is
+/// the drift that caused that; there is now exactly one.
+pub const FRAME_REFUSAL_REASON_SUFFIX_SEPARATOR: &str = " | reason=";
 /// Bound on offenders. The scheduled roster is 73; this leaves headroom without
 /// admitting an absurd record.
 pub const FRAME_REFUSAL_MAX_OFFENDERS: usize = 1024;
@@ -729,7 +742,9 @@ fn contains_as_a_field(haystack: &str, needle: &str) -> bool {
                 .chars()
                 .next_back()
                 .is_some_and(|c| c == ',' || c == ' ');
-        let after_ok = end == haystack.len() || haystack[end..].starts_with(',');
+        let after_ok = end == haystack.len()
+            || haystack[end..].starts_with(',')
+            || haystack[end..].starts_with(FRAME_REFUSAL_REASON_SUFFIX_SEPARATOR);
         if before_ok && after_ok {
             return true;
         }
@@ -1849,6 +1864,32 @@ mod tests {
         // WHICH one is missing rather than just that something is.
         let error = check_reason_names_its_units(&honest, &units, 3, "test").unwrap_err();
         assert!(error.contains("does not contain unit 2"), "{error}");
+    }
+
+    /// Production offender reasons append the producer's original diagnostic
+    /// after the rendered unit prefix. The final named unit is therefore
+    /// followed by ` | reason=`, not by a comma or end-of-string, and remains a
+    /// complete field rather than a substring of a longer unit.
+    #[test]
+    fn a_final_named_unit_before_the_producer_reason_suffix_counts_as_named() {
+        let units = vec![
+            DiagUnit::deciding("read_completion", 1),
+            DiagUnit::deciding("answer_extent", 1),
+        ];
+        let reason = format!(
+            "domain 88: {},{} | reason=D88 source refused",
+            units[0].render(),
+            units[1].render()
+        );
+
+        check_reason_names_its_units(&reason, &units, 2, "test").unwrap();
+
+        let longer = format!(
+            "domain 88: {},{}_suffix=2 | reason=D88 source refused",
+            units[0].render(),
+            units[1].render()
+        );
+        assert!(check_reason_names_its_units(&longer, &units, 2, "test").is_err());
     }
 
     /// The offender entry's reserved `u16` must be zero, so a later version can

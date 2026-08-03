@@ -86,7 +86,8 @@ pub struct DomainGapRecordV1 {
     pub queue_capacity: u32,
     pub queue_depth: u32,
     pub queue_dropped: u64,
-    /// Zero-based ordinal of this scheduler outcome.
+    /// Zero-based ordinal of this emitted scheduler-outcome record within its
+    /// `(domain_id, part)` lane. A coalesced range is one outcome record.
     pub outcome_ordinal: u64,
 }
 
