@@ -115,10 +115,15 @@ pub struct SchedulerTelemetry {
     pub refused_hours: u64,
     /// Admitted hours whose capture request was replaced by a newer frontier
     /// before any reader could take it. THIS is the counter that answers "how
-    /// many hours opened no frame at all": each one leaves a per-domain
-    /// `Backpressure` range and no `FRAME_END`. Counted positively at the
-    /// eviction site so a manifest never has to subtract frames from advanced
-    /// hours to learn the number.
+    /// many hours were never swept": each one leaves a per-domain
+    /// `Backpressure` range and no DATA frame.
+    ///
+    /// Note carefully that "no DATA frame" is not "no `FRAME_END`". Those ranges
+    /// are transported by `build_scheduler_gap_frames`, which closes each one
+    /// with `FRAME_END(range_end)` -- so the LAST hour of a coalesced run of
+    /// evictions does carry a frame, one containing no domain record at all.
+    /// That is why the host cannot learn this number by counting FRAME_END
+    /// holes, and why it is counted here at the eviction site instead.
     pub evicted_pending_hours: u64,
     /// Admitted hours dropped because the clock went unknown or the campaign
     /// reloaded under an in-flight or pending request.
@@ -214,11 +219,15 @@ impl HourLedger {
                 == Some(self.scheduled)
     }
 
-    /// Hours that published no `FRAME_END`, whether or not they were ever
-    /// admitted. `refused` is included: an H4FR hour was swept, but it published
-    /// no frame. Outstanding hours are excluded -- they are not yet resolved
+    /// Hours that put no domain data on the wire, whether or not they were ever
+    /// admitted. `refused` is included: an H4FR hour was swept, but published
+    /// nothing. Outstanding hours are excluded -- they are not yet resolved
     /// either way.
-    pub fn hours_with_no_published_frame(&self) -> u64 {
+    ///
+    /// Deliberately NOT "hours with no `FRAME_END`". A coalesced gap range is
+    /// closed by `FRAME_END(range_end)`, so some of these hours do carry a
+    /// frame; what none of them carries is a domain record.
+    pub fn hours_with_no_data_frame(&self) -> u64 {
         self.refused
             .saturating_add(self.evicted_pending)
             .saturating_add(self.abandoned)
@@ -1511,7 +1520,7 @@ mod tests {
         );
         assert_eq!(ledger.outstanding, 2, "100 in flight, 102 pending");
         assert!(ledger.balanced(), "{ledger:?}");
-        assert_eq!(ledger.hours_with_no_published_frame(), 1);
+        assert_eq!(ledger.hours_with_no_data_frame(), 1);
 
         // Resolving the in-flight frame moves it to `accepted`, and the ledger
         // still balances -- no disposition is double-counted.
@@ -1564,9 +1573,9 @@ mod tests {
         assert_eq!(ledger.outstanding, 0);
         assert!(ledger.balanced(), "{ledger:?}");
         assert_eq!(
-            ledger.hours_with_no_published_frame(),
+            ledger.hours_with_no_data_frame(),
             5,
-            "hours 2 (refused), 3, 4, 5 and 6 published no frame"
+            "hours 2 (refused), 3, 4, 5 and 6 put no domain data on the wire"
         );
     }
 
