@@ -9,6 +9,12 @@ re-running anything.
 
 Usage:
     python report_raw_capture.py --run-dir <dir> [--json] [--all-domains]
+    python report_raw_capture.py --selftest
+
+Exit codes:
+    0  clean
+    1  blocking domains, or the hourly requirement was not met
+    2  a domain published a status bit no compact-stream contract defines
 """
 from __future__ import annotations
 
@@ -144,6 +150,103 @@ def load_manifest(run_dir: str) -> tuple[dict, str]:
             with open(path, encoding="utf-8") as handle:
                 return json.load(handle), path
     raise SystemExit(f"no native_session_manifest.json under {run_dir}")
+
+
+def selftest() -> int:
+    """Prove the undefined-status-bit verdict through the REAL entry path.
+
+    Every case runs `main()` over a synthetic run directory, so what is pinned
+    is the exit code and the printed verdict a caller actually blocks on -- not
+    a private helper that could keep agreeing with itself while the gate stops
+    working.
+    """
+    import contextlib
+    import io
+    import tempfile
+
+    def build(domains):
+        return {
+            "session_id": "selftest",
+            "compact_stream": {
+                "expected_domains": list(domains),
+                "domains_seen": list(domains),
+                "frame_end_record_count": 1,
+                "per_domain": {
+                    name: {
+                        "domain_id": domain_id,
+                        "status_flags_or": flags,
+                        "data_record_count": 1,
+                        "row_count_total": 1,
+                        "world_folded": True,
+                        "problems": {},
+                    }
+                    for name, (domain_id, flags) in domains.items()
+                },
+            },
+            "hourly_requirement": {"met": True, "problems": []},
+            "replay_artifact": {
+                "written_file": "x", "recovery": False, "gate_problems": [],
+            },
+        }
+
+    def run(domains):
+        with tempfile.TemporaryDirectory() as run_dir:
+            path = os.path.join(run_dir, "native_session_manifest.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(build(domains), handle)
+            argv = sys.argv
+            sys.argv = [argv[0], "--run-dir", run_dir]
+            buffer = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    code = main()
+            finally:
+                sys.argv = argv
+            return code, buffer.getvalue()
+
+    cases = (
+        ("a clean word is clean",
+         {"fuel_live": (10, 0)}, 0, "VERDICT: clean", "UNDEFINED"),
+        # The regression this file exists for: these are the exact words
+        # runs/live_unlock/t15 published, and they were reported as
+        # UNKNOWN_BITS(0x530000)/UNKNOWN_BITS(0x30000).
+        ("d53's registered badges are not undefined",
+         {"diplomacy_intel_operatives_live": (53, 0x530000)}, 0,
+         "VERDICT: clean", "UNDEFINED"),
+        ("d60's registered badges are not undefined",
+         {"capitulation_war_state_live": (60, 0x30000)}, 0,
+         "VERDICT: clean", "UNDEFINED"),
+        ("an ordinary failure status stays exit 1, not the undefined class",
+         {"fuel_live": (10, 1 << 9)}, 1, "VERDICT: BLOCKED",
+         "UNDEFINED STATUS BITS"),
+        ("an unassigned bit on a domain with no lane vocabulary is fatal",
+         {"fuel_live": (10, 1 << 15)}, EXIT_UNDEFINED_STATUS_BITS,
+         "CONTRACT VIOLATION: UNDEFINED STATUS BITS", None),
+        # The strip is domain-scoped, never a blanket amnesty for high bits.
+        ("an unregistered high bit on d53 is fatal despite d53's badges",
+         {"diplomacy_intel_operatives_live": (53, 0x530000 | (1 << 23))},
+         EXIT_UNDEFINED_STATUS_BITS, "0x800000", None),
+        ("d99's bit 18 is fatal when d60 publishes it",
+         {"capitulation_war_state_live": (60, 0x30000 | (1 << 18))},
+         EXIT_UNDEFINED_STATUS_BITS, "0x40000", None),
+        ("the verdict names the offending domain",
+         {"fuel_live": (10, 1 << 31)}, EXIT_UNDEFINED_STATUS_BITS,
+         "fuel_live (domain 10) published status bits", None),
+    )
+
+    failures = 0
+    for label, domains, want_code, want_text, forbidden in cases:
+        code, out = run(domains)
+        ok = code == want_code and want_text in out
+        if forbidden is not None and forbidden in out:
+            ok = False
+        print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
+              f"(want {want_code}): {label}")
+        if not ok:
+            failures += 1
+            print(out)
+    print(f"selftest: {len(cases) - failures}/{len(cases)} passed")
+    return 1 if failures else 0
 
 
 def main() -> int:
@@ -354,4 +457,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv[1:]:
+        raise SystemExit(selftest())
     raise SystemExit(main())
