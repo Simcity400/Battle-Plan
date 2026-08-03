@@ -147,10 +147,35 @@ impl<const N: usize> Rel5HookRoster<N> {
     }
 
     /// True once every site holds an installed receipt.
+    ///
+    /// EXACT, and deliberately fail-open on a poisoned lock: this answers "may
+    /// I publish a complete release", and publishing over custody this cannot
+    /// read would be a worse answer than declining. For the safety question --
+    /// "might a detour still be patched in" -- use
+    /// [`Self::may_still_hold_installed_custody`], which fails the other way.
     pub fn has_complete_installed_custody(&self) -> bool {
         self.lock_installed()
             .map(|installed| installed.iter().all(Option::is_some))
             .unwrap_or(false)
+    }
+
+    /// True while ANY site may still hold installed custody.
+    ///
+    /// This is the predicate a lane's `release_pending()` is built from, and it
+    /// is pessimistic in both directions [`Self::has_complete_installed_custody`]
+    /// is not:
+    ///
+    ///   * a PARTIAL roster counts. `observe_installed` persists receipts site
+    ///     by site, so a failure at site three leaves two attested detours in
+    ///     the executable; "not complete" is not "not there".
+    ///   * a POISONED lock counts. "I cannot read my own custody" is not
+    ///     evidence that there is none, and the registry reads a `false` here as
+    ///     proof it may skip the release entirely -- which would strand
+    ///     executable detours in a running game.
+    pub fn may_still_hold_installed_custody(&self) -> bool {
+        self.lock_installed()
+            .map(|installed| installed.iter().any(Option::is_some))
+            .unwrap_or(true)
     }
 
     /// True while ANY custody is outstanding on either side.

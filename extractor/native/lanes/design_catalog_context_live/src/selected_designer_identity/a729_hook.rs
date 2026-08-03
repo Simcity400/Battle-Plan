@@ -479,7 +479,7 @@ pub fn take_released_hook_receipts(
 /// came back clean.
 pub fn release_pending() -> bool {
     FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
-        || (!installed() && HOOK_RECEIPTS.has_complete_installed_custody())
+        || (!installed() && HOOK_RECEIPTS.may_still_hold_installed_custody())
 }
 
 /// Normal production installer. It shares the exact sentinel-gated hook owner

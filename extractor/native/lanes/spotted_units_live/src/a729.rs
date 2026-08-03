@@ -304,7 +304,7 @@ pub fn installed() -> bool {
 ///     `INSTALLED` already false.
 pub fn release_pending() -> bool {
     RETAINED_LIVE.load(Ordering::Acquire)
-        || (!installed() && HOOK_RECEIPTS.has_complete_installed_custody())
+        || (!installed() && HOOK_RECEIPTS.may_still_hold_installed_custody())
 }
 
 /// The exact enabled-byte receipts for the four D95 production hook sites.

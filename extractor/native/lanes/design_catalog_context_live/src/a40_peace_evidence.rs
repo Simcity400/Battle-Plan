@@ -491,7 +491,7 @@ pub fn take_released_hook_receipts(
 ///     that failed leaves `installed()` false with the receipts still held.
 pub fn release_pending() -> bool {
     FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
-        || (!installed() && HOOK_RECEIPTS.has_complete_installed_custody())
+        || (!installed() && HOOK_RECEIPTS.may_still_hold_installed_custody())
 }
 
 /// Release this lane for a production install that is being given up, and
