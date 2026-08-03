@@ -1477,6 +1477,27 @@ fn map_d81_domain_gap(
                     .to_vec(),
             },
         ),
+        // The wire reason the `ClockUnreadable` arm above was standing in for.
+        // That arm already produced `SourceUnavailable` here, which is why the
+        // product read correctly while the wire label did not.
+        DomainGapReason::SourceUnavailable => (
+            GapReason::SourceUnavailable,
+            GapWitness::StatusBits {
+                bit_width: 32,
+                bits: compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
+                    .to_le_bytes()
+                    .to_vec(),
+            },
+        ),
+        // No outcome was recorded, so the only witness that does not overclaim
+        // is the coverage one: zero observed across the hours expected.
+        DomainGapReason::ReaderSilent => (
+            GapReason::CoverageShortfall,
+            GapWitness::Coverage {
+                observed: 0,
+                expected: width,
+            },
+        ),
     };
     let gap = GapRecord {
         tick_start,
