@@ -1161,9 +1161,20 @@ unsafe extern "system" fn convoy_terminal_hook(
 /// necessarily the engine having moved forward.
 ///
 /// Measured, which is why this is separated at all: in
-/// `runs/live_unlock/t15` all 19,470 convoy-attack callbacks were dropped and
-/// all 19,470 were attributed to `dropped_hour_or_epoch`, with
-/// `dropped_resolver` at zero. The frames' own diagnostics carry
+/// `runs/live_unlock/t15` all 107 convoy-attack callbacks were dropped and all
+/// 107 were attributed to `dropped_hour_or_epoch`, with `dropped_resolver` at
+/// zero.
+///
+/// (107 is the LAST batch's absolute counter, measured by scanning the sealed
+/// stream's 396 CTA2 headers. The t15 manifest says 19,470 for the same
+/// quantity because these counters are cumulative-since-install and the
+/// recorder host sums them once per frame; 19,470 is that frame-sum and is not
+/// an event count. The proportions below are unaffected -- every batch has
+/// callbacks_seen == original_calls == dropped_hour_or_epoch and
+/// resolver_publication_sequence == 0 -- but the magnitude was overstated by
+/// ~180x and is corrected here.)
+///
+/// The frames' own diagnostics carry
 /// `h_convoy_resolver_error_hash = 14547190417989963716`, which is
 /// FNV-1a-64 of "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0
 /// client handles" -- so the publication was refused every frame, the
@@ -1179,7 +1190,7 @@ unsafe extern "system" fn convoy_terminal_hook(
 /// read" is not formally excluded. Splitting the counter is what lets the
 /// NEXT capture tell the two apart. What is certain either way is that the
 /// resolver was never published, so `dropped_hour_or_epoch` was at best an
-/// ambiguous label for 19,470 events and at worst the wrong subsystem
+/// ambiguous label for all 107 of them and at worst the wrong subsystem
 /// entirely.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2368,7 +2379,7 @@ mod resolver_refusal_tests {
     /// `game_hour_raw`. The original guard was
     /// `publication_sequence == 0 || game_hour_raw != hour`, so an unset field
     /// that happened to differ from the engine hour was counted as
-    /// `dropped_hour_or_epoch` -- the label ALL 19,470 dropped convoy-attack
+    /// `dropped_hour_or_epoch` -- the label ALL 107 dropped convoy-attack
     /// events in `runs/live_unlock/t15` carry, with `dropped_resolver` at
     /// zero, while the resolver was demonstrably never published: those
     /// frames' own
@@ -2376,7 +2387,7 @@ mod resolver_refusal_tests {
     /// "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0 client
     /// handles").
     ///
-    /// What the t15 aggregate does NOT prove: that every one of those 19,470
+    /// What the t15 aggregate does NOT prove: that every one of those 107
     /// callbacks reached the receipt check. `DROP_HOUR_OR_EPOCH` is also
     /// incremented when the pre-call stable hour read fails, and twice more in
     /// `complete_observation`. The counters do exclude the second of those --
