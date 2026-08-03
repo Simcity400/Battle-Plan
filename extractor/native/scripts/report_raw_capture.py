@@ -46,19 +46,95 @@ FAILURE_MASK = (
     (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 6)
     | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12)
 )
-# Bits these domains reuse for lane-local badges; masked before global reading.
+# Lane-local status badges, per domain: a domain-scoped vocabulary that must be
+# stripped before the word is read against the global v1 bits. This table IS a
+# copy of `compact_contract::lane_local_status_mask`, and the copy is exactly
+# how this report went wrong: it knew only d49/d51 while the contract had
+# registered d53, d60 and d99, so every d53/d60 capture was reported as
+# "UNKNOWN_BITS" -- a false contract violation on bits the contract defines.
+# `compact_contract/tests/script_status_vocabulary_sweep.rs` now parses this
+# table and fails if it ever disagrees with the contract again.
+LANE_LOCAL_BITS = {
+    49: {11: "d49:location_candidate_unvalidated"},
+    51: {
+        11: "d51:flag_names_partial",
+        12: "d51:delayed_events_root_unresolved",
+        13: "d51:scripted_gui_root_unresolved",
+    },
+    53: {
+        16: "d53:operations_detail_resisted",
+        17: "d53:intel_map_resisted",
+        18: "d53:war_root_unvalidated",
+        19: "d53:incoming_action_queue_unvalidated",
+        20: "d53:war_lifecycle_detail_unvalidated",
+        21: "d53:faction_group_unvalidated",
+        22: "d53:intel_network_graph_unvalidated",
+    },
+    60: {
+        16: "d60:war_casualties_running_accumulator",
+        17: "d60:war_residuals_exact",
+    },
+    99: {
+        16: "d99:torn_rows_present",
+        17: "d99:stat_block_null_present",
+        18: "d99:incomplete_observation",
+    },
+}
 LANE_LOCAL_MASK = {
-    49: 1 << 11,
-    51: (1 << 11) | (1 << 12) | (1 << 13),
+    domain: sum(1 << bit for bit in bits)
+    for domain, bits in LANE_LOCAL_BITS.items()
 }
 
 
-def decode(flags: int) -> list[str]:
-    names = [name for bit, name in sorted(STATUS_BITS.items()) if flags & bit]
-    unknown = flags & ~KNOWN_MASK
-    if unknown:
-        names.append(f"UNKNOWN_BITS(0x{unknown:x})")
+def globalize(domain_id: int, flags: int) -> int:
+    """The word as the GLOBAL vocabulary sees it (contract
+    `compact_status_for_global_interpretation`)."""
+    return flags & ~LANE_LOCAL_MASK.get(domain_id, 0)
+
+
+def undefined_bits(domain_id: int, flags: int) -> int:
+    """Status bits this capture published that NOTHING defines.
+
+    A registered lane-local badge is defined, so it is stripped first; what
+    survives is a producer writing into the status word without a contract
+    entry, which no consumer can classify. Deliberately computed from the raw
+    word rather than reported away: the strip is the contract's own, and only
+    the contract's own.
+    """
+    return globalize(domain_id, flags) & ~KNOWN_MASK
+
+
+def decode(flags: int, domain_id: int = -1) -> list[str]:
+    lane_bits = LANE_LOCAL_BITS.get(domain_id, {})
+    lane_mask = LANE_LOCAL_MASK.get(domain_id, 0)
+    names = [
+        lane_bits[bit] for bit in sorted(lane_bits) if flags & (1 << bit)
+    ]
+    globalized = flags & ~lane_mask
+    names += [
+        name for bit, name in sorted(STATUS_BITS.items()) if globalized & bit
+    ]
+    undefined = globalized & ~KNOWN_MASK
+    if undefined:
+        names.append(f"UNDEFINED_BITS(0x{undefined:x})")
     return names
+
+
+# A capture that published a status bit nothing defines is not "a capture with
+# a problem to weigh" -- it is a capture whose status word cannot be read at
+# all, by this report or by any other consumer. It gets its own exit code so
+# callers can block on THAT specifically without having to block on every
+# ordinary residual failure (a PARTIAL_DATA hour is a known, classifiable
+# outcome; an undefined bit is not).
+EXIT_UNDEFINED_STATUS_BITS = 2
+
+
+def verdict_exit_code(undefined: list, blocking: list, hourly: dict) -> int:
+    if undefined:
+        return EXIT_UNDEFINED_STATUS_BITS
+    if blocking or hourly.get("met") is False:
+        return 1
+    return 0
 
 
 def load_manifest(run_dir: str) -> tuple[dict, str]:
@@ -91,24 +167,28 @@ def main() -> int:
     for name, info in sorted(per_domain.items()):
         domain_id = int(info.get("domain_id", -1))
         raw = int(info.get("status_flags_or", 0))
-        globalized = raw & ~LANE_LOCAL_MASK.get(domain_id, 0)
+        globalized = globalize(domain_id, raw)
         residual_failure = globalized & FAILURE_MASK & ~tolerated.get(name, 0)
         rows.append({
             "domain": name,
             "domain_id": domain_id,
             "raw_flags": raw,
-            "flag_names": decode(raw),
-            "lane_local_bits": decode(raw & LANE_LOCAL_MASK.get(domain_id, 0)),
+            "flag_names": decode(raw, domain_id),
+            "lane_local_mask": LANE_LOCAL_MASK.get(domain_id, 0),
+            "lane_local_bits": decode(
+                raw & LANE_LOCAL_MASK.get(domain_id, 0), domain_id
+            ),
             "tolerated_flags": tolerated.get(name, 0),
             "residual_failure_flags": residual_failure,
-            "residual_failure_names": decode(residual_failure),
-            "unknown_bits": raw & ~KNOWN_MASK,
+            "residual_failure_names": decode(residual_failure, domain_id),
+            "unknown_bits": undefined_bits(domain_id, raw),
             "data_record_count": info.get("data_record_count", 0),
             "row_count_total": info.get("row_count_total", 0),
             "problems": info.get("problems", {}) or {},
             "world_folded": info.get("world_folded"),
         })
 
+    undefined = [r for r in rows if r["unknown_bits"]]
     blocking = [r for r in rows if r["residual_failure_flags"] or r["unknown_bits"]]
     silent = [r for r in rows if r["data_record_count"] == 0]
     with_problems = [r for r in rows if r["problems"]]
@@ -157,6 +237,16 @@ def main() -> int:
         "replay_is_recovery": artifact.get("recovery"),
         "replay_gate_problems": artifact.get("gate_problems", []),
         "blocking_domains": blocking,
+        "undefined_status_bit_domains": [
+            {
+                "domain": r["domain"],
+                "domain_id": r["domain_id"],
+                "raw_flags": r["raw_flags"],
+                "lane_local_mask": r["lane_local_mask"],
+                "undefined_bits": r["unknown_bits"],
+            }
+            for r in undefined
+        ],
         "silent_domains": [r["domain"] for r in silent],
         "domains_with_problems": [r["domain"] for r in with_problems],
         "all_domains": rows if args.all_domains else None,
@@ -165,7 +255,7 @@ def main() -> int:
     if args.json:
         json.dump(report, sys.stdout, indent=2)
         print()
-        return 0 if not blocking and hourly.get("met") is not False else 1
+        return verdict_exit_code(undefined, blocking, hourly)
 
     def line(label: str, value: object) -> None:
         print(f"  {label:34s} {value}")
@@ -205,7 +295,23 @@ def main() -> int:
             for item in report[key]:
                 print(f"  {item}")
 
-    print(f"\n--- domains with residual failure/unknown status ({len(blocking)}) ---")
+    if undefined:
+        print(f"\n--- CONTRACT VIOLATION: UNDEFINED STATUS BITS ({len(undefined)}) ---")
+        for row in undefined:
+            print(f"  {row['domain']} (domain {row['domain_id']}) published status bits "
+                  f"0x{row['unknown_bits']:x} that the compact status contract does not "
+                  f"define")
+            print(f"    raw status word          0x{row['raw_flags']:x}")
+            print(f"    assigned v1 vocabulary   0x{KNOWN_MASK:x}")
+            print(f"    registered lane-local    0x{row['lane_local_mask']:x} "
+                  f"(compact_contract::lane_local_status_mask)")
+            print(f"    UNDEFINED                0x{row['unknown_bits']:x} "
+                  f"(bits {', '.join(str(b) for b in range(32) if row['unknown_bits'] & (1 << b))})")
+        print("  No consumer can classify an undefined bit: it is neither a failure nor an\n"
+              "  informational status. Either declare it in compact_contract (and register it\n"
+              "  in lane_local_status_mask) or stop the producer writing it.")
+
+    print(f"\n--- domains with residual failure/undefined status ({len(blocking)}) ---")
     if not blocking:
         print("  none")
     for row in blocking:
@@ -213,8 +319,11 @@ def main() -> int:
         print(f"    {'flags:':10s} {', '.join(row['flag_names']) or 'none'}")
         if row["lane_local_bits"]:
             print(f"    {'lane-local:':10s} {', '.join(row['lane_local_bits'])}")
+        if row["unknown_bits"]:
+            print(f"    {'UNDEFINED:':10s} 0x{row['unknown_bits']:x}")
         if row["tolerated_flags"]:
-            print(f"    {'tolerated:':10s} {', '.join(decode(row['tolerated_flags']))}")
+            print(f"    {'tolerated:':10s} "
+                  f"{', '.join(decode(row['tolerated_flags'], row['domain_id']))}")
         print(f"    {'RESIDUAL:':10s} {', '.join(row['residual_failure_names']) or 'none'}")
         print(f"    {'volume:':10s} records={row['data_record_count']} rows={row['row_count_total']}")
         if row["problems"]:
@@ -232,10 +341,16 @@ def main() -> int:
             print(f"  {row['domain']:48s} d{row['domain_id']:<3d} recs={row['data_record_count']:<6d} "
                   f"rows={row['row_count_total']:<10d} {names}")
 
-    ok = not blocking and report["hourly_requirement_met"] is not False
-    print(f"\nVERDICT: {'clean' if ok else 'BLOCKED'} "
-          f"({len(blocking)} domain(s) with residual failure status)\n")
-    return 0 if ok else 1
+    exit_code = verdict_exit_code(undefined, blocking, hourly)
+    verdict = {
+        0: "clean",
+        1: "BLOCKED",
+        EXIT_UNDEFINED_STATUS_BITS: "BLOCKED (UNDEFINED STATUS BITS)",
+    }[exit_code]
+    print(f"\nVERDICT: {verdict} "
+          f"({len(blocking)} domain(s) with residual failure status, "
+          f"{len(undefined)} with undefined status bits)\n")
+    return exit_code
 
 
 if __name__ == "__main__":
