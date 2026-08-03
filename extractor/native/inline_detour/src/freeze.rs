@@ -1124,6 +1124,15 @@ mod tests {
     /// It also pins the truncation rule for the second enumeration walk in
     /// this module, which the `enumerate_thread_ids` clause above does not
     /// reach: reading a broken walk as "absent" would excuse a live thread.
+    ///
+    /// WHAT THIS IS NOT, stated because the gap is invisible otherwise: it is
+    /// a lexical guard over a named list of allocating constructs, not a proof
+    /// of allocation freedom. A future body that allocates by calling some
+    /// helper of ours that allocates internally passes this test. Proving the
+    /// stronger property needs a `#[global_allocator]` shim that panics while
+    /// a freeze is held, which this crate does not have. The list below is
+    /// therefore the shapes a future edit is LIKELY to reach for, and its job
+    /// is to make the invariant visible at the point of edit.
     #[test]
     fn the_recycled_id_predicate_builds_no_list_while_the_process_is_frozen() {
         let production = production_code();
@@ -1134,7 +1143,10 @@ mod tests {
             .split_once("\n}\n")
             .expect("id_is_still_in_this_process has a closing brace")
             .0;
-        for allocating in ["Vec", "push(", "to_vec", "collect"] {
+        for allocating in [
+            "Vec", "push(", "to_vec", "collect", "String", "to_string", "format!", "vec!",
+            "Box::", "Rc::", "Arc::", "HashSet", "HashMap", "to_owned",
+        ] {
             assert!(
                 !predicate.contains(allocating),
                 "id_is_still_in_this_process must not `{allocating}`; it runs \
