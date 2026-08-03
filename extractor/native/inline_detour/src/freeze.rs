@@ -160,6 +160,13 @@
 //! suspension and reused across passes so the steady state allocates nothing
 //! while frozen.
 //!
+//! The recycled-id check below adds one more snapshot inside that window, on
+//! the rare path where `OpenThread` is denied. It builds no list -- it answers
+//! as it walks -- so it adds no Rust allocation, only the `kernel32` call. A
+//! reserved buffer would NOT have been good enough there: the reservation is
+//! sized from the thread count at the start of the freeze, and a process
+//! churning threads is exactly the one that can exceed it.
+//!
 //! What would close it rather than narrow it: enumerating with
 //! `NtGetNextThread`, which returns handles straight from the kernel and needs
 //! no user-mode allocation, and/or `HeapLock` on the process heap before the
@@ -716,26 +723,63 @@ fn enumerate_thread_ids(out: &mut Vec<u32>) -> Result<(), FreezeRefusal> {
 /// separate function is that the ordering is the proof: every caller must take
 /// this AFTER the `OpenThread` it is explaining, never before.
 ///
-/// `scratch` is a caller-owned buffer so this can be asked inside the frozen
-/// window without allocating; [`enumerate_thread_ids`] reuses its capacity.
+/// It ALLOCATES NOTHING, and answers from the snapshot as it walks rather than
+/// calling [`enumerate_thread_ids`] to materialise a list. That is not a
+/// micro-optimisation: this runs inside the frozen window, and a `Vec` that
+/// outgrows a reservation there takes the Rust global allocator's lock, which
+/// a suspended thread may be holding -- the hang the module header describes.
+/// A reservation could only ever be a bound on the thread count, and the churn
+/// this exists to survive is precisely a process whose thread count is moving.
+/// Not materialising the list removes the question instead of bounding it.
+///
+/// It does still take a `CreateToolhelp32Snapshot` inside the frozen window,
+/// and that is unavoidable: fresh evidence is the whole point. Whether that
+/// call allocates from the process default heap is undetermined, exactly as
+/// the module header already records for the per-pass enumerations.
 ///
 /// FAIL CLOSED: a snapshot that cannot be taken, or an enumeration that stops
 /// partway, propagates as a refusal rather than answering "not ours". A
 /// truncated list is a list of threads we did not see, and reading one as
-/// proof that a thread left the process is exactly backwards.
-fn id_is_still_in_this_process(
-    thread_id: u32,
-    scratch: &mut Vec<u32>,
-) -> Result<bool, FreezeRefusal> {
+/// proof that a thread left the process is exactly backwards. A POSITIVE match
+/// is conclusive on its own and returns early, because finding the thread does
+/// not depend on having seen the rest of the list.
+fn id_is_still_in_this_process(thread_id: u32) -> Result<bool, FreezeRefusal> {
     if thread_id == unsafe { GetCurrentThreadId() } {
         // Cannot arise from the freeze loop, whose enumeration excludes this
-        // thread, but [`enumerate_thread_ids`] excludes it too and answering
-        // "not in this process" about the thread doing the asking would be
-        // absurd for any future caller.
+        // thread, but answering "not in this process" about the thread doing
+        // the asking would be absurd for any future caller.
         return Ok(true);
     }
-    enumerate_thread_ids(scratch)?;
-    Ok(scratch.contains(&thread_id))
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(FreezeRefusal::Snapshot(unsafe { GetLastError() }));
+    }
+    let process_id = unsafe { GetCurrentProcessId() };
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
+    if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
+        let code = unsafe { GetLastError() };
+        unsafe { CloseHandle(snapshot) };
+        return Err(FreezeRefusal::Enumeration(code));
+    }
+    loop {
+        if entry.th32OwnerProcessID == process_id && entry.th32ThreadID == thread_id {
+            unsafe { CloseHandle(snapshot) };
+            return Ok(true);
+        }
+        if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+            let code = unsafe { GetLastError() };
+            unsafe { CloseHandle(snapshot) };
+            // Only a list that ran to its documented end can support "absent".
+            // Absence from a TRUNCATED list is not absence, and excusing an
+            // unopenable id on it would excuse a live thread of ours.
+            return if enumeration_stop_is_end_of_list(code) {
+                Ok(false)
+            } else {
+                Err(FreezeRefusal::Enumeration(code))
+            };
+        }
+    }
 }
 
 /// Has this thread terminated, given a bounded moment to finish doing so?
@@ -815,11 +859,6 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
     // capacity, so the frozen window does not allocate in the steady state.
     let headroom = ids.len().saturating_mul(4).saturating_add(64);
     ids.reserve(headroom);
-    // The buffer the recycled-id re-enumeration writes into. Reserved here,
-    // alongside `ids` and for the same reason: it is filled while every other
-    // thread is suspended, and growing it there would allocate inside the
-    // frozen window. It cannot be `ids`, which the pass below is iterating.
-    let mut recheck: Vec<u32> = Vec::with_capacity(headroom);
     let mut freeze = ProcessFreeze {
         _serialisation: serialisation,
         frozen: Vec::with_capacity(headroom),
@@ -852,7 +891,7 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
                     // AFTER the failed open, which is what makes the answer
                     // proof rather than a guess.
                     OpenFailure::Unopenable => {
-                        let still_ours = id_is_still_in_this_process(thread_id, &mut recheck)?;
+                        let still_ours = id_is_still_in_this_process(thread_id)?;
                         if !still_ours {
                             OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS.fetch_add(1, Ordering::AcqRel);
                         }
@@ -1022,10 +1061,13 @@ mod tests {
     /// The foreign id is taken from a live system-wide snapshot rather than
     /// invented, because the point is that such ids are indistinguishable from
     /// ours by value alone.
+    ///
+    /// None of the three answers can be vacuous: a snapshot that could not be
+    /// taken, or an enumeration that stopped early, is an `Err`, and every
+    /// assertion here is against an `Ok`.
     #[test]
     fn an_id_is_this_processs_own_only_while_the_thread_is() {
         let _serialised = os_suspend_state_guard();
-        let mut scratch: Vec<u32> = Vec::new();
 
         let stop = Arc::new(AtomicBool::new(false));
         let ours = Arc::new(AtomicU64::new(0));
@@ -1047,7 +1089,7 @@ mod tests {
         }
         let our_worker = ours.load(Ordering::Acquire) as u32;
         assert_eq!(
-            id_is_still_in_this_process(our_worker, &mut scratch),
+            id_is_still_in_this_process(our_worker),
             Ok(true),
             "a live thread of this process must read as ours"
         );
@@ -1056,24 +1098,54 @@ mod tests {
             .expect("some other process on this machine has a thread");
         assert_ne!(foreign, our_worker);
         assert_eq!(
-            id_is_still_in_this_process(foreign, &mut scratch),
+            id_is_still_in_this_process(foreign),
             Ok(false),
             "a thread of another process must not read as ours merely because \
              thread ids are drawn from one system-wide space"
         );
 
         // Ids are allocated in multiples of four, so an odd one names nothing.
-        assert_eq!(id_is_still_in_this_process(u32::MAX, &mut scratch), Ok(false));
+        assert_eq!(id_is_still_in_this_process(u32::MAX), Ok(false));
 
         stop.store(true, Ordering::Release);
         worker.join().expect("worker joins");
+    }
 
-        // The predicate must have had a list to answer from, or the two
-        // `Ok(false)` answers above were vacuous.
+    /// Falsifiable: fails if the recycled-id predicate starts building a list.
+    ///
+    /// It runs with every other thread in the process suspended. Materialising
+    /// a `Vec` there means the Rust global allocator, and a reservation cannot
+    /// bound it -- the thread count is exactly what is moving in the churn
+    /// this path exists for. If one of the suspended threads holds the heap
+    /// lock, the process HANGS rather than crashing, which is the one failure
+    /// mode this module cannot detect at runtime. Text, because "did not
+    /// allocate" is not observable from a test.
+    ///
+    /// It also pins the truncation rule for the second enumeration walk in
+    /// this module, which the `enumerate_thread_ids` clause above does not
+    /// reach: reading a broken walk as "absent" would excuse a live thread.
+    #[test]
+    fn the_recycled_id_predicate_builds_no_list_while_the_process_is_frozen() {
+        let production = production_code();
+        let predicate = production
+            .split_once("fn id_is_still_in_this_process(")
+            .expect("id_is_still_in_this_process is declared in production")
+            .1
+            .split_once("\n}\n")
+            .expect("id_is_still_in_this_process has a closing brace")
+            .0;
+        for allocating in ["Vec", "push(", "to_vec", "collect"] {
+            assert!(
+                !predicate.contains(allocating),
+                "id_is_still_in_this_process must not `{allocating}`; it runs \
+                 with every other thread suspended and the allocator's lock \
+                 may be held by one of them"
+            );
+        }
         assert!(
-            !scratch.is_empty(),
-            "the enumeration behind the predicate returned nothing, so its \
-             negative answers proved nothing"
+            predicate.contains("enumeration_stop_is_end_of_list(code)"),
+            "the predicate's own walk must classify its stop code; reading a \
+             truncated list as `absent` excuses a live thread of ours"
         );
     }
 
@@ -1279,7 +1351,7 @@ mod tests {
     // The ceiling decision is guarded instead by
     // `a_suspension_must_leave_minhook_a_slot_of_its_own` (the arithmetic) and
     // by the call-site clause in
-    // `the_two_fail_open_decisions_are_taken_only_through_their_classifiers`
+    // `the_fail_open_decisions_are_taken_only_through_their_classifiers`
     // (that the answer is consulted). Both go red under the mutation that
     // ignores the ceiling.
     //
