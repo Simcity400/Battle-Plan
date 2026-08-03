@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -580,6 +581,64 @@ class Registry:
             results.append(value)
         return results
 
+    def search_function_proposed_names(
+        self,
+        query: str,
+        executable_sha256: str,
+    ) -> list[dict[str, Any]]:
+        """Find build-relevant annotation claims by their proposed function name."""
+        with self.connect() as connection:
+            build = connection.execute(
+                "SELECT build_id FROM builds WHERE sha256=?", (executable_sha256.lower(),)
+            ).fetchone()
+            build_id = None if build is None else str(build[0])
+            orphan = (
+                "(build_id IS NOT NULL AND "
+                "build_id NOT IN (SELECT build_id FROM builds))"
+            )
+            if build_id is None:
+                rows = connection.execute(
+                    f"""
+                    SELECT * FROM claims
+                    WHERE predicate='annotation'
+                      AND (build_id IS NULL OR {orphan})
+                    ORDER BY created_utc DESC,claim_id
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    f"""
+                    SELECT * FROM claims
+                    WHERE predicate='annotation'
+                      AND (build_id IS NULL OR build_id=? OR {orphan})
+                    ORDER BY created_utc DESC,claim_id
+                    """,
+                    (build_id,),
+                ).fetchall()
+
+        needle = query.casefold()
+        results = []
+        for row in rows:
+            value = json.loads(row["value_json"])
+            proposed_name = value.get("proposed_name")
+            if not isinstance(proposed_name, str) or needle not in proposed_name.casefold():
+                continue
+            raw_address = value.get("address")
+            if not isinstance(raw_address, str) or re.fullmatch(
+                r"0x[0-9a-fA-F]{1,16}", raw_address
+            ) is None:
+                continue
+            results.append(
+                {
+                    "address": int(raw_address, 16),
+                    "proposed_name": proposed_name,
+                    "claim_id": str(row["claim_id"]),
+                    "status": str(row["status"]),
+                    "evidence_refs": value.get("evidence_refs", []),
+                }
+            )
+        return results
+
     def record_function_annotation(
         self,
         address: int,
@@ -588,10 +647,22 @@ class Registry:
         note: str,
         evidence_refs: list[Any],
         evidence_root: Path | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         """Append a proposed function finding to the existing WAL claims journal."""
         if not isinstance(note, str) or not note.strip():
             raise ValueError("note must be a non-empty string")
+        proposed_name = None
+        if name is not None:
+            if not isinstance(name, str):
+                raise ValueError("name must be a string")
+            if any(unicodedata.category(character) == "Cc" for character in name):
+                raise ValueError("name must not contain control characters")
+            proposed_name = name.strip()
+            if not proposed_name:
+                raise ValueError("name must not be empty")
+            if len(proposed_name) > 256:
+                raise ValueError("name must be at most 256 characters")
         if not isinstance(evidence_refs, list) or not evidence_refs:
             raise ValueError("evidence_refs must contain at least one artifact citation")
         if evidence_root is None:
@@ -649,6 +720,8 @@ class Registry:
             "evidence_refs": validated_refs,
             "annotation_created_utc": created,
         }
+        if proposed_name is not None:
+            payload["proposed_name"] = proposed_name
         claim_seed = json.dumps(payload, sort_keys=True).encode("utf-8")
         claim_id = "claim_" + hashlib.sha256(claim_seed).hexdigest()[:20]
         recorded = {
@@ -666,6 +739,7 @@ class Registry:
             "status": "proposed",
             "build_id": build_id,
             "created_utc": created,
+            "proposed_name": proposed_name,
         }
 
     def query(self, kind: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
