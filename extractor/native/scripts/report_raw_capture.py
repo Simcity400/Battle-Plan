@@ -143,19 +143,24 @@ EXIT_UNDEFINED_STATUS_BITS = 2
 # definedness check that never ran.
 EXIT_REPORT_ERROR = 3
 
-# Printed on the LAST line of stdout by every path that reaches a verdict, and
-# by no other path. An exit code alone cannot be trusted: a SyntaxError, a
-# failed import, or a missing interpreter kills python BEFORE any code in this
-# file runs, and the process exits 1 -- which is this report's code for "I read
-# the status words and some domain is failing", an ANSWER that a caller is
-# entitled to walk past. The receipt is the difference between "the check said
-# 1" and "something exited 1". A caller that does not see it must treat the
-# definedness check as never having run.
+# Printed to STDERR by every path that reaches a verdict, and by no other path.
+# An exit code alone cannot be trusted: a SyntaxError, a failed import, or a
+# missing interpreter kills python BEFORE any code in this file runs, and the
+# process exits 1 -- which is this report's code for "I read the status words
+# and some domain is failing", an ANSWER that a caller is entitled to walk past.
+# The receipt is the difference between "the check said 1" and "something
+# exited 1"; a caller that does not see it must treat the definedness check as
+# never having run.
+#
+# STDERR, not stdout, because `--json` writes one complete JSON document to
+# stdout and a caller pipes it straight into a parser. A receipt appended there
+# makes the document unparseable -- which is exactly what it did before this
+# was moved.
 VERDICT_RECEIPT_PREFIX = "COMPACT_STATUS_VERDICT="
 
 
 def emit_verdict_receipt(code: int) -> int:
-    print(f"{VERDICT_RECEIPT_PREFIX}{code}")
+    print(f"{VERDICT_RECEIPT_PREFIX}{code}", file=sys.stderr)
     return code
 
 

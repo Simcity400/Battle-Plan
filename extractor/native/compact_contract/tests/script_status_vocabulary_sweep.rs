@@ -70,10 +70,14 @@ fn registered_domains() -> BTreeMap<u16, u32> {
 // would never see it. Same class of hole as the drift being guarded against,
 // one level up.
 
-/// Blanks everything that is NOT executable code, preserving offsets and line
-/// structure: `#` line comments, PowerShell `<# ... #>` block comments, and
-/// Python triple-quoted strings (which are inert wherever these tables live and
-/// are the idiomatic way to comment a block out).
+/// Blanks everything that is NOT executable code -- `#` line comments,
+/// PowerShell `<# ... #>` block comments, and Python triple-quoted blocks --
+/// preserving BYTE length and line structure so every offset survives.
+///
+/// FAIL-CLOSED like the rest of these parsers: an unterminated block comment or
+/// triple-quoted block panics rather than being blanked through end-of-file. A
+/// script with one does not parse, and a sweep that reported on it would be
+/// vouching for a file the runtime cannot read.
 ///
 /// Nothing downstream is comment-aware, and it must not have to be. Two
 /// distinct failures need this:
@@ -89,24 +93,44 @@ fn strip_non_code(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut index = 0usize;
 
-    // Blanks `count` characters from `index`, keeping newlines so line
-    // structure (and every "is this the first thing after the marker" test)
-    // still holds.
+    // Blanks a region, preserving BYTE length (`ch.len_utf8()` spaces per
+    // character) and newlines, so line structure and every byte offset survive.
+    // Offsets matter: `delimited_after` requires the opening delimiter to be
+    // the first non-whitespace thing after its marker, which is a claim about
+    // position in the stripped text.
     let blank = |out: &mut String, from: usize, to: usize| {
         for ch in &chars[from..to] {
-            out.push(if *ch == '\n' { '\n' } else { ' ' });
+            if *ch == '\n' {
+                out.push('\n');
+            } else {
+                for _ in 0..ch.len_utf8() {
+                    out.push(' ');
+                }
+            }
         }
     };
 
     while index < chars.len() {
         let ch = chars[index];
-        // PowerShell block comment.
+        // PowerShell block comment. Not nestable in PowerShell, so the first
+        // `#>` closes it.
         if ch == '<' && chars.get(index + 1) == Some(&'#') {
             let mut end = index + 2;
-            while end < chars.len() && !(chars[end] == '#' && chars.get(end + 1) == Some(&'>')) {
+            let mut closed = false;
+            while end < chars.len() {
+                if chars[end] == '#' && chars.get(end + 1) == Some(&'>') {
+                    closed = true;
+                    break;
+                }
                 end += 1;
             }
-            let end = (end + 2).min(chars.len());
+            assert!(
+                closed,
+                "unterminated `<# ... #>` block comment at character {index}; the \
+                 script does not parse, and this sweep refuses to report on a \
+                 file it cannot read"
+            );
+            let end = end + 2;
             blank(&mut out, index, end);
             index = end;
             continue;
@@ -121,35 +145,77 @@ fn strip_non_code(text: &str) -> String {
             index = end;
             continue;
         }
-        // Triple-quoted Python string.
         if ch == '"' || ch == '\'' {
-            let triple = chars.get(index + 1) == Some(&ch) && chars.get(index + 2) == Some(&ch);
-            if triple {
+            // Triple-quoted Python block. Inert wherever these tables live, and
+            // the idiomatic way to comment a block out.
+            if chars.get(index + 1) == Some(&ch) && chars.get(index + 2) == Some(&ch) {
                 let mut end = index + 3;
-                while end + 2 < chars.len()
-                    && !(chars[end] == ch && chars[end + 1] == ch && chars[end + 2] == ch)
-                {
+                let mut closed = false;
+                let mut escaped = false;
+                while end < chars.len() {
+                    let c = chars[end];
+                    if escaped {
+                        // A backslash-escaped delimiter does NOT close the
+                        // block; treating it as a terminator would expose the
+                        // rest of an inert region as live code.
+                        escaped = false;
+                        end += 1;
+                        continue;
+                    }
+                    if c == '\\' {
+                        escaped = true;
+                        end += 1;
+                        continue;
+                    }
+                    if c == ch && chars.get(end + 1) == Some(&ch) && chars.get(end + 2) == Some(&ch)
+                    {
+                        closed = true;
+                        break;
+                    }
                     end += 1;
                 }
-                let end = (end + 3).min(chars.len());
+                assert!(
+                    closed,
+                    "unterminated triple-quoted block at character {index}; the \
+                     script does not parse, and this sweep refuses to report on \
+                     a file it cannot read"
+                );
+                let end = end + 3;
                 blank(&mut out, index, end);
                 index = end;
                 continue;
             }
-            // Ordinary string: kept verbatim, because the badge NAMES live in
-            // these and downstream parsers rely on seeing them.
+            // Ordinary string: kept VERBATIM, because the badge names live in
+            // these and the downstream parsers rely on seeing them. Only the
+            // EXTENT matters, and both escape conventions are honoured: the
+            // Python backslash and the PowerShell backtick. Ending a string
+            // early at an escaped quote would expose the rest of it as code,
+            // and a `#` inside would then blank the live code after it.
+            //
+            // A doubled-quote rule (`''`/`""`, PowerShell's other escape) is
+            // deliberately ABSENT. Dropping it only re-pairs one string into
+            // two adjacent ones, which shifts the in/out partition by a whole
+            // quote pair and so preserves parity: every `#` stays on the side
+            // it was on. Verified by exhaustive search over every string of
+            // length <= 8 in `' " # a \n ;` -- 1,963,046 inputs, zero
+            // differences. A rule that cannot change an outcome would only
+            // carry a test that cannot fail.
             out.push(ch);
             index += 1;
-            let mut escaped = false;
             while index < chars.len() {
                 let c = chars[index];
+                if c == '\\' || c == '`' {
+                    out.push(c);
+                    index += 1;
+                    if index < chars.len() {
+                        out.push(chars[index]);
+                        index += 1;
+                    }
+                    continue;
+                }
                 out.push(c);
                 index += 1;
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' {
-                    escaped = true;
-                } else if c == ch || c == '\n' {
+                if c == ch || c == '\n' {
                     break;
                 }
             }
@@ -853,18 +919,34 @@ fn the_harness_status_verdict_survives_every_route_out() {
          reproduces its conditions"
     );
 
-    // Each route out of the script, as the shape that reaches `finally`.
+    // The arbitration point is the body of an INNER `finally` wrapping the
+    // cleanup prefix, and each route below is a way that nesting has to hold.
+    // The shapes reproduce the real one; `the_harness_arbitration_is_nested_
+    // inside_the_cleanup_finally` separately pins that the harness still HAS
+    // that nesting, because a faithful shape here proves nothing if the file
+    // stops using it.
     let routes: &[(&str, &str)] = &[
-        ("normal completion", "try { } finally { BODY }"),
+        ("normal completion", "try { } finally { try { } finally { BODY } }"),
         // A throw from the try body: an unauthenticated teardown, a null
         // recorder exit code, or any bug. Without an exit inside `finally`
         // this resumes after it and returns 1.
-        ("pending exception from the try body", "try { throw 'boom' } finally { BODY }"),
-        // The cleanup-fatal throw lives after the arbitration point in the
-        // real `finally`; this reproduces "a throw is about to happen here".
+        (
+            "pending exception from the try body",
+            "try { throw 'boom' } finally { try { } finally { BODY } }",
+        ),
+        // The cleanup-fatal throw lives after the inner finally in the real
+        // script; this reproduces "a throw is about to happen here".
         (
             "cleanup fatal about to throw",
-            "try { } finally { BODY\n throw 'cleanup fatal' }",
+            "try { } finally { try { } finally { BODY }\n throw 'cleanup fatal' }",
+        ),
+        // The route that being merely LAST in the outer `finally` did not
+        // survive: a terminating error in the cleanup prefix. Under
+        // $ErrorActionPreference = 'Stop' every failing cmdlet is terminating,
+        // and it abandons the rest of the enclosing block.
+        (
+            "terminating error in the cleanup prefix",
+            "try { } finally { try { Get-Item 'Z:\\no\\such\\path' } finally { BODY } }",
         ),
     ];
 
@@ -910,7 +992,7 @@ fn the_harness_status_verdict_survives_every_route_out() {
          $collectorInjectionStarted = $false\n\
          $collectorTeardownAuthenticated = $true\n\
          $gradedWindowStarted = $false\n\
-         try {{ }} finally {{ {arbitration} }}\n\
+         try {{ }} finally {{ try {{ }} finally {{ {arbitration} }} }}\n\
          exit 0\n"
     );
     let path = dir.join("probe_no_verdict.ps1");
@@ -1003,7 +1085,8 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
     fs::write(&reporter, "").expect("write probe reporter");
     let absent = dir.join("does_not_exist");
 
-    // The report proves it reached a verdict by printing a receipt on stdout;
+    // The report proves it reached a verdict by printing a receipt on STDERR
+    // (stdout carries the --json document and must stay parseable);
     // an exit code alone is not evidence, because python exits 1 on a
     // SyntaxError before any of the report's own code runs, and 1 is the
     // report's code for an ANSWER.
@@ -1013,34 +1096,34 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
     //  game died, expected: does the verdict block?)
     let cases: Vec<(&str, String, bool, bool, bool, bool)> = vec![
         ("report says clean",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), true, true, false, false),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=0}}", receipt(0)), true, true, false, false),
         ("report says blocking",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=1}}", receipt(1)), true, true, false, false),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=1}}", receipt(1)), true, true, false, false),
         ("report says undefined bits",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=2}}", receipt(2)), true, true, false, true),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=2}}", receipt(2)), true, true, false, true),
         // The defect this case exists for: the report used to crash onto 1,
         // which the harness reads as an ANSWER and walks past.
         ("report crashed (3)",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=3}}", receipt(3)), true, true, false, true),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=3}}", receipt(3)), true, true, false, true),
         ("report exited outside its vocabulary",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=9}}", receipt(9)), true, true, false, true),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=9}}", receipt(9)), true, true, false, true),
         // python died BEFORE the report's own code ran (SyntaxError, failed
         // import, missing interpreter): exit 1 and no receipt. The exit code
         // alone would read as an answered blocking verdict.
         ("report died before its own code ran",
          "@{Stdout='';Stderr='SyntaxError';ExitCode=1}".to_string(), true, true, false, true),
         ("report printed a receipt that disagrees with its exit code",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(2)), true, true, false, true),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=0}}", receipt(2)), true, true, false, true),
         // Invoke-BoundedNativeCapture throws on timeout.
         ("report timed out (throw)",
          "throw 'raw-capture report timed out'".to_string(), true, true, false, true),
         ("reporter missing",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), true, false, false, true),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=0}}", receipt(0)), true, false, false, true),
         ("no manifest, game lived",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), false, true, false, true),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=0}}", receipt(0)), false, true, false, true),
         // The one explained absence: the game died, so there is nothing to grade.
         ("no manifest, game died",
-         format!("@{{Stdout='{}';Stderr='';ExitCode=0}}", receipt(0)), false, true, true, false),
+         format!("@{{Stdout='';Stderr='{}';ExitCode=0}}", receipt(0)), false, true, true, false),
     ];
 
     let mut failures = Vec::new();
@@ -1121,4 +1204,124 @@ fn the_reporter_and_manifest_checks_are_not_recombined() {
         "the reporter and manifest existence checks are combined again, which makes a \
          finalized capture with a missing reporter exit 0"
     );
+}
+
+/// The behavioural route test reconstructs the harness's nesting; this pins
+/// that the harness still USES it. A faithful reconstruction proves nothing
+/// about a file that has stopped nesting the arbitration point.
+#[test]
+fn the_harness_arbitration_is_nested_inside_the_cleanup_finally() {
+    let code = strip_non_code(&read_script("Invoke-HeadlessRawCapture.ps1"));
+    let arbitration = "if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {";
+    let position = code
+        .find(arbitration)
+        .expect("the harness has no compact-status arbitration point");
+    // Everything from the outer `finally` to the arbitration point must open
+    // one more `try {` than it closes, i.e. the arbitration sits inside an
+    // inner `try`'s `finally`.
+    let outer = code
+        .find("} finally {\n    $cleanupFatalMessage = $null")
+        .or_else(|| code.find("} finally {\r\n    $cleanupFatalMessage = $null"))
+        .expect("the harness's outer cleanup finally moved");
+    let prefix = &code[outer..position];
+    assert!(
+        prefix.contains("    try {"),
+        "the arbitration point is no longer nested inside a `try` wrapping the \
+         cleanup prefix, so a terminating error in that prefix (every failing \
+         cmdlet is terminating under $ErrorActionPreference = 'Stop') abandons \
+         the block before the verdict is delivered"
+    );
+    assert!(
+        prefix.rfind("} finally {").map(|at| at > 0).unwrap_or(false)
+            && prefix.matches("} finally {").count() >= 2,
+        "the arbitration point is not the body of an INNER finally: {prefix:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unterminated `<# ... #>` block comment")]
+fn an_unterminated_block_comment_is_refused() {
+    // The script does not parse. Blanking it through end-of-file would let this
+    // sweep vouch for a file the runtime cannot read.
+    strip_non_code("$Mask = 1\n<# never closed\n$Mask = 2\n");
+}
+
+#[test]
+#[should_panic(expected = "unterminated triple-quoted block")]
+fn an_unterminated_triple_quoted_block_is_refused() {
+    strip_non_code("MASK = 1\n\"\"\" never closed\nMASK = 2\n");
+}
+
+#[test]
+fn an_escaped_triple_delimiter_does_not_end_an_inert_block() {
+    // `\"""` inside a triple-quoted block is an escaped quote, not a
+    // terminator. Ending the block there would expose the rest of an inert
+    // region as live code -- and the exposed text is exactly what a `contains`
+    // check would then be satisfied by.
+    //
+    // Breaking the escape rule also unbalances the file (one fewer delimiter is
+    // consumed as a terminator), so the mutation that proves this test surfaces
+    // as EITHER this assertion or the unterminated-block panic. Both are the
+    // same defect; the fixture is not contorted to force one of them.
+    let source = "\"\"\"\ndocs with an escaped \\\"\"\" delimiter\nKNOWN_MASK = (1 << 15) - 1\n\"\"\"\nKNOWN_MASK = (1 << 9) - 1\n";
+    let code = strip_non_code(source);
+    assert!(
+        !code.contains("(1 << 15) - 1"),
+        "an escaped triple delimiter ended the inert block early: {code:?}"
+    );
+    assert!(code.contains("KNOWN_MASK = (1 << 9) - 1"));
+}
+
+#[test]
+fn a_powershell_backtick_escape_does_not_end_a_string_early() {
+    // PowerShell escapes with a backtick, not a backslash. Ending the string at
+    // the escaped quote treats the REST OF THE STRING as code -- and the `#`
+    // inside it then reads as a line comment, blanking everything after it on
+    // that line, including live code.
+    let source = "$a = \"has a `\" quote and a # hash\"; $Mask = [uint32]0x1\n";
+    let code = strip_non_code(source);
+    assert!(
+        code.contains("# hash"),
+        "the `#` inside the string was taken for a comment, so the string ended \
+         at the backtick-escaped quote: {code:?}"
+    );
+    assert!(
+        code.contains("$Mask = [uint32]0x1"),
+        "live code after the string was blanked: {code:?}"
+    );
+}
+
+#[test]
+fn a_doubled_quote_re_pairs_without_changing_what_counts_as_code() {
+    // PowerShell's OTHER escape, `''`. The stripper has no rule for it, and
+    // deliberately so: re-pairing shifts the in/out partition by a whole quote
+    // pair, so every `#` stays on the side it was on. This pins the OUTCOME
+    // (which is what the sweep depends on), not a rule that does not exist.
+    let source = "$a = 'it''s fine # not a comment'; $Mask = [uint32]0x1\n";
+    let code = strip_non_code(source);
+    assert!(
+        code.contains("# not a comment"),
+        "the `#` inside the doubled-quote string was taken for a comment: {code:?}"
+    );
+    assert!(
+        code.contains("$Mask = [uint32]0x1"),
+        "live code after the string was blanked: {code:?}"
+    );
+}
+
+#[test]
+fn blanking_preserves_byte_length_for_non_ascii() {
+    // The offsets `delimited_after` relies on are BYTE offsets, so a multi-byte
+    // character in a comment must be replaced by as many spaces as it had
+    // bytes. An em dash is three.
+    let source = "TABLE = {  # note — with an em dash\n    53: {16: 'a'},\n}\n";
+    let code = strip_non_code(source);
+    assert_eq!(
+        code.len(),
+        source.len(),
+        "stripping changed the BYTE length, so every offset after a non-ASCII \
+         comment is wrong"
+    );
+    let block = block_after(&code, "TABLE = ");
+    assert_eq!(mask_of(&int_keys(&nested_entries(&block)[0].1)), 1 << 16);
 }

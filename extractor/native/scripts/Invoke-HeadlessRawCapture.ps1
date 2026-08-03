@@ -2175,10 +2175,13 @@ if ($haveStreamReport -and $haveManifest) {
         # exits 1 -- which is the report's code for an ANSWER, and this harness
         # walks past answers. The receipt is printed only by paths that reached
         # a verdict, so its ABSENCE means the check did not run.
+        # STDERR: `--json` puts one complete JSON document on stdout and a
+        # caller pipes it straight into a parser, so the receipt cannot live
+        # there.
         $verdictReceipt = $null
-        if (-not [string]::IsNullOrWhiteSpace($reportResult.Stdout)) {
+        if (-not [string]::IsNullOrWhiteSpace($reportResult.Stderr)) {
             $verdictReceipt = @(
-                $reportResult.Stdout -split "`n" |
+                $reportResult.Stderr -split "`n" |
                     ForEach-Object { $_.Trim() } |
                     Where-Object { $_ -like 'COMPACT_STATUS_VERDICT=*' }
             ) | Select-Object -Last 1
@@ -2243,6 +2246,14 @@ $captureSucceeded = ([int]$recorderExit -eq 0 -and -not $gameDied)
 $scriptExitCode = [int]$recorderExit
 } finally {
     $cleanupFatalMessage = $null
+    # The whole cleanup body is wrapped so the compact-status arbitration point
+    # can sit in an INNER `finally`. Being last in the outer `finally` was not
+    # enough: $ErrorActionPreference is 'Stop' for this script, so any failing
+    # cmdlet in the cleanup prefix below (a Test-Path on a vanished drive, a
+    # SetEnvironmentVariable denial) is TERMINATING and abandons the rest of the
+    # outer `finally` -- including the arbitration -- leaving exit 1. The inner
+    # `finally` is the only construct that still runs in that case.
+    try {
     # Never terminate collector_record after injection. Its configured duration
     # is the cooperative stop authority; hard termination can orphan hooks or
     # the injected DLL before authenticated teardown is published.
@@ -2379,21 +2390,28 @@ $scriptExitCode = [int]$recorderExit
             Write-SettingsGuardNonThrowingWarning -Message "Settings guard restored IsReadOnly=$settingsGuardPriorReadOnly on '$settingsPath', but could not remove sentinel '$settingsGuardSentinel'. Remove it manually after verifying the attribute. Error: $($_.Exception.Message)"
         }
     }
+    } finally {
     # --- the single compact-status arbitration point -------------------------
     #
-    # This MUST live at the end of `finally`, and there must be exactly one of
-    # it. `finally` is the only place that runs on every route out of this
-    # script: the normal path, a `throw` from the try body (an unauthenticated
-    # teardown, a null recorder exit code, any bug), and the cleanup-fatal
-    # `throw` below. Anywhere else and the verdict is lost:
+    # There must be exactly one of these, and it must be the body of the INNER
+    # `finally` that wraps the whole cleanup prefix. That nesting is what makes
+    # it unconditional. Every other placement loses the verdict on some route:
     #
-    #   * a `throw` from the try body resumes AFTER `finally` and skips
-    #     everything below this block, returning 1;
-    #   * a `throw` from `finally` itself terminates the script right here.
+    #   * after the outer `finally`: a `throw` from the try body (an
+    #     unauthenticated teardown, a null recorder exit code, any bug) resumes
+    #     there and skips it, returning 1;
+    #   * last inside the outer `finally`: any TERMINATING error in the cleanup
+    #     prefix above -- and every failing cmdlet is terminating here, because
+    #     $ErrorActionPreference is 'Stop' -- abandons the rest of that block,
+    #     including this one;
+    #   * before the cleanup: the capture would not yet be finalized, receipted
+    #     and left on disk, and that artifact is exactly what someone has to
+    #     read to fix the producer.
     #
     # `exit` from `finally` beats a pending exception in PowerShell 5.1 -- that
-    # is measured, not assumed (`every_harness_undefined_status_branch_...`
-    # runs this block with an exception already in flight).
+    # is measured, not assumed (`the_harness_status_verdict_survives_every_
+    # route_out` runs this block with an exception already in flight, and with
+    # one thrown by the cleanup prefix).
     #
     # Exit code 2 wins over every co-occurring failure, and every one of them is
     # still PRINTED. That is a decision, not an accident: each of the others
@@ -2419,6 +2437,7 @@ $scriptExitCode = [int]$recorderExit
         [Console]::Error.WriteLine(
             'Exit code 2 reports the compact status verdict. Any failure printed above still needs an operator.')
         exit 2
+    }
     }
     if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
         throw $cleanupFatalMessage
