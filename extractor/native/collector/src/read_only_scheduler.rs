@@ -164,6 +164,10 @@ pub struct SchedulerTelemetry {
 /// looked at" by subtracting published frames from an advanced-hour span. Each
 /// disposition below is counted at the exact site where it happens, and
 /// [`HourLedger::balanced`] states the identity that makes the set exhaustive.
+///
+/// Production consumes the individual counters through the `rs_*` probe units,
+/// not this struct; `balanced` exists so that a drop site added later without a
+/// counter fails a test rather than quietly widening the unexplained set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HourLedger {
     /// Hours admitted to the data lane (one per distinct observed frontier).
@@ -210,10 +214,13 @@ impl HourLedger {
                 == Some(self.scheduled)
     }
 
-    /// Hours that reached no frame, whether or not they were ever admitted.
-    /// Outstanding hours are excluded: they are not yet resolved either way.
-    pub fn unobserved_total(&self) -> u64 {
-        self.evicted_pending
+    /// Hours that published no `FRAME_END`, whether or not they were ever
+    /// admitted. `refused` is included: an H4FR hour was swept, but it published
+    /// no frame. Outstanding hours are excluded -- they are not yet resolved
+    /// either way.
+    pub fn hours_with_no_published_frame(&self) -> u64 {
+        self.refused
+            .saturating_add(self.evicted_pending)
             .saturating_add(self.abandoned)
             .saturating_add(self.flushed_pending)
             .saturating_add(self.unobserved_overrun)
@@ -366,6 +373,15 @@ impl ReadOnlyScheduler {
             // interval the recorder never looked at, and the host would then
             // count that hour in `unique_game_hour_count` as observed. Claiming
             // an unobserved hour is worse than the silence it would replace.
+            //
+            // CONSEQUENCE, accepted deliberately: these hours therefore carry no
+            // PER-HOUR producer record, so the host counts them `unaccounted`
+            // and the capture fails its gap-acceptance gate. That is the honest
+            // outcome -- the recorder cannot vouch for the interval -- and it is
+            // strictly better than the tautological pass this replaced. Giving
+            // them per-hour evidence needs a transport that can carry a gap
+            // range WITHOUT closing a frame, which is a wire change and not this
+            // lane's to make.
             self.count_unobserved_span(self.last, hour_raw, UnobservedCause::ClockUnknown);
             self.next_epoch = self.next_epoch.saturating_add(1);
             self.force_baseline = true;
@@ -1495,7 +1511,7 @@ mod tests {
         );
         assert_eq!(ledger.outstanding, 2, "100 in flight, 102 pending");
         assert!(ledger.balanced(), "{ledger:?}");
-        assert_eq!(ledger.unobserved_total(), 1);
+        assert_eq!(ledger.hours_with_no_published_frame(), 1);
 
         // Resolving the in-flight frame moves it to `accepted`, and the ledger
         // still balances -- no disposition is double-counted.
@@ -1548,9 +1564,9 @@ mod tests {
         assert_eq!(ledger.outstanding, 0);
         assert!(ledger.balanced(), "{ledger:?}");
         assert_eq!(
-            ledger.unobserved_total(),
-            4,
-            "hours 3, 4, 5 and 6 opened no frame"
+            ledger.hours_with_no_published_frame(),
+            5,
+            "hours 2 (refused), 3, 4, 5 and 6 published no frame"
         );
     }
 
