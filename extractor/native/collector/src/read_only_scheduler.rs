@@ -34,12 +34,12 @@ pub enum GapKind {
     ReloadBaseline,
 }
 
-/// Why a span of hours was never admitted to the data lane. Only used to route
-/// the count to the right telemetry axis; the wire evidence is the gap range.
+/// Why a span of hours was never admitted to the data lane. Routes the count to
+/// the right telemetry axis. These spans are counted, never turned into control
+/// ranges -- see `count_unobserved_span`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UnobservedCause {
     ClockUnknown,
-    CounterAnomaly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,13 +130,19 @@ pub struct SchedulerTelemetry {
     /// admitted at all. Each leaves a per-domain `Overrun` range.
     pub unobserved_overrun_hours: u64,
     /// Hours that elapsed while the authenticated clock could not be read, and
-    /// so were never admitted. Each leaves a per-domain `ClockUnreadable`
-    /// range naming the interval.
+    /// so were never admitted. Counted, not published: naming them on the
+    /// control lane would close the last one with a `FRAME_END`.
     pub unobserved_clock_unknown_hours: u64,
-    /// Hours spanned by a forward counter jump the scheduler refuses to
-    /// believe (`delta > MAX_FORWARD_DELTA`). The span is named on the control
-    /// lane rather than passing silently; the scheduler then goes terminal.
-    pub unobserved_counter_anomaly_hours: u64,
+    /// Forward counter jumps the scheduler refused to believe
+    /// (`delta > MAX_FORWARD_DELTA`). Counted as EVENTS, never as hours: the
+    /// implied span rests on a value the scheduler has just rejected, so
+    /// turning it into an hour count would assert elapsed time on the strength
+    /// of a read that is not trusted.
+    pub counter_anomaly_events: u64,
+    /// Stable observations discarded because the scheduler was already
+    /// terminal. Nothing publishes after a terminal, so these hours leave the
+    /// capture span rather than opening a hole -- but they are not invisible.
+    pub post_terminal_observations: u64,
     pub gapped_domain_hours: u64,
     pub overrun_domain_hours: u64,
     pub backpressure_domain_hours: u64,
@@ -178,8 +184,15 @@ pub struct HourLedger {
     pub unobserved_overrun: u64,
     /// Hours never admitted: elapsed while the clock was unreadable.
     pub unobserved_clock_unknown: u64,
-    /// Hours never admitted: spanned by a rejected forward counter jump.
-    pub unobserved_counter_anomaly: u64,
+    /// Rejected forward counter jumps. An event count, not an hour count.
+    pub counter_anomaly_events: u64,
+    /// Stable observations discarded because the scheduler was already
+    /// terminal. Nothing publishes after a terminal, so these hours leave the
+    /// capture span rather than opening a hole -- but they are not invisible.
+    pub post_terminal_observations: u64,
+    /// False when the per-domain slots have diverged; `balanced` is only
+    /// defined for the whole-frame lane and says so rather than guessing.
+    pub slots_uniform: bool,
 }
 
 impl HourLedger {
@@ -187,13 +200,14 @@ impl HourLedger {
     /// must sum back to `scheduled`. A new drop site that forgets to count
     /// itself breaks this, which is the whole point.
     pub fn balanced(&self) -> bool {
-        self.accepted
+        self.slots_uniform
+            && self.accepted
             .checked_add(self.refused)
             .and_then(|n| n.checked_add(self.evicted_pending))
             .and_then(|n| n.checked_add(self.abandoned))
             .and_then(|n| n.checked_add(self.flushed_pending))
             .and_then(|n| n.checked_add(self.outstanding))
-            == Some(self.scheduled)
+                == Some(self.scheduled)
     }
 
     /// Hours that reached no frame, whether or not they were ever admitted.
@@ -204,7 +218,6 @@ impl HourLedger {
             .saturating_add(self.flushed_pending)
             .saturating_add(self.unobserved_overrun)
             .saturating_add(self.unobserved_clock_unknown)
-            .saturating_add(self.unobserved_counter_anomaly)
     }
 }
 
@@ -297,19 +310,37 @@ impl ReadOnlyScheduler {
             abandoned: t.abandoned_hours,
             flushed_pending: t.flushed_pending_hours,
             outstanding: self.outstanding_hours(),
+            slots_uniform: self.slots_uniform(),
             unobserved_overrun: t.unobserved_overrun_hours,
             unobserved_clock_unknown: t.unobserved_clock_unknown_hours,
-            unobserved_counter_anomaly: t.unobserved_counter_anomaly_hours,
+            counter_anomaly_events: t.counter_anomaly_events,
+            post_terminal_observations: t.post_terminal_observations,
         }
     }
 
     /// Admitted hours the scheduler still holds. The whole-frame lane keeps at
-    /// most one in flight plus one pending, and `decide` refuses to proceed
-    /// when the per-domain slots disagree, so slot zero is the canonical view.
+    /// most one in flight plus one pending across ALL domains at once, so slot
+    /// zero is the canonical view -- but only while the slots agree.
     fn outstanding_hours(&self) -> u64 {
         self.domain_requests.first().map_or(0, |slot| {
             u64::from(slot.in_flight.is_some()) + u64::from(slot.latest_pending.is_some())
         })
+    }
+
+    /// Whether every domain slot holds the same pair of requests.
+    ///
+    /// The per-domain API (`take_domain_request` / `reject_domain`) can move one
+    /// slot without the others. It has no production caller -- the collector
+    /// drives the whole-frame lane only -- but a ledger that silently reported
+    /// `balanced` under divergence would be exactly the kind of accounting this
+    /// change exists to remove, so divergence is stated instead of hidden.
+    fn slots_uniform(&self) -> bool {
+        let Some(first) = self.domain_requests.first() else {
+            return true;
+        };
+        self.domain_requests
+            .iter()
+            .all(|slot| slot.in_flight == first.in_flight && slot.latest_pending == first.latest_pending)
     }
 
     /// Admit one stable `CGameState+0x468` observation. The caller is
@@ -317,25 +348,25 @@ impl ReadOnlyScheduler {
     /// opening/closing root+hour pair equal.
     pub fn observe_stable(&mut self, hour_raw: i32, observation_ordinal: u64) {
         if self.telemetry.terminal.is_some() {
+            self.telemetry.post_terminal_observations =
+                self.telemetry.post_terminal_observations.saturating_add(1);
             return;
         }
         self.telemetry.observations = self.telemetry.observations.saturating_add(1);
         if self.clock_unknown {
             self.gap_all_pending(GapKind::ClockUnreadable);
             // The hours that elapsed while the clock was unreadable were never
-            // admitted, so no eviction site sees them and nothing else in this
-            // module would ever mention them. Before this range existed the
-            // whole outage passed with no record of any kind: a consumer could
-            // not tell it apart from an hour in which nothing happened. Naming
-            // the interval is a statement about the RECORDER (we did not look),
-            // not about the game -- no world state is attached to these hours
-            // and no frame is published for them.
-            self.note_unobserved_span(
-                self.last,
-                hour_raw,
-                GapKind::ClockUnreadable,
-                UnobservedCause::ClockUnknown,
-            );
+            // admitted, so no eviction site sees them. They are COUNTED here
+            // and nowhere else.
+            //
+            // They are deliberately NOT pushed onto the control lane. A control
+            // gap range is transported by `build_scheduler_gap_frames`, which
+            // closes each range with `FRAME_END(range_end)` -- so emitting one
+            // would publish an empty-but-clean frame for the last hour of an
+            // interval the recorder never looked at, and the host would then
+            // count that hour in `unique_game_hour_count` as observed. Claiming
+            // an unobserved hour is worse than the silence it would replace.
+            self.count_unobserved_span(self.last, hour_raw, UnobservedCause::ClockUnknown);
             self.next_epoch = self.next_epoch.saturating_add(1);
             self.force_baseline = true;
             self.clock_unknown = false;
@@ -390,18 +421,15 @@ impl ReadOnlyScheduler {
         }
         let delta = i64::from(hour_raw) - i64::from(last.hour_raw);
         if delta > MAX_FORWARD_DELTA {
-            // The jump is not believed, and going terminal is correct. What was
-            // wrong is that the interval used to vanish: the scheduler stopped
-            // admitting hours and said nothing about the span it had stopped
-            // over. The range below claims no world state for those hours -- it
-            // records only that the recorder holds no observation between the
-            // two endpoints, which is true whether or not the counter is.
-            self.note_unobserved_span(
-                Some(last),
-                hour_raw,
-                GapKind::ClockUnreadable,
-                UnobservedCause::CounterAnomaly,
-            );
+            // The jump is not believed, so the span it implies is not counted
+            // as elapsed hours and certainly not named on the control lane:
+            // doing either would assert that hours the recorder has no reason
+            // to think existed did exist. Only the fact of the anomaly is
+            // recorded, and `terminal` already ends scheduling -- no later hour
+            // publishes, so the manifest span simply stops here rather than
+            // acquiring a hole that needs explaining.
+            self.telemetry.counter_anomaly_events =
+                self.telemetry.counter_anomaly_events.saturating_add(1);
             self.telemetry.terminal = Some(TerminalOutcome::CounterAnomaly);
             return;
         }
@@ -741,17 +769,15 @@ impl ReadOnlyScheduler {
         }
     }
 
-    /// Name the hours strictly between `from`'s frontier and `to`, which the
+    /// Count the hours strictly between `from`'s frontier and `to`, which the
     /// scheduler never admitted and which therefore reach no eviction site.
     ///
-    /// One inclusive range per domain, so the control cost is the domain count
-    /// regardless of how long the interval is. Emits nothing when no whole hour
-    /// separates the two endpoints.
-    fn note_unobserved_span(
+    /// Counting only. See the call site for why these hours must not become
+    /// control-lane ranges.
+    fn count_unobserved_span(
         &mut self,
         from: Option<ClockStamp>,
         to: i32,
-        kind: GapKind,
         cause: UnobservedCause,
     ) {
         let Some(from) = from else {
@@ -767,25 +793,11 @@ impl ReadOnlyScheduler {
         }
         let span = i64::from(last_missing) - i64::from(first_missing) + 1;
         let span = u64::try_from(span).unwrap_or(0);
-        self.push_all_domain_gap_range(
-            from.epoch,
-            first_missing,
-            last_missing,
-            kind,
-            clock_witness(from.hour_raw),
-            clock_witness(to),
-        );
         match cause {
             UnobservedCause::ClockUnknown => {
                 self.telemetry.unobserved_clock_unknown_hours = self
                     .telemetry
                     .unobserved_clock_unknown_hours
-                    .saturating_add(span)
-            }
-            UnobservedCause::CounterAnomaly => {
-                self.telemetry.unobserved_counter_anomaly_hours = self
-                    .telemetry
-                    .unobserved_counter_anomaly_hours
                     .saturating_add(span)
             }
         }
@@ -1357,22 +1369,30 @@ mod tests {
         assert!(s.rollback_reserved_control().is_err());
     }
 
-    /// THE SILENCE HOLE. While the authenticated clock cannot be read the game
-    /// keeps advancing, and every one of those hours used to leave NO record of
-    /// any kind: `note_clock_unreadable` gapped only the requests it happened to
-    /// be holding, and the recovering `observe_stable` opened a fresh epoch at
-    /// the new frontier without ever mentioning the interval it had jumped. A
-    /// consumer could not distinguish that outage from an hour in which nothing
-    /// happened, which is exactly the distinction a capture exists to preserve.
+    /// THE SILENCE HOLE, and the trap in closing it.
     ///
-    /// The range below attaches no world state and publishes no frame. It says
-    /// only "the recorder holds no observation for hours 101..=104".
+    /// While the authenticated clock cannot be read the game keeps advancing,
+    /// and those hours used to leave NO record of any kind: `note_clock_unreadable`
+    /// gapped only the requests it happened to be holding, and the recovering
+    /// `observe_stable` opened a fresh epoch at the new frontier without ever
+    /// mentioning the interval it had jumped.
     ///
-    /// Mutation proof: delete the `note_unobserved_span(..., ClockUnknown)` call
-    /// from the `clock_unknown` branch of `observe_stable` and this test fails
-    /// -- the elapsed hours vanish from the control lane again.
+    /// The obvious fix -- push a control-lane gap range naming the interval --
+    /// is WRONG here, and this test pins that. `build_scheduler_gap_frames`
+    /// closes every control range with `FRAME_END(range_end)`, so a range for
+    /// hours 101..=104 would publish an empty-but-clean frame for hour 104. The
+    /// host derives `unique_hours` from FRAME_END records, so hour 104 would
+    /// then be counted as observed -- the recorder claiming an hour it never
+    /// looked at, which is worse than the silence it replaced.
+    ///
+    /// So the interval is COUNTED and not published.
+    ///
+    /// Mutation proof: delete the `count_unobserved_span` call from the
+    /// `clock_unknown` branch of `observe_stable` and the count assertion
+    /// fails. Restore the earlier `push_all_domain_gap_range` form and the
+    /// "no control range" assertion fails.
     #[test]
-    fn hours_elapsed_while_the_clock_was_unreadable_are_named_not_silent() {
+    fn hours_elapsed_while_the_clock_was_unreadable_are_counted_but_never_published() {
         let mut s = scheduler(&[10, 11], 1, 64);
         s.observe_stable(100, 1);
         // Drain the baseline request so the outage has nothing pending to gap;
@@ -1386,38 +1406,39 @@ mod tests {
         // Four game hours pass unobserved, then the clock reads again.
         s.observe_stable(105, 2);
 
-        let gaps: Vec<_> = s.drain_control().collect();
-        let named: Vec<_> = gaps
-            .iter()
-            .filter(|gap| gap.kind == GapKind::ClockUnreadable)
-            .collect();
-        assert_eq!(
-            named.len(),
-            2,
-            "one inclusive range per domain, not one record per hour: {gaps:?}"
-        );
-        for gap in &named {
-            assert_eq!(gap.first_hour_raw, 101);
-            assert_eq!(gap.last_hour_raw, 104);
-        }
         let ledger = s.hour_ledger();
         assert_eq!(
             ledger.unobserved_clock_unknown, 4,
             "the interval is counted positively, not derived by subtraction"
         );
         assert!(ledger.balanced(), "{ledger:?}");
+
+        let gaps: Vec<_> = s.drain_control().collect();
+        assert!(
+            gaps.is_empty(),
+            "an unobserved interval must not become a control range: every range \
+             is closed by FRAME_END(range_end), which would publish a frame for \
+             an hour nobody looked at -- {gaps:?}"
+        );
         // And the recovery hour is still claimed normally.
         assert!(s.take_current_request().is_some());
     }
 
-    /// A forward counter jump the scheduler refuses to believe used to end the
-    /// capture with no statement about the span it stopped over. Going terminal
-    /// stays correct; passing over the interval in silence does not.
+    /// A forward counter jump the scheduler refuses to believe is recorded as an
+    /// EVENT, never as a span of hours.
     ///
-    /// Mutation proof: delete the `note_unobserved_span(..., CounterAnomaly)`
-    /// call before the terminal assignment and this test fails.
+    /// Turning the rejected value into an hour range would assert that those
+    /// hours elapsed on the strength of a read the scheduler has just declared
+    /// untrustworthy, and -- because control ranges publish
+    /// `FRAME_END(range_end)` -- would close a frame at `untrusted_value - 1`.
+    /// `terminal` already stops scheduling, so no later hour publishes and the
+    /// capture span simply ends here without acquiring a hole.
+    ///
+    /// Mutation proof: emit a control range for the span (the earlier form) and
+    /// the "no control range" assertion fails; delete the
+    /// `counter_anomaly_events` increment and the event assertion fails.
     #[test]
-    fn a_rejected_forward_counter_jump_still_names_the_span_it_stopped_over() {
+    fn a_rejected_forward_counter_jump_is_an_event_not_a_claimed_span() {
         let mut s = scheduler(&[10], 1, 64);
         s.observe_stable(100, 1);
         let baseline = s.take_current_request().expect("baseline hour is takeable");
@@ -1431,15 +1452,17 @@ mod tests {
             Some(TerminalOutcome::CounterAnomaly),
             "the jump is still rejected"
         );
-        let gaps: Vec<_> = s.drain_control().collect();
-        assert_eq!(gaps.len(), 1, "{gaps:?}");
-        assert_eq!(gaps[0].kind, GapKind::ClockUnreadable);
-        assert_eq!(gaps[0].first_hour_raw, 101);
-        assert_eq!(gaps[0].last_hour_raw, far - 1);
+        assert_eq!(s.hour_ledger().counter_anomaly_events, 1);
         assert_eq!(
-            s.hour_ledger().unobserved_counter_anomaly,
-            u64::try_from(far - 101).unwrap()
+            s.hour_ledger().unobserved_clock_unknown, 0,
+            "a rejected read must not be converted into elapsed hours"
         );
+        let gaps: Vec<_> = s.drain_control().collect();
+        assert!(gaps.is_empty(), "no range may be claimed from a rejected read: {gaps:?}");
+
+        // Observations after a terminal are discarded, but not invisibly.
+        s.observe_stable(far + 1, 3);
+        assert_eq!(s.telemetry().post_terminal_observations, 1);
     }
 
     /// The 146-hours-with-no-frame shape, in miniature. A frame that outlives
@@ -1528,6 +1551,34 @@ mod tests {
             ledger.unobserved_total(),
             4,
             "hours 3, 4, 5 and 6 opened no frame"
+        );
+    }
+
+    /// `balanced` is a claim about the whole-frame lane. The per-domain API can
+    /// move one slot on its own; when it does, the ledger says the accounting is
+    /// undefined rather than reporting a balance it cannot support.
+    ///
+    /// Mutation proof: drop the `self.slots_uniform &&` conjunct from
+    /// `HourLedger::balanced` and this test fails -- one hour then reads as
+    /// fully accepted while another domain still holds it.
+    #[test]
+    fn a_diverged_per_domain_slot_is_reported_not_silently_balanced() {
+        let mut s = scheduler(&[10, 11], 1, 64);
+        s.observe_stable(1, 1);
+        assert!(s.hour_ledger().slots_uniform);
+
+        let request = s.take_domain_request(10).expect("domain 10 can be taken alone");
+        assert!(!s.hour_ledger().slots_uniform, "slot 10 moved on its own");
+        s.accept_request(request);
+
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.scheduled, 1);
+        assert_eq!(ledger.accepted, 1);
+        assert_eq!(ledger.outstanding, 0, "slot zero looks empty");
+        assert!(
+            !ledger.balanced(),
+            "domain 11 still holds the hour, so this arithmetic must not be \
+             reported as a balanced ledger: {ledger:?}"
         );
     }
 }
