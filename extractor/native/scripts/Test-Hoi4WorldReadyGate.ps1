@@ -271,8 +271,14 @@ Write-Host 'case: the scripts that run are wired to the wait that is tested'
 $harness = Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-HeadlessRawCapture.ps1') -Raw
 Assert-True -Condition ($harness -match "\.\s*\(Join-Path \`$scriptDir 'Hoi4WorldReady\.Gate\.ps1'\)") `
     -Message 'the harness dot-sources the world-ready gate library'
-Assert-True -Condition ($harness -match 'return \(Wait-Hoi4WorldReadyState') `
+# The word boundary matters: without it the assertion also accepts a call to a
+# DIFFERENT function whose name merely starts with this one.
+Assert-True -Condition ($harness -match 'return \(Wait-Hoi4WorldReadyState\b') `
     -Message 'the harness world-ready wait delegates to the tested wait'
+# And the old shape -- return the first observation whose singletons were
+# coherent -- must not come back alongside it.
+Assert-True -Condition ($harness -notmatch 'if \(\$null -ne \$state\) \{ return \$state \}') `
+    -Message 'the harness does not still accept the first coherent observation as ready'
 
 # The observer must actually READ the offset and REPORT it. Asserting the field
 # alone leaves the read replaceable with a constant.
