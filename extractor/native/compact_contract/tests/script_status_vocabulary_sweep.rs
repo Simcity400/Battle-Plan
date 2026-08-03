@@ -1572,6 +1572,108 @@ fn the_two_dialects_really_differ() {
     );
 }
 
+/// Classifies a PowerShell right-hand side for the verdict audit.
+///
+/// `Some(true)`  -- provably NON-empty, so it ARMS the verdict.
+/// `Some(false)` -- provably null/empty/whitespace, so it RETIRES the verdict.
+/// `None`        -- cannot be proved either way; the caller fails closed.
+///
+/// Only two shapes are recognised: the exact empty forms, and a `+`-join of
+/// quoted literals. Everything else is refused, because an expression that
+/// merely BEGINS with a quoted word can still evaluate to nothing --
+/// `'message' -replace 'message', ''`, `"message".Substring(7)` and
+/// `'message' -as [int]` are all empty or null at runtime, and the arbitration
+/// tests the verdict with `IsNullOrWhiteSpace`.
+///
+/// Inside a double-quoted literal, `$name` and `$( ... )` interpolate to
+/// something unknown and a backtick escapes the next character, so neither
+/// counts as proof; what proves the value is literal non-whitespace text
+/// outside all of those. A single-quoted literal interpolates nothing, so any
+/// non-whitespace character in it is proof.
+fn classify_powershell_value(value: &str) -> Option<bool> {
+    let trimmed = value.trim();
+    if trimmed == "$null" || trimmed.eq_ignore_ascii_case("[string]::Empty") {
+        return Some(false);
+    }
+
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut index = 0usize;
+    let mut proven_non_empty = false;
+    loop {
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+        if index >= chars.len() {
+            break;
+        }
+        let quote = chars[index];
+        if quote != '\'' && quote != '"' {
+            return None; // not a quoted literal: a call, an operator, a cast
+        }
+        index += 1;
+        let mut literal_text = false;
+        let mut closed = false;
+        while index < chars.len() {
+            let ch = chars[index];
+            if quote == '"' && ch == '`' {
+                index += 2; // the escape and whatever it escapes
+                continue;
+            }
+            if ch == quote {
+                index += 1;
+                closed = true;
+                break;
+            }
+            if quote == '"' && ch == '$' {
+                // Skip the interpolation: `$( ... )` or `$name`.
+                index += 1;
+                if chars.get(index) == Some(&'(') {
+                    let mut depth = 0i32;
+                    while index < chars.len() {
+                        match chars[index] {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    index += 1;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        index += 1;
+                    }
+                } else {
+                    while index < chars.len()
+                        && (chars[index].is_alphanumeric() || chars[index] == '_')
+                    {
+                        index += 1;
+                    }
+                }
+                continue;
+            }
+            if !ch.is_whitespace() {
+                literal_text = true;
+            }
+            index += 1;
+        }
+        if !closed {
+            return None; // unterminated literal
+        }
+        proven_non_empty |= literal_text;
+
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+        match chars.get(index) {
+            None => break,
+            Some('+') => index += 1,
+            Some(_) => return None, // `.Substring(...)`, `-replace`, `-as`, ...
+        }
+    }
+    Some(proven_non_empty)
+}
+
 /// The verdict DEFAULTS to blocking from the moment a capture exists.
 ///
 /// Before this, everything between injection and the report -- a passive-witness
@@ -1638,46 +1740,26 @@ fn the_verdict_defaults_to_blocking_once_a_capture_exists() {
                 break;
             }
         }
-        // Can this value be null, empty, or whitespace? Decided by recognising
-        // the exact forms, and FAIL-CLOSED on anything else: "contains a letter,
-        // so it must be a message" put `[string]::Empty` in the arming bucket
-        // and silently dropped it from the audit, even though
-        // IsNullOrWhiteSpace([string]::Empty) is true and it retires the verdict.
-        let trimmed = value.trim();
-        let retires = trimmed == "$null"
-            || trimmed == "''"
-            || trimmed == "\"\""
-            || trimmed == "[string]::Empty"
-            || trimmed == "[String]::Empty"
-            || (trimmed.starts_with('\'')
-                && trimmed.ends_with('\'')
-                && !trimmed[1..trimmed.len() - 1].chars().any(|c| !c.is_whitespace()))
-            || (trimmed.starts_with('"')
-                && trimmed.ends_with('"')
-                && !trimmed[1..trimmed.len() - 1].chars().any(|c| !c.is_whitespace()));
-        // A value this audit can PROVE non-empty: a quoted literal whose FIRST
-        // character is literal text that necessarily survives evaluation.
+        // Is this value null, empty or whitespace AT RUNTIME? Decided
+        // STRUCTURALLY, and fail-closed on anything the audit cannot prove.
         //
-        // "contains an alphanumeric somewhere" is not proof. `"$null"`
-        // interpolates to the empty string, `` "`t" `` is a tab, and
-        // `'' + [string]::Empty` is empty -- all three satisfy
-        // IsNullOrWhiteSpace and so RETIRE the verdict, yet all three start
-        // with a quote and contain source alphanumerics. Requiring the
-        // character right after the opening quote to be alphanumeric excludes
-        // every one of them (`$`, a backtick, a second quote), and every real
-        // message here begins with a word.
-        let mut body = trimmed.chars();
-        let opener = body.next();
-        let arms = matches!(opener, Some('\'') | Some('"'))
-            && body.next().is_some_and(|c| c.is_alphanumeric());
+        // Inspecting only the start of the expression is not proof: every one
+        // of `'message' -replace 'message', ''`, `"message".Substring(7)` and
+        // `'message' -as [int]` begins with a quoted word and evaluates to
+        // null/empty, and each would retire the verdict while looking like a
+        // message. So the value must be a `+`-join of quoted literals and
+        // nothing else; a method call or any other operator is refused.
+        let trimmed = value.trim();
+        let classification = classify_powershell_value(trimmed);
+        let retires = classification == Some(false);
         assert!(
-            retires || arms,
+            classification.is_some(),
             "assignment to $undefinedStatusBitFailure at {at} has a value this \
              audit cannot PROVE is either verdict-retiring or verdict-arming, \
-             so it cannot vouch for the gate. A message must begin with a \
-             quoted word; anything else (interpolation, an escape, a \
-             concatenation) may evaluate to empty and silently retire the \
-             verdict. Value: {trimmed:?}"
+             so it cannot vouch for the gate. Only `$null`, `[string]::Empty` \
+             and a `+`-join of quoted literals are recognised -- a method call, \
+             a `-replace`, or any other operator can turn a message into an \
+             empty string and silently retire the verdict. Value: {trimmed:?}"
         );
         let carries_text = !retires;
         if carries_text {
@@ -1841,4 +1923,68 @@ fn a_doubly_escaped_backtick_still_leaves_a_live_subexpression() {
     // backticks escape each other, so the `$` is not escaped at all.
     let source = "$c = @\"\nvalue ``$($Mask -band 1)\n\"@\n";
     strip_non_code_in(source, Dialect::PowerShell);
+}
+
+/// The verdict audit's classifier, exercised directly.
+///
+/// Every "retires" case below is valid PowerShell that satisfies
+/// `IsNullOrWhiteSpace` and so suppresses exit 2; every "refuse" case is an
+/// expression whose runtime value this audit cannot prove, and guessing at one
+/// is how the audit stopped being an audit twice already.
+#[test]
+fn the_verdict_value_classifier_proves_rather_than_guesses() {
+    let arms: &[&str] = &[
+        "'the capture started but never reached the raw-capture report'",
+        // Punctuation-first messages are ordinary and must not be refused.
+        "'[compact status] report did not complete'",
+        "\"the raw-capture report exited $($result.ExitCode) without its receipt\"",
+        // Literal text survives AFTER an interpolation, and that is proof.
+        "\"'$verdictReceipt'; the two disagree, so its verdict is UNKNOWN.\"",
+        "'first half ' +\n    'second half'",
+    ];
+    let retires: &[&str] = &[
+        "$null",
+        "''",
+        "\"\"",
+        "[string]::Empty",
+        "[String]::Empty",
+        "' '",
+        "\"$null\"",         // interpolates to the empty string
+        "\"$missing\"",      // an unset variable
+        "\"`t\"",            // an escape, not literal text
+        "\"$($x)\"",         // a subexpression of unknown value
+        "'' + \"\"",         // a join of empties
+    ];
+    // Expressions that BEGIN with a quoted word and still evaluate to
+    // null/empty. None may be mistaken for a message.
+    let refuse: &[&str] = &[
+        "'message' -replace 'message', ''",
+        "\"message\".Substring(7)",
+        "'message' -as [int]",
+        "'' + [string]::Empty",
+        "$someHelper.Reset()",
+        "'unterminated",
+    ];
+
+    for value in arms {
+        assert_eq!(
+            classify_powershell_value(value),
+            Some(true),
+            "should be provably non-empty: {value:?}"
+        );
+    }
+    for value in retires {
+        assert_eq!(
+            classify_powershell_value(value),
+            Some(false),
+            "should be provably null/empty/whitespace: {value:?}"
+        );
+    }
+    for value in refuse {
+        assert_eq!(
+            classify_powershell_value(value),
+            None,
+            "should be REFUSED rather than classified: {value:?}"
+        );
+    }
 }
