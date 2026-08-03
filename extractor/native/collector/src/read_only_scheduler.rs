@@ -40,6 +40,21 @@ pub struct CaptureRequest {
     pub force_baseline: bool,
 }
 
+/// What the whole-frame capture owner may do with the scheduler's data lane.
+///
+/// `AwaitingNextHour` and `AdvancePending` both retain the exact request already
+/// owned by the reader.  Keeping them distinct is load-bearing: an ordinary
+/// idle poll must leave the delayed frame alone, while a newly observed frontier
+/// authorizes publication of that delayed frame before the successor is claimed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerDecision {
+    Idle,
+    Capture(CaptureRequest),
+    AwaitingNextHour(CaptureRequest),
+    AdvancePending(CaptureRequest),
+    DomainFrontiersDiverged,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DomainGapRange {
     pub domain_id: u16,
@@ -313,6 +328,50 @@ impl ReadOnlyScheduler {
             slot.in_flight = Some(request);
         }
         Some(request)
+    }
+
+    /// Decide one whole-frame action without collapsing "scheduler idle" into
+    /// "scheduler absent".
+    ///
+    /// The delayed-frame owner cannot claim a successor while the prior request
+    /// is in flight.  It must first learn whether a successor frontier exists,
+    /// publish the prior frame, accept that request, and only then call again to
+    /// claim the successor.  `take_current_request` alone deliberately returns
+    /// `None` for both halves of that distinction.
+    pub fn decide(&mut self) -> SchedulerDecision {
+        let first_in_flight = self
+            .domain_requests
+            .first()
+            .and_then(|slot| slot.in_flight);
+        if self
+            .domain_requests
+            .iter()
+            .any(|slot| slot.in_flight != first_in_flight)
+        {
+            return SchedulerDecision::DomainFrontiersDiverged;
+        }
+
+        let first_pending = self
+            .domain_requests
+            .first()
+            .and_then(|slot| slot.latest_pending);
+        if self
+            .domain_requests
+            .iter()
+            .any(|slot| slot.latest_pending != first_pending)
+        {
+            return SchedulerDecision::DomainFrontiersDiverged;
+        }
+
+        match (first_in_flight, first_pending) {
+            (None, Some(_)) => self
+                .take_current_request()
+                .map(SchedulerDecision::Capture)
+                .unwrap_or(SchedulerDecision::DomainFrontiersDiverged),
+            (None, None) => SchedulerDecision::Idle,
+            (Some(in_flight), None) => SchedulerDecision::AwaitingNextHour(in_flight),
+            (Some(in_flight), Some(_)) => SchedulerDecision::AdvancePending(in_flight),
+        }
     }
 
     pub fn take_domain_request(&mut self, domain_id: u16) -> Option<CaptureRequest> {
