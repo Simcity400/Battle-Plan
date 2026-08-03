@@ -1655,14 +1655,29 @@ fn the_verdict_defaults_to_blocking_once_a_capture_exists() {
             || (trimmed.starts_with('"')
                 && trimmed.ends_with('"')
                 && !trimmed[1..trimmed.len() - 1].chars().any(|c| !c.is_whitespace()));
-        // A value this audit can PROVE non-empty: a quoted literal with a word
-        // in it, optionally concatenated across lines.
-        let arms = trimmed.starts_with('\'') || trimmed.starts_with('"');
+        // A value this audit can PROVE non-empty: a quoted literal whose FIRST
+        // character is literal text that necessarily survives evaluation.
+        //
+        // "contains an alphanumeric somewhere" is not proof. `"$null"`
+        // interpolates to the empty string, `` "`t" `` is a tab, and
+        // `'' + [string]::Empty` is empty -- all three satisfy
+        // IsNullOrWhiteSpace and so RETIRE the verdict, yet all three start
+        // with a quote and contain source alphanumerics. Requiring the
+        // character right after the opening quote to be alphanumeric excludes
+        // every one of them (`$`, a backtick, a second quote), and every real
+        // message here begins with a word.
+        let mut body = trimmed.chars();
+        let opener = body.next();
+        let arms = matches!(opener, Some('\'') | Some('"'))
+            && body.next().is_some_and(|c| c.is_alphanumeric());
         assert!(
-            retires || (arms && trimmed.chars().any(|c| c.is_alphanumeric())),
+            retires || arms,
             "assignment to $undefinedStatusBitFailure at {at} has a value this \
-             audit cannot classify as either verdict-retiring or \
-             verdict-arming, so it cannot vouch for the gate. Value: {trimmed:?}"
+             audit cannot PROVE is either verdict-retiring or verdict-arming, \
+             so it cannot vouch for the gate. A message must begin with a \
+             quoted word; anything else (interpolation, an escape, a \
+             concatenation) may evaluate to empty and silently retire the \
+             verdict. Value: {trimmed:?}"
         );
         let carries_text = !retires;
         if carries_text {
