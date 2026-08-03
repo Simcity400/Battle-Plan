@@ -11084,6 +11084,132 @@ fn d44_disrupted_supply_delta_update_and_composite_tombstone_are_exact() {
     );
 }
 
+/// The fold is the replay consumer, so a bound tighter here than at seal time
+/// silently drops rows the seal-time authority admitted. `SUPPLY_MAX_DISRUPTED_RAW`
+/// was `FIXED_SCALE` (100_000) — the same "this is a 0..1.0 ratio" assumption
+/// that cost run `live_unlock/t12` all 63 of its domain-44 records. The engine
+/// stores a clamp-free signed i64 fixed-point; see
+/// `domain44_contract::MAX_COUNTRY_DISRUPTED_SUPPLY_RAW`.
+///
+/// Fails if `SUPPLY_MAX_DISRUPTED_RAW` returns to `FIXED_SCALE`, or to anything
+/// below 499_175.
+#[test]
+fn d44_fold_admits_disrupted_supply_above_the_fixed_point_scale() {
+    let d18 = || (18, country_identity_payload(&[(1, "GER")]));
+    // Bounds of the range observed in the t12 exclusion ledger.
+    for raw in [103_673i32, 176_715, 356_947, 499_175] {
+        assert!(raw > FIXED_SCALE as i32);
+        let snaps = chunk1_snapshots(vec![
+            vec![d18(), (44, d44_payload(0))],
+            vec![d18(), (44, d44_disrupted_delta_payload(Some(raw)))],
+        ]);
+        let row = &snaps[1]["supply"]["by_province"]["7081"]["disrupted_supply"][0];
+        assert_eq!(
+            row["value_raw"],
+            json!(raw),
+            "t12 value {raw} must survive the fold"
+        );
+        assert_eq!(
+            snaps[1]["supply"]["r2_logistics_attrition"]["country_disrupted_supply_rows"],
+            json!(1),
+            "t12 value {raw} must be counted by the fold"
+        );
+    }
+}
+
+/// The fold's widening must not open the gate either. Concrete values, not
+/// `SUPPLY_MAX_DISRUPTED_RAW + 1`, because a bound expressed in terms of itself
+/// can never catch that bound being widened.
+///
+/// Fails if `SUPPLY_MAX_DISRUPTED_RAW` is widened to `i32::MAX` or the
+/// non-negative half of the fold's range check is dropped.
+#[test]
+fn d44_fold_still_rejects_disrupted_supply_garbage() {
+    let d18 = || (18, country_identity_payload(&[(1, "GER")]));
+    let _ = d18;
+    // A *baseline* payload, not a delta: `fold_supply_logistics_attrition`
+    // returns early on a delta with no baseline seen, so validating a delta
+    // payload standalone would pass without ever reaching the row checks.
+    for raw in [100_000_001i32, 1_000_000_000, i32::MAX, -1, i32::MIN] {
+        let payload = d44_baseline_with_disrupted_value(raw);
+        assert!(
+            WorldFold::validate_domain_data_payload_exact(44, &payload, 0).is_err(),
+            "garbage disrupted value {raw} must be refused by the fold"
+        );
+    }
+    // The bound itself still folds, pinning the bound rather than its
+    // neighbourhood, and proving the harness admits a well-formed payload.
+    let payload = d44_baseline_with_disrupted_value(
+        supply_logistics_attrition_live_lane::domain44_contract::MAX_COUNTRY_DISRUPTED_SUPPLY_RAW,
+    );
+    assert!(
+        WorldFold::validate_domain_data_payload_exact(44, &payload, 0).is_ok(),
+        "the bound itself must fold"
+    );
+}
+
+/// The fold carried the same `1_081` vanilla state count as the two validators.
+///
+/// Fails if `SUPPLY_MAX_STATE_ID` returns to `1_081`.
+#[test]
+fn d44_fold_admits_state_id_above_the_vanilla_state_count() {
+    let payload = d44_baseline_with_state_id(1_082);
+    assert!(
+        WorldFold::validate_domain_data_payload_exact(44, &payload, 0).is_ok(),
+        "a modded state id must fold"
+    );
+}
+
+/// Fails if `SUPPLY_MAX_STATE_ID` is widened past the shared u16 representation
+/// bound, or the fold's state-id check is removed.
+#[test]
+fn d44_fold_still_rejects_state_id_above_the_representation_bound() {
+    for state_id in [0u32, 65_536, 1_000_000, u32::MAX] {
+        let payload = d44_baseline_with_state_id(state_id);
+        assert!(
+            WorldFold::validate_domain_data_payload_exact(44, &payload, 0).is_err(),
+            "state_id {state_id} must be refused by the fold"
+        );
+    }
+}
+
+/// `d44_payload(0)` with the province-logistics row's `join_id` (the state id)
+/// overwritten.
+fn d44_baseline_with_state_id(state_id: u32) -> Vec<u8> {
+    d44_baseline_patch_row(SUPPLY_ROW_KIND_PROVINCE_LOGISTICS, 8, &state_id.to_le_bytes())
+}
+
+/// `d44_payload(0)` with the exact country disrupted-supply row's `value_a_raw`
+/// overwritten. The row is located by scanning row slots for its row kind
+/// rather than by a hardcoded offset.
+fn d44_baseline_with_disrupted_value(value_a_raw: i32) -> Vec<u8> {
+    // row layout: kind, entity_id, join_id, owner_tag_db_id, flags, value_a_raw
+    d44_baseline_patch_row(
+        SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY,
+        20,
+        &value_a_raw.to_le_bytes(),
+    )
+}
+
+/// Overwrite 4 bytes at `field_offset` within the first `d44_payload(0)` row of
+/// `row_kind`. The row is located by scanning row slots rather than by a
+/// hardcoded offset, so it survives fixture reordering.
+fn d44_baseline_patch_row(row_kind: u32, field_offset: usize, bytes: &[u8; 4]) -> Vec<u8> {
+    const HEADER: usize = 48;
+    const ROW: usize = 40;
+    let mut payload = d44_payload(0);
+    let mut cursor = HEADER;
+    while cursor + ROW <= payload.len() {
+        let kind = u32::from_le_bytes(payload[cursor..cursor + 4].try_into().unwrap());
+        if kind == row_kind {
+            payload[cursor + field_offset..cursor + field_offset + 4].copy_from_slice(bytes);
+            return payload;
+        }
+        cursor += ROW;
+    }
+    panic!("d44_payload has no row of kind {row_kind}");
+}
+
 #[test]
 fn folds_d43_trade_contracts_world_and_per_country_views() {
     let snap = chunk1_one_snapshot(vec![
