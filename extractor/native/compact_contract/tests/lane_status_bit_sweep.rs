@@ -29,7 +29,7 @@ use compact_contract::{assigned_descriptor_by_id, lane_local_status_mask, Compac
 /// Global v1 status-bit names, indexed by bit position
 /// (`status_flags_base.rs`). A lane constant named `STATUS_<name>` declaring
 /// exactly `1 << bit` is a mirror, not a lane-local badge.
-const GLOBAL_V1_BIT_NAMES: [&str; 14] = [
+const GLOBAL_V1_BIT_NAMES: [&str; 15] = [
     "STATE_UNAVAILABLE",
     "PROFILE_MISMATCH",
     "NO_CLOCK",
@@ -44,7 +44,29 @@ const GLOBAL_V1_BIT_NAMES: [&str; 14] = [
     "TRANSITION_BASELINE_RESET",
     "CONTROL_INVALID",
     "WAR_SEGMENT_ABSENT",
+    "SOURCE_EMPTY",
 ];
+
+/// This table IS a local copy of the contract's vocabulary, which is the drift
+/// this file exists to catch elsewhere. Pin its length against the contract so
+/// the sweep cannot quietly start reading an assigned global bit as a
+/// lane-local badge: a `STATUS_SOURCE_EMPTY = 1 << 14` mirror in a lane would
+/// have been reported as an unregistered lane-local declaration purely because
+/// this array stopped one entry short.
+#[test]
+fn the_global_bit_name_table_covers_the_whole_assigned_vocabulary() {
+    assert_eq!(
+        compact_contract::COMPACT_STATUS_V1_KNOWN_MASK.count_ones() as usize,
+        GLOBAL_V1_BIT_NAMES.len(),
+        "the contract assigned a status bit this table does not name"
+    );
+    assert_eq!(
+        compact_contract::COMPACT_STATUS_V1_KNOWN_MASK,
+        (1u32 << GLOBAL_V1_BIT_NAMES.len()) - 1,
+        "the assigned vocabulary is no longer a contiguous run from bit 0, so \
+         indexing this table by bit position is wrong"
+    );
+}
 
 /// Lane-local declarations that are deliberately NOT registered because the
 /// production decode path rejects them outright — a stream carrying one is
