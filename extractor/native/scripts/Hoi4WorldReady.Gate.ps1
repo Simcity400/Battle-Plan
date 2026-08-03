@@ -14,10 +14,16 @@
     as readiness. That is strictly weaker than "the campaign is in play", and
     the difference is a whole savegame load wide.
 
-    CGameState+0xA39 is a bool member of CGameState -- every access to it goes
-    through the gamestate.h accessor whose assert pair is
+    CGameState+0xA39 is a bool member of CGameState. What identifies the object
+    is that each of the six setter call sites below is immediately preceded by
+    the gamestate.h accessor assert pair --
     `_pInstance && "gamestate unitilialized"` and
-    `_ThreadForbidCount == 0 && "Current thread is forbidden to access gamestate"`.
+    `_ThreadForbidCount == 0 && "Current thread is forbidden to access gamestate"`
+    -- and loads its `this` from DAT_143316E90. That is a fact about those six
+    sites; the 216 compare-shaped accesses to the same displacement elsewhere in
+    .text were not individually attributed to an object and are not claimed to
+    be CGameState.
+
     Enumerated from the pinned hoi4.exe (SHA-256 870ebf1f...c65ad), .text holds
     exactly four direct disp32 writes to a +0xA39 displacement, and exactly two
     of them are on the CGameState singleton DAT_143316E90:
@@ -162,10 +168,12 @@ function New-Hoi4WorldReadyTimeoutMessage {
         "latch CGameState+0xA39 never left zero: waited $WaitedSeconds s and it never became " +
         "non-zero (budget $TimeoutSeconds s, last observed value $observed). Exactly one " +
         'enumerated engine routine sets that byte -- FUN_140DC5310, the in-game session ' +
-        'setup -- and the savegame-load, frontend and reset paths clear it, so the campaign ' +
-        'never entered its in-game session. Driving the client from here is refused, not ' +
-        'deferred: the player toggle FUN_140DCD3E0 would return at 0x140DCD409 without ' +
-        'transitioning.'
+        'setup -- and the savegame-load, frontend and reset paths clear it. What is ' +
+        'established is that NO observation in that window saw it set, which means the ' +
+        'campaign either never entered its in-game session or entered and left it between ' +
+        'observations; polling cannot tell those apart. Driving the client from here is ' +
+        'refused, not deferred: the player toggle FUN_140DCD3E0 would return at ' +
+        '0x140DCD409 without transitioning.'
     )
 }
 
@@ -196,16 +204,22 @@ function New-Hoi4WorldReadyTimeoutMessage {
     can begin just under the deadline. Inside it:
 
       * the observation is allowed ceil(remaining) seconds, clamped to 1..30, so
-        within one second of the deadline its own budget is 1 s -- an
-        observation therefore ends by deadline + 1 s;
-      * Invoke-BoundedNativeCapture enforces that itself, and on expiry adds
-        Stop-ExactProcess (<= 10 s) plus a 1 s stream flush;
+        within one second of the deadline its own budget is 1 s. The rounding
+        alone therefore contributes < 1 s;
+      * Invoke-BoundedNativeCapture enforces that budget itself. On NATURAL
+        child exit it then waits <= 1 s for the redirected streams to flush. On
+        EXPIRY it instead calls Stop-ExactProcess (<= 10 s) and throws, which
+        skips the flush -- but the throw runs its finally, and if the child is
+        somehow still alive there, Stop-ExactProcess runs a SECOND time for
+        another <= 10 s;
       * the poll sleep adds 0.75 s.
 
-    Worst case is therefore deadline + ~12.75 s before the refusal is raised,
-    on a 600 s default budget. Get-Process and the process-epoch assertions are
-    not separately bounded, so this is a bound on the coded waits rather than on
-    the wall clock.
+    So the coded waits give deadline + < 2.75 s when the last child exits on its
+    own, and deadline + < 21.75 s in the pathological case where the child
+    overruns its budget AND survives the first termination attempt, on a 600 s
+    default budget. Get-Process, Process.Kill and the process-epoch assertions
+    are not separately bounded, so this is a bound on the coded waits rather
+    than on the wall clock.
 
     A SUCCESSFUL observation is returned without re-checking the deadline, and
     that is deliberate: the budget bounds how long the harness WAITS, not how
