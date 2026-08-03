@@ -34,6 +34,14 @@ pub enum GapKind {
     ReloadBaseline,
 }
 
+/// Why a span of hours was never admitted to the data lane. Only used to route
+/// the count to the right telemetry axis; the wire evidence is the gap range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnobservedCause {
+    ClockUnknown,
+    CounterAnomaly,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureRequest {
     pub stamp: ClockStamp,
@@ -101,6 +109,34 @@ pub struct SchedulerTelemetry {
     /// can never mistake a degraded hour for a clean one from telemetry alone,
     /// which is the same distinction the wire keeps.
     pub degraded_hours: u64,
+    /// Admitted hours released by [`ReadOnlyScheduler::reject_request`]. These
+    /// never published; the caller accounts each one with a frame-level `H4FR`
+    /// record, which is why they raise no per-domain gap.
+    pub refused_hours: u64,
+    /// Admitted hours whose capture request was replaced by a newer frontier
+    /// before any reader could take it. THIS is the counter that answers "how
+    /// many hours opened no frame at all": each one leaves a per-domain
+    /// `Backpressure` range and no `FRAME_END`. Counted positively at the
+    /// eviction site so a manifest never has to subtract frames from advanced
+    /// hours to learn the number.
+    pub evicted_pending_hours: u64,
+    /// Admitted hours dropped because the clock went unknown or the campaign
+    /// reloaded under an in-flight or pending request.
+    pub abandoned_hours: u64,
+    /// Admitted hours dropped by the teardown flush of the not-yet-issued
+    /// frontier.
+    pub flushed_pending_hours: u64,
+    /// Hours that elapsed BETWEEN two stable observations and so were never
+    /// admitted at all. Each leaves a per-domain `Overrun` range.
+    pub unobserved_overrun_hours: u64,
+    /// Hours that elapsed while the authenticated clock could not be read, and
+    /// so were never admitted. Each leaves a per-domain `ClockUnreadable`
+    /// range naming the interval.
+    pub unobserved_clock_unknown_hours: u64,
+    /// Hours spanned by a forward counter jump the scheduler refuses to
+    /// believe (`delta > MAX_FORWARD_DELTA`). The span is named on the control
+    /// lane rather than passing silently; the scheduler then goes terminal.
+    pub unobserved_counter_anomaly_hours: u64,
     pub gapped_domain_hours: u64,
     pub overrun_domain_hours: u64,
     pub backpressure_domain_hours: u64,
@@ -114,6 +150,62 @@ pub struct SchedulerTelemetry {
     pub request_cap: u32,
     pub control_cap: u32,
     pub terminal: Option<TerminalOutcome>,
+}
+
+/// Closed accounting for every game hour the scheduler has seen.
+///
+/// The point of this type is that no consumer may compute "hours we never
+/// looked at" by subtracting published frames from an advanced-hour span. Each
+/// disposition below is counted at the exact site where it happens, and
+/// [`HourLedger::balanced`] states the identity that makes the set exhaustive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HourLedger {
+    /// Hours admitted to the data lane (one per distinct observed frontier).
+    pub scheduled: u64,
+    /// Admitted hours that published a frame (complete or degraded).
+    pub accepted: u64,
+    /// Admitted hours released without publication, accounted by `H4FR`.
+    pub refused: u64,
+    /// Admitted hours evicted by a newer frontier before a reader took them.
+    pub evicted_pending: u64,
+    /// Admitted hours dropped at a clock-unknown or reload boundary.
+    pub abandoned: u64,
+    /// Admitted hours dropped by the teardown flush.
+    pub flushed_pending: u64,
+    /// Admitted hours still held (in flight and/or pending) right now.
+    pub outstanding: u64,
+    /// Hours never admitted: elapsed between two stable observations.
+    pub unobserved_overrun: u64,
+    /// Hours never admitted: elapsed while the clock was unreadable.
+    pub unobserved_clock_unknown: u64,
+    /// Hours never admitted: spanned by a rejected forward counter jump.
+    pub unobserved_counter_anomaly: u64,
+}
+
+impl HourLedger {
+    /// Every admitted hour has exactly one disposition, so the dispositions
+    /// must sum back to `scheduled`. A new drop site that forgets to count
+    /// itself breaks this, which is the whole point.
+    pub fn balanced(&self) -> bool {
+        self.accepted
+            .checked_add(self.refused)
+            .and_then(|n| n.checked_add(self.evicted_pending))
+            .and_then(|n| n.checked_add(self.abandoned))
+            .and_then(|n| n.checked_add(self.flushed_pending))
+            .and_then(|n| n.checked_add(self.outstanding))
+            == Some(self.scheduled)
+    }
+
+    /// Hours that reached no frame, whether or not they were ever admitted.
+    /// Outstanding hours are excluded: they are not yet resolved either way.
+    pub fn unobserved_total(&self) -> u64 {
+        self.evicted_pending
+            .saturating_add(self.abandoned)
+            .saturating_add(self.flushed_pending)
+            .saturating_add(self.unobserved_overrun)
+            .saturating_add(self.unobserved_clock_unknown)
+            .saturating_add(self.unobserved_counter_anomaly)
+    }
 }
 
 #[derive(Debug)]
@@ -194,6 +286,32 @@ impl ReadOnlyScheduler {
         self.telemetry.terminal
     }
 
+    /// The closed hour accounting. See [`HourLedger`].
+    pub fn hour_ledger(&self) -> HourLedger {
+        let t = &self.telemetry;
+        HourLedger {
+            scheduled: t.scheduled_hours,
+            accepted: t.accepted_hours,
+            refused: t.refused_hours,
+            evicted_pending: t.evicted_pending_hours,
+            abandoned: t.abandoned_hours,
+            flushed_pending: t.flushed_pending_hours,
+            outstanding: self.outstanding_hours(),
+            unobserved_overrun: t.unobserved_overrun_hours,
+            unobserved_clock_unknown: t.unobserved_clock_unknown_hours,
+            unobserved_counter_anomaly: t.unobserved_counter_anomaly_hours,
+        }
+    }
+
+    /// Admitted hours the scheduler still holds. The whole-frame lane keeps at
+    /// most one in flight plus one pending, and `decide` refuses to proceed
+    /// when the per-domain slots disagree, so slot zero is the canonical view.
+    fn outstanding_hours(&self) -> u64 {
+        self.domain_requests.first().map_or(0, |slot| {
+            u64::from(slot.in_flight.is_some()) + u64::from(slot.latest_pending.is_some())
+        })
+    }
+
     /// Admit one stable `CGameState+0x468` observation. The caller is
     /// responsible for authenticating the CGameState root and proving the
     /// opening/closing root+hour pair equal.
@@ -204,6 +322,20 @@ impl ReadOnlyScheduler {
         self.telemetry.observations = self.telemetry.observations.saturating_add(1);
         if self.clock_unknown {
             self.gap_all_pending(GapKind::ClockUnreadable);
+            // The hours that elapsed while the clock was unreadable were never
+            // admitted, so no eviction site sees them and nothing else in this
+            // module would ever mention them. Before this range existed the
+            // whole outage passed with no record of any kind: a consumer could
+            // not tell it apart from an hour in which nothing happened. Naming
+            // the interval is a statement about the RECORDER (we did not look),
+            // not about the game -- no world state is attached to these hours
+            // and no frame is published for them.
+            self.note_unobserved_span(
+                self.last,
+                hour_raw,
+                GapKind::ClockUnreadable,
+                UnobservedCause::ClockUnknown,
+            );
             self.next_epoch = self.next_epoch.saturating_add(1);
             self.force_baseline = true;
             self.clock_unknown = false;
@@ -258,6 +390,18 @@ impl ReadOnlyScheduler {
         }
         let delta = i64::from(hour_raw) - i64::from(last.hour_raw);
         if delta > MAX_FORWARD_DELTA {
+            // The jump is not believed, and going terminal is correct. What was
+            // wrong is that the interval used to vanish: the scheduler stopped
+            // admitting hours and said nothing about the span it had stopped
+            // over. The range below claims no world state for those hours -- it
+            // records only that the recorder holds no observation between the
+            // two endpoints, which is true whether or not the counter is.
+            self.note_unobserved_span(
+                Some(last),
+                hour_raw,
+                GapKind::ClockUnreadable,
+                UnobservedCause::CounterAnomaly,
+            );
             self.telemetry.terminal = Some(TerminalOutcome::CounterAnomaly);
             return;
         }
@@ -275,6 +419,10 @@ impl ReadOnlyScheduler {
                 clock_witness(last.hour_raw),
                 clock_witness(hour_raw.saturating_sub(1)),
             );
+            self.telemetry.unobserved_overrun_hours = self
+                .telemetry
+                .unobserved_overrun_hours
+                .saturating_add(u64::try_from(delta - 1).unwrap_or(0));
         }
         let stamp = ClockStamp {
             epoch: last.epoch,
@@ -462,6 +610,7 @@ impl ReadOnlyScheduler {
         // the domains that forced it. Emitting gaps as well would double-report
         // the hour and would tell a consumer the queue lost throughput, which is
         // not what happened.
+        self.telemetry.refused_hours = self.telemetry.refused_hours.saturating_add(1);
         self.force_baseline = true;
         rejected.len()
     }
@@ -583,7 +732,61 @@ impl ReadOnlyScheduler {
         for index in 0..self.domains.len() {
             let domain = self.domains[index];
             if let Some(request) = self.domain_requests[index].latest_pending.take() {
+                if index == 0 {
+                    self.telemetry.flushed_pending_hours =
+                        self.telemetry.flushed_pending_hours.saturating_add(1);
+                }
                 self.push_gap(domain, request.stamp, GapKind::Backpressure);
+            }
+        }
+    }
+
+    /// Name the hours strictly between `from`'s frontier and `to`, which the
+    /// scheduler never admitted and which therefore reach no eviction site.
+    ///
+    /// One inclusive range per domain, so the control cost is the domain count
+    /// regardless of how long the interval is. Emits nothing when no whole hour
+    /// separates the two endpoints.
+    fn note_unobserved_span(
+        &mut self,
+        from: Option<ClockStamp>,
+        to: i32,
+        kind: GapKind,
+        cause: UnobservedCause,
+    ) {
+        let Some(from) = from else {
+            return;
+        };
+        let (Some(first_missing), Some(last_missing)) =
+            (from.hour_raw.checked_add(1), to.checked_sub(1))
+        else {
+            return;
+        };
+        if first_missing > last_missing {
+            return;
+        }
+        let span = i64::from(last_missing) - i64::from(first_missing) + 1;
+        let span = u64::try_from(span).unwrap_or(0);
+        self.push_all_domain_gap_range(
+            from.epoch,
+            first_missing,
+            last_missing,
+            kind,
+            clock_witness(from.hour_raw),
+            clock_witness(to),
+        );
+        match cause {
+            UnobservedCause::ClockUnknown => {
+                self.telemetry.unobserved_clock_unknown_hours = self
+                    .telemetry
+                    .unobserved_clock_unknown_hours
+                    .saturating_add(span)
+            }
+            UnobservedCause::CounterAnomaly => {
+                self.telemetry.unobserved_counter_anomaly_hours = self
+                    .telemetry
+                    .unobserved_counter_anomaly_hours
+                    .saturating_add(span)
             }
         }
     }
@@ -593,6 +796,12 @@ impl ReadOnlyScheduler {
         for index in 0..self.domains.len() {
             let domain = self.domains[index];
             if let Some(evicted) = self.domain_requests[index].latest_pending.replace(request) {
+                if index == 0 {
+                    // Counted once per HOUR, not once per domain. This is the
+                    // hour that will open no frame at all.
+                    self.telemetry.evicted_pending_hours =
+                        self.telemetry.evicted_pending_hours.saturating_add(1);
+                }
                 self.push_gap(domain, evicted.stamp, GapKind::Backpressure);
             }
             self.telemetry.max_request_depth = self.telemetry.max_request_depth.max(u32::from(
@@ -605,9 +814,17 @@ impl ReadOnlyScheduler {
         for index in 0..self.domains.len() {
             let domain = self.domains[index];
             if let Some(request) = self.domain_requests[index].in_flight.take() {
+                if index == 0 {
+                    self.telemetry.abandoned_hours =
+                        self.telemetry.abandoned_hours.saturating_add(1);
+                }
                 self.push_gap(domain, request.stamp, kind);
             }
             if let Some(request) = self.domain_requests[index].latest_pending.take() {
+                if index == 0 {
+                    self.telemetry.abandoned_hours =
+                        self.telemetry.abandoned_hours.saturating_add(1);
+                }
                 self.push_gap(domain, request.stamp, kind);
             }
         }
@@ -1138,5 +1355,179 @@ mod tests {
         s.commit_reserved_control_prefix(2).unwrap();
         assert!(s.commit_empty_reserved_control().is_err());
         assert!(s.rollback_reserved_control().is_err());
+    }
+
+    /// THE SILENCE HOLE. While the authenticated clock cannot be read the game
+    /// keeps advancing, and every one of those hours used to leave NO record of
+    /// any kind: `note_clock_unreadable` gapped only the requests it happened to
+    /// be holding, and the recovering `observe_stable` opened a fresh epoch at
+    /// the new frontier without ever mentioning the interval it had jumped. A
+    /// consumer could not distinguish that outage from an hour in which nothing
+    /// happened, which is exactly the distinction a capture exists to preserve.
+    ///
+    /// The range below attaches no world state and publishes no frame. It says
+    /// only "the recorder holds no observation for hours 101..=104".
+    ///
+    /// Mutation proof: delete the `note_unobserved_span(..., ClockUnknown)` call
+    /// from the `clock_unknown` branch of `observe_stable` and this test fails
+    /// -- the elapsed hours vanish from the control lane again.
+    #[test]
+    fn hours_elapsed_while_the_clock_was_unreadable_are_named_not_silent() {
+        let mut s = scheduler(&[10, 11], 1, 64);
+        s.observe_stable(100, 1);
+        // Drain the baseline request so the outage has nothing pending to gap;
+        // any evidence after this point has to come from the interval itself.
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+        let _ = s.drain_control().count();
+
+        s.note_clock_unreadable();
+        s.note_clock_unreadable();
+        // Four game hours pass unobserved, then the clock reads again.
+        s.observe_stable(105, 2);
+
+        let gaps: Vec<_> = s.drain_control().collect();
+        let named: Vec<_> = gaps
+            .iter()
+            .filter(|gap| gap.kind == GapKind::ClockUnreadable)
+            .collect();
+        assert_eq!(
+            named.len(),
+            2,
+            "one inclusive range per domain, not one record per hour: {gaps:?}"
+        );
+        for gap in &named {
+            assert_eq!(gap.first_hour_raw, 101);
+            assert_eq!(gap.last_hour_raw, 104);
+        }
+        let ledger = s.hour_ledger();
+        assert_eq!(
+            ledger.unobserved_clock_unknown, 4,
+            "the interval is counted positively, not derived by subtraction"
+        );
+        assert!(ledger.balanced(), "{ledger:?}");
+        // And the recovery hour is still claimed normally.
+        assert!(s.take_current_request().is_some());
+    }
+
+    /// A forward counter jump the scheduler refuses to believe used to end the
+    /// capture with no statement about the span it stopped over. Going terminal
+    /// stays correct; passing over the interval in silence does not.
+    ///
+    /// Mutation proof: delete the `note_unobserved_span(..., CounterAnomaly)`
+    /// call before the terminal assignment and this test fails.
+    #[test]
+    fn a_rejected_forward_counter_jump_still_names_the_span_it_stopped_over() {
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+        let _ = s.drain_control().count();
+
+        let far = 100 + MAX_FORWARD_DELTA as i32 + 10;
+        s.observe_stable(far, 2);
+        assert_eq!(
+            s.terminal(),
+            Some(TerminalOutcome::CounterAnomaly),
+            "the jump is still rejected"
+        );
+        let gaps: Vec<_> = s.drain_control().collect();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(gaps[0].kind, GapKind::ClockUnreadable);
+        assert_eq!(gaps[0].first_hour_raw, 101);
+        assert_eq!(gaps[0].last_hour_raw, far - 1);
+        assert_eq!(
+            s.hour_ledger().unobserved_counter_anomaly,
+            u64::try_from(far - 101).unwrap()
+        );
+    }
+
+    /// The 146-hours-with-no-frame shape, in miniature. A frame that outlives
+    /// its game hour causes the NEXT hour's request to be replaced before any
+    /// reader can take it; that hour opens no frame at all.
+    ///
+    /// The counter matters because it is the only way to learn the number
+    /// without subtracting published frames from an advanced-hour span --
+    /// a subtraction that cannot tell an evidenced hole from a silent one.
+    ///
+    /// Mutation proof: delete the `evicted_pending_hours` increment in
+    /// `enqueue_request` and the ledger stops balancing, failing this test.
+    #[test]
+    fn an_hour_evicted_before_any_reader_took_it_is_counted_where_it_happens() {
+        let mut s = scheduler(&[10, 11], 1, 64);
+        s.observe_stable(100, 1);
+        let in_flight = s.take_current_request().expect("hour 100 is takeable");
+
+        // The reader is still busy. Hours 101 and 102 arrive; 101 is evicted by
+        // 102 and will never be seen by anyone.
+        s.observe_stable(101, 2);
+        s.observe_stable(102, 3);
+
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.scheduled, 3);
+        assert_eq!(ledger.accepted, 0);
+        assert_eq!(
+            ledger.evicted_pending, 1,
+            "hour 101 opened no frame and nothing else in the ledger claims it"
+        );
+        assert_eq!(ledger.outstanding, 2, "100 in flight, 102 pending");
+        assert!(ledger.balanced(), "{ledger:?}");
+        assert_eq!(ledger.unobserved_total(), 1);
+
+        // Resolving the in-flight frame moves it to `accepted`, and the ledger
+        // still balances -- no disposition is double-counted.
+        s.accept_request(in_flight);
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.accepted, 1);
+        assert_eq!(ledger.outstanding, 1);
+        assert!(ledger.balanced(), "{ledger:?}");
+    }
+
+    /// Every disposition of an admitted hour is counted at its own site, so a
+    /// capture that exercises all of them still balances. A new drop path that
+    /// forgets to say so breaks this.
+    ///
+    /// Mutation proof: delete the `refused_hours` increment in `reject_request`,
+    /// or the `flushed_pending_hours` increment in `flush_latest_pending`, or
+    /// either `abandoned_hours` increment in `gap_all_pending`, and the
+    /// corresponding assertion below fails.
+    #[test]
+    fn every_admitted_hour_has_exactly_one_counted_disposition() {
+        let mut s = scheduler(&[10], 1, 64);
+
+        // accepted
+        s.observe_stable(1, 1);
+        let r = s.take_current_request().unwrap();
+        s.accept_request(r);
+        // refused
+        s.observe_stable(2, 2);
+        let r = s.take_current_request().unwrap();
+        s.reject_request(r);
+        // evicted pending
+        s.observe_stable(3, 3);
+        let r = s.take_current_request().unwrap();
+        s.observe_stable(4, 4);
+        s.observe_stable(5, 5);
+        // abandoned (in flight + pending) at a clock-unknown boundary
+        s.note_clock_unreadable();
+        // flushed pending at teardown
+        s.observe_stable(6, 6);
+        s.flush_latest_pending();
+        let _ = r;
+
+        let ledger = s.hour_ledger();
+        assert_eq!(ledger.scheduled, 6);
+        assert_eq!(ledger.accepted, 1);
+        assert_eq!(ledger.refused, 1);
+        assert_eq!(ledger.evicted_pending, 1, "hour 4 was replaced by hour 5");
+        assert_eq!(ledger.abandoned, 2, "hour 3 in flight and hour 5 pending");
+        assert_eq!(ledger.flushed_pending, 1, "hour 6");
+        assert_eq!(ledger.outstanding, 0);
+        assert!(ledger.balanced(), "{ledger:?}");
+        assert_eq!(
+            ledger.unobserved_total(),
+            4,
+            "hours 3, 4, 5 and 6 opened no frame"
+        );
     }
 }
