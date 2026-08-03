@@ -286,6 +286,21 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+/// True while this lane holds a release it could not PROVE.
+///
+/// Two independent ways that happens, and `installed()` reports false for both:
+///
+///   * `RETAINED_LIVE` -- a disable that did not take. The detour is still in
+///     the executable and the latch is one-way, so this stays true forever.
+///   * receipt custody still on the installed side. `uninstall` publishes the
+///     release only when every disable AND every removal came back clean, so an
+///     uninstall that errored leaves the installed receipts in place with
+///     `INSTALLED` already false.
+pub fn release_pending() -> bool {
+    RETAINED_LIVE.load(Ordering::Acquire)
+        || (!installed() && HOOK_RECEIPTS.has_complete_installed_custody())
+}
+
 /// The exact enabled-byte receipts for the four D95 production hook sites.
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
     HOOK_RECEIPTS.installed_receipts()

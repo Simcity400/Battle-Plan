@@ -10,5 +10,6 @@ mod a729;
 #[cfg(windows)]
 pub use a729::{
     abort_partial_install_and_uninstall, drain_latest, install, installed, installed_hook_receipts,
-    take_released_hook_receipts, uninstall, HOOK_RECEIPT_COUNT, PRODUCTION_HOOK_SPECS,
+    release_pending, take_released_hook_receipts, uninstall, HOOK_RECEIPT_COUNT,
+    PRODUCTION_HOOK_SPECS,
 };

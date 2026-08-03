@@ -163,6 +163,14 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
+/// A failed installation could not PROVE it removed its detours.
+///
+/// `INSTALLED` is set only after the WHOLE roster is enabled, so an enable
+/// failure whose rollback also failed leaves every other predicate answering
+/// "nothing here" over a live patch. One-way, like D94's twin: there is no
+/// later state in which a patch this module could not remove becomes provably
+/// gone.
+static FAILED_INSTALL_REMOVAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
@@ -368,6 +376,10 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
                 }
             }
             if !cleanup_failures.is_empty() {
+                // The enable failed and the rollback could not finish, so a
+                // target may still be patched with `INSTALLED` never set. Latch
+                // it: this is the only remaining record.
+                FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
                 return Err(format!(
                     "A40 hook enable at {target:#x} failed: {status}; rollback failed: {}",
                     cleanup_failures.join(", ")
@@ -387,6 +399,7 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
     if let Err(error) = HOOK_RECEIPTS.observe_installed(base, detours()) {
         let cleanup = release_created_sites(&created);
         if !cleanup.is_empty() {
+            FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
                 "A40 selected-designer hook receipt refused: {error}; rollback failed: {}",
                 cleanup.join(", ")
@@ -456,13 +469,17 @@ pub fn take_released_hook_receipts(
     HOOK_RECEIPTS.take_released_receipts()
 }
 
-/// True while this module holds receipt custody it has not released.
+/// True while this module holds a release it could not PROVE.
 ///
-/// `uninstall_fixture_hooks` clears `INSTALLED` as soon as the disables succeed
-/// and before the removals run, so `installed()` alone goes false while sites
-/// may still be created.
+/// Two independent ways that happens, and `installed()` reports false for both:
+/// a failed install whose rollback could not finish
+/// ([`FAILED_INSTALL_REMOVAL_UNPROVED`]), and receipt custody still on the
+/// installed side -- `uninstall_fixture_hooks` clears `INSTALLED` as soon as the
+/// disables succeed but publishes the release only after every removal also
+/// came back clean.
 pub fn release_pending() -> bool {
-    !installed() && HOOK_RECEIPTS.has_complete_installed_custody()
+    FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
+        || (!installed() && HOOK_RECEIPTS.has_complete_installed_custody())
 }
 
 /// Normal production installer. It shares the exact sentinel-gated hook owner

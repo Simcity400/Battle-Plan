@@ -79,6 +79,12 @@ static ORIGINAL_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
+/// A failed installation could not PROVE it removed its detour.
+///
+/// `INSTALLED` is set only after the enable succeeds, so an enable failure --
+/// which may still have patched the target -- leaves every other predicate
+/// answering "nothing here". One-way, like D94's twin.
+static FAILED_INSTALL_REMOVAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
@@ -136,7 +142,14 @@ pub fn install() -> Result<InstalledHookAddress, String> {
     ORIGINAL_REFRESH.store(original as usize, Ordering::Release);
     MODULE_BASE.store(base, Ordering::Release);
     if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-        let _ = unsafe { inline_detour::remove(target as *mut c_void) };
+        // An enable that reported failure may still have patched the target,
+        // and `remove` here is the only attempt to take it back out. Its result
+        // was discarded outright before 2026-08-03, which left a possibly-live
+        // detour with `INSTALLED` false and nothing recording it.
+        let removed = unsafe { inline_detour::remove(target as *mut c_void) };
+        if removed.is_err() {
+            FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
+        }
         ORIGINAL_REFRESH.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("A27 designer refresh hook enable failed: {status}"));
@@ -151,7 +164,8 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         let disabled = unsafe { inline_detour::disable(target as *mut c_void) };
         if disabled.is_err() {
             // The target may still be patched, so the custody record is the
-            // only remaining evidence that it is. Keep it.
+            // only remaining evidence that it is. Keep it, and latch.
+            FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
                 "A27 designer refresh hook receipt refused: {error}; rollback failed: {}",
                 disabled.unwrap_err()
@@ -185,9 +199,11 @@ pub fn take_released_hook_receipts(
     HOOK_RECEIPTS.take_released_receipts()
 }
 
-/// True while this module holds receipt custody it has not released.
+/// True while this module holds a release it could not PROVE: a failed install
+/// whose removal did not take, or receipt custody still on the installed side.
 pub fn release_pending() -> bool {
-    !installed() && HOOK_RECEIPTS.has_complete_installed_custody()
+    FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
+        || (!installed() && HOOK_RECEIPTS.has_complete_installed_custody())
 }
 
 pub fn uninstall() -> Result<(), String> {
