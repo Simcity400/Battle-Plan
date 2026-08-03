@@ -325,13 +325,6 @@ fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
         "the pass must be handed the expanded scheduled roster, or a domain that emitted \
          nothing at all is invisible to it too:\n{call_args}"
     );
-    // And the emission count it returns has to actually reach FRAME_END, or the
-    // minted gaps disagree with the seal's own words.
-    assert!(
-        code[call..].contains("emitted_domains.saturating_add(closed.newly_emitted)"),
-        "the seal must consume the pass's emission count"
-    );
-
     // Anchored to a newline plus exactly four spaces: the read frame's own
     // FRAME_END sits at the top level of the gate function, while the earlier
     // ones -- including the `state == None` early return's -- are nested deeper
@@ -342,6 +335,20 @@ fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
     assert!(
         call < frame_end,
         "the pass adjusts the emitted-domain count that FRAME_END seals, so it must run first"
+    );
+
+    // The emission count has to be ASSIGNED BACK, and before the seal reads it.
+    // Matching the bare expression would accept `let _ = emitted_domains
+    // .saturating_add(closed.newly_emitted);`, which computes the right number
+    // and throws it away; searching the whole file would accept it landing
+    // after FRAME_END had already been written. Both are exactly the wiring
+    // mistakes this check exists for, so it looks for the full assignment
+    // within the region the seal actually reads.
+    assert!(
+        code[call..frame_end]
+            .contains("emitted_domains = emitted_domains.saturating_add(closed.newly_emitted);"),
+        "the pass's emission count must be assigned back to `emitted_domains` between the \
+         call and the FRAME_END that seals it"
     );
 }
 

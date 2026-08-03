@@ -180,19 +180,15 @@ fn gap_reason_names(mask: u32) -> Vec<&'static str> {
 
 /// A reason missing from `gap_reason_names` is not a compile error -- the table
 /// is a list, not a `match` -- so it would silently drop out of every report
-/// while the mask still carried its bit. This is what makes the table
-/// exhaustive in practice.
+/// while the mask still carried its bit.
+///
+/// Driven by `DomainGapReason::ALL` rather than by a second hand-written list:
+/// a list checked against a list is satisfied by forgetting the variant twice.
+/// `ALL` is itself pinned complete by an exhaustive match in `compact_contract`,
+/// so a new variant reaches this test whether or not anyone remembered it.
 #[test]
 fn every_gap_reason_has_a_report_name() {
-    for reason in [
-        DomainGapReason::Torn,
-        DomainGapReason::Overrun,
-        DomainGapReason::Backpressure,
-        DomainGapReason::ClockUnreadable,
-        DomainGapReason::WorkerPanic,
-        DomainGapReason::SourceUnavailable,
-        DomainGapReason::ReaderSilent,
-    ] {
+    for reason in DomainGapReason::ALL {
         assert_eq!(
             gap_reason_names(1u32 << reason.code()).len(),
             1,

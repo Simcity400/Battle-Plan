@@ -34,6 +34,36 @@ pub enum DomainGapReason {
 }
 
 impl DomainGapReason {
+    /// Every reason, for consumers that must handle all of them but cannot be
+    /// forced to by a `match` -- report tables keyed by name, mask decoders,
+    /// round-trip coverage. Those are hand-maintained lists, and a hand list
+    /// checked against another hand list proves nothing; this is the one the
+    /// compiler stands behind, via [`DomainGapReason::position`].
+    pub const ALL: [DomainGapReason; 7] = [
+        Self::Torn,
+        Self::Overrun,
+        Self::Backpressure,
+        Self::ClockUnreadable,
+        Self::WorkerPanic,
+        Self::SourceUnavailable,
+        Self::ReaderSilent,
+    ];
+
+    /// This match is exhaustive, so a new variant does not compile until it is
+    /// named here; `all_is_exhaustive` then fails until it is also in `ALL`.
+    /// Together that is what makes `ALL` complete rather than merely current.
+    const fn position(self) -> usize {
+        match self {
+            Self::Torn => 0,
+            Self::Overrun => 1,
+            Self::Backpressure => 2,
+            Self::ClockUnreadable => 3,
+            Self::WorkerPanic => 4,
+            Self::SourceUnavailable => 5,
+            Self::ReaderSilent => 6,
+        }
+    }
+
     pub const fn code(self) -> u16 {
         self as u16
     }
@@ -237,17 +267,27 @@ mod tests {
         }
     }
 
+    /// `ALL` is complete, not merely current.
+    ///
+    /// `position` is an exhaustive match, so a new variant cannot compile
+    /// without a position; this pins every position to a distinct slot of
+    /// `ALL`, so a variant that has a position but is missing from `ALL` -- or
+    /// listed twice -- fails here. Consumers that iterate `ALL` inherit that
+    /// guarantee instead of maintaining a second hand list.
+    #[test]
+    fn all_is_exhaustive() {
+        for (slot, reason) in DomainGapReason::ALL.iter().enumerate() {
+            assert_eq!(
+                reason.position(),
+                slot,
+                "{reason:?} is not in its declared position in ALL"
+            );
+        }
+    }
+
     #[test]
     fn every_closed_reason_round_trips_with_exact_layout() {
-        for reason in [
-            DomainGapReason::Torn,
-            DomainGapReason::Overrun,
-            DomainGapReason::Backpressure,
-            DomainGapReason::ClockUnreadable,
-            DomainGapReason::WorkerPanic,
-            DomainGapReason::SourceUnavailable,
-            DomainGapReason::ReaderSilent,
-        ] {
+        for reason in DomainGapReason::ALL {
             let value = sample(reason);
             let wire = value.encode().unwrap();
             assert_eq!(wire.len(), COMPACT_DOMAIN_GAP_PAYLOAD_LEN);
