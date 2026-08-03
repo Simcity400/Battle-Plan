@@ -64,6 +64,9 @@
 //!  * it was opened and suspended -- it is provably not running; or
 //!  * `OpenThread` failed with `ERROR_INVALID_PARAMETER`, meaning the kernel
 //!    has no thread with that id, so the id in our snapshot is stale; or
+//!  * `OpenThread` failed some OTHER way AND a fresh enumeration of THIS
+//!    PROCESS, taken after that failure, no longer lists the id -- see
+//!    "Thread ids are system-wide" below; or
 //!  * the handle was opened, `SuspendThread` failed, AND the thread object
 //!    becomes signalled within [`TERMINATION_PROOF_TIMEOUT_MS`], which is
 //!    positive proof the thread has terminated and will execute no further
@@ -72,6 +75,47 @@
 //! Anything else refuses. Every id that is NOT already held suspended has its
 //! disposition re-derived from scratch each pass, so a recycled id belonging
 //! to a new live thread is opened and suspended like any other.
+//!
+//! # Thread ids are system-wide, and that is why `OpenThread` can be DENIED
+//!
+//! `OpenThread` takes a bare thread id -- `CLIENT_ID.UniqueProcess` is NULL --
+//! so the kernel resolves it against the SYSTEM-WIDE id table, not against
+//! this process. Ids are recycled from that table, and nothing reserves a
+//! freed id for the process that last used it.
+//!
+//! So the sequence below is ordinary rather than exotic, and MEASURED here
+//! (see `an_id_that_is_no_longer_ours_does_not_refuse_the_freeze`): one of our
+//! threads exits between the snapshot and the open; the kernel hands its id to
+//! a thread in a DIFFERENT process; our `OpenThread` therefore targets a
+//! stranger's thread and is correctly refused with `ERROR_ACCESS_DENIED` (5).
+//! Under the churn the module's own tests generate this happened in roughly
+//! one run in five, and every single occurrence had the same shape: the id was
+//! absent from a fresh enumeration of our own process, and a system-wide
+//! snapshot named another process as its owner. Six of eight probed instances
+//! could not even be opened for `THREAD_QUERY_LIMITED_INFORMATION`, so asking
+//! the handle who owns it is not a usable test; re-enumerating our own
+//! process is.
+//!
+//! Reading that denial as "a thread of ours that may be running" refused an
+//! entire hook installation, at exactly the rate above. It is also
+//! self-contradictory: a live thread of our own process IS openable at
+//! [`FREEZE_THREAD_ACCESS`], which is the claim the paragraph about MinHook's
+//! `OpenThread` above rests on. Both statements cannot hold of one thread.
+//!
+//! The disposition does NOT rest on that openability claim, deliberately. It
+//! rests on the enumeration alone: a `CreateToolhelp32Snapshot` lists every
+//! thread currently attached to this process, so if the id is absent from a
+//! snapshot taken AFTER the failed open, then no thread of ours that was alive
+//! at the moment of that open still exists. Our thread with that id is gone,
+//! whatever the error code said and whoever holds the id now. If the id IS
+//! still ours, the freeze refuses -- fail-closed, unchanged.
+//!
+//! That leaves one window, and it is the same window the
+//! `ERROR_INVALID_PARAMETER` arm has always had: the kernel may hand the freed
+//! id straight back to a NEW thread of ours after the re-enumeration. Such a
+//! thread is genuinely new, it is counted as a vanish rather than as a
+//! suspension, [`pass_is_quiet`] therefore cannot end the loop on this pass,
+//! and the next pass enumerates it and suspends it like any other.
 //!
 //! NOT true of an id we already hold, and this is a known hole rather than a
 //! covered case: membership in the frozen set is keyed on the thread id alone.
@@ -238,6 +282,15 @@ static SUSPEND_FAILURES_EXCUSED_AS_TERMINATED: AtomicU64 = AtomicU64::new(0);
 /// instead of asserting that a constant is non-zero: drop the timeout to 0 and
 /// this counter stops moving while the other one keeps going.
 static SUSPEND_FAILURES_NEEDING_THE_WAIT: AtomicU64 = AtomicU64::new(0);
+/// How many times an `OpenThread` failure that was NOT "no such thread id" was
+/// excused because a fresh enumeration of this process no longer listed the
+/// id.
+///
+/// This is the recycled-id population the module header describes, and it
+/// exists for the same reason the two counters above do: so a test can say the
+/// path was REACHED rather than merely not-refused. Every occurrence measured
+/// here reported `ERROR_ACCESS_DENIED`.
+static OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS: AtomicU64 = AtomicU64::new(0);
 
 std::thread_local! {
     /// Per-thread copy of [`FREEZE_ATTEMPTS`].
@@ -278,6 +331,12 @@ pub fn suspend_failures_needing_the_termination_wait() -> u64 {
     SUSPEND_FAILURES_NEEDING_THE_WAIT.load(Ordering::Acquire)
 }
 
+/// How many `OpenThread` failures were excused because the id had left this
+/// process by the time it was re-enumerated -- the recycled-id case.
+pub fn open_failures_excused_as_no_longer_ours() -> u64 {
+    OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS.load(Ordering::Acquire)
+}
+
 /// Serialises every test in this crate that touches process-global suspend
 /// state.
 ///
@@ -311,7 +370,8 @@ pub enum FreezeRefusal {
     Snapshot(u32),
     /// `Thread32First` failed, so no thread list was obtained at all.
     Enumeration(u32),
-    /// A thread could not be opened, and the failure was not "no such thread".
+    /// A thread could not be opened, the failure was not "no such thread id",
+    /// and the id was still this process's own on re-enumeration.
     ThreadOpen { thread: u32, os_error: u32 },
     /// A thread could not be suspended and could not be proven terminated.
     ThreadSuspend { thread: u32, os_error: u32 },
@@ -342,8 +402,9 @@ impl fmt::Display for FreezeRefusal {
             Self::ThreadOpen { thread, os_error } => write!(
                 f,
                 "detour patch refused: thread {thread} could not be opened \
-                 (os error {os_error}), so it could not be proven outside the \
-                 patch site; no target byte was touched"
+                 (os error {os_error}) and is still this process's own, so it \
+                 could not be proven outside the patch site; no target byte \
+                 was touched"
             ),
             Self::ThreadSuspend { thread, os_error } => write!(
                 f,
@@ -391,17 +452,55 @@ pub(crate) enum ThreadDisposition {
     Refuse,
 }
 
-/// `OpenThread` failed. The only benign reading is "the kernel has no thread
-/// with this id", which is what `ERROR_INVALID_PARAMETER` means and which can
-/// only happen for an id that went stale between the snapshot and the open.
+/// What an `OpenThread` failure says ON ITS OWN, before anything is
+/// re-enumerated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenFailure {
+    /// The kernel has NO thread with this id anywhere in the system, which is
+    /// what `ERROR_INVALID_PARAMETER` means. The id in our snapshot is stale
+    /// and nothing further needs asking.
+    NoSuchThreadId,
+    /// Some other code. The kernel found *a* thread with this id and would not
+    /// give us a handle to it. Because ids are system-wide that thread need
+    /// not be ours, so this decides NOTHING by itself -- see
+    /// [`classify_unopenable_thread`].
+    Unopenable,
+}
+
+/// `OpenThread` failed. Which of the two questions does the code answer?
 ///
-/// Anything else -- notably `ERROR_ACCESS_DENIED` -- describes a thread that
-/// may well be running, and is refused.
-pub(crate) fn classify_open_failure(os_error: u32) -> ThreadDisposition {
+/// Deliberately NOT a disposition. The old form of this function mapped every
+/// code but `ERROR_INVALID_PARAMETER` -- explicitly including
+/// `ERROR_ACCESS_DENIED` -- straight to a refusal, on the reading that such a
+/// thread "may well be running". Measured, that reading was wrong about which
+/// PROCESS the thread belongs to: see the module header. The code alone cannot
+/// settle it, so this function no longer pretends to.
+pub(crate) fn classify_open_failure(os_error: u32) -> OpenFailure {
     if os_error == ERROR_INVALID_PARAMETER {
-        ThreadDisposition::Gone
+        OpenFailure::NoSuchThreadId
     } else {
+        OpenFailure::Unopenable
+    }
+}
+
+/// The kernel has a thread with this id and would not let us open it. Is that
+/// thread ours?
+///
+/// `id_is_still_ours` must come from an enumeration of THIS PROCESS taken
+/// AFTER the failed open, because that ordering is the whole proof: a snapshot
+/// lists every thread attached to the process at the moment it is taken, so an
+/// id missing from it belongs to no thread of ours that was alive at the
+/// earlier open. That thread is gone. An id still present is a live thread of
+/// ours that we could not stop, and refuses.
+///
+/// FAIL CLOSED in the direction that matters: this excuses an open failure
+/// only on positive evidence that the id left this process, never on the error
+/// code, and never on a snapshot taken before the failure.
+pub(crate) fn classify_unopenable_thread(id_is_still_ours: bool) -> ThreadDisposition {
+    if id_is_still_ours {
         ThreadDisposition::Refuse
+    } else {
+        ThreadDisposition::Gone
     }
 }
 
@@ -611,6 +710,34 @@ fn enumerate_thread_ids(out: &mut Vec<u32>) -> Result<(), FreezeRefusal> {
     }
 }
 
+/// Is `thread_id` still attached to THIS process, right now?
+///
+/// The evidence [`classify_unopenable_thread`] runs on, and the reason it is a
+/// separate function is that the ordering is the proof: every caller must take
+/// this AFTER the `OpenThread` it is explaining, never before.
+///
+/// `scratch` is a caller-owned buffer so this can be asked inside the frozen
+/// window without allocating; [`enumerate_thread_ids`] reuses its capacity.
+///
+/// FAIL CLOSED: a snapshot that cannot be taken, or an enumeration that stops
+/// partway, propagates as a refusal rather than answering "not ours". A
+/// truncated list is a list of threads we did not see, and reading one as
+/// proof that a thread left the process is exactly backwards.
+fn id_is_still_in_this_process(
+    thread_id: u32,
+    scratch: &mut Vec<u32>,
+) -> Result<bool, FreezeRefusal> {
+    if thread_id == unsafe { GetCurrentThreadId() } {
+        // Cannot arise from the freeze loop, whose enumeration excludes this
+        // thread, but [`enumerate_thread_ids`] excludes it too and answering
+        // "not in this process" about the thread doing the asking would be
+        // absurd for any future caller.
+        return Ok(true);
+    }
+    enumerate_thread_ids(scratch)?;
+    Ok(scratch.contains(&thread_id))
+}
+
 /// Has this thread terminated, given a bounded moment to finish doing so?
 ///
 /// Probed in two steps rather than one so the bounded wait's own population is
@@ -688,6 +815,11 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
     // capacity, so the frozen window does not allocate in the steady state.
     let headroom = ids.len().saturating_mul(4).saturating_add(64);
     ids.reserve(headroom);
+    // The buffer the recycled-id re-enumeration writes into. Reserved here,
+    // alongside `ids` and for the same reason: it is filled while every other
+    // thread is suspended, and growing it there would allocate inside the
+    // frozen window. It cannot be `ids`, which the pass below is iterating.
+    let mut recheck: Vec<u32> = Vec::with_capacity(headroom);
     let mut freeze = ProcessFreeze {
         _serialisation: serialisation,
         frozen: Vec::with_capacity(headroom),
@@ -712,7 +844,22 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             let handle = unsafe { OpenThread(FREEZE_THREAD_ACCESS, 0, thread_id) };
             if handle.is_null() {
                 let os_error = unsafe { GetLastError() };
-                match classify_open_failure(os_error) {
+                let disposition = match classify_open_failure(os_error) {
+                    // The kernel has no thread with this id at all.
+                    OpenFailure::NoSuchThreadId => ThreadDisposition::Gone,
+                    // The kernel has one and would not open it for us. Ids are
+                    // system-wide, so ask whether it is still OURS -- and ask
+                    // AFTER the failed open, which is what makes the answer
+                    // proof rather than a guess.
+                    OpenFailure::Unopenable => {
+                        let still_ours = id_is_still_in_this_process(thread_id, &mut recheck)?;
+                        if !still_ours {
+                            OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS.fetch_add(1, Ordering::AcqRel);
+                        }
+                        classify_unopenable_thread(still_ours)
+                    }
+                };
+                match disposition {
                     ThreadDisposition::Gone => {
                         vanished += 1;
                         continue;
@@ -812,25 +959,149 @@ mod tests {
         );
     }
 
-    /// Falsifiable: fails if an `OpenThread` failure other than "no such
-    /// thread" is ever read as benign.
+    /// Falsifiable: fails if an `OpenThread` error code is ever taken as a
+    /// disposition in its own right.
     ///
-    /// `ERROR_ACCESS_DENIED` is the case that matters: a thread we may not
-    /// touch is a thread that may be running inside the patch site, and
-    /// treating it as gone is exactly the fail-open being removed.
+    /// Only `ERROR_INVALID_PARAMETER` settles anything by itself, and what it
+    /// settles is that no thread anywhere has the id. Every other code --
+    /// `ERROR_ACCESS_DENIED` above all -- means the kernel HAS a thread with
+    /// this id and refused us a handle, which says nothing about whose thread
+    /// it is, so it must arrive at [`classify_unopenable_thread`] undecided.
     #[test]
-    fn only_a_missing_thread_id_excuses_an_open_failure() {
+    fn only_a_missing_thread_id_is_settled_by_the_open_error_code_alone() {
         assert_eq!(
             classify_open_failure(ERROR_INVALID_PARAMETER),
-            ThreadDisposition::Gone
+            OpenFailure::NoSuchThreadId
         );
         for os_error in [0u32, 5, 6, 8, 87 + 1, 1450] {
             assert_eq!(
                 classify_open_failure(os_error),
-                ThreadDisposition::Refuse,
-                "os error {os_error} must refuse"
+                OpenFailure::Unopenable,
+                "os error {os_error} cannot be settled by its code alone"
             );
         }
+    }
+
+    /// Falsifiable, and the guard on the whole recycled-id disposition: fails
+    /// if an unopenable id is ever excused while it is still this process's
+    /// own.
+    ///
+    /// The excusal is sound only because it rests on the ENUMERATION, not on
+    /// the error code: an id absent from a snapshot of this process taken
+    /// after the failed open belongs to no thread of ours that was alive at
+    /// that open. Invert this and a live thread of ours that we could not stop
+    /// is waved through, which is the MinHook fail-open the module exists to
+    /// close, reintroduced one step earlier.
+    #[test]
+    fn an_unopenable_id_is_excused_only_when_it_has_left_this_process() {
+        assert_eq!(
+            classify_unopenable_thread(true),
+            ThreadDisposition::Refuse,
+            "an id that is still ours is a live thread we could not stop"
+        );
+        assert_eq!(
+            classify_unopenable_thread(false),
+            ThreadDisposition::Gone,
+            "an id that has left this process cannot name a running thread of ours"
+        );
+    }
+
+    /// Falsifiable, and the one that observes the real OS behind
+    /// [`classify_unopenable_thread`]: fails if
+    /// [`id_is_still_in_this_process`] stops distinguishing this process's
+    /// threads from everyone else's.
+    ///
+    /// Three shapes, and all three are needed. A live thread of ours must read
+    /// TRUE -- a predicate stuck on `false` would excuse every unopenable id,
+    /// which is the fail-open. A thread of ANOTHER process must read FALSE:
+    /// that is the recycled-id case the fix turns on, and it is what a
+    /// predicate stuck on `true` (or one that forgot the owner-pid filter and
+    /// walked the whole system list) fails. An id that belongs to nobody must
+    /// read FALSE too.
+    ///
+    /// The foreign id is taken from a live system-wide snapshot rather than
+    /// invented, because the point is that such ids are indistinguishable from
+    /// ours by value alone.
+    #[test]
+    fn an_id_is_this_processs_own_only_while_the_thread_is() {
+        let _serialised = os_suspend_state_guard();
+        let mut scratch: Vec<u32> = Vec::new();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let ours = Arc::new(AtomicU64::new(0));
+        let worker = {
+            let stop = Arc::clone(&stop);
+            let ours = Arc::clone(&ours);
+            std::thread::spawn(move || {
+                ours.store(
+                    u64::from(unsafe { GetCurrentThreadId() }),
+                    Ordering::Release,
+                );
+                while !stop.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        while ours.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        let our_worker = ours.load(Ordering::Acquire) as u32;
+        assert_eq!(
+            id_is_still_in_this_process(our_worker, &mut scratch),
+            Ok(true),
+            "a live thread of this process must read as ours"
+        );
+
+        let foreign = a_thread_id_belonging_to_another_process()
+            .expect("some other process on this machine has a thread");
+        assert_ne!(foreign, our_worker);
+        assert_eq!(
+            id_is_still_in_this_process(foreign, &mut scratch),
+            Ok(false),
+            "a thread of another process must not read as ours merely because \
+             thread ids are drawn from one system-wide space"
+        );
+
+        // Ids are allocated in multiples of four, so an odd one names nothing.
+        assert_eq!(id_is_still_in_this_process(u32::MAX, &mut scratch), Ok(false));
+
+        stop.store(true, Ordering::Release);
+        worker.join().expect("worker joins");
+
+        // The predicate must have had a list to answer from, or the two
+        // `Ok(false)` answers above were vacuous.
+        assert!(
+            !scratch.is_empty(),
+            "the enumeration behind the predicate returned nothing, so its \
+             negative answers proved nothing"
+        );
+    }
+
+    /// A thread id owned by some process other than this one, from a live
+    /// system-wide snapshot. `None` only if this machine is running nothing
+    /// else, which it is not.
+    fn a_thread_id_belonging_to_another_process() -> Option<u32> {
+        let process_id = unsafe { GetCurrentProcessId() };
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
+        let mut found = None;
+        if unsafe { Thread32First(snapshot, &mut entry) } != 0 {
+            loop {
+                if entry.th32OwnerProcessID != process_id && entry.th32OwnerProcessID != 0 {
+                    found = Some(entry.th32ThreadID);
+                    break;
+                }
+                if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                    break;
+                }
+            }
+        }
+        unsafe { CloseHandle(snapshot) };
+        found
     }
 
     /// Falsifiable: fails if a suspend failure is ever excused by anything
@@ -879,7 +1150,7 @@ mod tests {
     }
 
     /// Falsifiable, and the reason the classifiers above are not decorative:
-    /// fails if either fail-open decision is taken anywhere but through them.
+    /// fails if a fail-open decision is taken anywhere but through them.
     ///
     /// A mutation battery found both classifier tests survive a reversion at
     /// the CALL SITE -- put `break` back in `enumerate_thread_ids`, or
@@ -888,15 +1159,26 @@ mod tests {
     /// driven from a test: `Thread32Next` cannot be made to fail on demand,
     /// and the vanish-with-a-successor interleaving is not schedulable. So the
     /// call sites are pinned by text rather than left unguarded.
+    ///
+    /// The recycled-id arm is pinned the same way and for a sharper reason:
+    /// its soundness is entirely an ORDERING claim -- the re-enumeration has
+    /// to happen after the failed open, in the same iteration, and its result
+    /// has to be the thing the disposition is taken from. A mutation that
+    /// hoists the re-enumeration, or that maps `Unopenable` straight to
+    /// `Gone`, leaves both classifier tests green.
     #[test]
-    fn the_two_fail_open_decisions_are_taken_only_through_their_classifiers() {
+    fn the_fail_open_decisions_are_taken_only_through_their_classifiers() {
         let production = production_code();
         let enumerate = production
             .split_once("fn enumerate_thread_ids(")
             .expect("enumerate_thread_ids is declared in production")
             .1
-            .split_once("\nfn ")
-            .expect("enumerate_thread_ids is followed by another item")
+            // To the closing brace at column 0, and no further. Ending at the
+            // next `\nfn ` swept in the FOLLOWING item's doc comment, and this
+            // guard then went red because a neighbouring comment used the word
+            // `break` in prose.
+            .split_once("\n}\n")
+            .expect("enumerate_thread_ids has a closing brace")
             .0;
         assert!(
             enumerate.contains("enumeration_stop_is_end_of_list(code)"),
@@ -926,6 +1208,35 @@ mod tests {
             inner.contains("!leaves_room_for_minhooks_suspension(previous_count)"),
             "a suspension that lands on the ceiling must refuse; MinHook's own \
              suspension is the one that then fails, and MinHook patches anyway"
+        );
+
+        // The recycled-id arm, in the one order that makes it a proof: the
+        // failed `OpenThread`, then the re-enumeration, then the disposition
+        // taken from it. Matched on fragments that survive rustfmt rewrapping.
+        let opened = inner
+            .find("OpenThread(FREEZE_THREAD_ACCESS, 0, thread_id)")
+            .expect("the freeze loop must open each enumerated thread");
+        let arm = inner
+            .find("OpenFailure::Unopenable => {")
+            .expect("the freeze loop must handle an unopenable id explicitly");
+        let reenumerates = inner.find("id_is_still_in_this_process(thread_id").expect(
+            "an unopenable id must be settled by re-enumerating THIS process; \
+             the error code cannot say whose thread it is",
+        );
+        let classifies = inner
+            .find("classify_unopenable_thread(still_ours)")
+            .expect("the re-enumeration's answer must be the disposition");
+        assert!(
+            opened < arm && arm < reenumerates && reenumerates < classifies,
+            "the re-enumeration must run after the OpenThread it explains and \
+             before the disposition is taken from it; any other order proves \
+             nothing about whether the id is still ours"
+        );
+        let arm_body = &inner[arm..classifies];
+        assert!(
+            !arm_body.contains("ThreadDisposition::Gone"),
+            "the Unopenable arm must not reach Gone without the enumeration; \
+             excusing an unopenable id on its error code is the fail-open"
         );
     }
 
@@ -1102,6 +1413,14 @@ mod tests {
     /// test, which is where the coverage is: `ThreadSuspend` is exactly the
     /// fail-closed-on-a-dead-thread regression this exists to catch.
     ///
+    /// `ThreadOpen` is the SECOND refusal shape this catches, and the reason
+    /// the recycled-id disposition exists. Before it, this test failed on
+    /// about one run in five with "thread N could not be opened (os error 5)"
+    /// -- an `ERROR_ACCESS_DENIED` on an id the kernel had already handed to
+    /// another process. The counter below is reported on failure because
+    /// distinguishing "the recycled-id path is broken" from "the recycled-id
+    /// path was never reached" is otherwise guesswork.
+    ///
     /// Nothing is joined while a freeze is held: each freeze is dropped at the
     /// end of its own iteration, and the churn threads are stopped and joined
     /// only after the loop.
@@ -1135,6 +1454,7 @@ mod tests {
         const MAX_ROUNDS: u32 = 20_000;
         let excused_before = suspend_failures_excused_as_terminated();
         let waited_before = suspend_failures_needing_the_termination_wait();
+        let recycled_before = open_failures_excused_as_no_longer_ours();
         let mut rounds = 0u32;
         let outcome = loop {
             rounds += 1;
@@ -1154,10 +1474,13 @@ mod tests {
         };
         stop.store(true, Ordering::Release);
         churn.join().expect("churn thread joins");
+        let recycled = open_failures_excused_as_no_longer_ours() - recycled_before;
         match outcome {
             Err((round, refusal)) => panic!(
                 "round {round}: a thread exiting mid-enumeration must not refuse \
-                 the freeze: {refusal}"
+                 the freeze: {refusal} \
+                 ({recycled} open failure(s) had already been excused as \
+                 no-longer-ours during this run)"
             ),
             Ok((rounds, 0)) => panic!(
                 "{rounds} freezes under churn never hit both shapes of a thread \
