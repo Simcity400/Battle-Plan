@@ -14,7 +14,12 @@ pub const DOMAIN_CONVOY_TRANSPORT_ATTACK: u16 = 90;
 pub const DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME: &str = "convoy_transport_attack_live";
 
 pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
-pub const BATCH_VERSION: u16 = 1;
+/// v2 claims header word 188 -- the last reserved word -- for
+/// `resolver_unbound_convoy_clients`. v1 declared it reserved-zero, so a v1
+/// decoder would refuse any v2 batch that carries a nonzero count rather than
+/// silently reading a partial resolver as a complete one; the version bump
+/// makes that refusal explicit instead of accidental.
+pub const BATCH_VERSION: u16 = 2;
 pub const BATCH_HEADER_LEN: usize = 192;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
@@ -108,6 +113,12 @@ pub struct ConvoyTransportAttackWitness {
     pub resolver_game_hour_raw: i32,
     pub resolver_member_bindings: u32,
     pub resolver_route_bindings: u32,
+    /// Convoy members of the publishing d49/d50 walk whose client handle or
+    /// route could not be bound. Nonzero means the resolver in force for this
+    /// batch was PARTIAL: the bound clients resolve normally, the unbound ones
+    /// refuse per event. It is the wire-visible denominator that keeps a
+    /// partial batch from being read as an exhaustive one.
+    pub resolver_unbound_convoy_clients: u32,
     pub telemetry: ConvoyTransportAttackTelemetry,
 }
 
@@ -117,6 +128,12 @@ impl ConvoyTransportAttackWitness {
             && self.queue_drain_complete
             && self.remaining_events == 0
             && self.active_callbacks == 0
+            // A partial resolver refuses every event belonging to a convoy
+            // member it could not bind, so the drained set cannot be claimed
+            // exhaustive. Those refusals also raise a drop counter, but that
+            // counter alone does not say WHICH subsystem lost them; this makes
+            // the resolver's own partiality independently disqualifying.
+            && self.resolver_unbound_convoy_clients == 0
             // A freshly installed observer can produce a complete measured-
             // empty drain before the first d49/d50 resolver publication. Any
             // callback in that interval increments a drop counter, so only a
@@ -218,6 +235,7 @@ pub fn encode_convoy_transport_attack_batch(
     write_i32(&mut out, 176, witness.resolver_game_hour_raw);
     write_u32(&mut out, 180, witness.resolver_member_bindings);
     write_u32(&mut out, 184, witness.resolver_route_bindings);
+    write_u32(&mut out, 188, witness.resolver_unbound_convoy_clients);
 
     for (index, row) in rows.iter().enumerate() {
         validate_row(row)?;
@@ -252,10 +270,9 @@ pub fn decode_convoy_transport_attack_batch(
     {
         return Err(BatchDecodeError::VersionOrLayout);
     }
-    if read_u16(bytes, 10)? != 0
-        || read_u32(bytes, 20)? != 0
-        || read_u32(bytes, 188)? != 0
-    {
+    // Word 188 is `resolver_unbound_convoy_clients` from v2 on; only 10 and 20
+    // remain reserved-zero.
+    if read_u16(bytes, 10)? != 0 || read_u32(bytes, 20)? != 0 {
         return Err(BatchDecodeError::Reserved);
     }
     let flags = read_u32(bytes, 16)?;
@@ -298,6 +315,7 @@ pub fn decode_convoy_transport_attack_batch(
         resolver_game_hour_raw: read_i32(bytes, 176)?,
         resolver_member_bindings: read_u32(bytes, 180)?,
         resolver_route_bindings: read_u32(bytes, 184)?,
+        resolver_unbound_convoy_clients: read_u32(bytes, 188)?,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry_values[0],
             original_calls: telemetry_values[1],

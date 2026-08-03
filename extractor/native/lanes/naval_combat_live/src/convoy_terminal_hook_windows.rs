@@ -1022,6 +1022,7 @@ fn encode_convoy_transport_attack_drain(
         resolver_game_hour_raw: drain.resolver.game_hour_raw,
         resolver_member_bindings: drain.resolver.member_bindings,
         resolver_route_bindings: drain.resolver.route_bindings,
+        resolver_unbound_convoy_clients: drain.resolver.unbound_convoy_clients,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry.callbacks_seen,
             original_calls: telemetry.original_calls,

@@ -50,6 +50,19 @@ pub struct ResolverPublicationReceipt {
     pub game_hour_raw: i32,
     pub member_bindings: u32,
     pub route_bindings: u32,
+    /// Convoy members of the same clean d49/d50 walk that this publication
+    /// could NOT bind: their `CFEXMember+0xD0` client handle was unreadable or
+    /// structurally invalid, or their route read/authentication was refused.
+    ///
+    /// This is the denominator that makes a partial resolver provable. A
+    /// publication with `unbound_convoy_clients != 0` still resolves every
+    /// client it DID bind -- `resolve_client_route` fails closed per client and
+    /// never synthesizes -- so events for bound clients are captured normally
+    /// while events for unbound ones are refused and counted. It is carried
+    /// onto the D90 batch witness, where it forces `exact_events_complete` to
+    /// false, so a partial binding set can never be read as an exhaustive
+    /// event set.
+    pub unbound_convoy_clients: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -251,7 +264,7 @@ pub fn publish_convoy_terminal_resolver_snapshot(
             });
         }
     }
-    publish_convoy_terminal_resolver_bindings(&member_bindings, routes, game_hour_raw)
+    publish_convoy_terminal_resolver_bindings(&member_bindings, routes, game_hour_raw, 0)
 }
 
 /// Collector adapter for the exact process-local bindings produced by the
@@ -261,6 +274,7 @@ pub fn publish_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
     game_hour_raw: i32,
+    unbound_convoy_clients: u32,
 ) -> Result<ResolverPublicationReceipt, String> {
     let authority = accepted_authority()?;
     publish_convoy_terminal_resolver_bindings_with_hashes(
@@ -268,6 +282,7 @@ pub fn publish_convoy_terminal_resolver_bindings(
         routes,
         game_hour_raw,
         authority,
+        unbound_convoy_clients,
     )
 }
 
@@ -278,12 +293,14 @@ pub fn publish_evidence_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
     game_hour_raw: i32,
+    unbound_convoy_clients: u32,
 ) -> Result<ResolverPublicationReceipt, String> {
     publish_convoy_terminal_resolver_bindings_with_hashes(
         member_bindings,
         routes,
         game_hour_raw,
         [0; 32],
+        unbound_convoy_clients,
     )
 }
 
@@ -292,6 +309,7 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
     routes: &[AuthenticatedLiveRouteBinding],
     game_hour_raw: i32,
     authority: [u8; 32],
+    unbound_convoy_clients: u32,
 ) -> Result<ResolverPublicationReceipt, String> {
     let member_epochs: BTreeMap<usize, CombatEpoch> = build_member_epoch_map(member_bindings)?
         .into_iter()
@@ -320,6 +338,7 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
             .map_err(|_| "member binding count exceeds u32".to_string())?,
         route_bindings: u32::try_from(route_map.len())
             .map_err(|_| "route binding count exceeds u32".to_string())?,
+        unbound_convoy_clients,
     };
     let next = Arc::new(ResolverSnapshot {
         receipt,
